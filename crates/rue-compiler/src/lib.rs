@@ -28,8 +28,10 @@
 mod diagnostic;
 mod drop_glue;
 mod semantic_order;
+mod source_metadata;
 mod unit;
 
+pub use source_metadata::SourceMetadata;
 pub use unit::{CompilationUnit, SourceStats};
 
 use rayon::prelude::*;
@@ -321,6 +323,28 @@ pub struct ParsedProgram {
 /// let program = parse_all_files(&sources)?;
 /// ```
 pub fn parse_all_files(sources: &[SourceFile<'_>]) -> MultiErrorResult<ParsedProgram> {
+    let root_file_id = sources
+        .first()
+        .map(|source| source.file_id)
+        .unwrap_or(FileId::DEFAULT);
+    let source_metadata =
+        SourceMetadata::from_sources(sources, root_file_id, std::collections::HashMap::new())
+            .map_err(CompileErrors::from)?;
+    parse_all_files_with_source_metadata(sources, &source_metadata)
+}
+
+/// Parse source files after validating them against immutable metadata.
+///
+/// This is the canonical multi-file parsing boundary. Invalid source IDs,
+/// paths, or descriptor membership are rejected before any source is lexed.
+pub fn parse_all_files_with_source_metadata(
+    sources: &[SourceFile<'_>],
+    source_metadata: &SourceMetadata,
+) -> MultiErrorResult<ParsedProgram> {
+    source_metadata
+        .validate_sources(sources)
+        .map_err(CompileErrors::from)?;
+
     // Parse all files sequentially with a shared interner
     // This ensures Spur values are consistent across files for cross-file symbol resolution
     let mut parsed_files = Vec::with_capacity(sources.len());
@@ -949,20 +973,78 @@ pub fn compile_frontend_from_ast(
 ///
 /// This function collects errors from multiple functions instead of stopping at the
 /// first error, allowing users to see all issues at once.
+///
+/// This compatibility entry point accepts the anonymous `FileId::DEFAULT`
+/// produced by [`Lexer::new`]. ASTs carrying explicit file IDs must use
+/// [`compile_frontend_from_ast_with_source_metadata_and_target`] so their root
+/// and source identities are not inferred.
 pub fn compile_frontend_from_ast_with_options(
     ast: Ast,
     interner: ThreadedRodeo,
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
 ) -> MultiErrorResult<CompileState> {
-    compile_frontend_from_ast_with_file_paths_and_target(
+    let source_metadata = anonymous_source_metadata(&ast).map_err(CompileErrors::from)?;
+    compile_frontend_from_ast_with_source_metadata_and_target(
         ast,
         interner,
         opt_level,
         preview_features,
         CompileOptions::default().target,
-        std::collections::HashMap::new(),
+        &source_metadata,
     )
+}
+
+fn anonymous_source_metadata(ast: &Ast) -> CompileResult<SourceMetadata> {
+    let mut file_ids: Vec<_> = ast
+        .items
+        .iter()
+        .map(semantic_order::item_span)
+        .map(|span| span.file_id)
+        .collect();
+    file_ids.sort_by_key(|file_id| file_id.index());
+    file_ids.dedup();
+    if file_ids.is_empty() {
+        file_ids.push(FileId::DEFAULT);
+    }
+
+    if file_ids != [FileId::DEFAULT] {
+        let displayed_ids = file_ids
+            .iter()
+            .map(|file_id| file_id.index().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+            format!(
+                "raw AST uses non-anonymous file IDs {displayed_ids}; pass SourceMetadata explicitly"
+            ),
+        )));
+    }
+
+    let physical_paths: std::collections::HashMap<_, _> = file_ids
+        .iter()
+        .copied()
+        .map(|file_id| (file_id, "<source>".to_string()))
+        .collect();
+    SourceMetadata::new(file_ids[0], physical_paths.clone(), physical_paths)
+}
+
+fn source_metadata_from_legacy_maps(
+    ast: &Ast,
+    file_paths: std::collections::HashMap<FileId, String>,
+    mut logical_path_overrides: std::collections::HashMap<FileId, String>,
+) -> CompileResult<SourceMetadata> {
+    if file_paths.is_empty() && logical_path_overrides.is_empty() {
+        return anonymous_source_metadata(ast);
+    }
+
+    let root_file_id = semantic_order::legacy_root_file_id(ast, &file_paths);
+    for (&file_id, physical_path) in &file_paths {
+        logical_path_overrides
+            .entry(file_id)
+            .or_insert_with(|| physical_path.clone());
+    }
+    SourceMetadata::new(root_file_id, file_paths, logical_path_overrides)
 }
 
 /// Like [`compile_frontend_from_ast_with_options`], but with the
@@ -1025,35 +1107,36 @@ pub fn compile_frontend_from_ast_with_file_paths_and_symbol_paths_and_target(
     file_paths: std::collections::HashMap<FileId, String>,
     symbol_paths: std::collections::HashMap<FileId, String>,
 ) -> MultiErrorResult<CompileState> {
-    let root_file_id = semantic_order::legacy_root_file_id(&ast, &file_paths);
+    let source_metadata = source_metadata_from_legacy_maps(&ast, file_paths, symbol_paths)
+        .map_err(CompileErrors::from)?;
     compile_frontend_from_ast_with_source_metadata_and_target(
         ast,
         interner,
         opt_level,
         preview_features,
         target,
-        root_file_id,
-        file_paths,
-        symbol_paths,
+        &source_metadata,
     )
 }
 
 /// Compile an already-parsed program with complete multi-file source metadata.
 ///
-/// Unlike the compatibility wrappers above, this entry point receives the
-/// designated semantic root explicitly. FileIds are arbitrary diagnostic
-/// handles; their numeric order must not affect import fallback, semantic
-/// allocation, or generated artifacts.
+/// Unlike the compatibility wrappers above, this entry point receives one
+/// descriptor carrying the designated semantic root and complete path maps.
+/// FileIds are arbitrary diagnostic handles; their numeric order must not
+/// affect import fallback, semantic allocation, or generated artifacts.
 pub fn compile_frontend_from_ast_with_source_metadata_and_target(
     ast: Ast,
     interner: ThreadedRodeo,
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
     target: Target,
-    root_file_id: FileId,
-    file_paths: std::collections::HashMap<FileId, String>,
-    symbol_paths: std::collections::HashMap<FileId, String>,
+    source_metadata: &SourceMetadata,
 ) -> MultiErrorResult<CompileState> {
+    source_metadata
+        .validate_ast(&ast)
+        .map_err(CompileErrors::from)?;
+
     // Preserve the caller-visible AST/RIR order for inspection and --emit rir.
     let (rir, interner) = {
         let _span = info_span!("astgen").entered();
@@ -1067,7 +1150,7 @@ pub fn compile_frontend_from_ast_with_source_metadata_and_target(
     // composite type IDs, destructor/drop-glue traversal, string IDs, and
     // object layout. Lower a private logical-path-ordered RIR without changing
     // the observable AST/RIR above (RUE-624).
-    let semantic_ast = semantic_order::for_sema(&ast, &file_paths, &symbol_paths, root_file_id);
+    let semantic_ast = semantic_order::for_sema(&ast, source_metadata);
     let semantic_rir = {
         let _span = info_span!("semantic_astgen").entered();
         AstGen::new(&semantic_ast, &interner).generate()
@@ -1078,9 +1161,9 @@ pub fn compile_frontend_from_ast_with_source_metadata_and_target(
         let _span = info_span!("sema").entered();
         let mut sema =
             Sema::new_for_target(&semantic_rir, &interner, preview_features.clone(), target);
-        sema.set_root_file_id(root_file_id);
-        sema.set_file_paths(file_paths);
-        sema.set_symbol_paths(symbol_paths);
+        sema.set_root_file_id(source_metadata.root_file_id());
+        sema.set_file_paths(source_metadata.physical_path_map().clone());
+        sema.set_symbol_paths(source_metadata.logical_path_map().clone());
         let output = sema.analyze_all()?;
         info!(
             function_count = output.functions.len(),
@@ -1189,28 +1272,29 @@ pub fn compile_multi_file_with_options(
     sources: &[SourceFile<'_>],
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
-    let symbol_paths = sources
-        .iter()
-        .map(|source| (source.file_id, source.path.to_string()))
-        .collect();
-    compile_multi_file_with_symbol_paths_and_options(sources, symbol_paths, options)
+    compile_multi_file_with_symbol_paths_and_options(
+        sources,
+        std::collections::HashMap::new(),
+        options,
+    )
 }
 
 /// Compile multiple source files while keeping physical paths separate from
-/// relocation-stable identities used in generated symbols.
+/// caller-provided logical identities used in generated symbols.
 ///
 /// This is the driver-facing variant of [`compile_multi_file_with_options`].
 /// As in that function, `sources[0]` is the designated semantic root.
 /// Physical [`SourceFile::path`] values continue to control diagnostics and
 /// module resolution; `symbol_paths` only qualify otherwise-colliding generated
-/// names.
+/// names. The map may omit IDs (physical paths are the compatibility fallback),
+/// but it may not contain IDs absent from `sources`.
 pub fn compile_multi_file_with_symbol_paths_and_options(
     sources: &[SourceFile<'_>],
     symbol_paths: std::collections::HashMap<FileId, String>,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
-    compile_multi_file_with_symbol_paths_and_options_impl(sources, symbol_paths, options, false)
-        .map(|(output, _stats)| output)
+    let source_metadata = source_metadata_from_sources(sources, symbol_paths)?;
+    compile_multi_file_with_source_metadata_and_options(sources, &source_metadata, options)
 }
 
 /// Compile multiple source files and return metrics collected by the live frontend.
@@ -1223,9 +1307,53 @@ pub fn compile_multi_file_with_symbol_paths_and_options_and_stats(
     symbol_paths: std::collections::HashMap<FileId, String>,
     options: &CompileOptions,
 ) -> MultiErrorResult<(CompileOutput, SourceStats)> {
-    let (output, stats) = compile_multi_file_with_symbol_paths_and_options_impl(
+    let source_metadata = source_metadata_from_sources(sources, symbol_paths)?;
+    compile_multi_file_with_source_metadata_and_options_and_stats(
         sources,
-        symbol_paths,
+        &source_metadata,
+        options,
+    )
+}
+
+fn source_metadata_from_sources(
+    sources: &[SourceFile<'_>],
+    logical_path_overrides: std::collections::HashMap<FileId, String>,
+) -> MultiErrorResult<SourceMetadata> {
+    let root_file_id = sources
+        .first()
+        .map(|source| source.file_id)
+        .unwrap_or(FileId::DEFAULT);
+    SourceMetadata::from_sources(sources, root_file_id, logical_path_overrides)
+        .map_err(CompileErrors::from)
+}
+
+/// Compile sources using an explicit, immutable root and source descriptor.
+///
+/// This is the canonical batch compilation boundary. The descriptor must
+/// describe exactly `sources`; validation happens before lexing.
+pub fn compile_multi_file_with_source_metadata_and_options(
+    sources: &[SourceFile<'_>],
+    source_metadata: &SourceMetadata,
+    options: &CompileOptions,
+) -> MultiErrorResult<CompileOutput> {
+    compile_multi_file_with_source_metadata_and_options_impl(
+        sources,
+        source_metadata,
+        options,
+        false,
+    )
+    .map(|(output, _stats)| output)
+}
+
+/// Compile sources with explicit metadata and return live frontend metrics.
+pub fn compile_multi_file_with_source_metadata_and_options_and_stats(
+    sources: &[SourceFile<'_>],
+    source_metadata: &SourceMetadata,
+    options: &CompileOptions,
+) -> MultiErrorResult<(CompileOutput, SourceStats)> {
+    let (output, stats) = compile_multi_file_with_source_metadata_and_options_impl(
+        sources,
+        source_metadata,
         options,
         true,
     )?;
@@ -1237,9 +1365,9 @@ pub fn compile_multi_file_with_symbol_paths_and_options_and_stats(
     Ok((output, stats))
 }
 
-fn compile_multi_file_with_symbol_paths_and_options_impl(
+fn compile_multi_file_with_source_metadata_and_options_impl(
     sources: &[SourceFile<'_>],
-    symbol_paths: std::collections::HashMap<FileId, String>,
+    source_metadata: &SourceMetadata,
     options: &CompileOptions,
     collect_stats: bool,
 ) -> MultiErrorResult<(CompileOutput, Option<SourceStats>)> {
@@ -1259,8 +1387,12 @@ fn compile_multi_file_with_symbol_paths_and_options_impl(
     .entered();
 
     // Use CompilationUnit for the entire pipeline
-    let mut unit = CompilationUnit::new(sources.to_vec(), options.clone());
-    unit.set_symbol_paths(symbol_paths);
+    let mut unit = CompilationUnit::with_source_metadata(
+        sources.to_vec(),
+        source_metadata.clone(),
+        options.clone(),
+    )
+    .map_err(CompileErrors::from)?;
     let output = unit.run_all()?;
     let stats = collect_stats.then(|| unit.collected_source_stats());
     Ok((output, stats))
@@ -1915,6 +2047,162 @@ pub fn compile_to_cfg_with_preview_features(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_invalid_compiler_input(errors: CompileErrors, expected: &str) {
+        assert_eq!(errors.len(), 1);
+        let error = errors.iter().next().unwrap();
+        assert!(
+            matches!(&error.kind, ErrorKind::InvalidCompilerInput(_)),
+            "expected E1400, got {error:?}"
+        );
+        assert_eq!(error.to_string(), expected);
+    }
+
+    #[test]
+    fn parse_rejects_invalid_source_identity_before_lexing() {
+        let duplicate_id = FileId::new(7);
+        let sources = [
+            SourceFile::new("z.rue", "$", duplicate_id),
+            SourceFile::new("a.rue", "#", duplicate_id),
+        ];
+
+        let errors = parse_all_files(&sources).unwrap_err();
+        assert_invalid_compiler_input(
+            errors,
+            "invalid compiler input: source files contain duplicate file IDs: 7",
+        );
+    }
+
+    #[test]
+    fn canonical_parse_rejects_source_metadata_drift_before_lexing() {
+        let file_id = FileId::new(3);
+        let metadata = SourceMetadata::new(
+            file_id,
+            std::collections::HashMap::from([(file_id, "expected.rue".to_string())]),
+            std::collections::HashMap::from([(file_id, "stable.rue".to_string())]),
+        )
+        .unwrap();
+        let sources = [SourceFile::new("actual.rue", "$", file_id)];
+
+        let errors = parse_all_files_with_source_metadata(&sources, &metadata).unwrap_err();
+        assert_invalid_compiler_input(
+            errors,
+            "invalid compiler input: physical path for 3 is \"expected.rue\", but source file uses \"actual.rue\"",
+        );
+    }
+
+    #[test]
+    fn raw_ast_boundary_rejects_undeclared_file_ids_before_lowering() {
+        let declared = FileId::new(2);
+        let metadata = SourceMetadata::new(
+            declared,
+            std::collections::HashMap::from([(declared, "main.rue".to_string())]),
+            std::collections::HashMap::from([(declared, "main.rue".to_string())]),
+        )
+        .unwrap();
+        let ast = Ast {
+            items: vec![Item::Error(Span::with_file(FileId::new(9), 0, 1))],
+        };
+
+        let result = compile_frontend_from_ast_with_source_metadata_and_target(
+            ast,
+            ThreadedRodeo::new(),
+            OptLevel::default(),
+            &PreviewFeatures::new(),
+            CompileOptions::default().target,
+            &metadata,
+        );
+        let errors = match result {
+            Ok(_) => panic!("undeclared AST file ID should fail"),
+            Err(errors) => errors,
+        };
+        assert_invalid_compiler_input(
+            errors,
+            "invalid compiler input: AST contains unknown file IDs: 9",
+        );
+    }
+
+    #[test]
+    fn legacy_raw_ast_wrapper_only_synthesizes_truly_anonymous_metadata() {
+        let ast = Ast {
+            items: vec![Item::Error(Span::with_file(FileId::new(9), 0, 1))],
+        };
+        let result = compile_frontend_from_ast_with_options(
+            ast,
+            ThreadedRodeo::new(),
+            OptLevel::default(),
+            &PreviewFeatures::new(),
+        );
+        let errors = match result {
+            Ok(_) => panic!("non-anonymous AST should require source metadata"),
+            Err(errors) => errors,
+        };
+        assert_invalid_compiler_input(
+            errors,
+            "invalid compiler input: raw AST uses non-anonymous file IDs 9; pass SourceMetadata explicitly",
+        );
+    }
+
+    #[test]
+    fn legacy_raw_ast_maps_materialize_partial_logical_paths_and_reject_unknown_ids() {
+        let root = FileId::new(2);
+        let empty_file = FileId::new(8);
+        let unknown = FileId::new(9);
+        let ast = Ast {
+            items: vec![Item::Error(Span::with_file(root, 0, 1))],
+        };
+        let file_paths = std::collections::HashMap::from([
+            (root, "physical/root.rue".to_string()),
+            (empty_file, "physical/empty.rue".to_string()),
+        ]);
+
+        let metadata = source_metadata_from_legacy_maps(
+            &ast,
+            file_paths.clone(),
+            std::collections::HashMap::from([(root, "stable/root.rue".to_string())]),
+        )
+        .unwrap();
+        assert_eq!(metadata.root_file_id(), root);
+        assert_eq!(metadata.logical_path(root), Some("stable/root.rue"));
+        assert_eq!(
+            metadata.logical_path(empty_file),
+            Some("physical/empty.rue")
+        );
+
+        let error = source_metadata_from_legacy_maps(
+            &ast,
+            file_paths,
+            std::collections::HashMap::from([(unknown, "unknown.rue".to_string())]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "invalid compiler input: logical path map contains unknown file IDs: 9"
+        );
+    }
+
+    #[test]
+    fn canonical_batch_rejects_metadata_drift_before_lexing() {
+        let file_id = FileId::new(3);
+        let metadata = SourceMetadata::new(
+            file_id,
+            std::collections::HashMap::from([(file_id, "expected.rue".to_string())]),
+            std::collections::HashMap::from([(file_id, "stable.rue".to_string())]),
+        )
+        .unwrap();
+        let sources = [SourceFile::new("actual.rue", "$", file_id)];
+
+        let errors = compile_multi_file_with_source_metadata_and_options(
+            &sources,
+            &metadata,
+            &CompileOptions::default(),
+        )
+        .unwrap_err();
+        assert_invalid_compiler_input(
+            errors,
+            "invalid compiler input: physical path for 3 is \"expected.rue\", but source file uses \"actual.rue\"",
+        );
+    }
 
     #[test]
     fn test_embedded_runtime_is_valid() {
@@ -2800,12 +3088,22 @@ mod tests {
             if reverse_siblings {
                 sources.swap(1, 2);
             }
-            let mut unit = CompilationUnit::new(sources, CompileOptions::default());
-            unit.set_symbol_paths(std::collections::HashMap::from([
-                (main_id, "main.rue".to_string()),
-                (left_id, "left.rue".to_string()),
-                (right_id, "right.rue".to_string()),
-            ]));
+            let source_metadata = SourceMetadata::from_sources(
+                &sources,
+                main_id,
+                std::collections::HashMap::from([
+                    (main_id, "main.rue".to_string()),
+                    (left_id, "left.rue".to_string()),
+                    (right_id, "right.rue".to_string()),
+                ]),
+            )
+            .unwrap();
+            let mut unit = CompilationUnit::with_source_metadata(
+                sources,
+                source_metadata,
+                CompileOptions::default(),
+            )
+            .unwrap();
             unit.run_frontend().expect("frontend should compile");
             let mut names: Vec<_> = unit
                 .functions()
@@ -2901,12 +3199,22 @@ mod tests {
                 sources.swap(1, 2);
             }
 
-            let mut unit = CompilationUnit::new(sources, CompileOptions::default());
-            unit.set_symbol_paths(std::collections::HashMap::from([
-                (FileId::new(1), "main.rue".to_string()),
-                (left_id, "left/shared.rue".to_string()),
-                (right_id, "right/shared.rue".to_string()),
-            ]));
+            let source_metadata = SourceMetadata::from_sources(
+                &sources,
+                FileId::new(1),
+                std::collections::HashMap::from([
+                    (FileId::new(1), "main.rue".to_string()),
+                    (left_id, "left/shared.rue".to_string()),
+                    (right_id, "right/shared.rue".to_string()),
+                ]),
+            )
+            .unwrap();
+            let mut unit = CompilationUnit::with_source_metadata(
+                sources,
+                source_metadata,
+                CompileOptions::default(),
+            )
+            .unwrap();
             unit.run_frontend().expect("frontend should compile");
 
             let pool = unit.type_pool();
@@ -2982,12 +3290,22 @@ mod tests {
             ),
         ];
 
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
-        unit.set_symbol_paths(std::collections::HashMap::from([
-            (main_id, "main.rue".to_string()),
-            (struct_id, "left/clash.rue".to_string()),
-            (enum_id, "right/clash.rue".to_string()),
-        ]));
+        let source_metadata = SourceMetadata::from_sources(
+            &sources,
+            main_id,
+            std::collections::HashMap::from([
+                (main_id, "main.rue".to_string()),
+                (struct_id, "left/clash.rue".to_string()),
+                (enum_id, "right/clash.rue".to_string()),
+            ]),
+        )
+        .unwrap();
+        let mut unit = CompilationUnit::with_source_metadata(
+            sources,
+            source_metadata,
+            CompileOptions::default(),
+        )
+        .unwrap();
         unit.run_frontend().expect("frontend should compile");
 
         let drop_glue_names: std::collections::BTreeSet<_> = unit
@@ -3023,7 +3341,7 @@ mod tests {
                 FileId::new(2),
             ),
         ];
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
         unit.run_frontend().expect("frontend should compile");
 
         let warnings = unit

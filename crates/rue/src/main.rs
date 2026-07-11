@@ -15,12 +15,12 @@ mod timing;
 use rue_compiler::{
     CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind, FileId, Lexer,
     LinkerMode, MultiFileFormatter, MultiFileJsonFormatter, OptLevel, ParsedProgram,
-    PreviewFeature, PreviewFeatures, SourceFile, SourceInfo, Span, TokenKind,
-    compile_multi_file_with_symbol_paths_and_options,
-    compile_multi_file_with_symbol_paths_and_options_and_stats, configure_thread_pool,
+    PreviewFeature, PreviewFeatures, SourceFile, SourceInfo, SourceMetadata, Span, TokenKind,
+    compile_multi_file_with_source_metadata_and_options,
+    compile_multi_file_with_source_metadata_and_options_and_stats, configure_thread_pool,
     generate_emitted_asm, generate_liveness_info, generate_lowering_info, generate_mir,
     generate_regalloc_info, generate_stack_frame_info, import_candidate_groups, merge_symbols,
-    parse_all_files,
+    parse_all_files_with_source_metadata,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -1199,16 +1199,6 @@ fn derive_symbol_paths_with_std_root(
         })
         .collect::<Result<_, String>>()?;
 
-    let mut seen = std::collections::HashSet::new();
-    for symbol_path in &symbol_paths {
-        if !seen.insert(symbol_path) {
-            return Err(format!(
-                "multiple source files resolve to the same stable identity {:?}",
-                symbol_path
-            ));
-        }
-    }
-
     Ok(symbol_paths)
 }
 
@@ -1699,13 +1689,6 @@ fn main() {
     // Build SourceFile structs for multi-file compilation. Physical paths stay
     // available for imports and diagnostics; generated symbols use a separate,
     // relocation-stable identity (RUE-618).
-    let symbol_paths = match derive_symbol_paths(&sources) {
-        Ok(paths) => paths,
-        Err(message) => {
-            eprintln!("Error: {message}");
-            std::process::exit(1);
-        }
-    };
     let source_files: Vec<SourceFile<'_>> = sources
         .iter()
         .enumerate()
@@ -1713,12 +1696,6 @@ fn main() {
             SourceFile::new(path.as_str(), content.as_str(), FileId::new((i + 1) as u32))
         })
         .collect();
-    let symbol_path_map: std::collections::HashMap<FileId, String> = source_files
-        .iter()
-        .zip(symbol_paths)
-        .map(|(source, symbol_path)| (source.file_id, symbol_path))
-        .collect();
-
     // Create multi-file diagnostic formatters for diagnostics that may span multiple files.
     let source_infos: Vec<_> = sources
         .iter()
@@ -1731,6 +1708,29 @@ fn main() {
         })
         .collect();
     let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
+    let symbol_paths = match derive_symbol_paths(&sources) {
+        Ok(paths) => paths,
+        Err(message) => {
+            diagnostics.print_error(&CompileError::without_span(
+                ErrorKind::InvalidCompilerInput(message),
+            ));
+            std::process::exit(1);
+        }
+    };
+    let symbol_path_map: std::collections::HashMap<FileId, String> = source_files
+        .iter()
+        .zip(symbol_paths)
+        .map(|(source, symbol_path)| (source.file_id, symbol_path))
+        .collect();
+    let source_metadata =
+        match SourceMetadata::from_sources(&source_files, source_files[0].file_id, symbol_path_map)
+        {
+            Ok(source_metadata) => source_metadata,
+            Err(error) => {
+                diagnostics.print_error(&error);
+                std::process::exit(1);
+            }
+        };
 
     if options.emit_stages.contains(&EmitStage::Deps) {
         if options.emit_stages.len() != 1 {
@@ -1784,7 +1784,7 @@ fn main() {
     // Handle emit modes with multi-file support
     if !options.emit_stages.is_empty() {
         if let Err(()) =
-            handle_emit_multi_file(&source_files, &symbol_path_map, &options, &diagnostics)
+            handle_emit_multi_file(&source_files, &source_metadata, &options, &diagnostics)
         {
             std::process::exit(1);
         }
@@ -1806,16 +1806,16 @@ fn main() {
         preview_features: options.preview_features.clone(),
     };
     let compile_result = if options.benchmark_json {
-        compile_multi_file_with_symbol_paths_and_options_and_stats(
+        compile_multi_file_with_source_metadata_and_options_and_stats(
             &source_files,
-            symbol_path_map,
+            &source_metadata,
             &compile_options,
         )
         .map(|(output, stats)| (output, Some(stats)))
     } else {
-        compile_multi_file_with_symbol_paths_and_options(
+        compile_multi_file_with_source_metadata_and_options(
             &source_files,
-            symbol_path_map,
+            &source_metadata,
             &compile_options,
         )
         .map(|output| (output, None))
@@ -1939,7 +1939,7 @@ fn main() {
 /// For later stages (rir, air, cfg, etc.), the merged program is used.
 fn handle_emit_multi_file(
     sources: &[SourceFile<'_>],
-    symbol_paths: &std::collections::HashMap<FileId, String>,
+    source_metadata: &SourceMetadata,
     options: &Options,
     diagnostics: &DiagnosticOutput<'_>,
 ) -> Result<(), ()> {
@@ -1986,7 +1986,7 @@ fn handle_emit_multi_file(
 
     // Parse all files (needed for AST output or later stages)
     let mut parsed: Option<ParsedProgram> = if needs_ast || needs_later_stages {
-        match parse_all_files(sources) {
+        match parse_all_files_with_source_metadata(sources, source_metadata) {
             Ok(program) => Some(program),
             Err(errors) => {
                 diagnostics.print_errors(&errors);
@@ -2025,21 +2025,13 @@ fn handle_emit_multi_file(
             }
         };
 
-        // Thread file paths through so @import resolution works under --emit
-        // exactly as in a normal build (RUE-130).
-        let file_paths: std::collections::HashMap<FileId, String> = sources
-            .iter()
-            .map(|s| (s.file_id, s.path.to_string()))
-            .collect();
         let state = match rue_compiler::compile_frontend_from_ast_with_source_metadata_and_target(
             merged.ast,
             merged.interner,
             options.opt_level,
             &options.preview_features,
             options.target,
-            sources[0].file_id,
-            file_paths,
-            symbol_paths.clone(),
+            source_metadata,
         ) {
             Ok(state) => state,
             Err(errors) => {
