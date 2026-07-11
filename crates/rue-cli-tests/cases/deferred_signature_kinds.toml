@@ -1,0 +1,129 @@
+[section]
+id = "cli.deferred_signature_kinds"
+name = "Deferred signature source kinds"
+description = "Generic signatures preserve type/value positions while declaration validation is deferred."
+
+[[case]]
+name = "value_param_is_not_an_array_element_type"
+files = [{ path = "main.rue", source = """
+fn bad(comptime N: i32, value: [N; 2]) -> i32 { 0 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0204", "unknown type", "N"]
+
+[[case]]
+name = "value_param_is_not_a_pointer_target_type"
+files = [{ path = "main.rue", source = """
+fn bad(comptime N: i32, value: ptr const N) -> i32 { 0 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0204", "unknown type", "N"]
+
+[[case]]
+name = "value_param_is_not_a_constructor_type_argument"
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type { struct { value: T } }
+fn bad(comptime N: i32, value: Box(N)) -> i32 { 0 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0204", "unknown type", "N"]
+
+[[case]]
+name = "type_param_is_not_an_integer_value_argument"
+files = [{ path = "main.rue", source = """
+fn size(comptime n: i32) -> i32 { n }
+fn bad(comptime T: type, value: [i32; size(T)]) -> i32 { 0 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["type mismatch", "i32", "type"]
+
+[[case]]
+name = "bool_value_param_is_not_an_array_length"
+files = [{ path = "main.rue", source = """
+fn bad(comptime N: bool, value: [i32; N]) -> i32 { 0 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0481", "non-integer type", "bool"]
+
+[[case]]
+name = "outer_value_param_uses_its_declared_type"
+files = [{ path = "main.rue", source = """
+fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { marker: i32 }
+}
+fn bad(comptime FLAG: bool, value: Witness(i32, FLAG)) -> i32 { 0 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["type mismatch", "i32", "bool"]
+
+[[case]]
+name = "nested_static_value_uses_substituted_declared_type"
+files = [{ path = "main.rue", source = """
+const FLAG: bool = true;
+
+fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { marker: i32 }
+}
+fn Pair(comptime T: type, comptime U: type) -> type {
+    struct { left: T, right: U }
+}
+fn bad(comptime T: type, value: Pair(T, Witness(i32, FLAG))) -> i32 { 0 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["type mismatch", "i32", "bool"]
+
+[[case]]
+name = "nested_static_integer_is_range_checked"
+files = [{ path = "main.rue", source = """
+fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { marker: i32 }
+}
+fn Pair(comptime T: type, comptime U: type) -> type {
+    struct { left: T, right: U }
+}
+fn bad(comptime T: type, value: Pair(T, Witness(i8, 300))) -> i32 { 0 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "outside the range", "i8"]
+
+[[case]]
+name = "nested_callable_alias_is_not_a_value_argument"
+files = [{ path = "main.rue", source = """
+fn id(value: i32) -> i32 { value }
+const F = id;
+
+fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { marker: i32 }
+}
+fn Pair(comptime T: type, comptime U: type) -> type {
+    struct { left: T, right: U }
+}
+fn bad(comptime T: type, value: Pair(T, Witness(type, F))) -> i32 { 0 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "callable alias", "cannot be passed"]
+
+[[case]]
+name = "type_param_is_a_value_when_nested_callee_expects_type"
+files = [{ path = "main.rue", source = """
+fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { marker: i32 }
+}
+fn read(comptime T: type, value: Witness(type, T)) -> i32 {
+    value.marker
+}
+fn main() -> i32 {
+    if false { read(i32, @panic("not run")); }
+    42
+}
+""" }]
+exit_code = 42
