@@ -34,8 +34,8 @@ use crate::inst::{
 
 /// Generates RIR from an AST.
 pub struct AstGen<'a> {
-    /// The AST being processed
-    ast: &'a Ast,
+    /// The AST being processed by the compatibility constructor.
+    ast: Option<&'a Ast>,
     /// String interner for symbols (thread-safe, takes shared reference)
     interner: &'a ThreadedRodeo,
     /// Output RIR
@@ -50,7 +50,7 @@ impl<'a> AstGen<'a> {
     /// Create a new AstGen for the given AST.
     pub fn new(ast: &'a Ast, interner: &'a ThreadedRodeo) -> Self {
         Self {
-            ast,
+            ast: Some(ast),
             interner,
             rir: Rir::new(),
             for_counter: 0,
@@ -59,10 +59,32 @@ impl<'a> AstGen<'a> {
 
     /// Generate RIR from the AST.
     pub fn generate(mut self) -> Rir {
-        for item in &self.ast.items {
+        let ast = self.ast.expect("AstGen::new always stores an AST");
+        for item in &ast.items {
             self.gen_item(item);
         }
         self.rir
+    }
+
+    /// Generate RIR from an immutable borrowed sequence of AST items.
+    ///
+    /// The iterator order is the lowering order. This lets compiler
+    /// orchestration supply a canonical query/view without cloning item
+    /// payloads or constructing a second [`Ast`].
+    pub fn generate_items<'item>(
+        interner: &'a ThreadedRodeo,
+        items: impl IntoIterator<Item = &'item Item>,
+    ) -> Rir {
+        let mut generator = Self {
+            ast: None,
+            interner,
+            rir: Rir::new(),
+            for_counter: 0,
+        };
+        for item in items {
+            generator.gen_item(item);
+        }
+        generator.rir
     }
 
     fn gen_item(&mut self, item: &Item) {
@@ -1607,6 +1629,25 @@ mod tests {
         let astgen = AstGen::new(&ast, &interner);
         let rir = astgen.generate();
         (rir, interner)
+    }
+
+    #[test]
+    fn borrowed_item_lowering_matches_reordered_ast_lowering() {
+        let lexer = Lexer::new("fn first() -> i32 { 1 } fn main() -> i32 { first() }");
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, interner) = parser.parse().unwrap();
+
+        let reordered = Ast {
+            items: ast.items.iter().rev().cloned().collect(),
+        };
+        let compatibility = AstGen::new(&reordered, &interner).generate();
+        let borrowed = AstGen::generate_items(&interner, ast.items.iter().rev());
+
+        assert_eq!(
+            RirPrinter::new(&borrowed, &interner).to_string(),
+            RirPrinter::new(&compatibility, &interner).to_string()
+        );
     }
 
     #[test]

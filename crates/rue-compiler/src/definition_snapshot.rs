@@ -1020,7 +1020,7 @@ mod tests {
             1,
         )];
         let (mut program, source_snapshot) = parse(&inputs, FileId::new(1));
-        program.files[0].ast.items.reverse();
+        Arc::make_mut(&mut program.files[0].ast).items.reverse();
         let snapshot = DefinitionSnapshot::from_parsed_program(&program, &source_snapshot).unwrap();
         let definitions: Vec<_> = snapshot.definitions().collect();
 
@@ -1296,7 +1296,8 @@ mod tests {
         assert!(message.contains("physical path for parsed file ID 5"));
         program.files[0].path = "/metadata/location.rue".to_owned();
 
-        let Item::Function(function) = &mut program.files[0].ast.items[0] else {
+        let Item::Function(function) = &mut Arc::make_mut(&mut program.files[0].ast).items[0]
+        else {
             panic!("expected function");
         };
         function.name.span.file_id = FileId::new(8);
@@ -1305,7 +1306,8 @@ mod tests {
         );
         assert!(message.contains("definition name uses file ID 8"));
 
-        let Item::Function(function) = &mut program.files[0].ast.items[0] else {
+        let Item::Function(function) = &mut Arc::make_mut(&mut program.files[0].ast).items[0]
+        else {
             panic!("expected function");
         };
         function.name.span.file_id = FileId::new(5);
@@ -1323,7 +1325,8 @@ mod tests {
             input("/two.rue", "two.rue", "fn two() {}", 2),
         ];
         let (mut program, source_snapshot) = parse(&inputs, FileId::new(1));
-        let Item::Function(function) = &mut program.files[0].ast.items[0] else {
+        let Item::Function(function) = &mut Arc::make_mut(&mut program.files[0].ast).items[0]
+        else {
             panic!("expected function");
         };
         function.span.file_id = FileId::new(2);
@@ -1335,7 +1338,8 @@ mod tests {
         );
 
         let (mut program, source_snapshot) = parse(&inputs, FileId::new(1));
-        let Item::Function(function) = &mut program.files[0].ast.items[0] else {
+        let Item::Function(function) = &mut Arc::make_mut(&mut program.files[0].ast).items[0]
+        else {
             panic!("expected function");
         };
         function.name.span.file_id = FileId::new(2);
@@ -1357,7 +1361,8 @@ mod tests {
         )];
         let (mut program, source_snapshot) = parse(&inputs, FileId::new(1));
         let source_len = source_snapshot.source_text(FileId::new(1)).unwrap().len();
-        let Item::Function(function) = &mut program.files[0].ast.items[0] else {
+        let Item::Function(function) = &mut Arc::make_mut(&mut program.files[0].ast).items[0]
+        else {
             panic!("expected function");
         };
         function.span.end = u32::try_from(source_len + 1).unwrap();
@@ -1378,7 +1383,8 @@ mod tests {
             .find('é')
             .unwrap()
             + 1;
-        let Item::Function(function) = &mut program.files[0].ast.items[0] else {
+        let Item::Function(function) = &mut Arc::make_mut(&mut program.files[0].ast).items[0]
+        else {
             panic!("expected function");
         };
         function.name.span.start = u32::try_from(interior).unwrap();
@@ -1402,7 +1408,8 @@ mod tests {
         for index in 1..256 {
             foreign_name = foreign_interner.get_or_intern(format!("foreign-{index}"));
         }
-        let Item::Function(function) = &mut program.files[0].ast.items[0] else {
+        let Item::Function(function) = &mut Arc::make_mut(&mut program.files[0].ast).items[0]
+        else {
             panic!("expected function");
         };
         function.name.name = foreign_name;
@@ -1417,7 +1424,8 @@ mod tests {
     fn rejects_recovered_error_items_at_the_success_only_boundary() {
         let inputs = [input("/root.rue", "root.rue", "fn original() {}", 1)];
         let (mut program, metadata) = parse(&inputs, FileId::new(1));
-        program.files[0].ast.items[0] = Item::Error(Span::with_file(FileId::new(1), 0, 1));
+        Arc::make_mut(&mut program.files[0].ast).items[0] =
+            Item::Error(Span::with_file(FileId::new(1), 0, 1));
 
         let message = invalid_message(
             DefinitionSnapshot::from_parsed_program(&program, &metadata).unwrap_err(),

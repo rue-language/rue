@@ -88,7 +88,7 @@ fn parse_file(source: SourceFile<'_>, interner: ThreadedRodeo) -> FileParseOutco
         result: Ok(ParsedFile {
             path: source.path.to_owned(),
             file_id: source.file_id,
-            ast,
+            ast: std::sync::Arc::new(ast),
         }),
         interner,
         work,

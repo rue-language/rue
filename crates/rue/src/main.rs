@@ -2051,7 +2051,7 @@ fn handle_emit_multi_file(
     };
 
     // For AST output, collect the per-file AST info before merging (which consumes the program)
-    let per_file_asts: Option<Vec<(String, rue_compiler::Ast)>> = if needs_ast {
+    let per_file_asts: Option<Vec<(String, std::sync::Arc<rue_compiler::Ast>)>> = if needs_ast {
         parsed.as_ref().map(|program| {
             program
                 .files
@@ -2078,20 +2078,21 @@ fn handle_emit_multi_file(
             }
         };
 
-        let state = match rue_compiler::compile_frontend_from_ast_with_source_metadata_and_target(
-            merged.ast,
-            merged.interner,
-            options.opt_level,
-            &options.preview_features,
-            options.target,
-            source_snapshot.metadata(),
-        ) {
-            Ok(state) => state,
-            Err(errors) => {
-                diagnostics.print_errors(&errors);
-                return Err(());
-            }
-        };
+        let state =
+            match rue_compiler::compile_frontend_from_merged_ast_with_source_metadata_and_target(
+                merged.ast,
+                merged.interner,
+                options.opt_level,
+                &options.preview_features,
+                options.target,
+                source_snapshot.metadata(),
+            ) {
+                Ok(state) => state,
+                Err(errors) => {
+                    diagnostics.print_errors(&errors);
+                    return Err(());
+                }
+            };
 
         // Warnings used to be silently dropped in all --emit modes (RUE-130).
         diagnostics.print_warnings(&state.warnings);
