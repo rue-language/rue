@@ -6,7 +6,7 @@
 use lasso::ThreadedRodeo;
 use rue_air::{
     Air, AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
-    StructId, Type, TypeInternPool, TypeKind,
+    ParamSlotModes, StructId, Type, TypeInternPool, TypeKind,
 };
 use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 
@@ -251,7 +251,7 @@ impl<'a> CfgBuilder<'a> {
         num_params: u32,
         fn_name: &str,
         type_pool: &'a TypeInternPool,
-        param_modes: Vec<bool>,
+        param_modes: impl Into<ParamSlotModes>,
         interner: &'a ThreadedRodeo,
         allow_unreachable_code: bool,
     ) -> CfgOutput {
@@ -3686,6 +3686,31 @@ mod tests {
             "field a's exit drop must be guarded by a flag test"
         );
         assert_all_blocks_terminated(&main_cfg);
+    }
+
+    #[test]
+    fn cfg_preserves_logical_writability_separately_from_by_ref_abi() {
+        let source = "struct Pair { a: i32, b: i32 }\n\
+             fn borrowed(borrow p: Pair) -> i32 { p.a }\n\
+             fn writable(inout p: Pair) -> i32 { p.a }\n\
+             fn main() -> i32 {\n\
+                 let mut p = Pair { a: 1, b: 2 };\n\
+                 borrowed(borrow p) + writable(inout p)\n\
+             }";
+
+        let borrow_cfg = build_cfg_named(source, "borrowed");
+        assert!(borrow_cfg.is_param_inout(0), "borrow uses the by-ref ABI");
+        assert!(
+            !borrow_cfg.is_param_writable(0),
+            "borrow must not carry logical write permission"
+        );
+
+        let inout_cfg = build_cfg_named(source, "writable");
+        assert!(inout_cfg.is_param_inout(0), "inout uses the by-ref ABI");
+        assert!(
+            inout_cfg.is_param_writable(0),
+            "inout must preserve logical write permission"
+        );
     }
 
     #[test]

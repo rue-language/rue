@@ -37,7 +37,7 @@ pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};
 pub use sema::{
     AnalyzedFunction, ConstValue, DirResolution, FunctionInfo, GatherOutput, MethodInfo,
-    ModulePath, Sema, SemaOutput, import_candidate_groups,
+    ModulePath, ParamSlotModes, Sema, SemaOutput, import_candidate_groups,
 };
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,
