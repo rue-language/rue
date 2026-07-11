@@ -120,6 +120,27 @@ class PerfBaselineAggregationTests(unittest.TestCase):
             ["lexer", "parser", "codegen"],
         )
 
+    def test_current_leaf_order_includes_definition_snapshot(self):
+        result = perf_baseline.aggregate(
+            [
+                self.sample(
+                    10.0,
+                    12.0,
+                    leaf_names=("codegen", "definition_snapshot", "parser", "lexer"),
+                    leaf_durations={
+                        "codegen": 1.0,
+                        "definition_snapshot": 1.0,
+                        "parser": 1.0,
+                        "lexer": 1.0,
+                    },
+                )
+            ]
+        )
+        self.assertEqual(
+            [name for name, _ms, _percent in result["rows"]],
+            ["lexer", "parser", "definition_snapshot", "codegen"],
+        )
+
     def test_leaf_accounting_is_paired_before_taking_medians(self):
         # Every individual run has exactly 100% sequential leaf coverage. The
         # independent leaf medians are nevertheless 5 + 5 while the root
@@ -676,17 +697,19 @@ class ChartAggregationTests(unittest.TestCase):
         }
         self.assertEqual(charts.get_total_time(run), 4)
 
-    def test_current_phase_order_includes_split_parse_and_semantic_lowering(self):
+    def test_current_phase_order_includes_definition_index_and_semantic_lowering(self):
         ordered = charts.order_pass_times(
             {
                 "linker": 1,
                 "semantic_astgen": 1,
+                "definition_snapshot": 1,
                 "parser": 1,
                 "lexer": 1,
             }
         )
         self.assertEqual(
-            list(ordered), ["lexer", "parser", "semantic_astgen", "linker"]
+            list(ordered),
+            ["lexer", "parser", "definition_snapshot", "semantic_astgen", "linker"],
         )
 
 

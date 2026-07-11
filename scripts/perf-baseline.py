@@ -23,6 +23,7 @@ the raw JSON contains both leaf passes and their aggregate parents:
     |  |- parse_file                <- aggregate, repeated for every file
     |  |  |- lexer                  <- leaf
     |  |  `- parser                 <- leaf
+    |  |- definition_snapshot       <- leaf
     |  `- merge_symbols             <- leaf
     |- astgen                       <- leaf
     |- semantic_astgen              <- leaf
@@ -84,6 +85,7 @@ CANONICAL_LEAF_ORDER = [
     "parse_file",  # schema-v1 combined lexer/parser leaf
     "lexer",
     "parser",
+    "definition_snapshot",
     "merge_symbols",
     "astgen",
     "semantic_astgen",

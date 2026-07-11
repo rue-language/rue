@@ -767,6 +767,7 @@ mod tests {
             ("parse", "parse_file"),
             ("parse_file", "lexer"),
             ("parse_file", "parser"),
+            ("parse", "definition_snapshot"),
             ("parse", "merge_symbols"),
         ] {
             assert!(
@@ -786,8 +787,16 @@ mod tests {
             .iter()
             .find(|pass| pass.name == "merge_symbols")
             .unwrap();
+        let definition_snapshot = unit_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "definition_snapshot")
+            .unwrap();
         assert_eq!(unit_parse.invocations, 1);
         assert_eq!(unit_parse.root_invocations, 1);
+        assert_eq!(definition_snapshot.invocations, 1);
+        assert_eq!(definition_snapshot.root_invocations, 0);
+        assert_eq!(definition_snapshot.leaf_invocations, 1);
         assert_eq!(merge.root_invocations, 0);
     }
 

@@ -45,6 +45,7 @@ compile                 <- compiler pipeline; excludes discovery/driver startup
 │  ├─ parse_file        <- aggregate, repeated for each input file
 │  │  ├─ lexer          <- leaf
 │  │  └─ parser         <- leaf
+│  ├─ definition_snapshot <- leaf: durable module/name-candidate index
 │  └─ merge_symbols     <- leaf: cross-file symbol merge
 ├─ astgen               <- leaf: AST -> RIR
 ├─ semantic_astgen      <- leaf: canonical semantic AST -> RIR
@@ -95,10 +96,11 @@ per-workload medians, not the accounting for a single run.
 **These are absolute milliseconds and are MACHINE-SPECIFIC — treat them as a
 relative profile (which passes dominate), not a hard threshold.**
 
-This historical table predates schema v2, so it shows the then-combined
-`parse_file` leaf rather than separate `lexer` and `parser` rows. Its totals
-were already taken from the old `compile` row, not the inflated old
-`total_ms`, and remain valid as compiler-pipeline measurements.
+This historical table predates schema v2 and the `definition_snapshot` phase,
+so it shows the then-combined `parse_file` leaf rather than separate `lexer`
+and `parser` rows and has no definition-index row. Its totals were already
+taken from the old `compile` row, not the inflated old `total_ms`, and remain
+valid as compiler-pipeline measurements.
 
 - Host: Intel Core i9-14900K, Linux x86-64 (WSL2), 32 logical CPUs.
 - Build: the buck2 **DEFAULT** profile as produced by `scripts/rue-bin`

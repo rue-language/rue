@@ -49,6 +49,7 @@ PASS_COLORS = {
     "lexer": "#5c6b34",  # olive
     "parser": "#7d8f4a",  # moss
     "parse_file": "#5c6b34",  # historical combined lexer/parser
+    "definition_snapshot": "#667a52",  # sage
     "merge_symbols": "#71813f",  # moss
     "parallel_astgen": "#5c6b34",  # historical olive
     "merge_rirs": "#71813f",  # historical moss
@@ -72,6 +73,7 @@ PASS_ORDER = [
     "lexer",
     "parser",
     "parse_file",
+    "definition_snapshot",
     "merge_symbols",
     "parallel_astgen",
     "merge_rirs",
