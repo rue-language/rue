@@ -7,6 +7,7 @@
 
 use super::*;
 
+mod call_contracts;
 mod place_contracts;
 
 fn run(src: &str) -> Outcome {
