@@ -448,47 +448,6 @@ fn capacity_and_intrinsic_signature_drift_are_contract_failures() {
 }
 
 #[test]
-fn panic_unit_signature_is_an_oracle_contract_for_both_arities() {
-    let state = compile_to_cfg(
-        r#"fn panic_no_message() { @panic() }
-        fn panic_with_message() { @panic("boom") }
-        fn main() -> i32 {
-            panic_no_message();
-            panic_with_message();
-            0
-        }"#,
-    )
-    .expect("both panic arities must compile with the unit contract");
-    let interp = Interp {
-        state: &state,
-        stdout: String::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-    };
-    let expected =
-        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(UnsupportedIntrinsicKind::Panic));
-
-    for function_name in ["panic_no_message", "panic_with_message"] {
-        let (cfg, intrinsic, args, result_ty) =
-            find_intrinsic_in_function(&state, function_name, "panic");
-        assert_eq!(result_ty, Type::UNIT, "{function_name} compiler metadata");
-        assert_eq!(
-            interp.classify_unsupported_intrinsic(cfg, intrinsic, "panic", &args, result_ty,),
-            expected,
-            "{function_name} unit signature"
-        );
-        assert_eq!(
-            interp.classify_unsupported_intrinsic(cfg, intrinsic, "panic", &args, Type::NEVER,),
-            UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-            "{function_name} must reject the old never-typed metadata"
-        );
-    }
-}
-
-#[test]
 fn malformed_outer_calls_are_rejected_before_unmodeled_operands_run() {
     let mut preview_features = PreviewFeatures::new();
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
@@ -582,6 +541,168 @@ fn malformed_outer_calls_are_rejected_before_unmodeled_operands_run() {
         let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, outer_call));
         assert_eq!(unsupported.kind(), expected, "{call_name}");
     }
+}
+
+#[test]
+fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
+    let source = r#"fn main() -> i32 {
+        let entropy: u32 = @random_u32();
+        @assert(true, "ok");
+        @panic("stop");
+        if entropy == 0 { 0 } else { 1 }
+    }"#;
+
+    for probe in 0..5 {
+        let mut state = compile_to_cfg(source).expect("abort-preflight probe must compile");
+        let main_index = state
+            .functions
+            .iter()
+            .position(|function| function.cfg.fn_name() == "main")
+            .expect("main CFG");
+        let (random, panic, panic_args, assertion, assert_args) = {
+            let cfg = &state.functions[main_index].cfg;
+            let (_, random, random_args, _) =
+                find_intrinsic_in_function(&state, "main", "random_u32");
+            assert!(random_args.is_empty());
+            let (_, panic, panic_args, _) = find_intrinsic_in_function(&state, "main", "panic");
+            let (_, assertion, assert_args, _) =
+                find_intrinsic_in_function(&state, "main", "assert");
+            assert!(cfg.get_inst(random).ty == Type::U32);
+            (random, panic, panic_args, assertion, assert_args)
+        };
+
+        let cfg = &mut state.functions[main_index].cfg;
+        let (outer, replacement_args, replacement_ty, expected) = match probe {
+            0 => (
+                panic,
+                vec![panic_args[0], random],
+                PANIC_CFG_RESULT_TYPE,
+                ContractViolationKind::IntrinsicArity,
+            ),
+            1 => (
+                panic,
+                vec![random],
+                PANIC_CFG_RESULT_TYPE,
+                ContractViolationKind::IntrinsicSignature,
+            ),
+            2 => (
+                assertion,
+                vec![assert_args[0], assert_args[1], random],
+                Type::UNIT,
+                ContractViolationKind::IntrinsicArity,
+            ),
+            3 => (
+                assertion,
+                vec![random, assert_args[1]],
+                Type::UNIT,
+                ContractViolationKind::IntrinsicSignature,
+            ),
+            4 => (
+                assertion,
+                assert_args.clone(),
+                Type::NEVER,
+                ContractViolationKind::IntrinsicSignature,
+            ),
+            _ => unreachable!(),
+        };
+        let (args_start, args_len) = cfg.push_extra(replacement_args);
+        let CfgInstData::Intrinsic {
+            args_start: stored_start,
+            args_len: stored_len,
+            ..
+        } = &mut cfg.get_inst_mut(outer).data
+        else {
+            unreachable!("selected an intrinsic")
+        };
+        *stored_start = args_start;
+        *stored_len = args_len;
+        cfg.get_inst_mut(outer).ty = replacement_ty;
+
+        let cfg = &state.functions[main_index].cfg;
+        let mut interp = Interp {
+            state: &state,
+            stdout: String::new(),
+            stdout_bytes: 0,
+            stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
+            budget: STEP_BUDGET,
+            depth: 0,
+        };
+        let mut frame = Frame {
+            params: Vec::new(),
+            locals: vec![None; cfg.num_locals() as usize],
+            cache: HashMap::new(),
+        };
+        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, outer));
+        assert_eq!(
+            unsupported.kind(),
+            UnsupportedKind::ContractViolation(expected),
+            "probe {probe} must reject the malformed outer intrinsic before @random_u32"
+        );
+    }
+}
+
+#[test]
+fn abort_intrinsics_require_exact_runtime_value_shapes() {
+    let source = r#"fn main() -> i32 {
+        @assert(true, "ok");
+        @panic("stop");
+        0
+    }"#;
+
+    for name in ["panic", "assert"] {
+        let state = compile_to_cfg(source).expect("abort value-shape probe must compile");
+        let (cfg, intrinsic, args, _) = find_intrinsic_in_function(&state, "main", name);
+        let mut interp = Interp {
+            state: &state,
+            stdout: String::new(),
+            stdout_bytes: 0,
+            stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
+            budget: STEP_BUDGET,
+            depth: 0,
+        };
+        let mut frame = Frame {
+            params: Vec::new(),
+            locals: vec![None; cfg.num_locals() as usize],
+            cache: HashMap::new(),
+        };
+        let corrupted = if name == "panic" { args[0] } else { args[1] };
+        frame
+            .cache
+            .insert(corrupted.as_u32(), Value::str_view("not owned"));
+
+        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, intrinsic));
+        assert_eq!(
+            unsupported.kind(),
+            UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+            "@{name} must reject a value whose runtime shape contradicts its owned-string type"
+        );
+    }
+
+    let state = compile_to_cfg(source).expect("assert condition-shape probe must compile");
+    let (cfg, assertion, args, _) = find_intrinsic_in_function(&state, "main", "assert");
+    let mut interp = Interp {
+        state: &state,
+        stdout: String::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+    };
+    let mut frame = Frame {
+        params: Vec::new(),
+        locals: vec![None; cfg.num_locals() as usize],
+        cache: HashMap::new(),
+    };
+    frame.cache.insert(args[0].as_u32(), Value::Int(1));
+    let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, assertion));
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+        "@assert condition must be a runtime Bool, not merely truthy"
+    );
 }
 
 #[test]

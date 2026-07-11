@@ -108,7 +108,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 101
-stderr_contains = "one is not two"
+stderr_contains = "panic: one is not two"
 
 [[case]]
 name = "cast_rejected_use_intcast"

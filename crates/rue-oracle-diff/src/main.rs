@@ -576,7 +576,22 @@ fn check_spec_case_with_known_gap(
     };
 
     let preview_features = spec_preview_features(case);
-    let expected_trap = trap::trap_expectation(case.runtime_error.iter().map(String::as_str));
+    let expected_trap = case.runtime_error.as_deref().map_or_else(
+        || {
+            if expected_exit == rue_test_runner::RUNTIME_ERROR_EXIT_CODE {
+                case.stderr_contains
+                    .as_deref()
+                    .and_then(trap::spec_stderr_trap_kind)
+                    .map_or(
+                        trap::TrapExpectation::Undeclared,
+                        trap::TrapExpectation::Modeled,
+                    )
+            } else {
+                trap::TrapExpectation::Undeclared
+            }
+        },
+        |runtime_error| trap::trap_expectation([runtime_error]),
+    );
 
     match run_source_with_preview_features(&case.source, &preview_features) {
         // Only Unsupported values carrying a registrable ModelGapKind count as
@@ -1614,6 +1629,54 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     }
 
     #[test]
+    fn cli_abort_intrinsics_check_exact_stderr_observations() {
+        for (source, expected, expected_kind) in [
+            (
+                "fn main() -> i32 { @panic(); 0 }",
+                "panic",
+                TrapKind::UserPanic,
+            ),
+            (
+                r#"fn main() -> i32 { @panic("boom"); 0 }"#,
+                "panic: boom",
+                TrapKind::UserPanic,
+            ),
+            (
+                "fn main() -> i32 { @assert(false); 0 }",
+                "assertion failed",
+                TrapKind::AssertionFailure,
+            ),
+            (
+                r#"fn main() -> i32 { @assert(false, "boom"); 0 }"#,
+                "panic: boom",
+                TrapKind::UserPanic,
+            ),
+        ] {
+            let mut case = corpus_case(source, false);
+            case.exit_code = Some(101);
+            case.runtime_error_contains = vec![expected.to_string()];
+            assert_eq!(
+                check_case(Path::new("panic.toml"), &case),
+                CaseOutcome::Agree,
+                "{expected_kind:?} with {expected:?}"
+            );
+        }
+
+        let mut wrong_message = corpus_case(r#"fn main() -> i32 { @panic("actual"); 0 }"#, false);
+        wrong_message.exit_code = Some(101);
+        // Both strings map to UserPanic. Exact stderr comparison must still
+        // reject the wrong user-visible message.
+        wrong_message.runtime_error_contains = vec!["panic: expected".to_string()];
+        let CaseOutcome::Disagreement(message) =
+            check_case(Path::new("panic.toml"), &wrong_message)
+        else {
+            panic!("same-category panic message mismatch was accepted");
+        };
+        assert!(message.contains("missing required substring"));
+        assert!(message.contains("panic: actual"));
+    }
+
+    #[test]
     fn spec_runtime_trap_expectations_use_the_same_typed_comparison() {
         let mut case = rue_test_runner::Case {
             name: "spec trap probe".to_string(),
@@ -1659,6 +1722,36 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
             check_spec_case("test:1", &case),
             CaseOutcome::Disagreement(_)
         ));
+    }
+
+    #[test]
+    fn spec_abort_stderr_has_a_narrow_separate_trap_vocabulary() {
+        let mut case = rue_test_runner::Case {
+            name: "spec panic probe".to_string(),
+            source: r#"fn main() -> i32 { @panic("boom"); 0 }"#.to_string(),
+            exit_code: Some(101),
+            stderr_contains: Some("panic: boom".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(check_spec_case("test:1", &case), CaseOutcome::Agree);
+
+        case.source = "fn main() -> i32 { @assert(false); 0 }".to_string();
+        case.stderr_contains = Some("assertion failed".to_string());
+        assert_eq!(check_spec_case("test:1", &case), CaseOutcome::Agree);
+
+        case.source = r#"fn main() -> i32 { @assert(false, "actual"); 0 }"#.to_string();
+        case.stderr_contains = Some("panic: expected".to_string());
+        assert!(matches!(
+            check_spec_case("test:1", &case),
+            CaseOutcome::Disagreement(_)
+        ));
+
+        case.source = "fn main() -> i32 { let x: i32 = 2147483647; x + 1 }".to_string();
+        case.stderr_contains = Some("error: integer overflow".to_string());
+        let CaseOutcome::Disagreement(message) = check_spec_case("test:1", &case) else {
+            panic!("generic stderr text declared an unrelated arithmetic trap");
+        };
+        assert!(message.contains("trap contract"));
     }
 
     #[test]
