@@ -51,9 +51,27 @@ pub(crate) fn normalize_module_path(path: &str) -> String {
     buf.to_string_lossy().into_owned()
 }
 
+/// Encode an arbitrary path as one injective machine-symbol component.
+///
+/// Rue identifiers contain only ASCII alphanumerics and `_`; encoding every
+/// other byte (including `_` itself) as `_xx` keeps the result unambiguous.
+pub(crate) fn mangle_symbol_component(component: &str) -> String {
+    let mut mangled = String::new();
+    for byte in component.bytes() {
+        match byte {
+            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' => mangled.push(byte as char),
+            _ => {
+                use std::fmt::Write as _;
+                write!(&mut mangled, "_{byte:02x}").expect("writing to String cannot fail");
+            }
+        }
+    }
+    mangled
+}
+
 #[cfg(test)]
 mod tests {
-    use super::normalize_module_path as n;
+    use super::{mangle_symbol_component as m, normalize_module_path as n};
 
     #[test]
     fn drops_cur_dir() {
@@ -82,5 +100,12 @@ mod tests {
         // The two spellings of the same physical file must normalize equal.
         assert_eq!(n("a/../std/opt.rue"), n("std/opt.rue"));
         assert_eq!(n("./std/opt.rue"), n("std/opt.rue"));
+    }
+
+    #[test]
+    fn symbol_component_mangling_is_injective_for_escaped_bytes() {
+        assert_eq!(m("left/shared.rue"), "left_2fshared_2erue");
+        assert_eq!(m("a_b"), "a_5fb");
+        assert_ne!(m("a/b"), m("a_2fb"));
     }
 }

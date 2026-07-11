@@ -19,7 +19,7 @@ use rue_span::{FileId, Span};
 
 use super::{ConstInfo, ConstValue, FunctionInfo, InferenceContext, MethodInfo, Sema};
 use crate::inference::{FunctionSig, MethodSig};
-use crate::path_norm::normalize_module_path;
+use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type, TypeKind};
 
 /// A node in the "contains by value" type graph, used by
@@ -2891,20 +2891,6 @@ impl<'a> Sema<'a> {
             span,
         ))
     }
-}
-
-fn mangle_symbol_component(component: &str) -> String {
-    let mut mangled = String::new();
-    for byte in component.bytes() {
-        match byte {
-            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' => mangled.push(byte as char),
-            _ => {
-                use std::fmt::Write as _;
-                write!(&mut mangled, "_{byte:02x}").expect("writing to String cannot fail");
-            }
-        }
-    }
-    mangled
 }
 
 /// A constant declaration captured by the pre-scan, waiting to be collected.
