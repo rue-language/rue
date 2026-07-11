@@ -137,6 +137,38 @@ exit_code = 101
 stdout = ""
 runtime_error_contains = ["panic: one is not two"]
 
+# ── Operand contract rejection ───────────────────────────────────────────────
+
+# The frontend must reject a non-bool condition before backend lowering. It
+# used to accept integers (and aggregates) and compile them as truthy/falsy.
+[[case]]
+name = "assert_non_bool_condition_is_rejected"
+description = "@assert requires an exact bool condition, not integer truthiness."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @assert(1);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0702", "bool condition", "found i32"]
+
+# Message validation is nominal, not layout-based. Before the frontend check,
+# this exact three-slot impostor reached both backends and its first two fields
+# were reinterpreted as the panic runtime's pointer and length.
+[[case]]
+name = "panic_struct_message_impostor_is_rejected"
+description = "@panic accepts only the builtin StrBuf message type."
+files = [{ path = "main.rue", source = """
+struct Fake { a: u64, b: u64, c: u64 }
+fn main() -> i32 {
+    @panic(Fake { a: 0, b: 0, c: 0 });
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0702", "StrBuf message", "found Fake"]
+
 # ── @cast rejection ──────────────────────────────────────────────────────────
 
 # @cast is redundant with @intCast and never had a working inference rule; it

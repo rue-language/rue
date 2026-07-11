@@ -3,12 +3,19 @@ mod tests {
     use crate::inst::{AirInstData, AirRef};
     use crate::sema::{Sema, SemaOutput};
     use crate::types::Type;
-    use rue_error::{CompileErrors, ErrorKind, MultiErrorResult, PreviewFeatures};
+    use rue_error::{CompileErrors, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures};
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::AstGen;
 
     fn compile_to_air(source: &str) -> MultiErrorResult<SemaOutput> {
+        compile_to_air_with_preview_features(source, PreviewFeatures::new())
+    }
+
+    fn compile_to_air_with_preview_features(
+        source: &str,
+        preview_features: PreviewFeatures,
+    ) -> MultiErrorResult<SemaOutput> {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from_error)?;
         let parser = Parser::new(tokens, interner);
@@ -17,7 +24,7 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
+        let sema = Sema::new(&rir, &mut interner, preview_features);
         sema.analyze_all()
     }
 
@@ -41,8 +48,24 @@ mod tests {
             ("panic_with_message", "@panic(\"boom\")"),
             ("assertion", "@assert(true)"),
             ("assertion_with_message", "@assert(true, \"ok\")"),
+            (
+                "panic_with_strbuf",
+                "let message: StrBuf = \"boom\"; @panic(message)",
+            ),
+            (
+                "panic_with_string_alias",
+                "let message: String = \"boom\"; @panic(message)",
+            ),
+            (
+                "assertion_with_strbuf",
+                "let message: StrBuf = \"ok\"; @assert(true, message)",
+            ),
+            ("never assertion condition", "@assert(diverge())"),
+            ("never panic message", "@panic(diverge())"),
         ] {
-            let source = format!("fn probe() {{ {body} }} fn main() -> i32 {{ probe(); 0 }}");
+            let source = format!(
+                "fn diverge() -> ! {{ loop {{}} }} fn probe() {{ {body} }} fn main() -> i32 {{ probe(); 0 }}"
+            );
             let output = compile_to_air(&source).unwrap();
             let function = output
                 .functions
@@ -68,6 +91,137 @@ mod tests {
                     .any(|(_, inst)| matches!(inst.data, AirInstData::Ret(_))),
                 "a unit-valued trailing intrinsic still needs an implicit return"
             );
+        }
+    }
+
+    #[test]
+    fn panic_and_assert_reject_invalid_operand_types_at_the_operand() {
+        for (name, source, preview_string_trio, intrinsic, expected, found, offending) in [
+            (
+                "integer assertion condition",
+                "fn main() -> i32 { @assert(1); 0 }",
+                false,
+                "assert",
+                "bool condition",
+                "i32",
+                "1",
+            ),
+            (
+                "aggregate assertion condition",
+                "fn main() -> i32 { let s: StrBuf = \"truthy\"; @assert(s); 0 }",
+                false,
+                "assert",
+                "bool condition",
+                "StrBuf",
+                "s",
+            ),
+            (
+                "scalar panic message",
+                "fn main() -> i32 { @panic(1); 0 }",
+                false,
+                "panic",
+                "StrBuf message",
+                "i32",
+                "1",
+            ),
+            (
+                "scalar assertion message",
+                "fn main() -> i32 { @assert(false, 7); 0 }",
+                false,
+                "assert",
+                "StrBuf message",
+                "i32",
+                "7",
+            ),
+            (
+                "str view message",
+                "fn main() -> i32 { let s: str = \"view\"; @panic(s); 0 }",
+                true,
+                "panic",
+                "StrBuf message",
+                "str",
+                "s",
+            ),
+            (
+                "fixed string message",
+                "fn main() -> i32 { let s: Str(8) = \"fixed\"; @assert(false, s); 0 }",
+                true,
+                "assert",
+                "StrBuf message",
+                "Str(8)",
+                "s",
+            ),
+            (
+                "array message",
+                "fn main() -> i32 { let a = [1, 2, 3]; @panic(a); 0 }",
+                false,
+                "panic",
+                "StrBuf message",
+                "[i32; 3]",
+                "a",
+            ),
+            (
+                "enum message",
+                "enum Mode { A } fn main() -> i32 { @assert(false, Mode.A); 0 }",
+                false,
+                "assert",
+                "StrBuf message",
+                "Mode",
+                "Mode.A",
+            ),
+            (
+                "three-slot struct impostor",
+                "struct Fake { a: u64, b: u64, c: u64 } fn main() -> i32 { @panic(Fake { a: 0, b: 0, c: 0 }); 0 }",
+                false,
+                "panic",
+                "StrBuf message",
+                "Fake",
+                "Fake { a: 0, b: 0, c: 0 }",
+            ),
+        ] {
+            let mut preview_features = PreviewFeatures::new();
+            if preview_string_trio {
+                preview_features.insert(PreviewFeature::StringTrio);
+            }
+            let errors =
+                compile_to_air_with_preview_features(source, preview_features).unwrap_err();
+            assert_eq!(errors.len(), 1, "{name} should fail once");
+            let error = errors.iter().next().unwrap();
+            match &error.kind {
+                ErrorKind::IntrinsicTypeMismatch(data) => {
+                    assert_eq!(data.name, intrinsic, "{name} intrinsic");
+                    assert_eq!(data.expected, expected, "{name} expected type");
+                    assert_eq!(data.found, found, "{name} found type");
+                }
+                other => panic!("{name} produced {other:?}, expected E0702"),
+            }
+
+            let span = error.span().expect("operand mismatch must be spanned");
+            assert_eq!(
+                &source[span.start as usize..span.end as usize],
+                offending,
+                "{name} must point at the offending operand",
+            );
+        }
+    }
+
+    #[test]
+    fn panic_and_assert_preserve_primary_operand_errors() {
+        for source in [
+            "fn main() -> i32 { @panic(missing); 0 }",
+            "fn main() -> i32 { @assert(missing); 0 }",
+            "fn main() -> i32 { @assert(false, missing); 0 }",
+        ] {
+            let errors = compile_to_air(source).unwrap_err();
+            assert_eq!(errors.len(), 1, "primary operand error must not cascade");
+            let error = errors.iter().next().unwrap();
+            assert!(
+                matches!(&error.kind, ErrorKind::UndefinedVariable(name) if name == "missing"),
+                "expected the operand's primary error, got {:?}",
+                error.kind
+            );
+            let span = error.span().expect("undefined operand must be spanned");
+            assert_eq!(&source[span.start as usize..span.end as usize], "missing");
         }
     }
 
