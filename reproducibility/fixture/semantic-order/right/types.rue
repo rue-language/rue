@@ -1,0 +1,32 @@
+const shared = @import("shared.rue");
+
+struct Payload {
+    value: i32,
+    extra: i32,
+    text: String,
+
+    fn score(borrow self) -> i32 {
+        shared.bump(self.value + self.extra)
+    }
+}
+
+drop fn Payload(self) {
+    @dbg("right-destructor");
+    @dbg(self.extra);
+}
+
+enum Choice {
+    Empty,
+    Text(String),
+    Many([String; 3]),
+}
+
+enum Clash {
+    Empty,
+    Text(String),
+}
+
+fn _right_entry(value: i32) -> i32 {
+    let payload = Payload { value: value, extra: 2, text: "right-value" };
+    payload.score()
+}
