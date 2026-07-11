@@ -38,7 +38,7 @@
 //! end, interpretation hits a resource limit or compiler/oracle contract
 //! violation, or the oracle disagrees with expected behavior. Only typed
 //! [`rue_oracle::ModelGapKind`] values can count as unmodeled corpus coverage;
-//! CLI corpus mode also requires an exact registry entry.
+//! each corpus mode also requires an exact registry entry.
 //! Generated fuzz mode has the stronger contract that every `Unsupported` is a
 //! failure because its generator promises to stay within the modeled subset.
 
@@ -533,6 +533,11 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
 /// so template semantics can never drift from the real runner. We then filter
 /// to the shapes the single-source oracle can model (see [`check_spec_case`]).
 fn spec_mode(raw_args: Vec<String>) -> ExitCode {
+    let inventory_scope = if raw_args.is_empty() {
+        model_gaps::InventoryScope::Authoritative
+    } else {
+        model_gaps::InventoryScope::Partial
+    };
     let dirs: Vec<PathBuf> = if !raw_args.is_empty() {
         raw_args.into_iter().map(PathBuf::from).collect()
     } else if let Some(cases) = std::env::var_os("RUE_ORACLE_DIFF_SPEC_CASES") {
@@ -543,27 +548,80 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
         vec![PathBuf::from("crates/rue-spec/cases")]
     };
 
-    if !dirs.iter().any(|d| d.exists()) {
-        eprintln!(
-            "no rue-spec cases dir found under {:?} (run from the repo root)",
-            dirs
-        );
-        return ExitCode::FAILURE;
-    }
-
     let mut report = Report::default();
+    let mut gap_audit = model_gaps::spec::audit(inventory_scope);
+    let mut inventory_complete = true;
     for dir in &dirs {
+        if !dir.exists() {
+            inventory_complete = false;
+            report.harness_failures.push(format!(
+                "no rue-spec cases dir found under {} (run from the repo root)",
+                dir.display()
+            ));
+            continue;
+        }
+
         // `load_test_files` expands `params` templates and validates preview
         // feature names exactly as the spec runner does; it needs only the
         // cases dir (no spec markdown).
-        for (ident, file) in rue_test_runner::load_test_files(dir) {
+        let files = rue_test_runner::load_test_files(dir);
+        if files.is_empty() {
+            inventory_complete = false;
+            report.harness_failures.push(format!(
+                "no rue-spec case files found under {}",
+                dir.display()
+            ));
+        }
+        for (ident, file) in files {
             for case in &file.case {
-                report.record(check_spec_case(&ident, case));
+                let outcome = check_spec_case(&ident, case);
+                gap_audit.observe(
+                    model_gaps::spec::CaseId::new(&file.section.id, &case.name),
+                    &case.only_on,
+                    spec_model_gap_observation(case, &outcome),
+                );
+                report.record(outcome);
             }
         }
     }
+    report
+        .harness_failures
+        .extend(gap_audit.finish(inventory_complete));
+    report.harness_failures.sort();
 
     finish_report(&report, "rue-spec")
+}
+
+/// Translate a spec outcome into exact model-gap registry policy while
+/// independently auditing observations the interpreter cannot currently make.
+fn spec_model_gap_observation(
+    case: &rue_test_runner::Case,
+    outcome: &CaseOutcome,
+) -> model_gaps::Observation {
+    if !matches!(outcome, CaseOutcome::Ineligible(_)) {
+        if trap::trap_expectation(case.runtime_error.iter().map(String::as_str))
+            == trap::TrapExpectation::Unmodeled
+        {
+            return model_gaps::Observation::Unregistrable("runtime trap expectation");
+        }
+    }
+
+    match outcome {
+        CaseOutcome::Agree => model_gaps::Observation::Agreement,
+        CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(kind)) => {
+            model_gaps::Observation::ModelGap(*kind)
+        }
+        CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation) => {
+            model_gaps::Observation::Unregistrable("runtime trap expectation")
+        }
+        CaseOutcome::Ineligible(IneligibleReason::HostFiltered) => {
+            model_gaps::Observation::InactiveHost
+        }
+        CaseOutcome::Ineligible(_) => model_gaps::Observation::OtherIneligible,
+        CaseOutcome::FrontendFailure(_)
+        | CaseOutcome::OracleFailure(_)
+        | CaseOutcome::Disagreement(_) => model_gaps::Observation::HardFailure,
+    }
 }
 
 /// Run one expanded rue-spec case through the oracle and return one outcome.
@@ -2167,6 +2225,55 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         assert_eq!(
             model_gap_observation(&case, &outcome),
             model_gaps::Observation::InactiveHost
+        );
+    }
+
+    #[test]
+    fn spec_registry_preserves_typed_debt_without_hiding_trap_contracts() {
+        let gap = ModelGapKind::ExternalDependency(rue_oracle::ExternalDependencyKind::RandomU32);
+        let clean = rue_test_runner::Case::default();
+        assert_eq!(
+            spec_model_gap_observation(
+                &clean,
+                &CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(gap)),
+            ),
+            model_gaps::Observation::ModelGap(gap)
+        );
+
+        let unknown_trap = rue_test_runner::Case {
+            runtime_error: Some("custom trap wording".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            spec_model_gap_observation(
+                &unknown_trap,
+                &CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(gap)),
+            ),
+            model_gaps::Observation::Unregistrable("runtime trap expectation")
+        );
+        assert_eq!(
+            spec_model_gap_observation(
+                &unknown_trap,
+                &CaseOutcome::Ineligible(IneligibleReason::HostFiltered),
+            ),
+            model_gaps::Observation::InactiveHost
+        );
+    }
+
+    #[test]
+    fn exact_spec_stderr_remains_a_modeled_registry_observation() {
+        let case = rue_test_runner::Case {
+            name: "spec panic registry probe".to_string(),
+            source: r#"fn main() -> i32 { @panic("boom"); 0 }"#.to_string(),
+            exit_code: Some(101),
+            stderr_contains: Some("panic: boom".to_string()),
+            ..Default::default()
+        };
+        let outcome = check_spec_case("test:1", &case);
+        assert_eq!(outcome, CaseOutcome::Agree);
+        assert_eq!(
+            spec_model_gap_observation(&case, &outcome),
+            model_gaps::Observation::Agreement
         );
     }
 
