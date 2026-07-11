@@ -120,6 +120,25 @@ jobs:
       - name: Build all targets
         run: ./buck2 build //crates/...
 
+      # RUE-617: the compiler built above is the first half of this comparison.
+      # On the required Linux x64 lane, rebuild Rue locally with remote caching
+      # disabled from a relocated clean source tree and compare the complete
+      # compiler artifacts.  Limiting the extra cold build to one lane keeps the
+      # merge queue moving while still turning path/scheduling/environment leaks
+      # into a required failure.
+      - name: Verify compiler build reproducibility
+        id: compiler_repro
+        if: matrix.name == 'linux-x64'
+        run: ./scripts/check-reproducible-compiler.sh
+
+      - name: Upload compiler reproducibility diagnostics
+        if: failure() && matrix.name == 'linux-x64' && steps.compiler_repro.outcome == 'failure'
+        uses: actions/upload-artifact@v6
+        with:
+          name: compiler-reproducibility-diagnostics
+          path: ${{ runner.temp }}/rue-compiler-repro-artifacts
+          if-no-files-found: ignore
+
       - name: Run tests
         run: ./test.sh
 
