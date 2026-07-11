@@ -107,8 +107,11 @@ rue main.rue -o program        # @imports resolved and loaded automatically
 **Legacy flat mode is being removed (ADR-0046):** extra positional source files
 (`rue a.rue b.rue -o prog`) are still accepted as legacy inputs, but unqualified
 cross-file name resolution is gone — referencing another file's items without
-`@import` is an undefined-name error (E0202). Top-level names still collide
-program-wide (transitional; RUE-426 tracks module-scoping them). Don't write new
+`@import` is an undefined-name error (E0202). Functions have module-qualified
+internal identity (RUE-426/RUE-441, closed 2026-07-11): sibling modules may
+define the same top-level name — including same-name generics and same-named
+structs' methods — without colliding (regression cases:
+`crates/rue-cli-tests/cases/sibling_module_identity.toml`). Don't write new
 tests or examples that rely on flat file lists.
 
 ### Key Design Decisions

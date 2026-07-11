@@ -1,0 +1,95 @@
+# Module-qualified function identity across sibling modules (RUE-426 tree).
+#
+# The basic same-name collision fixture landed with RUE-440; these cases pin
+# the three deeper shapes verified when RUE-442/RUE-426 were closed
+# (2026-07-11): per-module signature resolution, per-module comptime
+# specialization (no key aliasing), and per-module method resolution on
+# same-named structs. Each would regress silently if any function/method
+# table fell back to bare-source-name keys.
+
+[section]
+id = "cli.sibling_module_identity"
+name = "Sibling-module function identity"
+description = "Module-qualified function identity: same-name functions/generics/methods in sibling modules resolve per module (RUE-426/RUE-441/RUE-442)."
+
+[[case]]
+name = "sibling_same_name_different_signatures"
+description = "Same fn name with DIFFERENT signatures in sibling modules: each call resolves its own module's signature (a flat inference table would mix them up)"
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 42
+files = [
+    { path = "main.rue", source = """
+const app = @import("app");
+fn main() -> i32 { app.run() }
+""" },
+    { path = "app/_app.rue", source = """
+pub const left = @import("left/entry.rue");
+pub const right = @import("right/entry.rue");
+pub fn run() -> i32 { @intCast(left.compute(20)) + right.compute(1, 1) }
+""" },
+    { path = "app/left/entry.rue", source = """
+pub fn compute(x: i64) -> i64 { x * 2 }
+""" },
+    { path = "app/right/entry.rue", source = """
+pub fn compute(a: i32, b: i32) -> i32 { a + b }
+""" },
+]
+
+[[case]]
+name = "sibling_same_name_generics_specialize_independently"
+description = "Same-name comptime generics in sibling modules, same T: each module's specialization runs its OWN body (aliased specialization keys would silently run the wrong one)"
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 42
+files = [
+    { path = "main.rue", source = """
+const app = @import("app");
+fn main() -> i32 { app.run() }
+""" },
+    { path = "app/_app.rue", source = """
+pub const left = @import("left/entry.rue");
+pub const right = @import("right/entry.rue");
+pub fn run() -> i32 { left.pick(i32, 40, 1) + right.pick(i32, 1, 2) }
+""" },
+    { path = "app/left/entry.rue", source = """
+pub fn pick(comptime T: type, a: T, b: T) -> T { a }
+""" },
+    { path = "app/right/entry.rue", source = """
+pub fn pick(comptime T: type, a: T, b: T) -> T { b }
+""" },
+]
+
+[[case]]
+name = "sibling_same_name_struct_methods_resolve_per_module"
+description = "Same-named structs with same-named methods in sibling modules: each receiver resolves its own module's method body"
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 42
+files = [
+    { path = "main.rue", source = """
+const app = @import("app");
+fn main() -> i32 { app.run() }
+""" },
+    { path = "app/_app.rue", source = """
+pub const left = @import("left/entry.rue");
+pub const right = @import("right/entry.rue");
+pub fn run() -> i32 { left.value() + right.value() }
+""" },
+    { path = "app/left/entry.rue", source = """
+pub struct Counter {
+    n: i32,
+
+    fn get(self) -> i32 { self.n * 2 }
+}
+pub fn value() -> i32 { Counter { n: 10 }.get() }
+""" },
+    { path = "app/right/entry.rue", source = """
+pub struct Counter {
+    n: i32,
+
+    fn get(self) -> i32 { self.n + 2 }
+}
+pub fn value() -> i32 { Counter { n: 20 }.get() }
+""" },
+]
