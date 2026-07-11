@@ -114,6 +114,83 @@ stdout = """11
 """
 exit_code = 140
 
+# Zero-width Normal arguments have real CFG values but no physical ABI slots
+# (RUE-635). Interleave unit, an empty struct, and a zero-length array with
+# enough real scalar arguments to cross both x86-64's six-register and
+# AArch64's eight-register limits. The unit-producing call's output proves its
+# evaluation is retained even though its result is not marshalled.
+[[case]]
+name = "zero_width_normal_args_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct Empty {}
+
+fn observed_unit() {
+    @dbg(99);
+}
+
+fn sum(
+    a: i32,
+    unit: (),
+    b: i32,
+    empty: Empty,
+    c: i32,
+    zero: [i32; 0],
+    d: i32,
+    e: i32,
+    f: i32,
+    g: i32,
+    h: i32,
+    i: i32,
+) -> i32 {
+    a + b + c + d + e + f + g + h + i
+}
+
+fn main() -> i32 {
+    sum(1, observed_unit(), 2, Empty {}, 3, [], 4, 5, 6, 7, 8, 6)
+}
+""" }]
+stdout = "99\n"
+exit_code = 42
+
+# The same omission rule must compose with a hidden sret pointer, while
+# zero-sized Borrow/Inout arguments retain their one real pointer slot. The
+# trailing scalar lands after the two by-ref pointers and before the returned
+# nine-slot aggregate is copied out.
+[[case]]
+name = "zero_width_args_with_byref_and_sret_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct Empty {}
+
+struct Nine {
+    a: i32,
+    b: i32,
+    c: i32,
+    d: i32,
+    e: i32,
+    f: i32,
+    g: i32,
+    h: i32,
+    i: i32,
+}
+
+fn build(borrow shared: Empty, inout writable: Empty, unit: (), tail: i32) -> Nine {
+    writable = Empty {};
+    Nine { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: tail }
+}
+
+fn main() -> i32 {
+    let shared = Empty {};
+    let mut writable = Empty {};
+    let value = build(borrow shared, inout writable, (), 6);
+    value.a + value.b + value.c + value.d + value.e
+        + value.f + value.g + value.h + value.i
+}
+""" }]
+stdout = ""
+exit_code = 42
+
 # Call / recursion: mutual + self recursion, so inlining or tail-call style
 # opts (should they ever land) can't silently change the result.
 [[case]]
