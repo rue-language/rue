@@ -1042,6 +1042,38 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "anon_struct_method_parameter_modes_are_structural"
+spec = ["4.14:15"]
+description = "Anonymous methods whose explicit parameter modes differ have distinct structural types and ABIs"
+source = """
+fn Normal() -> type {
+    struct {
+        zero: i32,
+        fn combine(borrow self, value: i64) -> i32 {
+            self.zero + @intCast(value)
+        }
+    }
+}
+fn Borrowed() -> type {
+    struct {
+        zero: i32,
+        fn combine(borrow self, borrow value: i64) -> i32 {
+            self.zero + @intCast(value)
+        }
+    }
+}
+fn main() -> i32 {
+    let N = Normal();
+    let B = Borrowed();
+    let n = N { zero: 0 };
+    let b = B { zero: 0 };
+    let value: i64 = 22;
+    n.combine(20) + b.combine(borrow value)
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "anon_struct_swap_method"
 spec = ["4.14:11"]
 description = "Swap method from spec example"

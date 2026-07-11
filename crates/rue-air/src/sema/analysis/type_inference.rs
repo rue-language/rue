@@ -92,6 +92,7 @@ impl<'a> Sema<'a> {
                             .iter()
                             .map(|t| self.type_to_infer_type(*t))
                             .collect(),
+                        param_modes: self.param_arena.modes(info.params).to_vec(),
                         return_type: self.type_to_infer_type(info.return_type),
                     },
                 )

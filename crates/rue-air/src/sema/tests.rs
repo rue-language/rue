@@ -6,7 +6,7 @@ mod tests {
     use rue_error::{CompileErrors, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures};
     use rue_lexer::Lexer;
     use rue_parser::Parser;
-    use rue_rir::AstGen;
+    use rue_rir::{AstGen, RirParamMode};
 
     fn compile_to_air(source: &str) -> MultiErrorResult<SemaOutput> {
         compile_to_air_with_preview_features(source, PreviewFeatures::new())
@@ -1360,6 +1360,155 @@ mod tests {
         sema.register_type_names().unwrap();
         sema.resolve_declarations().unwrap();
         sema
+    }
+
+    #[test]
+    fn named_method_registration_preserves_complete_parameter_contract() {
+        let sema = gather_declarations_for_testing(
+            "struct Probe {
+                value: i32,
+                fn modes(
+                    borrow self,
+                    borrow read: i32,
+                    inout write: i32,
+                    comptime scale: i32,
+                ) -> i32 { read + write + scale }
+            }
+            fn main() -> i32 { 0 }",
+        );
+
+        let probe_name = sema.interner.get("Probe").unwrap();
+        let method_name = sema.interner.get("modes").unwrap();
+        let struct_id = *sema.structs.get(&probe_name).unwrap();
+        let method = sema.methods.get(&(struct_id, method_name)).unwrap();
+
+        assert_eq!(
+            sema.param_arena.modes(method.params),
+            &[
+                RirParamMode::Borrow,
+                RirParamMode::Inout,
+                RirParamMode::Normal,
+            ]
+        );
+        assert_eq!(
+            sema.param_arena.comptime(method.params),
+            &[false, false, true]
+        );
+
+        // The inference-side signature must carry the identical source-mode
+        // vector rather than a type-only shadow of MethodInfo (RUE-634).
+        let inference = sema.build_inference_context();
+        let signature = inference
+            .method_sigs
+            .get(&(struct_id, method_name))
+            .unwrap();
+        assert_eq!(
+            signature.param_modes,
+            vec![
+                RirParamMode::Borrow,
+                RirParamMode::Inout,
+                RirParamMode::Normal,
+            ]
+        );
+    }
+
+    #[test]
+    fn anonymous_method_self_mode_participates_in_structural_identity() {
+        let output = compile_to_air(
+            "fn ByValue() -> type {
+                struct { value: i32, fn f(self) -> i32 { self.value } }
+            }
+            fn ByBorrow() -> type {
+                struct { value: i32, fn f(borrow self) -> i32 { self.value } }
+            }
+            fn main() -> i32 {
+                let V = ByValue();
+                let B = ByBorrow();
+                let v = V { value: 20 };
+                let b = B { value: 22 };
+                v.f() + b.f()
+            }",
+        )
+        .unwrap();
+
+        let mut physical_modes: Vec<Vec<bool>> = output
+            .functions
+            .iter()
+            .filter(|function| {
+                function.name.starts_with("__anon_struct_") && function.name.ends_with(".f")
+            })
+            .map(|function| function.param_modes.by_ref().to_vec())
+            .collect();
+        physical_modes.sort();
+        assert_eq!(physical_modes, vec![vec![false], vec![true]]);
+    }
+
+    #[test]
+    fn anonymous_method_explicit_mode_participates_in_structural_identity() {
+        let output = compile_to_air(
+            "fn Normal() -> type {
+                struct { fn f(borrow self, x: i64) -> i64 { x } }
+            }
+            fn Borrowed() -> type {
+                struct { fn f(borrow self, borrow x: i64) -> i64 { x } }
+            }
+            fn main() -> i32 {
+                let N = Normal();
+                let B = Borrowed();
+                let n = N {};
+                let b = B {};
+                let x: i64 = 20;
+                let y: i64 = 22;
+                @intCast(n.f(x) + b.f(borrow y))
+            }",
+        )
+        .unwrap();
+
+        let mut physical_modes: Vec<Vec<bool>> = output
+            .functions
+            .iter()
+            .filter(|function| {
+                function.name.starts_with("__anon_struct_") && function.name.ends_with(".f")
+            })
+            .map(|function| function.param_modes.by_ref().to_vec())
+            .collect();
+        physical_modes.sort();
+        assert_eq!(physical_modes, vec![vec![true, false], vec![true, true]]);
+    }
+
+    #[test]
+    fn anonymous_method_comptime_flag_participates_in_structural_identity() {
+        let output = compile_to_air(
+            "fn Runtime() -> type {
+                struct { fn f(x: i32) -> i32 { x } }
+            }
+            fn Compiletime() -> type {
+                struct { fn f(comptime x: i32) -> i32 { x } }
+            }
+            fn main() -> i32 {
+                let R = Runtime();
+                let C = Compiletime();
+                let _r = R {};
+                let _c = C {};
+                0
+            }",
+        )
+        .unwrap();
+
+        let main = output
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .unwrap();
+        let struct_ids: std::collections::HashSet<_> = main
+            .air
+            .iter()
+            .filter_map(|(_, inst)| match inst.data {
+                AirInstData::StructInit { struct_id, .. } => Some(struct_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(struct_ids.len(), 2);
     }
 
     #[test]

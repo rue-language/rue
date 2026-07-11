@@ -57,6 +57,8 @@ impl<'a> Sema<'a> {
                 // Resolve parameter types (Self -> this anonymous struct's type)
                 let params = self.rir.get_params(*params_start, *params_len);
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
+                let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
+                let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
                 let param_types: Vec<Type> = params
                     .iter()
                     .map(|p| {
@@ -68,9 +70,12 @@ impl<'a> Sema<'a> {
                     self.resolve_type_with_self(*return_type, struct_type, method_inst.span)?;
 
                 // Allocate method parameters in the arena
-                let param_range = self
-                    .param_arena
-                    .alloc_method(param_names.into_iter(), param_types.into_iter());
+                let param_range = self.param_arena.alloc_method(
+                    param_names,
+                    param_types,
+                    param_modes,
+                    param_comptime,
+                );
 
                 self.methods.insert(
                     key,
@@ -134,6 +139,8 @@ impl<'a> Sema<'a> {
                 // Resolve parameter types using comptime-safe resolution
                 let params = self.rir.get_params(*params_start, *params_len);
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
+                let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
+                let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
                 let mut param_types: Vec<Type> = Vec::with_capacity(params.len());
 
                 for p in params {
@@ -156,9 +163,12 @@ impl<'a> Sema<'a> {
                 };
 
                 // Allocate method parameters in the arena
-                let param_range = self
-                    .param_arena
-                    .alloc_method(param_names.into_iter(), param_types.into_iter());
+                let param_range = self.param_arena.alloc_method(
+                    param_names,
+                    param_types,
+                    param_modes,
+                    param_comptime,
+                );
 
                 self.methods.insert(
                     key,
@@ -287,6 +297,8 @@ impl<'a> Sema<'a> {
                 // Resolve parameter types using comptime-safe resolution with substitution
                 let params = self.rir.get_params(*params_start, *params_len);
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
+                let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
+                let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
                 let mut param_types: Vec<Type> = Vec::with_capacity(params.len());
 
                 for p in params {
@@ -319,9 +331,12 @@ impl<'a> Sema<'a> {
                 };
 
                 // Allocate method parameters in the arena
-                let param_range = self
-                    .param_arena
-                    .alloc_method(param_names.into_iter(), param_types.into_iter());
+                let param_range = self.param_arena.alloc_method(
+                    param_names,
+                    param_types,
+                    param_modes,
+                    param_comptime,
+                );
 
                 staged.push((
                     key,
@@ -380,17 +395,26 @@ impl<'a> Sema<'a> {
                 params_len,
                 return_type,
                 has_self,
+                self_mode,
                 ..
             } = &method_inst.data
             {
-                // Extract parameter types as symbols (excluding self)
+                // Extract the complete explicit-parameter signature. Passing
+                // modes and comptime flags affect the callable contract just as
+                // types do, so anonymous types that differ in any of them must
+                // not share one StructId/method body (RUE-634).
                 let params = self.rir.get_params(*params_start, *params_len);
                 let param_types: Vec<Spur> = params.iter().map(|p| p.ty).collect();
+                let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
+                let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
 
                 sigs.push(super::super::AnonMethodSig {
                     name: *name,
                     has_self: *has_self,
+                    self_mode: *self_mode,
                     param_types,
+                    param_modes,
+                    param_comptime,
                     return_type: *return_type,
                 });
             }

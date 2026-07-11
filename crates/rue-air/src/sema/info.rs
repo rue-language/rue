@@ -75,8 +75,9 @@ pub struct MethodInfo {
 /// Method signature for anonymous struct structural equality comparison.
 ///
 /// This captures only the parts of a method that affect structural equality:
-/// method name, whether it has self, parameter types (as symbols), and return type.
-/// Method bodies do NOT affect structural equality - only signatures matter.
+/// method name, receiver presence and mode, explicit parameter types/modes,
+/// comptime flags, and return type. Method bodies do NOT affect structural
+/// equality - only signatures matter.
 ///
 /// Type symbols are stored as Spur (interned strings) rather than resolved Types
 /// because at comparison time, `Self` hasn't been resolved to a concrete StructId yet.
@@ -87,8 +88,15 @@ pub struct AnonMethodSig {
     pub name: Spur,
     /// Whether this is a method (has self) or associated function (no self)
     pub has_self: bool,
+    /// Receiver passing mode. Meaningful when `has_self` is true; associated
+    /// functions carry Normal.
+    pub self_mode: rue_rir::RirParamMode,
     /// Parameter type symbols (excluding self parameter)
     pub param_types: Vec<Spur>,
+    /// Explicit parameter passing modes, parallel to `param_types`.
+    pub param_modes: Vec<rue_rir::RirParamMode>,
+    /// Explicit parameter comptime flags, parallel to `param_types`.
+    pub param_comptime: Vec<bool>,
     /// Return type symbol
     pub return_type: Spur,
 }

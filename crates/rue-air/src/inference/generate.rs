@@ -90,6 +90,11 @@ pub struct MethodSig {
     pub has_self: bool,
     /// Parameter types (excluding self), as InferTypes for uniform handling.
     pub param_types: Vec<InferType>,
+    /// Source parameter modes (excluding self), in the same order as
+    /// `param_types`. Keeping modes in the inference signature prevents method
+    /// calls from consulting a type-only shadow of the callee contract
+    /// (RUE-634).
+    pub param_modes: Vec<rue_rir::RirParamMode>,
     /// Return type, as InferType for uniform handling.
     pub return_type: InferType,
 }

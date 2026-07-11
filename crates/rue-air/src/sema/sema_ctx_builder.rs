@@ -77,6 +77,7 @@ impl<'a> Sema<'a> {
                         struct_type,
                         has_self: true,
                         param_types,
+                        param_modes: vec![rue_rir::RirParamMode::Normal; method.params.len()],
                         return_type: self.type_to_infer_type(return_ty),
                     },
                 );
@@ -118,6 +119,7 @@ impl<'a> Sema<'a> {
                         struct_type,
                         has_self: false,
                         param_types,
+                        param_modes: vec![rue_rir::RirParamMode::Normal; assoc_fn.params.len()],
                         return_type: self.type_to_infer_type(return_ty),
                     },
                 );
