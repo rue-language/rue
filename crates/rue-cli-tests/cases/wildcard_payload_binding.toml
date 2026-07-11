@@ -1,0 +1,51 @@
+# `_` as a tuple-variant payload binding (RUE-601): matches and discards a
+# payload field without binding it. Driven through the real binary, including
+# the drop-semantics guarantee — a discarded non-Copy payload is not moved out
+# of the scrutinee, so its destructor runs exactly once (via the scrutinee's
+# drop), same as a bound-but-unused binding.
+
+[section]
+id = "cli.wildcard_payload_binding"
+name = "Wildcard payload binding"
+description = "`Err(_)` / `Rect(_, _)` discard payload fields; a discarded non-Copy field is dropped exactly once (RUE-601)."
+
+[[case]]
+name = "discard_partial_and_multiple"
+description = "`_` in one, the other, and both payload positions; discards compile and select correctly."
+files = [{ path = "main.rue", source = """
+enum Shape { Rect(i32, i32), Circle(i32), Empty }
+fn main() -> i32 {
+    let a = match Shape.Rect(40, 2) { Shape.Rect(w, _) => w, Shape.Circle(r) => r, Shape.Empty => 0 };
+    let b = match Shape.Rect(40, 2) { Shape.Rect(_, h) => h, Shape.Circle(r) => r, Shape.Empty => 0 };
+    let c = match Shape.Rect(9, 9)  { Shape.Rect(_, _) => 0, Shape.Circle(r) => r, Shape.Empty => 1 };
+    a + b + c
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "discarded_non_copy_payload_drops_once"
+description = "A discarded non-Copy payload's destructor runs exactly once — printed once, not zero (leak-semantics) or twice (double-drop)."
+files = [{ path = "main.rue", source = """
+struct Res { id: i32 }
+drop fn Res(self) { println(@to_string(self.id)); }
+enum Box { Full(Res), Empty }
+fn make() -> Box { Box.Full(Res { id: 5 }) }
+fn main() -> i32 {
+    match make() { Box.Full(_) => 7, Box.Empty => 0 }
+}
+""" }]
+stdout = "5\n"
+exit_code = 7
+
+[[case]]
+name = "err_underscore_common_idiom"
+description = "The common `Err(_) => default` idiom now parses (was E0100 before RUE-601)."
+files = [{ path = "main.rue", source = """
+enum Res { Ok(i32), Err(i32) }
+fn div(a: i32, b: i32) -> Res { if b == 0 { Res.Err(1) } else { Res.Ok(a / b) } }
+fn main() -> i32 {
+    match div(84, 2) { Res.Ok(v) => v, Res.Err(_) => -1 }
+}
+""" }]
+exit_code = 42

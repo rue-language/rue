@@ -1601,6 +1601,11 @@ impl<'a> ConstraintGenerator<'a> {
                                 })
                             {
                                 for (i, bname) in bindings.iter().enumerate() {
+                                    // A `_` payload (RUE-601) binds nothing —
+                                    // skip registering a local for it.
+                                    if self.interner.resolve(bname) == "_" {
+                                        continue;
+                                    }
                                     if let Some(&pty) = payload.get(i) {
                                         ctx.insert_local(
                                             *bname,

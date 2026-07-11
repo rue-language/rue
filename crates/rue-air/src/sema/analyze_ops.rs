@@ -2285,9 +2285,12 @@ impl<'a> Sema<'a> {
         // Every payload binding must be a fresh name (spec 4.7:30). Reusing an
         // identifier — `Rect(w, w)` — silently shadows the earlier binding and
         // discards its value, so reject it (E0484, analogous to Rust E0416)
-        // rather than losing a field (RUE-269). Wildcards never reach here:
-        // `_` in payload position isn't a binding.
+        // rather than losing a field (RUE-269). The `_` discard (RUE-601) is
+        // exempt: it binds nothing, so any number may repeat (`Rect(_, _)`).
         for (i, name) in bindings.iter().enumerate() {
+            if self.interner.resolve(name) == "_" {
+                continue;
+            }
             if bindings[..i].contains(name) {
                 return Err(CompileError::new(
                     ErrorKind::DuplicatePatternBinding {
@@ -2300,6 +2303,15 @@ impl<'a> Sema<'a> {
 
         let mut stmts: Vec<u32> = Vec::with_capacity(bindings.len() * 2);
         for (i, binding_name) in bindings.iter().enumerate() {
+            // A `_` payload (RUE-601) discards its field: bind nothing and emit
+            // no read. The field is not moved out of the scrutinee, so it is
+            // dropped together with the scrutinee — exactly like a
+            // discriminant-only match on a payload-carrying variant. The
+            // enumerate index `i` still tracks the real field position for the
+            // other bindings.
+            if self.interner.resolve(binding_name) == "_" {
+                continue;
+            }
             let field_ty = payload[i];
 
             // Read the payload field out of the scrutinee.
