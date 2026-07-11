@@ -1,0 +1,49 @@
+// Dogfood #3: bignum factorial with Result-based checks and `?`.
+const std = @import("std");
+const big = @import("big.rue");
+
+const CheckResult = std.result.Result(i64, i64);
+
+fn check_limb(borrow v: big.Big, i: u64, expected: i64) -> CheckResult {
+    let got = v.limb(i);
+    if got == expected {
+        CheckResult.Ok(got)
+    } else {
+        CheckResult.Err(got)
+    }
+}
+
+fn verify() -> CheckResult {
+    // 25! = 15511210043330985984000000
+    //     = limbs (base 1e9, LE): [984000000, 210043330985 % 1e9?...] — use
+    //       known decomposition: 15,511,210,043,330,985,984,000,000
+    //       = 15511210 * 1e18 + 043330985 * 1e9 + 984000000
+    let f25 = big.factorial(25);
+    check_limb(borrow f25, 0, 984000000)?;
+    check_limb(borrow f25, 1, 43330985)?;
+    check_limb(borrow f25, 2, 15511210)?;
+    // 20! + 5! == 2432902008176640000 + 120
+    let f20 = big.factorial(20);
+    let f5 = big.factorial(5);
+    let total = f20.plus(borrow f5);
+    check_limb(borrow total, 0, 176640120)?;
+    check_limb(borrow total, 1, 432902008)?;
+    check_limb(borrow total, 2, 2)?;
+    // ordering: 21! > 20!
+    let f21 = big.factorial(21);
+    if f21.cmp(borrow f20) == 1 {
+        CheckResult.Ok(42)
+    } else {
+        CheckResult.Err(0 - 1)
+    }
+}
+
+fn main() -> i32 {
+    match verify() {
+        CheckResult.Ok(v) => @intCast(v),
+        CheckResult.Err(got) => {
+            @dbg(got);
+            1
+        },
+    }
+}

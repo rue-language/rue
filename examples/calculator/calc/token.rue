@@ -1,0 +1,45 @@
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+// Token tags. Payload (for NUM) rides in a parallel buffer — ArrayBuf of a
+// cross-module enum can't be a field yet (RUE-630), so the stream is two
+// same-file ArrayBuf(i64)s behind a struct.
+pub const NUM: i64 = 0;
+pub const PLUS: i64 = 1;
+pub const MINUS: i64 = 2;
+pub const STAR: i64 = 3;
+pub const SLASH: i64 = 4;
+pub const LPAREN: i64 = 5;
+pub const RPAREN: i64 = 6;
+pub const END: i64 = 7;
+
+pub struct TokenStream {
+    tags: Ints,
+    vals: Ints,
+
+    fn new() -> Self {
+        Self { tags: Ints.new(), vals: Ints.new() }
+    }
+
+    fn num(inout self, v: i64) {
+        self.tags.push(0);
+        self.vals.push(v);
+    }
+
+    fn op(inout self, tag: i64) {
+        self.tags.push(tag);
+        self.vals.push(0);
+    }
+
+    fn tag_at(borrow self, i: u64) -> i64 {
+        self.tags.get_or(i, 7)
+    }
+
+    fn val_at(borrow self, i: u64) -> i64 {
+        self.vals.get_or(i, 0)
+    }
+
+    fn len(borrow self) -> u64 {
+        self.tags.len()
+    }
+}

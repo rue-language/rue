@@ -1,0 +1,35 @@
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+// CSR-ish adjacency: per-edge arrays plus a head/next chain per vertex.
+pub struct Graph {
+    n: u64,
+    head: Ints,    // head[v] = first edge index of v, or -1
+    to: Ints,      // to[e] = target vertex
+    weight: Ints,  // weight[e]
+    next: Ints,    // next[e] = next edge of the same source, or -1
+
+    fn new(n: u64) -> Self {
+        let mut head = Ints.new();
+        let mut i: u64 = 0;
+        while i < n {
+            head.push(0 - 1);
+            i = i + 1;
+        }
+        Self { n: n, head: head, to: Ints.new(), weight: Ints.new(), next: Ints.new() }
+    }
+
+    fn edge(inout self, from: u64, to_v: i64, w: i64) {
+        let e = self.to.len();
+        self.to.push(to_v);
+        self.weight.push(w);
+        self.next.push(self.head.get_or(from, 0 - 1));
+        self.head.set(from, @intCast(e));
+    }
+
+    fn vertex_count(borrow self) -> u64 { self.n }
+    fn first_edge(borrow self, v: u64) -> i64 { self.head.get_or(v, 0 - 1) }
+    fn edge_to(borrow self, e: u64) -> i64 { self.to.get_or(e, 0 - 1) }
+    fn edge_weight(borrow self, e: u64) -> i64 { self.weight.get_or(e, 0) }
+    fn next_edge(borrow self, e: u64) -> i64 { self.next.get_or(e, 0 - 1) }
+}

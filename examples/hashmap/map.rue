@@ -1,0 +1,126 @@
+// Open-addressing i64->i64 hash map: linear probing, tombstones, and
+// load-factor-driven rehash into a doubled table. States ride a parallel
+// buffer (0=empty, 1=full, 2=tombstone).
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+pub struct Map {
+    keys: Ints,
+    vals: Ints,
+    state: Ints,
+    live: u64,
+    used: u64,
+    cap: u64,
+
+    fn with_capacity(cap: u64) -> Self {
+        let mut keys = Ints.new();
+        let mut vals = Ints.new();
+        let mut state = Ints.new();
+        let mut i: u64 = 0;
+        while i < cap {
+            keys.push(0);
+            vals.push(0);
+            state.push(0);
+            i = i + 1;
+        }
+        Self { keys: keys, vals: vals, state: state, live: 0, used: 0, cap: cap }
+    }
+
+    fn hash(borrow self, key: i64) -> u64 {
+        // Fibonacci-ish scramble; keep it positive via masking.
+        let h = (key * 2654435761) % 9223372036854775807;
+        let positive = if h < 0 { 0 - h } else { h };
+        let m: u64 = @intCast(positive);
+        m % self.cap
+    }
+
+    fn insert(inout self, key: i64, val: i64) {
+        // Grow at 70% usage (live + tombstones).
+        if (self.used * 10) >= (self.cap * 7) {
+            self.grow();
+        }
+        let mut i = self.hash(key);
+        loop {
+            let s = self.state.get_or(i, 0);
+            if s == 1 {
+                if self.keys.get_or(i, 0) == key {
+                    self.vals.set(i, val);
+                    break;
+                }
+                i = (i + 1) % self.cap;
+            } else {
+                // empty or tombstone: claim it
+                if s == 0 { self.used = self.used + 1; }
+                self.keys.set(i, key);
+                self.vals.set(i, val);
+                self.state.set(i, 1);
+                self.live = self.live + 1;
+                break;
+            }
+        }
+    }
+
+    fn get_or(borrow self, key: i64, default: i64) -> i64 {
+        let mut i = self.hash(key);
+        let mut probes: u64 = 0;
+        let mut result = default;
+        let mut found = false;
+        while probes < self.cap {
+            let s = self.state.get_or(i, 0);
+            if s == 0 { break; }
+            if s == 1 {
+                if self.keys.get_or(i, 0) == key {
+                    result = self.vals.get_or(i, 0);
+                    found = true;
+                    break;
+                }
+            }
+            i = (i + 1) % self.cap;
+            probes = probes + 1;
+        }
+        if found { result } else { result }
+    }
+
+    fn remove(inout self, key: i64) -> bool {
+        let mut i = self.hash(key);
+        let mut probes: u64 = 0;
+        let mut removed = false;
+        while probes < self.cap {
+            let s = self.state.get_or(i, 0);
+            if s == 0 { break; }
+            if s == 1 {
+                if self.keys.get_or(i, 0) == key {
+                    self.state.set(i, 2);   // tombstone
+                    self.live = self.live - 1;
+                    removed = true;
+                    break;
+                }
+            }
+            i = (i + 1) % self.cap;
+            probes = probes + 1;
+        }
+        removed
+    }
+
+    fn len(borrow self) -> u64 { self.live }
+
+    fn grow(inout self) {
+        let old_cap = self.cap;
+        let mut bigger = Map.with_capacity(old_cap * 2);
+        let mut j: u64 = 0;
+        while j < old_cap {
+            if self.state.get_or(j, 0) == 1 {
+                bigger.insert(self.keys.get_or(j, 0), self.vals.get_or(j, 0));
+            }
+            j = j + 1;
+        }
+        // Field-by-field move of the local into self: each assignment
+        // overwrite-drops the old buffer and partially moves `bigger`.
+        self.keys = bigger.keys;
+        self.vals = bigger.vals;
+        self.state = bigger.state;
+        self.cap = bigger.cap;
+        self.live = bigger.live;
+        self.used = bigger.used;
+    }
+}

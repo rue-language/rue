@@ -1,0 +1,34 @@
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+// Arena-indexed expression tree, flattened into parallel buffers
+// (tag, lhs, rhs) — see RUE-630 for why not ArrayBuf(Node).
+pub const NUM: i64 = 0;
+pub const ADD: i64 = 1;
+pub const SUB: i64 = 2;
+pub const MUL: i64 = 3;
+pub const DIV: i64 = 4;
+pub const NEG: i64 = 5;
+
+pub struct Arena {
+    tags: Ints,
+    lhs: Ints,
+    rhs: Ints,
+
+    fn new() -> Self {
+        Self { tags: Ints.new(), lhs: Ints.new(), rhs: Ints.new() }
+    }
+
+    fn add(inout self, tag: i64, l: i64, r: i64) -> u64 {
+        self.tags.push(tag);
+        self.lhs.push(l);
+        self.rhs.push(r);
+        self.tags.len() - 1
+    }
+
+    fn num(inout self, v: i64) -> u64 { self.add(0, v, 0) }
+
+    fn tag_at(borrow self, i: u64) -> i64 { self.tags.get_or(i, 0) }
+    fn lhs_at(borrow self, i: u64) -> i64 { self.lhs.get_or(i, 0) }
+    fn rhs_at(borrow self, i: u64) -> i64 { self.rhs.get_or(i, 0) }
+}

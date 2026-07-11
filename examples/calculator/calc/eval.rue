@@ -1,0 +1,22 @@
+const ast = @import("ast.rue");
+
+// Recursive tree walk over a borrowed arena; the borrow is re-lent to
+// every recursive call (loan-extent nesting through calls).
+pub fn eval(borrow arena: ast.Arena, idx: u64) -> i64 {
+    let tag = arena.tag_at(idx);
+    let l = arena.lhs_at(idx);
+    let r = arena.rhs_at(idx);
+    if tag == ast.NUM {
+        l
+    } else if tag == ast.ADD {
+        eval(borrow arena, @intCast(l)) + eval(borrow arena, @intCast(r))
+    } else if tag == ast.SUB {
+        eval(borrow arena, @intCast(l)) - eval(borrow arena, @intCast(r))
+    } else if tag == ast.MUL {
+        eval(borrow arena, @intCast(l)) * eval(borrow arena, @intCast(r))
+    } else if tag == ast.DIV {
+        eval(borrow arena, @intCast(l)) / eval(borrow arena, @intCast(r))
+    } else {
+        0 - eval(borrow arena, @intCast(l))
+    }
+}

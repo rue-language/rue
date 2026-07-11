@@ -131,6 +131,38 @@ struct ExampleExpectation {
 }
 
 const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
+    // The 2026-07-11 ambitious-dogfood programs: each is a self-checking
+    // program that returns 42 exactly when every internal @assert passes.
+    ExampleExpectation {
+        path: "bignum/main.rue",
+        exit_code: 42,
+        stdout: "",
+        stdin: None,
+    },
+    ExampleExpectation {
+        path: "calculator/main.rue",
+        exit_code: 42,
+        stdout: "",
+        stdin: None,
+    },
+    ExampleExpectation {
+        path: "dijkstra/main.rue",
+        exit_code: 42,
+        stdout: "",
+        stdin: None,
+    },
+    ExampleExpectation {
+        path: "hashmap/main.rue",
+        exit_code: 42,
+        stdout: "",
+        stdin: None,
+    },
+    ExampleExpectation {
+        path: "linear_pool.rue",
+        exit_code: 42,
+        stdout: "",
+        stdin: None,
+    },
     ExampleExpectation {
         path: "arrays.rue",
         exit_code: 157,
@@ -1078,6 +1110,16 @@ fn run_example(
 }
 
 fn collect_example_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    // A directory that directly contains a `main.rue` is ONE root-module
+    // example (RUE-424): its other `.rue` files are modules reached through
+    // `@import` from that root, not standalone programs — compiling them
+    // alone would fail on the missing `main`. Emit the root and stop
+    // recursing into the program's subtree.
+    let root = dir.join("main.rue");
+    if root.is_file() {
+        out.push(root);
+        return Ok(());
+    }
     for entry in std::fs::read_dir(dir)
         .map_err(|e| format!("cannot read examples directory '{}': {}", dir.display(), e))?
     {

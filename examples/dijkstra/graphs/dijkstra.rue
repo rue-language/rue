@@ -1,0 +1,47 @@
+const std = @import("std");
+const graph = @import("graph.rue");
+const heap = @import("heap.rue");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+pub const INF: i64 = 4611686018427387904;   // 2^62: addition-safe infinity
+
+pub fn shortest(borrow g: graph.Graph, src: u64) -> Ints {
+    let n = g.vertex_count();
+    let mut dist = Ints.new();
+    let mut i: u64 = 0;
+    while i < n {
+        dist.push(INF);
+        i = i + 1;
+    }
+    dist.set(src, 0);
+
+    let mut pq = heap.MinHeap.new();
+    // @intCast can't take its target from a parameter type (finding #4:
+    // E0709 in call-argument position) — bind first.
+    let src_i: i64 = @intCast(src);
+    pq.push(0, src_i);
+
+    while !pq.is_empty() {
+        let d = pq.min_prio();
+        let v: u64 = @intCast(pq.min_load());
+        pq.pop();
+        if d > dist.get_or(v, INF) {
+            // stale entry
+        } else {
+            let mut e = g.first_edge(v);
+            while e != 0 - 1 {
+                let ei: u64 = @intCast(e);
+                let u = g.edge_to(ei);
+                let ui: u64 = @intCast(u);
+                let w = g.edge_weight(ei);
+                let nd = d + w;
+                if nd < dist.get_or(ui, INF) {
+                    dist.set(ui, nd);
+                    pq.push(nd, u);
+                }
+                e = g.next_edge(ei);
+            }
+        }
+    }
+    dist
+}
