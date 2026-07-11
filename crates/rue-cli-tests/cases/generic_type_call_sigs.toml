@@ -292,3 +292,73 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["expects 2", "provided"]
+
+[[case]]
+name = "dependent_comptime_value_kind_is_validated_before_reduction"
+description = "A type constructor validates an unused comptime value against the type selected by its earlier type argument."
+files = [{ path = "main.rue", source = """
+const FLAG: bool = true;
+
+fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { payload: T }
+}
+
+fn read(value: Witness(i32, FLAG)) -> i32 {
+    value.payload
+}
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["type mismatch", "i32", "bool"]
+
+[[case]]
+name = "dependent_comptime_value_range_is_validated_before_reduction"
+description = "An unused comptime integer argument is range-checked against its substituted declared type."
+files = [{ path = "main.rue", source = """
+fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { payload: T }
+}
+
+fn read(value: Witness(i8, 300)) -> i32 {
+    @intCast(value.payload)
+}
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "outside the range", "i8"]
+
+[[case]]
+name = "callable_alias_is_not_a_comptime_value_argument"
+description = "A callable alias cannot exploit the shared `type` sentinel to masquerade as a first-class comptime value."
+files = [{ path = "main.rue", source = """
+fn id(value: i32) -> i32 { value }
+const F = id;
+
+fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { marker: i32 }
+}
+
+fn bad(value: Witness(type, F)) -> i32 { value.marker }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "callable alias", "cannot be passed"]
+
+[[case]]
+name = "type_and_unit_values_remain_valid_comptime_arguments"
+description = "Type metadata and unit remain valid values when a dependent comptime parameter concretely requires them."
+files = [{ path = "main.rue", source = """
+const META = i32;
+const U: () = ();
+
+fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { marker: i32 }
+}
+
+fn read_meta(value: Witness(type, META)) -> i32 { value.marker }
+fn read_unit(value: Witness((), U)) -> i32 { value.marker }
+fn main() -> i32 { 42 }
+""" }]
+exit_code = 42

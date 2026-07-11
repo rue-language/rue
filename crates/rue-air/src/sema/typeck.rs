@@ -924,7 +924,7 @@ impl<'a> Sema<'a> {
             fn_info.is_pub,
             span,
         )?;
-        if fn_info.return_type != Type::COMPTIME_TYPE {
+        if !self.function_returns_type(&fn_info) {
             return Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
                     reason: format!(
@@ -1066,7 +1066,7 @@ impl<'a> Sema<'a> {
             .get(&function_key)
             .copied()
             .filter(|info| info.file_id == module_file_id)?;
-        if fn_info.return_type != Type::COMPTIME_TYPE {
+        if !self.function_returns_type(&fn_info) {
             return None;
         }
         self.check_unqualified_visibility(
@@ -1425,7 +1425,7 @@ impl<'a> Sema<'a> {
                 span,
             ));
         };
-        let is_type_ctor = fn_info.return_type == Type::COMPTIME_TYPE;
+        let is_type_ctor = self.function_returns_type(&fn_info);
         let params = fn_info.params;
         let ctor_file_id = fn_info.file_id;
         let ctor_is_pub = fn_info.is_pub;
@@ -1514,6 +1514,16 @@ impl<'a> Sema<'a> {
             .collect();
         debug_assert_eq!(flags.len(), function.params.len());
         flags
+    }
+
+    /// Whether the declaration's source return annotation is literally `type`.
+    ///
+    /// `FunctionInfo::return_type` cannot answer this: declaration gathering
+    /// also uses `COMPTIME_TYPE` as the placeholder for a dependent return such
+    /// as `-> T`. Kind-sensitive call paths must therefore consult the original
+    /// source symbol instead of the semantic placeholder.
+    pub(crate) fn function_returns_type(&self, function: &FunctionInfo) -> bool {
+        self.interner.get("type") == Some(function.return_type_sym)
     }
 
     /// Resolve one parameter of a generic function under a concrete
@@ -1706,7 +1716,7 @@ impl<'a> Sema<'a> {
             fn_info.is_pub,
             span,
         )?;
-        if fn_info.return_type != Type::COMPTIME_TYPE {
+        if !self.function_returns_type(&fn_info) {
             return Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
                     reason: format!(
@@ -2002,6 +2012,16 @@ impl<'a> Sema<'a> {
         span: Span,
         value_subst: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<u64> {
+        self.resolve_array_length_with_subst(len, span, None, value_subst)
+    }
+
+    fn resolve_array_length_with_subst(
+        &mut self,
+        len: &ArrayLen,
+        span: Span,
+        type_subst: Option<&HashMap<Spur, Type>>,
+        value_subst: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<u64> {
         match len {
             ArrayLen::Literal(n) => Ok(*n),
             ArrayLen::Named(name) => {
@@ -2012,7 +2032,13 @@ impl<'a> Sema<'a> {
                 // elsewhere (RUE-163). Bare names fall through to the
                 // const/comptime-parameter lookup below.
                 if let Some((callee, args)) = parse_type_call_syntax(name) {
-                    return self.resolve_array_length_call(&callee, &args, span, value_subst);
+                    return self.resolve_array_length_call(
+                        &callee,
+                        &args,
+                        span,
+                        type_subst,
+                        value_subst,
+                    );
                 }
                 let sym = self.interner.get_or_intern(name);
                 // 1. A `comptime` value parameter in scope (per specialization).
@@ -2091,6 +2117,7 @@ impl<'a> Sema<'a> {
         callee: &str,
         args: &[String],
         span: Span,
+        type_subst: Option<&HashMap<Spur, Type>>,
         value_subst: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<u64> {
         let invalid =
@@ -2103,13 +2130,13 @@ impl<'a> Sema<'a> {
                  `const`, a `comptime` value parameter, or a call to a comptime function"
             )));
         };
-        let Some(fn_info) = self.functions.get(&callee_key) else {
+        let Some(fn_info) = self.functions.get(&callee_key).copied() else {
             return Err(invalid(format!(
                 "'{callee}' is not a function; array lengths must be an integer literal, a \
                  `const`, a `comptime` value parameter, or a call to a comptime function"
             )));
         };
-        if fn_info.return_type == Type::COMPTIME_TYPE {
+        if self.function_returns_type(&fn_info) {
             return Err(invalid(format!(
                 "array length call '{callee}(...)' must return a value, not a type"
             )));
@@ -2117,6 +2144,7 @@ impl<'a> Sema<'a> {
         let params = fn_info.params;
         let param_names = self.param_arena.names(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
+        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
         // Same implicit-comptime gate as `eval_comptime_type_call`: a value
         // function reduces only with at least one parameter, every one
         // `comptime`. A runtime parameter makes this a genuine runtime call.
@@ -2127,8 +2155,38 @@ impl<'a> Sema<'a> {
                  must be a value-returning function whose parameters are all `comptime`"
             )));
         }
+        let empty_type_subst = HashMap::new();
+        let type_subst = type_subst.unwrap_or(&empty_type_subst);
+        let empty_value_subst = HashMap::new();
+        let value_subst = value_subst.unwrap_or(&empty_value_subst);
+        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
         let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
         for (i, arg) in args.iter().enumerate() {
+            if param_comptime_type[i] {
+                let arg_sym = self.interner.get_or_intern(arg.trim());
+                self.validate_substituted_signature_type(arg_sym, type_subst, value_subst, span)?;
+                let Some(ty) = self.resolve_type_for_comptime_with_subst_and_values_at_span(
+                    arg_sym,
+                    type_subst,
+                    value_subst,
+                    span,
+                ) else {
+                    return Err(invalid(format!(
+                        "argument '{}' for comptime type parameter '{}' of array length call '{}(...)' must be a type",
+                        arg,
+                        self.interner.resolve(&param_names[i]),
+                        callee
+                    )));
+                };
+                callee_types.insert(param_names[i], ty);
+                continue;
+            }
+
+            if let Some(value) = self.resolve_comptime_type_ctor_value_arg(arg, value_subst, span) {
+                callee_values.insert(param_names[i], value);
+                continue;
+            }
+
             // Mirror `parse_array_type_syntax`: a decimal literal is a
             // `Literal`, anything else (a name or nested call) is a `Named`
             // resolved recursively.
@@ -2136,11 +2194,15 @@ impl<'a> Sema<'a> {
                 Ok(n) => ArrayLen::Literal(n),
                 Err(_) => ArrayLen::Named(arg.clone()),
             };
-            let v = self.resolve_array_length(&arg_len, span, value_subst)?;
+            let v = self.resolve_array_length_with_subst(
+                &arg_len,
+                span,
+                Some(type_subst),
+                Some(value_subst),
+            )?;
             callee_values.insert(param_names[i], ConstValue::Integer(v as i128));
         }
-        let empty_types: HashMap<Spur, Type> = HashMap::new();
-        match self.reduce_type_ctor_body(callee_key, &empty_types, &callee_values)? {
+        match self.reduce_type_ctor_body(callee_key, &callee_types, &callee_values)? {
             Some(ConstValue::Integer(n)) if n >= 0 => u64::try_from(n)
                 .map_err(|_| invalid(format!("array length '{callee}(...)' ({n}) is too large"))),
             Some(ConstValue::Integer(n)) => Err(invalid(format!(
