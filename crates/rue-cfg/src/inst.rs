@@ -24,7 +24,7 @@ use std::fmt;
 const _: () = assert!(std::mem::size_of::<CfgInst>() <= 48);
 const _: () = assert!(std::mem::size_of::<CfgInstData>() <= 32);
 
-use lasso::{Key, Spur};
+use lasso::{Key, Spur, ThreadedRodeo};
 use rue_air::{EnumId, ParamSlotModes, StructId, Type};
 use rue_span::Span;
 
@@ -1021,8 +1021,26 @@ impl Cfg {
     }
 }
 
-impl fmt::Display for Cfg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// Interner-aware CFG display adapter for stable, human-readable symbols.
+pub struct CfgDisplay<'a> {
+    cfg: &'a Cfg,
+    interner: &'a ThreadedRodeo,
+}
+
+impl Cfg {
+    /// Display this CFG with call and intrinsic symbols resolved to names.
+    pub fn display_with_interner<'a>(&'a self, interner: &'a ThreadedRodeo) -> CfgDisplay<'a> {
+        CfgDisplay {
+            cfg: self,
+            interner,
+        }
+    }
+
+    fn fmt_with_interner(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        interner: Option<&ThreadedRodeo>,
+    ) -> fmt::Result {
         writeln!(
             f,
             "cfg {} (return_type: {}) {{",
@@ -1061,7 +1079,7 @@ impl fmt::Display for Cfg {
             for &val in &block.insts {
                 let inst = self.get_inst(val);
                 write!(f, "    {} : {} = ", val, inst.ty.name())?;
-                self.fmt_inst_data(f, &inst.data)?;
+                self.fmt_inst_data(f, &inst.data, interner)?;
                 writeln!(f)?;
             }
 
@@ -1157,8 +1175,25 @@ impl fmt::Display for Cfg {
     }
 }
 
+impl fmt::Display for CfgDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.cfg.fmt_with_interner(f, Some(self.interner))
+    }
+}
+
+impl fmt::Display for Cfg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt_with_interner(f, None)
+    }
+}
+
 impl Cfg {
-    fn fmt_inst_data(&self, f: &mut fmt::Formatter<'_>, data: &CfgInstData) -> fmt::Result {
+    fn fmt_inst_data(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        data: &CfgInstData,
+        interner: Option<&ThreadedRodeo>,
+    ) -> fmt::Result {
         match data {
             CfgInstData::Const(v) => write!(f, "const {}", v),
             CfgInstData::BoolConst(v) => write!(f, "const {}", v),
@@ -1204,8 +1239,10 @@ impl Cfg {
                 args_start,
                 args_len,
             } => {
-                // Display symbol as @{id} since we don't have interner access here
-                write!(f, "call @{}(", name.into_usize())?;
+                match interner {
+                    Some(interner) => write!(f, "call @{}(", interner.resolve(name))?,
+                    None => write!(f, "call @{}(", name.into_usize())?,
+                }
                 let args = self.get_call_args(*args_start, *args_len);
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -1224,8 +1261,10 @@ impl Cfg {
                 args_start,
                 args_len,
             } => {
-                // Display symbol as @{id} since we don't have interner access here
-                write!(f, "intrinsic @{}(", name.into_usize())?;
+                match interner {
+                    Some(interner) => write!(f, "intrinsic @{}(", interner.resolve(name))?,
+                    None => write!(f, "intrinsic @{}(", name.into_usize())?,
+                }
                 let args = self.get_extra(*args_start, *args_len);
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -1473,5 +1512,50 @@ mod tests {
         );
 
         assert_eq!(cfg.block_count(), 1);
+    }
+
+    #[test]
+    fn interner_aware_display_resolves_call_symbols() {
+        let interner = ThreadedRodeo::new();
+        let call = interner.get_or_intern("callee");
+        let intrinsic = interner.get_or_intern("assert");
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "test".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Call {
+                    name: call,
+                    args_start: 0,
+                    args_len: 0,
+                },
+                ty: Type::UNIT,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Intrinsic {
+                    name: intrinsic,
+                    args_start: 0,
+                    args_len: 0,
+                },
+                ty: Type::UNIT,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        let resolved = cfg.display_with_interner(&interner).to_string();
+        assert!(resolved.contains("call @callee()"));
+        assert!(resolved.contains("intrinsic @assert()"));
+
+        // The context-free Display API remains backward compatible.
+        let raw = cfg.to_string();
+        assert!(raw.contains(&format!("call @{}()", call.into_usize())));
+        assert!(raw.contains(&format!("intrinsic @{}()", intrinsic.into_usize())));
     }
 }

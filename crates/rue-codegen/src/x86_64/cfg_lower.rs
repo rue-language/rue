@@ -583,7 +583,7 @@ impl<'a> CfgLower<'a> {
     /// This is like `lower()` but also captures detailed information about
     /// how each CFG instruction maps to MIR instructions.
     pub fn lower_with_debug(mut self) -> CompileResult<(X86Mir, crate::LoweringDebugInfo)> {
-        use crate::cfg_lower::{format_cfg_inst_data, format_terminator};
+        use crate::cfg_lower::{format_cfg_inst_data_with_interner, format_terminator};
         use crate::{
             BlockLoweringInfo, LoweringDebugInfo, LoweringDecision, TerminatorLoweringDecision,
         };
@@ -650,7 +650,11 @@ impl<'a> CfgLower<'a> {
                 if !mir_insts.is_empty() {
                     block_info.instructions.push(LoweringDecision {
                         cfg_value: value,
-                        cfg_inst_desc: format_cfg_inst_data(self.ctx.cfg, &inst.data),
+                        cfg_inst_desc: format_cfg_inst_data_with_interner(
+                            self.ctx.cfg,
+                            &inst.data,
+                            self.interner,
+                        ),
                         cfg_type: inst.ty.name().to_string(),
                         mir_insts,
                         rationale,

@@ -19,7 +19,7 @@
 
 use std::fmt;
 
-use lasso::Key;
+use lasso::{Key, ThreadedRodeo};
 use rue_air::{StructId, TypeInternPool, TypeKind};
 use rue_builtins::{BinOp, get_builtin_type};
 use rue_cfg::{BlockId, Cfg, CfgValue, Type};
@@ -125,6 +125,23 @@ impl fmt::Display for LoweringDebugInfo {
 /// so places render with their projections resolved (`$0.#2.1`), not as raw
 /// projection-arena index ranges (`$0[3..5]`).
 pub fn format_cfg_inst_data(cfg: &rue_cfg::Cfg, data: &rue_cfg::CfgInstData) -> String {
+    format_cfg_inst_data_impl(cfg, data, None)
+}
+
+/// Format CFG instruction data with interned symbols resolved to stable names.
+pub fn format_cfg_inst_data_with_interner(
+    cfg: &rue_cfg::Cfg,
+    data: &rue_cfg::CfgInstData,
+    interner: &ThreadedRodeo,
+) -> String {
+    format_cfg_inst_data_impl(cfg, data, Some(interner))
+}
+
+fn format_cfg_inst_data_impl(
+    cfg: &rue_cfg::Cfg,
+    data: &rue_cfg::CfgInstData,
+    interner: Option<&ThreadedRodeo>,
+) -> String {
     use rue_cfg::CfgInstData;
 
     match data {
@@ -163,14 +180,15 @@ pub fn format_cfg_inst_data(cfg: &rue_cfg::Cfg, data: &rue_cfg::CfgInstData) -> 
             args_start,
             args_len,
         } => {
-            // Names display as @{id}: there is no interner access here. Args
-            // ARE renderable now that this fn takes the Cfg.
             let args: Vec<String> = cfg
                 .get_call_args(*args_start, *args_len)
                 .iter()
                 .map(|a| format!("{}", a.value))
                 .collect();
-            format!("call @{}({})", name.into_usize(), args.join(", "))
+            let name = interner
+                .map(|interner| interner.resolve(name).to_string())
+                .unwrap_or_else(|| name.into_usize().to_string());
+            format!("call @{}({})", name, args.join(", "))
         }
         CfgInstData::Intrinsic {
             name,
@@ -182,7 +200,10 @@ pub fn format_cfg_inst_data(cfg: &rue_cfg::Cfg, data: &rue_cfg::CfgInstData) -> 
                 .iter()
                 .map(|v| format!("{}", v))
                 .collect();
-            format!("intrinsic @{}({})", name.into_usize(), args.join(", "))
+            let name = interner
+                .map(|interner| interner.resolve(name).to_string())
+                .unwrap_or_else(|| name.into_usize().to_string());
+            format!("intrinsic @{}({})", name, args.join(", "))
         }
         CfgInstData::StructInit {
             struct_id,

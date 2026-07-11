@@ -1,0 +1,13 @@
+struct VioletRecord {
+    count: i32,
+    enabled: bool,
+}
+
+enum VioletChoice {
+    Missing,
+    Present(i32),
+}
+
+fn _violet_transform(value: i32) -> i32 {
+    value - 203
+}

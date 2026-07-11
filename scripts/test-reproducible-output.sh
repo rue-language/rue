@@ -138,6 +138,38 @@ assert_relocated_symbol_names() {
     fi
 }
 
+assert_source_order_independent_ir() {
+    local ir_a="$root_a/tmp/source-order-ir.txt"
+    local ir_b="$root_b/tmp/source-order-ir.txt"
+
+    # RUE-620: keep noise-a as the semantic root while moving main across an
+    # unrelated sibling. That changes process-local interner allocation without
+    # changing which files or definitions make up the program.
+    (
+        cd "$root_a/project/source-order"
+        "$RUE_BINARY" -j1 \
+            --emit air --emit cfg --emit lowering \
+            noise-a.rue main.rue noise-b.rue > "$ir_a"
+    )
+    "$RUE_BINARY" -j32 \
+        --emit air --emit cfg --emit lowering \
+        "$root_b/project/source-order/noise-a.rue" \
+        "$root_b/project/source-order/noise-b.rue" \
+        "$root_b/project/source-order/main.rue" > "$ir_b"
+
+    assert_identical "source-order-permuted AIR/CFG/lowering" "$ir_a" "$ir_b"
+
+    # Make the comparison non-vacuous: each adapter must have resolved the
+    # symbols exercised by ordinary, generic, and intrinsic calls.
+    local expected_symbol
+    for expected_symbol in '@rotate(' '@finish(' '@identity.i32(' '@assert('; do
+        if ! grep -Fq "$expected_symbol" "$ir_a"; then
+            printf 'FAIL: stable IR omitted resolved symbol %s\n' "$expected_symbol" >&2
+            return 1
+        fi
+    done
+}
+
 compile_pair() {
     local opt="$1"
     local output_a="$root_a/project/program-left-o$1"
@@ -182,5 +214,6 @@ compile_pair() {
 }
 
 assert_relocated_symbol_names
+assert_source_order_independent_ir
 compile_pair 0
 compile_pair 2
