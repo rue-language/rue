@@ -1305,6 +1305,11 @@ impl<'a> Sema<'a> {
             .filter(|p| p.is_comptime && p.ty != type_sym)
             .map(|p| p.name)
             .collect();
+        let value_param_type_syms: Vec<(Spur, Spur)> = params
+            .iter()
+            .filter(|p| p.is_comptime && p.ty != type_sym)
+            .map(|p| (p.name, p.ty))
+            .collect();
 
         // For generic functions, we defer type resolution of type parameters until specialization.
         // We use Type::COMPTIME_TYPE as a placeholder for comptime T: type parameters.
@@ -1332,6 +1337,7 @@ impl<'a> Sema<'a> {
                         p.ty,
                         &type_param_names,
                         &value_param_names,
+                        &value_param_type_syms,
                         span,
                     )?;
                     Ok(Type::COMPTIME_TYPE)
@@ -1356,6 +1362,7 @@ impl<'a> Sema<'a> {
                 return_type_sym,
                 &type_param_names,
                 &value_param_names,
+                &value_param_type_syms,
                 span,
             )?;
             Type::COMPTIME_TYPE

@@ -1009,6 +1009,7 @@ impl<'a> Sema<'a> {
     fn resolve_comptime_type_ctor_value_arg(
         &mut self,
         arg: &str,
+        type_subst: &HashMap<Spur, Type>,
         value_subst: &HashMap<Spur, ConstValue>,
         span: Span,
     ) -> Option<ConstValue> {
@@ -1025,6 +1026,14 @@ impl<'a> Sema<'a> {
         let sym = self.interner.get_or_intern(text);
         if let Some(v) = value_subst.get(&sym) {
             return Some(*v);
+        }
+        // A source `comptime T: type` parameter is itself a compile-time
+        // value when the callee's dependent value parameter has concretely
+        // resolved to `type` (`Witness(type, T)`). Keep source-kind routing
+        // authoritative, but expose that value through the same binder once
+        // the enclosing type substitution is concrete.
+        if let Some(ty) = type_subst.get(&sym) {
+            return Some(ConstValue::Type(*ty));
         }
         if span != Span::default()
             && let Some(info) = self.resolve_const_info_in_file(sym, span.file_id)
@@ -1103,7 +1112,8 @@ impl<'a> Sema<'a> {
                 )?;
                 callee_types.insert(param_names[i], arg_ty);
             } else {
-                let val = self.resolve_comptime_type_ctor_value_arg(arg, value_subst, span)?;
+                let val =
+                    self.resolve_comptime_type_ctor_value_arg(arg, type_subst, value_subst, span)?;
                 callee_values.insert(param_names[i], val);
             }
         }
@@ -1516,16 +1526,6 @@ impl<'a> Sema<'a> {
         flags
     }
 
-    /// Whether the declaration's source return annotation is literally `type`.
-    ///
-    /// `FunctionInfo::return_type` cannot answer this: declaration gathering
-    /// also uses `COMPTIME_TYPE` as the placeholder for a dependent return such
-    /// as `-> T`. Kind-sensitive call paths must therefore consult the original
-    /// source symbol instead of the semantic placeholder.
-    pub(crate) fn function_returns_type(&self, function: &FunctionInfo) -> bool {
-        self.interner.get("type") == Some(function.return_type_sym)
-    }
-
     /// Resolve one parameter of a generic function under a concrete
     /// specialization.
     ///
@@ -1784,7 +1784,7 @@ impl<'a> Sema<'a> {
                 callee_types.insert(param_names[i], arg_ty);
             } else {
                 let value = self
-                    .resolve_comptime_type_ctor_value_arg(arg, value_subst, span)
+                    .resolve_comptime_type_ctor_value_arg(arg, type_subst, value_subst, span)
                     .ok_or_else(|| {
                         CompileError::new(
                             ErrorKind::ComptimeEvaluationFailed {
@@ -2182,7 +2182,9 @@ impl<'a> Sema<'a> {
                 continue;
             }
 
-            if let Some(value) = self.resolve_comptime_type_ctor_value_arg(arg, value_subst, span) {
+            if let Some(value) =
+                self.resolve_comptime_type_ctor_value_arg(arg, type_subst, value_subst, span)
+            {
                 callee_values.insert(param_names[i], value);
                 continue;
             }
@@ -2229,8 +2231,13 @@ impl<'a> Sema<'a> {
     }
 
     fn type_name_mentions_type_param(&self, type_name: &str, type_params: &[Spur]) -> bool {
-        if let Some((element_type, _length)) = parse_array_type_syntax(type_name) {
-            return self.type_name_mentions_type_param(&element_type, type_params);
+        if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
+            let length_mentions = match length {
+                ArrayLen::Literal(_) => false,
+                ArrayLen::Named(name) => self.type_name_mentions_type_param(&name, type_params),
+            };
+            return length_mentions
+                || self.type_name_mentions_type_param(&element_type, type_params);
         }
         if let Some(pointee) = type_name
             .strip_prefix("ptr const ")
@@ -2282,16 +2289,13 @@ impl<'a> Sema<'a> {
 
     fn type_name_mentions_value_param(&self, type_name: &str, value_params: &[Spur]) -> bool {
         if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
-            // The length itself may name a value parameter.
-            if let ArrayLen::Named(name) = &len {
-                if let Some(sym) = self.interner.get(name) {
-                    if value_params.contains(&sym) {
-                        return true;
-                    }
-                }
-            }
+            let length_mentions = match len {
+                ArrayLen::Literal(_) => false,
+                ArrayLen::Named(name) => self.type_name_mentions_value_param(&name, value_params),
+            };
             // Recurse into the element type (nested arrays / pointers).
-            return self.type_name_mentions_value_param(&element_type, value_params);
+            return length_mentions
+                || self.type_name_mentions_value_param(&element_type, value_params);
         }
         if let Some(pointee) = type_name
             .strip_prefix("ptr const ")
@@ -2299,7 +2303,14 @@ impl<'a> Sema<'a> {
         {
             return self.type_name_mentions_value_param(pointee, value_params);
         }
-        false
+        if let Some((_call_name, arg_strs)) = parse_type_call_syntax(type_name) {
+            return arg_strs
+                .iter()
+                .any(|arg| self.type_name_mentions_value_param(arg, value_params));
+        }
+        self.interner
+            .get(type_name)
+            .is_some_and(|sym| value_params.contains(&sym))
     }
 
     /// Validate the non-deferred parts of a signature type that will otherwise
@@ -2322,14 +2333,88 @@ impl<'a> Sema<'a> {
         type_sym: Spur,
         type_params: &[Spur],
         value_params: &[Spur],
+        value_param_type_syms: &[(Spur, Spur)],
         span: Span,
     ) -> CompileResult<()> {
         self.validate_deferred_signature_type_name_lengths(
             self.interner.resolve(&type_sym).to_string(),
             type_params,
             value_params,
+            value_param_type_syms,
             span,
         )
+    }
+
+    /// Resolve a compile-time callee while validating a deferred signature.
+    ///
+    /// The lookup is deliberately independent of the callee's return kind:
+    /// type position requires `-> type`, while array lengths and nested value
+    /// arguments require an ordinary value. Keeping one lookup path lets the
+    /// position-aware walker make that distinction after it has followed the
+    /// source kinds of the callee's parameters.
+    fn deferred_comptime_function_info(
+        &mut self,
+        call_name: &str,
+        span: Span,
+    ) -> CompileResult<(Spur, FunctionInfo)> {
+        let unknown =
+            || CompileError::new(ErrorKind::UnknownType(format!("{}(...)", call_name)), span);
+
+        let function_key = if call_name.contains('.') {
+            let segments: Vec<&str> = call_name.split('.').collect();
+            if segments.len() < 2 || segments.iter().any(|segment| segment.is_empty()) {
+                return Err(unknown());
+            }
+            let (_module_id, module_file_id, _module_path) =
+                self.resolve_type_module_prefix(&segments[..segments.len() - 1], span)?;
+            let module_file_id = module_file_id.ok_or_else(unknown)?;
+            let member = segments[segments.len() - 1];
+            let member_sym = self.interner.get_or_intern(member);
+            self.ensure_free_function_signature(member_sym, Some(module_file_id))?;
+            let key = self
+                .resolve_function_name_local(member_sym, module_file_id)
+                .ok_or_else(unknown)?;
+            let info = self.functions.get(&key).copied().ok_or_else(unknown)?;
+            if info.file_id != module_file_id {
+                return Err(unknown());
+            }
+            self.check_unqualified_visibility("function", member, info.file_id, info.is_pub, span)?;
+            key
+        } else {
+            let name_sym = self.interner.get_or_intern(call_name);
+            let mut key = self.resolve_function_name_local(name_sym, span.file_id);
+            if key.is_none() {
+                self.ensure_free_function_signature(name_sym, Some(span.file_id))?;
+                key = self.resolve_function_name_local(name_sym, span.file_id);
+            }
+            let key = key.ok_or_else(unknown)?;
+            let info = self.functions.get(&key).copied().ok_or_else(unknown)?;
+            self.check_unqualified_visibility(
+                "function",
+                call_name,
+                info.file_id,
+                info.is_pub,
+                span,
+            )?;
+            key
+        };
+
+        let info = self
+            .functions
+            .get(&function_key)
+            .copied()
+            .ok_or_else(unknown)?;
+        Ok((function_key, info))
+    }
+
+    /// Whether the declaration's source return annotation is literally `type`.
+    ///
+    /// `FunctionInfo::return_type` cannot answer this: declaration gathering
+    /// also uses `COMPTIME_TYPE` as the placeholder for a dependent return such
+    /// as `-> T`. Kind-sensitive call paths must therefore consult the original
+    /// source symbol instead of the semantic placeholder.
+    pub(crate) fn function_returns_type(&self, function: &FunctionInfo) -> bool {
+        self.interner.get("type") == Some(function.return_type_sym)
     }
 
     fn validate_deferred_signature_type_name_lengths(
@@ -2337,17 +2422,57 @@ impl<'a> Sema<'a> {
         type_name: String,
         type_params: &[Spur],
         value_params: &[Spur],
+        value_param_type_syms: &[(Spur, Spur)],
         span: Span,
     ) -> CompileResult<()> {
+        self.validate_deferred_type_position(
+            type_name,
+            type_params,
+            value_params,
+            value_param_type_syms,
+            span,
+        )
+        .map(|_| ())
+    }
+
+    /// Validate a source fragment used in type position. The optional result
+    /// is the concrete type when the fragment is independent of the enclosing
+    /// generic parameters; `None` means specialization must finish it.
+    fn validate_deferred_type_position(
+        &mut self,
+        type_name: String,
+        type_params: &[Spur],
+        value_params: &[Spur],
+        value_param_type_syms: &[(Spur, Spur)],
+        span: Span,
+    ) -> CompileResult<Option<Type>> {
         if let Some((element_type, len)) = parse_array_type_syntax(&type_name) {
             if let ArrayLen::Named(name) = &len {
-                let sym = self.interner.get_or_intern(name);
-                if !value_params.contains(&sym) {
+                self.validate_deferred_value_position(
+                    name,
+                    type_params,
+                    value_params,
+                    value_param_type_syms,
+                    None,
+                    None,
+                    true,
+                    span,
+                )?;
+                let depends_on_param = self.type_name_mentions_type_param(name, type_params)
+                    || self.type_name_mentions_value_param(name, value_params);
+                if !depends_on_param {
                     self.resolve_array_length(&len, span, None)?;
                 }
             }
-            return self.validate_deferred_signature_type_name_lengths(
+            self.validate_deferred_type_position(
                 element_type,
+                type_params,
+                value_params,
+                value_param_type_syms,
+                span,
+            )?;
+            return self.resolve_independent_deferred_type(
+                &type_name,
                 type_params,
                 value_params,
                 span,
@@ -2358,37 +2483,483 @@ impl<'a> Sema<'a> {
             .strip_prefix("ptr const ")
             .or_else(|| type_name.strip_prefix("ptr mut "))
         {
-            return self.validate_deferred_signature_type_name_lengths(
+            self.validate_deferred_type_position(
                 pointee.to_string(),
+                type_params,
+                value_params,
+                value_param_type_syms,
+                span,
+            )?;
+            return self.resolve_independent_deferred_type(
+                &type_name,
                 type_params,
                 value_params,
                 span,
             );
         }
 
-        if let Some((_call_name, arg_strs)) = parse_type_call_syntax(&type_name) {
-            for arg in arg_strs {
-                self.validate_deferred_signature_type_name_lengths(
-                    arg,
-                    type_params,
-                    value_params,
+        if let Some((call_name, arg_strs)) = parse_type_call_syntax(&type_name) {
+            let (function_key, function) =
+                self.deferred_comptime_function_info(&call_name, span)?;
+            if !self.function_returns_type(&function) {
+                return Err(CompileError::new(
+                    ErrorKind::ComptimeEvaluationFailed {
+                        reason: format!(
+                            "'{}' is not a type: only a function returning `type` can be applied here",
+                            call_name
+                        ),
+                    },
                     span,
-                )?;
+                ));
             }
-            return Ok(());
+
+            let (callee_types, callee_values) = self.validate_deferred_comptime_call_args(
+                &call_name,
+                function,
+                &arg_strs,
+                type_params,
+                value_params,
+                value_param_type_syms,
+                span,
+            )?;
+            if callee_types.len() + callee_values.len() == arg_strs.len() {
+                return match self.reduce_type_ctor_body(
+                    function_key,
+                    &callee_types,
+                    &callee_values,
+                )? {
+                    Some(ConstValue::Type(ty)) => Ok(Some(ty)),
+                    _ => Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: format!(
+                                "the type constructor '{}' did not reduce to a concrete type",
+                                call_name
+                            ),
+                        },
+                        span,
+                    )),
+                };
+            }
+            return Ok(None);
         }
 
-        // A leaf that is one of this function's comptime type parameters is
-        // exactly what makes the signature deferred; leave it for
-        // specialization. Every other leaf must be a real declaration-time type.
+        // Only a source `comptime T: type` parameter may stand in type
+        // position. A value parameter that happens to share the semantic
+        // `type` placeholder is still a value, and accepting it here would
+        // defer an intrinsically malformed signature forever.
         if let Some(sym) = self.interner.get(&type_name) {
             if type_params.contains(&sym) {
-                return Ok(());
+                return Ok(None);
+            }
+            if value_params.contains(&sym) {
+                return Err(CompileError::new(ErrorKind::UnknownType(type_name), span));
             }
         }
 
         let sym = self.interner.get_or_intern(&type_name);
-        self.resolve_type(sym, span).map(|_| ())
+        self.resolve_type(sym, span).map(Some)
+    }
+
+    fn resolve_independent_deferred_type(
+        &mut self,
+        type_name: &str,
+        type_params: &[Spur],
+        value_params: &[Spur],
+        span: Span,
+    ) -> CompileResult<Option<Type>> {
+        if self.type_name_mentions_type_param(type_name, type_params)
+            || self.type_name_mentions_value_param(type_name, value_params)
+        {
+            return Ok(None);
+        }
+        let sym = self.interner.get_or_intern(type_name);
+        self.resolve_type(sym, span).map(Some)
+    }
+
+    /// Validate and partially bind a nested compile-time call. Argument
+    /// positions follow the callee's source declaration: type parameters walk
+    /// the type grammar, while value parameters are checked against their
+    /// declared type after applying all preceding concrete substitutions.
+    fn validate_deferred_comptime_call_args(
+        &mut self,
+        call_name: &str,
+        function: FunctionInfo,
+        args: &[String],
+        outer_type_params: &[Spur],
+        outer_value_params: &[Spur],
+        outer_value_param_type_syms: &[(Spur, Spur)],
+        span: Span,
+    ) -> CompileResult<(HashMap<Spur, Type>, HashMap<Spur, ConstValue>)> {
+        let params = function.params;
+        let param_names = self.param_arena.names(params).to_vec();
+        let param_types = self.param_arena.types(params).to_vec();
+        let param_comptime = self.param_arena.comptime(params).to_vec();
+        if args.len() != param_names.len()
+            || !(param_names.is_empty() || param_comptime.iter().all(|&flag| flag))
+        {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "compile-time function '{}' expects {} comptime argument(s), but {} were provided",
+                        call_name,
+                        param_names.len(),
+                        args.len()
+                    ),
+                },
+                span,
+            ));
+        }
+
+        let param_comptime_type = self.comptime_type_param_flags(&function);
+        let rir_param_types: Vec<Spur> = self
+            .rir
+            .get_params(function.rir_params_start, function.rir_params_len)
+            .iter()
+            .map(|param| param.ty)
+            .collect();
+        let callee_type_params: Vec<Spur> = param_names
+            .iter()
+            .zip(param_comptime_type.iter())
+            .filter_map(|(name, is_type)| is_type.then_some(*name))
+            .collect();
+        let callee_value_params: Vec<Spur> = param_names
+            .iter()
+            .zip(param_comptime_type.iter())
+            .filter_map(|(name, is_type)| (!is_type).then_some(*name))
+            .collect();
+        let call_display = self.interner.get_or_intern(call_name);
+        let mut callee_types = HashMap::new();
+        let mut callee_values = HashMap::new();
+
+        for (index, arg) in args.iter().enumerate() {
+            if param_comptime_type[index] {
+                if let Some(ty) = self.validate_deferred_type_position(
+                    arg.clone(),
+                    outer_type_params,
+                    outer_value_params,
+                    outer_value_param_type_syms,
+                    span,
+                )? {
+                    callee_types.insert(param_names[index], ty);
+                }
+                continue;
+            }
+
+            let expected = if param_types[index] != Type::COMPTIME_TYPE {
+                Some(param_types[index])
+            } else if let Some(bound) = callee_types.get(&rir_param_types[index]) {
+                Some(*bound)
+            } else if self.deferred_signature_substitutions_are_ready(
+                self.interner.resolve(&rir_param_types[index]),
+                &callee_type_params,
+                &callee_value_params,
+                &callee_types,
+                &callee_values,
+            ) {
+                Some(self.resolve_substituted_param_type(
+                    &function,
+                    index,
+                    param_types[index],
+                    &callee_types,
+                    &callee_values,
+                )?)
+            } else {
+                None
+            };
+
+            let value = self.validate_deferred_value_position(
+                arg,
+                outer_type_params,
+                outer_value_params,
+                outer_value_param_type_syms,
+                expected,
+                Some((call_display, param_names[index])),
+                false,
+                span,
+            )?;
+            if let Some(value) = value {
+                callee_values.insert(param_names[index], value);
+            }
+        }
+
+        Ok((callee_types, callee_values))
+    }
+
+    fn deferred_signature_substitutions_are_ready(
+        &self,
+        type_name: &str,
+        type_params: &[Spur],
+        value_params: &[Spur],
+        type_subst: &HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+    ) -> bool {
+        type_params.iter().all(|name| {
+            type_subst.contains_key(name)
+                || !self.type_name_mentions_type_param(type_name, &[*name])
+        }) && value_params.iter().all(|name| {
+            value_subst.contains_key(name)
+                || !self.type_name_mentions_value_param(type_name, &[*name])
+        })
+    }
+
+    /// Validate one source fragment in compile-time value position. Concrete
+    /// values are returned for partial binding; an enclosing comptime
+    /// parameter is valid but remains `None` until specialization.
+    fn validate_deferred_value_position(
+        &mut self,
+        value_name: &str,
+        type_params: &[Spur],
+        value_params: &[Spur],
+        value_param_type_syms: &[(Spur, Spur)],
+        expected: Option<Type>,
+        contract: Option<(Spur, Spur)>,
+        require_integer: bool,
+        span: Span,
+    ) -> CompileResult<Option<ConstValue>> {
+        let value_name = value_name.trim();
+        if let Some(sym) = self.interner.get(value_name) {
+            if type_params.contains(&sym) {
+                if expected != Some(Type::COMPTIME_TYPE) && (expected.is_some() || require_integer)
+                {
+                    if let Some(expected) = expected {
+                        return Err(CompileError::new(
+                            ErrorKind::TypeMismatch {
+                                expected: expected.safe_name_with_pool(Some(&self.type_pool)),
+                                found: Type::COMPTIME_TYPE
+                                    .safe_name_with_pool(Some(&self.type_pool)),
+                            },
+                            span,
+                        ));
+                    }
+                    return Err(CompileError::new(
+                        ErrorKind::InvalidArrayLength {
+                            reason: format!(
+                                "compile-time type parameter '{}' is a type, not an integer value",
+                                value_name
+                            ),
+                        },
+                        span,
+                    ));
+                }
+                return Ok(None);
+            }
+            if value_params.contains(&sym) {
+                let found = if let Some(type_sym) = value_param_type_syms
+                    .iter()
+                    .find_map(|(name, type_sym)| (*name == sym).then_some(*type_sym))
+                {
+                    let type_name = self.interner.resolve(&type_sym).to_string();
+                    let depends_on_outer_param = self
+                        .type_name_mentions_type_param(&type_name, type_params)
+                        || self.type_name_mentions_value_param(&type_name, value_params);
+                    if depends_on_outer_param {
+                        None
+                    } else {
+                        Some(self.resolve_type(type_sym, span)?)
+                    }
+                } else {
+                    None
+                };
+                self.validate_deferred_value_result(
+                    None,
+                    found,
+                    expected,
+                    contract,
+                    require_integer,
+                    value_name,
+                    span,
+                )?;
+                return Ok(None);
+            }
+        }
+
+        if let Some((call_name, args)) = parse_type_call_syntax(value_name) {
+            let (function_key, function) =
+                self.deferred_comptime_function_info(&call_name, span)?;
+            let param_names = self.param_arena.names(function.params).to_vec();
+            let param_comptime = self.param_arena.comptime(function.params).to_vec();
+            let is_type_function = self.function_returns_type(&function);
+            let eligible = if is_type_function {
+                param_names.is_empty() || param_comptime.iter().all(|&flag| flag)
+            } else {
+                !param_names.is_empty() && param_comptime.iter().all(|&flag| flag)
+            };
+            if !eligible {
+                return Err(CompileError::new(
+                    ErrorKind::ComptimeEvaluationFailed {
+                        reason: format!(
+                            "call '{}' is not a compile-time value; all of its parameters must be comptime",
+                            call_name
+                        ),
+                    },
+                    span,
+                ));
+            }
+
+            let (callee_types, callee_values) = self.validate_deferred_comptime_call_args(
+                &call_name,
+                function,
+                &args,
+                type_params,
+                value_params,
+                value_param_type_syms,
+                span,
+            )?;
+            let fully_bound = callee_types.len() + callee_values.len() == args.len();
+            let concrete = if fully_bound {
+                self.reduce_type_ctor_body(function_key, &callee_types, &callee_values)?
+            } else {
+                None
+            };
+            let found = if is_type_function {
+                Some(Type::COMPTIME_TYPE)
+            } else if function.return_type != Type::COMPTIME_TYPE {
+                Some(function.return_type)
+            } else {
+                let param_comptime_type = self.comptime_type_param_flags(&function);
+                let callee_type_params: Vec<Spur> = param_names
+                    .iter()
+                    .zip(param_comptime_type.iter())
+                    .filter_map(|(name, is_type)| is_type.then_some(*name))
+                    .collect();
+                let callee_value_params: Vec<Spur> = param_names
+                    .iter()
+                    .zip(param_comptime_type.iter())
+                    .filter_map(|(name, is_type)| (!is_type).then_some(*name))
+                    .collect();
+                let return_name = self.interner.resolve(&function.return_type_sym);
+                if self.deferred_signature_substitutions_are_ready(
+                    return_name,
+                    &callee_type_params,
+                    &callee_value_params,
+                    &callee_types,
+                    &callee_values,
+                ) {
+                    Some(self.resolve_substituted_return_type(
+                        &function,
+                        &callee_types,
+                        &callee_values,
+                    )?)
+                } else {
+                    None
+                }
+            };
+            self.validate_deferred_value_result(
+                concrete,
+                found,
+                expected,
+                contract,
+                require_integer,
+                value_name,
+                span,
+            )?;
+            return Ok(concrete);
+        }
+
+        let value =
+            match self.resolve_type_ctor_value_arg("compile-time call", value_name, span, None) {
+                Ok(value) => value,
+                Err(_) if require_integer => {
+                    // This is the outer array-length boundary, not a nested
+                    // comptime-call argument. Preserve its established E0481
+                    // diagnostic for an unknown bare name (`[T; A]`) rather than
+                    // leaking the generic E1200 value-argument diagnostic.
+                    let length = value_name
+                        .parse::<u64>()
+                        .map(ArrayLen::Literal)
+                        .unwrap_or_else(|_| ArrayLen::Named(value_name.to_string()));
+                    ConstValue::Integer(self.resolve_array_length(&length, span, None)? as i128)
+                }
+                Err(error) => return Err(error),
+            };
+        self.validate_deferred_value_result(
+            Some(value),
+            Some(value.get_type()),
+            expected,
+            contract,
+            require_integer,
+            value_name,
+            span,
+        )?;
+        Ok(Some(value))
+    }
+
+    fn validate_deferred_value_result(
+        &self,
+        value: Option<ConstValue>,
+        found: Option<Type>,
+        expected: Option<Type>,
+        contract: Option<(Spur, Spur)>,
+        require_integer: bool,
+        expression: &str,
+        span: Span,
+    ) -> CompileResult<()> {
+        if require_integer {
+            if let Some(value) = value {
+                let Some(integer) = value.as_int_value() else {
+                    return Err(CompileError::new(
+                        ErrorKind::InvalidArrayLength {
+                            reason: format!(
+                                "array length expression '{}' is not an integer",
+                                expression
+                            ),
+                        },
+                        span,
+                    ));
+                };
+                if integer < 0 || u64::try_from(integer).is_err() {
+                    return Err(CompileError::new(
+                        ErrorKind::InvalidArrayLength {
+                            reason: format!(
+                                "array length expression '{}' is outside the valid range",
+                                expression
+                            ),
+                        },
+                        span,
+                    ));
+                }
+            } else if let Some(found) = found
+                && !found.is_integer()
+            {
+                return Err(CompileError::new(
+                    ErrorKind::InvalidArrayLength {
+                        reason: format!(
+                            "array length expression '{}' has non-integer type {}",
+                            expression,
+                            found.safe_name_with_pool(Some(&self.type_pool))
+                        ),
+                    },
+                    span,
+                ));
+            }
+        }
+
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        if let Some(value) = value {
+            let (function_name, param_name) = contract.expect("value contracts name a parameter");
+            return self.validate_comptime_value_for_type(
+                function_name,
+                param_name,
+                value,
+                expected,
+                span,
+            );
+        }
+        if let Some(found) = found
+            && found != expected
+            && !(found.is_integer() && expected.is_integer())
+        {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: expected.safe_name_with_pool(Some(&self.type_pool)),
+                    found: found.safe_name_with_pool(Some(&self.type_pool)),
+                },
+                span,
+            ));
+        }
+        Ok(())
     }
 
     /// Get or create an array type for the given element type and length.
