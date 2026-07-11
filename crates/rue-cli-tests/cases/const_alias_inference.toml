@@ -1,0 +1,161 @@
+# File-level const type aliases and inference (RUE-633 / RUE-638).
+#
+# Two miscompile classes found dogfooding multi-module programs
+# (2026-07-11): (1) a method chain rooted at a file-level const alias
+# (`const Ints = ArrayBuf(i64); Ints.new()`) left every downstream method
+# argument unconstrained, so an integer-literal expression argument
+# defaulted to i32 and was ZERO-extended into the declared 64-bit slot —
+# `push(0 - 1)` stored 4294967295; (2) the inference const tables were
+# bare-name keyed, so same-named consts in sibling files bled into each
+# other (last writer won program-wide), resurfacing (1) even for identical
+# definitions and silently typing one file's code against another file's
+# alias.
+
+[section]
+id = "cli.const_alias_inference"
+name = "Const-alias inference"
+description = "File-level const type aliases constrain method arguments; const tables are by-file (RUE-633, RUE-638)."
+
+[[case]]
+name = "negative_literal_arg_through_const_alias"
+description = "ArrayBuf(i64).push(0 - 1) through a const alias stores -1, not 4294967295 (RUE-633)"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+fn main() -> i32 {
+    let mut b = Ints.new();
+    b.push(0 - 1);
+    let neg: i64 = 0 - 1;
+    @dbg(b.get_or(0, 0));
+    if b.get_or(0, 0) == neg { 42 } else { 1 }
+}
+""" },
+]
+stdout = "-1\n"
+exit_code = 42
+
+[[case]]
+name = "intcast_infers_target_from_method_param"
+description = "@intCast in method-argument position takes its target from the parameter type (was E0709)"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+fn main() -> i32 {
+    let mut b = Ints.new();
+    let x: u32 = 41;
+    b.push(@intCast(x));
+    b.push(0 - 1);
+    @intCast(b.get_or(0, 0) - b.get_or(1, 0))
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "same_named_aliases_in_sibling_files_stay_distinct"
+description = "Same-named const aliases with DIFFERENT element types in sibling modules do not bleed (RUE-638: a.rue's push was constrained against b.rue's u64 instantiation)"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn main() -> i32 {
+    @dbg(a.probe());
+    @dbg(b.other());
+    if a.probe() == 0 - 1 { 42 } else { 1 }
+}
+""" },
+    { path = "a.rue", source = """
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+pub fn probe() -> i64 {
+    let mut b = Ints.new();
+    b.push(0 - 1);
+    b.get_or(0, 0)
+}
+""" },
+    { path = "b.rue", source = """
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(u64);
+pub fn other() -> u64 {
+    let mut b = Ints.new();
+    b.push(9);
+    b.get_or(0, 0)
+}
+""" },
+]
+stdout = "-1\n9\n"
+exit_code = 42
+
+[[case]]
+name = "identical_same_named_aliases_in_sibling_files"
+description = "IDENTICAL same-named aliases in sibling modules each resolve their own instantiation (RUE-638: distinct anon-struct ids; the loser's method sigs went missing)"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn main() -> i32 {
+    if a.probe() == b.probe() { 42 } else { 1 }
+}
+""" },
+    { path = "a.rue", source = """
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+pub fn probe() -> i64 {
+    let mut v = Ints.new();
+    v.push(0 - 7);
+    v.get_or(0, 0)
+}
+""" },
+    { path = "b.rue", source = """
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+pub fn probe() -> i64 {
+    let mut v = Ints.new();
+    v.push(0 - 7);
+    v.get_or(0, 0)
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "module_type_assoc_fn_constrains_result"
+description = "module.Type.assoc_fn() resolves the member type: the result anchors literal operands instead of leaving them to default to i32 (RUE-633 family)"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const store = @import("store.rue");
+fn main() -> i32 {
+    let b = store.Box.new();
+    let v = b.first();
+    if v == 0 - 1 { 42 } else { 1 }
+}
+""" },
+    { path = "store.rue", source = """
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+pub struct Box {
+    vals: Ints,
+
+    fn new() -> Self {
+        let mut vals = Ints.new();
+        vals.push(0 - 1);
+        Self { vals: vals }
+    }
+
+    fn first(borrow self) -> i64 {
+        self.vals.get_or(0, 0)
+    }
+}
+""" },
+]
+exit_code = 42

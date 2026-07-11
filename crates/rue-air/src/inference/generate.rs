@@ -188,10 +188,10 @@ pub struct ConstraintGenerator<'a> {
     /// a const reference infers to its declared type instead of `<error>`
     /// (RUE-142). `None` only in unit tests; production passes the map via
     /// [`Self::with_const_types`].
-    const_types: Option<&'a HashMap<Spur, Type>>,
+    const_types: Option<&'a HashMap<(FileId, Spur), Type>>,
     /// File-level type aliases (`const T = SomeType(...)`) resolved during
     /// declaration gathering. Consulted in type positions.
-    const_type_aliases: Option<&'a HashMap<Spur, Type>>,
+    const_type_aliases: Option<&'a HashMap<(FileId, Spur), Type>>,
     /// Module-binding types (`const utils = @import(...)`): (declaring file,
     /// name) -> module type. Per-file scoped (RUE-113), so `VarRef` consults
     /// this with the reference's own `span.file_id` before `const_types`.
@@ -256,10 +256,10 @@ pub struct ConstraintGenerator<'a> {
     /// naming a `const` (`[i32; K]`) resolves to a concrete length during
     /// constraint generation (RUE-16). `None` only in unit tests; production
     /// passes the map via [`Self::with_const_values`].
-    const_values: Option<&'a HashMap<Spur, i128>>,
+    const_values: Option<&'a HashMap<(FileId, Spur), i128>>,
     /// Function-valued constants: alias name -> callee function name. These
     /// let constraint generation type `alias(...)` as a direct call.
-    const_function_aliases: Option<&'a HashMap<Spur, Spur>>,
+    const_function_aliases: Option<&'a HashMap<(FileId, Spur), Spur>>,
     /// Comptime *value* parameters known for the specialization currently being
     /// analyzed (`comptime n: i32` → `n = 0` for the call `f(0)`). Lets a
     /// `match` on a comptime-known scrutinee prune to its selected arm during
@@ -360,13 +360,16 @@ impl<'a> ConstraintGenerator<'a> {
 
     /// Provide file-level constant types (name -> declared type) for `VarRef`
     /// resolution. See the `const_types` field for details (RUE-142).
-    pub fn with_const_types(mut self, const_types: &'a HashMap<Spur, Type>) -> Self {
+    pub fn with_const_types(mut self, const_types: &'a HashMap<(FileId, Spur), Type>) -> Self {
         self.const_types = Some(const_types);
         self
     }
 
     /// Provide file-level type aliases for type-position resolution.
-    pub fn with_const_type_aliases(mut self, const_type_aliases: &'a HashMap<Spur, Type>) -> Self {
+    pub fn with_const_type_aliases(
+        mut self,
+        const_type_aliases: &'a HashMap<(FileId, Spur), Type>,
+    ) -> Self {
         self.const_type_aliases = Some(const_type_aliases);
         self
     }
@@ -457,7 +460,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// Provide file-level integer constant values (name -> value) so an array
     /// length naming a `const` resolves during constraint generation. See the
     /// `const_values` field (RUE-16).
-    pub fn with_const_values(mut self, const_values: &'a HashMap<Spur, i128>) -> Self {
+    pub fn with_const_values(mut self, const_values: &'a HashMap<(FileId, Spur), i128>) -> Self {
         self.const_values = Some(const_values);
         self
     }
@@ -466,7 +469,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// signature during constraint generation.
     pub fn with_const_function_aliases(
         mut self,
-        const_function_aliases: &'a HashMap<Spur, Spur>,
+        const_function_aliases: &'a HashMap<(FileId, Spur), Spur>,
     ) -> Self {
         self.const_function_aliases = Some(const_function_aliases);
         self
@@ -495,7 +498,7 @@ impl<'a> ConstraintGenerator<'a> {
             ArrayLen::Literal(n) => Some(*n),
             ArrayLen::Named(name) => {
                 let sym = self.interner.get(name)?;
-                let value = *self.const_values?.get(&sym)?;
+                let value = self.unique_const_value(&sym)?;
                 u64::try_from(value).ok()
             }
         }
@@ -521,10 +524,43 @@ impl<'a> ConstraintGenerator<'a> {
                 let value = values
                     .get(&sym)
                     .copied()
-                    .or_else(|| self.const_values.and_then(|m| m.get(&sym).copied()))?;
+                    .or_else(|| self.unique_const_value(&sym))?;
                 u64::try_from(value).ok()
             }
         }
+    }
+
+    /// Bare-name integer-const lookup for the name-string type-resolution
+    /// helpers, which carry no reference file. Returns the value only when
+    /// the name denotes exactly one constant program-wide, so same-named
+    /// constants in sibling files can never bleed into each other (RUE-638);
+    /// an ambiguous name defers to sema's by-file resolution.
+    fn unique_const_value(&self, sym: &Spur) -> Option<i128> {
+        let mut found = None;
+        for ((_, name), value) in self.const_values?.iter() {
+            if name == sym {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(*value);
+            }
+        }
+        found
+    }
+
+    /// Bare-name type-alias lookup with the same unique-name guard as
+    /// [`Self::unique_const_value`] (RUE-638).
+    fn unique_const_type_alias(&self, sym: &Spur) -> Option<Type> {
+        let mut found = None;
+        for ((_, name), ty) in self.const_type_aliases?.iter() {
+            if name == sym {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(*ty);
+            }
+        }
+        found
     }
 
     /// Get the type variables allocated for integer literals.
@@ -859,7 +895,9 @@ impl<'a> ConstraintGenerator<'a> {
                     // @import(...)`): per-file scoped, checked before the
                     // global value-const table (RUE-113).
                     self.type_to_infer(*binding_ty)
-                } else if let Some(const_ty) = self.const_types.and_then(|consts| consts.get(name))
+                } else if let Some(const_ty) = self
+                    .const_types
+                    .and_then(|consts| consts.get(&(span.file_id, *name)))
                 {
                     // File-level constant: its type was resolved during
                     // declaration gathering (i32/bool/unit literals, module
@@ -898,7 +936,7 @@ impl<'a> ConstraintGenerator<'a> {
                         .copied()
                         .or_else(|| {
                             self.const_type_aliases
-                                .and_then(|aliases| aliases.get(ty_sym).copied())
+                                .and_then(|aliases| aliases.get(&(span.file_id, *ty_sym)).copied())
                         })
                         .map(|ty| self.type_to_infer(ty))
                         .or_else(|| self.resolve_type_name(self.interner.resolve(ty_sym)));
@@ -1022,7 +1060,7 @@ impl<'a> ConstraintGenerator<'a> {
             } => {
                 let name = self
                     .const_function_aliases
-                    .and_then(|aliases| aliases.get(name))
+                    .and_then(|aliases| aliases.get(&(span.file_id, *name)))
                     .unwrap_or(name);
                 let args = self.rir.get_call_args(*args_start, *args_len);
                 // `print(s)` / `println(s)` builtin free functions (RUE-1):
@@ -1944,14 +1982,22 @@ impl<'a> ConstraintGenerator<'a> {
                         // Module receiver: `m.CONST` resolves to a module
                         // member value-constant; yield its declared type so
                         // uses like `m.CONST + 1` are anchored (RUE-160).
-                        // The lookup is global by name, never verifying the
-                        // constant belongs to the receiver module's file —
-                        // the same known looseness as member calls (RUE-140).
+                        // Resolved in the receiver module's defining file —
+                        // the by-file const tables (RUE-638) closed the old
+                        // global-by-name looseness (RUE-140).
                         let member_const_ty = match &base_info.ty {
-                            InferType::Concrete(ty) if ty.is_module() => self
-                                .const_types
-                                .and_then(|consts| consts.get(field))
-                                .copied(),
+                            InferType::Concrete(ty) if ty.is_module() => ty
+                                .as_module()
+                                .and_then(|module_id| {
+                                    self.module_file_ids
+                                        .and_then(|ids| ids.get(&module_id))
+                                        .copied()
+                                })
+                                .and_then(|file_id| {
+                                    self.const_types
+                                        .and_then(|consts| consts.get(&(file_id, *field)))
+                                        .copied()
+                                }),
                             _ => None,
                         };
                         match member_const_ty {
@@ -2036,7 +2082,7 @@ impl<'a> ConstraintGenerator<'a> {
                     RepeatCount::Literal(n) => Some(*n),
                     RepeatCount::Named(sym) => self
                         .const_values
-                        .and_then(|cv| cv.get(sym))
+                        .and_then(|cv| cv.get(&(span.file_id, *sym)))
                         .and_then(|v| u64::try_from(*v).ok()),
                 };
                 match resolved {
@@ -2146,6 +2192,39 @@ impl<'a> ConstraintGenerator<'a> {
                     };
                 }
 
+                // `module.Type.assoc_fn(...)`: the receiver is a module
+                // member naming a struct/enum type declared in the module's
+                // file. Route it through the type-qualified path so the
+                // call's arguments and result are constrained — the FieldGet
+                // arm yields a fresh variable for a type member (types are
+                // declarations, not constants), which left integer-literal
+                // operands used with the result to default to i32 and
+                // zero-extend against the callee's real 64-bit value
+                // (RUE-633 family). Skipped when the module name is shadowed
+                // by a runtime binding (`local.field.method()` stays a
+                // value-method chain).
+                if let InstData::FieldGet {
+                    base: module_ref,
+                    field: type_name,
+                } = self.rir.get(*receiver).data
+                    && !matches!(self.rir.get(module_ref).data,
+                        InstData::VarRef { name }
+                            if ctx.locals.contains_key(&name) || ctx.params.contains_key(&name))
+                    && let Some(member_ty) = self
+                        .struct_type_for_module(module_ref, &type_name)
+                        .or_else(|| self.enum_type_for_module(module_ref, &type_name))
+                    && let Some(result) = self.generate_call_on_reduced_type(
+                        member_ty,
+                        *method,
+                        *args_start,
+                        *args_len,
+                        ctx,
+                    )
+                {
+                    self.record_type(inst_ref, result.clone());
+                    return ExprInfo::new(result, span);
+                }
+
                 // Generate type for receiver
                 let receiver_info = self.generate(*receiver, ctx);
                 let args = self.rir.get_call_args(*args_start, *args_len);
@@ -2241,9 +2320,25 @@ impl<'a> ConstraintGenerator<'a> {
                     // defaulted to `i32` and could not satisfy a wider
                     // declared payload type (RUE-599).
                     InferType::Concrete(ty) if *ty == Type::COMPTIME_TYPE => {
+                        // `module.Type.assoc_fn(...)`: the receiver is a
+                        // module member naming a struct/enum type. Resolve it
+                        // in the module's defining file and constrain the
+                        // call like any type-qualified call — leaving it a
+                        // fresh variable let integer-literal operands used
+                        // with the result default to i32 (RUE-633 family).
+                        let module_member_ty = match self.rir.get(*receiver).data {
+                            InstData::FieldGet {
+                                base: module_ref,
+                                field: type_name,
+                            } => self
+                                .struct_type_for_module(module_ref, &type_name)
+                                .or_else(|| self.enum_type_for_module(module_ref, &type_name)),
+                            _ => None,
+                        };
                         if let Some(reduced) = self
                             .inline_ctor_head_types
                             .and_then(|heads| heads.get(receiver).copied())
+                            .or(module_member_ty)
                             && let Some(result) = self.generate_call_on_reduced_type(
                                 reduced,
                                 *method,
@@ -2529,8 +2624,12 @@ impl<'a> ConstraintGenerator<'a> {
         }
 
         // Struct associated function: constrain each argument to the declared
-        // parameter type and yield the return type.
-        if let Some(struct_ty) = self.structs.get(&type_name).copied()
+        // parameter type and yield the return type. Resolved through
+        // `struct_type_for` (not just the global table) so comptime and
+        // file-level const aliases participate — `const Ints = ArrayBuf(i64);
+        // Ints.new()` must yield the concrete instantiation or downstream
+        // method arguments go unconstrained (RUE-633).
+        if let Some(struct_ty) = self.struct_type_for(&type_name, span.file_id)
             && struct_ty.as_struct().is_some()
         {
             if let Some(result) =
@@ -2621,6 +2720,18 @@ impl<'a> ConstraintGenerator<'a> {
             .copied()
             .filter(|ty| ty.as_struct().is_some())
             .or_else(|| {
+                // File-level `const Ints = ArrayBuf(i64);` aliases: without
+                // this, a method chain rooted at the alias (`Ints.new()`)
+                // missed the type-qualified path, the receiver degraded to a
+                // fresh variable, and every later method argument was left
+                // unconstrained — an integer-literal expression argument then
+                // defaulted to i32 and was zero-extended into the declared
+                // 64-bit slot (miscompile, RUE-633).
+                self.const_type_aliases
+                    .and_then(|aliases| aliases.get(&(file_id, *type_name)).copied())
+                    .filter(|ty| ty.as_struct().is_some())
+            })
+            .or_else(|| {
                 self.structs_by_file_name
                     .and_then(|structs| structs.get(&(file_id, *type_name)))
                     .copied()
@@ -2634,6 +2745,14 @@ impl<'a> ConstraintGenerator<'a> {
             .copied()
             .filter(|ty| ty.is_enum())
             .or_else(|| {
+                // File-level const enum aliases, for the same reason as
+                // `struct_type_for` (RUE-633): a construction rooted at the
+                // alias must constrain its payload arguments.
+                self.const_type_aliases
+                    .and_then(|aliases| aliases.get(&(file_id, *type_name)).copied())
+                    .filter(|ty| ty.is_enum())
+            })
+            .or_else(|| {
                 self.enums_by_file_name
                     .and_then(|enums| enums.get(&(file_id, *type_name)))
                     .copied()
@@ -2642,6 +2761,28 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     fn enum_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
+        let file_id = self.module_member_file(module)?;
+        self.enums_by_file_name
+            .and_then(|enums| enums.get(&(file_id, *type_name)))
+            .copied()
+    }
+
+    /// Struct analogue of [`Self::enum_type_for_module`], for
+    /// `module.Type.assoc_fn(...)` calls: without it the receiver degraded to
+    /// a fresh variable, the call's arguments and result went unconstrained,
+    /// and an integer-literal operand later compared against the result
+    /// defaulted to i32 — zero-extended against the callee's real 64-bit
+    /// value at run time (the RUE-633 miscompile family).
+    fn struct_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
+        let file_id = self.module_member_file(module)?;
+        self.structs_by_file_name
+            .and_then(|structs| structs.get(&(file_id, *type_name)))
+            .copied()
+    }
+
+    /// The defining file of `module`'s target, when `module` is a `VarRef`
+    /// naming an imported module binding in the current file.
+    fn module_member_file(&self, module: InstRef) -> Option<FileId> {
         let inst = self.rir.get(module);
         let InstData::VarRef { name } = &inst.data else {
             return None;
@@ -2651,12 +2792,8 @@ impl<'a> ConstraintGenerator<'a> {
             .and_then(|bindings| bindings.get(&(inst.span.file_id, *name)))
             .copied()?;
         let module_id = module_ty.as_module()?;
-        let file_id = self
-            .module_file_ids
+        self.module_file_ids
             .and_then(|module_file_ids| module_file_ids.get(&module_id))
-            .copied()?;
-        self.enums_by_file_name
-            .and_then(|enums| enums.get(&(file_id, *type_name)))
             .copied()
     }
 
@@ -2794,8 +2931,9 @@ impl<'a> ConstraintGenerator<'a> {
                 .comptime_values
                 .and_then(|m| m.get(name).copied())
                 .or_else(|| {
+                    let file_id = self.rir.get(inst).span.file_id;
                     self.const_values
-                        .and_then(|m| m.get(name).copied())
+                        .and_then(|m| m.get(&(file_id, *name)).copied())
                         .map(Integer)
                 }),
             InstData::Neg { operand } => match self.eval_comptime_value(*operand)? {
@@ -3101,10 +3239,7 @@ impl<'a> ConstraintGenerator<'a> {
             if let Some(&enum_ty) = self.enums.get(&name_spur) {
                 return Some(InferType::Concrete(enum_ty));
             }
-            if let Some(&alias_ty) = self
-                .const_type_aliases
-                .and_then(|aliases| aliases.get(&name_spur))
-            {
+            if let Some(alias_ty) = self.unique_const_type_alias(&name_spur) {
                 return Some(InferType::Concrete(alias_ty));
             }
         }
