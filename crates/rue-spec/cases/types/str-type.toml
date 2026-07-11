@@ -341,7 +341,7 @@ preview = "string_trio"
 preview_should_pass = true
 source = """
 fn take(inout s: str) {
-    s = "hi";
+    let _length = s.len();
 }
 fn main() -> i32 {
     let mut s: str = "hello";

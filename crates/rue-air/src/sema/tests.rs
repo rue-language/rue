@@ -378,6 +378,228 @@ mod tests {
     }
 
     #[test]
+    fn inout_param_assignment_is_constrained_and_store_typed_exactly() {
+        // Parameter assignments participate in inference, so a literal takes
+        // the declared integer width instead of defaulting to i32. Sema then
+        // proves the same exact type again at the ParamStore chokepoint.
+        let output = compile_to_air(
+            "fn replace(inout value: i64) { value = 42; } \
+             fn main() -> i32 { let mut value: i64 = 0; replace(inout value); 0 }",
+        )
+        .unwrap();
+        let replace = output
+            .functions
+            .iter()
+            .find(|function| function.name == "replace")
+            .unwrap();
+        let stored_value = replace
+            .air
+            .iter()
+            .find_map(|(_, inst)| match inst.data {
+                AirInstData::ParamStore { value, .. } => Some(value),
+                _ => None,
+            })
+            .expect("replace must contain a ParamStore");
+        assert_eq!(replace.air.get(stored_value).ty, Type::I64);
+
+        // An arbitrary differently-typed RHS used to bypass inference and
+        // reach ParamStore. It must now fail in the frontend.
+        let errors = compile_to_air(
+            "fn replace(inout value: i64) { value = true; } \
+             fn main() -> i32 { let mut value: i64 = 0; replace(inout value); 0 }",
+        )
+        .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            &errors.iter().next().unwrap().kind,
+            ErrorKind::TypeMismatch { expected, found }
+                if expected == "i64" && found == "bool"
+        ));
+
+        // Constraining only mutable parameters preserves the primary target
+        // diagnostic for normal and borrowed bindings; RHS type inference must
+        // not mask these as E0206.
+        let immutable = compile_to_air(
+            "fn replace(value: i64) { value = true; } \
+             fn main() -> i32 { replace(0); 0 }",
+        )
+        .unwrap_err();
+        assert!(matches!(
+            immutable.iter().next().unwrap().kind,
+            ErrorKind::AssignToImmutable(_)
+        ));
+
+        let borrowed = compile_to_air(
+            "fn replace(borrow value: i64) { value = true; } \
+             fn main() -> i32 { let value: i64 = 0; replace(borrow value); 0 }",
+        )
+        .unwrap_err();
+        assert!(matches!(
+            borrowed.iter().next().unwrap().kind,
+            ErrorKind::MutateBorrowedValue { .. }
+        ));
+    }
+
+    #[test]
+    fn inout_fixed_string_assignment_materializes_the_destination_type() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        let output = compile_to_air_with_preview_features(
+            r#"
+                fn replace(inout value: Str(8)) { value = "hi"; }
+                fn main() -> i32 {
+                    let mut value: Str(8) = "hello";
+                    replace(inout value);
+                    0
+                }
+            "#,
+            preview.clone(),
+        )
+        .unwrap();
+        let replace = output
+            .functions
+            .iter()
+            .find(|function| function.name == "replace")
+            .unwrap();
+        let stored_value = replace
+            .air
+            .iter()
+            .find_map(|(_, inst)| match inst.data {
+                AirInstData::ParamStore { value, .. } => Some(value),
+                _ => None,
+            })
+            .expect("replace must contain a ParamStore");
+        assert_eq!(
+            replace
+                .air
+                .get(stored_value)
+                .ty
+                .safe_name_with_pool(Some(&output.type_pool)),
+            "Str(8)"
+        );
+
+        // Never coercion remains legal. The outer Str(8) expectation belongs
+        // to the assignment result and must not leak into @panic's StrBuf
+        // message operand.
+        for rhs in ["@panic()", "@panic(\"boom\")"] {
+            compile_to_air_with_preview_features(
+                &format!(
+                    "fn replace(inout value: Str(8)) {{ value = {rhs}; }} \
+                     fn main() -> i32 {{ \
+                         let mut value: Str(8) = \"hello\"; \
+                         replace(inout value); \
+                         0 \
+                     }}"
+                ),
+                preview.clone(),
+            )
+            .unwrap_or_else(|errors| panic!("{rhs} must coerce from never: {errors}"));
+        }
+
+        compile_to_air_with_preview_features(
+            r#"
+                fn die(message: StrBuf) -> ! { @panic(message) }
+                fn replace(inout value: Str(8)) { value = die("boom"); }
+                fn main() -> i32 {
+                    let mut value: Str(8) = "hello";
+                    replace(inout value);
+                    0
+                }
+            "#,
+            preview.clone(),
+        )
+        .unwrap_or_else(|errors| {
+            panic!("a never-returning call must keep its StrBuf argument context: {errors}")
+        });
+
+        // The same expected-type boundary applies to @assert: its message is
+        // a StrBuf, and the assignment is rejected for the unit result rather
+        // than misdiagnosing the message as Str(8).
+        let assertion = compile_to_air_with_preview_features(
+            r#"
+                fn replace(inout value: Str(8)) { value = @assert(false, "boom"); }
+                fn main() -> i32 {
+                    let mut value: Str(8) = "hello";
+                    replace(inout value);
+                    0
+                }
+            "#,
+            preview.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(assertion.len(), 1);
+        assert!(matches!(
+            &assertion.iter().next().unwrap().kind,
+            ErrorKind::TypeMismatch { expected, found }
+                if expected == "Str(8)" && found == "()"
+        ));
+
+        let mismatch = compile_to_air_with_preview_features(
+            r#"
+                fn replace(inout value: Str(8), other: Str(16)) { value = other; }
+                fn main() -> i32 {
+                    let mut value: Str(8) = "small";
+                    let other: Str(16) = "large";
+                    replace(inout value, other);
+                    0
+                }
+            "#,
+            preview.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(mismatch.len(), 1);
+        assert!(matches!(
+            &mismatch.iter().next().unwrap().kind,
+            ErrorKind::TypeMismatch { expected, found }
+                if expected == "Str(8)" && found == "Str(16)"
+        ));
+
+        // Different physical widths must be rejected at the sema chokepoint,
+        // even though fixed-string inference deliberately defers string
+        // coercion checks. This is the original 3-word-through-2-word hazard.
+        let width_mismatch = compile_to_air_with_preview_features(
+            r#"
+                fn replace(inout value: Str(8), other: StrBuf) { value = other; }
+                fn main() -> i32 {
+                    let mut value: Str(8) = "small";
+                    let other: StrBuf = "growable";
+                    replace(inout value, other);
+                    0
+                }
+            "#,
+            preview.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(width_mismatch.len(), 1);
+        assert!(matches!(
+            &width_mismatch.iter().next().unwrap().kind,
+            ErrorKind::TypeMismatch { expected, found }
+                if expected == "Str(8)" && found == "StrBuf"
+        ));
+
+        let too_long = compile_to_air_with_preview_features(
+            r#"
+                fn replace(inout value: Str(8)) { value = "123456789"; }
+                fn main() -> i32 {
+                    let mut value: Str(8) = "hello";
+                    replace(inout value);
+                    0
+                }
+            "#,
+            preview,
+        )
+        .unwrap_err();
+        assert_eq!(too_long.len(), 1);
+        assert!(matches!(
+            too_long.iter().next().unwrap().kind,
+            ErrorKind::StrFixedCapacityExceeded {
+                capacity: 8,
+                byte_len: 9
+            }
+        ));
+    }
+
+    #[test]
     fn test_multiple_variables() {
         let output = compile_to_air("fn main() -> i32 { let x = 10; let y = 20; x + y }").unwrap();
 

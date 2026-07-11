@@ -94,7 +94,7 @@ name = "static_str_as_inout_is_e0496"
 description = "A static `str` value as an `inout str` operand is E0496 (requires a local buffer)."
 preview = "string_trio"
 source = """
-fn take(inout s: str) { s = "hi"; }
+fn take(inout s: str) { let _length = s.len(); }
 fn main() -> i32 {
     let mut s: str = "hello";
     take(inout s);

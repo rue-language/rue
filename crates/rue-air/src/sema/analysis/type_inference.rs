@@ -127,11 +127,12 @@ impl<'a> Sema<'a> {
         // Convert Type to InferType so arrays are represented structurally.
         let mut param_vars: HashMap<Spur, ParamVarInfo> = params
             .iter()
-            .map(|(name, ty, _mode, _is_comptime)| {
+            .map(|(name, ty, mode, _is_comptime)| {
                 (
                     *name,
                     ParamVarInfo {
                         ty: self.type_to_infer_type(*ty),
+                        is_inout: *mode == RirParamMode::Inout,
                     },
                 )
             })
@@ -159,6 +160,7 @@ impl<'a> Sema<'a> {
                     ConstValue::Integer(_) => {
                         param_vars.entry(*name).or_insert(ParamVarInfo {
                             ty: InferType::Var(cgen.fresh_int_literal_var()),
+                            is_inout: false,
                         });
                         continue;
                     }
@@ -169,6 +171,7 @@ impl<'a> Sema<'a> {
                 };
                 param_vars.entry(*name).or_insert(ParamVarInfo {
                     ty: self.type_to_infer_type(ty),
+                    is_inout: false,
                 });
             }
         }

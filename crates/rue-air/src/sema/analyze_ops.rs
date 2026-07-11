@@ -449,7 +449,7 @@ impl<'a> Sema<'a> {
                 // Capacity-fits legality (ADR-0043 Phase 5, RUE-326): a string
                 // literal materialized as a fixed `Str(N)` must fit — its UTF-8
                 // byte length must be ≤ N — else it is a clean compile error
-                // (E0210). `str` (no capacity) never triggers this.
+                // (E0492). `str` (no capacity) never triggers this.
                 if let Some(capacity) = self.str_fixed_capacity(ty) {
                     let byte_len = string_content.len() as u64;
                     if byte_len > capacity {
@@ -3171,8 +3171,42 @@ impl<'a> Sema<'a> {
                 let abi_slot = param_info.abi_slot;
                 let param_ty = param_info.ty;
 
-                // Analyze the value
-                let value_result = self.analyze_inst(air, value, ctx)?;
+                // A direct fixed-string literal is contextually typed by its
+                // exact destination capacity (spec 3.7:50). Keep the context
+                // deliberately at the literal boundary: applying it to an
+                // arbitrary RHS would leak Str(N) into call/intrinsic operands
+                // (for example the StrBuf message in a never-returning call).
+                // Non-literal values retain their own type and are checked
+                // exactly below.
+                let contextual_fixed_literal = self.is_str_fixed_struct(param_ty)
+                    && matches!(&self.rir.get(value).data, InstData::StringConst(_));
+                let value_result = if contextual_fixed_literal {
+                    let prev_expected = ctx.expected_type.replace(param_ty);
+                    let result = self.analyze_inst(air, value, ctx);
+                    ctx.expected_type = prev_expected;
+                    result?
+                } else {
+                    self.analyze_inst(air, value, ctx)?
+                };
+
+                // ParamStore has no coercion or conversion step: codegen drops
+                // and copies according to the RHS type. Require semantic type
+                // identity before emitting it so equal source/target layout is
+                // a proved invariant, not an assumption. Never/Error retain
+                // their usual recovery coercions and cannot execute a store.
+                if value_result.ty != param_ty
+                    && !value_result.ty.is_never()
+                    && !value_result.ty.is_error()
+                    && !param_ty.is_error()
+                {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: param_ty.safe_name_with_pool(Some(&self.type_pool)),
+                            found: value_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        self.rir.get(value).span,
+                    ));
+                }
 
                 // RUE-387: reassigning an `inout` parameter whose type carries
                 // a linear value would silently drop the caller's live value.

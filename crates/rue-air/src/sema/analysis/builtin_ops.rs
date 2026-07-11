@@ -588,6 +588,14 @@ impl<'a> Sema<'a> {
 
         // For mutation methods, store the result back to the receiver
         if method.receiver_mode == ReceiverMode::ByMutRef {
+            // This is the only ParamStore producer besides whole inout
+            // assignment. The builtin registry requires every ByMutRef method
+            // to return SelfType, so its writeback is representation-identical
+            // to the receiver by construction (RUE-641).
+            debug_assert_eq!(
+                return_ty, receiver.result.ty,
+                "builtin mutation writeback must preserve the receiver type"
+            );
             let storage = receiver.storage.ok_or_else(|| {
                 CompileError::new(ErrorKind::InvalidAssignmentTarget, method_ctx.span)
             })?;
