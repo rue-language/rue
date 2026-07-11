@@ -1,0 +1,6 @@
+// The designated semantic and import root is intentionally not the file that
+// contains the executable entry point. The gate keeps this source first while
+// reversing the two sibling modules that follow it.
+struct RootMarker {
+    value: i32,
+}

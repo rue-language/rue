@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RUE-616: black-box reproducibility contract for programs produced by Rue.
+# RUE-616/RUE-624: black-box reproducibility contract for programs produced by Rue.
 #
 # Compile the same logical project in deliberately different environments and
 # compare the complete native artifacts.  This is intentionally an end-to-end
@@ -77,6 +77,23 @@ assert_fixture_runs() {
     if [ "$status" -ne 78 ] || [ "$actual" != "$expected" ]; then
         printf 'FAIL: reproducibility fixture produced an invalid program\n' >&2
         printf '  exit: %s (expected 78)\n' "$status" >&2
+        printf '  output:\n%s\n' "$actual" >&2
+        return 1
+    fi
+}
+
+assert_semantic_fixture_runs() {
+    local program="$1" actual status expected
+    set +e
+    actual="$("$program" 2>&1)"
+    status=$?
+    set -e
+    expected="$(printf 'left-destructor\n38\n43')"
+
+    if [ "$status" -ne 43 ] || [ "$actual" != "$expected" ]; then
+        printf 'FAIL: semantic-order fixture produced an invalid program\n' >&2
+        printf '  program: %s\n' "$program" >&2
+        printf '  exit: %s (expected 43)\n' "$status" >&2
         printf '  output:\n%s\n' "$actual" >&2
         return 1
     fi
@@ -170,6 +187,106 @@ assert_source_order_independent_ir() {
     done
 }
 
+emit_semantic_order_pair() {
+    local opt="$1" target="$2"
+    shift 2
+    local target_tag="${target//-/_}"
+    local output_a="$root_a/tmp/semantic-order-${target_tag}-o${opt}-a.txt"
+    local output_b="$root_b/tmp/semantic-order-${target_tag}-o${opt}-b.txt"
+
+    # The semantic root remains first, while left/right exchange both source
+    # position and FileId. shared.rue is deliberately discovered through each
+    # nested sibling's root-relative import rather than listed positionally.
+    (
+        umask 022
+        cd "$root_a/project/semantic-order"
+        env \
+            LC_ALL=C \
+            SOURCE_DATE_EPOCH=1 \
+            TMPDIR="$root_a/tmp" \
+            TZ=UTC \
+            "$RUE_BINARY" "-O$opt" -j1 --target "$target" \
+            --source-manifest ../sources.manifest \
+            "$@" \
+            root.rue left/types.rue right/types.rue > "$output_a"
+    )
+    (
+        umask 077
+        env \
+            LC_ALL=C \
+            SOURCE_DATE_EPOCH=2000000000 \
+            TMPDIR="$root_b/tmp" \
+            TZ=Pacific/Honolulu \
+            "$RUE_BINARY" "-O$opt" -j32 --target "$target" \
+            --source-manifest "$root_b/project/sources.manifest" \
+            "$@" \
+            "$root_b/project/semantic-order/./root.rue" \
+            "$root_b/project/semantic-order/right/../right/types.rue" \
+            "$root_b/project/semantic-order/left/./types.rue" > "$output_b"
+    )
+
+    assert_identical \
+        "semantic-order $target -O$opt output" \
+        "$output_a" "$output_b"
+}
+
+assert_semantic_order_symbols() {
+    local output="$1" expected_name
+    for expected_name in \
+        'Payload$left_2ftypes_2erue.__drop' \
+        'Payload$left_2ftypes_2erue.score' \
+        'Payload$right_2ftypes_2erue.__drop' \
+        '__rue_drop_Payload$left_2ftypes_2erue' \
+        '__rue_drop_Payload$right_2ftypes_2erue' \
+        '__rue_drop_Choice$left_2ftypes_2erue' \
+        '__rue_drop_Choice$right_2ftypes_2erue' \
+        '__rue_drop_Clash$left_2ftypes_2erue' \
+        '__rue_drop_Clash$right_2ftypes_2erue'; do
+        if ! grep -Fq "function ${expected_name}:" "$output"; then
+            printf 'FAIL: semantic-order output omitted stable symbol %s\n' \
+                "$expected_name" >&2
+            return 1
+        fi
+    done
+
+    if grep -Eq '(Payload|Choice|Clash)\$([0-9]+|file[0-9]+)' "$output"; then
+        printf 'FAIL: semantic-order output leaked a numeric FileId identity\n' >&2
+        return 1
+    fi
+}
+
+assert_semantic_stage_markers() {
+    local output="$1" marker
+    for marker in \
+        '=== AIR ===' \
+        '=== CFG ===' \
+        '=== Instruction Selection (' \
+        '=== MIR (x86-64-linux) ===' \
+        '=== Liveness Analysis (x86-64-linux) ===' \
+        '=== Register Allocation (x86-64-linux) ===' \
+        '=== Assembly (x86-64-linux) ===' \
+        '=== Stack Frame ('; do
+        if ! grep -Fq "$marker" "$output"; then
+            printf 'FAIL: semantic-order output omitted stage marker %s\n' \
+                "$marker" >&2
+            return 1
+        fi
+    done
+    if ! grep -Fq '.globl Payload$left_2ftypes_2erue.__drop' "$output"; then
+        printf 'FAIL: semantic-order assembly stage emitted no pinned function body\n' >&2
+        return 1
+    fi
+}
+
+assert_cross_target_assembly() {
+    local target="$1" output="$2"
+    if ! grep -Fq "=== Assembly ($target) ===" "$output" ||
+        ! grep -Fq '.globl Payload$left_2ftypes_2erue.__drop' "$output"; then
+        printf 'FAIL: %s assembly output is empty or incomplete\n' "$target" >&2
+        return 1
+    fi
+}
+
 compile_pair() {
     local opt="$1"
     local output_a="$root_a/project/program-left-o$1"
@@ -213,7 +330,82 @@ compile_pair() {
     assert_macos_signature "$output_b"
 }
 
+compile_semantic_order_pair() {
+    local opt="$1"
+    local output_a="$root_a/project/semantic-order/program-forward-o$1"
+    local output_b="$root_b/project/semantic-order/program-reverse-with-long-name-o$1"
+
+    (
+        umask 022
+        cd "$root_a/project/semantic-order"
+        env \
+            LC_ALL=C \
+            SOURCE_DATE_EPOCH=1 \
+            TMPDIR="$root_a/tmp" \
+            TZ=UTC \
+            "$RUE_BINARY" "-O$opt" -j1 \
+            --source-manifest ../sources.manifest \
+            root.rue left/types.rue right/types.rue -o "$output_a"
+    )
+    (
+        umask 077
+        env \
+            LC_ALL=C \
+            SOURCE_DATE_EPOCH=2000000000 \
+            TMPDIR="$root_b/tmp" \
+            TZ=Pacific/Honolulu \
+            "$RUE_BINARY" "-O$opt" -j32 \
+            --source-manifest "$root_b/project/sources.manifest" \
+            "$root_b/project/semantic-order/./root.rue" \
+            "$root_b/project/semantic-order/right/../right/types.rue" \
+            "$root_b/project/semantic-order/left/./types.rue" -o "$output_b"
+    )
+
+    assert_identical "semantic-order native -O$opt program" "$output_a" "$output_b"
+    assert_semantic_fixture_runs "$output_a"
+    assert_semantic_fixture_runs "$output_b"
+    assert_macos_signature "$output_a"
+    assert_macos_signature "$output_b"
+}
+
 assert_relocated_symbol_names
 assert_source_order_independent_ir
+
+# RUE-624: compare every semantic/backend textual stage without filtering or
+# sorting, at both optimization levels. Early tokens/AST/RIR/deps intentionally
+# remain caller/discovery ordered and are therefore outside this equality set.
+semantic_stages=(
+    --emit air
+    --emit cfg
+    --emit lowering
+    --emit mir
+    --emit liveness
+    --emit regalloc
+    --emit asm
+    --emit stackframe
+)
+emit_semantic_order_pair 0 x86-64-linux "${semantic_stages[@]}"
+emit_semantic_order_pair 2 x86-64-linux "${semantic_stages[@]}"
+assert_semantic_order_symbols \
+    "$root_a/tmp/semantic-order-x86_64_linux-o0-a.txt"
+assert_semantic_stage_markers \
+    "$root_a/tmp/semantic-order-x86_64_linux-o0-a.txt"
+assert_semantic_stage_markers \
+    "$root_a/tmp/semantic-order-x86_64_linux-o2-a.txt"
+
+# Foreign-target emission never links, so every CI host can verify the two
+# other supported object-model/codegen paths as exact assembly text.
+for cross_target in aarch64-linux aarch64-macos; do
+    emit_semantic_order_pair 0 "$cross_target" --emit asm
+    emit_semantic_order_pair 2 "$cross_target" --emit asm
+    cross_target_tag="${cross_target//-/_}"
+    assert_cross_target_assembly "$cross_target" \
+        "$root_a/tmp/semantic-order-${cross_target_tag}-o0-a.txt"
+    assert_cross_target_assembly "$cross_target" \
+        "$root_a/tmp/semantic-order-${cross_target_tag}-o2-a.txt"
+done
+
 compile_pair 0
 compile_pair 2
+compile_semantic_order_pair 0
+compile_semantic_order_pair 2

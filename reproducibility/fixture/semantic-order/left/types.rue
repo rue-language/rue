@@ -1,0 +1,41 @@
+// No left/shared.rue exists: both reordered siblings must resolve this import
+// relative to the explicitly designated root. The compiler unit regression
+// separately proves that the root need not have the lowest numeric FileId.
+const shared = @import("shared.rue");
+
+struct Payload {
+    value: i32,
+    text: String,
+
+    fn score(borrow self) -> i32 {
+        shared.bump(self.value)
+    }
+}
+
+drop fn Payload(self) {
+    @dbg("left-destructor");
+    @dbg(self.value);
+}
+
+enum Choice {
+    Empty,
+    Text(String),
+    Many([String; 2]),
+}
+
+// Cross-kind collisions must occupy the same path-qualified glue namespace.
+struct Clash {
+    text: String,
+}
+
+fn left_entry(value: i32) -> i32 {
+    let payload = Payload { value: value, text: "left-value" };
+    payload.score()
+}
+
+fn main() -> i32 {
+    let seed = shared.identity(i32, 38);
+    let result = left_entry(seed);
+    @dbg(result);
+    result
+}

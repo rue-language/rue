@@ -1,0 +1,7 @@
+pub fn bump(value: i32) -> i32 {
+    value + 5
+}
+
+pub fn identity(comptime T: type, value: T) -> T {
+    value
+}
