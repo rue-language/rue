@@ -46,7 +46,8 @@ mod trap;
 use rue_error::{PreviewFeature, PreviewFeatures};
 use rue_oracle::{RunSourceError, TrapKind, run_source_with_preview_features};
 use serde::Deserialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
@@ -111,12 +112,75 @@ enum CliInvocationReason {
     UnsupportedFlag,
 }
 
+impl fmt::Display for CliInvocationReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::MissingSourceArgument => "missing source argument",
+            Self::SourceArgumentMismatch => "source argument mismatch",
+            Self::MissingOptionValue => "missing option value",
+            Self::UnknownPreviewFeature => "unknown preview feature",
+            Self::UnsupportedFlag => "unsupported flag",
+        })
+    }
+}
+
+/// Why a loaded corpus case cannot be judged by the runtime oracle.
+///
+/// Declaration order is the stable, user-visible report order. Keep this
+/// closed: a new exclusion path must name its reason instead of disappearing
+/// into an aggregate catch-all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum IneligibleReason {
+    ExplicitSkip,
+    HostFiltered,
+    PreviewExpectedFailure,
+    ExpectedCompileFailure,
+    CompileOnly,
+    ApplicableKnownBug,
+    StandardInput,
+    CompilerEnvironment,
+    ExternalSourcePath,
+    NoInlineSource,
+    MultipleSourceFiles,
+    CliInvocation(CliInvocationReason),
+    AuxiliaryFiles,
+    GoldenIrOnly,
+    TargetPinned,
+    MissingExecutionExpectation,
+    KnownOracleGap,
+}
+
+impl fmt::Display for IneligibleReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExplicitSkip => f.write_str("explicit skip marker"),
+            Self::HostFiltered => f.write_str("host platform filter"),
+            Self::PreviewExpectedFailure => f.write_str("preview expected failure"),
+            Self::ExpectedCompileFailure => f.write_str("expected compile failure"),
+            Self::CompileOnly => f.write_str("compile-only case"),
+            Self::ApplicableKnownBug => f.write_str("applicable known bug"),
+            Self::StandardInput => f.write_str("standard input required"),
+            Self::CompilerEnvironment => f.write_str("compiler environment"),
+            Self::ExternalSourcePath => f.write_str("external source path"),
+            Self::NoInlineSource => f.write_str("no inline source"),
+            Self::MultipleSourceFiles => f.write_str("multiple source files"),
+            Self::CliInvocation(reason) => write!(f, "CLI invocation ({reason})"),
+            Self::AuxiliaryFiles => f.write_str("auxiliary source files"),
+            Self::GoldenIrOnly => f.write_str("golden IR only"),
+            Self::TargetPinned => f.write_str("target-pinned execution"),
+            Self::MissingExecutionExpectation => f.write_str("missing execution expectation"),
+            Self::KnownOracleGap => f.write_str("known oracle gap"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum CaseOutcome {
     Agree,
     /// The case has an executable shape, but the oracle does not model it yet.
     Unmodeled,
     /// The case does not describe a single concrete execution this harness can drive.
-    Ineligible,
+    Ineligible(IneligibleReason),
     /// An eligible case was rejected by the shared compiler front end.
     FrontendFailure(String),
     /// The oracle ran but disagreed with the expected behavior.
@@ -154,7 +218,7 @@ fn compare_trap_expectation(
 struct Report {
     agree: u32,
     unmodeled: u32,
-    ineligible: u32,
+    ineligible_reasons: BTreeMap<IneligibleReason, u32>,
     frontend_failures: Vec<String>,
     disagreements: Vec<String>,
     /// corpus discovery/read/parse failures — the harness did not check all inputs
@@ -167,7 +231,9 @@ impl Report {
         match outcome {
             CaseOutcome::Agree => self.agree += 1,
             CaseOutcome::Unmodeled => self.unmodeled += 1,
-            CaseOutcome::Ineligible => self.ineligible += 1,
+            CaseOutcome::Ineligible(reason) => {
+                *self.ineligible_reasons.entry(reason).or_default() += 1;
+            }
             CaseOutcome::FrontendFailure(failure) => self.frontend_failures.push(failure),
             CaseOutcome::Disagreement(disagreement) => self.disagreements.push(disagreement),
         }
@@ -175,6 +241,25 @@ impl Report {
 
     fn modeled_eligible_count(&self) -> u32 {
         self.agree + self.frontend_failures.len() as u32 + self.disagreements.len() as u32
+    }
+
+    fn ineligible_count(&self) -> u32 {
+        self.ineligible_reasons.values().sum()
+    }
+
+    fn classified_case_count(&self) -> u32 {
+        self.agree
+            + self.unmodeled
+            + self.ineligible_count()
+            + self.frontend_failures.len() as u32
+            + self.disagreements.len() as u32
+    }
+
+    fn ineligible_breakdown_lines(&self) -> Vec<String> {
+        self.ineligible_reasons
+            .iter()
+            .map(|(reason, count)| format!("    {reason}: {count}"))
+            .collect()
     }
 }
 
@@ -271,15 +356,14 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
 /// on any harness/front-end failure or disagreement. Shared by [`corpus_mode`]
 /// and [`spec_mode`]; `corpus` names which corpus was audited, for the header.
 fn finish_report(report: &Report, corpus: &str) -> ExitCode {
-    let total = report.agree
-        + report.unmodeled
-        + report.ineligible
-        + report.frontend_failures.len() as u32
-        + report.disagreements.len() as u32;
+    let total = report.classified_case_count();
     println!("\n=== rue-oracle-diff: {corpus} corpus classification audit ({total} cases) ===");
     println!("  agree (modeled eligible): {}", report.agree);
     println!("  unmodeled eligible:       {}", report.unmodeled);
-    println!("  ineligible:               {}", report.ineligible);
+    println!("  ineligible:               {}", report.ineligible_count());
+    for line in report.ineligible_breakdown_lines() {
+        println!("{line}");
+    }
     println!("  HARNESS FAILURES: {}", report.harness_failures.len());
     for failure in &report.harness_failures {
         println!("\n  ✗ {failure}");
@@ -371,7 +455,8 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
 /// a single concrete program the oracle can execute and compare: `compile_fail`
 /// (no runtime output), `compile_only` (never executed), golden-IR-only (an IR
 /// dump, not a run), or a shape with no oracle model (stdin, multi-file
-/// `aux_files`). Preview-gated cases run with their declared preview feature.
+/// `aux_files`). Preview-gated cases run with their declared preview feature;
+/// preview cases the real runner explicitly allows to fail remain ineligible.
 /// Cases the oracle simply can't model yet return [`RunSourceError::Unsupported`]
 /// and count as unmodeled. [`RunSourceError::Compile`] for a case that
 /// survived these shape filters is a front-end failure and fails the harness.
@@ -387,24 +472,38 @@ fn check_spec_case_with_known_gap(
     case: &rue_test_runner::Case,
     is_known_gap: bool,
 ) -> CaseOutcome {
-    let golden_only = case.has_golden_ir_assertions() && !case.has_execution_assertions();
-    // A `target`-pinned case's expected exit is target-specific (e.g. it matches
-    // on `@target_arch()`), and a case restricted by `only_on` to other hosts is
-    // built for a target the oracle isn't evaluating for. The oracle interprets a
-    // single source with no `--target` notion, so neither is a program it can be
-    // asked to reproduce — classify both as ineligible, matching the spec
-    // runner's `only_on` exclusion.
-    let target_specific =
-        case.target.is_some() || rue_test_runner::should_skip_for_platform(&case.only_on).is_some();
-    if case.skip
-        || case.compile_fail
-        || case.compile_only
-        || case.stdin.is_some()
-        || !case.aux_files.is_empty()
-        || golden_only
-        || target_specific
-    {
-        return CaseOutcome::Ineligible;
+    // Mirror the real rue-spec wrapper before classifying case shapes. Preview
+    // cases without `preview_should_pass` use xfail semantics there, so they do
+    // not constitute required compiler/oracle agreement here either.
+    if case.skip {
+        return CaseOutcome::Ineligible(IneligibleReason::ExplicitSkip);
+    }
+    if rue_test_runner::should_skip_for_platform(&case.only_on).is_some() {
+        return CaseOutcome::Ineligible(IneligibleReason::HostFiltered);
+    }
+    if case.preview.is_some() && !case.preview_should_pass {
+        return CaseOutcome::Ineligible(IneligibleReason::PreviewExpectedFailure);
+    }
+    if case.compile_fail {
+        return CaseOutcome::Ineligible(IneligibleReason::ExpectedCompileFailure);
+    }
+    if case.compile_only {
+        return CaseOutcome::Ineligible(IneligibleReason::CompileOnly);
+    }
+    if case.stdin.is_some() {
+        return CaseOutcome::Ineligible(IneligibleReason::StandardInput);
+    }
+    if !case.aux_files.is_empty() {
+        return CaseOutcome::Ineligible(IneligibleReason::AuxiliaryFiles);
+    }
+    if case.has_golden_ir_assertions() && !case.has_execution_assertions() {
+        return CaseOutcome::Ineligible(IneligibleReason::GoldenIrOnly);
+    }
+    // A target-pinned case's expected exit is target-specific (for example,
+    // it may branch on `@target_arch()`). The in-process oracle has no target
+    // context, so it cannot reproduce that execution contract.
+    if case.target.is_some() {
+        return CaseOutcome::Ineligible(IneligibleReason::TargetPinned);
     }
 
     // The exit code the compiled binary is expected to produce. A runtime-error
@@ -417,7 +516,7 @@ fn check_spec_case_with_known_gap(
     } else if let Some(code) = case.exit_code {
         code
     } else {
-        return CaseOutcome::Ineligible;
+        return CaseOutcome::Ineligible(IneligibleReason::MissingExecutionExpectation);
     };
 
     let preview_features = spec_preview_features(case);
@@ -470,7 +569,7 @@ fn check_spec_case_with_known_gap(
                     // Preserve the existing policy: a known wrong-but-Ok oracle
                     // result is excluded from the audit as ineligible, rather
                     // than being conflated with Unsupported/unmodeled coverage.
-                    CaseOutcome::Ineligible
+                    CaseOutcome::Ineligible(IneligibleReason::KnownOracleGap)
                 };
             }
 
@@ -537,8 +636,11 @@ const KNOWN_ORACLE_GAPS: &[(&str, &str, &str)] = &[
 fn check_case(path: &Path, case: &Case) -> CaseOutcome {
     // Mirror the real CLI runner's wrapper order: explicit and host-filtered
     // cases never reach invocation parsing or execution.
-    if case.skip || rue_test_runner::should_skip_for_platform(&case.only_on).is_some() {
-        return CaseOutcome::Ineligible;
+    if case.skip {
+        return CaseOutcome::Ineligible(IneligibleReason::ExplicitSkip);
+    }
+    if rue_test_runner::should_skip_for_platform(&case.only_on).is_some() {
+        return CaseOutcome::Ineligible(IneligibleReason::HostFiltered);
     }
 
     let known_bug_applies = case.known_bug.is_some()
@@ -548,25 +650,40 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
                 .iter()
                 .any(|platform| platform == rue_test_runner::get_host_target()));
 
-    // Shapes the harness cannot drive through the single-source oracle.
-    if case.compile_fail
-        || case.compile_only
-        || known_bug_applies
-        || case.stdin.is_some()
-        // The in-process oracle compiles one source string; it cannot reproduce
-        // CLI-only environment-dependent loading such as RUE_STD_PATH. Treat
-        // any declared environment as a shape limitation before compilation.
-        || !case.env.is_empty()
-        // `source_path` names a repository input that the oracle-diff Buck
-        // target does not own; do not silently substitute an inline file.
-        || case.source_path.is_some()
-        || case.files.len() != 1
-    {
-        return CaseOutcome::Ineligible;
+    if case.compile_fail {
+        return CaseOutcome::Ineligible(IneligibleReason::ExpectedCompileFailure);
+    }
+    if case.compile_only {
+        return CaseOutcome::Ineligible(IneligibleReason::CompileOnly);
+    }
+    if known_bug_applies {
+        return CaseOutcome::Ineligible(IneligibleReason::ApplicableKnownBug);
+    }
+    if case.stdin.is_some() {
+        return CaseOutcome::Ineligible(IneligibleReason::StandardInput);
+    }
+    // The in-process oracle compiles one source string; it cannot reproduce
+    // CLI-only environment-dependent loading such as RUE_STD_PATH.
+    if !case.env.is_empty() {
+        return CaseOutcome::Ineligible(IneligibleReason::CompilerEnvironment);
+    }
+    // `source_path` names a repository input that the oracle-diff Buck target
+    // does not own; do not silently substitute an inline file.
+    if case.source_path.is_some() {
+        return CaseOutcome::Ineligible(IneligibleReason::ExternalSourcePath);
+    }
+    if case.files.is_empty() {
+        return CaseOutcome::Ineligible(IneligibleReason::NoInlineSource);
+    }
+    if case.files.len() > 1 {
+        return CaseOutcome::Ineligible(IneligibleReason::MultipleSourceFiles);
     }
 
-    let Ok(preview_features) = corpus_preview_features(case) else {
-        return CaseOutcome::Ineligible;
+    let preview_features = match corpus_preview_features(case) {
+        Ok(features) => features,
+        Err(reason) => {
+            return CaseOutcome::Ineligible(IneligibleReason::CliInvocation(reason));
+        }
     };
     let source = &case.files[0].source;
     let expected_trap =
@@ -898,6 +1015,20 @@ mod tests {
         }
     }
 
+    fn assert_cli_ineligible(case: &Case, expected: IneligibleReason) {
+        assert_eq!(
+            check_case(Path::new("classification.toml"), case),
+            CaseOutcome::Ineligible(expected)
+        );
+    }
+
+    fn assert_spec_ineligible(case: &rue_test_runner::Case, expected: IneligibleReason) {
+        assert_eq!(
+            check_spec_case("test:1", case),
+            CaseOutcome::Ineligible(expected)
+        );
+    }
+
     fn other_known_target() -> String {
         rue_test_runner::KNOWN_TARGETS
             .iter()
@@ -1052,26 +1183,26 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         ));
 
         case.only_on = vec![other_known_target()];
-        assert!(matches!(
+        assert_eq!(
             check_case(Path::new("platform.toml"), &case),
-            CaseOutcome::Ineligible
-        ));
+            CaseOutcome::Ineligible(IneligibleReason::HostFiltered)
+        );
     }
 
     #[test]
     fn known_bug_on_scopes_the_expected_failure() {
         let mut case = corpus_case("fn main() -> i32 { 0 }", false);
         case.known_bug = Some("RUE-test".to_string());
-        assert!(matches!(
+        assert_eq!(
             check_case(Path::new("known-bug.toml"), &case),
-            CaseOutcome::Ineligible
-        ));
+            CaseOutcome::Ineligible(IneligibleReason::ApplicableKnownBug)
+        );
 
         case.known_bug_on = vec![rue_test_runner::get_host_target().to_string()];
-        assert!(matches!(
+        assert_eq!(
             check_case(Path::new("known-bug.toml"), &case),
-            CaseOutcome::Ineligible
-        ));
+            CaseOutcome::Ineligible(IneligibleReason::ApplicableKnownBug)
+        );
 
         case.known_bug_on = vec![other_known_target()];
         assert!(matches!(
@@ -1095,10 +1226,10 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         // Keep the inline source too: this proves the oracle does not silently
         // substitute it for the external source selected by the real runner.
         case.source_path = Some("examples/welcome.rue".to_string());
-        assert!(matches!(
+        assert_eq!(
             check_case(Path::new("source-path.toml"), &case),
-            CaseOutcome::Ineligible
-        ));
+            CaseOutcome::Ineligible(IneligibleReason::ExternalSourcePath)
+        );
     }
 
     #[test]
@@ -1189,9 +1320,140 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     fn typed_cli_invocation_exclusions_remain_ineligible() {
         let mut case = corpus_case("fn main() -> i32 { 0 }", false);
         case.args = Some(vec!["-O2".to_string(), "probe.rue".to_string()]);
-        assert!(matches!(
+        assert_eq!(
             check_case(Path::new("optimization.toml"), &case),
-            CaseOutcome::Ineligible
+            CaseOutcome::Ineligible(IneligibleReason::CliInvocation(
+                CliInvocationReason::UnsupportedFlag
+            ))
+        );
+    }
+
+    #[test]
+    fn cli_ineligibility_reasons_have_runner_ordered_precedence() {
+        let mut case = corpus_case("fn main() -> i32 { 0 }", false);
+        case.skip = true;
+        case.only_on = vec![other_known_target()];
+        case.compile_fail = true;
+        case.compile_only = true;
+        case.known_bug = Some("RUE-test".to_string());
+        case.stdin = Some(String::new());
+        case.env
+            .insert("RUE_STD_PATH".to_string(), "std".to_string());
+        case.source_path = Some("external.rue".to_string());
+        case.args = Some(vec!["-O2".to_string(), "probe.rue".to_string()]);
+
+        assert_cli_ineligible(&case, IneligibleReason::ExplicitSkip);
+        case.skip = false;
+        assert_cli_ineligible(&case, IneligibleReason::HostFiltered);
+        case.only_on.clear();
+        assert_cli_ineligible(&case, IneligibleReason::ExpectedCompileFailure);
+        case.compile_fail = false;
+        assert_cli_ineligible(&case, IneligibleReason::CompileOnly);
+        case.compile_only = false;
+        assert_cli_ineligible(&case, IneligibleReason::ApplicableKnownBug);
+        case.known_bug = None;
+        assert_cli_ineligible(&case, IneligibleReason::StandardInput);
+        case.stdin = None;
+        assert_cli_ineligible(&case, IneligibleReason::CompilerEnvironment);
+        case.env.clear();
+        case.files.clear();
+        assert_cli_ineligible(&case, IneligibleReason::ExternalSourcePath);
+        case.source_path = None;
+        assert_cli_ineligible(&case, IneligibleReason::NoInlineSource);
+        case.files = vec![
+            SourceFile {
+                path: "probe.rue".to_string(),
+                source: "fn main() -> i32 { 0 }".to_string(),
+            },
+            SourceFile {
+                path: "other.rue".to_string(),
+                source: "fn other() -> i32 { 0 }".to_string(),
+            },
+        ];
+        assert_cli_ineligible(&case, IneligibleReason::MultipleSourceFiles);
+        case.files.pop();
+        assert_cli_ineligible(
+            &case,
+            IneligibleReason::CliInvocation(CliInvocationReason::UnsupportedFlag),
+        );
+    }
+
+    #[test]
+    fn spec_ineligibility_reasons_have_runner_ordered_precedence() {
+        let mut case = rue_test_runner::Case {
+            name: "spec precedence".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            skip: true,
+            only_on: vec![other_known_target()],
+            preview: Some("test_infra".to_string()),
+            compile_fail: true,
+            compile_only: true,
+            stdin: Some(String::new()),
+            expected_ast: Some("golden".to_string()),
+            target: Some(rue_test_runner::get_host_target().to_string()),
+            ..Default::default()
+        };
+        case.aux_files
+            .insert("aux.rue".to_string(), "fn aux() {}".to_string());
+
+        assert_spec_ineligible(&case, IneligibleReason::ExplicitSkip);
+        case.skip = false;
+        assert_spec_ineligible(&case, IneligibleReason::HostFiltered);
+        case.only_on.clear();
+        assert_spec_ineligible(&case, IneligibleReason::PreviewExpectedFailure);
+        case.preview_should_pass = true;
+        assert_spec_ineligible(&case, IneligibleReason::ExpectedCompileFailure);
+        case.compile_fail = false;
+        assert_spec_ineligible(&case, IneligibleReason::CompileOnly);
+        case.compile_only = false;
+        assert_spec_ineligible(&case, IneligibleReason::StandardInput);
+        case.stdin = None;
+        assert_spec_ineligible(&case, IneligibleReason::AuxiliaryFiles);
+        case.aux_files.clear();
+        assert_spec_ineligible(&case, IneligibleReason::GoldenIrOnly);
+        case.expected_ast = None;
+        assert_spec_ineligible(&case, IneligibleReason::TargetPinned);
+        case.target = None;
+        assert_spec_ineligible(&case, IneligibleReason::MissingExecutionExpectation);
+    }
+
+    #[test]
+    fn known_oracle_gap_reason_is_live_and_stale_checked() {
+        let mut case = rue_test_runner::Case {
+            name: "known gap probe".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            exit_code: Some(1),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            check_spec_case_with_known_gap("test:1", &case, true),
+            CaseOutcome::Ineligible(IneligibleReason::KnownOracleGap)
+        );
+        assert!(matches!(
+            check_spec_case_with_known_gap("test:1", &case, false),
+            CaseOutcome::Disagreement(_)
+        ));
+
+        case.exit_code = Some(0);
+        let CaseOutcome::Disagreement(message) =
+            check_spec_case_with_known_gap("test:1", &case, true)
+        else {
+            panic!("a stale known-gap entry did not fail");
+        };
+        assert!(message.contains("KNOWN_ORACLE_GAPS entry now AGREES"));
+
+        case.source = "fn main() -> u32 { let value: u32 = @random_u32(); value }".to_string();
+        assert_eq!(
+            check_spec_case_with_known_gap("test:1", &case, true),
+            CaseOutcome::Unmodeled,
+            "a known-gap entry must not absorb a genuine oracle coverage gap"
+        );
+
+        case.source = "fn main() -> i32 { missing_name }".to_string();
+        assert!(matches!(
+            check_spec_case_with_known_gap("test:1", &case, true),
+            CaseOutcome::FrontendFailure(_)
         ));
     }
 
@@ -1407,17 +1669,35 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     }
 
     #[test]
-    fn report_records_each_terminal_case_outcome_once() {
+    fn report_records_each_outcome_and_formats_reasons_deterministically() {
         let mut report = Report::default();
         report.record(CaseOutcome::Agree);
         report.record(CaseOutcome::Unmodeled);
-        report.record(CaseOutcome::Ineligible);
+        report.record(CaseOutcome::Ineligible(IneligibleReason::CliInvocation(
+            CliInvocationReason::UnsupportedFlag,
+        )));
+        report.record(CaseOutcome::Ineligible(
+            IneligibleReason::ExpectedCompileFailure,
+        ));
+        report.record(CaseOutcome::Ineligible(IneligibleReason::HostFiltered));
+        report.record(CaseOutcome::Ineligible(
+            IneligibleReason::ExpectedCompileFailure,
+        ));
         report.record(CaseOutcome::FrontendFailure("frontend".to_string()));
         report.record(CaseOutcome::Disagreement("disagreement".to_string()));
 
         assert_eq!(report.agree, 1);
         assert_eq!(report.unmodeled, 1);
-        assert_eq!(report.ineligible, 1);
+        assert_eq!(report.ineligible_count(), 4);
+        assert_eq!(report.classified_case_count(), 8);
+        assert_eq!(
+            report.ineligible_breakdown_lines(),
+            vec![
+                "    host platform filter: 1",
+                "    expected compile failure: 2",
+                "    CLI invocation (unsupported flag): 1",
+            ]
+        );
         assert_eq!(report.frontend_failures, vec!["frontend".to_string()]);
         assert_eq!(report.disagreements, vec!["disagreement".to_string()]);
     }
@@ -1454,7 +1734,11 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
 
         report.record(check_case(Path::new("compile_fail.toml"), &case));
 
-        assert_eq!(report.ineligible, 1);
+        assert_eq!(report.ineligible_count(), 1);
+        assert_eq!(
+            report.ineligible_breakdown_lines(),
+            vec!["    expected compile failure: 1"]
+        );
         assert_eq!(report.unmodeled, 0);
         assert_eq!(report.modeled_eligible_count(), 0);
         assert!(report.frontend_failures.is_empty());
@@ -1470,7 +1754,11 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
 
         report.record(check_case(Path::new("environment.toml"), &case));
 
-        assert_eq!(report.ineligible, 1);
+        assert_eq!(report.ineligible_count(), 1);
+        assert_eq!(
+            report.ineligible_breakdown_lines(),
+            vec!["    compiler environment: 1"]
+        );
         assert_eq!(report.unmodeled, 0);
         assert!(report.frontend_failures.is_empty());
     }
