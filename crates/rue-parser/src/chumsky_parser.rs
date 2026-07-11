@@ -69,6 +69,11 @@ pub struct PrimitiveTypeSpurs {
     /// Known directive name `copy`. Pre-interned so expression-position
     /// `@copy(...)` can be rejected as a misplaced directive (RUE-403).
     pub copy_directive: Spur,
+    /// The wildcard `_` used as a discarding tuple-variant payload binding
+    /// (`Ok(_)`, `Rect(w, _)`, RUE-601). The lexer emits a dedicated
+    /// `Underscore` token; the payload-binding parser maps it back to this
+    /// symbol, and sema skips extracting/binding any payload named `_`.
+    pub underscore: Spur,
 }
 
 impl PrimitiveTypeSpurs {
@@ -91,6 +96,7 @@ impl PrimitiveTypeSpurs {
             drop_marker: interner.get_or_intern("__drop"),
             allow_directive: interner.get_or_intern("allow"),
             copy_directive: interner.get_or_intern("copy"),
+            underscore: interner.get_or_intern("_"),
         }
     }
 }
@@ -987,8 +993,18 @@ where
     };
 
     // Optional payload bindings for a tuple-variant pattern: `(a, b, ...)`
-    // (RUE-221). At least one binding required inside the parens.
-    let pattern_bindings = ident_parser()
+    // (RUE-221). At least one binding required inside the parens. Each binding
+    // is an identifier or `_` (a discard, RUE-601) — the latter is mapped to the
+    // interned `_` symbol, which sema skips extracting/binding.
+    let wildcard_binding = just(TokenKind::Underscore).map_with(|_, e| {
+        let span = span_from_extra(e);
+        Ident {
+            name: e.state().syms.underscore,
+            span,
+        }
+    });
+    let payload_binding = choice((wildcard_binding, ident_parser()));
+    let pattern_bindings = payload_binding
         .separated_by(just(TokenKind::Comma))
         .at_least(1)
         .allow_trailing()
