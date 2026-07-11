@@ -265,14 +265,41 @@ fn overflow_traps() {
         b
     }");
     assert_eq!(out.exit_code, 101);
-    assert!(out.panic.as_deref() == Some("arithmetic overflow"));
+    assert_eq!(out.panic, Some(TrapKind::ArithmeticOverflow));
 }
 
 #[test]
-fn divide_by_zero_traps() {
+fn divide_and_remainder_by_zero_share_a_trap_kind() {
     let out = run("fn main() -> i32 { let z = 0; 10 / z }");
     assert_eq!(out.exit_code, 101);
-    assert_eq!(out.panic.as_deref(), Some("divide by zero"));
+    assert_eq!(out.panic, Some(TrapKind::DivisionByZero));
+
+    let out = run("fn main() -> i32 { let z = 0; 10 % z }");
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.panic, Some(TrapKind::DivisionByZero));
+}
+
+#[test]
+fn trap_kind_display_spellings_are_stable() {
+    let cases = [
+        (TrapKind::ArithmeticOverflow, "arithmetic overflow"),
+        (TrapKind::DivisionByZero, "division by zero"),
+        (TrapKind::IntegerCastOverflow, "integer cast overflow"),
+        (TrapKind::IndexOutOfBounds, "index out of bounds"),
+        (TrapKind::InvalidUtf8, "invalid UTF-8"),
+        (TrapKind::Unreachable, "reached unreachable"),
+    ];
+
+    for (kind, expected) in cases {
+        assert_eq!(kind.to_string(), expected);
+    }
+}
+
+#[test]
+fn normal_return_101_is_not_a_trap() {
+    let out = run("fn main() -> i32 { 101 }");
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.panic, None);
 }
 
 #[test]
@@ -296,7 +323,7 @@ fn intcast_in_range_and_overflow() {
         y
     }");
     assert_eq!(out.exit_code, 101);
-    assert_eq!(out.panic.as_deref(), Some("integer cast overflow"));
+    assert_eq!(out.panic, Some(TrapKind::IntegerCastOverflow));
 }
 
 #[test]
@@ -417,7 +444,7 @@ fn array_out_of_bounds_traps() {
     }";
     let out = run(src);
     assert_eq!(out.exit_code, 101);
-    assert_eq!(out.panic.as_deref(), Some("index out of bounds"));
+    assert_eq!(out.panic, Some(TrapKind::IndexOutOfBounds));
 }
 
 #[test]
@@ -661,7 +688,7 @@ fn string_byte_index_out_of_bounds_traps() {
     }";
     let out = run(src);
     assert_eq!(out.exit_code, 101);
-    assert_eq!(out.panic.as_deref(), Some("index out of bounds"));
+    assert_eq!(out.panic, Some(TrapKind::IndexOutOfBounds));
 }
 
 #[test]
@@ -707,7 +734,7 @@ fn string_chars_traps_on_raw_invalid_utf8_byte() {
     }";
     let out = run(src);
     assert_eq!(out.exit_code, 101);
-    assert_eq!(out.panic.as_deref(), Some("invalid UTF-8"));
+    assert_eq!(out.panic, Some(TrapKind::InvalidUtf8));
 }
 
 #[test]
