@@ -42,26 +42,42 @@ mod tests {
     }
 
     #[test]
-    fn panic_and_assert_intrinsics_have_unit_air_contracts() {
-        for (name, body) in [
-            ("panic_no_message", "@panic()"),
-            ("panic_with_message", "@panic(\"boom\")"),
-            ("assertion", "@assert(true)"),
-            ("assertion_with_message", "@assert(true, \"ok\")"),
+    fn panic_is_never_and_assert_is_unit_in_air() {
+        // `@panic` diverges: its AIR result type is `!` (never), matching HM
+        // and CFG (RUE-512). `@assert` returns on the success path, so it stays
+        // unit-typed. Both must agree with the inference contract. The message
+        // operand's own type never changes the intrinsic's result type
+        // (StrBuf/String-alias messages, never-typed operands).
+        for (name, body, expected) in [
+            ("panic_no_message", "@panic()", Type::NEVER),
+            ("panic_with_message", "@panic(\"boom\")", Type::NEVER),
+            ("assertion", "@assert(true)", Type::UNIT),
+            (
+                "assertion_with_message",
+                "@assert(true, \"ok\")",
+                Type::UNIT,
+            ),
             (
                 "panic_with_strbuf",
                 "let message: StrBuf = \"boom\"; @panic(message)",
+                Type::NEVER,
             ),
             (
                 "panic_with_string_alias",
                 "let message: String = \"boom\"; @panic(message)",
+                Type::NEVER,
             ),
             (
                 "assertion_with_strbuf",
                 "let message: StrBuf = \"ok\"; @assert(true, message)",
+                Type::UNIT,
             ),
-            ("never assertion condition", "@assert(diverge())"),
-            ("never panic message", "@panic(diverge())"),
+            (
+                "never assertion condition",
+                "@assert(diverge())",
+                Type::UNIT,
+            ),
+            ("never panic message", "@panic(diverge())", Type::NEVER),
         ] {
             let source = format!(
                 "fn diverge() -> ! {{ loop {{}} }} fn probe() {{ {body} }} fn main() -> i32 {{ probe(); 0 }}"
@@ -81,16 +97,23 @@ mod tests {
                 .collect();
             assert_eq!(
                 intrinsic_types,
-                vec![Type::UNIT],
+                vec![expected],
                 "{name} intrinsic result must agree with HM"
             );
-            assert!(
-                function
-                    .air
-                    .iter()
-                    .any(|(_, inst)| matches!(inst.data, AirInstData::Ret(_))),
-                "a unit-valued trailing intrinsic still needs an implicit return"
-            );
+            // A unit-valued trailing `@assert` still needs an implicit return; a
+            // never-valued trailing `@panic` diverges, so no return is synthesized.
+            let has_ret = function
+                .air
+                .iter()
+                .any(|(_, inst)| matches!(inst.data, AirInstData::Ret(_)));
+            if expected == Type::UNIT {
+                assert!(has_ret, "{name}: a unit trailing intrinsic needs a return");
+            } else {
+                assert!(
+                    !has_ret,
+                    "{name}: a diverging trailing intrinsic must not synthesize a return"
+                );
+            }
         }
     }
 

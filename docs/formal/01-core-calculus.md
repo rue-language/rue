@@ -637,13 +637,14 @@ and an infinite `loop { e }` — one whose body **syntactically contains no
 `break` targeting it**, the same purely syntactic classification the prose
 (`4.8:21`) and the compiler use; reachability of a `break` that is present is
 not consulted. (Surface `continue` elaborates to the loop's back-edge and is
-likewise never-typed; it is not a distinct core form. `@panic(...)` is **not**
-a never form — it elaborates to an ordinary call of type `unit`, matching
-`3.4:2`, which lists only these control-transfer forms, and the compiler's HM,
-AIR, and CFG contracts, which all type a `@panic` expression at `unit`; its
-*dynamics* are the `↯user` trap of §6.12. Whether `@panic` should instead be
-`!`-typed is the open RUE-512 design question — only this typing paragraph
-would change, not the dynamics.)
+likewise never-typed; it is not a distinct core form. `@panic(...)` **is** a
+never form — it elaborates to a diverging call of type `!`, matching `3.4:2`
+(which lists it among the control-transfer forms) and the compiler's HM, AIR,
+and CFG contracts, which all type a `@panic` expression at `!`; its *dynamics*
+are the `↯user` trap of §6.12. This resolves the former RUE-512 question in
+favour of `!`-typing: `@panic` participates in never-coercion (Sub-Never)
+exactly like `return`, so it may inhabit any value context. `@assert` is **not**
+a never form — it returns on the success path and is typed `unit`.)
 
 ```
   Γ;Σ;Λ ⊢ e ⇒ T_ret ⊣ _        T_ret = the enclosing function's declared return type
@@ -1379,12 +1380,13 @@ observable output, and abandons the configuration:
   @panic(v_msg)  →  ↯user                    -- after emitting "panic: v_msg" to the observable output
 ```
 
-Statically `@panic(…)` is an ordinary `unit`-typed call (§5.7); dynamically it
-never yields that unit — `↯user` is lifted past every context by
+Statically `@panic(…)` is a diverging `!`-typed call (§5.7); dynamically it
+yields no value at all — `↯user` is lifted past every context by
 (Panic-Lift). Verified against the compiler: a `@panic` prints its message and
 exits 101, indistinguishable from the four machine traps at the process
-boundary. (The RUE-512 question — whether `@panic` should be `!`-typed —
-touches only the §5.7 typing; this equation is unaffected.) The top-level
+boundary. (The RUE-512 typing question is settled at §5.7 in favour of `!`; this
+dynamic equation is unchanged — `!`-typing only sharpens the static side,
+letting `@panic` inhabit any value context via never-coercion.) The top-level
 result is fixed by running `main`:
 
 ```

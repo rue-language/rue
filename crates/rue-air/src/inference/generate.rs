@@ -1235,13 +1235,22 @@ impl<'a> ConstraintGenerator<'a> {
                     // Return type is inferred from context - create a fresh type variable
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
-                } else if intrinsic_name == "panic" || intrinsic_name == "assert" {
-                    // Both abort intrinsics are ordinary unit expressions in the
-                    // surface type system. `@panic` never returns at runtime, but
-                    // it is deliberately not a never-typed control-transfer form
-                    // (spec 3.4:2; formal core §5.7). Keep these names explicit
-                    // instead of relying on the generic unit fallback so HM and
-                    // semantic analysis cannot drift apart again.
+                } else if intrinsic_name == "panic" {
+                    // `@panic` diverges: it aborts the process and never returns,
+                    // so its expression type is `!` (never), a control-transfer
+                    // form that participates in never coercion (spec 3.4:2,
+                    // 4.13:5b; formal core §5.7; RUE-512). Keeping it explicit
+                    // here — rather than leaning on the generic unit fallback —
+                    // stops HM and semantic analysis from drifting apart.
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::NEVER)
+                } else if intrinsic_name == "assert" {
+                    // `@assert` is NOT never-typed: on the success path it returns
+                    // and evaluates to `()`. It only aborts when the condition is
+                    // false, so its static type is unit on both paths (spec
+                    // 4.13:5b). Keep it explicit so HM and sema stay in lockstep.
                     for arg_ref in args.iter() {
                         self.generate(*arg_ref, ctx);
                     }
@@ -3171,8 +3180,15 @@ mod tests {
     }
 
     #[test]
-    fn panic_and_assert_intrinsics_have_explicit_unit_results() {
-        for (name, has_arg) in [("panic", false), ("panic", true), ("assert", true)] {
+    fn panic_is_never_and_assert_is_unit_in_hm() {
+        // `@panic` diverges (type `!`); `@assert` returns on the success path
+        // (type `()`). Pin both explicit HM contracts, and verify each still
+        // visits its operand (RUE-512).
+        for (name, has_arg, expected) in [
+            ("panic", false, Type::NEVER),
+            ("panic", true, Type::NEVER),
+            ("assert", true, Type::UNIT),
+        ] {
             let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
             let functions = HashMap::new();
             let structs = HashMap::new();
@@ -3206,7 +3222,12 @@ mod tests {
             let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
             let info = cgen.generate(intrinsic, &mut ctx);
-            assert_eq!(info.ty, InferType::Concrete(Type::UNIT));
+            assert_eq!(
+                info.ty,
+                InferType::Concrete(expected),
+                "@{} HM result contract",
+                interner.resolve(&name)
+            );
             if let Some(arg) = arg_refs.first() {
                 assert_eq!(
                     cgen.expr_types().get(arg),

@@ -64,6 +64,68 @@ exit_code = 101
 stdout = "1\n"
 runtime_error_contains = ["panic: stop"]
 
+# ── @panic in value positions (never coercion, RUE-512) ──────────────────────
+
+# @panic is `!`-typed, so it coerces into a typed `if`/`else` arm. When that arm
+# is taken it aborts; side effects before the branch are still observable.
+[[case]]
+name = "panic_in_if_else_arm_taken_aborts"
+description = "@panic in a taken else arm coerces to i32, runs prior side effects, then aborts."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(9);
+    let x: i32 = if false { 1 } else { @panic("boom") };
+    x
+}
+""" }]
+exit_code = 101
+stdout = "9\n"
+runtime_error_contains = ["panic: boom"]
+
+# The same coercion when the panic arm is NOT taken: the value path yields 7 and
+# the program exits normally, proving never-coercion does not disturb runtime.
+[[case]]
+name = "panic_in_if_else_arm_untaken_yields_value"
+description = "When the @panic arm is not taken, the if yields its value and exits normally."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = if true { 7 } else { @panic("unreached") };
+    x
+}
+""" }]
+exit_code = 7
+stdout = ""
+
+# @panic in a typed match arm: the non-panic arm still produces its value.
+[[case]]
+name = "panic_in_match_arm_yields_value"
+description = "@panic in a match arm coerces; the taken non-panic arm produces a value."
+files = [{ path = "main.rue", source = """
+fn classify(n: i32) -> i32 {
+    let r: i32 = match n {
+        0 => 100,
+        _ => @panic("nonzero"),
+    };
+    r
+}
+fn main() -> i32 { classify(0) }
+""" }]
+exit_code = 100
+stdout = ""
+
+# @panic as the bare tail of an i32-returning function: `!` coerces to the
+# declared return type, no explicit `return` needed.
+[[case]]
+name = "panic_as_function_tail_aborts"
+description = "@panic as a bare function tail coerces to the return type and aborts."
+files = [{ path = "main.rue", source = """
+fn dead() -> i32 { @panic("tail") }
+fn main() -> i32 { dead() }
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: tail"]
+
 # ── @assert ──────────────────────────────────────────────────────────────────
 
 # @assert(false): aborts with "assertion failed".
