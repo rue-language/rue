@@ -6717,7 +6717,7 @@ impl<'a> Sema<'a> {
             }),
 
             InstData::TypeIntrinsic { name, type_arg } => {
-                self.analyze_type_intrinsic(air, *name, *type_arg, inst.span)
+                self.analyze_type_intrinsic(air, *name, *type_arg, inst.span, ctx)
             }
 
             InstData::OffsetOf { type_arg, field } => {
@@ -6734,16 +6734,21 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Analyze a type intrinsic (@size_of, @align_of).
+    /// Analyze a type intrinsic (@size_of, @align_of, @require_droppable,
+    /// @require_trivially_droppable). Resolves the type argument through the
+    /// current analysis context so a type parameter (`T` in a monomorphized
+    /// generic method body, e.g. `ArrayBuf(T)::get`) binds to its concrete
+    /// element type via `ctx.comptime_type_vars` (RUE-651).
     fn analyze_type_intrinsic(
         &mut self,
         air: &mut Air,
         name: Spur,
         type_arg: Spur,
         span: Span,
+        ctx: &AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let intrinsic_name = self.interner.resolve(&name).to_string();
-        let ty = self.resolve_type(type_arg, span)?;
+        let ty = self.resolve_type_with_ctx(type_arg, span, ctx)?;
 
         // `@require_droppable(T)` is the owning-container well-formedness gate
         // (RUE-388): it has no runtime value and evaluates to unit. It is
@@ -6753,6 +6758,24 @@ impl<'a> Sema<'a> {
         // linear/destructor rejection instead of falling to E0700.
         if intrinsic_name == "require_droppable" {
             self.check_require_droppable(ty, span)?;
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Const(0),
+                ty: Type::UNIT,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+        }
+
+        // `@require_trivially_droppable(T)` is the by-copy-read gate (RUE-651).
+        // Unlike `@require_droppable`, this one normally *does* reach runtime
+        // analysis: it lives in `ArrayBuf(T)`'s `get`/`get_or` method bodies, and
+        // demand-driven analysis (ADR-0045) monomorphizes those bodies with the
+        // concrete element type only when a program actually calls a by-copy read.
+        // If that `T` has drop glue, reading it by copy would alias its owned
+        // resources (double-free), so reject it (E0711) and point the caller at
+        // `pop`. It has no runtime value and evaluates to unit.
+        if intrinsic_name == "require_trivially_droppable" {
+            self.check_trivially_droppable(ty, span)?;
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Const(0),
                 ty: Type::UNIT,

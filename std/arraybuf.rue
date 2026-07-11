@@ -51,11 +51,16 @@
 //     READING A NON-COPY ELEMENT — use `pop`, not `get` (RUE-651). `pop`/`pop_or`
 //     MOVE the element out (they retire the slot, so there is exactly one owner)
 //     and are sound for any `T`. `get`/`get_or` return the element *by copy*
-//     (`@ptr_read`): for a `Copy` `T` that is fine, but for a NON-COPY `T` the
-//     copy ALIASES the element's owned buffer — both the copy and the still-live
-//     slot would run drop glue, a double-free (masked today only by the no-op
-//     bump allocator). Until borrow-returning reads exist (RUE-651), treat
-//     `get`/`get_or` as Copy-element-only.
+//     (`@ptr_read`): for a trivially-droppable `T` that is fine, but for a `T`
+//     with drop glue the copy would ALIAS the element's owned buffer — both the
+//     copy and the still-live slot would run drop glue, a double-free. `get`/
+//     `get_or` therefore GATE on their element type: calling either with a
+//     drop-glue `T` is a compile error (E0711, via `@require_trivially_droppable`
+//     in their bodies) that directs you to `pop`. This is exactly Swift's rule
+//     that a non-copyable element cannot use a by-value `get` subscript. Storing,
+//     pushing, popping, and dropping a drop-glue element stay legal (RUE-646) —
+//     only the by-copy *read* is gated. Lifting that to borrow-returning reads
+//     (a projection/yield accessor, Hylo-style) is the RUE-651 follow-up.
 //   * Multi-slot aggregate element types (e.g. a two-field struct) work as long
 //     as they are trivially droppable: every aggregate is laid out
 //     ascending-in-address and `@ptr_read`/`@ptr_write` walk slots upward from
@@ -132,6 +137,14 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // element's owned buffer (double-free — RUE-651); read owned elements
         // with `pop`.
         fn get(borrow self, i: u64) -> option.Option(T) {
+            // By-copy reads are sound only for a trivially-droppable `T`
+            // (RUE-651): reading a drop-glue element out by `@ptr_read` while the
+            // slot stays live would alias its owned buffer and double-free at
+            // scope exit. This gate fires only when a program actually calls
+            // `get` (demand-driven analysis, ADR-0045); storing/pushing/popping a
+            // drop-glue element stays legal (RUE-646). Read owned elements out
+            // with `pop`, which moves the element (one owner).
+            @require_trivially_droppable(T);
             let O = option.Option(T);
             if i < self.len {
                 O.Some(checked { @ptr_read(@ptr_offset(self.buf, i)) })
@@ -145,6 +158,10 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // `Option`. COPY-ELEMENT-ONLY: aliases an owned element's buffer for a
         // non-Copy `T` (double-free — RUE-651); read owned elements with `pop`.
         fn get_or(borrow self, i: u64, default: T) -> T {
+            // Trivially-droppable `T` only, same reason as `get` (RUE-651): a
+            // by-copy read of a drop-glue element would alias its owned buffer
+            // (double-free). Read owned elements out with `pop_or` instead.
+            @require_trivially_droppable(T);
             if i < self.len {
                 checked { @ptr_read(@ptr_offset(self.buf, i)) }
             } else {

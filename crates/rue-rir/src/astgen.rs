@@ -14,7 +14,12 @@ use lasso::{Key, Spur, ThreadedRodeo};
 /// `linear` element (RUE-388). It takes the element type as its sole argument
 /// and evaluates to unit during comptime type-constructor reduction, so it must
 /// be lowered as a `TypeIntrinsic` (like `@size_of`), not an expression call.
-const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of", "require_droppable"];
+const TYPE_INTRINSICS: &[&str] = &[
+    "size_of",
+    "align_of",
+    "require_droppable",
+    "require_trivially_droppable",
+];
 use rue_parser::ast::{ConstDecl, DropFn};
 use rue_parser::{
     ArgMode, ArrayLength, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl,

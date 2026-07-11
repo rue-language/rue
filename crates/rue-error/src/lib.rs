@@ -336,6 +336,7 @@ impl ErrorCode {
     pub const AMBIGUOUS_MODULE: Self = Self(708);
     pub const CANNOT_INFER_CAST_TARGET: Self = Self(709);
     pub const CANNOT_INFER_POINTEE_TYPE: Self = Self(710);
+    pub const CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE: Self = Self(711);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -1317,6 +1318,18 @@ pub enum ErrorKind {
         "`@require_droppable` requires a trivially-droppable type, but `{ty}` is `linear` — an owning growable container (e.g. `ArrayBuf`) cannot yet track element linearity, so the element would be leaked (RUE-388)"
     )]
     ContainerElementIsLinear { ty: String },
+    /// A by-copy element read (`ArrayBuf(T)::get`/`get_or`) was attempted on an
+    /// element type that owns resources — one with drop glue (a destructor, or a
+    /// field/payload that has one). Copying such an element by `@ptr_read` leaves
+    /// the copy and the still-live slot both pointing at the same owned buffer, so
+    /// both run drop glue at scope exit: a double-free (RUE-651). The read is
+    /// rejected; the element must be *moved* out with `pop`/`pop_or` instead (one
+    /// owner) until borrow-returning reads exist. Mirrors Swift's rule that a
+    /// non-copyable element cannot use a by-value `get` subscript.
+    #[error(
+        "cannot read an element of type `{ty}` by copy: it owns resources (has drop glue), so a by-copy read would alias the owned value and double-free it at scope exit — move it out with `pop`/`pop_or` instead (RUE-651)"
+    )]
+    ContainerElementNotTriviallyDroppable { ty: String },
     /// Inout argument is not an lvalue (variable, field, or array element)
     #[error("inout argument must be an lvalue (variable, field, or array element)")]
     InoutNonLvalue,
@@ -1710,6 +1723,9 @@ impl ErrorKind {
             ErrorKind::IntrinsicTypeMismatch(_) => ErrorCode::INTRINSIC_TYPE_MISMATCH,
             ErrorKind::CannotInferCastTarget(_) => ErrorCode::CANNOT_INFER_CAST_TARGET,
             ErrorKind::CannotInferPointeeType(_) => ErrorCode::CANNOT_INFER_POINTEE_TYPE,
+            ErrorKind::ContainerElementNotTriviallyDroppable { .. } => {
+                ErrorCode::CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE
+            }
             ErrorKind::ImportRequiresStringLiteral => ErrorCode::IMPORT_REQUIRES_STRING_LITERAL,
             ErrorKind::ModuleNotFound { .. } => ErrorCode::MODULE_NOT_FOUND,
             ErrorKind::AmbiguousModule { .. } => ErrorCode::AMBIGUOUS_MODULE,
