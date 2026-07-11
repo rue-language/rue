@@ -1220,12 +1220,13 @@ impl Sema<'_> {
             InstData::FieldGet { .. } => Ok(env.const_module_members.get(&inst_ref).copied()),
 
             // Type intrinsic in comptime position. `@require_droppable(T)` is the
-            // owning-container well-formedness gate (RUE-388): std's `ArrayBuf(T)`
-            // calls it in its `-> type` constructor body so that instantiating
-            // the container with an element type it cannot yet correctly own —
-            // one that is `linear` or carries a destructor — is rejected at
-            // instantiation time (E0499 / E0498) rather than silently leaking the
-            // element's `drop fn`. It reduces to unit so the surrounding block
+            // owning-container well-formedness gate (RUE-388/RUE-646): std's
+            // `ArrayBuf(T)` calls it in its `-> type` constructor body so that
+            // instantiating the container with an element type it cannot yet
+            // correctly own — one that is `linear` — is rejected at instantiation
+            // time (E0499). Droppable-but-non-linear elements are accepted: the
+            // container runs each live element's drop glue before freeing its
+            // buffer (RUE-646). It reduces to unit so the surrounding block
             // body still yields the `struct { .. }` tail. `@size_of`/`@align_of`
             // are not comptime-foldable here and stay non-evaluable.
             InstData::TypeIntrinsic { name, type_arg } => {
@@ -1395,21 +1396,24 @@ impl Sema<'_> {
     /// containers (RUE-388, Steve's 2026-07-09 ruling).
     ///
     /// A source-level owning container such as `std/arraybuf.rue`'s `ArrayBuf(T)`
-    /// owns a heap buffer of `T` and drops it wholesale in its `drop fn` at scope
-    /// exit; it does **not** yet run per-element drop glue, nor track element
-    /// linearity. So an element type that is `linear` (must be consumed) or that
-    /// carries a destructor / drop glue would be silently leaked when the buffer
-    /// is freed. Until container/element multiplicity propagation is designed
-    /// (its own future ADR — deliberately out of scope here), the container gates
-    /// its element type through this check and rejects those two classes:
+    /// owns a heap buffer of `T`. It runs each live element's drop glue in
+    /// ascending index order before freeing the buffer (Rust's `Vec<T>` drop
+    /// discipline, RUE-646), so droppable-but-non-linear elements — nested
+    /// `ArrayBuf`, `ArrayBuf(StrBuf)`, lists of `drop fn` structs — are legal.
+    /// It does **not** yet track element linearity, so a `linear` element (which
+    /// must be consumed exactly once, not merely dropped) would be leaked; this
+    /// gate rejects only that class:
     ///
     /// - `linear` (transitively — infectious linearity, spec 3.8:57): E0499.
-    /// - carries a destructor / drop glue (transitively): E0498.
     ///
-    /// Linearity takes precedence in the message: a linear type is the stronger
-    /// "must be consumed" property. A trivially-droppable element (primitives,
-    /// pointers, `Copy` structs of them) passes.
+    /// Until container/element multiplicity propagation is designed (its own
+    /// future ADR — deliberately out of scope here), linear elements stay
+    /// rejected. A droppable element (primitives, pointers, `Copy` structs,
+    /// destructor-bearing structs, nested containers) passes.
     pub(crate) fn check_require_droppable(&self, ty: Type, span: Span) -> CompileResult<()> {
+        // Linear element types stay rejected (E0499): a linear value must be
+        // consumed exactly once and a container cannot run the consuming
+        // discharge on drop — that is the deferred RUE-649 work.
         if self.type_carries_linear(ty) {
             return Err(CompileError::new(
                 ErrorKind::ContainerElementIsLinear {
@@ -1418,53 +1422,12 @@ impl Sema<'_> {
                 span,
             ));
         }
-        if self.type_needs_drop_gate(ty) {
-            return Err(CompileError::new(
-                ErrorKind::ContainerElementHasDestructor {
-                    ty: self.format_type_name(ty),
-                },
-                span,
-            ));
-        }
+        // Droppable-but-non-linear element types are now ACCEPTED (RUE-646,
+        // Steve's 2026-07-11 ruling): the container runs each live element's
+        // drop glue before freeing its buffer, exactly as Rust's `Vec<T>`
+        // does. The old E0498 rejection is gone; `ArrayBuf(ArrayBuf(i64))`,
+        // `ArrayBuf(StrBuf)`, and lists of `drop fn` structs are legal.
         Ok(())
-    }
-
-    /// Whether dropping `ty` requires running any drop glue — a destructor
-    /// (`drop fn`) on the type itself or, transitively, on a field / array
-    /// element / enum-variant payload. Mirrors `rue-cfg`'s `type_needs_drop`
-    /// (the drop-glue authority at CFG-build time), replicated here because that
-    /// method lives in a different crate; the two must agree so the
-    /// `@require_droppable` gate rejects exactly the element types whose drop
-    /// glue the container would otherwise silently skip (RUE-388). Linearity is
-    /// checked separately by [`Sema::type_carries_linear`].
-    fn type_needs_drop_gate(&self, ty: Type) -> bool {
-        match ty.kind() {
-            TypeKind::Struct(struct_id) => {
-                let struct_def = self.type_pool.struct_def(struct_id);
-                if struct_def.destructor.is_some() {
-                    return true;
-                }
-                let field_types: Vec<Type> = struct_def.fields.iter().map(|f| f.ty).collect();
-                field_types
-                    .iter()
-                    .any(|&fty| self.type_needs_drop_gate(fty))
-            }
-            TypeKind::Enum(enum_id) => {
-                let enum_def = self.type_pool.enum_def(enum_id);
-                let payloads: Vec<Type> = enum_def
-                    .variant_payloads
-                    .iter()
-                    .flatten()
-                    .copied()
-                    .collect();
-                payloads.iter().any(|&pty| self.type_needs_drop_gate(pty))
-            }
-            TypeKind::Array(array_id) => {
-                let (element_type, _length) = self.type_pool.array_def(array_id);
-                self.type_needs_drop_gate(element_type)
-            }
-            _ => false,
-        }
     }
 
     /// Reduce a call to a comptime-evaluable function to its resulting value,

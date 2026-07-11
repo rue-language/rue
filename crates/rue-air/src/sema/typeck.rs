@@ -72,17 +72,13 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Point a container well-formedness rejection (E0498/E0499, RUE-388) at
+    /// Point a container well-formedness rejection (E0499, RUE-388/RUE-646) at
     /// the user's type-constructor application. The gate raises inside the
     /// constructor's own body (`@require_droppable(T)` in std source), so
     /// without this label the user's file never appears in the diagnostic
     /// (RUE-610). Other reduction errors already carry their own spans.
     pub(crate) fn label_ctor_instantiation_site(err: CompileError, span: Span) -> CompileError {
-        if matches!(
-            err.kind,
-            ErrorKind::ContainerElementHasDestructor { .. }
-                | ErrorKind::ContainerElementIsLinear { .. }
-        ) {
+        if matches!(err.kind, ErrorKind::ContainerElementIsLinear { .. }) {
             err.with_label("required by the type-constructor application here", span)
         } else {
             err
