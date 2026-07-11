@@ -11,6 +11,15 @@ use super::Sema;
 use crate::path_norm::normalize_module_path;
 
 impl<'a> Sema<'a> {
+    /// Set the designated semantic root module.
+    ///
+    /// FileIds are diagnostic handles, not semantic ranks. Multi-source
+    /// callers provide the root explicitly so permuting otherwise arbitrary
+    /// FileId assignments cannot change root-relative import behavior.
+    pub fn set_root_file_id(&mut self, root_file_id: FileId) {
+        self.root_file_id = Some(root_file_id);
+    }
+
     /// Set file paths for module resolution in multi-file compilation.
     ///
     /// This maps FileIds to their corresponding source file paths,

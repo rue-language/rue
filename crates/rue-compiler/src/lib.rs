@@ -27,6 +27,7 @@
 
 mod diagnostic;
 mod drop_glue;
+mod semantic_order;
 mod unit;
 
 pub use unit::CompilationUnit;
@@ -788,11 +789,15 @@ fn build_functions_and_cfgs(
     let drop_glue_functions = drop_glue::synthesize_drop_glue(&type_pool);
 
     // Combine user functions with drop glue, filtering out comptime-only functions.
-    let all_functions: Vec<_> = functions
+    let mut all_functions: Vec<_> = functions
         .into_iter()
         .filter(|f| f.air.return_type() != Type::COMPTIME_TYPE)
         .chain(drop_glue_functions)
         .collect();
+    // Function order controls indexed Rayon collection, object-file order,
+    // and final linker layout. Machine symbols are the stable semantic
+    // identity shared by user, specialized, destructor, and glue functions.
+    all_functions.sort_by(|left, right| left.name.cmp(&right.name));
 
     let _span = info_span!("cfg_construction").entered();
 
@@ -1020,7 +1025,36 @@ pub fn compile_frontend_from_ast_with_file_paths_and_symbol_paths_and_target(
     file_paths: std::collections::HashMap<FileId, String>,
     symbol_paths: std::collections::HashMap<FileId, String>,
 ) -> MultiErrorResult<CompileState> {
-    // AST to RIR (untyped IR)
+    let root_file_id = semantic_order::legacy_root_file_id(&ast, &file_paths);
+    compile_frontend_from_ast_with_source_metadata_and_target(
+        ast,
+        interner,
+        opt_level,
+        preview_features,
+        target,
+        root_file_id,
+        file_paths,
+        symbol_paths,
+    )
+}
+
+/// Compile an already-parsed program with complete multi-file source metadata.
+///
+/// Unlike the compatibility wrappers above, this entry point receives the
+/// designated semantic root explicitly. FileIds are arbitrary diagnostic
+/// handles; their numeric order must not affect import fallback, semantic
+/// allocation, or generated artifacts.
+pub fn compile_frontend_from_ast_with_source_metadata_and_target(
+    ast: Ast,
+    interner: ThreadedRodeo,
+    opt_level: OptLevel,
+    preview_features: &PreviewFeatures,
+    target: Target,
+    root_file_id: FileId,
+    file_paths: std::collections::HashMap<FileId, String>,
+    symbol_paths: std::collections::HashMap<FileId, String>,
+) -> MultiErrorResult<CompileState> {
+    // Preserve the caller-visible AST/RIR order for inspection and --emit rir.
     let (rir, interner) = {
         let _span = info_span!("astgen").entered();
         let astgen = AstGen::new(&ast, &interner);
@@ -1029,10 +1063,22 @@ pub fn compile_frontend_from_ast_with_file_paths_and_symbol_paths_and_target(
         (rir, interner)
     };
 
+    // Sema allocation order is a machine-level input: it controls nominal and
+    // composite type IDs, destructor/drop-glue traversal, string IDs, and
+    // object layout. Lower a private logical-path-ordered RIR without changing
+    // the observable AST/RIR above (RUE-624).
+    let semantic_ast = semantic_order::for_sema(&ast, &file_paths, &symbol_paths, root_file_id);
+    let semantic_rir = {
+        let _span = info_span!("semantic_astgen").entered();
+        AstGen::new(&semantic_ast, &interner).generate()
+    };
+
     // Semantic analysis (RIR to AIR) - this now collects multiple errors
     let sema_output = {
         let _span = info_span!("sema").entered();
-        let mut sema = Sema::new_for_target(&rir, &interner, preview_features.clone(), target);
+        let mut sema =
+            Sema::new_for_target(&semantic_rir, &interner, preview_features.clone(), target);
+        sema.set_root_file_id(root_file_id);
         sema.set_file_paths(file_paths);
         sema.set_symbol_paths(symbol_paths);
         let output = sema.analyze_all()?;
@@ -1117,7 +1163,8 @@ pub fn configure_thread_pool(jobs: usize) {
 ///
 /// # Arguments
 ///
-/// * `sources` - Slice of source files to compile
+/// * `sources` - Slice of source files to compile. The first entry is the
+///   designated root for root-relative import fallback.
 /// * `options` - Compilation options (target, linker, optimization level, etc.)
 ///
 /// # Returns
@@ -1153,6 +1200,7 @@ pub fn compile_multi_file_with_options(
 /// relocation-stable identities used in generated symbols.
 ///
 /// This is the driver-facing variant of [`compile_multi_file_with_options`].
+/// As in that function, `sources[0]` is the designated semantic root.
 /// Physical [`SourceFile::path`] values continue to control diagnostics and
 /// module resolution; `symbol_paths` only qualify otherwise-colliding generated
 /// names.

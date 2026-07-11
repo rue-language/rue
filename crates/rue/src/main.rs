@@ -2037,12 +2037,13 @@ fn handle_emit_multi_file(
             .iter()
             .map(|s| (s.file_id, s.path.to_string()))
             .collect();
-        let state = match rue_compiler::compile_frontend_from_ast_with_file_paths_and_symbol_paths_and_target(
+        let state = match rue_compiler::compile_frontend_from_ast_with_source_metadata_and_target(
             merged.ast,
             merged.interner,
             options.opt_level,
             &options.preview_features,
             options.target,
+            sources[0].file_id,
             file_paths,
             symbol_paths.clone(),
         ) {

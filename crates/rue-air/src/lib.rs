@@ -35,6 +35,7 @@ pub use intern_pool::{
 };
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};
+pub use path_norm::normalize_module_path;
 pub use sema::{
     AnalyzedFunction, ConstValue, DirResolution, FunctionInfo, GatherOutput, MethodInfo,
     ModulePath, ParamSlotModes, Sema, SemaOutput, import_candidate_groups,

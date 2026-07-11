@@ -17,10 +17,17 @@ impl<'a> Sema<'a> {
         };
         let importer_dir = self.get_source_path(span).map(&dir_of);
         let root_dir = self
-            .file_paths
-            .iter()
-            .min_by_key(|(id, _)| id.index())
-            .map(|(_, p)| dir_of(p));
+            .root_file_id
+            .and_then(|root_file_id| self.file_paths.get(&root_file_id))
+            // Preserve the historical fallback for direct Sema embedders that
+            // have not supplied explicit root metadata yet.
+            .or_else(|| {
+                self.file_paths
+                    .iter()
+                    .min_by_key(|(id, _)| id.index())
+                    .map(|(_, path)| path)
+            })
+            .map(|path| dir_of(path));
         let mut base_dirs: Vec<String> = Vec::new();
         if let Some(d) = importer_dir {
             base_dirs.push(d);

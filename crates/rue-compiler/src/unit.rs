@@ -67,6 +67,8 @@ pub struct CompilationUnit<'src> {
     // === Source ===
     /// Source files being compiled.
     sources: Vec<SourceFile<'src>>,
+    /// Designated semantic root (the first source), independent of FileId rank.
+    root_file_id: FileId,
 
     // === Phase 1: Parsing ===
     /// Merged AST containing all items (populated by `parse()`).
@@ -102,9 +104,14 @@ impl<'src> CompilationUnit<'src> {
     ///
     /// # Arguments
     ///
-    /// * `sources` - Source files to compile
+    /// * `sources` - Source files to compile. The first entry is the designated
+    ///   root for root-relative import fallback.
     /// * `options` - Compilation options (target, optimization, etc.)
     pub fn new(sources: Vec<SourceFile<'src>>, options: CompileOptions) -> Self {
+        let root_file_id = sources
+            .first()
+            .map(|source| source.file_id)
+            .unwrap_or(FileId::DEFAULT);
         let file_paths: HashMap<FileId, String> = sources
             .iter()
             .map(|s| (s.file_id, s.path.to_string()))
@@ -114,6 +121,7 @@ impl<'src> CompilationUnit<'src> {
         Self {
             options,
             sources,
+            root_file_id,
             merged_ast: None,
             interner: None,
             file_paths,
@@ -278,18 +286,35 @@ impl<'src> CompilationUnit<'src> {
     ///
     /// Panics if called before [`lower()`](Self::lower).
     pub fn analyze(&mut self) -> MultiErrorResult<()> {
-        let rir = self.rir.as_ref().expect("analyze() called before lower()");
+        self.rir.as_ref().expect("analyze() called before lower()");
+        let ast = self
+            .merged_ast
+            .as_ref()
+            .expect("analyze() called before parse()");
         let interner = self.interner.as_ref().expect("interner not initialized");
+
+        // Keep `self.rir` in positional order for the public phase accessor,
+        // while sema consumes a private logical-path-ordered lowering. This
+        // makes allocation and artifact layout canonical without changing the
+        // caller-visible AST/RIR contract (RUE-624).
+        let semantic_ast = crate::semantic_order::for_sema(
+            ast,
+            &self.file_paths,
+            &self.symbol_paths,
+            self.root_file_id,
+        );
+        let semantic_rir = AstGen::new(&semantic_ast, interner).generate();
 
         // Semantic analysis
         let sema_output = {
             let _span = info_span!("sema").entered();
             let mut sema = Sema::new_for_target(
-                rir,
+                &semantic_rir,
                 interner,
                 self.options.preview_features.clone(),
                 self.options.target,
             );
+            sema.set_root_file_id(self.root_file_id);
             sema.set_file_paths(self.file_paths.clone());
             sema.set_symbol_paths(self.symbol_paths.clone());
             let output = sema.analyze_all()?;
@@ -531,8 +556,10 @@ impl<'src> CompilationUnit<'src> {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
-    use crate::FileId;
+    use crate::{FileId, RirPrinter};
 
     fn make_sources(source: &str) -> Vec<SourceFile<'_>> {
         vec![SourceFile::new("<test>", source, FileId::new(1))]
@@ -645,6 +672,216 @@ mod tests {
 
         assert_eq!(unit.warnings().len(), 1);
         assert!(unit.warnings()[0].to_string().contains("unused"));
+    }
+
+    #[derive(Debug)]
+    struct ReproFingerprint {
+        type_symbols: Vec<String>,
+        function_names: Vec<String>,
+        strings: Vec<String>,
+        observable_rir: String,
+        textual_frontend: String,
+        artifact: Vec<u8>,
+    }
+
+    fn compile_repro_fingerprint(
+        physical_root: &str,
+        root_id: FileId,
+        left_id: FileId,
+        right_id: FileId,
+        shared_id: FileId,
+        reverse_siblings: bool,
+    ) -> ReproFingerprint {
+        let main_path = format!("{physical_root}/main.rue");
+        let left_path = format!("{physical_root}/left/types.rue");
+        let right_path = format!("{physical_root}/right/types.rue");
+        let shared_path = format!("{physical_root}/shared.rue");
+        let mut sources = vec![
+            SourceFile::new(
+                &main_path,
+                r#"fn identity(comptime T: type, value: T) -> T { value }
+                    fn main() -> i32 {
+                        let left = @import("left/types.rue");
+                        let right = @import("right/types.rue");
+                        left.entry(identity(i32, 10)) + right.entry(identity(i32, 20))
+                    }"#,
+                root_id,
+            ),
+            SourceFile::new(
+                &left_path,
+                r#"const shared = @import("shared.rue");
+                    pub struct Payload {
+                        value: i32,
+                        text: String,
+                        fn score(borrow self) -> i32 { self.value + 1 }
+                    }
+                    drop fn Payload(self) { @dbg(self.value); }
+                    pub enum Choice { Empty, Text(String), Many([String; 2]) }
+                    pub fn entry(value: i32) -> i32 {
+                        let payload = Payload { value: value, text: "left-value" };
+                        shared.bump(payload.score())
+                    }"#,
+                left_id,
+            ),
+            SourceFile::new(
+                &right_path,
+                r#"const shared = @import("shared.rue");
+                    pub struct Payload {
+                        value: i32,
+                        extra: i32,
+                        text: String,
+                        fn score(borrow self) -> i32 { self.value + self.extra }
+                    }
+                    drop fn Payload(self) { @dbg(self.extra); }
+                    pub enum Choice { Empty, Text(String), Many([String; 3]) }
+                    pub fn entry(value: i32) -> i32 {
+                        let payload = Payload { value: value, extra: 2, text: "right-value" };
+                        shared.bump(payload.score())
+                    }"#,
+                right_id,
+            ),
+            SourceFile::new(
+                &shared_path,
+                "pub fn bump(value: i32) -> i32 { value + 5 }",
+                shared_id,
+            ),
+        ];
+        if reverse_siblings {
+            sources.swap(1, 2);
+        }
+
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        unit.set_symbol_paths(std::collections::HashMap::from([
+            (root_id, "main.rue".to_string()),
+            (left_id, "left/types.rue".to_string()),
+            (right_id, "right/types.rue".to_string()),
+            (shared_id, "shared.rue".to_string()),
+        ]));
+        unit.run_frontend().expect("frontend should compile");
+
+        let pool = unit.type_pool();
+        let mut type_symbols = Vec::new();
+        type_symbols.extend(
+            pool.all_struct_ids()
+                .into_iter()
+                .map(|id| format!("struct:{}", pool.struct_symbol_name(id))),
+        );
+        type_symbols.extend(
+            pool.all_enum_ids()
+                .into_iter()
+                .map(|id| format!("enum:{}", pool.enum_symbol_name(id))),
+        );
+
+        let function_names = unit
+            .functions()
+            .iter()
+            .map(|function| function.analyzed.name.clone())
+            .collect();
+        let observable_rir = RirPrinter::new(unit.rir(), unit.interner()).to_string();
+        let mut textual_frontend = String::new();
+        for function in unit.functions() {
+            writeln!(
+                &mut textual_frontend,
+                "function {}:",
+                function.analyzed.name
+            )
+            .unwrap();
+            writeln!(
+                &mut textual_frontend,
+                "{}",
+                function.analyzed.air.display_with_interner(unit.interner())
+            )
+            .unwrap();
+            writeln!(
+                &mut textual_frontend,
+                "{}",
+                function.cfg.display_with_interner(unit.interner())
+            )
+            .unwrap();
+        }
+        let strings = unit.strings().to_vec();
+        let artifact = unit.compile().expect("backend should compile").elf;
+
+        ReproFingerprint {
+            type_symbols,
+            function_names,
+            strings,
+            observable_rir,
+            textual_frontend,
+            artifact,
+        }
+    }
+
+    #[test]
+    fn test_semantic_and_native_output_ignore_sibling_order_and_file_ids() {
+        let forward = compile_repro_fingerprint(
+            "/tmp/rue-short-root",
+            FileId::new(1),
+            FileId::new(2),
+            FileId::new(3),
+            FileId::new(4),
+            false,
+        );
+        let reversed = compile_repro_fingerprint(
+            "/tmp/a-deliberately-much-longer-relocated-rue-root",
+            FileId::new(100),
+            FileId::new(42),
+            FileId::new(7),
+            FileId::new(55),
+            true,
+        );
+
+        assert_eq!(forward.type_symbols, reversed.type_symbols);
+        assert_eq!(forward.function_names, reversed.function_names);
+        assert_eq!(forward.strings, reversed.strings);
+        assert_eq!(forward.textual_frontend, reversed.textual_frontend);
+        assert_ne!(
+            forward.observable_rir, reversed.observable_rir,
+            "caller-facing RIR should retain positional source order"
+        );
+        let forward_left = forward
+            .observable_rir
+            .find("left-value")
+            .expect("forward RIR should contain the left literal");
+        let forward_right = forward
+            .observable_rir
+            .find("right-value")
+            .expect("forward RIR should contain the right literal");
+        let reversed_left = reversed
+            .observable_rir
+            .find("left-value")
+            .expect("reversed RIR should contain the left literal");
+        let reversed_right = reversed
+            .observable_rir
+            .find("right-value")
+            .expect("reversed RIR should contain the right literal");
+        assert!(forward_left < forward_right);
+        assert!(reversed_right < reversed_left);
+        assert!(forward.function_names.is_sorted());
+        assert!(forward.strings.is_sorted());
+        for expected_name in [
+            "Payload$left_2ftypes_2erue.score",
+            "Payload$right_2ftypes_2erue.score",
+            "Payload$left_2ftypes_2erue.__drop",
+            "Payload$right_2ftypes_2erue.__drop",
+            "__rue_drop_Choice$left_2ftypes_2erue",
+            "__rue_drop_Choice$right_2ftypes_2erue",
+        ] {
+            assert!(
+                forward
+                    .function_names
+                    .iter()
+                    .any(|name| name == expected_name),
+                "missing non-vacuity symbol {expected_name}"
+            );
+        }
+        assert_eq!(forward.strings, ["left-value", "right-value"]);
+        assert!(
+            forward.artifact == reversed.artifact,
+            "complete native artifacts differ ({} versus {} bytes)",
+            forward.artifact.len(),
+            reversed.artifact.len()
+        );
     }
 
     #[test]
