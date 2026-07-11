@@ -1,0 +1,94 @@
+// An arena-backed binary search tree — dogfood program for the milestone
+// (RUE-226).
+//
+// Recursive structures in Rue are spelled with indices into an arena rather
+// than owning pointers, so this deliberately stresses: multi-slot aggregate
+// elements in an ArrayBuf (the node struct), a user struct named through a
+// const alias as a member type (RUE-603 surface), sentinel-index linking,
+// borrow methods that allocate their own scratch collection (an explicit
+// traversal stack), and the get/set copy-out/copy-in mutation pattern.
+//
+// The deterministic, checkable output is the in-order sum of the inserted
+// keys (42).
+const std = @import("std");
+
+struct Node {
+    val: i64,
+    left: u64,   // 0 = none (slot 0 is a sentinel)
+    right: u64,
+}
+const Nodes = std.arraybuf.ArrayBuf(Node);
+const Stack = std.arraybuf.ArrayBuf(u64);
+
+struct Tree {
+    nodes: Nodes,
+
+    fn new() -> Self {
+        let mut nodes = Nodes.new();
+        nodes.push(Node { val: 0, left: 0, right: 0 });  // sentinel slot 0
+        Self { nodes: nodes }
+    }
+
+    fn insert(inout self, v: i64) {
+        let idx = self.nodes.len();
+        self.nodes.push(Node { val: v, left: 0, right: 0 });
+        if idx == 1 {
+            return;  // first real node is the root
+        }
+        let mut cur: u64 = 1;
+        loop {
+            let node = self.nodes.get_or(cur, Node { val: 0, left: 0, right: 0 });
+            if v < node.val {
+                if node.left == 0 {
+                    self.nodes.set(cur, Node { val: node.val, left: idx, right: node.right });
+                    return;
+                }
+                cur = node.left;
+            } else {
+                if node.right == 0 {
+                    self.nodes.set(cur, Node { val: node.val, left: node.left, right: idx });
+                    return;
+                }
+                cur = node.right;
+            }
+        }
+    }
+
+    // Iterative in-order traversal with an explicit index stack; returns the
+    // sum of all keys.
+    fn sum(borrow self) -> i64 {
+        let mut stack = Stack.new();
+        let mut total: i64 = 0;
+        let mut cur: u64 = 1;
+        if self.nodes.len() < 2 {
+            return 0;
+        }
+        loop {
+            loop {
+                if cur == 0 { break; }
+                stack.push(cur);
+                let node = self.nodes.get_or(cur, Node { val: 0, left: 0, right: 0 });
+                cur = node.left;
+            }
+            let top = stack.pop_or(0);
+            if top == 0 { break; }
+            let node = self.nodes.get_or(top, Node { val: 0, left: 0, right: 0 });
+            total = total + node.val;
+            cur = node.right;
+        }
+        total
+    }
+}
+
+fn main() -> i32 {
+    let mut t = Tree.new();
+    t.insert(8);
+    t.insert(3);
+    t.insert(10);
+    t.insert(1);
+    t.insert(6);
+    t.insert(14);
+    let s = t.sum();
+    println(@to_string(s));
+    if s == 42 { 0 } else { 1 }
+}

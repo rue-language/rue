@@ -1,0 +1,118 @@
+// A tiny bytecode stack machine — dogfood program for the milestone (RUE-226).
+//
+// Deliberately stresses: growable ArrayBuf state owned by a struct across a
+// whole run (code and operand stack), inout methods driving inout methods on
+// collection fields, an enum step result matched in the interpreter loop,
+// u64/i64 mixing with @intCast for jump targets, and hand-assembled control
+// flow (a countdown loop with a conditional jump).
+//
+// The assembled program computes sum(1..=10) via a countdown loop; the
+// deterministic, checkable output is the printed result (55).
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+// opcodes: 0=push imm, 1=add, 2=sub, 3=dup, 4=halt, 5=jz, 6=jmp, 7=swap, 8=over
+enum Step {
+    Running,
+    Halted(i64),
+}
+
+struct VM {
+    code: Ints,
+    stack: Ints,
+    pc: u64,
+
+    fn new() -> Self {
+        Self { code: Ints.new(), stack: Ints.new(), pc: 0 }
+    }
+
+    fn emit(inout self, word: i64) {
+        self.code.push(word);
+    }
+
+    // Fetch the immediate operand following the current opcode.
+    fn imm(inout self) -> i64 {
+        let v = self.code.get_or(self.pc, 0);
+        self.pc = self.pc + 1;
+        v
+    }
+
+    fn step(inout self) -> Step {
+        let op = self.code.get_or(self.pc, 4);
+        self.pc = self.pc + 1;
+        if op == 0 {
+            let v = self.imm();
+            self.stack.push(v);
+            Step.Running
+        } else if op == 1 {
+            let b = self.stack.pop_or(0);
+            let a = self.stack.pop_or(0);
+            self.stack.push(a + b);
+            Step.Running
+        } else if op == 2 {
+            let b = self.stack.pop_or(0);
+            let a = self.stack.pop_or(0);
+            self.stack.push(a - b);
+            Step.Running
+        } else if op == 3 {
+            let n = self.stack.len();
+            let top = self.stack.get_or(n - 1, 0);
+            self.stack.push(top);
+            Step.Running
+        } else if op == 5 {
+            let target = self.imm();
+            let cond = self.stack.pop_or(1);
+            if cond == 0 {
+                self.pc = @intCast(target);
+            }
+            Step.Running
+        } else if op == 6 {
+            let target = self.imm();
+            self.pc = @intCast(target);
+            Step.Running
+        } else if op == 7 {
+            let b = self.stack.pop_or(0);
+            let a = self.stack.pop_or(0);
+            self.stack.push(b);
+            self.stack.push(a);
+            Step.Running
+        } else if op == 8 {
+            let n = self.stack.len();
+            let second = self.stack.get_or(n - 2, 0);
+            self.stack.push(second);
+            Step.Running
+        } else {
+            Step.Halted(self.stack.pop_or(0))
+        }
+    }
+
+    fn run(inout self) -> i64 {
+        loop {
+            match self.step() {
+                Step.Halted(v) => { return v; },
+                Step.Running => {},
+            }
+        }
+    }
+}
+
+fn main() -> i32 {
+    let mut vm = VM.new();
+    // sum(1..=10) = 55 via countdown; stack invariant at the loop head: [sum n]
+    vm.emit(0); vm.emit(0);    //  0: push 0        [0]
+    vm.emit(0); vm.emit(10);   //  2: push 10       [0 10]
+    vm.emit(3);                //  4: dup           [sum n n]
+    vm.emit(5); vm.emit(16);   //  5: jz 16         [sum n]
+    vm.emit(7);                //  7: swap          [n sum]
+    vm.emit(8);                //  8: over          [n sum n]
+    vm.emit(1);                //  9: add           [n sum+n]
+    vm.emit(7);                // 10: swap          [sum' n]
+    vm.emit(0); vm.emit(1);    // 11: push 1        [sum' n 1]
+    vm.emit(2);                // 13: sub           [sum' n-1]
+    vm.emit(6); vm.emit(4);    // 14: jmp 4
+    vm.emit(7);                // 16: swap          [0 sum]
+    vm.emit(4);                // 17: halt -> sum
+    let out = vm.run();
+    println(@to_string(out));
+    if out == 55 { 0 } else { 1 }
+}
