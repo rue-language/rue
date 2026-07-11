@@ -63,49 +63,7 @@ pub fn array_element_slot_count_from_type(type_pool: &TypeInternPool, ty: Type) 
 /// For nested types, this recursively calculates.
 /// Zero-sized types (unit, never, empty structs, zero-length arrays) return 0.
 pub fn type_slot_count(type_pool: &TypeInternPool, ty: Type) -> u32 {
-    match ty.kind() {
-        // Zero-sized types
-        TypeKind::Unit | TypeKind::Never => 0,
-        TypeKind::Array(array_type_id) => {
-            // Zero-length arrays naturally get 0 slots (0 * element_slots).
-            // SATURATING, not truncating-u32: sema rejects oversized types
-            // with E0906 before lowering (RUE-561), so this value is never
-            // used for real allocation, but it must not silently wrap
-            // (`[i32; 4294967296]` truncated to 0 slots) or panic in debug.
-            let (element_type, length) = type_pool.array_def(array_type_id);
-            let elem_slots = u64::from(type_slot_count(type_pool, element_type));
-            u32::try_from(elem_slots.saturating_mul(length)).unwrap_or(u32::MAX)
-        }
-        TypeKind::Struct(struct_id) => {
-            // Sum the slot counts of all fields
-            // Empty structs naturally get 0 slots here
-            let struct_def = type_pool.struct_def(struct_id);
-            let mut total = 0u32;
-            for field in &struct_def.fields {
-                total = total.saturating_add(type_slot_count(type_pool, field.ty));
-            }
-            total
-        }
-        TypeKind::Enum(enum_id) => {
-            // Tagged-union layout (RUE-221, ADR-0038): slot 0 holds the
-            // discriminant; the payload area that follows is sized to the
-            // largest variant. A discriminant-only (C-like) enum has no
-            // payload and therefore occupies exactly one slot, unchanged from
-            // before payloads existed.
-            let enum_def = type_pool.enum_def(enum_id);
-            let mut max_payload = 0u32;
-            for i in 0..enum_def.variant_count() {
-                let mut variant_slots = 0u32;
-                for &ty in enum_def.variant_payload(i) {
-                    variant_slots = variant_slots.saturating_add(type_slot_count(type_pool, ty));
-                }
-                max_payload = max_payload.max(variant_slots);
-            }
-            1u32.saturating_add(max_payload)
-        }
-        // Scalars and other types use 1 slot
-        _ => 1,
-    }
+    type_pool.abi_slot_count(ty)
 }
 
 /// Return the `(Some, None)` discriminant values for an `Option`-shaped enum

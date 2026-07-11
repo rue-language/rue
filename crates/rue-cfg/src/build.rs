@@ -986,8 +986,13 @@ impl<'a> CfgBuilder<'a> {
                     return Self::diverged();
                 };
 
-                // Allocate a temporary slot for the struct
-                let temp_slot = self.cfg.alloc_temp_local();
+                // Reserve the computed value's complete frame region. Codegen
+                // stores every flattened slot before reading the projection;
+                // a one-slot reservation would overlap the next local/param.
+                let base_type = self.air.get(*base).ty;
+                let temp_slot = self
+                    .cfg
+                    .alloc_temp_local_slots(self.type_pool.abi_slot_count(base_type).max(1));
 
                 // Emit StorageLive, Alloc to store the computed struct
                 self.emit(
@@ -1007,7 +1012,7 @@ impl<'a> CfgBuilder<'a> {
                 // Create a PlaceRead from the temp slot with Field projection
                 let place = self.cfg.make_place(
                     PlaceBase::Local(temp_slot),
-                    self.air.get(*base).ty,
+                    base_type,
                     std::iter::once(Projection::Field {
                         struct_id: *struct_id,
                         field_index: *field_index,
@@ -1725,8 +1730,11 @@ impl<'a> CfgBuilder<'a> {
                     return Self::diverged();
                 };
 
-                // Allocate a temporary slot for the array
-                let temp_slot = self.cfg.alloc_temp_local();
+                // Reserve every flattened array slot (or one concrete slot
+                // for a zero-sized root whose address may still be formed).
+                let temp_slot = self
+                    .cfg
+                    .alloc_temp_local_slots(self.type_pool.abi_slot_count(*array_type).max(1));
 
                 // Emit StorageLive, Alloc to store the computed array
                 self.emit(
@@ -3375,6 +3383,39 @@ mod tests {
                 .all(|value| !matches!(cfg.get_inst(*value).data, CfgInstData::Param { .. })),
             "the base type must not depend on a separate Param instruction"
         );
+    }
+
+    #[test]
+    fn computed_aggregate_projection_reserves_the_complete_temp_width() {
+        let cfg = build_cfg_named(
+            "struct Pair { left: i32, right: i32 }\n\
+             fn make() -> Pair { Pair { left: 10, right: 20 } }\n\
+             fn use(n: i32) -> i32 { make().right + n }\n\
+             fn main() -> i32 { use(5) }",
+            "use",
+        );
+
+        assert_eq!(cfg.num_params(), 1);
+        assert_eq!(
+            cfg.num_locals(),
+            2,
+            "the two-slot Pair spill must end before the parameter area"
+        );
+        let place = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter().copied())
+            .find_map(|value| match cfg.get_inst(value).data {
+                CfgInstData::PlaceRead { place } if matches!(place.base, PlaceBase::Local(0)) => {
+                    Some(place)
+                }
+                _ => None,
+            })
+            .expect("computed Pair projection");
+        assert!(matches!(
+            cfg.get_place_projections(&place),
+            [Projection::Field { field_index: 1, .. }]
+        ));
     }
 
     #[test]

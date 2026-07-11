@@ -306,6 +306,53 @@ impl TypeInternPool {
         }
     }
 
+    /// Return the flattened runtime ABI width of `ty` in eight-byte slots.
+    ///
+    /// This is the canonical layout query shared by sema, CFG temporary
+    /// allocation, and code generation. Aggregate arithmetic saturates; sema
+    /// rejects layouts that exceed the representable slot range before they
+    /// can be materialized.
+    pub fn abi_slot_count(&self, ty: Type) -> u32 {
+        match ty.kind() {
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64
+            | TypeKind::Bool
+            | TypeKind::Error
+            | TypeKind::PtrConst(_)
+            | TypeKind::PtrMut(_) => 1,
+            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => 0,
+            TypeKind::Struct(struct_id) => self
+                .struct_def(struct_id)
+                .fields
+                .iter()
+                .fold(0u32, |total, field| {
+                    total.saturating_add(self.abi_slot_count(field.ty))
+                }),
+            TypeKind::Array(array_id) => {
+                let (element_type, length) = self.array_def(array_id);
+                let element_slots = u64::from(self.abi_slot_count(element_type));
+                u32::try_from(element_slots.saturating_mul(length)).unwrap_or(u32::MAX)
+            }
+            TypeKind::Enum(enum_id) => {
+                let def = self.enum_def(enum_id);
+                let mut max_payload = 0u32;
+                for index in 0..def.variant_count() {
+                    let payload = def.variant_payload(index).iter().fold(0u32, |total, &ty| {
+                        total.saturating_add(self.abi_slot_count(ty))
+                    });
+                    max_payload = max_payload.max(payload);
+                }
+                1u32.saturating_add(max_payload)
+            }
+        }
+    }
+
     /// Register a new struct (nominal - no deduplication).
     ///
     /// Returns the `StructId` (containing the pool index) and whether it was newly inserted.
