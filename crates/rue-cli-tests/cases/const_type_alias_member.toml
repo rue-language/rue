@@ -1,0 +1,35 @@
+# A comptime-type alias (`const P = Mod.Gen(T);`) is usable as a struct-field
+# and enum-payload type (RUE-603). Struct-field / enum-payload types are resolved
+# in the declaration pass, before the constant-collection pass; the alias is now
+# collected on demand there, so it resolves the same as in a function signature
+# (where it already worked). Driven through the real binary with a two-file
+# import so a data structure can actually hold a generic value.
+
+[section]
+id = "cli.const_type_alias_member"
+name = "Const type alias as a member type"
+description = "`const P = mod.Pair(i32)` works as a struct field and enum payload type (RUE-603)."
+
+[[case]]
+name = "alias_as_struct_field_and_enum_payload"
+description = "A const alias to an imported generic specialization is a valid struct-field AND enum-payload type."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const P = lib.Pair(i32);
+struct Holder { p: P }
+enum Maybe { Has(P), No }
+fn main() -> i32 {
+    let h = Holder { p: P { a: 20, b: 1 } };
+    let extra = match Maybe.Has(P { a: 20, b: 1 }) {
+        Maybe.Has(q) => q.a + q.b,
+        Maybe.No => 0,
+    };
+    h.p.a + h.p.b + extra
+}
+""" }]
+exit_code = 42
