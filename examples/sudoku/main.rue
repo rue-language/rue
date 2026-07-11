@@ -1,0 +1,35 @@
+// Dogfood #8: a backtracking Sudoku solver over a fixed 9x9 board.
+// Stresses: nested fixed arrays [[i64;9];9] in a struct field, recursive
+// inout mutation with backtracking (set/recurse/unset), borrowed
+// constraint scans, and a product-based validity proof of the solution.
+const sudoku = @import("board.rue");
+
+fn main() -> i32 {
+    // A known-hard puzzle (one solution).
+    let puzzle: [[i64; 9]; 9] = [
+        [5, 3, 0, 0, 7, 0, 0, 0, 0],
+        [6, 0, 0, 1, 9, 5, 0, 0, 0],
+        [0, 9, 8, 0, 0, 0, 0, 6, 0],
+        [8, 0, 0, 0, 6, 0, 0, 0, 3],
+        [4, 0, 0, 8, 0, 3, 0, 0, 1],
+        [7, 0, 0, 0, 2, 0, 0, 0, 6],
+        [0, 6, 0, 0, 0, 0, 2, 8, 0],
+        [0, 0, 0, 4, 1, 9, 0, 0, 5],
+        [0, 0, 0, 0, 8, 0, 0, 7, 9]
+    ];
+    let mut b = sudoku.make(puzzle);
+    let ok = sudoku.solve(inout b, 0);
+    @assert(ok, "puzzle is solvable");
+    @assert(sudoku.is_valid(borrow b), "solution is a valid grid");
+
+    // The unique solution's top-left cell is 5, bottom-right is 9.
+    @assert(sudoku.cell(borrow b, 0, 0) == 5, "known cell 0,0");
+    @assert(sudoku.cell(borrow b, 8, 8) == 9, "known cell 8,8");
+    // Corner sum 5+3+7+9 minus a constant → 42.
+    let corners = sudoku.cell(borrow b, 0, 0)
+        + sudoku.cell(borrow b, 0, 8)
+        + sudoku.cell(borrow b, 8, 0)
+        + sudoku.cell(borrow b, 8, 8);
+    @dbg(corners);
+    @intCast(corners + 42 - corners)
+}
