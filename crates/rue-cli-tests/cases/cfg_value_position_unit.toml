@@ -11,8 +11,8 @@
 # localized compiler-bug panic instead of a mystery SIGABRT.
 #
 # These cases must COMPILE AND RUN: a genuinely Unit-typed expression is a
-# legal argument to a `()` parameter, and its Unit value flows through the ABI
-# like any other value.
+# legal argument to a `()` parameter. It exists as a real CFG value so
+# evaluation can continue, but occupies no physical call-ABI slot.
 
 [section]
 id = "cli.cfg_value_position_unit"

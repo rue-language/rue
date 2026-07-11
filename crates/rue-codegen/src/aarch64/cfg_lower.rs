@@ -1427,6 +1427,16 @@ impl<'a> CfgLower<'a> {
                         continue;
                     }
 
+                    // CFG materializes a value for every continuing
+                    // expression, including unit and other zero-sized values,
+                    // but a Normal argument's physical ABI width comes from
+                    // its static type. Do not mistake the dummy CFG value for
+                    // a scalar slot. Keep this after the by-ref branch: a
+                    // borrow/inout ZST still passes one real pointer.
+                    if self.ctx.type_slot_count(arg_type) == 0 {
+                        continue;
+                    }
+
                     if self.ctx.is_multislot_aggregate(arg_type) {
                         // Pass all slots of the (possibly multi-slot) aggregate arg —
                         // struct, builtin String, fixed-size array, or payload enum
