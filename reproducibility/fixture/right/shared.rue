@@ -1,0 +1,19 @@
+pub struct Payload {
+    number: i32,
+    text: String,
+
+    fn score(borrow self) -> i32 {
+        if self.text.len() > 0 { self.number + 17 } else { -1 }
+    }
+}
+
+drop fn Payload(self) {
+    @dbg(self.number + 2000);
+}
+
+pub fn make(value: i32) -> Payload {
+    Payload {
+        number: value,
+        text: "right/shared::Payload",
+    }
+}

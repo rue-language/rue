@@ -1,0 +1,21 @@
+// Both branches import this file through `../shared.rue`, forming a diamond.
+// Its comptime constructor and generic function create shared specialization
+// work reached through two independent import paths.
+pub fn Frame(comptime N: i32) -> type {
+    struct {
+        values: [i32; N],
+        salt: i32,
+
+        fn score(borrow self) -> i32 {
+            self.values[0] * 3 + self.values[1] + self.salt
+        }
+    }
+}
+
+pub fn choose(comptime T: type, take_first: bool, first: T, second: T) -> T {
+    if take_first { first } else { second }
+}
+
+pub fn perturb(value: i32) -> i32 {
+    if value % 2 == 0 { value / 2 } else { value * 2 + 1 }
+}

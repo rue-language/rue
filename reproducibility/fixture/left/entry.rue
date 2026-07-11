@@ -1,0 +1,13 @@
+const common = @import("../shared.rue");
+const local = @import("shared.rue");
+
+pub fn compute(seed: i32) -> i32 {
+    let F = common.Frame(2);
+    let frame = F {
+        values: [seed, common.perturb(seed)],
+        salt: 3,
+    };
+    let selected = common.choose(i32, seed > 0, frame.score(), -1);
+    let payload = local.make(selected);
+    payload.score()
+}

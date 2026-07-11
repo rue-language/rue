@@ -1,0 +1,26 @@
+// Root-only compilation must discover the complete graph below. The sibling
+// branches deliberately export the same function name and each contains a
+// same-basename `shared.rue` module with colliding type, method, factory, and
+// destructor names.
+const left = @import("left/entry.rue");
+const right = @import("right/entry.rue");
+
+fn main() -> i32 {
+    let left_score = left.compute(4);
+    let right_score = right.compute(5);
+
+    // Distinct literals force stable rodata ordering and runtime relocations.
+    let order: String = if left_score < right_score {
+        "left-before-right"
+    } else {
+        "right-before-left"
+    };
+    let order_len = order.len();
+    @dbg(order);
+
+    if order_len == 17 {
+        left_score + right_score
+    } else {
+        1
+    }
+}

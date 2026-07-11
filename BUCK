@@ -44,6 +44,14 @@ filegroup(
     srcs = glob(["cli-test-fixtures/**"]),
 )
 
+# A deliberately adversarial multi-module project used to assert that Rue's
+# complete native output is byte-reproducible across relocated source roots and
+# scheduling/environment perturbations (RUE-616).
+filegroup(
+    name = "reproducibility-fixture",
+    srcs = glob(["reproducibility/fixture/**"]),
+)
+
 # Tutorial markdown is an input to the snippet checker. The checker only
 # compiles fences explicitly marked with `rue check` or `rue compile-fail`.
 filegroup(
@@ -120,6 +128,15 @@ sh_test(
         "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
         "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
         "RUE_STD_DIR": "$(location :std)/std",
+    },
+)
+
+sh_test(
+    name = "reproducible-programs",
+    test = "scripts/test-reproducible-output.sh",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_REPRO_FIXTURE": "$(location :reproducibility-fixture)/reproducibility/fixture",
     },
 )
 
