@@ -341,8 +341,21 @@ impl<'a> Sema<'a> {
         // Get the result type from HM inference (must be a ptr mut T)
         let result_type = Self::get_resolved_type(ctx, inst_ref, span, "@int_to_ptr intrinsic")?;
 
+        // The pointee type comes only from context. In a discarded/unconstrained
+        // position (`@int_to_ptr(z);`) the result variable has nothing to fix it
+        // and decays to `<error>`; report that cleanly instead of letting the
+        // `<error>`-typed value reach the end of analysis as a graceful ICE
+        // (RUE-153 backstop, found by the sema fuzzer). Args analyzed above via
+        // `?`, so an `<error>` result here is specifically the unresolved-pointee
+        // case, not a poisoned operand.
+        if result_type.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::CannotInferPointeeType("int_to_ptr".to_string()),
+                span,
+            ));
+        }
         // Validate that the inferred type is a mutable pointer
-        if !result_type.is_ptr_mut() && !result_type.is_error() && !result_type.is_never() {
+        if !result_type.is_ptr_mut() && !result_type.is_never() {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "int_to_ptr".to_string(),
@@ -407,9 +420,21 @@ impl<'a> Sema<'a> {
         }
 
         // The result type comes from HM inference (assignment/annotation
-        // context) and must be a mutable pointer `ptr mut T`.
+        // context) and must be a mutable pointer `ptr mut T`. In a discarded or
+        // otherwise unconstrained position (`@alloc(4);`) the result variable
+        // has no context to fix its pointee and decays to `<error>`; report
+        // that cleanly rather than letting the `<error>`-typed value reach the
+        // end of analysis as a graceful ICE (RUE-153 backstop, found by the
+        // sema fuzzer). The `count` arg was analyzed above via `?`, so an
+        // `<error>` result here is specifically the unresolved-pointee case.
         let result_type = Self::get_resolved_type(ctx, inst_ref, span, "@alloc intrinsic")?;
-        if !result_type.is_ptr_mut() && !result_type.is_error() && !result_type.is_never() {
+        if result_type.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::CannotInferPointeeType("alloc".to_string()),
+                span,
+            ));
+        }
+        if !result_type.is_ptr_mut() && !result_type.is_never() {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "alloc".to_string(),

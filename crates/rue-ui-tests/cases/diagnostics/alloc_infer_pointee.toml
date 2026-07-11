@@ -1,0 +1,58 @@
+[section]
+id = "diagnostics.alloc-infer-pointee"
+name = "@alloc / @int_to_ptr uninferrable pointee reports a clean error, not an ICE"
+description = """
+The pointer intrinsics `@alloc(count)` and `@int_to_ptr(addr)` return `ptr mut T`
+whose pointee `T` comes only from context. In a discarded or otherwise
+unconstrained position (`@alloc(4);`) the result variable has nothing to fix its
+pointee and decayed to `<error>`, which reached the end of semantic analysis as
+a graceful ICE (E9000, RUE-153 backstop) — found by the daily sema fuzzer
+(github #1419). It now reports a targeted E0710 naming the intrinsic and
+suggesting a `ptr mut T` annotation. An annotated allocation still compiles.
+"""
+
+[[case]]
+name = "bare_alloc_cannot_infer_pointee"
+description = "@alloc whose result is discarded cannot infer its pointee: clean E0710, not an ICE."
+source = """
+fn main() -> i32 {
+    checked { @alloc(4); };
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0710",
+    "cannot infer the pointee type of '@alloc'",
+    "add a type annotation",
+]
+
+[[case]]
+name = "bare_int_to_ptr_cannot_infer_pointee"
+description = "@int_to_ptr with an unconstrained result cannot infer its pointee: clean E0710, not an ICE."
+source = """
+fn main() -> i32 {
+    checked { let z: u64 = 0; @int_to_ptr(z); };
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0710",
+    "cannot infer the pointee type of '@int_to_ptr'",
+]
+
+[[case]]
+name = "annotated_alloc_still_compiles"
+description = "An @alloc bound to a `ptr mut T` annotation still infers its pointee and compiles."
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i32 = @alloc(4);
+        @ptr_write(p, 42);
+        @ptr_read(p)
+    }
+}
+"""
+compile_fail = false
+exit_code = 42
