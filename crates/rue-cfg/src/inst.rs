@@ -40,14 +40,21 @@ use rue_span::Span;
 ///
 /// # Examples
 ///
-/// - `x` → `Place { base: Local(0), proj_start: 0, proj_len: 0 }`
-/// - `arr[i]` → `Place { base: Local(0), proj_start: 0, proj_len: 1 }` with `Index` projection
-/// - `point.x` → `Place { base: Local(0), proj_start: 0, proj_len: 1 }` with `Field` projection
-/// - `arr[i].x` → `Place { base: Local(0), proj_start: 0, proj_len: 2 }` with `Index` then `Field`
+/// - `x` → `Place { base: Local(0), base_type: T, ... }`
+/// - `arr[i]` → `Place { base: Local(0), base_type: Array, ... }` with `Index` projection
+/// - `point.x` → `Place { base: Local(0), base_type: Point, ... }` with `Field` projection
+/// - `arr[i].x` → the same `Array` base type with `Index` then `Field`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Place {
     /// The base of the place - either a local slot or parameter slot
     pub base: PlaceBase,
+    /// The logical type stored at the base before applying projections.
+    ///
+    /// This is explicit because a physical ABI slot does not uniquely identify
+    /// its logical value type (aggregates are flattened and zero-sized values
+    /// can share an index). It also lets the verifier type-check the first
+    /// projection instead of trusting its self-described container.
+    pub base_type: Type,
     /// Start index into Cfg's projections array
     pub proj_start: u32,
     /// Number of projections
@@ -57,9 +64,10 @@ pub struct Place {
 impl Place {
     /// Create a place for a local variable with no projections.
     #[inline]
-    pub const fn local(slot: u32) -> Self {
+    pub const fn local(slot: u32, base_type: Type) -> Self {
         Self {
             base: PlaceBase::Local(slot),
+            base_type,
             proj_start: 0,
             proj_len: 0,
         }
@@ -67,9 +75,10 @@ impl Place {
 
     /// Create a place for a parameter with no projections.
     #[inline]
-    pub const fn param(slot: u32) -> Self {
+    pub const fn param(slot: u32, base_type: Type) -> Self {
         Self {
             base: PlaceBase::Param(slot),
+            base_type,
             proj_start: 0,
             proj_len: 0,
         }
@@ -834,11 +843,13 @@ impl Cfg {
     pub fn make_place(
         &mut self,
         base: PlaceBase,
+        base_type: Type,
         projs: impl IntoIterator<Item = Projection>,
     ) -> Place {
         let (proj_start, proj_len) = self.push_projections(projs);
         Place {
             base,
+            base_type,
             proj_start,
             proj_len,
         }

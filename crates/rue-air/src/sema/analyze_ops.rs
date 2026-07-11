@@ -345,7 +345,7 @@ impl<'a> Sema<'a> {
     /// Build an AirPlaceRef from a PlaceTrace, adding projections to the Air.
     pub(crate) fn build_place_ref(air: &mut Air, trace: &PlaceTrace) -> AirPlaceRef {
         let projs = trace.projections.iter().map(|p| p.proj);
-        air.make_place(trace.base, projs)
+        air.make_place(trace.base, trace.base_type, projs)
     }
 
     /// Build a `MarkMoved` place from a trace.
@@ -377,7 +377,7 @@ impl<'a> Sema<'a> {
                 }
             }
         }
-        air.make_place(trace.base, projs)
+        air.make_place(trace.base, trace.base_type, projs)
     }
 
     // ========================================================================
@@ -4107,6 +4107,7 @@ impl<'a> Sema<'a> {
         // Create PlaceRead with Field projection on the temp slot
         let place_ref = air.make_place(
             AirPlaceBase::Local(temp_slot),
+            base_type,
             std::iter::once(AirProjection::Field {
                 struct_id,
                 field_index: field_index as u32,
@@ -5226,6 +5227,7 @@ impl<'a> Sema<'a> {
         // Create PlaceRead with Index projection on the temp slot
         let place_ref = air.make_place(
             AirPlaceBase::Local(temp_slot),
+            base_type,
             std::iter::once(AirProjection::Index {
                 array_type: base_type,
                 index: index_result.air_ref,

@@ -1434,7 +1434,7 @@ impl<'a> Interp<'a> {
     /// mutated value can be copied back after the call.
     fn lvalue_of(cfg: &'a Cfg, v: CfgValue) -> Step<Place> {
         match &cfg.get_inst(v).data {
-            CfgInstData::Load { slot } => Ok(Place::local(*slot)),
+            CfgInstData::Load { slot } => Ok(Place::local(*slot, cfg.get_inst(v).ty)),
             CfgInstData::PlaceRead { place } => Ok(place.clone()),
             other => Err(Flow::Unsupported(Unsupported(format!(
                 "inout argument is not an lvalue: {other:?}"

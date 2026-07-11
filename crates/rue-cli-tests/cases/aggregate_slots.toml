@@ -501,3 +501,63 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 0
+
+# RUE-589: every projected place carries its root type instead of reconstructing
+# the root width from its first projection. One deliberately deep root exercises
+# the three consumers of that fact: static aggregate reads, dynamic aggregate
+# writes, and projected inout address formation. Sentinels on both sides of each
+# aggregate make a wrong root-origin shift observable.
+[[case]]
+name = "deep_place_root_type_drives_all_codegen_paths"
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+struct Mid { lead: i32, pair: Pair, trail: i32 }
+struct Root { head: i32, mid: Mid, rows: [Mid; 2], tail: i32 }
+
+fn bump(inout pair: Pair) {
+    pair.a = pair.a + 20;
+    pair.b = pair.b + 30;
+}
+
+fn main() -> i32 {
+    let mut root = Root {
+        head: 1,
+        mid: Mid { lead: 2, pair: Pair { a: 3, b: 4 }, trail: 5 },
+        rows: [
+            Mid { lead: 6, pair: Pair { a: 7, b: 8 }, trail: 9 },
+            Mid { lead: 10, pair: Pair { a: 11, b: 12 }, trail: 13 }
+        ],
+        tail: 14,
+    };
+
+    let copy = root.mid.pair;
+    root.rows[1].pair = copy;
+    bump(inout root.rows[0].pair);
+
+    @dbg(root.head);
+    @dbg(root.mid.lead); @dbg(root.mid.trail);
+    @dbg(root.rows[0].lead); @dbg(root.rows[0].pair.a); @dbg(root.rows[0].pair.b); @dbg(root.rows[0].trail);
+    @dbg(root.rows[1].lead); @dbg(root.rows[1].pair.a); @dbg(root.rows[1].pair.b); @dbg(root.rows[1].trail);
+    @dbg(root.tail);
+    0
+}
+""" }]
+exit_code = 0
+stdout = "1\n2\n5\n6\n27\n38\n9\n10\n3\n4\n13\n14\n"
+
+# A zero-sized logical root still needs a concrete address for the physical
+# by-reference ABI. Its explicit type must not make the low-end origin shift
+# underflow (`slot_count == 0`).
+[[case]]
+name = "zero_sized_place_root_byref_address"
+files = [{ path = "main.rue", source = """
+struct Empty {}
+struct Holder { value: Empty }
+fn answer(borrow value: Empty) -> i32 { 42 }
+fn main() -> i32 {
+    let holder = Holder { value: Empty {} };
+    let values: [Empty; 1] = [Empty {}];
+    answer(borrow holder.value) + answer(borrow values[0])
+}
+""" }]
+exit_code = 84

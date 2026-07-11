@@ -4296,7 +4296,7 @@ impl<'a> CfgLower<'a> {
         // frame-resident aggregate's low-address end is its highest-numbered
         // slot, `root_base + root_count - 1`. Field offsets then move UP in
         // address (toward higher addresses = lower slot numbers).
-        let root_count = crate::agg_slots::root_slot_count(self, projections, 1);
+        let root_count = crate::agg_slots::root_slot_count(self, place);
 
         // Calculate dynamic offset from index projections
         let dynamic_offset_vreg = if !index_levels.is_empty() {
@@ -4494,7 +4494,7 @@ impl<'a> CfgLower<'a> {
         }
 
         // Origin shift to the ROOT object's low end (ADR-0040 / RUE-311).
-        let root_count = crate::agg_slots::root_slot_count(self, projections, vals.len() as u32);
+        let root_count = crate::agg_slots::root_slot_count(self, place);
 
         // Calculate dynamic offset from index projections
         let dynamic_offset_vreg = if !index_levels.is_empty() {
@@ -4686,8 +4686,8 @@ impl<'a> CfgLower<'a> {
 
         // Origin shift to the ROOT object's low end (ADR-0040 / RUE-311); the
         // resulting address is the accessed place's LOW end, from which slots
-        // ascend. With no projections the place is a scalar (root_count 1).
-        let root_count = crate::agg_slots::root_slot_count(self, projections, 1);
+        // ascend. The place's explicit logical base type supplies root_count.
+        let root_count = crate::agg_slots::root_slot_count(self, place);
 
         // Calculate dynamic offset from index projections
         let dynamic_offset_vreg = if !index_levels.is_empty() {
