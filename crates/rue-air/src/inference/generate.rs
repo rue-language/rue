@@ -2822,17 +2822,36 @@ impl<'a> ConstraintGenerator<'a> {
             })
     }
 
-    /// The defining file of `module`'s target, when `module` is a `VarRef`
-    /// naming an imported module binding in the current file.
+    /// The defining file of `module`'s target: a `VarRef` naming an imported
+    /// module binding in the current file, or a `FieldGet` chain through
+    /// re-exported module bindings (`db.query.Pred` resolves `db` in the
+    /// current file, then `query` as a module binding in db's file, and so
+    /// on) — without the recursion a nested-facade payload construction left
+    /// its arguments unconstrained (RUE-633 family, reject-valid this time:
+    /// sema's E0206 caught the defaulted literal).
     fn module_member_file(&self, module: InstRef) -> Option<FileId> {
         let inst = self.rir.get(module);
-        let InstData::VarRef { name } = &inst.data else {
-            return None;
-        };
-        let module_ty = self
-            .module_binding_types
-            .and_then(|bindings| bindings.get(&(inst.span.file_id, *name)))
-            .copied()?;
+        match &inst.data {
+            InstData::VarRef { name } => {
+                let module_ty = self
+                    .module_binding_types
+                    .and_then(|bindings| bindings.get(&(inst.span.file_id, *name)))
+                    .copied()?;
+                self.module_file(module_ty)
+            }
+            InstData::FieldGet { base, field } => {
+                let base_file = self.module_member_file(*base)?;
+                let module_ty = self
+                    .module_binding_types
+                    .and_then(|bindings| bindings.get(&(base_file, *field)))
+                    .copied()?;
+                self.module_file(module_ty)
+            }
+            _ => None,
+        }
+    }
+
+    fn module_file(&self, module_ty: Type) -> Option<FileId> {
         let module_id = module_ty.as_module()?;
         self.module_file_ids
             .and_then(|module_file_ids| module_file_ids.get(&module_id))

@@ -237,3 +237,60 @@ fn main() -> i32 {
 }
 """ },
 ]
+
+[[case]]
+name = "generic_instantiated_with_qualified_type_arg_in_const"
+description = "const Rows = std.arraybuf.ArrayBuf(records.Row) — a generic instantiation with a module-qualified type argument as a const initializer, used as a field type (RUE-630 rows 6/7; struct/enum members are type values)"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const records = @import("records.rue");
+const std = @import("std");
+const Rows = std.arraybuf.ArrayBuf(records.Row);
+
+pub struct Table { rows: Rows }
+
+fn main() -> i32 {
+    let mut rows = Rows.new();
+    rows.push(records.Row { id: 41, bump: 0 - 1 });
+    let t = Table { rows: rows };
+    let r = t.rows.get_or(0, records.Row { id: 0, bump: 0 });
+    @intCast(r.id - r.bump)
+}
+""" },
+    { path = "records.rue", source = """
+pub struct Row {
+    id: i64,
+    bump: i64,
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "nested_facade_variant_payload_constrained"
+description = "db.query.Pred.SalaryAtLeast(100) — payload construction through a nested module facade constrains the literal to the declared i64 (recursive module_member_file)"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const db = @import("db");
+
+fn main() -> i32 {
+    let p = db.inner.Pick.AtLeast(42);
+    match p {
+        db.inner.Pick.AtLeast(v) => @intCast(v),
+        db.inner.Pick.Nothing => 1,
+    }
+}
+""" },
+    { path = "db/_db.rue", source = """
+pub const inner = @import("inner.rue");
+""" },
+    { path = "db/inner.rue", source = """
+pub enum Pick {
+    AtLeast(i64),
+    Nothing,
+}
+""" },
+]
+exit_code = 42

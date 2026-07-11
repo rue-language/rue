@@ -1,0 +1,50 @@
+const std = @import("std");
+const record = @import("record.rue");
+const table = @import("table.rue");
+
+// Predicates as data: a tiny query language over rows.
+pub enum Pred {
+    ByDept(record.Dept),
+    SalaryAtLeast(i64),
+    Any,
+}
+
+fn matches(borrow row: record.Row, borrow p: Pred) -> bool {
+    match p {
+        Pred.ByDept(d) => row.dept == d,
+        Pred.SalaryAtLeast(min) => row.salary >= min,
+        Pred.Any => true,
+    }
+}
+
+pub fn sum_salaries(borrow t: table.Table, p: Pred) -> i64 {
+    let n = t.count();
+    let mut total: i64 = 0;
+    let mut i: u64 = 0;
+    while i < n {
+        let row = t.row_at(i);
+        if matches(borrow row, borrow p) {
+            total = total + row.salary;
+        }
+        i = i + 1;
+    }
+    total
+}
+
+pub fn top_earner(borrow t: table.Table, p: Pred) -> i64 {
+    let n = t.count();
+    let mut best_id: i64 = 0 - 1;
+    let mut best: i64 = 0 - 1;
+    let mut i: u64 = 0;
+    while i < n {
+        let row = t.row_at(i);
+        if matches(borrow row, borrow p) {
+            if row.salary > best {
+                best = row.salary;
+                best_id = row.id;
+            }
+        }
+        i = i + 1;
+    }
+    best_id
+}

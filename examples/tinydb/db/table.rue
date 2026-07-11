@@ -1,0 +1,29 @@
+const std = @import("std");
+const record = @import("record.rue");
+
+// The unlocked pattern: ArrayBuf of a cross-module struct via the
+// exporter's own alias would be ideal; rows are same-file-free structs,
+// so instantiate directly with the qualified type.
+pub const Rows = std.arraybuf.ArrayBuf(record.Row);
+
+pub struct Table {
+    rows: Rows,
+    next_id: i64,
+
+    fn new() -> Self {
+        Self { rows: Rows.new(), next_id: 1 }
+    }
+
+    fn insert(inout self, dept: record.Dept, salary: i64) -> i64 {
+        let id = self.next_id;
+        self.next_id = self.next_id + 1;
+        self.rows.push(record.Row.new(id, dept, salary));
+        id
+    }
+
+    fn count(borrow self) -> u64 { self.rows.len() }
+
+    fn row_at(borrow self, i: u64) -> record.Row {
+        self.rows.get_or(i, record.Row.new(0 - 1, record.Dept.Ops, 0))
+    }
+}
