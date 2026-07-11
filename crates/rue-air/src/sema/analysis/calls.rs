@@ -129,6 +129,33 @@ impl<'a> Sema<'a> {
         let receiver_byref_root = if is_builtin_mutation_method {
             receiver_var
         } else {
+            // A method that exists on NEITHER the user-method table nor the
+            // builtin registry is diagnosed here, before the receiver is
+            // analyzed: the unknown call would otherwise default to a
+            // by-value receiver, and a field-of-`inout self` receiver then
+            // failed the MOVE check first — reporting E0437 "cannot move out
+            // of inout parameter" for what is actually a typo'd method name
+            // (RUE-640).
+            if receiver_var.is_some()
+                && let Some(struct_id) = self
+                    .peek_place_type(receiver, ctx)
+                    .and_then(|ty| ty.as_struct())
+            {
+                let known = self.methods.contains_key(&(struct_id, method))
+                    || self
+                        .get_builtin_type_def(struct_id)
+                        .is_some_and(|def| def.find_method(&method_name_str).is_some());
+                if !known {
+                    let type_name = self.format_type_name(Type::new_struct(struct_id));
+                    return Err(CompileError::new(
+                        ErrorKind::UndefinedMethod {
+                            type_name,
+                            method_name: method_name_str.clone(),
+                        },
+                        span,
+                    ));
+                }
+            }
             receiver_var.and_then(|root| {
                 let ty = self.peek_place_type(receiver, ctx)?;
                 let struct_id = ty.as_struct()?;
