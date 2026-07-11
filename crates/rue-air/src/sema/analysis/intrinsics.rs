@@ -549,6 +549,7 @@ impl<'a> Sema<'a> {
 
         // Analyze the message argument
         let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
+        self.validate_abort_message_type("panic", arg_result.ty, self.rir.get(args[0].value).span)?;
 
         let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
@@ -583,11 +584,27 @@ impl<'a> Sema<'a> {
         }
 
         let cond_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let cond_span = self.rir.get(args[0].value).span;
+        if cond_result.ty != Type::BOOL && !cond_result.ty.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "assert".to_string(),
+                    expected: "bool condition".to_string(),
+                    found: cond_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                })),
+                cond_span,
+            ));
+        }
 
         // Build args for AIR
         let mut extra_data = vec![cond_result.air_ref.as_u32()];
         if args.len() > 1 {
             let msg_result = self.analyze_inst(air, args[1].value, ctx)?;
+            self.validate_abort_message_type(
+                "assert",
+                msg_result.ty,
+                self.rir.get(args[1].value).span,
+            )?;
             extra_data.push(msg_result.air_ref.as_u32());
         }
 
@@ -603,6 +620,34 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// Validate the shared message contract of `@panic` and `@assert`.
+    ///
+    /// The runtime ABI consumes the builtin `StrBuf` representation. Checking
+    /// nominal type identity here is important: accepting any aggregate with a
+    /// convenient slot count would let codegen reinterpret its first fields as
+    /// a pointer and length. `String` remains accepted because it is a source
+    /// alias for the same builtin type, while `str`, `Str(N)`, and user structs
+    /// are distinct types even when part of their layout happens to match.
+    fn validate_abort_message_type(
+        &self,
+        intrinsic_name: &str,
+        message_ty: Type,
+        message_span: Span,
+    ) -> CompileResult<()> {
+        if !self.is_builtin_string(message_ty) && !message_ty.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: intrinsic_name.to_string(),
+                    expected: "StrBuf message".to_string(),
+                    found: message_ty.safe_name_with_pool(Some(&self.type_pool)),
+                })),
+                message_span,
+            ));
+        }
+
+        Ok(())
     }
 
     /// Analyze @intCast intrinsic.

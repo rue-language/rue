@@ -3857,6 +3857,30 @@ mod integration_tests {
         }
 
         #[test]
+        fn never_operands_coerce_to_abort_intrinsic_parameters() {
+            for (name, body) in [
+                ("assert condition", "@assert(diverge())"),
+                ("panic message", "@panic(diverge())"),
+            ] {
+                let source = format!(
+                    "fn diverge() -> ! {{ loop {{}} }} fn probe() {{ {body} }} fn main() -> i32 {{ probe(); 0 }}"
+                );
+                let state = compile_to_cfg(&source)
+                    .unwrap_or_else(|error| panic!("never must coerce to {name}: {error}"));
+                for &target in Target::all() {
+                    for function in &state.functions {
+                        generate_mir(&function.cfg, &state.type_pool, &state.interner, target)
+                            .unwrap_or_else(|error| {
+                                panic!("{name} must lower for {target}: {error}")
+                            });
+                    }
+                }
+                compile(&source)
+                    .unwrap_or_else(|error| panic!("{name} must compile and link: {error}"));
+            }
+        }
+
+        #[test]
         fn size_of_intrinsic() {
             // @size_of returns i32
             let src = "fn main() -> i32 { @size_of(i32) }";
