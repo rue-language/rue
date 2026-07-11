@@ -42,9 +42,10 @@ rue_binary(
 # examples smoke test wiring (RUE-48): filegroup input + env var + sh_test.
 # Multi-file / unsupported custom-arg / compile-fail cases are skipped by the
 # harness when their shape is intentionally non-runnable. For runnable cases,
-# oracle compile failures fail the harness while unsupported semantics remain a
-# coverage skip. Preview-gated cases run when their declared preview flags can
-# be mapped onto the single-source oracle.
+# oracle compile failures, resource limits, and compiler/oracle contract
+# violations fail the harness; only typed model gaps remain coverage debt.
+# Preview-gated cases run when their declared preview flags can be mapped onto
+# the single-source oracle.
 sh_test(
     name = "oracle-diff-test",
     test = ":rue-oracle-diff",

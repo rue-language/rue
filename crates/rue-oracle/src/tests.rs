@@ -124,7 +124,7 @@ fn loop_reentry_recomputes_the_current_blocks() {
     }";
 
     let out =
-        run_with_budget(src, 1_000).unwrap_or_else(|u| panic!("bounded loop unsupported: {}", u.0));
+        run_with_budget(src, 1_000).unwrap_or_else(|u| panic!("bounded loop unsupported: {u}"));
     assert_eq!(out.exit_code, 3);
 }
 
@@ -172,14 +172,28 @@ fn stdout_at_cap_remains_exact() {
 fn repeated_dbg_over_stdout_cap_is_unsupported() {
     let unsupported = run_with_stdout_cap("fn main() -> i32 { @dbg(7); @dbg(8); 0 }", 3)
         .expect_err("the second complete output line must exceed the cap");
-    assert_eq!(unsupported.0, "stdout byte limit exceeded (3-byte limit)");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
+    );
+    assert_eq!(
+        unsupported.detail(),
+        "stdout byte limit exceeded (3-byte limit)"
+    );
 }
 
 #[test]
 fn oversized_string_dbg_is_unsupported() {
     let unsupported = run_with_stdout_cap("fn main() -> i32 { let s = \"hello\"; @dbg(s); 0 }", 5)
         .expect_err("the String plus its newline must exceed the cap");
-    assert_eq!(unsupported.0, "stdout byte limit exceeded (5-byte limit)");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
+    );
+    assert_eq!(
+        unsupported.detail(),
+        "stdout byte limit exceeded (5-byte limit)"
+    );
 }
 
 #[test]
@@ -196,7 +210,14 @@ fn stdout_cap_counts_raw_bytes_before_lossy_rendering() {
 
     let unsupported = run_with_stdout_cap(src, 1)
         .expect_err("one content byte plus newline must exceed a one-byte cap");
-    assert_eq!(unsupported.0, "stdout byte limit exceeded (1-byte limit)");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
+    );
+    assert_eq!(
+        unsupported.detail(),
+        "stdout byte limit exceeded (1-byte limit)"
+    );
 }
 
 #[test]
@@ -236,7 +257,129 @@ fn valid_unmodeled_program_is_unsupported_not_a_compile_error() {
     }";
 
     let unsupported = expect_unsupported(src);
-    assert_eq!(unsupported.0, "intrinsic @random_u32");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ExternalDependency(ExternalDependencyKind::RandomU32)
+    );
+    assert_eq!(unsupported.detail(), "intrinsic @random_u32");
+}
+
+#[test]
+fn every_known_unsupported_intrinsic_has_a_closed_kind() {
+    use UnsupportedIntrinsicKind as Intrinsic;
+
+    for (name, intrinsic) in [
+        ("panic", Intrinsic::Panic),
+        ("assert", Intrinsic::Assert),
+        ("parse_i32", Intrinsic::ParseI32),
+        ("parse_i64", Intrinsic::ParseI64),
+        ("parse_u32", Intrinsic::ParseU32),
+        ("parse_u64", Intrinsic::ParseU64),
+        ("ptr_read", Intrinsic::PointerRead),
+        ("ptr_write", Intrinsic::PointerWrite),
+        ("ptr_offset", Intrinsic::PointerOffset),
+        ("ptr_to_int", Intrinsic::PointerToInt),
+        ("int_to_ptr", Intrinsic::IntToPointer),
+        ("raw", Intrinsic::RawAddress),
+        ("raw_mut", Intrinsic::RawMutableAddress),
+        ("field_ptr", Intrinsic::FieldPointer),
+        ("alloc", Intrinsic::Allocate),
+        ("free", Intrinsic::Free),
+        ("realloc", Intrinsic::Reallocate),
+    ] {
+        let expected = UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(intrinsic));
+        assert_eq!(unsupported_intrinsic_kind(name), expected, "@{name}");
+        assert!(
+            expected.model_gap().is_some(),
+            "@{name} must be registrable"
+        );
+    }
+
+    for (name, dependency) in [
+        ("read_line", ExternalDependencyKind::StandardInput),
+        ("random_u32", ExternalDependencyKind::RandomU32),
+        ("random_u64", ExternalDependencyKind::RandomU64),
+        ("syscall", ExternalDependencyKind::SystemCall),
+    ] {
+        assert_eq!(
+            unsupported_intrinsic_kind(name),
+            UnsupportedKind::ExternalDependency(dependency),
+            "@{name}"
+        );
+    }
+
+    for name in [
+        "dbg",
+        "drop",
+        "intCast",
+        "cast",
+        "to_string",
+        "test_preview_gate",
+        "import",
+        "target_arch",
+        "target_os",
+        "__rue_char_next",
+        "unknown_future_intrinsic",
+    ] {
+        assert_eq!(
+            unsupported_intrinsic_kind(name),
+            UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic),
+            "@{name} must fail closed if it unexpectedly survives lowering"
+        );
+    }
+}
+
+#[test]
+fn every_known_missing_runtime_call_has_a_closed_kind() {
+    use UnsupportedRuntimeCallKind as RuntimeCall;
+
+    for (name, expected) in [
+        ("__rue_String_concat", RuntimeCall::StringConcat),
+        ("__rue_String_contains", RuntimeCall::StringContains),
+        ("__rue_String_starts_with", RuntimeCall::StringStartsWith),
+        ("__rue_String_substring", RuntimeCall::StringSubstring),
+        ("__rue_print", RuntimeCall::Print),
+        ("__rue_println", RuntimeCall::Println),
+    ] {
+        assert_eq!(
+            unsupported_runtime_call_kind(name),
+            Some(expected),
+            "{name}"
+        );
+    }
+    for name in ["__rue_str_eq", "user_function", "new_runtime_helper"] {
+        assert_eq!(unsupported_runtime_call_kind(name), None, "{name}");
+    }
+}
+
+#[test]
+fn only_model_gaps_are_registrable() {
+    let semantic = UnsupportedKind::SemanticGap(SemanticGapKind::FlattenedParameterSlot);
+    assert_eq!(
+        semantic.model_gap(),
+        Some(ModelGapKind::Semantic(
+            SemanticGapKind::FlattenedParameterSlot
+        ))
+    );
+    assert_eq!(semantic.class(), UnsupportedClass::SemanticGap);
+
+    let resource = UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps);
+    assert_eq!(resource.model_gap(), None);
+    assert_eq!(resource.class(), UnsupportedClass::ResourceLimit);
+
+    let contract = UnsupportedKind::ContractViolation(ContractViolationKind::MissingTerminator);
+    assert_eq!(contract.model_gap(), None);
+    assert_eq!(contract.class(), UnsupportedClass::ContractViolation);
+}
+
+#[test]
+fn exact_string_capacity_is_implementation_defined() {
+    let unsupported =
+        expect_unsupported("fn main() -> i32 { let s = String.new(); @intCast(s.capacity()) }");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ImplementationDefined(ImplementationDefinedKind::StringCapacityValue)
+    );
 }
 
 #[test]
@@ -330,28 +473,28 @@ fn intcast_in_range_and_overflow() {
 fn unbounded_recursion_is_unsupported() {
     // A recursive function with no base case would recurse forever and overflow
     // the Rust stack (an uncatchable abort). The shared recursion-depth bound
-    // (MAX_DEPTH) must turn it into a clean `Unsupported` skip instead (RUE-340).
+    // (MAX_DEPTH) must turn it into a typed resource failure instead (RUE-340).
     let src = "fn r(n: i32) -> i32 { r(n) }
     fn main() -> i32 { r(0) }";
     let err = expect_unsupported(src);
-    assert!(
-        err.0.contains("depth budget"),
-        "expected a depth-budget skip, got: {}",
-        err.0
+    assert_eq!(
+        err.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::RecursionDepth),
+        "expected a depth-budget failure, got: {err}"
     );
 }
 
 #[test]
 fn deep_bounded_recursion_is_unsupported() {
-    // Recursion that is bounded but far deeper than MAX_DEPTH must also skip
+    // Recursion that is bounded but far deeper than MAX_DEPTH must also fail
     // cleanly (hitting the depth bound) rather than overflow the stack.
     let src = "fn r(n: i32) -> i32 { if n <= 0 { 0 } else { r(n - 1) } }
     fn main() -> i32 { r(100000) }";
     let err = expect_unsupported(src);
-    assert!(
-        err.0.contains("depth budget"),
-        "expected a depth-budget skip, got: {}",
-        err.0
+    assert_eq!(
+        err.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::RecursionDepth),
+        "expected a depth-budget failure, got: {err}"
     );
 }
 
@@ -380,10 +523,10 @@ fn runaway_loop_is_unsupported() {
     // instruction), so the budget is decremented every turn of the loop.
     let src = "fn main() -> i32 { let mut b = true; loop { b = !b; } }";
     let err = expect_unsupported(src);
-    assert!(
-        err.0.contains("step budget"),
-        "expected a step-budget skip, got: {}",
-        err.0
+    assert_eq!(
+        err.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
+        "expected a step-budget failure, got: {err}"
     );
 }
 

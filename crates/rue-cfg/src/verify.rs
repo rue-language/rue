@@ -47,6 +47,67 @@ use crate::inst::{Cfg, CfgInstData, CfgValue, Projection, Terminator};
 use rue_air::{Type, TypeKind};
 
 impl Cfg {
+    /// Count every operand use of `needle` across instructions and
+    /// terminators.
+    ///
+    /// This is derived from the verifier's exhaustive operand walk so
+    /// provenance-sensitive consumers do not need a second, drift-prone list
+    /// of [`CfgInstData`] variants.
+    pub fn value_use_count(&self, needle: CfgValue) -> usize {
+        let mut count = 0;
+        for block in self.blocks() {
+            for &value in &block.insts {
+                let mut operands = Vec::new();
+                self.collect_inst_operands(&self.get_inst(value).data, &mut operands);
+                count += operands
+                    .iter()
+                    .filter(|operand| **operand == needle)
+                    .count();
+            }
+            match &block.terminator {
+                Terminator::Goto {
+                    args_start,
+                    args_len,
+                    ..
+                } => {
+                    count += self
+                        .get_extra(*args_start, *args_len)
+                        .iter()
+                        .filter(|value| **value == needle)
+                        .count();
+                }
+                Terminator::Branch {
+                    cond,
+                    then_args_start,
+                    then_args_len,
+                    else_args_start,
+                    else_args_len,
+                    ..
+                } => {
+                    count += usize::from(*cond == needle);
+                    count += self
+                        .get_extra(*then_args_start, *then_args_len)
+                        .iter()
+                        .filter(|value| **value == needle)
+                        .count();
+                    count += self
+                        .get_extra(*else_args_start, *else_args_len)
+                        .iter()
+                        .filter(|value| **value == needle)
+                        .count();
+                }
+                Terminator::Switch { scrutinee, .. } => {
+                    count += usize::from(*scrutinee == needle);
+                }
+                Terminator::Return { value } => {
+                    count += usize::from(*value == Some(needle));
+                }
+                Terminator::Unreachable | Terminator::None => {}
+            }
+        }
+        count
+    }
+
     /// Verify the CFG's structural invariants, panicking with a precise,
     /// function- and block-localized message on any violation.
     ///
