@@ -193,10 +193,25 @@ pub fn write_all(fd: u64, mut buf: &[u8]) -> Result<(), i64> {
 
 /// Write a message to stderr.
 ///
-/// This is a best-effort write operation. If writing fails (e.g., stderr is
-/// closed or redirected to a broken pipe), the error is silently ignored
-/// because there's no meaningful recovery action - the runtime is typically
-/// about to exit anyway.
+/// This is a best-effort write operation: any error returned by [`write_all`]
+/// is dropped because there is no meaningful recovery action and the runtime is
+/// typically about to exit anyway.
+///
+/// # Broken pipes vs. other write errors (RUE-369)
+///
+/// The dropped-`Err` path is **not** what handles a broken output pipe. We do
+/// not install a `SIGPIPE` handler, so the signal keeps its default
+/// disposition: when the reader on the other end of a pipe or socket is gone,
+/// the `write` syscall raises `SIGPIPE` and the kernel terminates the process
+/// *before* the syscall returns — the process dies with exit code 141 (128 +
+/// SIGPIPE) and `write_all` never observes the `EPIPE` error. This is Rue's
+/// intended Unix default (spec §8.5).
+///
+/// Swallowing the `Err` still matters for failures that return an errno
+/// *without* raising a signal — e.g. a closed or otherwise-invalid file
+/// descriptor yields `EBADF`, and a stuck fd yields the `EIO` we synthesize
+/// below. In those cases no signal fires, the process keeps running, and we
+/// intentionally discard the error.
 ///
 /// This function handles partial writes by looping until all bytes are written
 /// or an error occurs.
@@ -205,14 +220,16 @@ pub fn write_all(fd: u64, mut buf: &[u8]) -> Result<(), i64> {
 ///
 /// * `msg` - The bytes to write to stderr
 pub fn write_stderr(msg: &[u8]) {
-    // Best-effort: ignore errors since we're typically about to exit
-    // and there's no way to report the error anyway
+    // Best-effort: drop non-fatal errno failures (e.g. EBADF on a closed fd).
+    // A broken pipe never reaches here — SIGPIPE kills the process first.
     let _ = write_all(STDERR, msg);
 }
 
 /// Write a message to stdout.
 ///
-/// This is a best-effort write operation similar to `write_stderr`.
+/// Best-effort, exactly like [`write_stderr`]: a broken output pipe kills the
+/// process with `SIGPIPE` (exit 141) before `write_all` returns, while a
+/// non-signalling errno such as `EBADF` from a closed fd is swallowed here.
 ///
 /// # Arguments
 ///
