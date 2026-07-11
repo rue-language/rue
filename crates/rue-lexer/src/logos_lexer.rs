@@ -630,6 +630,17 @@ impl<'a> LogosLexer<'a> {
 
         let mut lexer = LogosTokenKind::lexer_with_extras(self.source, self.interner);
 
+        // Skip a single leading UTF-8 BOM (U+FEFF, bytes EF BB BF) per Rust/Go
+        // precedent (RUE-378). We bump the logos read head past it instead of
+        // slicing the source, so every token span stays a byte offset into the
+        // ORIGINAL file — the first real token starts at byte 3 and diagnostics
+        // still line up. Only the *leading* position is skipped: a U+FEFF
+        // anywhere else falls through to the unexpected-character path below
+        // (it is still an invisible character in the middle of the program).
+        if self.source.starts_with('\u{feff}') {
+            lexer.bump('\u{feff}'.len_utf8());
+        }
+
         loop {
             match lexer.next() {
                 Some(result) => {
@@ -755,14 +766,16 @@ impl<'a> LogosLexer<'a> {
                             };
                             let mut error = CompileError::new(kind, rue_span);
                             if matches!(error.kind, ErrorKind::UnexpectedCharacter('\u{feff}')) {
-                                // The "character" is an invisible UTF-8
-                                // byte-order mark (typically emitted by Windows
-                                // editors at the start of the file), so the
-                                // default message and caret point at nothing
-                                // visible. Explain what is actually there.
+                                // A *leading* BOM is skipped before we get here
+                                // (see the bump above), so any BOM that reaches
+                                // this point is in the middle of the file. The
+                                // "character" is an invisible UTF-8 byte-order
+                                // mark, so the default message and caret point
+                                // at nothing visible. Explain what is there.
                                 error = error.with_help(
                                     "this invisible character is a UTF-8 byte-order \
-                                     mark (BOM); save the file without a BOM",
+                                     mark (BOM); a BOM is only ignored at the very \
+                                     start of a file — remove this one",
                                 );
                             }
                             errors.push(error);
@@ -1398,11 +1411,36 @@ mod tests {
     }
 
     #[test]
-    fn test_logos_leading_bom_gets_targeted_help() {
-        // A leading UTF-8 BOM is not accepted (the spec whitespace set is
-        // space/tab/LF/CR only), but the error must explain the invisible
-        // character instead of pointing a caret at nothing.
+    fn test_logos_leading_bom_is_skipped() {
+        // A single leading UTF-8 BOM is ignored (RUE-378, Rust/Go precedent).
+        // Tokenizing succeeds and the first real token starts at byte 3 — the
+        // BOM is skipped without shifting spans off the original file offsets.
         let lexer = LogosLexer::new("\u{feff}fn main() -> i32 { 42 }");
+        let (tokens, _interner) = lexer.tokenize().expect("leading BOM should be skipped");
+        assert!(matches!(tokens[0].kind, TokenKind::Fn));
+        assert_eq!(
+            tokens[0].span.start(),
+            3,
+            "first token must keep its byte offset into the original file (past the 3-byte BOM)"
+        );
+    }
+
+    #[test]
+    fn test_logos_bom_only_file_is_empty() {
+        // A file that is nothing but a BOM must not panic: the read head is
+        // bumped to end-of-source and lexing yields only EOF.
+        let lexer = LogosLexer::new("\u{feff}");
+        let (tokens, _interner) = lexer.tokenize().expect("BOM-only file should lex cleanly");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].kind, TokenKind::Eof));
+    }
+
+    #[test]
+    fn test_logos_mid_file_bom_errors_with_help() {
+        // A BOM anywhere but the leading position is still an error, and the
+        // error must explain the invisible character instead of pointing a
+        // caret at nothing.
+        let lexer = LogosLexer::new("fn main() -> i32 { \u{feff}42 }");
         let result = lexer.tokenize();
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1415,7 +1453,7 @@ mod tests {
                 .helps
                 .iter()
                 .any(|h| h.0.contains("byte-order mark")),
-            "BOM error should carry the explanatory help"
+            "mid-file BOM error should carry the explanatory help"
         );
     }
 

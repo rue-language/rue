@@ -61,3 +61,11 @@ fn main() -> i32 {
     0
 }
 ```
+
+{{ rule(id="2.0:8", cat="normative") }}
+
+A single byte-order mark (`U+FEFF`) at the very start of a source file is
+ignored: it is skipped before lexing and does not produce a token. This
+accommodates editors that prepend a UTF-8 BOM. A `U+FEFF` in any other position
+is not whitespace (2.3:1) and is a lexical error (E0001), like any other
+character that cannot begin a token.
