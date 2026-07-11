@@ -41,6 +41,7 @@
 
 mod fuzz;
 mod generator;
+mod trap;
 
 use rue_error::{PreviewFeature, PreviewFeatures};
 use rue_oracle::{RunSourceError, run_source_with_preview_features};

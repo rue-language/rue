@@ -71,6 +71,35 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
+/// A modeled oracle trap category.
+///
+/// The runtime-handled variants exit with code 101. [`TrapKind::Unreachable`]
+/// instead records a defensive CFG condition whose native counterpart normally
+/// faults. Keeping the category typed lets differential callers distinguish
+/// programs that terminate alike but trap for different semantic reasons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TrapKind {
+    ArithmeticOverflow,
+    DivisionByZero,
+    IntegerCastOverflow,
+    IndexOutOfBounds,
+    InvalidUtf8,
+    Unreachable,
+}
+
+impl fmt::Display for TrapKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ArithmeticOverflow => "arithmetic overflow",
+            Self::DivisionByZero => "division by zero",
+            Self::IntegerCastOverflow => "integer cast overflow",
+            Self::IndexOutOfBounds => "index out of bounds",
+            Self::InvalidUtf8 => "invalid UTF-8",
+            Self::Unreachable => "reached unreachable",
+        })
+    }
+}
+
 /// Observable result of running a program under the oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -78,9 +107,9 @@ pub struct Outcome {
     pub exit_code: i32,
     /// Everything `@dbg` wrote, in order, newline-terminated per call.
     pub stdout: String,
-    /// `Some(reason)` if execution ended in a runtime panic (exit code 101),
-    /// `None` on normal completion. The reason mirrors the runtime's category.
-    pub panic: Option<String>,
+    /// `Some(kind)` if execution ended in a modeled trap, `None` on normal
+    /// completion. Runtime-handled kinds mirror the runtime's trap categories.
+    pub panic: Option<TrapKind>,
 }
 
 /// Maximum number of raw bytes accepted from a program's `@dbg` output.
@@ -299,7 +328,7 @@ impl Value {
 }
 
 /// A runtime panic, carrying its category (mirrors the runtime's panic classes).
-struct Panic(String);
+struct Panic(TrapKind);
 
 type Step<T> = Result<T, Flow>;
 
@@ -579,7 +608,7 @@ impl<'a> Interp<'a> {
                     incoming = Vec::new();
                 }
                 Terminator::Unreachable => {
-                    return Err(Flow::Panic(Panic("reached unreachable".into())));
+                    return Err(Flow::Panic(Panic(TrapKind::Unreachable)));
                 }
                 Terminator::None => {
                     return Err(Flow::Unsupported(Unsupported("terminator None".into())));
@@ -674,7 +703,7 @@ impl<'a> Interp<'a> {
                 let bytes = s(&args[0])?;
                 let idx = args[1].as_int();
                 if idx < 0 || idx as u128 >= bytes.len() as u128 {
-                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
                 }
                 Value::Int(bytes[idx as usize] as i128)
             }
@@ -687,7 +716,7 @@ impl<'a> Interp<'a> {
                 let bytes = s(&args[0])?;
                 let idx = args[1].as_int();
                 if idx < 0 || idx as u128 >= bytes.len() as u128 {
-                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
                 }
                 Value::Int(bytes[idx as usize] as i128)
             }
@@ -697,7 +726,7 @@ impl<'a> Interp<'a> {
                 let bytes = s(&args[0])?;
                 match char_at(&bytes, args[1].as_int()) {
                     Some((scalar, _)) => Value::Int(scalar as i128),
-                    None => return Err(Flow::Panic(Panic("invalid UTF-8".into()))),
+                    None => return Err(Flow::Panic(Panic(TrapKind::InvalidUtf8))),
                 }
             }
             "__rue_String_char_next" => {
@@ -705,7 +734,7 @@ impl<'a> Interp<'a> {
                 let offset = args[1].as_int();
                 match char_at(&bytes, offset) {
                     Some((_, width)) => Value::Int(offset + width as i128),
-                    None => return Err(Flow::Panic(Panic("invalid UTF-8".into()))),
+                    None => return Err(Flow::Panic(Panic(TrapKind::InvalidUtf8))),
                 }
             }
             // The lossy character view never traps: invalid UTF-8 becomes U+FFFD
@@ -990,7 +1019,7 @@ impl<'a> Interp<'a> {
                 let idx = self.eval(cfg, frame, *index)?.as_int();
                 let val = self.eval(cfg, frame, *value)?;
                 if idx < 0 {
-                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
                 }
                 Self::set_agg_elem(frame, *slot, idx as usize, val)?;
                 Value::Unit
@@ -1065,7 +1094,7 @@ impl<'a> Interp<'a> {
                 let idx = self.eval(cfg, frame, *index)?.as_int();
                 let val = self.eval(cfg, frame, *value)?;
                 if idx < 0 {
-                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
                 }
                 Self::set_param_elem(frame, *param_slot, idx as usize, val)?;
                 Value::Unit
@@ -1140,7 +1169,7 @@ impl<'a> Interp<'a> {
                     Flow::Unsupported(Unsupported("intcast target not an int".into()))
                 })?;
                 if x < lo || x > hi {
-                    return Err(Flow::Panic(Panic("integer cast overflow".into())));
+                    return Err(Flow::Panic(Panic(TrapKind::IntegerCastOverflow)));
                 }
                 Value::Int(x)
             }
@@ -1183,19 +1212,14 @@ impl<'a> Interp<'a> {
         let x = self.eval(cfg, frame, a)?.as_int();
         let y = self.eval(cfg, frame, b)?.as_int();
         if y == 0 {
-            let reason = if is_mod {
-                "remainder by zero"
-            } else {
-                "divide by zero"
-            };
-            return Err(Flow::Panic(Panic(reason.into())));
+            return Err(Flow::Panic(Panic(TrapKind::DivisionByZero)));
         }
         // MIN / -1 (and MIN % -1) trap at the operand width: the hardware `idiv`
         // faults even though the mathematical remainder is 0. Our i128 model
         // wouldn't otherwise catch it (the value fits in i128).
         if let Some((lo, _)) = int_bounds(ty) {
             if ty.is_signed() && x == lo && y == -1 {
-                return Err(Flow::Panic(Panic("arithmetic overflow".into())));
+                return Err(Flow::Panic(Panic(TrapKind::ArithmeticOverflow)));
             }
         }
         let r = if is_mod {
@@ -1316,7 +1340,7 @@ impl<'a> Interp<'a> {
                 Projection::Index { index, .. } => {
                     let i = self.eval(cfg, frame, index)?.as_int();
                     if i < 0 {
-                        return Err(Flow::Panic(Panic("index out of bounds".into())));
+                        return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
                     }
                     path.push(i as usize);
                 }
@@ -1343,7 +1367,7 @@ impl<'a> Interp<'a> {
             cur = match cur {
                 Value::Aggregate(mut v) if idx < v.len() => v.swap_remove(idx),
                 Value::Aggregate(_) => {
-                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
                 }
                 _ => {
                     return Err(Flow::Unsupported(Unsupported(
@@ -1378,7 +1402,7 @@ impl<'a> Interp<'a> {
             cur = match cur {
                 Value::Aggregate(v) if *idx < v.len() => &mut v[*idx],
                 Value::Aggregate(_) => {
-                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
                 }
                 _ => {
                     return Err(Flow::Unsupported(Unsupported(
@@ -1399,7 +1423,7 @@ impl<'a> Interp<'a> {
                 v[idx] = val;
                 Ok(())
             }
-            Some(Value::Aggregate(_)) => Err(Flow::Panic(Panic("index out of bounds".into()))),
+            Some(Value::Aggregate(_)) => Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds))),
             _ => Err(Flow::Unsupported(Unsupported(
                 "field/index set on non-aggregate".into(),
             ))),
@@ -1432,7 +1456,7 @@ impl<'a> Interp<'a> {
                 v[idx] = val;
                 Ok(())
             }
-            Some(Value::Aggregate(_)) => Err(Flow::Panic(Panic("index out of bounds".into()))),
+            Some(Value::Aggregate(_)) => Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds))),
             _ => Err(Flow::Unsupported(Unsupported(
                 "field/index set on non-aggregate inout param".into(),
             ))),
@@ -1574,9 +1598,9 @@ fn int_bounds(ty: Type) -> Option<(i128, i128)> {
 /// `None` (a checked-arithmetic overflow) or an out-of-range result traps as a
 /// runtime overflow panic (spec 3.1:6/13); otherwise the value is returned.
 fn range_check(v: Option<i128>, ty: Type) -> Step<Value> {
-    let n = v.ok_or_else(|| Flow::Panic(Panic("arithmetic overflow".into())))?;
+    let n = v.ok_or(Flow::Panic(Panic(TrapKind::ArithmeticOverflow)))?;
     match int_bounds(ty) {
-        Some((lo, hi)) if n < lo || n > hi => Err(Flow::Panic(Panic("arithmetic overflow".into()))),
+        Some((lo, hi)) if n < lo || n > hi => Err(Flow::Panic(Panic(TrapKind::ArithmeticOverflow))),
         _ => Ok(Value::Int(n)),
     }
 }
