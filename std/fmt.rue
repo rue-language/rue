@@ -1,0 +1,56 @@
+// std.fmt — scalar-to-string formatting for the builtin types.
+//
+// This is the low-level formatting surface: turning individual `i*`/`u*`/`bool`
+// values into `String`. Multi-argument `format("n={}", n)` / interpolation is a
+// separate design (RUE-350) tracked in M5; this module is what it will build on.
+//
+//     const std = @import("std");
+//     let s = std.fmt.to_hex(255);        // "ff"
+//     let t = std.fmt.bool_to_string(true); // "true"
+
+const arraybuf = @import("arraybuf.rue");
+
+// Decimal string of any integer value (wraps the `@to_string` intrinsic, which
+// already handles every integer width).
+pub fn int_to_string(comptime T: type, x: T) -> String {
+    @to_string(x)
+}
+
+// "true" / "false".
+pub fn bool_to_string(b: bool) -> String {
+    if b { "true" } else { "false" }
+}
+
+// Unsigned value in an arbitrary base 2..=16, lowercase, no prefix.
+pub fn to_radix(n: u64, base: u64) -> String {
+    if n == 0 {
+        return "0";
+    }
+    let digits = "0123456789abcdef";
+    let bytes = arraybuf.ArrayBuf(u8);
+    let mut buf = bytes.new();
+    let mut m = n;
+    while m > 0 {
+        let d = m % base;
+        buf.push(digits[d]);
+        m = m / base;
+    }
+    // Digits were produced least-significant first; emit them reversed.
+    let mut out = String.new();
+    let mut i = buf.len();
+    while i > 0 {
+        i = i - 1;
+        out.push(buf.get_or(i, 48));
+    }
+    out
+}
+
+// Hexadecimal (base 16), lowercase, no `0x` prefix.
+pub fn to_hex(n: u64) -> String {
+    to_radix(n, 16)
+}
+
+// Binary (base 2), no `0b` prefix.
+pub fn to_binary(n: u64) -> String {
+    to_radix(n, 2)
+}
