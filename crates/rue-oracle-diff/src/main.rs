@@ -22,9 +22,9 @@
 //!   rue-cli-tests — templated `params`, `spec=[...]` refs, golden-IR and
 //!   preview assertions — so we lean on [`rue_test_runner`] (the spec runner's
 //!   own crate) to parse and template-expand every case exactly as the spec
-//!   suite does, then filter to the runnable subset the oracle can model
+//!   suite does, then filter to the eligible subset the oracle can model
 //!   (concrete `source` + expected exit/stdout; golden-IR-only, `compile_fail`,
-//!   multi-file and stdin cases are skipped, not disagreements). Preview-gated
+//!   multi-file and stdin cases are ineligible, not disagreements). Preview-gated
 //!   cases run with their declared preview feature.
 //!   Dir resolution mirrors corpus mode: argv; else `RUE_ORACLE_DIFF_SPEC_CASES`
 //!   (how the `buck2 test` sh_test feeds the rue-spec `cases` filegroup); else
@@ -34,7 +34,7 @@
 //!   against the real compiler + native binary. See [`fuzz`]. A `dump <seed>`
 //!   subcommand prints a generated program for inspection.
 //!
-//! Every mode exits non-zero if a runnable program is rejected by the front end
+//! Every mode exits non-zero if an eligible program is rejected by the front end
 //! or if the oracle disagrees with the expected behavior. Generated fuzz mode
 //! also exits non-zero if the oracle reports `Unsupported`, because its
 //! generator promises to stay within the modeled subset.
@@ -93,19 +93,44 @@ struct SourceFile {
     source: String,
 }
 
+enum CaseOutcome {
+    Agree,
+    /// The case has an executable shape, but the oracle does not model it yet.
+    Unmodeled,
+    /// The case does not describe a single concrete execution this harness can drive.
+    Ineligible,
+    /// An eligible case was rejected by the shared compiler front end.
+    FrontendFailure(String),
+    /// The oracle ran but disagreed with the expected behavior.
+    Disagreement(String),
+}
+
 #[derive(Default)]
 struct Report {
     agree: u32,
-    /// oracle could not model this program (outside its coverage) — not a bug
-    skip_unsupported: u32,
-    /// case shape the harness cannot drive (multi-file, stdin, custom args, …)
-    skip_nonrunnable: u32,
-    /// a runnable corpus case was rejected by the shared compiler front end
+    unmodeled: u32,
+    ineligible: u32,
     frontend_failures: Vec<String>,
-    /// oracle ran but disagreed with the expected behavior — a bug
     disagreements: Vec<String>,
     /// corpus discovery/read/parse failures — the harness did not check all inputs
     harness_failures: Vec<String>,
+}
+
+impl Report {
+    /// Record exactly one terminal classification for one successfully loaded case.
+    fn record(&mut self, outcome: CaseOutcome) {
+        match outcome {
+            CaseOutcome::Agree => self.agree += 1,
+            CaseOutcome::Unmodeled => self.unmodeled += 1,
+            CaseOutcome::Ineligible => self.ineligible += 1,
+            CaseOutcome::FrontendFailure(failure) => self.frontend_failures.push(failure),
+            CaseOutcome::Disagreement(disagreement) => self.disagreements.push(disagreement),
+        }
+    }
+
+    fn modeled_eligible_count(&self) -> u32 {
+        self.agree + self.frontend_failures.len() as u32 + self.disagreements.len() as u32
+    }
 }
 
 fn main() -> ExitCode {
@@ -188,7 +213,7 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
             }
         };
         for case in &file.cases {
-            check_case(path, case, &mut report);
+            report.record(check_case(path, case));
         }
     }
     report.harness_failures.sort();
@@ -197,19 +222,19 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
 }
 
 /// Print the tallied report and turn it into a process exit code: success when
-/// the oracle agreed with the compiler on every runnable case, failure on any
-/// front-end rejection or disagreement. Shared by [`corpus_mode`] and
-/// [`spec_mode`]; `corpus` names which corpus was differenced, for the header.
+/// the oracle agreed with the compiler on every modeled eligible case, failure
+/// on any harness/front-end failure or disagreement. Shared by [`corpus_mode`]
+/// and [`spec_mode`]; `corpus` names which corpus was audited, for the header.
 fn finish_report(report: &Report, corpus: &str) -> ExitCode {
     let total = report.agree
-        + report.skip_unsupported
-        + report.skip_nonrunnable
+        + report.unmodeled
+        + report.ineligible
         + report.frontend_failures.len() as u32
         + report.disagreements.len() as u32;
-    println!("\n=== rue-oracle-diff: differential agreement over {total} {corpus} cases ===");
-    println!("  agree:            {}", report.agree);
-    println!("  skip (unmodeled): {}", report.skip_unsupported);
-    println!("  skip (non-runnable shape): {}", report.skip_nonrunnable);
+    println!("\n=== rue-oracle-diff: {corpus} corpus classification audit ({total} cases) ===");
+    println!("  agree (modeled eligible): {}", report.agree);
+    println!("  unmodeled eligible:       {}", report.unmodeled);
+    println!("  ineligible:               {}", report.ineligible);
     println!("  HARNESS FAILURES: {}", report.harness_failures.len());
     for failure in &report.harness_failures {
         println!("\n  ✗ {failure}");
@@ -223,11 +248,14 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
         println!("\n  ✗ {d}");
     }
 
-    // Zero cases checked means the corpus wiring is broken (empty dir, stale
-    // env-var path, TOMLs with no parseable cases) — a no-op differential run
-    // must not report success (the RUE-341 coverage-overstatement hazard).
-    if total == 0 {
-        println!("\nno runnable {corpus} cases were checked — corpus dir empty or misconfigured.");
+    // Ineligible and unmodeled cases do not judge compiler semantics. A corpus
+    // containing only those outcomes must not turn this differential into a
+    // vacuous green check (the RUE-341 coverage-overstatement hazard).
+    if report.modeled_eligible_count() == 0 {
+        println!(
+            "\nno modeled eligible {corpus} cases were judged — corpus empty, \
+             misconfigured, or entirely outside oracle coverage."
+        );
         return ExitCode::FAILURE;
     }
 
@@ -235,13 +263,13 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
         && report.frontend_failures.is_empty()
         && report.disagreements.is_empty()
     {
-        println!("\noracle agrees with the compiler on every runnable case.");
+        println!("\noracle agrees with the compiler on every modeled eligible case.");
         ExitCode::SUCCESS
     } else {
         println!(
             "\n{} harness failure(s), {} frontend failure(s), {} disagreement(s) — \
-             corpus inputs must load and runnable cases must compile before the oracle can \
-             check them.",
+             corpus inputs must load and modeled eligible cases must compile before the \
+             oracle can check them.",
             report.harness_failures.len(),
             report.frontend_failures.len(),
             report.disagreements.len()
@@ -251,7 +279,7 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
 }
 
 /// The spec-corpus differential (RUE-204): expand each rue-spec templated case
-/// and run the runnable subset through the oracle, checking three-way agreement
+/// and run the eligible subset through the oracle, checking three-way agreement
 /// (oracle == expected == compiler).
 ///
 /// Parsing and `params` template-expansion are delegated to
@@ -284,7 +312,7 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
         // cases dir (no spec markdown).
         for (ident, file) in rue_test_runner::load_test_files(dir) {
             for case in &file.case {
-                check_spec_case(&ident, case, &mut report);
+                report.record(check_spec_case(&ident, case));
             }
         }
     }
@@ -292,23 +320,24 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
     finish_report(&report, "rue-spec")
 }
 
-/// Run one expanded rue-spec case through the oracle, tallying the outcome.
+/// Run one expanded rue-spec case through the oracle and return one outcome.
 ///
-/// Skipped (as a non-runnable shape, never a disagreement) when the case is not
+/// Ineligible (never a disagreement) when the case is not
 /// a single concrete program the oracle can execute and compare: `compile_fail`
 /// (no runtime output), `compile_only` (never executed), golden-IR-only (an IR
 /// dump, not a run), or a shape with no oracle model (stdin, multi-file
 /// `aux_files`). Preview-gated cases run with their declared preview feature.
 /// Cases the oracle simply can't model yet return [`RunSourceError::Unsupported`]
-/// and count as unmodeled skips. [`RunSourceError::Compile`] for a case that
+/// and count as unmodeled. [`RunSourceError::Compile`] for a case that
 /// survived these shape filters is a front-end failure and fails the harness.
-fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Report) {
+fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
     let golden_only = case.has_golden_ir_assertions() && !case.has_execution_assertions();
     // A `target`-pinned case's expected exit is target-specific (e.g. it matches
     // on `@target_arch()`), and a case restricted by `only_on` to other hosts is
     // built for a target the oracle isn't evaluating for. The oracle interprets a
     // single source with no `--target` notion, so neither is a program it can be
-    // asked to reproduce — skip both, exactly as the spec runner skips `only_on`.
+    // asked to reproduce — classify both as ineligible, matching the spec
+    // runner's `only_on` exclusion.
     let target_specific =
         case.target.is_some() || rue_test_runner::should_skip_for_platform(&case.only_on).is_some();
     if case.skip
@@ -319,8 +348,7 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Repor
         || golden_only
         || target_specific
     {
-        report.skip_nonrunnable += 1;
-        return;
+        return CaseOutcome::Ineligible;
     }
 
     // The exit code the compiled binary is expected to produce. A runtime-error
@@ -333,8 +361,7 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Repor
     } else if let Some(code) = case.exit_code {
         code
     } else {
-        report.skip_nonrunnable += 1;
-        return;
+        return CaseOutcome::Ineligible;
     };
 
     let is_known_gap = KNOWN_ORACLE_GAPS
@@ -344,12 +371,12 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Repor
     let preview_features = spec_preview_features(case);
 
     match run_source_with_preview_features(&case.source, &preview_features) {
-        // Unsupported means the interpreter cannot model a valid program and is
-        // a clean skip. Compile means this runnable corpus case was rejected by
+        // Unsupported means the interpreter cannot model a valid program.
+        // Compile means this eligible corpus case was rejected by
         // the shared front end and must fail rather than disappear as unmodeled.
         Err(error) => {
             let context = format!("{ident} :: {}", case.name);
-            record_oracle_error(&context, error, report);
+            record_oracle_error(&context, error)
         }
         Ok(outcome) => {
             let exit_ok = outcome.exit_code == expected_exit;
@@ -370,21 +397,23 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Repor
                 // is expected to diverge because of a tracked oracle bug. If it
                 // now AGREES, the gap is fixed — fail loudly so the entry is
                 // removed and the case becomes a live regression check again.
-                if agrees {
-                    report.disagreements.push(format!(
+                return if agrees {
+                    CaseOutcome::Disagreement(format!(
                         "{ident} :: {} — KNOWN_ORACLE_GAPS entry now AGREES; the tracked \
                          oracle gap is fixed, so delete its entry in \
                          crates/rue-oracle-diff/src/main.rs",
                         case.name
-                    ));
+                    ))
                 } else {
-                    report.skip_nonrunnable += 1;
-                }
-                return;
+                    // Preserve the existing policy: a known wrong-but-Ok oracle
+                    // result is excluded from the audit as ineligible, rather
+                    // than being conflated with Unsupported/unmodeled coverage.
+                    CaseOutcome::Ineligible
+                };
             }
 
             if agrees {
-                report.agree += 1;
+                CaseOutcome::Agree
             } else {
                 let mut msg = format!("{ident} :: {}", case.name);
                 if !exit_ok {
@@ -400,7 +429,7 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Repor
                         outcome.stdout
                     );
                 }
-                report.disagreements.push(msg);
+                CaseOutcome::Disagreement(msg)
             }
         }
     }
@@ -432,10 +461,9 @@ const KNOWN_ORACLE_GAPS: &[(&str, &str, &str)] = &[
     // run as normal three-way-agreement checks again.
 ];
 
-fn check_case(path: &Path, case: &Case, report: &mut Report) {
+fn check_case(path: &Path, case: &Case) -> CaseOutcome {
     let Some(preview_features) = corpus_preview_features(case) else {
-        report.skip_nonrunnable += 1;
-        return;
+        return CaseOutcome::Ineligible;
     };
 
     // Shapes the harness cannot drive through the single-source oracle.
@@ -450,8 +478,7 @@ fn check_case(path: &Path, case: &Case, report: &mut Report) {
         || !case.env.is_empty()
         || case.files.len() != 1
     {
-        report.skip_nonrunnable += 1;
-        return;
+        return CaseOutcome::Ineligible;
     }
     let source = &case.files[0].source;
 
@@ -467,13 +494,13 @@ fn check_case(path: &Path, case: &Case, report: &mut Report) {
     match run_source_with_preview_features(source, &preview_features) {
         Err(error) => {
             let context = format!("{} :: {}", rel(path), case.name);
-            record_oracle_error(&context, error, report);
+            record_oracle_error(&context, error)
         }
         Ok(outcome) => {
             let exit_ok = outcome.exit_code == expected_exit;
             let stdout_ok = case.stdout.as_ref().is_none_or(|s| &outcome.stdout == s);
             if exit_ok && stdout_ok {
-                report.agree += 1;
+                CaseOutcome::Agree
             } else {
                 let mut msg = format!("{} :: {}", rel(path), case.name);
                 if !exit_ok {
@@ -489,7 +516,7 @@ fn check_case(path: &Path, case: &Case, report: &mut Report) {
                         outcome.stdout
                     );
                 }
-                report.disagreements.push(msg);
+                CaseOutcome::Disagreement(msg)
             }
         }
     }
@@ -498,13 +525,13 @@ fn check_case(path: &Path, case: &Case, report: &mut Report) {
 /// Classify an oracle error without conflating a compiler rejection with an
 /// interpreter coverage gap. Corpus/spec callers prefilter intentional
 /// `compile_fail` cases, so any [`RunSourceError::Compile`] reaching this helper
-/// is an unexpected front-end failure in a supposedly runnable program.
-fn record_oracle_error(context: &str, error: RunSourceError, report: &mut Report) {
+/// is an unexpected front-end failure in an eligible program.
+fn record_oracle_error(context: &str, error: RunSourceError) -> CaseOutcome {
     match error {
-        RunSourceError::Compile(errors) => report
-            .frontend_failures
-            .push(format!("{context}\n      {errors:#?}")),
-        RunSourceError::Unsupported(_) => report.skip_unsupported += 1,
+        RunSourceError::Compile(errors) => {
+            CaseOutcome::FrontendFailure(format!("{context}\n      {errors:#?}"))
+        }
+        RunSourceError::Unsupported(_) => CaseOutcome::Unmodeled,
     }
 }
 
@@ -802,44 +829,71 @@ files = [{{ path = "probe.rue", source = "not Rue" }}]
     }
 
     #[test]
-    fn runnable_compile_rejection_is_a_frontend_failure() {
+    fn eligible_compile_rejection_is_a_frontend_failure() {
         let case = corpus_case("fn main() -> i32 { missing_name }", false);
         let mut report = Report::default();
 
-        check_case(Path::new("classification.toml"), &case, &mut report);
+        report.record(check_case(Path::new("classification.toml"), &case));
 
         assert_eq!(report.frontend_failures.len(), 1);
         assert!(report.frontend_failures[0].contains("classification.toml"));
-        assert_eq!(report.skip_unsupported, 0);
+        assert_eq!(report.unmodeled, 0);
         assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
     }
 
     #[test]
-    fn unsupported_is_still_a_clean_skip() {
+    fn report_records_each_terminal_case_outcome_once() {
+        let mut report = Report::default();
+        report.record(CaseOutcome::Agree);
+        report.record(CaseOutcome::Unmodeled);
+        report.record(CaseOutcome::Ineligible);
+        report.record(CaseOutcome::FrontendFailure("frontend".to_string()));
+        report.record(CaseOutcome::Disagreement("disagreement".to_string()));
+
+        assert_eq!(report.agree, 1);
+        assert_eq!(report.unmodeled, 1);
+        assert_eq!(report.ineligible, 1);
+        assert_eq!(report.frontend_failures, vec!["frontend".to_string()]);
+        assert_eq!(report.disagreements, vec!["disagreement".to_string()]);
+    }
+
+    #[test]
+    fn an_all_unmodeled_corpus_fails_closed() {
         let mut report = Report::default();
 
-        record_oracle_error(
+        report.record(record_oracle_error(
             "unsupported probe",
             RunSourceError::Unsupported(Unsupported("known coverage gap".to_string())),
-            &mut report,
-        );
+        ));
 
-        assert_eq!(report.skip_unsupported, 1);
+        assert_eq!(report.unmodeled, 1);
+        assert_eq!(report.modeled_eligible_count(), 0);
         assert!(report.frontend_failures.is_empty());
+        assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn agreement_plus_unmodeled_coverage_is_successful() {
+        let mut report = Report::default();
+        report.record(CaseOutcome::Agree);
+        report.record(CaseOutcome::Unmodeled);
+
+        assert_eq!(report.modeled_eligible_count(), 1);
         assert_eq!(finish_report(&report, "test"), ExitCode::SUCCESS);
     }
 
     #[test]
-    fn intentional_compile_fail_is_prefiltered() {
+    fn an_all_ineligible_corpus_fails_closed() {
         let case = corpus_case("this is intentionally not Rue", true);
         let mut report = Report::default();
 
-        check_case(Path::new("compile_fail.toml"), &case, &mut report);
+        report.record(check_case(Path::new("compile_fail.toml"), &case));
 
-        assert_eq!(report.skip_nonrunnable, 1);
-        assert_eq!(report.skip_unsupported, 0);
+        assert_eq!(report.ineligible, 1);
+        assert_eq!(report.unmodeled, 0);
+        assert_eq!(report.modeled_eligible_count(), 0);
         assert!(report.frontend_failures.is_empty());
-        assert_eq!(finish_report(&report, "test"), ExitCode::SUCCESS);
+        assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
     }
 
     #[test]
@@ -849,11 +903,10 @@ files = [{{ path = "probe.rue", source = "not Rue" }}]
             .insert("RUE_STD_PATH".to_string(), "${REAL_STD}".to_string());
         let mut report = Report::default();
 
-        check_case(Path::new("environment.toml"), &case, &mut report);
+        report.record(check_case(Path::new("environment.toml"), &case));
 
-        assert_eq!(report.skip_nonrunnable, 1);
-        assert_eq!(report.skip_unsupported, 0);
+        assert_eq!(report.ineligible, 1);
+        assert_eq!(report.unmodeled, 0);
         assert!(report.frontend_failures.is_empty());
-        assert_eq!(finish_report(&report, "test"), ExitCode::SUCCESS);
     }
 }
