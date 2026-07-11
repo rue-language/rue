@@ -732,6 +732,15 @@ impl<'a> AstGen<'a> {
                     .collect();
                 let (fields_start, fields_len) = self.rir.add_field_inits(&fields);
 
+                // Field-init shorthand (`P { x }`, RUE-613) is fully desugared to
+                // `x: x` above; carry the first shorthand field's span so Sema can
+                // gate the form behind its preview flag.
+                let shorthand_span = struct_lit
+                    .fields
+                    .iter()
+                    .find(|f| f.shorthand)
+                    .map(|f| f.span);
+
                 self.rir.add_inst(Inst {
                     data: InstData::StructInit {
                         module,
@@ -739,6 +748,7 @@ impl<'a> AstGen<'a> {
                         type_name: struct_lit.name.name, // Already a Spur
                         fields_start,
                         fields_len,
+                        shorthand_span,
                     },
                     span: struct_lit.span,
                 })

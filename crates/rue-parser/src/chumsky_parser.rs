@@ -699,21 +699,40 @@ where
         .collect()
 }
 
-/// Parser for struct field initializers: name: expr
+/// Parser for struct field initializers: `name: expr`, or the field-init
+/// shorthand `name` (RUE-613, preview `field_init_shorthand`) which desugars to
+/// `name: name` at parse time. The explicit `name :` form is tried first; a bare
+/// identifier followed by `,` or `}` (i.e. no `:`) is taken as shorthand. The
+/// `shorthand` flag is recorded so Sema can gate the form behind its preview
+/// flag; downstream stages see the fully desugared `name: Ident(name)` value.
 fn field_init_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
 ) -> impl Parser<'src, I, FieldInit, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    ident_parser()
+    let explicit = ident_parser()
         .then_ignore(just(TokenKind::Colon))
         .then(expr)
         .map_with(|(name, value), e| FieldInit {
             name,
             value: Box::new(value),
+            shorthand: false,
             span: span_from_extra(e),
-        })
+        });
+
+    // Shorthand `name` → `name: name`. The desugared value reuses the field
+    // name's identifier (and span), so an out-of-scope name produces the normal
+    // undefined-variable error at the desugared site, and a `let`-shadowed name
+    // resolves to the innermost binding just like writing `name` explicitly.
+    let shorthand = ident_parser().map_with(|name: Ident, e| FieldInit {
+        value: Box::new(Expr::Ident(name.clone())),
+        name,
+        shorthand: true,
+        span: span_from_extra(e),
+    });
+
+    choice((explicit, shorthand))
 }
 
 /// Parser for comma-separated field initializers
@@ -1194,33 +1213,120 @@ fn empty_body_from_reclaimed_struct_lit(lit: &StructLitExpr) -> BlockExpr {
     }
 }
 
-fn reclaim_empty_struct_lit_head(lit: StructLitExpr) -> Option<Expr> {
-    if !lit.fields.is_empty() {
-        return None;
-    }
-
-    Some(match (lit.base, lit.ctor_args) {
+/// Reclaim the *head* of a struct literal that greedily swallowed a
+/// restricted-position brace group (`if`/`while`/`for`/`match` head), ignoring
+/// its fields. Returns the expression the head denotes, or `None` for a form
+/// that is not reclaimable (a qualified inline type-constructor head).
+fn reclaim_struct_lit_head(
+    base: Option<Box<Expr>>,
+    name: Ident,
+    ctor_args: Option<Vec<CallArg>>,
+    span: Span,
+) -> Option<Expr> {
+    Some(match (base, ctor_args) {
         // `F(args) {}` used as a restricted-position head (`if`/`while`/`for`)
-        // reclaims to the constructor call `F(args)`; the empty braces are the
-        // block body, exactly as `if F(args) {}` parsed before the inline
+        // reclaims to the constructor call `F(args)`; the braces are the block
+        // body, exactly as `if F(args) {}` parsed before the inline
         // type-constructor struct-literal head existed (RUE-596). Only the
         // unqualified form is reclaimable here.
-        (None, Some(args)) => Expr::Call(CallExpr {
-            name: lit.name,
-            args,
-            span: lit.span,
-        }),
+        (None, Some(args)) => Expr::Call(CallExpr { name, args, span }),
         (Some(_), Some(_)) => return None,
-        (None, None) => Expr::Ident(lit.name),
+        (None, None) => Expr::Ident(name),
         (Some(base), None) => {
-            let span = base.span().extend_to(lit.name.span.end);
+            let span = base.span().extend_to(name.span.end);
             Expr::Field(FieldExpr {
                 base,
-                field: lit.name,
+                field: name,
                 span,
             })
         }
     })
+}
+
+fn reclaim_empty_struct_lit_head(lit: StructLitExpr) -> Option<Expr> {
+    if !lit.fields.is_empty() {
+        return None;
+    }
+    reclaim_struct_lit_head(lit.base, lit.name, lit.ctor_args, lit.span)
+}
+
+/// Does the condition end (on its right spine) in a struct literal that greedily
+/// swallowed a restricted-position brace group? Used only to choose between the
+/// "struct literal in bare condition" and "expected block" diagnostics once
+/// reclamation has already failed.
+fn cond_tail_is_struct_lit(cond: &Expr) -> bool {
+    match cond {
+        Expr::StructLit(_) => true,
+        Expr::Binary(b) => cond_tail_is_struct_lit(&b.right),
+        Expr::Unary(u) => cond_tail_is_struct_lit(&u.operand),
+        _ => false,
+    }
+}
+
+/// Reclaim a condition expression whose trailing brace group was greedily parsed
+/// as a struct literal back into a `(condition, body)` pair for `if`/`while`/`for`.
+///
+/// The brace group is what should have been the block body; a struct literal is
+/// never permitted unparenthesized as a bare condition (spec 4.6:13 / 4.7:28), so
+/// its braces are reclaimed as the block. Two shapes are reclaimable:
+///
+/// - A top-level `Head {}` → head plus an *empty* body (the pre-existing
+///   zero-field case; only ever arises at the top level).
+/// - A single field-init-shorthand field `Head { ident }` (RUE-613) → head plus
+///   the block `{ ident }`. Because the shorthand makes `{ ident }` look like
+///   both a block and a struct literal, this can appear not only at the top level
+///   but nested on the condition's right spine — e.g. `if a < b { a }` parses as
+///   `a < (b { a })`, so the struct literal must be peeled off the right operand.
+///   `{ a, b }` and `{ a: 1 }` are not blocks, so they remain non-reclaimable and
+///   fall through to the bare-condition error.
+fn reclaim_struct_lit_as_cond_and_body(cond: Expr) -> Option<(Expr, BlockExpr)> {
+    // Top-level empty `Head {}` reclaims to an empty body. (Empty literals are
+    // only reclaimed at the top level; a nested `a < b {}` keeps erroring as a
+    // bare-condition struct literal, unchanged from before RUE-613.)
+    if let Expr::StructLit(lit) = &cond {
+        if lit.fields.is_empty() {
+            let body = empty_body_from_reclaimed_struct_lit(lit);
+            let Expr::StructLit(lit) = cond else {
+                unreachable!("matched StructLit by ref immediately above")
+            };
+            let head = reclaim_struct_lit_head(lit.base, lit.name, lit.ctor_args, lit.span)?;
+            return Some((head, body));
+        }
+    }
+    reclaim_trailing_shorthand_struct_lit(cond)
+}
+
+/// Peel a single-field-init-shorthand struct literal (`Head { ident }`, RUE-613)
+/// off the right spine of `cond`, returning the reclaimed head expression and the
+/// `{ ident }` block. Recurses through binary and unary operators because the
+/// dangling brace group attaches to the right-most operand.
+fn reclaim_trailing_shorthand_struct_lit(cond: Expr) -> Option<(Expr, BlockExpr)> {
+    match cond {
+        Expr::StructLit(lit) if lit.fields.len() == 1 && lit.fields[0].shorthand => {
+            let body = BlockExpr {
+                statements: Vec::new(),
+                expr: Box::new(Expr::Ident(lit.fields[0].name.clone())),
+                span: Span::with_file(lit.span.file_id, lit.name.span.end, lit.span.end),
+            };
+            let head = reclaim_struct_lit_head(lit.base, lit.name, lit.ctor_args, lit.span)?;
+            Some((head, body))
+        }
+        Expr::Binary(mut b) => {
+            let (new_right, body) = reclaim_trailing_shorthand_struct_lit(*b.right)?;
+            let new_right = Box::new(new_right);
+            b.span = b.left.span().extend_to(new_right.span().end);
+            b.right = new_right;
+            Some((Expr::Binary(b), body))
+        }
+        Expr::Unary(mut u) => {
+            let (new_operand, body) = reclaim_trailing_shorthand_struct_lit(*u.operand)?;
+            let new_operand = Box::new(new_operand);
+            u.span = u.span.extend_to(new_operand.span().end);
+            u.operand = new_operand;
+            Some((Expr::Unary(u), body))
+        }
+        _ => None,
+    }
 }
 
 /// Parser for control flow expressions: break, continue, return, if, while, loop, match
@@ -1305,39 +1411,46 @@ where
             )
             .try_map_with(|((cond, then_block), else_block), e| {
                 let span = span_from_extra(e);
-                match (cond, then_block) {
-                    (Expr::StructLit(lit), None) => {
-                        let then_block = empty_body_from_reclaimed_struct_lit(&lit);
-                        let Some(cond) = reclaim_empty_struct_lit_head(lit) else {
-                            return Err(Rich::custom(
-                                e.span(),
-                                "struct literals are not allowed as a bare if condition; \
-                                 wrap the condition in parentheses",
-                            ));
-                        };
-
-                        Ok(Expr::If(IfExpr {
-                            cond: Box::new(cond),
-                            then_block,
-                            else_block,
-                            span,
-                        }))
-                    }
-                    (Expr::StructLit(_), _) => Err(Rich::custom(
+                match then_block {
+                    // A block after a struct-literal-tailed condition is the
+                    // illegal bare struct-literal condition (`if Foo {} {..}`).
+                    Some(_) if cond_tail_is_struct_lit(&cond) => Err(Rich::custom(
                         e.span(),
                         "struct literals are not allowed as a bare if condition; \
                          wrap the condition in parentheses",
                     )),
-                    (cond, Some(then_block)) => Ok(Expr::If(IfExpr {
+                    Some(then_block) => Ok(Expr::If(IfExpr {
                         cond: Box::new(cond),
                         then_block,
                         else_block,
                         span,
                     })),
-                    (_, None) => Err(Rich::custom(
-                        e.span(),
-                        "expected '{' and then block after the if condition",
-                    )),
+                    // No block parsed: the condition greedily swallowed the
+                    // then-block braces as a struct literal. Reclaim them.
+                    None => {
+                        let tail_is_struct = cond_tail_is_struct_lit(&cond);
+                        match reclaim_struct_lit_as_cond_and_body(cond) {
+                            Some((cond, then_block)) => Ok(Expr::If(IfExpr {
+                                cond: Box::new(cond),
+                                then_block,
+                                else_block,
+                                span,
+                            })),
+                            // A non-reclaimable struct-literal tail (explicit
+                            // fields, a qualified inline ctor head) is an illegal
+                            // bare condition; anything else is simply a missing
+                            // block.
+                            None if tail_is_struct => Err(Rich::custom(
+                                e.span(),
+                                "struct literals are not allowed as a bare if condition; \
+                                 wrap the condition in parentheses",
+                            )),
+                            None => Err(Rich::custom(
+                                e.span(),
+                                "expected '{' and then block after the if condition",
+                            )),
+                        }
+                    }
                 }
             })
     })
@@ -1352,37 +1465,36 @@ where
         .then(block_parser(expr.clone(), block_like.clone()).or_not())
         .try_map_with(|(cond, body), e| {
             let span = span_from_extra(e);
-            match (cond, body) {
-                (Expr::StructLit(lit), None) => {
-                    let body = empty_body_from_reclaimed_struct_lit(&lit);
-                    let Some(cond) = reclaim_empty_struct_lit_head(lit) else {
-                        return Err(Rich::custom(
-                            e.span(),
-                            "struct literals are not allowed as a bare while condition; \
-                             wrap the condition in parentheses",
-                        ));
-                    };
-
-                    Ok(Expr::While(WhileExpr {
-                        cond: Box::new(cond),
-                        body,
-                        span,
-                    }))
-                }
-                (Expr::StructLit(_), _) => Err(Rich::custom(
+            match body {
+                Some(_) if cond_tail_is_struct_lit(&cond) => Err(Rich::custom(
                     e.span(),
                     "struct literals are not allowed as a bare while condition; \
                      wrap the condition in parentheses",
                 )),
-                (cond, Some(body)) => Ok(Expr::While(WhileExpr {
+                Some(body) => Ok(Expr::While(WhileExpr {
                     cond: Box::new(cond),
                     body,
                     span,
                 })),
-                (_, None) => Err(Rich::custom(
-                    e.span(),
-                    "expected '{' and body block after the while condition",
-                )),
+                None => {
+                    let tail_is_struct = cond_tail_is_struct_lit(&cond);
+                    match reclaim_struct_lit_as_cond_and_body(cond) {
+                        Some((cond, body)) => Ok(Expr::While(WhileExpr {
+                            cond: Box::new(cond),
+                            body,
+                            span,
+                        })),
+                        None if tail_is_struct => Err(Rich::custom(
+                            e.span(),
+                            "struct literals are not allowed as a bare while condition; \
+                             wrap the condition in parentheses",
+                        )),
+                        None => Err(Rich::custom(
+                            e.span(),
+                            "expected '{' and body block after the while condition",
+                        )),
+                    }
+                }
             }
         })
         .boxed();
@@ -1410,39 +1522,38 @@ where
         .then(block_parser(expr.clone(), block_like.clone()).or_not())
         .try_map_with(|((binder, iterable), body), e| {
             let span = span_from_extra(e);
-            match (iterable, body) {
-                (Expr::StructLit(lit), None) => {
-                    let body = empty_body_from_reclaimed_struct_lit(&lit);
-                    let Some(iterable) = reclaim_empty_struct_lit_head(lit) else {
-                        return Err(Rich::custom(
-                            e.span(),
-                            "struct literals are not allowed as a bare for iterable; \
-                             wrap the iterable in parentheses",
-                        ));
-                    };
-
-                    Ok(Expr::For(ForExpr {
-                        binder,
-                        iterable: Box::new(iterable),
-                        body,
-                        span,
-                    }))
-                }
-                (Expr::StructLit(_), _) => Err(Rich::custom(
+            match body {
+                Some(_) if cond_tail_is_struct_lit(&iterable) => Err(Rich::custom(
                     e.span(),
                     "struct literals are not allowed as a bare for iterable; \
                      wrap the iterable in parentheses",
                 )),
-                (iterable, Some(body)) => Ok(Expr::For(ForExpr {
+                Some(body) => Ok(Expr::For(ForExpr {
                     binder,
                     iterable: Box::new(iterable),
                     body,
                     span,
                 })),
-                (_, None) => Err(Rich::custom(
-                    e.span(),
-                    "expected '{' and body block after the for iterable",
-                )),
+                None => {
+                    let tail_is_struct = cond_tail_is_struct_lit(&iterable);
+                    match reclaim_struct_lit_as_cond_and_body(iterable) {
+                        Some((iterable, body)) => Ok(Expr::For(ForExpr {
+                            binder,
+                            iterable: Box::new(iterable),
+                            body,
+                            span,
+                        })),
+                        None if tail_is_struct => Err(Rich::custom(
+                            e.span(),
+                            "struct literals are not allowed as a bare for iterable; \
+                             wrap the iterable in parentheses",
+                        )),
+                        None => Err(Rich::custom(
+                            e.span(),
+                            "expected '{' and body block after the for iterable",
+                        )),
+                    }
+                }
             }
         })
         .boxed();
@@ -1642,15 +1753,24 @@ where
     // followed by `}` (empty struct) or `ident :` (non-empty struct) to confirm it's
     // a struct literal, not field access followed by a block.
     //
-    // Lookahead check: succeeds (without consuming) if `{ }` or `{ ident : `
+    // Lookahead check: succeeds (without consuming) if `{ }`, `{ ident : `, or
+    // (field-init shorthand, RUE-613) `{ ident }` / `{ ident , `. The shorthand
+    // forms let `module.Point { x }` and `module.Point { x, y }` parse as
+    // qualified struct literals rather than field access + block; `{ ident . `
+    // and `{ ident ( ` do not match, so `obj.field { expr }` blocks are
+    // unaffected.
     let struct_lit_lookahead = just(TokenKind::LBrace)
         .then(
             choice((
                 // Empty struct: { }
                 just(TokenKind::RBrace).ignored(),
-                // Non-empty struct: { ident : ...
+                // Non-empty struct: `{ ident :`, `{ ident ,`, or `{ ident }`
                 select! { TokenKind::Ident(_) => () }
-                    .then_ignore(just(TokenKind::Colon))
+                    .then_ignore(choice((
+                        just(TokenKind::Colon).ignored(),
+                        just(TokenKind::Comma).ignored(),
+                        just(TokenKind::RBrace).ignored(),
+                    )))
                     .ignored(),
             ))
             // We're just checking the pattern exists, not consuming
@@ -3916,6 +4036,78 @@ mod tests {
         let result =
             parse("fn main() -> i32 { let mut x = 0; while x < 10 { x = x + 1; } x }").unwrap();
         assert_eq!(result.ast.items.len(), 1);
+    }
+
+    // ==================== Field-Init Shorthand (RUE-613) ====================
+
+    #[test]
+    fn test_field_init_shorthand_desugars_to_ident() {
+        // `P { x }` desugars to `P { x: x }`: one field whose value is Ident(x)
+        // and whose `shorthand` flag is set.
+        let result = parse_expr("P { x }").unwrap();
+        match result.expr {
+            Expr::StructLit(lit) => {
+                assert_eq!(lit.fields.len(), 1);
+                let f = &lit.fields[0];
+                assert!(f.shorthand, "field should be marked shorthand");
+                assert_eq!(result.interner.resolve(&f.name.name), "x");
+                match f.value.as_ref() {
+                    Expr::Ident(id) => assert_eq!(result.interner.resolve(&id.name), "x"),
+                    other => panic!("expected desugared Ident value, got {other:?}"),
+                }
+            }
+            other => panic!("expected StructLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_field_init_shorthand_mixed_with_explicit() {
+        // Mixed `P { x, y: 2 }`: first field shorthand, second explicit.
+        let result = parse_expr("P { x, y: 2 }").unwrap();
+        match result.expr {
+            Expr::StructLit(lit) => {
+                assert_eq!(lit.fields.len(), 2);
+                assert!(lit.fields[0].shorthand);
+                assert!(!lit.fields[1].shorthand);
+            }
+            other => panic!("expected StructLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_if_single_ident_body_is_block_not_struct_literal() {
+        // `if c { y }` must parse as an if whose then-block is the block `{ y }`,
+        // NOT as the struct literal `c { y: y }` used illegally as a condition.
+        let result = parse_expr("if c { y } else { z }").unwrap();
+        match result.expr {
+            Expr::If(if_expr) => match if_expr.cond.as_ref() {
+                Expr::Ident(id) => assert_eq!(result.interner.resolve(&id.name), "c"),
+                other => panic!("expected Ident condition, got {other:?}"),
+            },
+            other => panic!("expected If, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_if_binary_condition_with_single_ident_body_not_struct_literal() {
+        // Regression: `if a < b { a }` must not parse the right operand `b { a }`
+        // as a shorthand struct literal (which would make the whole `a < b { a }`
+        // a struct-literal-tailed binary and swallow the block). The condition
+        // must stay `a < b` with `{ a }` as the block body.
+        let result = parse_expr("if a < b { a } else { b }").unwrap();
+        match result.expr {
+            Expr::If(if_expr) => match if_expr.cond.as_ref() {
+                Expr::Binary(bin) => {
+                    assert_eq!(bin.op, BinaryOp::Lt);
+                    match bin.right.as_ref() {
+                        Expr::Ident(id) => assert_eq!(result.interner.resolve(&id.name), "b"),
+                        other => panic!("expected Ident right operand, got {other:?}"),
+                    }
+                }
+                other => panic!("expected Binary condition, got {other:?}"),
+            },
+            other => panic!("expected If, got {other:?}"),
+        }
     }
 
     // ==================== Struct Method Parsing Tests ====================

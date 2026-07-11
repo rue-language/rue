@@ -370,3 +370,109 @@ expected_stdout = """
 2
 1
 """
+
+# =============================================================================
+# Field-Init Shorthand (RUE-613, preview field_init_shorthand)
+# =============================================================================
+
+[[case]]
+name = "field_init_shorthand_basic"
+spec = ["3.6:18"]
+preview = "field_init_shorthand"
+preview_should_pass = true
+description = "`P { x }` is shorthand for `P { x: x }`, taking the value from the in-scope `x`"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let x = 10;
+    let y = 20;
+    let p = Point { x, y };
+    p.x + p.y  // 30
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "field_init_shorthand_mixed_with_explicit"
+spec = ["3.6:18"]
+preview = "field_init_shorthand"
+preview_should_pass = true
+description = "Shorthand and explicit initializers may be mixed within one literal"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let x = 10;
+    let p = Point { x, y: 20 };
+    p.x + p.y  // 30
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "field_init_shorthand_uses_innermost_binding"
+spec = ["3.6:18"]
+preview = "field_init_shorthand"
+preview_should_pass = true
+description = "A `let` shadowing an outer `x` supplies the shorthand's value (innermost binding)"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let x = 1;
+    let x = 40;
+    let p = Point { x, y: 2 };
+    p.x + p.y  // 42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "field_init_shorthand_self_in_method"
+spec = ["3.6:18"]
+preview = "field_init_shorthand"
+preview_should_pass = true
+description = "Shorthand is available under a `Self { .. }` head inside a method"
+source = """
+struct Point {
+    x: i32,
+    y: i32,
+    fn make(x: i32, y: i32) -> Self { Self { x, y } }
+}
+fn main() -> i32 {
+    let p = Point.make(40, 2);
+    p.x + p.y  // 42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "field_init_shorthand_requires_preview"
+spec = ["3.6:18"]
+description = "Without the preview feature the shorthand is an error (E1100)"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let x = 10;
+    let y = 20;
+    let p = Point { x, y };
+    p.x + p.y
+}
+"""
+compile_fail = true
+error_contains = ["E1100", "field_init_shorthand"]
+
+[[case]]
+name = "field_init_shorthand_undefined_name"
+spec = ["3.6:18"]
+preview = "field_init_shorthand"
+preview_should_pass = true
+description = "A shorthand naming a binding not in scope is the normal undefined-name error"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let y = 20;
+    let p = Point { x, y };
+    p.x + p.y
+}
+"""
+compile_fail = true
+error_contains = ["E0201", "x"]

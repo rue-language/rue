@@ -507,6 +507,11 @@ pub enum PreviewFeature {
     /// bind-first form (`let P = F(args); P.NAME`). Elided args (`Option(_)`)
     /// remain out of scope (RUE-401).
     InlineTypeCtorPath,
+    /// Field-init shorthand (RUE-613): a struct-literal field written as a bare
+    /// identifier `P { x }` desugars to `P { x: x }`, taking the value from the
+    /// in-scope binding of the same name. Mixed forms (`P { x, y: 2 }`) and
+    /// `Self { a, b }` in methods are supported.
+    FieldInitShorthand,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -530,6 +535,7 @@ impl PreviewFeature {
             PreviewFeature::Slices => "slices",
             PreviewFeature::StringTrio => "string_trio",
             PreviewFeature::InlineTypeCtorPath => "inline_type_ctor_paths",
+            PreviewFeature::FieldInitShorthand => "field_init_shorthand",
         }
     }
 
@@ -541,6 +547,7 @@ impl PreviewFeature {
             PreviewFeature::Slices => "ADR-0043",
             PreviewFeature::StringTrio => "ADR-0043",
             PreviewFeature::InlineTypeCtorPath => "ADR-0025",
+            PreviewFeature::FieldInitShorthand => "RUE-613",
         }
     }
 
@@ -551,6 +558,7 @@ impl PreviewFeature {
             PreviewFeature::Slices,
             PreviewFeature::StringTrio,
             PreviewFeature::InlineTypeCtorPath,
+            PreviewFeature::FieldInitShorthand,
         ]
     }
 
@@ -577,6 +585,7 @@ impl std::str::FromStr for PreviewFeature {
             "slices" => Ok(PreviewFeature::Slices),
             "string_trio" => Ok(PreviewFeature::StringTrio),
             "inline_type_ctor_paths" => Ok(PreviewFeature::InlineTypeCtorPath),
+            "field_init_shorthand" => Ok(PreviewFeature::FieldInitShorthand),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -2520,7 +2529,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, slices, string_trio, inline_type_ctor_paths"
+            "test_infra, slices, string_trio, inline_type_ctor_paths, field_init_shorthand"
         );
     }
 
