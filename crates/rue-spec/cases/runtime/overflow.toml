@@ -17,7 +17,7 @@ fn main() -> i32 {
     x + 1
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "overflow_sub_exit_101"
@@ -28,7 +28,7 @@ fn main() -> i32 {
     x - 1
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "overflow_mul_exit_101"
@@ -39,7 +39,7 @@ fn main() -> i32 {
     x * 2
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 # =============================================================================
 # Operations That Can Overflow
@@ -54,7 +54,7 @@ fn main() -> i32 {
     x + 1
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "overflow_subtraction"
@@ -65,7 +65,7 @@ fn main() -> i32 {
     x - 1
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "overflow_multiplication"
@@ -76,7 +76,7 @@ fn main() -> i32 {
     x * 10000
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "overflow_negation"
@@ -87,7 +87,7 @@ fn main() -> i32 {
     -x
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 # Division and remainder overflow exactly for MIN / -1 (RUE-30): the quotient
 # -MIN is unrepresentable. Hardware gives no clean trap (x86 IDIV raises
@@ -104,7 +104,7 @@ fn main() -> i32 {
     x / y
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "overflow_remainder_min_by_neg1"
@@ -116,7 +116,7 @@ fn main() -> i32 {
     x % y
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 # Near-miss controls: MIN / 1 and (MIN + 1) / -1 are representable and must
 # NOT trap.
