@@ -149,6 +149,90 @@ function main:
     bl __rue_exit
 """
 
+# =============================================================================
+# Local and parameter storage lowering (RUE-612)
+# =============================================================================
+
+[[case]]
+name = "storage_lowering_mir_x86_64"
+spec = ["5.2:1", "5.2:2", "5.2:3", "6.1:14", "6.1:18"]
+description = "Scalar allocation, local load/store, and inout ParamStore retain their exact x86-64 MIR sequence."
+source = """
+fn set(inout x: i32) { x = 42; }
+
+fn main() -> i32 {
+    let mut x = 0;
+    x = 1;
+    set(inout x);
+    x
+}
+"""
+target = "x86-64-linux"
+expected_mir = """
+function main:
+    mov v0, 0
+    mov [rbp-8], v0
+    mov v1, 1
+    mov [rbp-8], v1
+    mov v2, [rbp-8]
+    lea v4, [rbp-8]
+    mov rax, v4
+    push rax
+    pop rdi
+    call set
+    mov v3, rax
+    mov v5, [rbp-8]
+    mov rdi, v5
+    call __rue_exit
+
+function set:
+    mov v0, [rbp-8]
+    mov v1, 42
+    mov [v0], v1
+    mov v2, 0
+    mov rax, v2
+    ret
+"""
+
+[[case]]
+name = "storage_lowering_mir_aarch64"
+spec = ["5.2:1", "5.2:2", "5.2:3", "6.1:14", "6.1:18"]
+description = "Scalar allocation, local load/store, and inout ParamStore retain their exact AArch64 MIR sequence."
+source = """
+fn set(inout x: i32) { x = 42; }
+
+fn main() -> i32 {
+    let mut x = 0;
+    x = 1;
+    set(inout x);
+    x
+}
+"""
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #0
+    str v0, [fp, #-8]
+    mov v1, #1
+    str v1, [fp, #-8]
+    ldr v2, [fp, #-8]
+    add v4, fp, #-8
+    mov x0, v4
+    bl set
+    mov v3, x0
+    ldr v5, [fp, #-8]
+    mov x0, v5
+    bl __rue_exit
+
+function set:
+    ldr v0, [fp, #-8]
+    mov v1, #42
+    str v1, [v0]
+    mov v2, #0
+    mov x0, v2
+    ret
+"""
+
 [[case]]
 name = "zero_rir"
 spec = ["2.1:1"]

@@ -45,6 +45,7 @@ mod codegen_pipeline;
 mod schedule_core;
 mod stack_frame;
 mod stack_verify;
+mod storage_lower;
 
 pub mod aarch64;
 pub mod agg_slots;
