@@ -665,8 +665,7 @@ fn main() -> i32 {
     0
 }
 """
-exit_code = 101
-stderr_contains = "integer cast overflow"
+runtime_error = "integer cast overflow"
 
 [[case]]
 name = "intcast_overflow_negative_to_unsigned"
@@ -678,8 +677,7 @@ fn main() -> i32 {
     0
 }
 """
-exit_code = 101
-stderr_contains = "integer cast overflow"
+runtime_error = "integer cast overflow"
 
 [[case]]
 name = "intcast_overflow_i8_max"
@@ -691,8 +689,7 @@ fn main() -> i32 {
     0
 }
 """
-exit_code = 101
-stderr_contains = "integer cast overflow"
+runtime_error = "integer cast overflow"
 
 [[case]]
 name = "intcast_overflow_i8_min"
@@ -704,8 +701,7 @@ fn main() -> i32 {
     0
 }
 """
-exit_code = 101
-stderr_contains = "integer cast overflow"
+runtime_error = "integer cast overflow"
 
 [[case]]
 name = "intcast_boundary_i8_max"
@@ -777,8 +773,7 @@ fn main() -> i32 {
     y
 }
 """
-exit_code = 101
-stderr_contains = "integer cast overflow"
+runtime_error = "integer cast overflow"
 
 # =============================================================================
 # @read_line Intrinsic
