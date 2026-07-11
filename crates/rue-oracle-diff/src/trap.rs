@@ -28,6 +28,11 @@ pub(crate) fn native_runtime_trap_kind(stderr: &str) -> Option<TrapKind> {
         "error: division by zero\n" => Some(TrapKind::DivisionByZero),
         "error: index out of bounds\n" => Some(TrapKind::IndexOutOfBounds),
         "error: invalid UTF-8\n" => Some(TrapKind::InvalidUtf8),
+        "panic\n" => Some(TrapKind::UserPanic),
+        "assertion failed\n" => Some(TrapKind::AssertionFailure),
+        stderr if stderr.starts_with("panic: ") && stderr.ends_with('\n') => {
+            Some(TrapKind::UserPanic)
+        }
         _ => None,
     }
 }
@@ -43,13 +48,26 @@ fn expected_trap_kind(fragment: &str) -> Option<TrapKind> {
     }
 }
 
-pub(crate) fn trap_expectation<'a>(
+/// CLI cases also pin the two abort intrinsics' exact runtime prefixes. Keep
+/// this vocabulary separate from rue-spec so adding the CLI registry does not
+/// silently reclassify that corpus's existing observation coverage.
+fn cli_expected_trap_kind(fragment: &str) -> Option<TrapKind> {
+    expected_trap_kind(fragment).or_else(|| match fragment {
+        "panic" => Some(TrapKind::UserPanic),
+        "assertion failed" => Some(TrapKind::AssertionFailure),
+        fragment if fragment.starts_with("panic: ") => Some(TrapKind::UserPanic),
+        _ => None,
+    })
+}
+
+fn classify_expectation<'a>(
     fragments: impl IntoIterator<Item = &'a str>,
+    classify: fn(&str) -> Option<TrapKind>,
 ) -> TrapExpectation {
     let mut expected = None;
 
     for fragment in fragments {
-        let Some(kind) = expected_trap_kind(fragment) else {
+        let Some(kind) = classify(fragment) else {
             return TrapExpectation::Unmodeled;
         };
         if expected.is_some_and(|prior| prior != kind) {
@@ -59,6 +77,18 @@ pub(crate) fn trap_expectation<'a>(
     }
 
     expected.map_or(TrapExpectation::Undeclared, TrapExpectation::Modeled)
+}
+
+pub(crate) fn trap_expectation<'a>(
+    fragments: impl IntoIterator<Item = &'a str>,
+) -> TrapExpectation {
+    classify_expectation(fragments, expected_trap_kind)
+}
+
+pub(crate) fn cli_trap_expectation<'a>(
+    fragments: impl IntoIterator<Item = &'a str>,
+) -> TrapExpectation {
+    classify_expectation(fragments, cli_expected_trap_kind)
 }
 
 #[cfg(test)]
@@ -87,15 +117,26 @@ mod tests {
             native_runtime_trap_kind("error: invalid UTF-8\n"),
             Some(TrapKind::InvalidUtf8)
         );
+        assert_eq!(
+            native_runtime_trap_kind("panic\n"),
+            Some(TrapKind::UserPanic)
+        );
+        assert_eq!(
+            native_runtime_trap_kind("panic: boom\n"),
+            Some(TrapKind::UserPanic)
+        );
+        assert_eq!(
+            native_runtime_trap_kind("assertion failed\n"),
+            Some(TrapKind::AssertionFailure)
+        );
     }
 
     #[test]
-    fn expectation_fragments_user_panics_and_extra_output_are_not_proof() {
+    fn user_panics_are_distinct_from_builtin_traps_and_extra_output_is_not_proof() {
         assert_eq!(native_runtime_trap_kind("integer overflow"), None);
-        assert_eq!(native_runtime_trap_kind("panic: integer overflow\n"), None);
         assert_eq!(
             native_runtime_trap_kind("panic: index out of bounds\n"),
-            None
+            Some(TrapKind::UserPanic)
         );
         assert_eq!(
             native_runtime_trap_kind("error: integer cast overflow\nerror: integer overflow\n"),
@@ -131,6 +172,22 @@ mod tests {
         assert_eq!(
             trap_expectation(["division by zero", "division by zero"]),
             TrapExpectation::Modeled(TrapKind::DivisionByZero)
+        );
+
+        for fragment in ["panic", "panic: boom", "panic: integer overflow"] {
+            assert_eq!(
+                cli_trap_expectation([fragment]),
+                TrapExpectation::Modeled(TrapKind::UserPanic)
+            );
+            assert_eq!(trap_expectation([fragment]), TrapExpectation::Unmodeled);
+        }
+        assert_eq!(
+            cli_trap_expectation(["assertion failed"]),
+            TrapExpectation::Modeled(TrapKind::AssertionFailure)
+        );
+        assert_eq!(
+            trap_expectation(["assertion failed"]),
+            TrapExpectation::Unmodeled
         );
     }
 

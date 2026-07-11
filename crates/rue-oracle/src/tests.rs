@@ -433,6 +433,8 @@ fn trap_kind_display_spellings_are_stable() {
         (TrapKind::IntegerCastOverflow, "integer cast overflow"),
         (TrapKind::IndexOutOfBounds, "index out of bounds"),
         (TrapKind::InvalidUtf8, "invalid UTF-8"),
+        (TrapKind::UserPanic, "user panic"),
+        (TrapKind::AssertionFailure, "assertion failure"),
         (TrapKind::Unreachable, "reached unreachable"),
     ];
 

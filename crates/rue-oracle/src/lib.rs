@@ -88,6 +88,8 @@ pub enum TrapKind {
     IntegerCastOverflow,
     IndexOutOfBounds,
     InvalidUtf8,
+    UserPanic,
+    AssertionFailure,
     Unreachable,
 }
 
@@ -99,6 +101,8 @@ impl fmt::Display for TrapKind {
             Self::IntegerCastOverflow => "integer cast overflow",
             Self::IndexOutOfBounds => "index out of bounds",
             Self::InvalidUtf8 => "invalid UTF-8",
+            Self::UserPanic => "user panic",
+            Self::AssertionFailure => "assertion failure",
             Self::Unreachable => "reached unreachable",
         })
     }

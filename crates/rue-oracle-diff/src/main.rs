@@ -760,7 +760,7 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
     };
     let source = &case.files[0].source;
     let expected_trap =
-        trap::trap_expectation(case.runtime_error_contains.iter().map(String::as_str));
+        trap::cli_trap_expectation(case.runtime_error_contains.iter().map(String::as_str));
 
     // A program that expects a runtime panic exits 101 by convention.
     let expected_exit = case
@@ -1811,7 +1811,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     fn unknown_runtime_expectations_are_counted_as_unmodeled() {
         let mut case = corpus_case("fn main() -> i32 { let x: i32 = 2147483647; x + 1 }", false);
         case.exit_code = None;
-        case.runtime_error_contains = vec!["panic: integer overflow".to_string()];
+        case.runtime_error_contains = vec!["custom trap wording".to_string()];
 
         let mut report = Report::default();
         report.record(check_case(Path::new("trap.toml"), &case));
@@ -1896,7 +1896,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         let mut trap_case =
             corpus_case("fn main() -> i32 { let x: i32 = 2147483647; x + 1 }", false);
         trap_case.exit_code = None;
-        trap_case.runtime_error_contains = vec!["panic: integer overflow".to_string()];
+        trap_case.runtime_error_contains = vec!["custom trap wording".to_string()];
         let trap_outcome = check_case(Path::new("trap.toml"), &trap_case);
 
         let stderr_case = rue_test_runner::Case {

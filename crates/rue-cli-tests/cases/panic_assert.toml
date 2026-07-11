@@ -135,7 +135,7 @@ fn main() -> i32 {
 """ }]
 exit_code = 101
 stdout = ""
-runtime_error_contains = ["one is not two"]
+runtime_error_contains = ["panic: one is not two"]
 
 # ── @cast rejection ──────────────────────────────────────────────────────────
 
