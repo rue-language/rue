@@ -105,7 +105,7 @@ fn main() -> i32 {
     arr[i]
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 # =============================================================================
 # Out-of-Bounds Panic
@@ -121,7 +121,7 @@ fn main() -> i32 {
     arr[i]
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 # =============================================================================
 # Zero-Length Arrays (Zero-Sized Types)

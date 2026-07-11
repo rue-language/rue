@@ -120,7 +120,7 @@ fn main() -> i32 {
     @intCast(b)
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 # 3.7:44 — a literal `str` is first-class: passable as a `str` argument.
 [[case]]

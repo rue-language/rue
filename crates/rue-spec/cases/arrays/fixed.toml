@@ -232,7 +232,7 @@ fn main() -> i32 {
     arr[i]
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 # =============================================================================
 # Mutable Array Element Assignment
@@ -502,7 +502,7 @@ fn main() -> i32 {
     matrix[i][0]
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 # Arrays in structs
 
