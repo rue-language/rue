@@ -402,6 +402,17 @@ impl<'a> Sema<'a> {
             let base_result = self.analyze_inst_for_projection(air, base, ctx)?;
             let base_type = base_result.ty;
 
+            // Module member access in a projection position: equality
+            // operands are read through a shared borrow (4.3:3f), so a
+            // module-qualified constant (`tag == m.CONST`) reaches this arm
+            // with a module-typed base. Resolve it as a member access —
+            // mirroring `analyze_field_get`'s fallback — instead of
+            // rejecting it as field access on a non-struct (RUE-632). A
+            // constant inlines a fresh value, so no move state applies.
+            if let Some(module_id) = base_type.as_module() {
+                return self.analyze_module_type_member_access(air, module_id, field, field_span);
+            }
+
             let struct_id = match base_type.kind() {
                 TypeKind::Struct(id) => id,
                 _ => {

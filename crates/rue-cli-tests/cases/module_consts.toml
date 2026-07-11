@@ -339,3 +339,32 @@ pub const ANSWER: i32 = 42;
 """ },
 ]
 stdout = "42\n"
+
+# A module-qualified const in EVERY expression position, including the
+# equality operand — which routes through sema's place-projection path
+# (equality operands are borrows, 4.3:3f) and used to fail E0423 "field
+# access on non-struct type '<module>'" because that path lacked the
+# module-member fallback the value path has (RUE-632).
+[[case]]
+name = "module_const_in_equality_operand"
+files = [
+    { path = "main.rue", source = """
+const h = @import("helper.rue");
+
+fn take(v: i64) -> i64 { v }
+
+fn main() -> i32 {
+    let a = h.MAGIC;                             // let init
+    let b = take(h.MAGIC);                       // call argument
+    let c = h.MAGIC + 1;                         // arithmetic operand
+    let d = if a == h.MAGIC { 1 } else { 0 };    // equality operand (RUE-632)
+    let e = if h.MAGIC != 8 { 1 } else { 0 };    // inequality operand
+    let f = if h.MAGIC < 8 { 1 } else { 0 };     // ordering operand
+    @intCast(a + b + c + d + e + f + 17)
+}
+""" },
+    { path = "helper.rue", source = """
+pub const MAGIC: i64 = 7;
+""" },
+]
+exit_code = 42
