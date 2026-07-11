@@ -54,8 +54,8 @@ use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
 use rue_rir::{InstData, InstRef, RepeatCount, RirPattern};
 use rue_span::{FileId, Span};
 
-use super::Sema;
 use super::context::{AnalysisContext, ConstValue, LocalVar, ParamInfo};
+use super::{FunctionInfo, Sema};
 use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
 use crate::types::{ArrayLen, StructField, Type, TypeKind};
 
@@ -326,32 +326,6 @@ impl Sema<'_> {
         // its receiver against the expression's own file's imports (RUE-511).
         env.defining_file = Some(self.rir.get(inst_ref).span.file_id);
         self.eval_const_expr(inst_ref, &mut env).ok().flatten()
-    }
-
-    /// Like [`try_evaluate_const_with_subst`], but *propagates* a hard
-    /// diagnostic raised while reducing the body instead of swallowing it.
-    ///
-    /// Reducing a `-> type` constructor body may legitimately be non-evaluable
-    /// (`Ok(None)` — defer to a runtime call) or raise a genuine compile error
-    /// (`Err` — e.g. an arithmetic overflow, a privacy violation, or exceeding
-    /// the comptime-recursion depth limit for a non-terminating type
-    /// constructor, RUE-261). The type-constructor reduction site uses this so
-    /// the latter surfaces as its real diagnostic (E1200) rather than being
-    /// swallowed and mis-reported as a downstream link error.
-    ///
-    /// [`try_evaluate_const_with_subst`]: Sema::try_evaluate_const_with_subst
-    pub(crate) fn eval_type_constructor_body(
-        &mut self,
-        inst_ref: InstRef,
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
-    ) -> CompileResult<Option<ConstValue>> {
-        let mut env = ComptimeEnv::with_subst(type_subst, value_subst);
-        // The body is code from the constructor's file, so a module-qualified
-        // comptime call inside it (`let O = b.Mk(T)`) resolves its receiver
-        // against that file's imports (RUE-511).
-        env.defining_file = Some(self.rir.get(inst_ref).span.file_id);
-        self.eval_const_expr(inst_ref, &mut env)
     }
 
     /// Try to extract a constant integer value from an RIR index expression.
@@ -1423,9 +1397,6 @@ impl Sema<'_> {
     /// rejected. A droppable element (primitives, pointers, `Copy` structs,
     /// destructor-bearing structs, nested containers) passes.
     pub(crate) fn check_require_droppable(&self, ty: Type, span: Span) -> CompileResult<()> {
-        // Linear element types stay rejected (E0499): a linear value must be
-        // consumed exactly once and a container cannot run the consuming
-        // discharge on drop — that is the deferred RUE-649 work.
         if self.type_carries_linear(ty) {
             return Err(CompileError::new(
                 ErrorKind::ContainerElementIsLinear {
@@ -1434,11 +1405,10 @@ impl Sema<'_> {
                 span,
             ));
         }
-        // Droppable-but-non-linear element types are now ACCEPTED (RUE-646,
-        // Steve's 2026-07-11 ruling): the container runs each live element's
-        // drop glue before freeing its buffer, exactly as Rust's `Vec<T>`
-        // does. The old E0498 rejection is gone; `ArrayBuf(ArrayBuf(i64))`,
-        // `ArrayBuf(StrBuf)`, and lists of `drop fn` structs are legal.
+        // Droppable-but-non-linear element types are accepted (RUE-646): the
+        // container runs each live element's drop glue before freeing its
+        // buffer. Linear element types stay rejected because they require a
+        // consuming discharge rather than ordinary drop glue.
         Ok(())
     }
 
@@ -1524,7 +1494,7 @@ impl Sema<'_> {
             };
             (key, info)
         };
-        let is_type_fn = fn_info.return_type == Type::COMPTIME_TYPE;
+        let is_type_fn = self.function_returns_type(&fn_info);
         let params = fn_info.params;
         let param_names = self.param_arena.names(params).to_vec();
         let param_modes = self.param_arena.modes(params).to_vec();
@@ -1586,36 +1556,170 @@ impl Sema<'_> {
         self.reduce_type_ctor_body(name_key, &callee_types, &callee_values)
     }
 
-    /// Reduce a comptime-evaluable function's body to a [`ConstValue`] under
-    /// the given comptime parameter substitutions — a type value for a
-    /// `-> type` constructor, or an integer/bool for a value-returning
-    /// comptime function (RUE-163 facet 1). Shared by
-    /// [`eval_comptime_type_call`] (value/const-expr positions, args evaluated
-    /// via [`eval_const_expr`]) and [`resolve_type_function_call`] (a
-    /// type-function call written directly in a signature/annotation position,
-    /// args resolved as types; RUE-241) so both produce the identical
-    /// monomorphized result.
-    ///
-    /// Guards the reduction against unbounded self-recursion. A `-> type`
-    /// function reduces eagerly on the host stack, so a constructor with no
-    /// compile-time-known base case (`fn Bad() -> type { Bad() }`,
-    /// `fn Wrap(comptime n: i32) -> type { Wrap(n + 1) }`) would overflow that
-    /// stack and abort the compiler (SIGABRT) with no diagnostic. Cap the
-    /// depth at the same bound the specialization pass uses for value
-    /// recursion, emitting the identical E1200 (RUE-261, spec 4.14:18).
-    ///
-    /// [`eval_comptime_type_call`]: Sema::eval_comptime_type_call
-    /// [`eval_const_expr`]: Sema::eval_const_expr
-    /// [`resolve_type_function_call`]: Sema::resolve_type_function_call
+    pub(crate) fn validate_comptime_value_for_type(
+        &self,
+        function_name: Spur,
+        param_name: Spur,
+        value: ConstValue,
+        expected: Type,
+        span: Span,
+    ) -> CompileResult<()> {
+        if matches!(value, ConstValue::Function(_)) {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "callable alias passed to compile-time parameter '{}' of '{}'; callable aliases cannot be passed as arguments",
+                        self.interner.resolve(&param_name),
+                        self.interner.resolve(&function_name)
+                    ),
+                },
+                span,
+            ));
+        }
+
+        if let ConstValue::Integer(integer) = value
+            && expected.is_integer()
+        {
+            if const_int_fits(integer, expected) {
+                return Ok(());
+            }
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "compile-time argument '{}' for '{}' has value {} outside the range of {}",
+                        self.interner.resolve(&param_name),
+                        self.interner.resolve(&function_name),
+                        integer,
+                        expected.safe_name_with_pool(Some(&self.type_pool))
+                    ),
+                },
+                span,
+            ));
+        }
+
+        let found = value.get_type();
+        if found != expected {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: expected.safe_name_with_pool(Some(&self.type_pool)),
+                    found: found.safe_name_with_pool(Some(&self.type_pool)),
+                },
+                span,
+            )
+            .with_help(format!(
+                "compile-time argument '{}' must match its declared type in '{}'",
+                self.interner.resolve(&param_name),
+                self.interner.resolve(&function_name)
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validate the complete comptime argument contract at the shared
+    /// reduction boundary. Binding paths may differ, but none may reduce a
+    /// body until type/value kinds, dependent declared types, and integer
+    /// ranges agree with the source declaration.
+    fn validate_comptime_call_substitutions(
+        &mut self,
+        function_name: Spur,
+        function: &FunctionInfo,
+        callee_types: &HashMap<Spur, Type>,
+        callee_values: &HashMap<Spur, ConstValue>,
+    ) -> CompileResult<()> {
+        let params = function.params;
+        let param_names = self.param_arena.names(params).to_vec();
+        let param_types = self.param_arena.types(params).to_vec();
+        let param_comptime = self.param_arena.comptime(params).to_vec();
+        let param_comptime_type = self.comptime_type_param_flags(function);
+
+        let expected_type_args = param_comptime
+            .iter()
+            .zip(param_comptime_type.iter())
+            .filter(|(is_comptime, is_type)| **is_comptime && **is_type)
+            .count();
+        let expected_value_args = param_comptime
+            .iter()
+            .zip(param_comptime_type.iter())
+            .filter(|(is_comptime, is_type)| **is_comptime && !**is_type)
+            .count();
+        if callee_types.len() != expected_type_args || callee_values.len() != expected_value_args {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "comptime argument maps for '{}' do not match its declaration: received {}/{} type/value arguments, expected {expected_type_args}/{expected_value_args}",
+                    self.interner.resolve(&function_name),
+                    callee_types.len(),
+                    callee_values.len(),
+                )),
+                function.span,
+            ));
+        }
+
+        for (index, ((name, declared), is_comptime)) in param_names
+            .iter()
+            .zip(param_types.iter())
+            .zip(param_comptime.iter())
+            .enumerate()
+        {
+            if !is_comptime {
+                continue;
+            }
+            if param_comptime_type[index] {
+                if !callee_types.contains_key(name) {
+                    return Err(CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "comptime type argument for '{}' is missing while reducing '{}'",
+                            self.interner.resolve(name),
+                            self.interner.resolve(&function_name)
+                        )),
+                        function.span,
+                    ));
+                }
+                continue;
+            }
+            let value = callee_values.get(name).copied().ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "comptime value argument for '{}' is missing while reducing '{}'",
+                        self.interner.resolve(name),
+                        self.interner.resolve(&function_name)
+                    )),
+                    function.span,
+                )
+            })?;
+            let expected = self.resolve_substituted_param_type(
+                function,
+                index,
+                *declared,
+                callee_types,
+                callee_values,
+            )?;
+
+            self.validate_comptime_value_for_type(
+                function_name,
+                *name,
+                value,
+                expected,
+                function.span,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Reduce a comptime-evaluable function body under concrete substitutions.
+    /// This is the shared path for type constructors and value-returning
+    /// comptime functions, so it validates the argument contract once before
+    /// evaluation and guards recursive reductions with the specialization
+    /// depth limit (RUE-163, RUE-241, RUE-261).
     pub(crate) fn reduce_type_ctor_body(
         &mut self,
         name: Spur,
         callee_types: &HashMap<Spur, Type>,
         callee_values: &HashMap<Spur, ConstValue>,
     ) -> CompileResult<Option<ConstValue>> {
-        let Some(fn_info) = self.functions.get(&name) else {
+        let Some(fn_info) = self.functions.get(&name).copied() else {
             return Ok(None);
         };
+        self.validate_comptime_call_substitutions(name, &fn_info, callee_types, callee_values)?;
         let fn_body = fn_info.body;
         let fn_span = fn_info.span;
         let fn_file = fn_info.file_id;

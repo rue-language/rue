@@ -70,3 +70,20 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0481", "not a function"]
+
+[[case]]
+name = "generic_value_return_is_not_a_type_constructor"
+description = "A dependent `-> T` return keeps its source value kind when used by an array-length comptime call."
+files = [{ path = "main.rue", source = """
+fn id(comptime T: type, comptime value: T) -> T { value }
+const I = i32;
+
+fn sum(value: [i32; id(I, 2)]) -> i32 {
+    value[0] + value[1]
+}
+
+fn main() -> i32 {
+    sum([20, 22])
+}
+""" }]
+exit_code = 42

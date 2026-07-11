@@ -6056,7 +6056,7 @@ impl<'a> Sema<'a> {
         // otherwise a constructor that ignores a wrong-kind/private argument
         // can accidentally accept it.
         let all_params_comptime = param_comptime.iter().all(|&flag| flag);
-        if base_return_type == Type::COMPTIME_TYPE && (args.is_empty() || all_params_comptime) {
+        if self.function_returns_type(&fn_info) && (args.is_empty() || all_params_comptime) {
             let mut type_subst = std::collections::HashMap::new();
             let mut value_subst = std::collections::HashMap::new();
             for (i, is_comptime) in param_comptime.iter().enumerate() {
@@ -6108,7 +6108,7 @@ impl<'a> Sema<'a> {
             // rather than being swallowed into a downstream link error, so use
             // the propagating reduction entry point.
             if let Some(ConstValue::Type(ty)) = self
-                .eval_type_constructor_body(fn_body, &type_subst, &value_subst)
+                .reduce_type_ctor_body(name, &type_subst, &value_subst)
                 .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
             {
                 // Success! Return a TypeConst instruction instead of a runtime call
