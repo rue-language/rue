@@ -37,31 +37,35 @@
 //! sema lowers them earlier: `@target_arch`/`@target_os` fold to a compile-time
 //! `EnumVariant` against `Target::host()` (the oracle runs on that same host, so
 //! the discriminant it evaluates agrees with the compiled binary); `@to_string`,
-//! `@parse*`, byte indexing, and `.chars()` become `Call`s; `@intCast` becomes
-//! `IntCast`. Those are all covered through the resulting instruction paths.
+//! byte indexing, and `.chars()` become `Call`s; `@intCast` becomes `IntCast`.
+//! Those are all covered through the resulting instruction paths.
 //!
-//! ## What is *not* modeled (reported [`Unsupported`], never guessed)
+//! ## Typed incomplete execution
 //!
-//! Corpus/spec programs hitting any of these are **skipped** by the differential
-//! harness, so "compiles + runs under the oracle" is NOT the same as
-//! "differentially checked" — the gaps below are genuinely unvalidated. The
-//! generated-program mode has a stronger contract and fails closed if its
-//! supposedly supported generator reaches one of these gaps.
+//! [`Unsupported`] is not an opaque skip: every producer supplies a closed
+//! [`UnsupportedKind`]. [`Unsupported::model_gap`] identifies the semantic,
+//! external-dependency, and implementation-defined cases that a corpus may
+//! explicitly register as coverage debt. Resource limits and compiler/oracle
+//! contract violations are deliberately not registrable and must fail closed.
+//! Generated-program mode has the stronger promise that no `Unsupported` kind
+//! is valid and reports every one as a generator-contract failure.
 //!
 //! - **All CFG intrinsics except `@dbg`.** The `Intrinsic` arm models only
-//!   `@dbg`; every other intrinsic that survives to the CFG bails: the
+//!   `@dbg`; every other intrinsic that is allowed to survive to the CFG is a
+//!   typed model gap: the
 //!   non-deterministic `@read_line`, `@random_u32`/`@random_u64`, `@syscall`;
 //!   the heap intrinsics `@alloc`/`@free`/`@realloc`; the raw-pointer intrinsics
 //!   `@raw`/`@raw_mut`/`@field_ptr`/`@ptr_read`/`@ptr_write`/`@ptr_offset`/
 //!   `@ptr_to_int`/`@int_to_ptr` (heap-/layout-dependent, and `checked`-only);
 //!   and `@panic`/`@assert` (deterministic, but not yet modeled).
 //! - **`String::capacity`/`reserve`/`with_capacity` capacity behavior** — the
-//!   heap layout (ptr, len, cap) is implementation-defined, so `capacity` is
-//!   reported [`Unsupported`] rather than guessed.
+//!   exact capacity value is implementation-defined, so `capacity` is reported
+//!   as a typed gap rather than guessed. Specified bounds and growth/preservation
+//!   relationships can still be modeled independently.
 //! - **Deeply-nested `inout` field writes** (non-zero inner offset).
 
 use lasso::ThreadedRodeo;
-use rue_air::{Type, TypeKind};
+use rue_air::{Type, TypeKind, parse_array_type_syntax};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{
     CompileErrors, CompileState, PreviewFeatures, compile_to_cfg,
@@ -121,16 +125,222 @@ pub struct Outcome {
 /// comparing a truncated prefix.
 pub const MAX_STDOUT_BYTES: usize = 256 * 1024;
 
-/// A construct the interpreter does not yet model (see the coverage note). This
-/// is *not* a program error — it means the oracle cannot judge this program yet.
-/// Callers decide whether that is an expected coverage skip or a violation of a
-/// stronger contract, such as a generator that promises oracle-supported input.
+/// The policy class of a typed oracle execution failure.
+///
+/// Corpus callers may defer genuine semantic, external-dependency, or
+/// implementation-defined gaps. Resource exhaustion and contract violations
+/// are never ordinary coverage gaps: they mean the oracle could not complete
+/// its promised judgment safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum UnsupportedClass {
+    /// Rue semantics that the interpreter has not implemented yet.
+    SemanticGap,
+    /// Execution depends on input or host behavior unavailable to the oracle.
+    ExternalDependency,
+    /// Rue deliberately leaves the exact observation implementation-defined.
+    ImplementationDefined,
+    /// A bounded oracle resource was exhausted.
+    ResourceLimit,
+    /// A compiler/oracle contract that should hold for valid CFG was broken.
+    ContractViolation,
+}
+
+/// A user-facing intrinsic whose deterministic semantics are not modeled yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum UnsupportedIntrinsicKind {
+    Panic,
+    Assert,
+    ParseI32,
+    ParseI64,
+    ParseU32,
+    ParseU64,
+    PointerRead,
+    PointerWrite,
+    PointerOffset,
+    PointerToInt,
+    IntToPointer,
+    EmptySlicePointer,
+    RawAddress,
+    RawMutableAddress,
+    FieldPointer,
+    Allocate,
+    Free,
+    Reallocate,
+}
+
+/// A compiler-emitted runtime call whose deterministic semantics are not
+/// modeled yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum UnsupportedRuntimeCallKind {
+    StringConcat,
+    StringContains,
+    StringStartsWith,
+    StringSubstring,
+    Print,
+    Println,
+}
+
+/// A deterministic semantic feature missing from the interpreter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SemanticGapKind {
+    Intrinsic(UnsupportedIntrinsicKind),
+    RuntimeCall(UnsupportedRuntimeCallKind),
+    FlattenedParameterSlot,
+    TextProjectionRead,
+    InoutParameterForwarding,
+}
+
+/// A dependency whose value comes from outside deterministic Rue semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ExternalDependencyKind {
+    StandardInput,
+    RandomU32,
+    RandomU64,
+    SystemCall,
+}
+
+/// An observation for which Rue does not specify one exact value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ImplementationDefinedKind {
+    /// The exact capacity value, as distinct from specified capacity bounds and
+    /// preservation/growth relationships.
+    StringCapacityValue,
+}
+
+/// A registrable oracle coverage gap.
+///
+/// Corpus registries use this type rather than [`UnsupportedKind`], making
+/// resource limits and contract violations impossible to register as accepted
+/// debt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ModelGapKind {
+    Semantic(SemanticGapKind),
+    ExternalDependency(ExternalDependencyKind),
+    ImplementationDefined(ImplementationDefinedKind),
+}
+
+/// A bounded interpreter resource that was exhausted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ResourceLimitKind {
+    StdoutBytes,
+    RecursionDepth,
+    InterpreterSteps,
+}
+
+/// A compiler/oracle invariant that valid CFG is expected to satisfy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ContractViolationKind {
+    MissingFunctionBody,
+    BlockArgumentArity,
+    MissingTerminator,
+    BuiltinArity,
+    BuiltinArgumentType,
+    BuiltinArgumentMode,
+    BuiltinResultType,
+    RuntimeCallArity,
+    RuntimeCallSignature,
+    IntrinsicArity,
+    IntrinsicSignature,
+    StringConstantIndex,
+    ParameterSlotOutOfBounds,
+    UnboundBlockParameter,
+    EnumPayloadProjection,
+    UnexpectedIntrinsic,
+    DebugArity,
+    IntCastTargetType,
+    UninitializedLocal,
+    PlaceBaseOutOfBounds,
+    PlaceBaseNotWritable,
+    NonAggregateProjectionRead,
+    NonAggregateProjectionWrite,
+    PlaceProjectionMetadata,
+    UnexpectedLegacyMutationInstruction,
+    InoutArgumentNotLvalue,
+    NonIntegerOperationType,
+    UnsupportedDebugType,
+}
+
+/// The closed, machine-readable cause of an oracle execution failure.
+///
+/// Dynamic names, indices, and limits live only in [`Unsupported::detail`]; no
+/// caller needs to parse display text to decide policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum UnsupportedKind {
+    SemanticGap(SemanticGapKind),
+    ExternalDependency(ExternalDependencyKind),
+    ImplementationDefined(ImplementationDefinedKind),
+    ResourceLimit(ResourceLimitKind),
+    ContractViolation(ContractViolationKind),
+}
+
+impl UnsupportedKind {
+    /// Return the exhaustive policy class for this cause.
+    pub const fn class(self) -> UnsupportedClass {
+        match self {
+            Self::SemanticGap(_) => UnsupportedClass::SemanticGap,
+            Self::ExternalDependency(_) => UnsupportedClass::ExternalDependency,
+            Self::ImplementationDefined(_) => UnsupportedClass::ImplementationDefined,
+            Self::ResourceLimit(_) => UnsupportedClass::ResourceLimit,
+            Self::ContractViolation(_) => UnsupportedClass::ContractViolation,
+        }
+    }
+
+    /// Return the registrable gap, or `None` for a hard resource/contract
+    /// failure.
+    pub const fn model_gap(self) -> Option<ModelGapKind> {
+        match self {
+            Self::SemanticGap(kind) => Some(ModelGapKind::Semantic(kind)),
+            Self::ExternalDependency(kind) => Some(ModelGapKind::ExternalDependency(kind)),
+            Self::ImplementationDefined(kind) => Some(ModelGapKind::ImplementationDefined(kind)),
+            Self::ResourceLimit(_) | Self::ContractViolation(_) => None,
+        }
+    }
+}
+
+/// A typed reason the interpreter could not produce an observable outcome.
+///
+/// The kind is stable and drives policy. The detail is diagnostic-only and may
+/// contain a dynamic name, index, type, or configured limit.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Unsupported(pub String);
+pub struct Unsupported {
+    kind: UnsupportedKind,
+    detail: String,
+}
+
+impl Unsupported {
+    fn new(kind: UnsupportedKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+
+    /// Return the closed cause; callers should match this instead of display
+    /// text.
+    pub const fn kind(&self) -> UnsupportedKind {
+        self.kind
+    }
+
+    /// Return diagnostic context for humans. This is not a policy key.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// Return the broad policy class for this cause.
+    pub const fn class(&self) -> UnsupportedClass {
+        self.kind.class()
+    }
+
+    /// Return the registrable model gap, if this failure is eligible for a
+    /// corpus coverage registry.
+    pub const fn model_gap(&self) -> Option<ModelGapKind> {
+        self.kind.model_gap()
+    }
+}
 
 impl fmt::Display for Unsupported {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.detail)
     }
 }
 
@@ -146,7 +356,8 @@ impl std::error::Error for Unsupported {}
 pub enum RunSourceError {
     /// Rue's front end rejected the source before interpretation could begin.
     Compile(CompileErrors),
-    /// The source compiled, but the interpreter cannot model part of it.
+    /// The source compiled, but interpretation ended with a typed model gap,
+    /// resource limit, or compiler/oracle contract violation.
     Unsupported(Unsupported),
 }
 
@@ -173,8 +384,9 @@ impl std::error::Error for RunSourceError {
 /// Compile `source` to CFG and run it under the reference semantics.
 ///
 /// [`RunSourceError::Compile`] means the front end rejected the source;
-/// [`RunSourceError::Unsupported`] means compilation succeeded but execution
-/// reached a construct outside the interpreter's current coverage.
+/// [`RunSourceError::Unsupported`] means compilation succeeded but interpretation
+/// could not produce an outcome; inspect [`Unsupported::kind`] rather than
+/// parsing its diagnostic text.
 pub fn run_source(source: &str) -> Result<Outcome, RunSourceError> {
     let state = compile_to_cfg(source).map_err(RunSourceError::Compile)?;
     run_state(state).map_err(RunSourceError::Unsupported)
@@ -213,7 +425,7 @@ fn run_state_with_limits(
     // programs need far more stack than a default thread provides. Running on
     // our own generous stack makes `run_source` safe to call from any thread
     // (a 2 MiB Rust test thread included) and, together with `MAX_DEPTH`, lets
-    // unbounded recursion resolve to an `Unsupported` skip *before* the Rust
+    // unbounded recursion resolve to a typed resource failure *before* the Rust
     // stack is exhausted rather than aborting the process (RUE-340).
     std::thread::scope(|scope| {
         std::thread::Builder::new()
@@ -245,7 +457,7 @@ const WORKER_STACK: usize = 256 * 1024 * 1024;
 /// Total interpreter step budget, shared across **all** call activations (not
 /// per-frame): every instruction executed anywhere in the run decrements it, so
 /// it bounds *total work* — a runaway loop, deep/unbounded recursion, or any
-/// combination — and reports [`Unsupported`] instead of hanging. Generous
+/// combination — and reports a typed [`ResourceLimitKind`] instead of hanging. Generous
 /// enough that no legitimate program in the differential corpus reaches it.
 const STEP_BUDGET: u64 = 50_000_000;
 
@@ -253,10 +465,10 @@ const STEP_BUDGET: u64 = 50_000_000;
 /// Each Rue call activation is a nested `call` -> `eval` Rust recursion, so
 /// unbounded Rue recursion would otherwise overflow the *Rust* stack — an
 /// uncatchable process abort that kills the whole differential harness rather
-/// than yielding a clean skip (RUE-340). This bound fires first, turning
-/// deep/infinite recursion into an [`Unsupported`] skip. It sits far above any
+/// than yielding a typed failure (RUE-340). This bound fires first, turning
+/// deep/infinite recursion into a [`ResourceLimitKind::RecursionDepth`] result. It sits far above any
 /// legitimately-recursive corpus/fuzzer program yet far below the number of
-/// activations that fit in `WORKER_STACK`, so the skip always wins the race
+/// activations that fit in `WORKER_STACK`, so the bound always wins the race
 /// against stack exhaustion.
 const MAX_DEPTH: u32 = 2_000;
 
@@ -336,13 +548,68 @@ type Step<T> = Result<T, Flow>;
 enum Flow {
     /// A modeled runtime panic (maps to exit 101).
     Panic(Panic),
-    /// The program uses an unmodeled construct.
+    /// Interpretation stopped with a typed model gap or hard oracle failure.
     Unsupported(Unsupported),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlaceAccess {
+    Read,
+    Write,
 }
 
 impl From<Unsupported> for Flow {
     fn from(u: Unsupported) -> Self {
         Flow::Unsupported(u)
+    }
+}
+
+fn unsupported(kind: UnsupportedKind, detail: impl Into<String>) -> Flow {
+    Flow::Unsupported(Unsupported::new(kind, detail))
+}
+
+fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
+    use ExternalDependencyKind as External;
+    use SemanticGapKind as Semantic;
+    use UnsupportedIntrinsicKind as Intrinsic;
+
+    match name {
+        "panic" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Panic)),
+        "assert" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Assert)),
+        "parse_i32" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseI32)),
+        "parse_i64" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseI64)),
+        "parse_u32" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseU32)),
+        "parse_u64" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseU64)),
+        "ptr_read" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerRead)),
+        "ptr_write" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerWrite)),
+        "ptr_offset" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerOffset)),
+        "ptr_to_int" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerToInt)),
+        "int_to_ptr" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::IntToPointer)),
+        "raw" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::RawAddress)),
+        "raw_mut" => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::RawMutableAddress))
+        }
+        "field_ptr" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::FieldPointer)),
+        "alloc" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Allocate)),
+        "free" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Free)),
+        "realloc" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Reallocate)),
+        "read_line" => UnsupportedKind::ExternalDependency(External::StandardInput),
+        "random_u32" => UnsupportedKind::ExternalDependency(External::RandomU32),
+        "random_u64" => UnsupportedKind::ExternalDependency(External::RandomU64),
+        "syscall" => UnsupportedKind::ExternalDependency(External::SystemCall),
+        _ => UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic),
+    }
+}
+
+fn unsupported_runtime_call_kind(name: &str) -> Option<UnsupportedRuntimeCallKind> {
+    match name {
+        "__rue_String_concat" => Some(UnsupportedRuntimeCallKind::StringConcat),
+        "__rue_String_contains" => Some(UnsupportedRuntimeCallKind::StringContains),
+        "__rue_String_starts_with" => Some(UnsupportedRuntimeCallKind::StringStartsWith),
+        "__rue_String_substring" => Some(UnsupportedRuntimeCallKind::StringSubstring),
+        "__rue_print" => Some(UnsupportedRuntimeCallKind::Print),
+        "__rue_println" => Some(UnsupportedRuntimeCallKind::Println),
+        _ => None,
     }
 }
 
@@ -403,10 +670,513 @@ impl<'a> Interp<'a> {
 
     fn is_str_like_type(&self, ty: Type) -> bool {
         if let TypeKind::Struct(struct_id) = ty.kind() {
-            let name = &self.state.type_pool.struct_def(struct_id).name;
-            name == "str" || (name.starts_with("Str(") && name.ends_with(')'))
+            self.is_str_like_struct(struct_id)
         } else {
             false
+        }
+    }
+
+    fn is_bare_str_type(&self, ty: Type) -> bool {
+        ty.as_struct()
+            .is_some_and(|struct_id| self.state.type_pool.struct_def(struct_id).name == "str")
+    }
+
+    fn is_str_like_struct(&self, struct_id: rue_air::StructId) -> bool {
+        let name = &self.state.type_pool.struct_def(struct_id).name;
+        name == "str" || (name.starts_with("Str(") && name.ends_with(')'))
+    }
+
+    fn text_struct_slots(&self, struct_id: rue_air::StructId) -> Option<usize> {
+        if self.is_str_like_struct(struct_id) {
+            Some(2)
+        } else if self.is_owned_string_struct(struct_id) {
+            Some(3)
+        } else {
+            None
+        }
+    }
+
+    /// Return the ABI width certified by a real text-field projection.
+    ///
+    /// The oracle stores text as an opaque byte vector instead of exposing its
+    /// compiler ABI fields. Only a field projection whose struct metadata and
+    /// field index match that ABI may therefore become a registrable model
+    /// gap. In particular, an arbitrary `Index` projection or an out-of-range
+    /// field must remain a compiler/oracle contract violation even if a broken
+    /// frame happens to contain a `Value::Str` at runtime.
+    fn text_projection_slots(&self, projection: Projection) -> Option<usize> {
+        let Projection::Field {
+            struct_id,
+            field_index,
+        } = projection
+        else {
+            return None;
+        };
+        let slots = self.text_struct_slots(struct_id)?;
+        let def = self.state.type_pool.struct_def(struct_id);
+        (def.field_count() == slots && (field_index as usize) < 2).then_some(slots)
+    }
+
+    fn is_matching_text_projection(&self, projection: Projection, actual_slots: usize) -> bool {
+        self.text_projection_slots(projection) == Some(actual_slots)
+    }
+
+    fn is_owned_string_type(&self, ty: Type) -> bool {
+        if let TypeKind::Struct(struct_id) = ty.kind() {
+            self.is_owned_string_struct(struct_id)
+        } else {
+            false
+        }
+    }
+
+    fn is_owned_string_struct(&self, struct_id: rue_air::StructId) -> bool {
+        matches!(
+            self.state.type_pool.struct_def(struct_id).name.as_str(),
+            "String" | "StrBuf"
+        )
+    }
+
+    fn classify_unsupported_runtime_call_static(
+        &self,
+        name: &str,
+        arg_types: &[Type],
+        arg_modes: &[CfgArgMode],
+        result_ty: Type,
+    ) -> UnsupportedKind {
+        let Some(runtime_call) = unsupported_runtime_call_kind(name) else {
+            return UnsupportedKind::ContractViolation(ContractViolationKind::MissingFunctionBody);
+        };
+        let expected_arity = match runtime_call {
+            UnsupportedRuntimeCallKind::StringConcat
+            | UnsupportedRuntimeCallKind::StringContains
+            | UnsupportedRuntimeCallKind::StringStartsWith => 2,
+            UnsupportedRuntimeCallKind::StringSubstring => 3,
+            UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => 1,
+        };
+        if arg_types.len() != expected_arity || arg_modes.len() != expected_arity {
+            return UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity);
+        }
+        if !arg_modes.iter().all(|mode| *mode == CfgArgMode::Normal) {
+            return UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature);
+        }
+
+        let signature_matches = match runtime_call {
+            UnsupportedRuntimeCallKind::StringConcat => {
+                arg_types.iter().all(|ty| self.is_owned_string_type(*ty))
+                    && self.is_owned_string_type(result_ty)
+            }
+            UnsupportedRuntimeCallKind::StringContains
+            | UnsupportedRuntimeCallKind::StringStartsWith => {
+                arg_types.iter().all(|ty| self.is_owned_string_type(*ty)) && result_ty == Type::BOOL
+            }
+            UnsupportedRuntimeCallKind::StringSubstring => {
+                self.is_owned_string_type(arg_types[0])
+                    && arg_types[1] == Type::U64
+                    && arg_types[2] == Type::U64
+                    && self.is_owned_string_type(result_ty)
+            }
+            UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => {
+                self.is_owned_string_type(arg_types[0]) && result_ty == Type::UNIT
+            }
+        };
+        if signature_matches {
+            UnsupportedKind::SemanticGap(SemanticGapKind::RuntimeCall(runtime_call))
+        } else {
+            UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
+        }
+    }
+
+    fn classify_unsupported_runtime_call(
+        &self,
+        name: &str,
+        args: &[Value],
+        arg_types: &[Type],
+        arg_modes: &[CfgArgMode],
+        result_ty: Type,
+    ) -> UnsupportedKind {
+        let static_kind =
+            self.classify_unsupported_runtime_call_static(name, arg_types, arg_modes, result_ty);
+        let UnsupportedKind::SemanticGap(SemanticGapKind::RuntimeCall(runtime_call)) = static_kind
+        else {
+            return static_kind;
+        };
+        if args.len() != arg_types.len() {
+            return UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity);
+        }
+
+        let is_owned_value = |index: usize| matches!(args[index], Value::Str { slots: 3, .. });
+        let is_int_value = |index: usize| matches!(args[index], Value::Int(_));
+        let values_match = match runtime_call {
+            UnsupportedRuntimeCallKind::StringConcat
+            | UnsupportedRuntimeCallKind::StringContains
+            | UnsupportedRuntimeCallKind::StringStartsWith => {
+                is_owned_value(0) && is_owned_value(1)
+            }
+            UnsupportedRuntimeCallKind::StringSubstring => {
+                is_owned_value(0) && is_int_value(1) && is_int_value(2)
+            }
+            UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => {
+                is_owned_value(0)
+            }
+        };
+        if values_match {
+            static_kind
+        } else {
+            UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
+        }
+    }
+
+    fn pointer_pointee(&self, ty: Type) -> Option<(Type, bool)> {
+        match ty.kind() {
+            TypeKind::PtrConst(id) => Some((self.state.type_pool.ptr_const_def(id), false)),
+            TypeKind::PtrMut(id) => Some((self.state.type_pool.ptr_mut_def(id), true)),
+            _ => None,
+        }
+    }
+
+    fn option_payload(&self, ty: Type) -> Option<Type> {
+        let TypeKind::Enum(enum_id) = ty.kind() else {
+            return None;
+        };
+        let def = self.state.type_pool.enum_def(enum_id);
+        let (Some(some), Some(none)) = (def.find_variant("Some"), def.find_variant("None")) else {
+            return None;
+        };
+        if def.variant_count() != 2 || !def.variant_payload(none).is_empty() {
+            return None;
+        }
+        let [payload] = def.variant_payload(some) else {
+            return None;
+        };
+        Some(*payload)
+    }
+
+    fn is_option_of(&self, ty: Type, payload: Type) -> bool {
+        self.option_payload(ty) == Some(payload)
+    }
+
+    /// Whether this exact `@int_to_ptr(0) -> ptr const T` is the compiler's
+    /// synthesized null pointer for an empty borrowed array slice.
+    ///
+    /// A zero constant and const-pointer result are not sufficient provenance:
+    /// user-authored `@int_to_ptr(0)` could otherwise be mislabeled as this
+    /// model gap. Require the intrinsic to feed field 0 of the canonical
+    /// two-word `[T] { ptr, len: 0 }` StructInit emitted by slice coercion.
+    fn is_empty_slice_pointer(&self, cfg: &Cfg, intrinsic: CfgValue) -> bool {
+        if cfg.value_use_count(intrinsic) != 1 {
+            return false;
+        }
+        let pointer_ty = cfg.get_inst(intrinsic).ty;
+        cfg.blocks()
+            .iter()
+            .filter_map(|block| {
+                let intrinsic_index = block.insts.iter().position(|value| *value == intrinsic)?;
+                Some(block.insts.iter().skip(intrinsic_index + 1).copied())
+            })
+            .flatten()
+            .any(|value| {
+                let CfgInstData::StructInit {
+                    struct_id,
+                    fields_start,
+                    fields_len,
+                } = cfg.get_inst(value).data
+                else {
+                    return false;
+                };
+                let def = self.state.type_pool.struct_def(struct_id);
+                let is_slice = def.name.starts_with('[')
+                    && def.name.ends_with(']')
+                    && parse_array_type_syntax(&def.name).is_none();
+                if !is_slice
+                    || def.fields.len() != 2
+                    || def.fields[0].ty != pointer_ty
+                    || def.fields[1].ty != Type::U64
+                    || fields_len != 2
+                    || cfg.get_inst(value).ty != Type::new_struct(struct_id)
+                    || cfg.value_use_count(value) != 1
+                {
+                    return false;
+                }
+                let fields = cfg.get_extra(fields_start, fields_len);
+                fields[0] == intrinsic
+                    && cfg.get_inst(fields[1]).ty == Type::U64
+                    && matches!(cfg.get_inst(fields[1]).data, CfgInstData::Const(0))
+                    && cfg.blocks().iter().any(|block| {
+                        block.insts.iter().any(|candidate| {
+                            let CfgInstData::Call {
+                                args_start,
+                                args_len,
+                                ..
+                            } = &cfg.get_inst(*candidate).data
+                            else {
+                                return false;
+                            };
+                            cfg.get_call_args(*args_start, *args_len)
+                                .iter()
+                                .any(|arg| arg.value == value && arg.mode == CfgArgMode::Normal)
+                        })
+                    })
+            })
+    }
+
+    fn projection_types(&self, cfg: &Cfg, projection: Projection) -> Option<(Type, Type)> {
+        match projection {
+            Projection::Field {
+                struct_id,
+                field_index,
+            } => {
+                let def = self.state.type_pool.struct_def(struct_id);
+                let field = def.fields.get(field_index as usize)?;
+                Some((Type::new_struct(struct_id), field.ty))
+            }
+            Projection::Index { array_type, index } => {
+                if index.as_u32() as usize >= cfg.value_count()
+                    || !cfg.get_inst(index).ty.is_integer()
+                {
+                    return None;
+                }
+                let TypeKind::Array(array_id) = array_type.kind() else {
+                    return None;
+                };
+                let (element, _) = self.state.type_pool.array_def(array_id);
+                Some((array_type, element))
+            }
+        }
+    }
+
+    /// Validate the complete typed projection chain carried by a place.
+    /// Every projection must consume the base type or the preceding
+    /// projection's result, and the last result must match the operation's
+    /// expected value type.
+    fn place_projection_metadata_is_valid(
+        &self,
+        cfg: &Cfg,
+        place: &Place,
+        expected_type: Type,
+        access: PlaceAccess,
+    ) -> bool {
+        let projections = cfg.get_place_projections(place);
+        let mut previous_result = place.base_type;
+        for &projection in projections {
+            let Some((container, result)) = self.projection_types(cfg, projection) else {
+                return false;
+            };
+            if previous_result != container {
+                return false;
+            }
+            previous_result = result;
+        }
+        previous_result == expected_type
+            || (access == PlaceAccess::Read
+                && self.is_str_like_type(previous_result)
+                && self.is_bare_str_type(expected_type))
+    }
+
+    fn place_base_violation(
+        &self,
+        cfg: &Cfg,
+        place: &Place,
+        access: PlaceAccess,
+    ) -> Option<ContractViolationKind> {
+        let (slot, limit, width, param_slot) = match place.base {
+            PlaceBase::Local(slot) => (
+                slot,
+                cfg.num_locals(),
+                self.state.type_pool.abi_slot_count(place.base_type),
+                None,
+            ),
+            PlaceBase::Param(slot) => {
+                // A by-reference borrow/inout parameter occupies one physical
+                // ABI slot regardless of the logical pointee width. Slices are
+                // passed by value and therefore have no by-ref bit here.
+                let width = if cfg.is_param_inout(slot) {
+                    1
+                } else {
+                    self.state.type_pool.abi_slot_count(place.base_type)
+                };
+                (slot, cfg.num_params(), width, Some(slot))
+            }
+        };
+        let out_of_bounds = if width == 0 {
+            // Zero-sized roots consume no logical slot, so the canonical base
+            // may be exactly one past the final occupied slot.
+            slot > limit
+        } else {
+            slot.checked_add(width).is_none_or(|end| end > limit)
+        };
+        if out_of_bounds {
+            return Some(ContractViolationKind::PlaceBaseOutOfBounds);
+        }
+        if access == PlaceAccess::Write
+            && param_slot.is_some_and(|slot| !cfg.is_param_writable(slot))
+        {
+            return Some(ContractViolationKind::PlaceBaseNotWritable);
+        }
+        None
+    }
+
+    fn intrinsic_arg_is_place(&self, cfg: &Cfg, value: CfgValue) -> bool {
+        match &cfg.get_inst(value).data {
+            CfgInstData::Load { slot } => *slot < cfg.num_locals(),
+            CfgInstData::Param { index } => *index < cfg.num_params(),
+            CfgInstData::PlaceRead { place } => {
+                self.place_base_violation(cfg, place, PlaceAccess::Read)
+                    .is_none()
+                    && self.place_projection_metadata_is_valid(
+                        cfg,
+                        place,
+                        cfg.get_inst(value).ty,
+                        PlaceAccess::Read,
+                    )
+            }
+            _ => false,
+        }
+    }
+
+    fn is_inout_writeback_place(&self, cfg: &Cfg, value: CfgValue, place: &Place) -> bool {
+        if !self.place_projection_metadata_is_valid(
+            cfg,
+            place,
+            cfg.get_inst(value).ty,
+            PlaceAccess::Read,
+        ) {
+            return false;
+        }
+        self.place_base_violation(cfg, place, PlaceAccess::Write)
+            .is_none()
+    }
+
+    fn intrinsic_arg_is_field_place(&self, cfg: &Cfg, value: CfgValue) -> bool {
+        let CfgInstData::PlaceRead { place } = &cfg.get_inst(value).data else {
+            return false;
+        };
+        self.intrinsic_arg_is_place(cfg, value)
+            && matches!(
+                cfg.get_place_projections(place).last(),
+                Some(Projection::Field { .. })
+            )
+    }
+
+    fn classify_unsupported_intrinsic(
+        &self,
+        cfg: &Cfg,
+        intrinsic: CfgValue,
+        name: &str,
+        args: &[CfgValue],
+        result_ty: Type,
+    ) -> UnsupportedKind {
+        let kind = unsupported_intrinsic_kind(name);
+        if kind.model_gap().is_none() {
+            return kind;
+        }
+
+        let arity_matches = match name {
+            "panic" => args.len() <= 1,
+            "assert" => (1..=2).contains(&args.len()),
+            "read_line" | "random_u32" | "random_u64" => args.is_empty(),
+            "ptr_write" | "ptr_offset" | "free" => args.len() == 2,
+            "realloc" => args.len() == 3,
+            "syscall" => (1..=7).contains(&args.len()),
+            _ => args.len() == 1,
+        };
+        if !arity_matches {
+            return UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity);
+        }
+
+        let ty = |index: usize| cfg.get_inst(args[index]).ty;
+        let is_owned_string = |index: usize| self.is_owned_string_type(ty(index));
+        let mut validated_kind = kind;
+        let signature_matches = match name {
+            "panic" => result_ty == Type::NEVER && (args.is_empty() || is_owned_string(0)),
+            "assert" => {
+                result_ty == Type::UNIT
+                    && ty(0) == Type::BOOL
+                    && (args.len() == 1 || is_owned_string(1))
+            }
+            "parse_i32" => is_owned_string(0) && self.is_option_of(result_ty, Type::I32),
+            "parse_i64" => is_owned_string(0) && self.is_option_of(result_ty, Type::I64),
+            "parse_u32" => is_owned_string(0) && self.is_option_of(result_ty, Type::U32),
+            "parse_u64" => is_owned_string(0) && self.is_option_of(result_ty, Type::U64),
+            "ptr_read" => self
+                .pointer_pointee(ty(0))
+                .is_some_and(|(pointee, _)| pointee == result_ty),
+            "ptr_write" => self
+                .pointer_pointee(ty(0))
+                .is_some_and(|(pointee, mutable)| {
+                    mutable && pointee == ty(1) && result_ty == Type::UNIT
+                }),
+            "ptr_offset" => {
+                self.pointer_pointee(ty(0)).is_some() && ty(1).is_integer() && result_ty == ty(0)
+            }
+            "ptr_to_int" => self.pointer_pointee(ty(0)).is_some() && result_ty == Type::U64,
+            "int_to_ptr" => {
+                let pointer = self.pointer_pointee(result_ty);
+                if ty(0) == Type::U64 && pointer.is_some_and(|(_, mutable)| mutable) {
+                    true
+                } else if ty(0) == Type::U64
+                    && pointer.is_some_and(|(_, mutable)| !mutable)
+                    && matches!(cfg.get_inst(args[0]).data, CfgInstData::Const(0))
+                    && self.is_empty_slice_pointer(cfg, intrinsic)
+                {
+                    validated_kind = UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+                        UnsupportedIntrinsicKind::EmptySlicePointer,
+                    ));
+                    true
+                } else {
+                    false
+                }
+            }
+            "raw" => {
+                self.intrinsic_arg_is_place(cfg, args[0])
+                    && self
+                        .pointer_pointee(result_ty)
+                        .is_some_and(|(pointee, mutable)| !mutable && pointee == ty(0))
+            }
+            "raw_mut" => {
+                self.intrinsic_arg_is_place(cfg, args[0])
+                    && self
+                        .pointer_pointee(result_ty)
+                        .is_some_and(|(pointee, mutable)| mutable && pointee == ty(0))
+            }
+            "field_ptr" => {
+                self.intrinsic_arg_is_field_place(cfg, args[0])
+                    && self
+                        .pointer_pointee(result_ty)
+                        .is_some_and(|(pointee, mutable)| mutable && pointee == ty(0))
+            }
+            "alloc" => {
+                ty(0) == Type::U64
+                    && self
+                        .pointer_pointee(result_ty)
+                        .is_some_and(|(_, mutable)| mutable)
+            }
+            "free" => {
+                self.pointer_pointee(ty(0))
+                    .is_some_and(|(_, mutable)| mutable)
+                    && ty(1) == Type::U64
+                    && result_ty == Type::UNIT
+            }
+            "realloc" => {
+                self.pointer_pointee(ty(0))
+                    .is_some_and(|(_, mutable)| mutable)
+                    && ty(1) == Type::U64
+                    && ty(2) == Type::U64
+                    && result_ty == ty(0)
+            }
+            "read_line" => self
+                .option_payload(result_ty)
+                .is_some_and(|payload| self.is_owned_string_type(payload)),
+            "random_u32" => result_ty == Type::U32,
+            "random_u64" => result_ty == Type::U64,
+            "syscall" => {
+                args.iter().all(|arg| cfg.get_inst(*arg).ty == Type::U64) && result_ty == Type::I64
+            }
+            _ => false,
+        };
+        if signature_matches {
+            validated_kind
+        } else {
+            UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature)
         }
     }
 
@@ -419,10 +1189,13 @@ impl<'a> Interp<'a> {
         if let Value::Str { bytes, .. } = val
             && bytes.len() >= remaining
         {
-            return Err(Flow::Unsupported(Unsupported(format!(
-                "stdout byte limit exceeded ({}-byte limit)",
-                self.stdout_cap
-            ))));
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                format!(
+                    "stdout byte limit exceeded ({}-byte limit)",
+                    self.stdout_cap
+                ),
+            ));
         }
 
         let formatted = format_dbg(val, ty)?;
@@ -433,10 +1206,13 @@ impl<'a> Interp<'a> {
         // Reserve one byte for the newline emitted by this `@dbg` call. Using
         // the comparison form avoids overflowing while computing `len + 1`.
         if emitted_len >= remaining {
-            return Err(Flow::Unsupported(Unsupported(format!(
-                "stdout byte limit exceeded ({}-byte limit)",
-                self.stdout_cap
-            ))));
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                format!(
+                    "stdout byte limit exceeded ({}-byte limit)",
+                    self.stdout_cap
+                ),
+            ));
         }
 
         self.stdout.push_str(&formatted);
@@ -478,13 +1254,14 @@ impl<'a> Interp<'a> {
     /// is observably identical to by-reference under the law of exclusivity).
     fn call(&mut self, name: &str, args: &[Value]) -> Step<(Value, Vec<Option<Value>>)> {
         // Bound recursion *depth* (shared across activations) before descending,
-        // so unbounded Rue recursion resolves to a clean `Unsupported` skip
+        // so unbounded Rue recursion resolves to a typed resource failure
         // instead of overflowing the Rust stack and aborting the process
         // (RUE-340). Decrement on every exit path by capturing the result.
         if self.depth >= MAX_DEPTH {
-            return Err(Flow::Unsupported(Unsupported(
-                "recursion depth budget exhausted".into(),
-            )));
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::RecursionDepth),
+                "recursion depth budget exhausted",
+            ));
         }
         self.depth += 1;
         let result = self.call_inner(name, args);
@@ -493,9 +1270,12 @@ impl<'a> Interp<'a> {
     }
 
     fn call_inner(&mut self, name: &str, args: &[Value]) -> Step<(Value, Vec<Option<Value>>)> {
-        let cfg = self
-            .find_cfg(name)
-            .ok_or_else(|| Flow::Unsupported(Unsupported(format!("call to '{name}'"))))?;
+        let cfg = self.find_cfg(name).ok_or_else(|| {
+            unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::MissingFunctionBody),
+                format!("call to '{name}'"),
+            )
+        })?;
         // Lay arguments out by slot: place each whole value at its base slot,
         // then pad with `None` for the extra slots an aggregate occupies. A
         // zero-sized argument occupies no slot at all (matching
@@ -523,6 +1303,16 @@ impl<'a> Interp<'a> {
 
         loop {
             let block = cfg.get_block(current);
+            if incoming.len() != block.params.len() {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::BlockArgumentArity),
+                    format!(
+                        "block arg arity: received {}, expected {}",
+                        incoming.len(),
+                        block.params.len()
+                    ),
+                ));
+            }
             // Re-entering a block (a loop back-edge) must recompute that
             // block's instructions and receive fresh block arguments. Keep
             // every other cached value: CFG SSA permits dominated blocks to
@@ -536,10 +1326,14 @@ impl<'a> Interp<'a> {
                 frame.cache.remove(&inst.as_u32());
             }
             for (i, (pv, _)) in block.params.iter().enumerate() {
-                let val = incoming
-                    .get(i)
-                    .cloned()
-                    .ok_or_else(|| Flow::Unsupported(Unsupported("block arg arity".into())))?;
+                let val = incoming.get(i).cloned().ok_or_else(|| {
+                    unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::BlockArgumentArity,
+                        ),
+                        "block arg arity",
+                    )
+                })?;
                 frame.cache.insert(pv.as_u32(), val);
             }
             for &v in &block.insts {
@@ -547,7 +1341,10 @@ impl<'a> Interp<'a> {
                 // runaway loop or deep recursion reports `Unsupported` here
                 // rather than hanging.
                 self.budget = self.budget.checked_sub(1).ok_or_else(|| {
-                    Flow::Unsupported(Unsupported("step budget exhausted".into()))
+                    unsupported(
+                        UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
+                        "step budget exhausted",
+                    )
                 })?;
                 self.eval(cfg, &mut frame, v)?;
             }
@@ -611,28 +1408,25 @@ impl<'a> Interp<'a> {
                     return Err(Flow::Panic(Panic(TrapKind::Unreachable)));
                 }
                 Terminator::None => {
-                    return Err(Flow::Unsupported(Unsupported("terminator None".into())));
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::MissingTerminator,
+                        ),
+                        "terminator None",
+                    ));
                 }
             }
         }
     }
 
-    /// Dispatch a builtin `String` method (these have no CFG body). Returns
-    /// `Ok(None)` if `name` is not a String builtin (so the caller falls back to
-    /// the ordinary CFG call). `capacity`/`reserve`/`with_capacity` capacity
-    /// behavior is implementation-defined and deliberately not modeled.
-    fn string_builtin(&self, name: &str, args: &[Value]) -> Step<Option<Value>> {
-        // Logical-argument count each modeled builtin expects (receiver
-        // included). A call shape that doesn't match means the runtime-fn
-        // signature drifted from what the oracle models (the RUE-314 class):
-        // skip honestly rather than read args positionally from the wrong
-        // slots and return a plausible-but-wrong value.
-        let expected_arity = match name {
+    fn string_builtin_arity(name: &str) -> Option<usize> {
+        match name {
             "__rue_String_new" => Some(0),
             "__rue_to_string"
             | "__rue_to_string_unsigned"
             | "__rue_String_with_capacity"
             | "__rue_String_len"
+            | "__rue_String_capacity"
             | "__rue_String_is_empty"
             | "__rue_String_clear"
             | "__rue_String_clone" => Some(1),
@@ -646,23 +1440,156 @@ impl<'a> Interp<'a> {
             | "__rue_String_char_next"
             | "__rue_String_char_next_lossy" => Some(2),
             _ => None,
+        }
+    }
+
+    fn is_str_view_type(&self, ty: Type) -> bool {
+        let TypeKind::Struct(struct_id) = ty.kind() else {
+            return false;
         };
-        if let Some(expected) = expected_arity
-            && args.len() != expected
-        {
-            return Err(Flow::Unsupported(Unsupported(format!(
-                "builtin '{name}' called with {} args, oracle models {expected} (signature drift?)",
-                args.len()
-            ))));
+        self.text_struct_slots(struct_id) == Some(2)
+    }
+
+    /// Check every static part of a builtin call before evaluating operands.
+    /// This ordering is deliberate: malformed outer CFG must not be hidden by
+    /// an otherwise registrable model gap reached while evaluating an operand.
+    fn preflight_string_builtin(
+        &self,
+        name: &str,
+        arg_types: &[Type],
+        arg_modes: &[CfgArgMode],
+        result_ty: Type,
+    ) -> Step<bool> {
+        let Some(expected) = Self::string_builtin_arity(name) else {
+            return Ok(false);
+        };
+        if arg_types.len() != expected || arg_modes.len() != expected {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArity),
+                format!(
+                    "builtin '{name}' has {} typed args and {} modes, oracle models {expected}",
+                    arg_types.len(),
+                    arg_modes.len()
+                ),
+            ));
+        }
+        if !arg_modes.iter().all(|mode| *mode == CfgArgMode::Normal) {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentMode),
+                format!("builtin '{name}' argument mode drift"),
+            ));
+        }
+
+        let owned = |index: usize| self.is_owned_string_type(arg_types[index]);
+        let argument_types_match = match name {
+            "__rue_String_new" => true,
+            "__rue_to_string" => arg_types[0] == Type::I64,
+            "__rue_to_string_unsigned" | "__rue_String_with_capacity" => arg_types[0] == Type::U64,
+            "__rue_String_len"
+            | "__rue_String_capacity"
+            | "__rue_String_is_empty"
+            | "__rue_String_clear"
+            | "__rue_String_clone" => owned(0),
+            "__rue_String_push_str" => owned(0) && owned(1),
+            "__rue_String_push" => owned(0) && arg_types[1] == Type::U8,
+            "__rue_String_reserve" => owned(0) && arg_types[1] == Type::U64,
+            "__rue_String_byte_at" => owned(0) && arg_types[1].is_integer(),
+            "__rue_str_byte_at" => self.is_str_view_type(arg_types[0]) && arg_types[1].is_integer(),
+            "__rue_String_char_scalar"
+            | "__rue_String_char_scalar_lossy"
+            | "__rue_String_char_next"
+            | "__rue_String_char_next_lossy" => owned(0) && arg_types[1] == Type::U64,
+            _ => unreachable!("arity table and signature table must stay exhaustive"),
+        };
+        if !argument_types_match {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType),
+                format!("builtin '{name}' argument type drift"),
+            ));
+        }
+
+        let result_type_matches = match name {
+            "__rue_String_len" | "__rue_String_capacity" => result_ty == Type::U64,
+            "__rue_String_is_empty" => result_ty == Type::BOOL,
+            "__rue_String_byte_at" | "__rue_str_byte_at" => result_ty == Type::U8,
+            "__rue_String_char_scalar" | "__rue_String_char_scalar_lossy" => result_ty == Type::U32,
+            "__rue_String_char_next" | "__rue_String_char_next_lossy" => result_ty == Type::U64,
+            _ => self.is_owned_string_type(result_ty),
+        };
+        if !result_type_matches {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinResultType),
+                format!("builtin '{name}' result type drift"),
+            ));
+        }
+
+        Ok(true)
+    }
+
+    /// Dispatch a builtin `String` method (these have no CFG body). Returns
+    /// `Ok(None)` if `name` is not a String builtin (so the caller falls back to
+    /// the ordinary CFG call). `capacity`/`reserve`/`with_capacity` capacity
+    /// behavior is implementation-defined and deliberately not modeled.
+    fn string_builtin(
+        &self,
+        name: &str,
+        args: &[Value],
+        arg_types: &[Type],
+        arg_modes: &[CfgArgMode],
+        result_ty: Type,
+    ) -> Step<Option<Value>> {
+        if !self.preflight_string_builtin(name, arg_types, arg_modes, result_ty)? {
+            return Ok(None);
+        }
+        if args.len() != arg_types.len() {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArity),
+                format!("builtin '{name}' runtime argument count drift"),
+            ));
+        }
+        let value_shapes_match = match name {
+            "__rue_String_new" => true,
+            "__rue_to_string" | "__rue_to_string_unsigned" | "__rue_String_with_capacity" => {
+                matches!(args[0], Value::Int(_))
+            }
+            "__rue_String_len"
+            | "__rue_String_capacity"
+            | "__rue_String_is_empty"
+            | "__rue_String_clear"
+            | "__rue_String_clone" => matches!(args[0], Value::Str { slots: 3, .. }),
+            "__rue_String_push_str" => {
+                matches!(args[0], Value::Str { slots: 3, .. })
+                    && matches!(args[1], Value::Str { slots: 3, .. })
+            }
+            "__rue_String_push"
+            | "__rue_String_reserve"
+            | "__rue_String_byte_at"
+            | "__rue_String_char_scalar"
+            | "__rue_String_char_scalar_lossy"
+            | "__rue_String_char_next"
+            | "__rue_String_char_next_lossy" => {
+                matches!(args[0], Value::Str { slots: 3, .. }) && matches!(args[1], Value::Int(_))
+            }
+            "__rue_str_byte_at" => {
+                matches!(args[0], Value::Str { slots: 2, .. }) && matches!(args[1], Value::Int(_))
+            }
+            _ => unreachable!("preflight recognized this builtin"),
+        };
+        if !value_shapes_match {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType),
+                format!("builtin '{name}' runtime argument shape drift"),
+            ));
         }
         // Same honesty rule for argument TYPES: a non-string where the modeled
         // signature has a string is drift, not an empty string.
         let s = |v: &Value| -> Result<Vec<u8>, Flow> {
             match v {
                 Value::Str { bytes, .. } => Ok(bytes.clone()),
-                _ => Err(Flow::Unsupported(Unsupported(format!(
-                    "builtin '{name}' received a non-string argument (signature drift?)"
-                )))),
+                _ => Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType),
+                    format!("builtin '{name}' received a non-string argument (signature drift?)"),
+                )),
             }
         };
         let out = match name {
@@ -751,9 +1678,12 @@ impl<'a> Interp<'a> {
                 Value::Int(offset + width as i128)
             }
             "__rue_String_capacity" => {
-                return Err(Flow::Unsupported(Unsupported(
-                    "String::capacity is implementation-defined".into(),
-                )));
+                return Err(unsupported(
+                    UnsupportedKind::ImplementationDefined(
+                        ImplementationDefinedKind::StringCapacityValue,
+                    ),
+                    "String::capacity is implementation-defined",
+                ));
             }
             _ => return Ok(None),
         };
@@ -828,18 +1758,7 @@ impl<'a> Interp<'a> {
     /// zero-sized, and arrays that are empty or have zero-sized elements.
     /// Enums are never zero-sized (they always carry a discriminant slot).
     fn is_zero_sized(&self, ty: Type) -> bool {
-        match ty.kind() {
-            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType => true,
-            TypeKind::Struct(sid) => {
-                let sd = self.state.type_pool.struct_def(sid);
-                sd.fields.iter().all(|f| self.is_zero_sized(f.ty))
-            }
-            TypeKind::Array(aid) => {
-                let (elem_ty, len) = self.state.type_pool.array_def(aid);
-                len == 0 || self.is_zero_sized(elem_ty)
-            }
-            _ => false,
-        }
+        self.state.type_pool.abi_slot_count(ty) == 0
     }
 
     /// Materialize the (unique) value of a zero-sized type, preserving the
@@ -892,7 +1811,14 @@ impl<'a> Interp<'a> {
                     .strings
                     .get(*idx as usize)
                     .cloned()
-                    .ok_or_else(|| Flow::Unsupported(Unsupported("string const index".into())))?;
+                    .ok_or_else(|| {
+                        unsupported(
+                            UnsupportedKind::ContractViolation(
+                                ContractViolationKind::StringConstantIndex,
+                            ),
+                            "string const index",
+                        )
+                    })?;
                 self.string_literal_value(text, ty)
             }
             CfgInstData::Param { index } => {
@@ -904,18 +1830,37 @@ impl<'a> Interp<'a> {
                     // value); materialize the unique ZST value instead.
                     self.zero_sized_value(ty)
                 } else {
-                    frame
-                        .params
-                        .get(*index as usize)
-                        .and_then(|o| o.clone())
-                        .ok_or_else(|| Flow::Unsupported(Unsupported("param index".into())))?
+                    match frame.params.get(*index as usize) {
+                        Some(Some(value)) => value.clone(),
+                        Some(None) => {
+                            return Err(unsupported(
+                                UnsupportedKind::SemanticGap(
+                                    SemanticGapKind::FlattenedParameterSlot,
+                                ),
+                                "param index",
+                            ));
+                        }
+                        None => {
+                            return Err(unsupported(
+                                UnsupportedKind::ContractViolation(
+                                    ContractViolationKind::ParameterSlotOutOfBounds,
+                                ),
+                                format!("param index {index} out of bounds"),
+                            ));
+                        }
+                    }
                 }
             }
-            CfgInstData::BlockParam { .. } => frame
-                .cache
-                .get(&v.as_u32())
-                .cloned()
-                .ok_or_else(|| Flow::Unsupported(Unsupported("unbound block param".into())))?,
+            CfgInstData::BlockParam { .. } => {
+                frame.cache.get(&v.as_u32()).cloned().ok_or_else(|| {
+                    unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::UnboundBlockParameter,
+                        ),
+                        "unbound block param",
+                    )
+                })?
+            }
 
             CfgInstData::Add(a, b) => {
                 self.arith(cfg, frame, *a, *b, ty, |x, y| x.checked_add(y))?
@@ -979,10 +1924,57 @@ impl<'a> Interp<'a> {
             }
             CfgInstData::PlaceRead { place } => {
                 let place = place.clone();
+                if !self.place_projection_metadata_is_valid(cfg, &place, ty, PlaceAccess::Read) {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::PlaceProjectionMetadata,
+                        ),
+                        "PlaceRead projection metadata drift",
+                    ));
+                }
+                if let Some(kind) = self.place_base_violation(cfg, &place, PlaceAccess::Read) {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(kind),
+                        format!(
+                            "PlaceRead base {:?} with type {:?} (logical width {}) violates its CFG contract ({} local slots, {} parameter slots)",
+                            place.base,
+                            place.base_type,
+                            self.state.type_pool.abi_slot_count(place.base_type),
+                            cfg.num_locals(),
+                            cfg.num_params(),
+                        ),
+                    ));
+                }
                 self.place_read(cfg, frame, &place)?
             }
             CfgInstData::PlaceWrite { place, value } => {
                 let place = place.clone();
+                if !self.place_projection_metadata_is_valid(
+                    cfg,
+                    &place,
+                    cfg.get_inst(*value).ty,
+                    PlaceAccess::Write,
+                ) {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::PlaceProjectionMetadata,
+                        ),
+                        "PlaceWrite projection metadata drift",
+                    ));
+                }
+                if let Some(kind) = self.place_base_violation(cfg, &place, PlaceAccess::Write) {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(kind),
+                        format!(
+                            "PlaceWrite base {:?} with type {:?} (logical width {}) violates its CFG contract ({} local slots, {} parameter slots)",
+                            place.base,
+                            place.base_type,
+                            self.state.type_pool.abi_slot_count(place.base_type),
+                            cfg.num_locals(),
+                            cfg.num_params(),
+                        ),
+                    ));
+                }
                 let val = self.eval(cfg, frame, *value)?;
                 self.place_write(cfg, frame, &place, val)?;
                 Value::Unit
@@ -1003,26 +1995,16 @@ impl<'a> Interp<'a> {
                 let elems = cfg.get_extra(*elements_start, *elements_len).to_vec();
                 Value::Aggregate(self.eval_all(cfg, frame, &elems)?)
             }
-            CfgInstData::FieldSet {
-                slot,
-                field_index,
-                value,
-                ..
-            } => {
-                let val = self.eval(cfg, frame, *value)?;
-                Self::set_agg_elem(frame, *slot, *field_index as usize, val)?;
-                Value::Unit
-            }
-            CfgInstData::IndexSet {
-                slot, index, value, ..
-            } => {
-                let idx = self.eval(cfg, frame, *index)?.as_int();
-                let val = self.eval(cfg, frame, *value)?;
-                if idx < 0 {
-                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
-                }
-                Self::set_agg_elem(frame, *slot, idx as usize, val)?;
-                Value::Unit
+            legacy @ (CfgInstData::FieldSet { .. }
+            | CfgInstData::IndexSet { .. }
+            | CfgInstData::ParamFieldSet { .. }
+            | CfgInstData::ParamIndexSet { .. }) => {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(
+                        ContractViolationKind::UnexpectedLegacyMutationInstruction,
+                    ),
+                    format!("legacy convenience mutation instruction reached oracle: {legacy:?}"),
+                ));
             }
             // A discriminant-only variant is its tag (an `Int`); a payload-
             // carrying variant is an `Aggregate` whose element 0 is the tag and
@@ -1056,9 +2038,12 @@ impl<'a> Interp<'a> {
                     elems.swap_remove(*field_index as usize + 1)
                 }
                 _ => {
-                    return Err(Flow::Unsupported(Unsupported(
-                        "enum payload get on non-payload value".into(),
-                    )));
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::EnumPayloadProjection,
+                        ),
+                        "enum payload get on non-payload value",
+                    ));
                 }
             },
 
@@ -1069,37 +2054,6 @@ impl<'a> Interp<'a> {
                 Self::set_param(frame, *param_slot, val);
                 Value::Unit
             }
-            CfgInstData::ParamFieldSet {
-                param_slot,
-                inner_offset,
-                field_index,
-                value,
-                ..
-            } => {
-                if *inner_offset != 0 {
-                    return Err(Flow::Unsupported(Unsupported(
-                        "nested inout field write".into(),
-                    )));
-                }
-                let val = self.eval(cfg, frame, *value)?;
-                Self::set_param_elem(frame, *param_slot, *field_index as usize, val)?;
-                Value::Unit
-            }
-            CfgInstData::ParamIndexSet {
-                param_slot,
-                index,
-                value,
-                ..
-            } => {
-                let idx = self.eval(cfg, frame, *index)?.as_int();
-                let val = self.eval(cfg, frame, *value)?;
-                if idx < 0 {
-                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
-                }
-                Self::set_param_elem(frame, *param_slot, idx as usize, val)?;
-                Value::Unit
-            }
-
             CfgInstData::Call {
                 name,
                 args_start,
@@ -1107,6 +2061,24 @@ impl<'a> Interp<'a> {
             } => {
                 let fname = self.interner().resolve(name).to_string();
                 let call_args = cfg.get_call_args(*args_start, *args_len).to_vec();
+                let arg_types: Vec<Type> = call_args
+                    .iter()
+                    .map(|arg| cfg.get_inst(arg.value).ty)
+                    .collect();
+                let arg_modes: Vec<CfgArgMode> = call_args.iter().map(|arg| arg.mode).collect();
+                let is_string_builtin =
+                    self.preflight_string_builtin(&fname, &arg_types, &arg_modes, ty)?;
+                let missing_call_kind = if !is_string_builtin && self.find_cfg(&fname).is_none() {
+                    let kind = self.classify_unsupported_runtime_call_static(
+                        &fname, &arg_types, &arg_modes, ty,
+                    );
+                    if kind.model_gap().is_none() {
+                        return Err(unsupported(kind, format!("call to '{fname}'")));
+                    }
+                    Some(kind)
+                } else {
+                    None
+                };
                 // Copy-in every argument (by value); for `inout` args, remember
                 // the base parameter slot and the caller place to copy back into.
                 let mut argvals = Vec::with_capacity(call_args.len());
@@ -1120,14 +2092,22 @@ impl<'a> Interp<'a> {
                     // it to copy back from).
                     let w = slot_width(&v);
                     if matches!(a.mode, CfgArgMode::Inout) && w > 0 {
-                        writebacks.push((base, Self::lvalue_of(cfg, a.value)?));
+                        writebacks.push((base, self.lvalue_of(cfg, a.value)?));
                     }
                     argvals.push(v);
                     base += w;
                 }
                 // Builtin String methods have no CFG body; dispatch them here.
-                if let Some(v) = self.string_builtin(&fname, &argvals)? {
-                    v
+                if is_string_builtin {
+                    self.string_builtin(&fname, &argvals, &arg_types, &arg_modes, ty)?
+                        .expect("preflight recognized this String builtin")
+                } else if missing_call_kind.is_some() {
+                    return Err(unsupported(
+                        self.classify_unsupported_runtime_call(
+                            &fname, &argvals, &arg_types, &arg_modes, ty,
+                        ),
+                        format!("call to '{fname}'"),
+                    ));
                 } else {
                     let (result, final_params) = self.call(&fname, &argvals)?;
                     // Copy-out: write each inout parameter's final value back into
@@ -1147,16 +2127,20 @@ impl<'a> Interp<'a> {
                 args_len,
             } => {
                 let iname = self.interner().resolve(name).to_string();
-                if iname != "dbg" {
-                    return Err(Flow::Unsupported(Unsupported(format!(
-                        "intrinsic @{iname}"
-                    ))));
-                }
                 let args = cfg.get_extra(*args_start, *args_len).to_vec();
-                let arg = args
-                    .first()
-                    .copied()
-                    .ok_or_else(|| Flow::Unsupported(Unsupported("@dbg arity".into())))?;
+                if iname != "dbg" {
+                    return Err(unsupported(
+                        self.classify_unsupported_intrinsic(cfg, v, &iname, &args, ty),
+                        format!("intrinsic @{iname}"),
+                    ));
+                }
+                let [arg] = args.as_slice() else {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(ContractViolationKind::DebugArity),
+                        "@dbg arity",
+                    ));
+                };
+                let arg = *arg;
                 let arg_ty = cfg.get_inst(arg).ty;
                 let val = self.eval(cfg, frame, arg)?;
                 self.write_dbg(&val, arg_ty)?;
@@ -1166,7 +2150,12 @@ impl<'a> Interp<'a> {
             CfgInstData::IntCast { value, from_ty: _ } => {
                 let x = self.eval(cfg, frame, *value)?.as_int();
                 let (lo, hi) = int_bounds(ty).ok_or_else(|| {
-                    Flow::Unsupported(Unsupported("intcast target not an int".into()))
+                    unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::IntCastTargetType,
+                        ),
+                        "intcast target not an int",
+                    )
                 })?;
                 if x < lo || x > hi {
                     return Err(Flow::Panic(Panic(TrapKind::IntegerCastOverflow)));
@@ -1318,7 +2307,12 @@ impl<'a> Interp<'a> {
             .locals
             .get(slot as usize)
             .and_then(|o| o.clone())
-            .ok_or_else(|| Flow::Unsupported(Unsupported(format!("read of uninit local {slot}"))))
+            .ok_or_else(|| {
+                unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::UninitializedLocal),
+                    format!("read of uninit local {slot}"),
+                )
+            })
     }
 
     // ---- aggregates & places ---------------------------------------------
@@ -1331,18 +2325,20 @@ impl<'a> Interp<'a> {
         cfg: &'a Cfg,
         frame: &mut Frame,
         place: &Place,
-    ) -> Step<(PlaceBase, Vec<usize>)> {
+    ) -> Step<(PlaceBase, Vec<(usize, Projection)>)> {
         let projs = cfg.get_place_projections(place).to_vec();
         let mut path = Vec::with_capacity(projs.len());
         for p in projs {
             match p {
-                Projection::Field { field_index, .. } => path.push(field_index as usize),
+                Projection::Field { field_index, .. } => {
+                    path.push((field_index as usize, p));
+                }
                 Projection::Index { index, .. } => {
                     let i = self.eval(cfg, frame, index)?.as_int();
                     if i < 0 {
                         return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
                     }
-                    path.push(i as usize);
+                    path.push((i as usize, p));
                 }
             }
         }
@@ -1352,27 +2348,44 @@ impl<'a> Interp<'a> {
     fn base_value(frame: &Frame, base: PlaceBase) -> Step<Value> {
         match base {
             PlaceBase::Local(slot) => Self::get_local(frame, slot),
-            PlaceBase::Param(slot) => frame
-                .params
-                .get(slot as usize)
-                .and_then(|o| o.clone())
-                .ok_or_else(|| Flow::Unsupported(Unsupported("param place".into()))),
+            PlaceBase::Param(slot) => match frame.params.get(slot as usize) {
+                Some(Some(value)) => Ok(value.clone()),
+                Some(None) => Err(unsupported(
+                    UnsupportedKind::SemanticGap(SemanticGapKind::FlattenedParameterSlot),
+                    "param place",
+                )),
+                None => Err(unsupported(
+                    UnsupportedKind::ContractViolation(
+                        ContractViolationKind::ParameterSlotOutOfBounds,
+                    ),
+                    format!("param place {slot} out of bounds"),
+                )),
+            },
         }
     }
 
     fn place_read(&mut self, cfg: &'a Cfg, frame: &mut Frame, place: &Place) -> Step<Value> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
         let mut cur = Self::base_value(frame, base)?;
-        for idx in path {
+        for (idx, projection) in path {
             cur = match cur {
                 Value::Aggregate(mut v) if idx < v.len() => v.swap_remove(idx),
                 Value::Aggregate(_) => {
                     return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
                 }
+                Value::Str { slots, .. } if self.is_matching_text_projection(projection, slots) => {
+                    return Err(unsupported(
+                        UnsupportedKind::SemanticGap(SemanticGapKind::TextProjectionRead),
+                        "projection of non-aggregate",
+                    ));
+                }
                 _ => {
-                    return Err(Flow::Unsupported(Unsupported(
-                        "projection of non-aggregate".into(),
-                    )));
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::NonAggregateProjectionRead,
+                        ),
+                        "projection of non-aggregate",
+                    ));
                 }
             };
         }
@@ -1398,16 +2411,19 @@ impl<'a> Interp<'a> {
         }
         let root = store[slot].get_or_insert(Value::Unit);
         let mut cur = root;
-        for idx in &path {
+        for (idx, _) in &path {
             cur = match cur {
                 Value::Aggregate(v) if *idx < v.len() => &mut v[*idx],
                 Value::Aggregate(_) => {
                     return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
                 }
                 _ => {
-                    return Err(Flow::Unsupported(Unsupported(
-                        "projection of non-aggregate".into(),
-                    )));
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::NonAggregateProjectionWrite,
+                        ),
+                        "projection of non-aggregate",
+                    ));
                 }
             };
         }
@@ -1415,30 +2431,28 @@ impl<'a> Interp<'a> {
         Ok(())
     }
 
-    /// Set element `idx` of the aggregate held in local `slot` (used by the
-    /// `FieldSet`/`IndexSet` convenience instructions).
-    fn set_agg_elem(frame: &mut Frame, slot: u32, idx: usize, val: Value) -> Step<()> {
-        match frame.locals.get_mut(slot as usize).and_then(|o| o.as_mut()) {
-            Some(Value::Aggregate(v)) if idx < v.len() => {
-                v[idx] = val;
-                Ok(())
-            }
-            Some(Value::Aggregate(_)) => Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds))),
-            _ => Err(Flow::Unsupported(Unsupported(
-                "field/index set on non-aggregate".into(),
-            ))),
-        }
-    }
-
     /// Recover the caller place an `inout` argument was loaded from, so its
     /// mutated value can be copied back after the call.
-    fn lvalue_of(cfg: &'a Cfg, v: CfgValue) -> Step<Place> {
+    fn lvalue_of(&self, cfg: &'a Cfg, v: CfgValue) -> Step<Place> {
         match &cfg.get_inst(v).data {
-            CfgInstData::Load { slot } => Ok(Place::local(*slot, cfg.get_inst(v).ty)),
-            CfgInstData::PlaceRead { place } => Ok(place.clone()),
-            other => Err(Flow::Unsupported(Unsupported(format!(
-                "inout argument is not an lvalue: {other:?}"
-            )))),
+            CfgInstData::Load { slot } if *slot < cfg.num_locals() => {
+                Ok(Place::local(*slot, cfg.get_inst(v).ty))
+            }
+            CfgInstData::PlaceRead { place } if self.is_inout_writeback_place(cfg, v, place) => {
+                Ok(place.clone())
+            }
+            other @ CfgInstData::Param { index }
+                if *index < cfg.num_params() && cfg.is_param_writable(*index) =>
+            {
+                Err(unsupported(
+                    UnsupportedKind::SemanticGap(SemanticGapKind::InoutParameterForwarding),
+                    format!("inout argument is not an lvalue: {other:?}"),
+                ))
+            }
+            other => Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::InoutArgumentNotLvalue),
+                format!("inout argument is not an lvalue: {other:?}"),
+            )),
         }
     }
 
@@ -1448,19 +2462,6 @@ impl<'a> Interp<'a> {
             frame.params.resize(s + 1, None);
         }
         frame.params[s] = Some(val);
-    }
-
-    fn set_param_elem(frame: &mut Frame, slot: u32, idx: usize, val: Value) -> Step<()> {
-        match frame.params.get_mut(slot as usize).and_then(|o| o.as_mut()) {
-            Some(Value::Aggregate(v)) if idx < v.len() => {
-                v[idx] = val;
-                Ok(())
-            }
-            Some(Value::Aggregate(_)) => Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds))),
-            _ => Err(Flow::Unsupported(Unsupported(
-                "field/index set on non-aggregate inout param".into(),
-            ))),
-        }
     }
 }
 
@@ -1566,9 +2567,10 @@ fn int_shape(ty: Type) -> Result<(u32, TypeKind), Flow> {
         TypeKind::I32 | TypeKind::U32 => 32,
         TypeKind::I64 | TypeKind::U64 => 64,
         _ => {
-            return Err(Flow::Unsupported(Unsupported(format!(
-                "non-int type {kind:?}"
-            ))));
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::NonIntegerOperationType),
+                format!("non-int type {kind:?}"),
+            ));
         }
     };
     Ok((bits, kind))
@@ -1646,9 +2648,10 @@ fn format_dbg(val: &Value, ty: Type) -> Result<Cow<'_, str>, Flow> {
             Cow::Owned((n as u128).to_string())
         }
         other => {
-            return Err(Flow::Unsupported(Unsupported(format!(
-                "@dbg of type {other:?}"
-            ))));
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::UnsupportedDebugType),
+                format!("@dbg of type {other:?}"),
+            ));
         }
     })
 }

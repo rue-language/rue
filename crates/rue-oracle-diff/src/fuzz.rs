@@ -22,7 +22,9 @@
 //! `test.sh`, and Buck test targets set from `scripts/rue-bin`.
 
 use crate::{generator, trap::native_runtime_trap_kind};
-use rue_oracle::{MAX_STDOUT_BYTES, RunSourceError, TrapKind, run_source};
+use rue_oracle::{
+    MAX_STDOUT_BYTES, RunSourceError, TrapKind, Unsupported, UnsupportedKind, run_source,
+};
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -62,14 +64,14 @@ enum GeneratorContractFailure {
     /// The shared Rue frontend rejected generated source.
     Compile(String),
     /// The source compiled, but evaluation reached an unmodeled construct.
-    Unsupported(String),
+    Unsupported(Unsupported),
 }
 
 impl GeneratorContractFailure {
     fn from_run_source(error: RunSourceError) -> Self {
         match error {
             RunSourceError::Compile(errors) => Self::Compile(format!("{errors:#?}")),
-            RunSourceError::Unsupported(unsupported) => Self::Unsupported(unsupported.0),
+            RunSourceError::Unsupported(unsupported) => Self::Unsupported(unsupported),
         }
     }
 
@@ -82,7 +84,15 @@ impl GeneratorContractFailure {
 
     fn detail(&self) -> &str {
         match self {
-            Self::Compile(detail) | Self::Unsupported(detail) => detail,
+            Self::Compile(detail) => detail,
+            Self::Unsupported(unsupported) => unsupported.detail(),
+        }
+    }
+
+    fn unsupported_kind(&self) -> Option<UnsupportedKind> {
+        match self {
+            Self::Compile(_) => None,
+            Self::Unsupported(unsupported) => Some(unsupported.kind()),
         }
     }
 }
@@ -95,11 +105,17 @@ struct GeneratorContractFinding {
 
 impl GeneratorContractFinding {
     fn render(&self) -> String {
+        let typed_kind = self
+            .failure
+            .unsupported_kind()
+            .map(|kind| format!(" ({kind:?})"))
+            .unwrap_or_default();
         format!(
-            "\n\u{2717} GENERATOR CONTRACT FAILURE (seed {seed})\n  {kind}: {detail}\n  \
+            "\n\u{2717} GENERATOR CONTRACT FAILURE (seed {seed})\n  {kind}{typed_kind}: {detail}\n  \
              --- source (regenerate with `fuzz --start {seed} --seeds 1`) ---\n{source}",
             seed = self.seed,
             kind = self.failure.kind(),
+            typed_kind = typed_kind,
             detail = self.failure.detail(),
             source = self.source,
         )
@@ -739,6 +755,9 @@ fn generator_contract_repro_contents(finding: &GeneratorContractFinding) -> Stri
         finding.seed
     );
     push_repro_comment(&mut contents, "failure kind", finding.failure.kind());
+    if let Some(kind) = finding.failure.unsupported_kind() {
+        push_repro_comment(&mut contents, "oracle cause", &format!("{kind:?}"));
+    }
     push_repro_comment(&mut contents, "detail", finding.failure.detail());
     push_repro_comment(
         &mut contents,
@@ -984,12 +1003,35 @@ mod tests {
         // A compiled-but-unmodeled program is the other distinct contract
         // failure class. Keep the variant typed so summaries/repros cannot
         // collapse it back into the old generic skip path.
-        let unsupported = RunSourceError::Unsupported(rue_oracle::Unsupported(
-            "intrinsic @random_u32".to_string(),
-        ));
+        let unsupported = run_source(
+            "fn main() -> i32 { let n: u32 = @random_u32(); if n == 0 { 0 } else { 1 } }",
+        )
+        .expect_err("randomness must remain outside the deterministic oracle");
+        let failure = GeneratorContractFailure::from_run_source(unsupported);
+        let GeneratorContractFailure::Unsupported(unsupported) = &failure else {
+            panic!("compiled source must produce the typed Unsupported variant");
+        };
         assert_eq!(
-            GeneratorContractFailure::from_run_source(unsupported),
-            GeneratorContractFailure::Unsupported("intrinsic @random_u32".to_string())
+            unsupported.kind(),
+            rue_oracle::UnsupportedKind::ExternalDependency(
+                rue_oracle::ExternalDependencyKind::RandomU32
+            )
+        );
+        assert_eq!(unsupported.detail(), "intrinsic @random_u32");
+
+        let finding = GeneratorContractFinding {
+            seed: 9,
+            source: "fn main() -> i32 { 9 }\n".to_string(),
+            failure,
+        };
+        assert!(
+            finding
+                .render()
+                .contains("unsupported (ExternalDependency(RandomU32))")
+        );
+        assert!(
+            generator_contract_repro_contents(&finding)
+                .contains("// oracle cause: ExternalDependency(RandomU32)\n")
         );
     }
 

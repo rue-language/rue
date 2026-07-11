@@ -34,10 +34,12 @@
 //!   against the real compiler + native binary. See [`fuzz`]. A `dump <seed>`
 //!   subcommand prints a generated program for inspection.
 //!
-//! Every mode exits non-zero if an eligible program is rejected by the front end
-//! or if the oracle disagrees with the expected behavior. Generated fuzz mode
-//! also exits non-zero if the oracle reports `Unsupported`, because its
-//! generator promises to stay within the modeled subset.
+//! Every mode exits non-zero if an eligible program is rejected by the front
+//! end, interpretation hits a resource limit or compiler/oracle contract
+//! violation, or the oracle disagrees with expected behavior. Only typed
+//! [`rue_oracle::ModelGapKind`] values can count as unmodeled corpus coverage.
+//! Generated fuzz mode has the stronger contract that every `Unsupported` is a
+//! failure because its generator promises to stay within the modeled subset.
 
 mod fuzz;
 mod generator;
@@ -183,6 +185,8 @@ enum CaseOutcome {
     Ineligible(IneligibleReason),
     /// An eligible case was rejected by the shared compiler front end.
     FrontendFailure(String),
+    /// Interpretation hit a resource limit or compiler/oracle contract breach.
+    OracleFailure(String),
     /// The oracle ran but disagreed with the expected behavior.
     Disagreement(String),
 }
@@ -220,6 +224,7 @@ struct Report {
     unmodeled: u32,
     ineligible_reasons: BTreeMap<IneligibleReason, u32>,
     frontend_failures: Vec<String>,
+    oracle_failures: Vec<String>,
     disagreements: Vec<String>,
     /// corpus discovery/read/parse failures — the harness did not check all inputs
     harness_failures: Vec<String>,
@@ -235,12 +240,16 @@ impl Report {
                 *self.ineligible_reasons.entry(reason).or_default() += 1;
             }
             CaseOutcome::FrontendFailure(failure) => self.frontend_failures.push(failure),
+            CaseOutcome::OracleFailure(failure) => self.oracle_failures.push(failure),
             CaseOutcome::Disagreement(disagreement) => self.disagreements.push(disagreement),
         }
     }
 
     fn modeled_eligible_count(&self) -> u32 {
-        self.agree + self.frontend_failures.len() as u32 + self.disagreements.len() as u32
+        self.agree
+            + self.frontend_failures.len() as u32
+            + self.oracle_failures.len() as u32
+            + self.disagreements.len() as u32
     }
 
     fn ineligible_count(&self) -> u32 {
@@ -252,6 +261,7 @@ impl Report {
             + self.unmodeled
             + self.ineligible_count()
             + self.frontend_failures.len() as u32
+            + self.oracle_failures.len() as u32
             + self.disagreements.len() as u32
     }
 
@@ -353,8 +363,9 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
 
 /// Print the tallied report and turn it into a process exit code: success when
 /// the oracle agreed with the compiler on every modeled eligible case, failure
-/// on any harness/front-end failure or disagreement. Shared by [`corpus_mode`]
-/// and [`spec_mode`]; `corpus` names which corpus was audited, for the header.
+/// on any harness/front-end/oracle failure or disagreement. Shared by
+/// [`corpus_mode`] and [`spec_mode`]; `corpus` names which corpus was audited,
+/// for the header.
 fn finish_report(report: &Report, corpus: &str) -> ExitCode {
     let total = report.classified_case_count();
     println!("\n=== rue-oracle-diff: {corpus} corpus classification audit ({total} cases) ===");
@@ -370,6 +381,10 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
     }
     println!("  FRONTEND FAILURES: {}", report.frontend_failures.len());
     for failure in &report.frontend_failures {
+        println!("\n  ✗ {failure}");
+    }
+    println!("  ORACLE FAILURES:   {}", report.oracle_failures.len());
+    for failure in &report.oracle_failures {
         println!("\n  ✗ {failure}");
     }
     println!("  DISAGREEMENTS:    {}", report.disagreements.len());
@@ -390,17 +405,20 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
 
     if report.harness_failures.is_empty()
         && report.frontend_failures.is_empty()
+        && report.oracle_failures.is_empty()
         && report.disagreements.is_empty()
     {
         println!("\noracle agrees with the compiler on every modeled eligible case.");
         ExitCode::SUCCESS
     } else {
         println!(
-            "\n{} harness failure(s), {} frontend failure(s), {} disagreement(s) — \
+            "\n{} harness failure(s), {} frontend failure(s), {} oracle failure(s), {} \
+             disagreement(s) — \
              corpus inputs must load and modeled eligible cases must compile before the \
              oracle can check them.",
             report.harness_failures.len(),
             report.frontend_failures.len(),
+            report.oracle_failures.len(),
             report.disagreements.len()
         );
         ExitCode::FAILURE
@@ -457,9 +475,10 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
 /// dump, not a run), or a shape with no oracle model (stdin, multi-file
 /// `aux_files`). Preview-gated cases run with their declared preview feature;
 /// preview cases the real runner explicitly allows to fail remain ineligible.
-/// Cases the oracle simply can't model yet return [`RunSourceError::Unsupported`]
-/// and count as unmodeled. [`RunSourceError::Compile`] for a case that
-/// survived these shape filters is a front-end failure and fails the harness.
+/// A typed oracle model gap counts as unmodeled; resource exhaustion or a
+/// compiler/oracle contract violation fails the harness. [`RunSourceError::Compile`]
+/// for a case that survived these shape filters is likewise a hard front-end
+/// failure.
 fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
     let is_known_gap = KNOWN_ORACLE_GAPS
         .iter()
@@ -523,9 +542,9 @@ fn check_spec_case_with_known_gap(
     let expected_trap = trap::trap_expectation(case.runtime_error.iter().map(String::as_str));
 
     match run_source_with_preview_features(&case.source, &preview_features) {
-        // Unsupported means the interpreter cannot model a valid program.
-        // Compile means this eligible corpus case was rejected by
-        // the shared front end and must fail rather than disappear as unmodeled.
+        // Only Unsupported values carrying a registrable ModelGapKind count as
+        // coverage. Resource/contract failures and eligible compile rejections
+        // fail rather than disappearing as unmodeled.
         Err(error) => {
             let context = format!("{ident} :: {}", case.name);
             record_oracle_error(&context, error)
@@ -775,16 +794,24 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
     }
 }
 
-/// Classify an oracle error without conflating a compiler rejection with an
-/// interpreter coverage gap. Corpus/spec callers prefilter intentional
-/// `compile_fail` cases, so any [`RunSourceError::Compile`] reaching this helper
-/// is an unexpected front-end failure in an eligible program.
+/// Classify an oracle error without conflating a compiler rejection, a
+/// registrable interpreter coverage gap, and a hard oracle failure. Corpus/spec
+/// callers prefilter intentional `compile_fail` cases, so any
+/// [`RunSourceError::Compile`] reaching this helper is an unexpected front-end
+/// failure in an eligible program.
 fn record_oracle_error(context: &str, error: RunSourceError) -> CaseOutcome {
     match error {
         RunSourceError::Compile(errors) => {
             CaseOutcome::FrontendFailure(format!("{context}\n      {errors:#?}"))
         }
-        RunSourceError::Unsupported(_) => CaseOutcome::Unmodeled,
+        RunSourceError::Unsupported(unsupported) if unsupported.model_gap().is_some() => {
+            CaseOutcome::Unmodeled
+        }
+        RunSourceError::Unsupported(unsupported) => CaseOutcome::OracleFailure(format!(
+            "{context}\n      {:?}: {}",
+            unsupported.kind(),
+            unsupported.detail()
+        )),
     }
 }
 
@@ -1005,7 +1032,6 @@ fn collect_toml_file(path: &Path, out: &mut Vec<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_oracle::Unsupported;
 
     fn corpus_case(source: &str, compile_fail: bool) -> Case {
         Case {
@@ -1777,12 +1803,13 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
             IneligibleReason::ExpectedCompileFailure,
         ));
         report.record(CaseOutcome::FrontendFailure("frontend".to_string()));
+        report.record(CaseOutcome::OracleFailure("oracle".to_string()));
         report.record(CaseOutcome::Disagreement("disagreement".to_string()));
 
         assert_eq!(report.agree, 1);
         assert_eq!(report.unmodeled, 1);
         assert_eq!(report.ineligible_count(), 4);
-        assert_eq!(report.classified_case_count(), 8);
+        assert_eq!(report.classified_case_count(), 9);
         assert_eq!(
             report.ineligible_breakdown_lines(),
             vec![
@@ -1792,17 +1819,19 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
             ]
         );
         assert_eq!(report.frontend_failures, vec!["frontend".to_string()]);
+        assert_eq!(report.oracle_failures, vec!["oracle".to_string()]);
         assert_eq!(report.disagreements, vec!["disagreement".to_string()]);
     }
 
     #[test]
     fn an_all_unmodeled_corpus_fails_closed() {
         let mut report = Report::default();
+        let error = rue_oracle::run_source(
+            "fn main() -> i32 { let n: u32 = @random_u32(); if n == 0 { 0 } else { 1 } }",
+        )
+        .expect_err("randomness must remain outside the deterministic oracle");
 
-        report.record(record_oracle_error(
-            "unsupported probe",
-            RunSourceError::Unsupported(Unsupported("known coverage gap".to_string())),
-        ));
+        report.record(record_oracle_error("unsupported probe", error));
 
         assert_eq!(report.unmodeled, 1);
         assert_eq!(report.modeled_eligible_count(), 0);
@@ -1818,6 +1847,29 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
 
         assert_eq!(report.modeled_eligible_count(), 1);
         assert_eq!(finish_report(&report, "test"), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn resource_failure_cannot_hide_in_a_mixed_corpus() {
+        let error = rue_oracle::run_source(
+            "fn recurse(n: i32) -> i32 { recurse(n) }
+            fn main() -> i32 { recurse(0) }",
+        )
+        .expect_err("unbounded recursion must hit the oracle depth limit");
+        let outcome = record_oracle_error("resource probe", error);
+        let CaseOutcome::OracleFailure(message) = &outcome else {
+            panic!("resource exhaustion must be a hard oracle failure: {outcome:?}");
+        };
+        assert!(message.contains("ResourceLimit(RecursionDepth)"));
+
+        let mut report = Report::default();
+        report.record(CaseOutcome::Agree);
+        report.record(outcome);
+
+        assert_eq!(report.agree, 1);
+        assert_eq!(report.unmodeled, 0);
+        assert_eq!(report.oracle_failures.len(), 1);
+        assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
     }
 
     #[test]
