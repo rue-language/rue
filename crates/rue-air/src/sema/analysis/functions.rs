@@ -246,7 +246,7 @@ impl<'a> Sema<'a> {
         Air,
         u32,
         u32,
-        Vec<bool>,
+        ParamSlotModes,
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,
@@ -290,7 +290,7 @@ impl<'a> Sema<'a> {
         Air,
         u32,
         u32,
-        Vec<bool>,
+        ParamSlotModes,
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,
@@ -314,7 +314,8 @@ impl<'a> Sema<'a> {
         }
 
         let mut param_vec: Vec<ParamInfo> = Vec::new();
-        let mut param_modes: Vec<bool> = Vec::new();
+        let mut param_by_ref: Vec<bool> = Vec::new();
+        let mut param_writable: Vec<bool> = Vec::new();
 
         // Add parameters to the param vec, tracking ABI slot offsets.
         // Each parameter starts at the next available ABI slot.
@@ -359,11 +360,13 @@ impl<'a> Sema<'a> {
                 self.require_layout_slots(*ptype, self.rir.get(body).span)?
             };
             for _ in 0..slot_count {
-                param_modes.push(is_by_ref);
+                param_by_ref.push(is_by_ref);
+                param_writable.push(*mode == RirParamMode::Inout);
             }
             next_abi_slot += slot_count;
         }
         let num_param_slots = next_abi_slot;
+        let param_modes = ParamSlotModes::new(param_by_ref, param_writable);
 
         // The callee owns its pass-by-value (Normal) parameters and must drop
         // them at exit unless they are moved out (RUE-61). Inout/borrow params
@@ -540,7 +543,7 @@ impl<'a> Sema<'a> {
         Air,
         u32,
         u32,
-        Vec<bool>,
+        ParamSlotModes,
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,
@@ -582,7 +585,7 @@ impl<'a> Sema<'a> {
         Air,
         u32,
         u32,
-        Vec<bool>,
+        ParamSlotModes,
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,
@@ -635,7 +638,7 @@ impl<'a> Sema<'a> {
         Air,
         u32,
         u32,
-        Vec<bool>,
+        ParamSlotModes,
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,

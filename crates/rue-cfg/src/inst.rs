@@ -25,7 +25,7 @@ const _: () = assert!(std::mem::size_of::<CfgInst>() <= 48);
 const _: () = assert!(std::mem::size_of::<CfgInstData>() <= 32);
 
 use lasso::{Key, Spur};
-use rue_air::{EnumId, StructId, Type};
+use rue_air::{EnumId, ParamSlotModes, StructId, Type};
 use rue_span::Span;
 
 // ============================================================================
@@ -586,8 +586,9 @@ pub struct Cfg {
     num_params: u32,
     /// Function name
     fn_name: String,
-    /// Whether each parameter slot is inout (passed by reference)
-    param_modes: Vec<bool>,
+    /// Physical by-reference and logical writability facts for every
+    /// parameter ABI slot.
+    param_modes: ParamSlotModes,
     /// Local slots whose ADDRESS escapes through an address-taking intrinsic
     /// (`@raw` / `@raw_mut` / `@field_ptr`), recorded at construction by
     /// CfgBuilder (which has the interner to recognize the names — opt passes
@@ -607,7 +608,7 @@ impl Cfg {
         num_locals: u32,
         num_params: u32,
         fn_name: String,
-        param_modes: Vec<bool>,
+        param_modes: impl Into<ParamSlotModes>,
     ) -> Self {
         Self {
             blocks: Vec::new(),
@@ -621,7 +622,7 @@ impl Cfg {
             num_locals,
             num_params,
             fn_name,
-            param_modes,
+            param_modes: param_modes.into(),
             address_taken_slots: std::collections::HashSet::new(),
         }
     }
@@ -679,10 +680,25 @@ impl Cfg {
         &self.fn_name
     }
 
-    /// Get whether a parameter slot is inout.
+    /// Get whether a parameter slot uses the physical by-reference ABI.
+    ///
+    /// This legacy name is retained for codegen callers. It is true for both
+    /// logical `borrow` and logical `inout`; use [`Cfg::is_param_writable`] for
+    /// mutation permission.
     #[inline]
     pub fn is_param_inout(&self, slot: u32) -> bool {
         self.param_modes
+            .by_ref()
+            .get(slot as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Get whether a parameter ABI slot is logically writable (`inout`).
+    #[inline]
+    pub fn is_param_writable(&self, slot: u32) -> bool {
+        self.param_modes
+            .writable()
             .get(slot as usize)
             .copied()
             .unwrap_or(false)
@@ -691,7 +707,7 @@ impl Cfg {
     /// Get the parameter modes slice.
     #[inline]
     pub fn param_modes(&self) -> &[bool] {
-        &self.param_modes
+        self.param_modes.by_ref()
     }
 
     /// Create a new basic block and return its ID.

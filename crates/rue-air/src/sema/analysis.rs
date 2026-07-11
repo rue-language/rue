@@ -26,7 +26,7 @@ use super::context::{
     AnalysisContext, AnalysisResult, BuiltinMethodContext, CallLoanKind, ConstValue, ParamInfo,
     ReceiverInfo, StringReceiverStorage,
 };
-use super::{AnalyzedFunction, InferenceContext, MethodInfo, Sema, SemaOutput};
+use super::{AnalyzedFunction, InferenceContext, MethodInfo, ParamSlotModes, Sema, SemaOutput};
 use crate::inference::{
     Constraint, ConstraintContext, ConstraintGenerator, InferType, ParamVarInfo, Unifier,
     UnifyResult,
@@ -1331,7 +1331,7 @@ mod error_invariant_tests {
             air,
             num_locals: 0,
             num_param_slots: 0,
-            param_modes: Vec::new(),
+            param_modes: ParamSlotModes::default(),
             allow_unreachable_code: false,
         }
     }
