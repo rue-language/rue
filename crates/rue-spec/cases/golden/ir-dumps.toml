@@ -832,3 +832,85 @@ Layout (rbp-relative):
 
 Return: rax (Type::I32)
 """
+
+# =============================================================================
+# Projected-place lowering (RUE-604)
+# =============================================================================
+
+[[case]]
+name = "projected_place_mir_x86_64"
+spec = ["7.1:19", "7.1:25"]
+description = "Nested index+field projection pins bounds-before-address ordering, element scaling, root anchoring, and the final x86 indexed load."
+source = """
+struct P { a: i32, b: i32 }
+fn main() -> i32 {
+    let xs = [P { a: 1, b: 42 }];
+    let i = 0;
+    xs[i].b
+}
+"""
+target = "x86-64-linux"
+expected_mir = """
+function main:
+    mov v0, 1
+    mov v1, 42
+    mov v2, v0
+    mov v3, 0
+    mov [rbp-16], v0
+    mov [rbp-8], v1
+    mov v4, 0
+    mov [rbp-24], v4
+    mov v5, [rbp-24]
+    mov v7, 1
+    cmpq v5, v7
+    jb .L0
+    call __rue_bounds_check
+    .L0:
+    mov v8, v5
+    mov v9, 16
+    imulq v8, v9
+    lea v10, [rbp-8]
+    addq v10, v8
+    mov v6, [v10]
+    mov rdi, v6
+    call __rue_exit
+"""
+
+[[case]]
+name = "projected_place_mir_aarch64"
+spec = ["7.1:19", "7.1:25"]
+description = "Nested index+field projection pins bounds-before-address ordering, element scaling, root anchoring, and the final AArch64 base-only load."
+source = """
+struct P { a: i32, b: i32 }
+fn main() -> i32 {
+    let xs = [P { a: 1, b: 42 }];
+    let i = 0;
+    xs[i].b
+}
+"""
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #1
+    mov v1, #42
+    mov v2, v0
+    mov v3, #0
+    str v0, [fp, #-16]
+    str v1, [fp, #-8]
+    mov v4, #0
+    str v4, [fp, #-24]
+    ldr v5, [fp, #-24]
+    mov v7, #1
+    cmp v5, v7 // 64-bit
+    b.lo .L0
+    bl __rue_bounds_check
+    .L0:
+    mov v8, v5
+    mov v9, #16
+    mul v8, v8, v9
+    add v10, fp, #-8
+    add v10, v10, v8
+    ldr v6, [v10]
+    mov x0, v6
+    bl __rue_exit
+"""

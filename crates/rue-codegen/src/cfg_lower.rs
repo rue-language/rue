@@ -26,16 +26,6 @@ use rue_cfg::{BlockId, Cfg, CfgValue, Type};
 
 use crate::types;
 
-/// Represents an index operation: the index value and the stride (slots per element).
-/// Used for lowering Place projections that include array indexing.
-#[derive(Clone)]
-pub struct IndexLevel {
-    pub index: CfgValue,
-    pub elem_slot_count: u32,
-    /// The array type (Type::Array(...)) for bounds checking.
-    pub array_type: Type,
-}
-
 /// A single lowering decision: maps one CFG instruction to its MIR expansion.
 #[derive(Debug, Clone)]
 pub struct LoweringDecision {
