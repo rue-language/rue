@@ -368,6 +368,16 @@ pub(crate) struct AnalysisContext<'a> {
     /// destruction) or a move of the inner shadow outlives its block and
     /// poisons the outer binding with a false E0205 (RUE-522).
     pub moved_scope_stack: Vec<Vec<(Spur, Option<VariableMoveState>)>>,
+    /// Per-scope saved comptime-type-alias bindings, parallel to
+    /// `scope_stack`: each frame records the shadowed binding (or absence)
+    /// for every name bound in `comptime_type_vars` — or hidden there by a
+    /// same-named runtime `let` — in that scope, and `pop_scope` restores
+    /// them in reverse. This gives `let`-bound type aliases lexical block
+    /// scope (RUE-530): without it the flat map let an alias escape its
+    /// block and made sibling-branch aliases collide. Bind aliases through
+    /// [`AnalysisContext::bind_comptime_type_var`], never by inserting into
+    /// `comptime_type_vars` directly.
+    pub comptime_type_scope_stack: Vec<Vec<(Spur, Option<Type>)>>,
     /// Resolved types from HM inference.
     /// Maps RIR instruction refs to their resolved concrete types.
     /// This is populated by running constraint generation and unification
@@ -497,16 +507,29 @@ impl ScopedContext for AnalysisContext<'_> {
         if let Some(move_frame) = self.moved_scope_stack.last_mut() {
             move_frame.push((symbol, old_moves));
         }
+        // A runtime binding hides any same-named comptime type alias for the
+        // rest of this scope — the inner binding wins whatever its kind — and
+        // the alias is restored when this scope pops (RUE-530). Without the
+        // removal, a type-annotation lookup (which consults
+        // `comptime_type_vars` before locals) would resolve through the dead
+        // alias.
+        if let Some(old_alias) = self.comptime_type_vars.remove(&symbol)
+            && let Some(alias_frame) = self.comptime_type_scope_stack.last_mut()
+        {
+            alias_frame.push((symbol, Some(old_alias)));
+        }
     }
 
     fn push_scope(&mut self) {
         self.scope_stack.push(Vec::with_capacity(2));
         self.moved_scope_stack.push(Vec::new());
+        self.comptime_type_scope_stack.push(Vec::new());
     }
 
     fn pop_scope(&mut self) {
         // Mirrors the trait default for locals (reverse order — see the trait
-        // doc), plus the RUE-522 move-state restore from the parallel frame.
+        // doc), plus the RUE-522 move-state and RUE-530 type-alias restores
+        // from the parallel frames.
         if let Some(scope_entries) = self.scope_stack.pop() {
             for (symbol, old_value) in scope_entries.into_iter().rev() {
                 match old_value {
@@ -531,10 +554,45 @@ impl ScopedContext for AnalysisContext<'_> {
                 }
             }
         }
+        if let Some(alias_frame) = self.comptime_type_scope_stack.pop() {
+            for (symbol, old_alias) in alias_frame.into_iter().rev() {
+                match old_alias {
+                    Some(ty) => {
+                        self.comptime_type_vars.insert(symbol, ty);
+                    }
+                    None => {
+                        self.comptime_type_vars.remove(&symbol);
+                    }
+                }
+            }
+        }
     }
 }
 
 impl<'a> AnalysisContext<'a> {
+    /// Bind a `let`-bound comptime type alias (`let P = Point();`), saving
+    /// the name's previous binding (or absence) in the current scope's alias
+    /// frame so `pop_scope` restores it — the alias is lexically scoped like
+    /// any other `let` (RUE-530). Also hides a same-named runtime local for
+    /// this scope: the variable-reference and annotation paths consult
+    /// `comptime_type_vars` and `locals` in different orders, so leaving
+    /// both live would resolve the name inconsistently.
+    pub fn bind_comptime_type_var(&mut self, symbol: Spur, ty: Type) {
+        let old_alias = self.comptime_type_vars.insert(symbol, ty);
+        if let Some(alias_frame) = self.comptime_type_scope_stack.last_mut() {
+            alias_frame.push((symbol, old_alias));
+        }
+        if let Some(old_local) = self.locals.remove(&symbol) {
+            if let Some(current_scope) = self.scope_stack.last_mut() {
+                current_scope.push((symbol, Some(old_local)));
+            }
+            let old_moves = self.moved_vars.remove(&symbol);
+            if let Some(move_frame) = self.moved_scope_stack.last_mut() {
+                move_frame.push((symbol, old_moves));
+            }
+        }
+    }
+
     /// Create a scratch copy of this context for the loop back-edge move check.
     ///
     /// A value moved anywhere in a loop's condition or body is already moved
@@ -562,6 +620,7 @@ impl<'a> AnalysisContext<'a> {
             return_type: self.return_type,
             scope_stack: self.scope_stack.clone(),
             moved_scope_stack: self.moved_scope_stack.clone(),
+            comptime_type_scope_stack: self.comptime_type_scope_stack.clone(),
             resolved_types: self.resolved_types,
             moved_vars: self.moved_vars.clone(),
             warnings: Vec::new(),

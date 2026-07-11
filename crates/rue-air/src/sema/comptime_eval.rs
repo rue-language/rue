@@ -1678,10 +1678,14 @@ impl Sema<'_> {
     /// through the same paths as named structs.
     ///
     /// The walk is opportunistic: initializers that can't be evaluated at
-    /// compile time are simply skipped (sema diagnoses them later). Like
-    /// `AnalysisContext::comptime_type_vars`, the resulting map is flat
-    /// (not scope-aware); a shadowed alias resolves to the type value, which
-    /// matches the analysis pass's behavior.
+    /// compile time are simply skipped (sema diagnoses them later). The
+    /// result is keyed by the binding's own `Alloc` instruction, and the
+    /// evaluation environment is block-scoped (RUE-530): an alias is visible
+    /// to later initializers in its block and its nested blocks, then
+    /// unwound — so sibling-branch aliases sharing a name don't collide, and
+    /// a shadowed alias is restored when the shadow's block ends. The
+    /// constraint generator replays the same scoping live via
+    /// `ConstraintGenerator::enter_scope`/`exit_scope`.
     ///
     /// `type_subst` / `value_subst` carry the enclosing comptime parameter
     /// substitutions (specialized generic bodies), so aliases like
@@ -1692,23 +1696,37 @@ impl Sema<'_> {
         body: InstRef,
         type_subst: Option<&HashMap<Spur, Type>>,
         value_subst: Option<&HashMap<Spur, ConstValue>>,
-    ) -> HashMap<Spur, Type> {
-        let mut discovered: HashMap<Spur, Type> = HashMap::new();
+    ) -> HashMap<InstRef, Type> {
+        let mut discovered: HashMap<InstRef, Type> = HashMap::new();
         let mut eval_types: HashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
         let eval_values: HashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
-        self.walk_comptime_type_locals(body, &mut discovered, &mut eval_types, &eval_values);
+        let mut root_frame = Vec::new();
+        self.walk_comptime_type_locals(
+            body,
+            &mut discovered,
+            &mut eval_types,
+            &eval_values,
+            &mut root_frame,
+        );
         discovered
     }
 
     /// In-order walk over statement positions for
     /// [`precompute_comptime_type_locals`]. Only containers that can hold
     /// `let` statements are entered; everything else is left alone.
+    ///
+    /// `frame` is the innermost enclosing block's undo list: each alias
+    /// discovered in that block records the name's previous binding there,
+    /// and the block arm unwinds its frame (in reverse, RUE-522-style) when
+    /// its statements are done, restoring `eval_types` to the enclosing
+    /// scope's view.
     fn walk_comptime_type_locals(
         &mut self,
         inst_ref: InstRef,
-        discovered: &mut HashMap<Spur, Type>,
+        discovered: &mut HashMap<InstRef, Type>,
         eval_types: &mut HashMap<Spur, Type>,
         eval_values: &HashMap<Spur, ConstValue>,
+        frame: &mut Vec<(Spur, Option<Type>)>,
     ) {
         match &self.rir.get(inst_ref).data {
             InstData::Block { extra_start, len } => {
@@ -1718,16 +1736,29 @@ impl Sema<'_> {
                     .iter()
                     .map(|&raw| InstRef::from_raw(raw))
                     .collect();
+                let mut inner_frame = Vec::new();
                 for stmt in stmts {
-                    self.walk_comptime_type_locals(stmt, discovered, eval_types, eval_values);
+                    self.walk_comptime_type_locals(
+                        stmt,
+                        discovered,
+                        eval_types,
+                        eval_values,
+                        &mut inner_frame,
+                    );
+                }
+                for (name, old) in inner_frame.into_iter().rev() {
+                    match old {
+                        Some(ty) => eval_types.insert(name, ty),
+                        None => eval_types.remove(&name),
+                    };
                 }
             }
             InstData::Alloc { name, init, .. } => {
                 let (name, init) = (*name, *init);
                 if let Some(name) = name {
                     if let Some(ty) = self.try_eval_type_alias_init(init, eval_types, eval_values) {
-                        discovered.insert(name, ty);
-                        eval_types.insert(name, ty);
+                        discovered.insert(inst_ref, ty);
+                        frame.push((name, eval_types.insert(name, ty)));
                     }
                 }
             }
@@ -1737,14 +1768,26 @@ impl Sema<'_> {
                 ..
             } => {
                 let (then_block, else_block) = (*then_block, *else_block);
-                self.walk_comptime_type_locals(then_block, discovered, eval_types, eval_values);
+                self.walk_comptime_type_locals(
+                    then_block,
+                    discovered,
+                    eval_types,
+                    eval_values,
+                    frame,
+                );
                 if let Some(else_block) = else_block {
-                    self.walk_comptime_type_locals(else_block, discovered, eval_types, eval_values);
+                    self.walk_comptime_type_locals(
+                        else_block,
+                        discovered,
+                        eval_types,
+                        eval_values,
+                        frame,
+                    );
                 }
             }
             InstData::Loop { body, .. } | InstData::InfiniteLoop { body, .. } => {
                 let body = *body;
-                self.walk_comptime_type_locals(body, discovered, eval_types, eval_values);
+                self.walk_comptime_type_locals(body, discovered, eval_types, eval_values, frame);
             }
             InstData::Match {
                 arms_start,
@@ -1758,7 +1801,13 @@ impl Sema<'_> {
                     .map(|(_, body)| *body)
                     .collect();
                 for body in bodies {
-                    self.walk_comptime_type_locals(body, discovered, eval_types, eval_values);
+                    self.walk_comptime_type_locals(
+                        body,
+                        discovered,
+                        eval_types,
+                        eval_values,
+                        frame,
+                    );
                 }
             }
             _ => {}

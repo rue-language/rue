@@ -113,3 +113,66 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["[E0201]", "undefined variable"]
+
+[[case]]
+name = "comptime_type_alias_not_visible_after_block"
+spec = ["4.5:4"]
+description = "A let-bound comptime type alias obeys block scope like any other binding (RUE-530: the flat alias map let it escape its block)"
+source = """
+fn Point() -> type { struct { x: i32 } }
+
+fn main() -> i32 {
+    {
+        let P = Point();
+        let inside: P = P { x: 1 };
+        inside.x;
+    }
+    let outside: P = P { x: 42 };
+    outside.x
+}
+"""
+compile_fail = true
+error_contains = "[E0204]"
+
+[[case]]
+name = "comptime_type_aliases_in_disjoint_branches"
+spec = ["4.5:4"]
+description = "Same-named comptime type aliases in sibling branch blocks are disjoint bindings (RUE-530: the flat alias map made the second overwrite the first function-wide, E0206)"
+source = """
+fn A() -> type { struct { x: i32 } }
+fn B() -> type { struct { x: bool } }
+
+fn main() -> i32 {
+    if true {
+        let T = A();
+        let a: T = T { x: 42 };
+        a.x
+    } else {
+        let T = B();
+        let b: T = T { x: false };
+        7
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_type_alias_shadow_restored_after_block"
+spec = ["4.5:4"]
+description = "An inner comptime type alias shadows an outer same-named one for its block only; the outer alias is restored afterwards (RUE-530)"
+source = """
+fn A() -> type { struct { x: i32 } }
+fn B() -> type { struct { x: i64 } }
+
+fn main() -> i32 {
+    let T = A();
+    {
+        let T = B();
+        let inner: T = T { x: 100 };
+        inner.x;
+    }
+    let outer: T = T { x: 42 };
+    outer.x
+}
+"""
+exit_code = 42

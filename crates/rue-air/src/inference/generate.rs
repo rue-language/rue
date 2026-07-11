@@ -212,13 +212,28 @@ pub struct ConstraintGenerator<'a> {
     module_file_ids: Option<&'a HashMap<crate::types::ModuleId, FileId>>,
     /// Compile-time type aliases bound by `let` in the current function body
     /// (`let P = F();` where `F` returns `type`), pre-resolved by sema before
-    /// constraint generation. Consulted after `type_subst` when resolving
-    /// struct-literal type names and `let` annotations, so anonymous-struct
-    /// aliases route through the same concrete paths as named structs
-    /// (RUE-170). Like sema's `comptime_type_vars`, the map is flat (not
-    /// scope-aware). `None` only in unit tests; production passes the map via
-    /// [`Self::with_comptime_local_types`].
-    comptime_local_types: Option<&'a HashMap<Spur, Type>>,
+    /// constraint generation and keyed by each binding's own Alloc
+    /// instruction. When the walk reaches a binding site in this map, the
+    /// alias is brought into scope in [`Self::comptime_alias_types`] and
+    /// unwound with its enclosing block (RUE-530). `None` only in unit tests;
+    /// production passes the map via [`Self::with_comptime_local_bindings`].
+    comptime_local_bindings: Option<&'a HashMap<InstRef, Type>>,
+    /// The comptime type aliases currently in scope (name → aliased type),
+    /// maintained live during the walk from [`Self::comptime_local_bindings`]
+    /// via [`Self::enter_scope`]/[`Self::exit_scope`]. Consulted after
+    /// `type_subst` when resolving struct-literal type names and `let`
+    /// annotations, so anonymous-struct aliases route through the same
+    /// concrete paths as named structs (RUE-170), and lexically scoped like
+    /// sema's `comptime_type_vars` so sibling-branch aliases don't collide
+    /// and an alias doesn't outlive its block (RUE-530).
+    comptime_alias_types: HashMap<Spur, Type>,
+    /// Per-scope undo frames for `comptime_alias_types`, parallel to the
+    /// `ConstraintContext` scope stack (both are pushed/popped only by
+    /// [`Self::enter_scope`]/[`Self::exit_scope`]): each frame records the
+    /// shadowed binding (or absence) for every alias bound — or hidden by a
+    /// same-named runtime `let` — in that scope, restored in reverse on exit
+    /// (the RUE-522 pattern).
+    alias_scope_stack: Vec<Vec<(Spur, Option<Type>)>>,
     /// Inline type-constructor heads (`F(args).Variant(..)`, `F(args) { .. }`;
     /// RUE-596, preview `inline_type_ctor_paths`) pre-reduced by sema to their
     /// concrete struct/enum types, keyed by the head's own `InstRef` — the
@@ -309,7 +324,9 @@ impl<'a> ConstraintGenerator<'a> {
             module_binding_types: None,
             functions_by_file_name: None,
             module_file_ids: None,
-            comptime_local_types: None,
+            comptime_local_bindings: None,
+            comptime_alias_types: HashMap::new(),
+            alias_scope_stack: Vec::new(),
             inline_ctor_head_types: None,
             extra_method_sigs: None,
             const_values: None,
@@ -403,14 +420,15 @@ impl<'a> ConstraintGenerator<'a> {
         self
     }
 
-    /// Provide pre-resolved comptime type aliases (local name -> concrete
-    /// type) for struct-literal and `let`-annotation resolution. See the
-    /// `comptime_local_types` field (RUE-170).
-    pub fn with_comptime_local_types(
+    /// Provide pre-resolved comptime type aliases (binding-site Alloc
+    /// `InstRef` -> concrete type) for struct-literal and `let`-annotation
+    /// resolution. See the `comptime_local_bindings` field (RUE-170,
+    /// RUE-530).
+    pub fn with_comptime_local_bindings(
         mut self,
-        comptime_local_types: &'a HashMap<Spur, Type>,
+        comptime_local_bindings: &'a HashMap<InstRef, Type>,
     ) -> Self {
-        self.comptime_local_types = Some(comptime_local_types);
+        self.comptime_local_bindings = Some(comptime_local_bindings);
         self
     }
 
@@ -630,6 +648,53 @@ impl<'a> ConstraintGenerator<'a> {
         )
     }
 
+    /// Enter a lexical scope: pushes the context's local-variable scope and
+    /// this generator's comptime-alias scope together, so the two stacks stay
+    /// in lockstep (RUE-530). Always pair with [`Self::exit_scope`]; scope
+    /// sites must not call `ctx.push_scope()` directly.
+    fn enter_scope(&mut self, ctx: &mut ConstraintContext) {
+        ctx.push_scope();
+        self.alias_scope_stack.push(Vec::new());
+    }
+
+    /// Exit a lexical scope: pops the context's local-variable scope and
+    /// unwinds this scope's comptime-alias frame in reverse, restoring
+    /// shadowed aliases and removing ones introduced here (the RUE-522
+    /// unwind order).
+    fn exit_scope(&mut self, ctx: &mut ConstraintContext) {
+        ctx.pop_scope();
+        if let Some(frame) = self.alias_scope_stack.pop() {
+            for (name, old) in frame.into_iter().rev() {
+                match old {
+                    Some(ty) => self.comptime_alias_types.insert(name, ty),
+                    None => self.comptime_alias_types.remove(&name),
+                };
+            }
+        }
+    }
+
+    /// Bring a comptime type alias into scope, saving the name's previous
+    /// binding (or absence) in the current scope frame for restore on
+    /// [`Self::exit_scope`].
+    fn bind_comptime_alias(&mut self, name: Spur, ty: Type) {
+        let old = self.comptime_alias_types.insert(name, ty);
+        if let Some(frame) = self.alias_scope_stack.last_mut() {
+            frame.push((name, old));
+        }
+    }
+
+    /// A runtime `let` binding hides any same-named comptime type alias for
+    /// the rest of its scope (the inner binding wins, whatever its kind);
+    /// save the alias in the current frame so it is restored when the
+    /// shadowing binding's block ends.
+    fn hide_comptime_alias(&mut self, name: Spur) {
+        if let Some(old) = self.comptime_alias_types.remove(&name)
+            && let Some(frame) = self.alias_scope_stack.last_mut()
+        {
+            frame.push((name, Some(old)));
+        }
+    }
+
     /// Generate constraints for an expression.
     ///
     /// Returns the inferred type of the expression. Records the type in
@@ -828,8 +893,9 @@ impl<'a> ConstraintGenerator<'a> {
                     // tables); without this the annotation was unenforced and
                     // any value typechecked against it (RUE-170).
                     let annotated = self
-                        .comptime_local_types
-                        .and_then(|aliases| aliases.get(ty_sym).copied())
+                        .comptime_alias_types
+                        .get(ty_sym)
+                        .copied()
                         .or_else(|| {
                             self.const_type_aliases
                                 .and_then(|aliases| aliases.get(ty_sym).copied())
@@ -857,10 +923,10 @@ impl<'a> ConstraintGenerator<'a> {
                         // field types match the definition.
                         init_info.ty
                     }
-                } else if name.is_some_and(|n| {
-                    self.comptime_local_types
-                        .is_some_and(|aliases| aliases.contains_key(&n))
-                }) {
+                } else if self
+                    .comptime_local_bindings
+                    .is_some_and(|bindings| bindings.contains_key(&inst_ref))
+                {
                     // Sema pre-resolved this binding as a comptime type alias
                     // (`let O = std.option.Option(i64);`). A module-qualified
                     // constructor init infers as a fresh variable (the module
@@ -869,14 +935,19 @@ impl<'a> ConstraintGenerator<'a> {
                     // and left payload literals unconstrained (RUE-609, the
                     // RUE-599 failure mode through a bound alias). The binding
                     // holds a type value, so type it as one; downstream paths
-                    // read the concrete aliased type from `comptime_local_types`.
+                    // read the concrete aliased type from `comptime_alias_types`.
                     InferType::Concrete(Type::COMPTIME_TYPE)
                 } else {
                     // No annotation - use the init expression's type
                     init_info.ty
                 };
 
-                // Record the variable in scope (if it has a name)
+                // Record the variable in scope (if it has a name), and keep
+                // the comptime-alias view in sync: an alias binding comes
+                // into scope here (its initializer above must not see it —
+                // `let P = Wrap(P);` refers to the outer `P`), and a runtime
+                // binding hides any same-named outer alias for the rest of
+                // this scope (RUE-530).
                 if let Some(var_name) = name {
                     ctx.insert_local(
                         *var_name,
@@ -886,6 +957,13 @@ impl<'a> ConstraintGenerator<'a> {
                             span,
                         },
                     );
+                    match self
+                        .comptime_local_bindings
+                        .and_then(|bindings| bindings.get(&inst_ref).copied())
+                    {
+                        Some(alias_ty) => self.bind_comptime_alias(*var_name, alias_ty),
+                        None => self.hide_comptime_alias(*var_name),
+                    }
                 }
 
                 // Alloc produces unit type
@@ -1394,7 +1472,7 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Block
             InstData::Block { extra_start, len } => {
-                ctx.push_scope();
+                self.enter_scope(ctx);
                 let mut last_ty = InferType::Concrete(Type::UNIT);
                 let block_insts = self.rir.get_extra(*extra_start, *len);
                 for &inst_raw in block_insts {
@@ -1402,7 +1480,7 @@ impl<'a> ConstraintGenerator<'a> {
                     let info = self.generate(block_inst_ref, ctx);
                     last_ty = info.ty;
                 }
-                ctx.pop_scope();
+                self.exit_scope(ctx);
                 last_ty
             }
 
@@ -1439,9 +1517,9 @@ impl<'a> ConstraintGenerator<'a> {
                     };
                     let result_ty = match selected {
                         Some(block) => {
-                            ctx.push_scope();
+                            self.enter_scope(ctx);
                             let info = self.generate(block, ctx);
-                            ctx.pop_scope();
+                            self.exit_scope(ctx);
                             info.ty
                         }
                         // `if false { .. }` with no else: nothing runs, unit.
@@ -1581,9 +1659,9 @@ impl<'a> ConstraintGenerator<'a> {
                 // scrutinees sema prunes, so the selected arm always has an
                 // inferred type when sema later prunes to it.
                 if let Some(selected) = self.comptime_selected_arm(*scrutinee, &arms) {
-                    ctx.push_scope();
+                    self.enter_scope(ctx);
                     let body_info = self.generate(selected, ctx);
-                    ctx.pop_scope();
+                    self.exit_scope(ctx);
                     self.record_type(inst_ref, body_info.ty.clone());
                     return ExprInfo::new(body_info.ty, span);
                 }
@@ -1604,8 +1682,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // types, so the body's references resolve during inference
                     // (RUE-221). Without this, `Circle(r) => r` leaves `r`
                     // unbound and its type poisons the match result.
-                    use crate::scope::ScopedContext;
-                    ctx.push_scope();
+                    self.enter_scope(ctx);
                     if let rue_rir::RirPattern::Path {
                         module,
                         type_name,
@@ -1659,7 +1736,7 @@ impl<'a> ConstraintGenerator<'a> {
 
                     // Generate body and collect its type
                     let body_info = self.generate(*body, ctx);
-                    ctx.pop_scope();
+                    self.exit_scope(ctx);
                     arm_types.push(body_info);
                 }
 
@@ -1731,10 +1808,7 @@ impl<'a> ConstraintGenerator<'a> {
                 } else {
                     self.type_subst
                         .and_then(|subst| subst.get(type_name).copied())
-                        .or_else(|| {
-                            self.comptime_local_types
-                                .and_then(|aliases| aliases.get(type_name).copied())
-                        })
+                        .or_else(|| self.comptime_alias_types.get(type_name).copied())
                         .or_else(|| {
                             self.structs_by_file_name
                                 .and_then(|structs| structs.get(&(span.file_id, *type_name)))
@@ -2521,8 +2595,9 @@ impl<'a> ConstraintGenerator<'a> {
     /// permissiveness only — sema's module-local resolution is authoritative
     /// and rejects cross-file unqualified references (E0204).
     fn struct_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
-        self.comptime_local_types
-            .and_then(|aliases| aliases.get(type_name).copied())
+        self.comptime_alias_types
+            .get(type_name)
+            .copied()
             .filter(|ty| ty.as_struct().is_some())
             .or_else(|| {
                 self.structs_by_file_name
@@ -2533,8 +2608,9 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     fn enum_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
-        self.comptime_local_types
-            .and_then(|aliases| aliases.get(type_name).copied())
+        self.comptime_alias_types
+            .get(type_name)
+            .copied()
             .filter(|ty| ty.is_enum())
             .or_else(|| {
                 self.enums_by_file_name
@@ -2632,7 +2708,7 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::VarRef { name } => {
                 // A local bound to a type value (`let X = i32; identity(X, 42)`
                 // or `let P = Pair(i32); f(P, ..)`) resolves to that bound type
-                // via the precomputed comptime-local-types map — the same map
+                // via the in-scope comptime-alias view — the same map
                 // generic-enum construction/matching consults (`enum_type_for`).
                 // Without this the type argument was left unresolved, so the
                 // call's return type defaulted to the literal `type` and
@@ -2640,10 +2716,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // RUE-281). The literal form (`identity(i32, 42)`) already
                 // worked via the `TypeConst` arm; this makes an aliased type
                 // behave identically.
-                if let Some(ty) = self
-                    .comptime_local_types
-                    .and_then(|aliases| aliases.get(name).copied())
-                {
+                if let Some(ty) = self.comptime_alias_types.get(name).copied() {
                     return Some(ty);
                 }
                 // A local or parameter shadows any same-named struct/enum. A
