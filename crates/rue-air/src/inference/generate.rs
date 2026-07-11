@@ -2739,10 +2739,18 @@ impl<'a> ConstraintGenerator<'a> {
     /// permissiveness only — sema's module-local resolution is authoritative
     /// and rejects cross-file unqualified references (E0204).
     fn struct_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
-        self.comptime_alias_types
-            .get(type_name)
-            .copied()
+        // `Self` (and comptime type parameters) resolve through the enclosing
+        // substitution first, so `Self.assoc_fn(args)` constrains its
+        // arguments like `StructName.assoc_fn(args)` (RUE-639).
+        self.type_subst
+            .and_then(|subst| subst.get(type_name).copied())
             .filter(|ty| ty.as_struct().is_some())
+            .or_else(|| {
+                self.comptime_alias_types
+                    .get(type_name)
+                    .copied()
+                    .filter(|ty| ty.as_struct().is_some())
+            })
             .or_else(|| {
                 // File-level `const Ints = ArrayBuf(i64);` aliases: without
                 // this, a method chain rooted at the alias (`Ints.new()`)
@@ -2764,10 +2772,15 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     fn enum_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
-        self.comptime_alias_types
-            .get(type_name)
-            .copied()
+        self.type_subst
+            .and_then(|subst| subst.get(type_name).copied())
             .filter(|ty| ty.is_enum())
+            .or_else(|| {
+                self.comptime_alias_types
+                    .get(type_name)
+                    .copied()
+                    .filter(|ty| ty.is_enum())
+            })
             .or_else(|| {
                 // File-level const enum aliases, for the same reason as
                 // `struct_type_for` (RUE-633): a construction rooted at the

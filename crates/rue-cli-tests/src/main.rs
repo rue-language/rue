@@ -158,6 +158,12 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdin: None,
     },
     ExampleExpectation {
+        path: "maze/main.rue",
+        exit_code: 42,
+        stdout: "125\n",
+        stdin: None,
+    },
+    ExampleExpectation {
         path: "dijkstra/main.rue",
         exit_code: 42,
         stdout: "",

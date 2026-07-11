@@ -1,0 +1,103 @@
+// Dogfood #7: maze generation (iterative recursive-backtracker with an
+// explicit ArrayBuf stack + deterministic LCG) and BFS solving (ring-buffer
+// queue + parent tracking). Bitmask walls, heavy 2D index arithmetic.
+const std = @import("std");
+const rand = @import("rand.rue");
+const grid = @import("grid.rue");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+fn generate(inout m: grid.Maze, inout rng: rand.Lcg) {
+    let mut stack_x = Ints.new();
+    let mut stack_y = Ints.new();
+    stack_x.push(0);
+    stack_y.push(0);
+    m.mark(0, 0);
+    while !stack_x.is_empty() {
+        let x = stack_x.get_or(stack_x.len() - 1, 0);
+        let y = stack_y.get_or(stack_y.len() - 1, 0);
+        // Collect unvisited neighbors.
+        let mut dirs = Ints.new();
+        if y > 0 { if !m.seen(x, y - 1) { dirs.push(grid.N); } }
+        if x < m.width() - 1 { if !m.seen(x + 1, y) { dirs.push(grid.E); } }
+        if y < m.height() - 1 { if !m.seen(x, y + 1) { dirs.push(grid.S); } }
+        if x > 0 { if !m.seen(x - 1, y) { dirs.push(grid.W); } }
+        if dirs.is_empty() {
+            stack_x.pop_or(0);
+            stack_y.pop_or(0);
+        } else {
+            let pick: u64 = @intCast(rng.next(@intCast(dirs.len())));
+            let dir = dirs.get_or(pick, grid.N);
+            let nx = x + grid.dx(dir);
+            let ny = y + grid.dy(dir);
+            m.open(x, y, dir);
+            m.open(nx, ny, grid.opposite(dir));
+            m.mark(nx, ny);
+            stack_x.push(nx);
+            stack_y.push(ny);
+        }
+    }
+}
+
+// BFS from (0,0) to (w-1,h-1); returns shortest path length in cells, or -1.
+fn solve(inout m: grid.Maze) -> i64 {
+    m.clear_marks();
+    let w = m.width();
+    let h = m.height();
+    let mut qx = Ints.new();
+    let mut qy = Ints.new();
+    let mut qd = Ints.new();
+    let mut head: u64 = 0;
+    qx.push(0);
+    qy.push(0);
+    qd.push(1);
+    m.mark(0, 0);
+    let mut result: i64 = 0 - 1;
+    while head < qx.len() {
+        let x = qx.get_or(head, 0);
+        let y = qy.get_or(head, 0);
+        let d = qd.get_or(head, 0);
+        head = head + 1;
+        if x == w - 1 {
+            if y == h - 1 {
+                result = d;
+                break;
+            }
+        }
+        let p = m.passages(x, y);
+        if (p & grid.N) != 0 { if !m.seen(x, y - 1) { m.mark(x, y - 1); qx.push(x); qy.push(y - 1); qd.push(d + 1); } }
+        if (p & grid.E) != 0 { if !m.seen(x + 1, y) { m.mark(x + 1, y); qx.push(x + 1); qy.push(y); qd.push(d + 1); } }
+        if (p & grid.S) != 0 { if !m.seen(x, y + 1) { m.mark(x, y + 1); qx.push(x); qy.push(y + 1); qd.push(d + 1); } }
+        if (p & grid.W) != 0 { if !m.seen(x - 1, y) { m.mark(x - 1, y); qx.push(x - 1); qy.push(y); qd.push(d + 1); } }
+    }
+    result
+}
+
+fn main() -> i32 {
+    let mut rng = rand.Lcg.new(20260711);
+    let mut m = grid.Maze.new(16, 16);
+    generate(inout m, inout rng);
+
+    // A perfect maze visits every cell exactly once during generation and
+    // has exactly w*h-1 open passages (tree edges). Count passage bits/2.
+    let mut bits: i64 = 0;
+    let mut y: i64 = 0;
+    while y < 16 {
+        let mut x: i64 = 0;
+        while x < 16 {
+            let mut p = m.passages(x, y);
+            while p != 0 {
+                bits = bits + (p & 1);
+                p = p >> 1;
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    @assert(bits == 510, "tree edges * 2");   // (256-1)*2
+
+    let path = solve(inout m);
+    @dbg(path);
+    @assert(path >= 31, "path at least manhattan");
+    @assert(path <= 256, "path fits the grid");
+    42
+}
