@@ -57,13 +57,15 @@ struct TestFile {
 }
 
 /// A permissive subset of the rue-cli-tests case schema — only the fields the
-/// oracle can act on. Unknown fields (spec references, substring matchers, …)
-/// are ignored.
+/// oracle can act on. Unknown fields (spec references, compiler diagnostics,
+/// …) are ignored.
 #[derive(Deserialize)]
 struct Case {
     name: String,
     #[serde(default)]
     files: Vec<SourceFile>,
+    #[serde(default)]
+    source_path: Option<String>,
     #[serde(default)]
     args: Option<Vec<String>>,
     #[serde(default)]
@@ -77,11 +79,17 @@ struct Case {
     #[serde(default)]
     stdout: Option<String>,
     #[serde(default)]
+    stdout_contains: Vec<String>,
+    #[serde(default)]
     runtime_error_contains: Vec<String>,
     #[serde(default)]
     exit_code: Option<i32>,
     #[serde(default)]
     known_bug: Option<String>,
+    #[serde(default)]
+    known_bug_on: Vec<String>,
+    #[serde(default)]
+    only_on: Vec<String>,
     #[serde(default)]
     skip: bool,
 }
@@ -462,24 +470,39 @@ const KNOWN_ORACLE_GAPS: &[(&str, &str, &str)] = &[
 ];
 
 fn check_case(path: &Path, case: &Case) -> CaseOutcome {
-    let Some(preview_features) = corpus_preview_features(case) else {
+    // Mirror the real CLI runner's wrapper order: explicit and host-filtered
+    // cases never reach invocation parsing or execution.
+    if case.skip || rue_test_runner::should_skip_for_platform(&case.only_on).is_some() {
         return CaseOutcome::Ineligible;
-    };
+    }
+
+    let known_bug_applies = case.known_bug.is_some()
+        && (case.known_bug_on.is_empty()
+            || case
+                .known_bug_on
+                .iter()
+                .any(|platform| platform == rue_test_runner::get_host_target()));
 
     // Shapes the harness cannot drive through the single-source oracle.
-    if case.skip
-        || case.compile_fail
+    if case.compile_fail
         || case.compile_only
-        || case.known_bug.is_some()
+        || known_bug_applies
         || case.stdin.is_some()
         // The in-process oracle compiles one source string; it cannot reproduce
         // CLI-only environment-dependent loading such as RUE_STD_PATH. Treat
         // any declared environment as a shape limitation before compilation.
         || !case.env.is_empty()
+        // `source_path` names a repository input that the oracle-diff Buck
+        // target does not own; do not silently substitute an inline file.
+        || case.source_path.is_some()
         || case.files.len() != 1
     {
         return CaseOutcome::Ineligible;
     }
+
+    let Some(preview_features) = corpus_preview_features(case) else {
+        return CaseOutcome::Ineligible;
+    };
     let source = &case.files[0].source;
 
     // A program that expects a runtime panic exits 101 by convention.
@@ -499,7 +522,11 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
         Ok(outcome) => {
             let exit_ok = outcome.exit_code == expected_exit;
             let stdout_ok = case.stdout.as_ref().is_none_or(|s| &outcome.stdout == s);
-            if exit_ok && stdout_ok {
+            let missing_stdout = case
+                .stdout_contains
+                .iter()
+                .find(|expected| !outcome.stdout.contains(expected.as_str()));
+            if exit_ok && stdout_ok && missing_stdout.is_none() {
                 CaseOutcome::Agree
             } else {
                 let mut msg = format!("{} :: {}", rel(path), case.name);
@@ -513,6 +540,12 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
                     msg += &format!(
                         "\n      stdout: expected {:?}, oracle got {:?}",
                         case.stdout.as_deref().unwrap_or(""),
+                        outcome.stdout
+                    );
+                }
+                if let Some(expected) = missing_stdout {
+                    msg += &format!(
+                        "\n      stdout: missing required substring {expected:?} in {:?}",
                         outcome.stdout
                     );
                 }
@@ -588,7 +621,38 @@ fn rel(path: &Path) -> String {
 fn load_cli_test_file(path: &Path) -> Result<TestFile, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    toml::from_str(&text).map_err(|error| format!("could not parse {}: {error}", path.display()))
+    let file: TestFile = toml::from_str(&text)
+        .map_err(|error| format!("could not parse {}: {error}", path.display()))?;
+
+    let mut platform_failures = Vec::new();
+    for case in &file.cases {
+        let mut unknown: Vec<&str> = case
+            .only_on
+            .iter()
+            .map(String::as_str)
+            .filter(|platform| !rue_test_runner::KNOWN_TARGETS.contains(platform))
+            .collect();
+        unknown.sort_unstable();
+        unknown.dedup();
+        if !unknown.is_empty() {
+            platform_failures.push(format!(
+                "case {:?} has unknown only_on platform(s): {} (known: {})",
+                case.name,
+                unknown.join(", "),
+                rue_test_runner::KNOWN_TARGETS.join(", ")
+            ));
+        }
+    }
+    platform_failures.sort();
+    if platform_failures.is_empty() {
+        Ok(file)
+    } else {
+        Err(format!(
+            "could not validate {}:\n  {}",
+            path.display(),
+            platform_failures.join("\n  ")
+        ))
+    }
 }
 
 /// Discover TOML files under every requested root while retaining all failures.
@@ -724,17 +788,30 @@ mod tests {
                 path: "probe.rue".to_string(),
                 source: source.to_string(),
             }],
+            source_path: None,
             args: None,
             stdin: None,
             env: HashMap::new(),
             compile_fail,
             compile_only: false,
             stdout: None,
+            stdout_contains: Vec::new(),
             runtime_error_contains: Vec::new(),
             exit_code: Some(0),
             known_bug: None,
+            known_bug_on: Vec::new(),
+            only_on: Vec::new(),
             skip: false,
         }
+    }
+
+    fn other_known_target() -> String {
+        rue_test_runner::KNOWN_TARGETS
+            .iter()
+            .copied()
+            .find(|target| *target != rue_test_runner::get_host_target())
+            .expect("the test runner supports more than one target")
+            .to_string()
     }
 
     fn write_compile_fail_case(path: &Path, name: &str) {
@@ -813,6 +890,37 @@ files = [{{ path = "probe.rue", source = "not Rue" }}]
     }
 
     #[test]
+    fn unknown_only_on_is_a_fatal_load_error() {
+        let temp = tempfile::tempdir().expect("create temporary cases root");
+        let invalid = temp.path().join("invalid-platform.toml");
+        std::fs::write(
+            &invalid,
+            r#"
+[[case]]
+name = "misspelled platform"
+only_on = ["x86_64-linux"]
+files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
+"#,
+        )
+        .expect("write invalid-platform fixture");
+
+        let failure = match load_cli_test_file(&invalid) {
+            Err(failure) => failure,
+            Ok(_) => panic!("unknown only_on platform unexpectedly loaded"),
+        };
+        assert!(failure.contains(&invalid.display().to_string()));
+        assert!(failure.contains("misspelled platform"));
+        assert!(failure.contains("x86_64-linux"));
+        for target in rue_test_runner::KNOWN_TARGETS {
+            assert!(failure.contains(target));
+        }
+        assert_eq!(
+            corpus_mode(vec![temp.path().to_string_lossy().into_owned()]),
+            ExitCode::FAILURE
+        );
+    }
+
+    #[test]
     fn unreadable_or_empty_cli_inputs_fail_through_the_report() {
         let temp = tempfile::tempdir().expect("create temporary cases root");
         let missing_file = temp.path().join("vanished.toml");
@@ -839,6 +947,89 @@ files = [{{ path = "probe.rue", source = "not Rue" }}]
         assert!(report.frontend_failures[0].contains("classification.toml"));
         assert_eq!(report.unmodeled, 0);
         assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn only_on_matches_cli_runner_host_semantics() {
+        let mut case = corpus_case("fn main() -> i32 { 0 }", false);
+        case.only_on = vec![rue_test_runner::get_host_target().to_string()];
+        assert!(matches!(
+            check_case(Path::new("platform.toml"), &case),
+            CaseOutcome::Agree
+        ));
+
+        case.only_on = vec![other_known_target()];
+        assert!(matches!(
+            check_case(Path::new("platform.toml"), &case),
+            CaseOutcome::Ineligible
+        ));
+    }
+
+    #[test]
+    fn known_bug_on_scopes_the_expected_failure() {
+        let mut case = corpus_case("fn main() -> i32 { 0 }", false);
+        case.known_bug = Some("RUE-test".to_string());
+        assert!(matches!(
+            check_case(Path::new("known-bug.toml"), &case),
+            CaseOutcome::Ineligible
+        ));
+
+        case.known_bug_on = vec![rue_test_runner::get_host_target().to_string()];
+        assert!(matches!(
+            check_case(Path::new("known-bug.toml"), &case),
+            CaseOutcome::Ineligible
+        ));
+
+        case.known_bug_on = vec![other_known_target()];
+        assert!(matches!(
+            check_case(Path::new("known-bug.toml"), &case),
+            CaseOutcome::Agree
+        ));
+
+        // Keep parity with rue-cli-tests: only `only_on` is validated. An
+        // unknown known_bug_on value does not match this host, so the case
+        // runs normally and can fail loudly instead of being silently xfailed.
+        case.known_bug_on = vec!["not-a-real-target".to_string()];
+        assert!(matches!(
+            check_case(Path::new("known-bug.toml"), &case),
+            CaseOutcome::Agree
+        ));
+    }
+
+    #[test]
+    fn source_path_is_explicitly_ineligible() {
+        let mut case = corpus_case("fn main() -> i32 { 0 }", false);
+        // Keep the inline source too: this proves the oracle does not silently
+        // substitute it for the external source selected by the real runner.
+        case.source_path = Some("examples/welcome.rue".to_string());
+        assert!(matches!(
+            check_case(Path::new("source-path.toml"), &case),
+            CaseOutcome::Ineligible
+        ));
+    }
+
+    #[test]
+    fn stdout_contains_is_enforced_alongside_exact_stdout() {
+        let mut case = corpus_case("fn main() -> i32 { @dbg(42); 0 }", false);
+        case.stdout_contains = vec!["42".to_string()];
+        assert!(matches!(
+            check_case(Path::new("stdout.toml"), &case),
+            CaseOutcome::Agree
+        ));
+
+        case.stdout = Some("42\n".to_string());
+        case.stdout_contains = vec!["42".to_string(), "\n".to_string()];
+        assert!(matches!(
+            check_case(Path::new("stdout.toml"), &case),
+            CaseOutcome::Agree
+        ));
+
+        case.stdout_contains.push("missing".to_string());
+        let CaseOutcome::Disagreement(message) = check_case(Path::new("stdout.toml"), &case) else {
+            panic!("missing stdout substring did not produce a disagreement");
+        };
+        assert!(message.contains("missing required substring \"missing\""));
+        assert!(message.contains("42\\n"));
     }
 
     #[test]
