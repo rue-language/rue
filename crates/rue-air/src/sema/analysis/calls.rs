@@ -187,13 +187,24 @@ impl<'a> Sema<'a> {
         if receiver_type == Type::COMPTIME_TYPE
             && let AirInstData::TypeConst(reduced_ty) = air.get(receiver_result.air_ref).data
         {
+            // The preview gate covers exactly what RUE-596 added: a CALL as
+            // the path head (`F(args).NAME(..)`). A bare qualified member
+            // that merely evaluates to a type (`m.Alias.new()`) is ordinary
+            // module-member access and must not trip the gate — it used to,
+            // with a message naming a call that doesn't exist (RUE-631).
+            let receiver_is_call_head = matches!(
+                self.rir.get(receiver).data,
+                rue_rir::InstData::Call { .. } | rue_rir::InstData::MethodCall { .. }
+            );
             match reduced_ty.kind() {
                 TypeKind::Enum(enum_id) => {
-                    self.require_preview(
-                        PreviewFeature::InlineTypeCtorPath,
-                        "an inline type-constructor call as a path head",
-                        span,
-                    )?;
+                    if receiver_is_call_head {
+                        self.require_preview(
+                            PreviewFeature::InlineTypeCtorPath,
+                            "an inline type-constructor call as a path head",
+                            span,
+                        )?;
+                    }
                     let variant_name = self.interner.resolve(&method).to_string();
                     let def = self.type_pool.enum_def(enum_id);
                     if let Some(vidx) = def.find_variant(&variant_name) {
@@ -218,11 +229,13 @@ impl<'a> Sema<'a> {
                     ));
                 }
                 TypeKind::Struct(struct_id) => {
-                    self.require_preview(
-                        PreviewFeature::InlineTypeCtorPath,
-                        "an inline type-constructor call as a path head",
-                        span,
-                    )?;
+                    if receiver_is_call_head {
+                        self.require_preview(
+                            PreviewFeature::InlineTypeCtorPath,
+                            "an inline type-constructor call as a path head",
+                            span,
+                        )?;
+                    }
                     return self.analyze_assoc_fn_call_impl(
                         air,
                         method,

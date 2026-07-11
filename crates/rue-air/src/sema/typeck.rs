@@ -845,6 +845,22 @@ impl<'a> Sema<'a> {
             )?;
             return Ok(Type::new_enum(enum_id));
         }
+        // A type-valued constant member (`module.Alias` where the module has
+        // `pub const Alias = SomeType`). Constants are collected on demand
+        // (ADR-0045), so a member referenced from a *type position* in
+        // another file may not be collected yet — ensure it, in the MODULE's
+        // file, exactly as the unqualified same-file path does
+        // (`resolve_const_type_alias`); without this the member alias
+        // resolved in value positions but was E0707 in field/param/return
+        // positions (RUE-630).
+        if let Some(file_id) = module_file_id
+            && self
+                .constants_by_file_name
+                .get(&(file_id, member_sym))
+                .is_none()
+        {
+            self.try_collect_const_on_demand(member_sym, file_id);
+        }
         if let Some(info) = module_file_id
             .and_then(|file_id| self.constants_by_file_name.get(&(file_id, member_sym)))
             && let ConstValue::Type(alias_ty) = info.value
