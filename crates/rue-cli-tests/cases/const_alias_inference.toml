@@ -159,3 +159,81 @@ pub struct Box {
 """ },
 ]
 exit_code = 42
+
+[[case]]
+name = "module_member_alias_in_type_positions"
+description = "A pub const type alias used qualified (h.Ints/h.Item) in field, param, return, construction, and match positions (RUE-630 row 1 + RUE-631 gate narrowing)"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const h = @import("helper.rue");
+
+pub struct Holder { xs: h.Items }
+
+fn take(borrow hold: Holder) -> i64 {
+    match hold.xs.get_or(0, h.Item.Hole) {
+        h.Item.Leaf(v) => v,
+        h.Item.Hole => 0 - 1,
+    }
+}
+
+fn make() -> h.Items {
+    let mut b = h.Items.new();
+    b.push(h.Item.Leaf(42));
+    b
+}
+
+fn main() -> i32 {
+    let hold = Holder { xs: make() };
+    @intCast(take(borrow hold))
+}
+""" },
+    { path = "helper.rue", source = """
+const std = @import("std");
+
+pub enum Item {
+    Leaf(i64),
+    Hole,
+}
+
+pub const Items = std.arraybuf.ArrayBuf(Item);
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "bare_alias_head_needs_no_preview"
+description = "m.Alias.new() is ordinary member access, not an inline type-ctor CALL head — must compile without --preview inline_type_ctor_paths (RUE-631)"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const h = @import("helper.rue");
+fn main() -> i32 {
+    let mut b = h.Ints.new();
+    b.push(0 - 1);
+    let neg: i64 = 0 - 1;
+    if b.get_or(0, 0) == neg { 42 } else { 1 }
+}
+""" },
+    { path = "helper.rue", source = """
+const std = @import("std");
+pub const Ints = std.arraybuf.ArrayBuf(i64);
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "real_inline_ctor_head_still_gated"
+description = "The genuine RUE-596 shape (a CALL as path head) remains preview-gated after the RUE-631 narrowing"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+compile_fail = true
+error_contains = ["E1100", "inline_type_ctor_paths"]
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let r = std.result.Result(i64, i32).Ok(41);
+    0
+}
+""" },
+]

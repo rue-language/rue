@@ -2784,6 +2784,16 @@ impl<'a> ConstraintGenerator<'a> {
         self.enums_by_file_name
             .and_then(|enums| enums.get(&(file_id, *type_name)))
             .copied()
+            .or_else(|| {
+                // A type-valued const member (`pub const Opt = Option(i64)`)
+                // is as good as a declaration here (RUE-630/RUE-633): without
+                // it the qualified alias head left the whole chain
+                // unconstrained.
+                self.const_type_aliases
+                    .and_then(|aliases| aliases.get(&(file_id, *type_name)))
+                    .copied()
+                    .filter(|ty| ty.is_enum())
+            })
     }
 
     /// Struct analogue of [`Self::enum_type_for_module`], for
@@ -2797,6 +2807,14 @@ impl<'a> ConstraintGenerator<'a> {
         self.structs_by_file_name
             .and_then(|structs| structs.get(&(file_id, *type_name)))
             .copied()
+            .or_else(|| {
+                // Type-valued const members participate like declarations —
+                // see `enum_type_for_module` (RUE-630/RUE-633).
+                self.const_type_aliases
+                    .and_then(|aliases| aliases.get(&(file_id, *type_name)))
+                    .copied()
+                    .filter(|ty| ty.as_struct().is_some())
+            })
     }
 
     /// The defining file of `module`'s target, when `module` is a `VarRef`
