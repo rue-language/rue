@@ -1,5 +1,11 @@
 # Fork workflow (jj)
 
+> **Scope: internal/maintainer-oriented.** This describes the maintainers'
+> Jujutsu-based fork setup and assumes the configured git remotes and jj revset
+> aliases in [Required repo config](#required-repo-config). External contributors
+> do **not** need any of this — an ordinary Git fork and a GitHub PR against
+> `trunk` is fully supported; see [CONTRIBUTING.md](../../CONTRIBUTING.md).
+
 How to work on Rue from a **fork** using Jujutsu, with two git remotes:
 
 - `upstream` = `rue-language/rue` — the canonical repo, the source of truth.
