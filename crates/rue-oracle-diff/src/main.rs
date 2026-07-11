@@ -102,6 +102,15 @@ struct SourceFile {
     source: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CliInvocationReason {
+    MissingSourceArgument,
+    SourceArgumentMismatch,
+    MissingOptionValue,
+    UnknownPreviewFeature,
+    UnsupportedFlag,
+}
+
 enum CaseOutcome {
     Agree,
     /// The case has an executable shape, but the oracle does not model it yet.
@@ -556,7 +565,7 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
         return CaseOutcome::Ineligible;
     }
 
-    let Some(preview_features) = corpus_preview_features(case) else {
+    let Ok(preview_features) = corpus_preview_features(case) else {
         return CaseOutcome::Ineligible;
     };
     let source = &case.files[0].source;
@@ -650,15 +659,14 @@ fn empty_preview_features() -> PreviewFeatures {
     PreviewFeatures::new()
 }
 
-fn parse_preview_feature(name: &str) -> Option<PreviewFeature> {
-    PreviewFeature::from_str(name).ok()
-}
-
-fn corpus_preview_features(case: &Case) -> Option<PreviewFeatures> {
+fn corpus_preview_features(case: &Case) -> Result<PreviewFeatures, CliInvocationReason> {
     let Some(args) = &case.args else {
-        return Some(empty_preview_features());
+        return Ok(empty_preview_features());
     };
-    let only_source = case.files.first()?;
+    let only_source = case
+        .files
+        .first()
+        .ok_or(CliInvocationReason::MissingSourceArgument)?;
     let mut features = empty_preview_features();
     let mut saw_source = false;
     let mut i = 0;
@@ -666,28 +674,35 @@ fn corpus_preview_features(case: &Case) -> Option<PreviewFeatures> {
     while i < args.len() {
         match args[i].as_str() {
             "--preview" => {
-                let feature = args
+                let name = args
                     .get(i + 1)
-                    .and_then(|name| parse_preview_feature(name))?;
+                    .ok_or(CliInvocationReason::MissingOptionValue)?;
+                let feature = PreviewFeature::from_str(name)
+                    .map_err(|_| CliInvocationReason::UnknownPreviewFeature)?;
                 features.insert(feature);
                 i += 2;
             }
             "-o" | "--output" => {
-                args.get(i + 1)?;
+                args.get(i + 1)
+                    .ok_or(CliInvocationReason::MissingOptionValue)?;
                 i += 2;
             }
             arg if !arg.starts_with('-') => {
                 if arg != only_source.path {
-                    return None;
+                    return Err(CliInvocationReason::SourceArgumentMismatch);
                 }
                 saw_source = true;
                 i += 1;
             }
-            _ => return None,
+            _ => return Err(CliInvocationReason::UnsupportedFlag),
         }
     }
 
-    saw_source.then_some(features)
+    if saw_source {
+        Ok(features)
+    } else {
+        Err(CliInvocationReason::MissingSourceArgument)
+    }
 }
 
 fn rel(path: &Path) -> String {
@@ -1082,6 +1097,100 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         case.source_path = Some("examples/welcome.rue".to_string());
         assert!(matches!(
             check_case(Path::new("source-path.toml"), &case),
+            CaseOutcome::Ineligible
+        ));
+    }
+
+    #[test]
+    fn cli_invocation_classifier_accepts_the_supported_runner_subset() {
+        let mut case = corpus_case("fn main() -> i32 { 0 }", false);
+        assert_eq!(
+            corpus_preview_features(&case),
+            Ok(empty_preview_features()),
+            "absent args use the real runner's synthesized default invocation"
+        );
+
+        case.args = Some(
+            [
+                "--preview",
+                "string_trio",
+                "-o",
+                "-unusual-output-name",
+                "probe.rue",
+                "--preview",
+                "slices",
+                "--preview",
+                "string_trio",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        );
+        let features = corpus_preview_features(&case).expect("supported invocation");
+        assert_eq!(features.len(), 2);
+        for name in ["string_trio", "slices"] {
+            assert!(features.contains(&PreviewFeature::from_str(name).unwrap()));
+        }
+    }
+
+    #[test]
+    fn cli_invocation_classifier_reports_the_first_exact_exclusion() {
+        let mut case = corpus_case("fn main() -> i32 { 0 }", false);
+        let probes = [
+            (vec![], CliInvocationReason::MissingSourceArgument),
+            (
+                vec!["wrong.rue"],
+                CliInvocationReason::SourceArgumentMismatch,
+            ),
+            (
+                vec!["probe.rue", "--preview"],
+                CliInvocationReason::MissingOptionValue,
+            ),
+            (
+                vec!["probe.rue", "-o"],
+                CliInvocationReason::MissingOptionValue,
+            ),
+            (
+                vec!["--preview", "future_feature", "probe.rue"],
+                CliInvocationReason::UnknownPreviewFeature,
+            ),
+            (
+                vec!["-O2", "probe.rue"],
+                CliInvocationReason::UnsupportedFlag,
+            ),
+            (
+                vec!["-O2", "wrong.rue"],
+                CliInvocationReason::UnsupportedFlag,
+            ),
+            (
+                vec!["wrong.rue", "-O2"],
+                CliInvocationReason::SourceArgumentMismatch,
+            ),
+            (
+                vec!["--preview", "future_feature", "-O2"],
+                CliInvocationReason::UnknownPreviewFeature,
+            ),
+        ];
+
+        for (args, expected) in probes {
+            case.args = Some(args.iter().map(|arg| (*arg).to_string()).collect());
+            assert_eq!(corpus_preview_features(&case), Err(expected), "{args:?}");
+        }
+
+        case.files.clear();
+        case.args = Some(Vec::new());
+        assert_eq!(
+            corpus_preview_features(&case),
+            Err(CliInvocationReason::MissingSourceArgument)
+        );
+    }
+
+    #[test]
+    fn typed_cli_invocation_exclusions_remain_ineligible() {
+        let mut case = corpus_case("fn main() -> i32 { 0 }", false);
+        case.args = Some(vec!["-O2".to_string(), "probe.rue".to_string()]);
+        assert!(matches!(
+            check_case(Path::new("optimization.toml"), &case),
             CaseOutcome::Ineligible
         ));
     }
