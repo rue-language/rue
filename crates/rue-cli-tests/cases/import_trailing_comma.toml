@@ -1,0 +1,46 @@
+# Trailing comma inside `@import("...",)` must still be discovered from disk
+# (RUE-536). The parser accepted `@import("x",)` as a one-argument list, but the
+# driver's import-discovery scan matched only the exact four-token shape
+# `@import ( String )`, so the trailing comma made the import silently bypass
+# discovery and the module failed to load (E0704 cannot find module). The scan
+# now tolerates a comma before the close paren. Driven through the real binary
+# with the imported file resolved from disk.
+
+[section]
+id = "cli.import_trailing_comma"
+name = "@import trailing comma discovery"
+description = "A trailing comma in @import(\"path\",) still resolves and loads the module (RUE-536)."
+
+[[case]]
+name = "import_trailing_comma_resolves"
+description = "`const helper = @import(\"helper.rue\",);` loads helper.rue and its pub fn is callable."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "helper.rue", source = """
+pub fn val() -> i32 { 42 }
+""" },
+  { path = "main.rue", source = """
+const helper = @import("helper.rue",);
+fn main() -> i32 {
+    helper.val()
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "import_directory_module_trailing_comma"
+description = "A directory-module facade import with a trailing comma still resolves via the discovery scan (RUE-536)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib/_lib.rue", source = """
+pub fn seven() -> i32 { 7 }
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib",);
+fn main() -> i32 {
+    lib.seven()
+}
+""" },
+]
+exit_code = 7

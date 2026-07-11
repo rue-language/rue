@@ -32,7 +32,7 @@ intrinsic_arg  = type | expression ;
 (* Functions *)
 function       = directives [ "pub" ] [ "unchecked" ]
                  "fn" IDENT "(" [ params ] ")" [ "->" type ] "{" block "}" ;
-params         = param { "," param } ;
+params         = param { "," param } [ "," ] ;
 param          = [ param_mode ] IDENT ":" type ;
 param_mode     = "comptime" | "inout" | "borrow" ;
 block          = { statement } [ expression ] ;
@@ -122,7 +122,7 @@ suffix         = "." IDENT                                     (* field access /
    argument itself is parsed as an arbitrary expression; the requirement that
    an inout/borrow argument denote a place (a variable, optionally with field/
    index projections) is a legality rule (6.1:17), not a syntactic one. *)
-call_args      = call_arg { "," call_arg } ;
+call_args      = call_arg { "," call_arg } [ "," ] ;
 call_arg       = [ "inout" | "borrow" ] expression ;
 
 primary        = INTEGER | STRING | BOOL | "()"
@@ -171,7 +171,7 @@ for_expr       = "for" ( IDENT | "_" ) "in" expression "{" block "}" ;
 break_expr     = "break" [ expression ] ;   (* an operand parses but is always
                                                rejected in semantic analysis *)
 return_expr    = "return" [ expression ] ;
-array_literal  = "[" ( [ expression { "," expression } ]
+array_literal  = "[" ( [ expression { "," expression } [ "," ] ]
                      | expression ";" repeat_count ) "]" ;
 repeat_count   = INTEGER | IDENT ;  (* repeat form: a literal or named compile-time constant (no call form) *)
 field_inits    = field_init { "," field_init } [ "," ] ;

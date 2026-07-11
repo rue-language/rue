@@ -180,3 +180,29 @@ fn main() -> i32 {
     x + my_variable + _unused + x1
 }
 ```
+
+## Comma-Separated Lists
+
+{{ rule(id="2.1:23", cat="normative") }}
+
+Every comma-separated list in the grammar accepts a single optional *trailing
+comma* after its final element. This applies uniformly to all list forms —
+call arguments, intrinsic and `@import` arguments, function and method
+parameters, array-literal elements, struct-literal field initializers, struct
+and enum declaration fields, enum tuple-variant payloads, match arms, and
+pattern bindings. A trailing comma is accepted only after at least one element;
+it has no semantic effect and never changes the number of elements. An empty
+list (`f()`, `[]`) followed by a comma remains a syntax error, because there is
+no final element for the comma to follow.
+
+{{ rule(id="2.1:24") }}
+
+```rue
+fn add(a: i32, b: i32,) -> i32 {   // trailing comma in parameters
+    a + b
+}
+fn main() -> i32 {
+    let xs = [1, 2, 3,];           // trailing comma in an array literal
+    add(xs[0], xs[1],)             // trailing comma in call arguments
+}
+```

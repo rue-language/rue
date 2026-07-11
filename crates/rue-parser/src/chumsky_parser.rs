@@ -619,6 +619,7 @@ where
 {
     param_parser()
         .separated_by(just(TokenKind::Comma))
+        .allow_trailing()
         .collect()
 }
 
@@ -696,6 +697,7 @@ where
 {
     call_arg_parser(expr)
         .separated_by(just(TokenKind::Comma))
+        .allow_trailing()
         .collect()
 }
 
@@ -1948,9 +1950,11 @@ where
             .map(|count| (Vec::new(), Some(count))),
         just(TokenKind::Comma)
             .ignore_then(
+                // A trailing comma is allowed uniformly (RUE-536): `[1,]` yields
+                // zero further elements, `[1, 2, 3,]` drops the final separator.
                 expr.clone()
                     .separated_by(just(TokenKind::Comma))
-                    .at_least(1)
+                    .allow_trailing()
                     .collect::<Vec<_>>(),
             )
             .map(|rest| (rest, None)),
