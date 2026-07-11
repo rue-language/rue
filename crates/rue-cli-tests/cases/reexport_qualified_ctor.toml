@@ -1,0 +1,58 @@
+# A type-constructor application whose head is qualified through a module
+# RE-EXPORT chain (`std.arraybuf.ArrayBuf(...)`, or `m.inner.Pair(...)` through
+# `pub const inner = @import(...)`) evaluates in comptime value positions
+# (RUE-609): as a nested argument to another constructor in a const
+# initializer, and as a `let`-bound alias whose enum constructions then type
+# their payload literals at the declared width (the RUE-599 failure mode
+# through a bound alias).
+
+[section]
+id = "cli.reexport_qualified_ctor"
+name = "Re-export-qualified type-constructor calls in comptime value positions"
+description = "`m.inner.G(...)` chains evaluate as const-initializer arguments and as let-bound aliases (RUE-609)."
+
+[[case]]
+name = "nested_reexport_chain_ctor_arg_in_const"
+description = "A re-export-chain application nests as a const-initializer argument: `const N = m.inner.Pair(m.inner.Pair(i64));`"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "inner.rue", source = """
+pub fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+""" },
+  { path = "outer.rue", source = """
+pub const inner = @import("inner.rue");
+""" },
+  { path = "main.rue", source = """
+const m = @import("outer.rue");
+const Nested = m.inner.Pair(m.inner.Pair(i64));
+const Inner = m.inner.Pair(i64);
+fn main() -> i32 {
+    let n = Nested {
+        a: Inner { a: 10, b: 11 },
+        b: Inner { a: 10, b: 11 },
+    };
+    if n.a.a + n.a.b + n.b.a + n.b.b == 42 { 42 } else { 1 }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "std_chain_alias_types_wide_payload_literal"
+description = "A let-bound alias of a std re-export-chain enum ctor types payload literals at the declared width: `let O = std.option.Option(i64); O.Some(40)`"
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "main.rue", source = """
+const std = @import("std");
+const Longs = std.arraybuf.ArrayBuf(std.option.Option(i64));
+fn main() -> i32 {
+    let mut xs = Longs.new();
+    let O = std.option.Option(i64);
+    xs.push(O.Some(40));
+    xs.push(O.None);
+    let a = match xs.get_or(0, O.None) { O.Some(v) => v, O.None => 0 };
+    let b = match xs.get_or(1, O.Some(2)) { O.Some(v) => v, O.None => 2 };
+    if a + b == 42 { 42 } else { 1 }
+}
+""" }]
+exit_code = 42

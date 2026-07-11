@@ -1274,9 +1274,22 @@ impl Sema<'_> {
         span: Span,
         env: &mut ComptimeEnv,
     ) -> CompileResult<Option<ConstValue>> {
-        // Receiver must be a bare name.
-        let InstData::VarRef { name: recv_name } = self.rir.get(receiver).data else {
-            return Ok(None);
+        // The receiver may be a bare import binding (`ab.Mk(..)`) or a
+        // re-export chain through module facades (`std.arraybuf.ArrayBuf(..)`,
+        // RUE-609); collect the dotted spine down to its root name. Any other
+        // receiver shape (a runtime value's method) is a genuine runtime call
+        // and stays non-evaluable.
+        let mut chain_rev: Vec<Spur> = Vec::new();
+        let mut cursor = receiver;
+        let recv_name = loop {
+            match self.rir.get(cursor).data {
+                InstData::VarRef { name } => break name,
+                InstData::FieldGet { base, field } => {
+                    chain_rev.push(field);
+                    cursor = base;
+                }
+                _ => return Ok(None),
+            }
         };
         // A `let`-binding, runtime local, or comptime parameter of the same name
         // shadows the module import (spec 4.14:6) — then this is not a module
@@ -1292,19 +1305,37 @@ impl Sema<'_> {
         if env.type_subst.contains_key(&recv_name) || env.value_subst.contains_key(&recv_name) {
             return Ok(None);
         }
-        // The receiver names an import of the file whose body is being reduced.
+        // The receiver's root names an import of the file whose body is being
+        // reduced; any further segments walk re-export bindings in the
+        // imported files (the same walk qualified type annotations use).
         let Some(file_id) = env.defining_file else {
             return Ok(None);
         };
-        let Some(binding) = self.module_bindings.get(&(file_id, recv_name)).cloned() else {
-            return Ok(None);
-        };
-        let Some(module_id) = binding.ty.as_module() else {
-            return Ok(None);
-        };
-        let module_def = self.module_registry.get_def(module_id);
-        let Some(module_file_id) = self.canonical_file_id(&module_def.file_path) else {
-            return Ok(None);
+        let module_file_id = if chain_rev.is_empty() {
+            let Some(binding) = self.module_bindings.get(&(file_id, recv_name)).cloned() else {
+                return Ok(None);
+            };
+            let Some(module_id) = binding.ty.as_module() else {
+                return Ok(None);
+            };
+            let module_def = self.module_registry.get_def(module_id);
+            let Some(module_file_id) = self.canonical_file_id(&module_def.file_path) else {
+                return Ok(None);
+            };
+            module_file_id
+        } else {
+            let mut segments: Vec<&str> = vec![self.interner.resolve(&recv_name)];
+            segments.extend(chain_rev.iter().rev().map(|s| self.interner.resolve(s)));
+            // Walk failures (unknown member, non-module segment, privacy) make
+            // the call non-evaluable here; the caller reports the comptime
+            // failure and sema's other paths carry the precise diagnostics.
+            let Some((_, Some(module_file_id), _)) = self
+                .resolve_type_module_prefix_in_file(file_id, &segments, span)
+                .ok()
+            else {
+                return Ok(None);
+            };
+            module_file_id
         };
         // Ensure the member's signature is collected, then require membership:
         // the resolved function must actually be declared in the module's file.

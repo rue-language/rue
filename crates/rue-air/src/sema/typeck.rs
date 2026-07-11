@@ -1083,6 +1083,20 @@ impl<'a> Sema<'a> {
         segments: &[&str],
         span: Span,
     ) -> CompileResult<(crate::types::ModuleId, Option<FileId>, String)> {
+        self.resolve_type_module_prefix_in_file(span.file_id, segments, span)
+    }
+
+    /// Like [`Self::resolve_type_module_prefix`], but with the file whose
+    /// imports anchor the walk's first segment made explicit. The comptime
+    /// engine resolves against its environment's `defining_file` (RUE-511),
+    /// which is authoritative even when the expression's span is a default
+    /// span with no file context (RUE-609).
+    pub(crate) fn resolve_type_module_prefix_in_file(
+        &mut self,
+        root_file: FileId,
+        segments: &[&str],
+        span: Span,
+    ) -> CompileResult<(crate::types::ModuleId, Option<FileId>, String)> {
         let Some((first, rest)) = segments.split_first() else {
             return Err(CompileError::new(
                 ErrorKind::UnknownType(String::new()),
@@ -1092,9 +1106,9 @@ impl<'a> Sema<'a> {
         let first_sym = self.interner.get_or_intern(first);
         let Some(binding) = self
             .module_bindings
-            .get(&(span.file_id, first_sym))
+            .get(&(root_file, first_sym))
             .cloned()
-            .or_else(|| self.resolve_direct_import_module_binding(span.file_id, first_sym, span))
+            .or_else(|| self.resolve_direct_import_module_binding(root_file, first_sym, span))
         else {
             return Err(CompileError::new(
                 ErrorKind::UnknownType((*first).to_string()),

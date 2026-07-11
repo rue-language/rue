@@ -857,6 +857,20 @@ impl<'a> ConstraintGenerator<'a> {
                         // field types match the definition.
                         init_info.ty
                     }
+                } else if name.is_some_and(|n| {
+                    self.comptime_local_types
+                        .is_some_and(|aliases| aliases.contains_key(&n))
+                }) {
+                    // Sema pre-resolved this binding as a comptime type alias
+                    // (`let O = std.option.Option(i64);`). A module-qualified
+                    // constructor init infers as a fresh variable (the module
+                    // member-call arm can't reduce a `-> type` body), which
+                    // blocked the type-name-receiver forwarding for `O.Some(..)`
+                    // and left payload literals unconstrained (RUE-609, the
+                    // RUE-599 failure mode through a bound alias). The binding
+                    // holds a type value, so type it as one; downstream paths
+                    // read the concrete aliased type from `comptime_local_types`.
+                    InferType::Concrete(Type::COMPTIME_TYPE)
                 } else {
                     // No annotation - use the init expression's type
                     init_info.ty
