@@ -2197,57 +2197,6 @@ impl<'a> Sema<'a> {
     /// every materialization site via [`Self::require_layout_slots`], so the
     /// saturated value is never used for real allocation.
     pub(crate) fn abi_slot_count(&self, ty: Type) -> u32 {
-        match ty.kind() {
-            TypeKind::I8
-            | TypeKind::I16
-            | TypeKind::I32
-            | TypeKind::I64
-            | TypeKind::U8
-            | TypeKind::U16
-            | TypeKind::U32
-            | TypeKind::U64
-            | TypeKind::Bool
-            | TypeKind::Error => 1,
-            // Zero-sized types use 0 slots
-            // ComptimeType is comptime-only and uses 0 runtime slots
-            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType => 0,
-            // Tagged-union layout (RUE-221, ADR-0038): slot 0 is the
-            // discriminant, followed by payload space sized to the largest
-            // variant. A discriminant-only (C-like) enum has no payload and so
-            // occupies exactly one slot. This MUST match the codegen layout in
-            // `rue_codegen::types::type_slot_count`.
-            TypeKind::Enum(enum_id) => {
-                let enum_def = self.type_pool.enum_def(enum_id);
-                let mut max_payload = 0u32;
-                for i in 0..enum_def.variant_count() {
-                    let variant_slots: u32 = enum_def
-                        .variant_payload(i)
-                        .iter()
-                        .fold(0u32, |acc, &ty| acc.saturating_add(self.abi_slot_count(ty)));
-                    max_payload = max_payload.max(variant_slots);
-                }
-                1u32.saturating_add(max_payload)
-            }
-            // Struct uses sum of all field slots (includes builtin String with 3 fields)
-            TypeKind::Struct(struct_id) => {
-                // Sum the slot counts of all fields (handles arrays, nested structs, and builtins)
-                // Empty structs naturally get 0 slots here
-                let struct_def = self.type_pool.struct_def(struct_id);
-                struct_def
-                    .fields
-                    .iter()
-                    .fold(0u32, |acc, f| acc.saturating_add(self.abi_slot_count(f.ty)))
-            }
-            TypeKind::Array(array_type_id) => {
-                // Zero-length arrays naturally get 0 slots (0 * element_slots)
-                let (element_type, length) = self.type_pool.array_def(array_type_id);
-                let element_slots = u64::from(self.abi_slot_count(element_type));
-                u32::try_from(element_slots.saturating_mul(length)).unwrap_or(u32::MAX)
-            }
-            // Module types don't take ABI slots (they're compile-time only)
-            TypeKind::Module(_) => 0,
-            // Pointer types take 1 slot (64-bit address)
-            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => 1,
-        }
+        self.type_pool.abi_slot_count(ty)
     }
 }

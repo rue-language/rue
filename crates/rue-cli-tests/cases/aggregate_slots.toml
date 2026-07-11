@@ -561,3 +561,17 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 84
+
+# CFG lowering spills a computed aggregate before projecting it. The temporary
+# must reserve the aggregate's full flattened width: with only one slot, the
+# Pair's first word overwrites `n` in the adjacent parameter area and this
+# returns 30 instead of 25.
+[[case]]
+name = "computed_aggregate_projection_temp_does_not_overlap_parameter"
+files = [{ path = "main.rue", source = """
+struct Pair { left: i32, right: i32 }
+fn make() -> Pair { Pair { left: 10, right: 20 } }
+fn use(n: i32) -> i32 { make().right + n }
+fn main() -> i32 { use(5) }
+""" }]
+exit_code = 25

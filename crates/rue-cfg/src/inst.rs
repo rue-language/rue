@@ -672,8 +672,26 @@ impl Cfg {
     /// Returns the slot number for the new local.
     #[inline]
     pub fn alloc_temp_local(&mut self) -> u32 {
+        self.alloc_temp_local_slots(1)
+    }
+
+    /// Allocate a contiguous temporary frame region and return its base slot.
+    ///
+    /// Multi-slot aggregate spills must reserve their complete ABI width;
+    /// reserving only the first slot lets codegen overwrite the following
+    /// local or parameter area. Callers use at least one slot for zero-sized
+    /// roots that still need a concrete address.
+    #[inline]
+    pub fn alloc_temp_local_slots(&mut self, slots: u32) -> u32 {
+        assert!(
+            slots > 0,
+            "temporary frame regions must reserve at least one slot"
+        );
         let slot = self.num_locals;
-        self.num_locals += 1;
+        self.num_locals = self
+            .num_locals
+            .checked_add(slots)
+            .expect("temporary frame slot count overflow");
         slot
     }
 
