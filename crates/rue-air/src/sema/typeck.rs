@@ -533,6 +533,41 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
+    /// Resolve a type-name symbol that may be a comptime-type alias
+    /// (`const A = Pair(i32);` used as a type). Returns the aliased type, or
+    /// `None` if the name is not a `type`-valued constant.
+    ///
+    /// The fast path reads an already-collected constant; the slow path collects
+    /// it on demand. The latter is needed because struct-field and enum-payload
+    /// types are resolved in the declaration/collection pass — before the
+    /// constant-collection pass runs — so a const alias would otherwise be
+    /// `unknown type` there while resolving fine in a later-analyzed function
+    /// signature (RUE-603). This mirrors the on-demand collection already used
+    /// for array-length constants.
+    pub(crate) fn resolve_const_type_alias(
+        &mut self,
+        type_sym: Spur,
+        span: Span,
+    ) -> CompileResult<Option<Type>> {
+        let mut value = self
+            .resolve_const_info_in_file(type_sym, span.file_id)
+            .map(|info| info.value);
+        if value.is_none() {
+            value = self.try_collect_const_on_demand(type_sym, span.file_id);
+        }
+        let Some(ConstValue::Type(alias_ty)) = value else {
+            return Ok(None);
+        };
+        // Privacy (E0460): an unqualified alias must not reach a private constant
+        // in another directory. Re-read the (now-collected) info for its origin.
+        if let Some(info) = self.resolve_const_info_in_file(type_sym, span.file_id) {
+            let (file_id, is_pub) = (info.span.file_id, info.is_pub);
+            let type_name = self.interner.resolve(&type_sym).to_string();
+            self.check_unqualified_visibility("constant", &type_name, file_id, is_pub, span)?;
+        }
+        Ok(Some(alias_ty))
+    }
+
     pub(crate) fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
         // Own the name so the read-only branches below borrow this local rather
         // than `self.interner`, leaving `self` free for the `&mut self` slice
@@ -593,16 +628,7 @@ impl<'a> Sema<'a> {
                 span,
             )?;
             Ok(Type::new_enum(enum_id))
-        } else if let Some(info) = self.resolve_const_info_in_file(type_sym, span.file_id)
-            && let ConstValue::Type(alias_ty) = info.value
-        {
-            self.check_unqualified_visibility(
-                "constant",
-                type_name,
-                info.span.file_id,
-                info.is_pub,
-                span,
-            )?;
+        } else if let Some(alias_ty) = self.resolve_const_type_alias(type_sym, span)? {
             Ok(alias_ty)
         } else {
             // Check for array type syntax: [T; N]
