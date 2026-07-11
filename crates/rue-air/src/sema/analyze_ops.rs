@@ -6047,11 +6047,8 @@ impl<'a> Sema<'a> {
         let param_comptime_type = self.comptime_type_param_flags(&fn_info);
         let param_names = param_names.to_vec();
         let param_modes = param_modes.to_vec();
-        let return_type_sym = fn_info.return_type_sym;
         let base_return_type = fn_info.return_type;
         let fn_body = fn_info.body;
-        let rir_params_start = fn_info.rir_params_start;
-        let rir_params_len = fn_info.rir_params_len;
 
         // `-> type` functions with no runtime parameters reduce immediately,
         // but their arguments still obey the ordinary comptime contract. Build
@@ -6246,12 +6243,6 @@ impl<'a> Sema<'a> {
             // generation, so this is the check that rejects e.g. passing a `B`
             // where `T == A` - without it the callee would read B-shaped fields
             // out of an A-sized allocation (RUE-99, RUE-73).
-            let rir_param_type_syms: Vec<Spur> = self
-                .rir
-                .get_params(rir_params_start, rir_params_len)
-                .iter()
-                .map(|p| p.ty)
-                .collect();
             for (i, (air_arg, &is_comptime)) in
                 air_args.iter().zip(param_comptime.iter()).enumerate()
             {
@@ -6260,26 +6251,13 @@ impl<'a> Sema<'a> {
                     // The comptime type argument itself - already validated above.
                     continue;
                 }
-                let expected = if declared == Type::COMPTIME_TYPE {
-                    // Generic parameter like `x: T` or a composite mentioning a
-                    // type parameter like `a: [T; 3]` (RUE-172) - substitute T.
-                    // If the type parameter wasn't resolved (e.g. it's a local
-                    // bound to a type value), the check happens after
-                    // specialization instead.
-                    let sym = rir_param_type_syms.get(i).copied();
-                    match sym.and_then(|sym| {
-                        self.resolve_type_for_comptime_with_subst_and_values(
-                            sym,
-                            &type_subst,
-                            &value_subst,
-                        )
-                    }) {
-                        Some(ty) => ty,
-                        None => continue,
-                    }
-                } else {
-                    declared
-                };
+                let expected = self.resolve_substituted_param_type(
+                    &fn_info,
+                    i,
+                    declared,
+                    &type_subst,
+                    &value_subst,
+                )?;
                 let found = air.get(air_arg.value).ty;
                 if found != expected
                     && !found.is_error()
@@ -6300,16 +6278,8 @@ impl<'a> Sema<'a> {
             // Handles bare type parameters (`-> T`), composites mentioning one
             // (`-> [T; 3]`, RUE-172), and the literal `type` return (which
             // resolves back to COMPTIME_TYPE and is comptime-evaluated below).
-            let return_type = if base_return_type == Type::COMPTIME_TYPE {
-                self.resolve_type_for_comptime_with_subst_and_values(
-                    return_type_sym,
-                    &type_subst,
-                    &value_subst,
-                )
-                .unwrap_or(base_return_type)
-            } else {
-                base_return_type
-            };
+            let return_type =
+                self.resolve_substituted_return_type(&fn_info, &type_subst, &value_subst)?;
 
             // Special case: functions that return `type` (not a type parameter) with only comptime args
             // can be fully evaluated at compile time to produce a concrete anonymous struct type.

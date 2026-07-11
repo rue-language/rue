@@ -511,30 +511,49 @@ fn create_specialized_function(
             continue;
         }
         if param_comptime_type[param_index] {
-            if type_arg_idx < key.type_args.len() {
-                type_subst.insert(*name, key.type_args[type_arg_idx]);
-                type_arg_idx += 1;
-            }
-        } else if value_arg_idx < key.value_args.len() {
-            value_subst.insert(*name, key.value_args[value_arg_idx]);
+            let ty = key.type_args.get(type_arg_idx).copied().ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "specialization is missing type argument {} for '{}'",
+                        type_arg_idx,
+                        interner.resolve(name)
+                    )),
+                    base_info.span,
+                )
+            })?;
+            type_subst.insert(*name, ty);
+            type_arg_idx += 1;
+        } else {
+            let value = key.value_args.get(value_arg_idx).copied().ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "specialization is missing value argument {} for '{}'",
+                        value_arg_idx,
+                        interner.resolve(name)
+                    )),
+                    base_info.span,
+                )
+            })?;
+            value_subst.insert(*name, value);
             value_arg_idx += 1;
         }
+    }
+    if type_arg_idx != key.type_args.len() || value_arg_idx != key.value_args.len() {
+        return Err(CompileError::new(
+            ErrorKind::InternalError(format!(
+                "specialization argument streams do not match declaration: consumed {type_arg_idx} type/{value_arg_idx} value, received {}/{}",
+                key.type_args.len(),
+                key.value_args.len()
+            )),
+            base_info.span,
+        ));
     }
 
     // Resolve the return type, substituting type parameters - bare (`-> T`)
     // or inside a composite (`-> [T; 3]`, RUE-172). Value parameters also
     // substitute so an array length can name a `comptime N: i32` (`-> [i32; N]`,
     // RUE-16).
-    let return_type = if base_info.return_type == Type::COMPTIME_TYPE {
-        sema.resolve_type_for_comptime_with_subst_and_values(
-            base_info.return_type_sym,
-            &type_subst,
-            &value_subst,
-        )
-        .unwrap_or(Type::UNIT)
-    } else {
-        base_info.return_type
-    };
+    let return_type = sema.resolve_substituted_return_type(base_info, &type_subst, &value_subst)?;
 
     // Copy out the param data first: substitution needs `&mut Sema` (composite
     // types like `[T; 3]` may intern new array types), which can't overlap a
@@ -552,16 +571,13 @@ fn create_specialized_function(
             // signature (types don't exist at runtime).
             continue;
         }
-        let concrete_ty = if ty == Type::COMPTIME_TYPE {
-            substitute_param_type(sema, base_info, name, &type_subst, &value_subst).unwrap_or_else(
-                || {
-                    debug_assert!(false, "type substitution failed for param");
-                    ty
-                },
-            )
-        } else {
-            ty
-        };
+        let concrete_ty = sema.resolve_substituted_param_type(
+            base_info,
+            param_index,
+            ty,
+            &type_subst,
+            &value_subst,
+        )?;
         // Comptime VALUE parameters stay in the runtime signature — the call
         // site still passes them. Their constant value is additionally
         // substituted into the body via value_subst (RUE-166).
@@ -600,24 +616,4 @@ fn create_specialized_function(
         referenced_functions,
         referenced_methods,
     })
-}
-
-/// Resolve a parameter's concrete type by substituting type parameters into
-/// its declared type symbol - bare (`x: T`) or inside a composite
-/// (`a: [T; 3]`, `p: ptr const T`; RUE-172). Value parameters also substitute
-/// so an array length can name a `comptime N: i32` (`arr: [i32; N]`, RUE-16).
-fn substitute_param_type(
-    sema: &mut Sema<'_>,
-    base_info: &FunctionInfo,
-    param_name: Spur,
-    type_subst: &HashMap<Spur, Type>,
-    value_subst: &HashMap<Spur, ConstValue>,
-) -> Option<Type> {
-    let type_sym = sema
-        .rir
-        .get_params(base_info.rir_params_start, base_info.rir_params_len)
-        .iter()
-        .find(|param| param.name == param_name)
-        .map(|param| param.ty)?;
-    sema.resolve_type_for_comptime_with_subst_and_values(type_sym, type_subst, value_subst)
 }
