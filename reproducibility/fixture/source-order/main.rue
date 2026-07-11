@@ -1,0 +1,17 @@
+fn rotate(value: i32) -> i32 {
+    value * 3 + 1
+}
+
+fn finish(value: i32) -> i32 {
+    value / 2 - 4
+}
+
+fn identity(comptime T: type, value: T) -> T {
+    value
+}
+
+fn main() -> i32 {
+    let result = finish(rotate(identity(i32, 10)));
+    @assert(result == 11);
+    result
+}

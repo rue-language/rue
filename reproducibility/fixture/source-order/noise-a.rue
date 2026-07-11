@@ -1,0 +1,13 @@
+struct AmberRecord {
+    first: i32,
+    second: bool,
+}
+
+enum AmberChoice {
+    Empty,
+    Number(i32),
+}
+
+fn _amber_transform(value: i32) -> i32 {
+    value + 101
+}

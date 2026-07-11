@@ -24,7 +24,7 @@ const _: () = assert!(std::mem::size_of::<AirInst>() <= 48);
 const _: () = assert!(std::mem::size_of::<AirInstData>() <= 32);
 
 use crate::types::{StructId, Type};
-use lasso::{Key, Spur};
+use lasso::{Key, Spur, ThreadedRodeo};
 use rue_span::Span;
 
 // ============================================================================
@@ -1135,8 +1135,26 @@ impl fmt::Display for AirRef {
     }
 }
 
-impl fmt::Display for Air {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// Interner-aware AIR display adapter for stable, human-readable symbols.
+pub struct AirDisplay<'a> {
+    air: &'a Air,
+    interner: &'a ThreadedRodeo,
+}
+
+impl Air {
+    /// Display AIR with interned call and intrinsic symbols resolved to names.
+    pub fn display_with_interner<'a>(&'a self, interner: &'a ThreadedRodeo) -> AirDisplay<'a> {
+        AirDisplay {
+            air: self,
+            interner,
+        }
+    }
+
+    fn fmt_with_interner(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        interner: Option<&ThreadedRodeo>,
+    ) -> fmt::Result {
         writeln!(f, "air (return_type: {}) {{", self.return_type.name())?;
         for (inst_ref, inst) in self.iter() {
             write!(f, "    {} : {} = ", inst_ref, inst.ty.name())?;
@@ -1224,7 +1242,10 @@ impl fmt::Display for Air {
                     args_start,
                     args_len,
                 } => {
-                    write!(f, "call @{}(", name.into_usize())?;
+                    match interner {
+                        Some(interner) => write!(f, "call @{}(", interner.resolve(name))?,
+                        None => write!(f, "call @{}(", name.into_usize())?,
+                    }
                     for (i, arg) in self.get_call_args(*args_start, *args_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
@@ -1242,7 +1263,10 @@ impl fmt::Display for Air {
                     args_start,
                     args_len,
                 } => {
-                    write!(f, "call_generic @{}<", name.into_usize())?;
+                    match interner {
+                        Some(interner) => write!(f, "call_generic @{}<", interner.resolve(name))?,
+                        None => write!(f, "call_generic @{}<", name.into_usize())?,
+                    }
                     // Show type arguments
                     for i in 0..*type_args_len {
                         if i > 0 {
@@ -1279,7 +1303,10 @@ impl fmt::Display for Air {
                     args_start,
                     args_len,
                 } => {
-                    write!(f, "intrinsic @sym:{}(", name.into_usize())?;
+                    match interner {
+                        Some(interner) => write!(f, "intrinsic @{}(", interner.resolve(name))?,
+                        None => write!(f, "intrinsic @sym:{}(", name.into_usize())?,
+                    }
                     for (i, arg) in self.get_air_refs(*args_start, *args_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
@@ -1495,6 +1522,18 @@ impl fmt::Display for Air {
     }
 }
 
+impl fmt::Display for AirDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.air.fmt_with_interner(f, Some(self.interner))
+    }
+}
+
+impl fmt::Display for Air {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt_with_interner(f, None)
+    }
+}
+
 impl Air {
     /// Format a place for display, showing the base and projections.
     fn fmt_place(&self, f: &mut fmt::Formatter<'_>, place_ref: AirPlaceRef) -> fmt::Result {
@@ -1588,5 +1627,53 @@ mod tests {
         let place = air.get_place(place_ref);
         assert_eq!(place.base, AirPlaceBase::Param(3));
         assert_eq!(place.base_type, base_type);
+    }
+
+    #[test]
+    fn interner_aware_display_resolves_call_symbols() {
+        let interner = ThreadedRodeo::new();
+        let call = interner.get_or_intern("callee");
+        let generic = interner.get_or_intern("generic");
+        let intrinsic = interner.get_or_intern("assert");
+        let mut air = Air::new(Type::UNIT);
+
+        for data in [
+            AirInstData::Call {
+                name: call,
+                args_start: 0,
+                args_len: 0,
+            },
+            AirInstData::CallGeneric {
+                name: generic,
+                type_args_start: 0,
+                type_args_len: 0,
+                value_args_start: 0,
+                value_args_len: 0,
+                args_start: 0,
+                args_len: 0,
+            },
+            AirInstData::Intrinsic {
+                name: intrinsic,
+                args_start: 0,
+                args_len: 0,
+            },
+        ] {
+            air.add_inst(AirInst {
+                data,
+                ty: Type::UNIT,
+                span: Span::new(0, 0),
+            });
+        }
+
+        let resolved = air.display_with_interner(&interner).to_string();
+        assert!(resolved.contains("call @callee()"));
+        assert!(resolved.contains("call_generic @generic<>()"));
+        assert!(resolved.contains("intrinsic @assert()"));
+
+        // The context-free Display API remains backward compatible.
+        let raw = air.to_string();
+        assert!(raw.contains(&format!("call @{}()", call.into_usize())));
+        assert!(raw.contains(&format!("call_generic @{}<>()", generic.into_usize())));
+        assert!(raw.contains(&format!("intrinsic @sym:{}()", intrinsic.into_usize())));
     }
 }

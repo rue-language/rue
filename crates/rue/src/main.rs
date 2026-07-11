@@ -2099,7 +2099,10 @@ fn handle_emit_multi_file(
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
                         println!("function {}:", func.analyzed.name);
-                        println!("{}", func.analyzed.air);
+                        println!(
+                            "{}",
+                            func.analyzed.air.display_with_interner(&state.interner)
+                        );
                     }
                 }
                 println!();
@@ -2108,7 +2111,7 @@ fn handle_emit_multi_file(
                 println!("=== CFG ===");
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
-                        println!("{}", func.cfg);
+                        println!("{}", func.cfg.display_with_interner(&state.interner));
                     }
                 }
                 println!();
