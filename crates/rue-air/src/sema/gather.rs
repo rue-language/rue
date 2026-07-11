@@ -125,6 +125,7 @@ impl<'a> GatherOutput<'a> {
             destructor_spans: HashMap::new(),
             infectious_linear: HashMap::new(),
             comptime_type_call_depth: 0,
+            fn_signatures_in_flight: std::collections::HashSet::new(),
         }
     }
 }

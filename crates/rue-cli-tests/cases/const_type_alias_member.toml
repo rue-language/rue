@@ -1,14 +1,16 @@
-# A comptime-type alias (`const P = Mod.Gen(T);`) is usable as a struct-field
-# and enum-payload type (RUE-603). Struct-field / enum-payload types are resolved
-# in the declaration pass, before the constant-collection pass; the alias is now
-# collected on demand there, so it resolves the same as in a function signature
-# (where it already worked). Driven through the real binary with a two-file
-# import so a data structure can actually hold a generic value.
+# A comptime-type alias (`const P = Mod.Gen(T);` or `const V = Vec(i32);`) and
+# an inline unqualified type-constructor application (`Vec(i32)`) are usable as
+# struct-field and enum-payload types (RUE-603). Member types are resolved in
+# the declaration pass, before the constant-collection and function-signature
+# passes; the alias's constant and the constructor's signature are now
+# collected on demand there, so they resolve the same as in a function
+# signature. Driven through the real binary with a two-file import so a data
+# structure can actually hold a generic value.
 
 [section]
 id = "cli.const_type_alias_member"
 name = "Const type alias as a member type"
-description = "`const P = mod.Pair(i32)` works as a struct field and enum payload type (RUE-603)."
+description = "`const P = mod.Pair(i32)`, `const V = Vec(i32)`, and inline `Vec(i32)` work as struct-field and enum-payload types (RUE-603)."
 
 [[case]]
 name = "alias_as_struct_field_and_enum_payload"
@@ -33,3 +35,73 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 42
+
+[[case]]
+name = "same_file_user_generic_alias_as_member"
+description = "A const alias to a same-file user generic (`const V = Vec(i32)`) is a valid struct-field and enum-payload type."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn Vec(comptime T: type) -> type { struct { x: T } }
+const V = Vec(i32);
+struct Holder { v: V }
+enum Maybe { Has(V), No }
+fn main() -> i32 {
+    let h = Holder { v: V { x: 20 } };
+    let extra = match Maybe.Has(V { x: 22 }) {
+        Maybe.Has(q) => q.x,
+        Maybe.No => 0,
+    };
+    h.v.x + extra
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "inline_user_generic_as_member"
+description = "An inline unqualified user-generic application (`Vec(i32)`) is a valid struct-field and enum-payload type."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn Vec(comptime T: type) -> type { struct { x: T } }
+struct Holder { v: Vec(i32) }
+enum Maybe { Has(Vec(i32)), No }
+fn main() -> i32 {
+    let V = Vec(i32);
+    let h = Holder { v: V { x: 20 } };
+    let extra = match Maybe.Has(V { x: 22 }) {
+        Maybe.Has(q) => q.x,
+        Maybe.No => 0,
+    };
+    h.v.x + extra
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "signature_use_before_ctor_declaration"
+description = "A signature naming `Vec(i32)` declared above `fn Vec` resolves (declaration order must not matter)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn get(v: Vec(i32)) -> i32 { v.x }
+fn Vec(comptime T: type) -> type { struct { x: T } }
+fn main() -> i32 {
+    let V = Vec(i32);
+    get(V { x: 42 })
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "signature_cycle_terminates_with_diagnostic"
+description = "Mutually recursive signature type applications (`fn A(x: B(i32))` / `fn B(x: A(i32))`) terminate with a diagnostic instead of recursing forever."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn A(x: B(i32)) -> i32 { 0 }
+fn B(x: A(i32)) -> i32 { 0 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0204"]
