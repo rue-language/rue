@@ -38,6 +38,50 @@ use crate::regalloc::RegAllocDebugInfo;
 // Re-export from parent
 pub use super::{EmittedCode, EmittedRelocation};
 
+fn prepare_backend(
+    cfg: &Cfg,
+    type_pool: &TypeInternPool,
+    interner: &ThreadedRodeo,
+    target: Target,
+) -> CompileResult<crate::codegen_pipeline::PreparedMir<Aarch64Mir, Reg>> {
+    crate::codegen_pipeline::prepare_mir(
+        cfg,
+        type_pool,
+        cfg_lower::RET_REGS.len() as u32,
+        || CfgLower::new(cfg, type_pool, interner, target).lower(),
+        |mir, existing_slots| RegAlloc::new(mir, existing_slots).allocate_with_spills(),
+        |mir| {
+            peephole::optimize(mir.instructions_vec_mut());
+        },
+        schedule::schedule,
+        verify::verify_stack_alignment,
+    )
+}
+
+fn generate_inner<T, Emit>(
+    cfg: &Cfg,
+    type_pool: &TypeInternPool,
+    strings: &[String],
+    interner: &ThreadedRodeo,
+    target: Target,
+    emit: Emit,
+) -> CompileResult<T>
+where
+    Emit: for<'a> FnOnce(Emitter<'a>) -> CompileResult<T>,
+{
+    let prepared = prepare_backend(cfg, type_pool, interner, target)?;
+    let emitter = Emitter::new(
+        &prepared.mir,
+        prepared.total_locals,
+        prepared.num_locals_original,
+        prepared.num_params,
+        &prepared.used_callee_saved,
+        strings,
+    )
+    .with_sret(prepared.has_sret);
+    emit(emitter)
+}
+
 /// Generate machine code from CFG.
 ///
 /// This is the main entry point for AArch64 code generation.
@@ -48,51 +92,14 @@ pub fn generate(
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<MachineCode> {
-    let num_locals = cfg.num_locals();
-    let num_params = cfg.num_params();
-    // sret returns reserve one extra frame slot (one past the param area)
-    // for the incoming buffer pointer; see crate::cfg_lower::type_uses_sret_return.
-    let has_sret =
-        crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, cfg_lower::RET_REGS.len() as u32);
-
-    // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, interner, target).lower()?;
-
-    // Allocate physical registers
-    // Spill slots go after locals, parameters AND the sret pointer slot to avoid conflicts
-    let existing_slots = num_locals + num_params + has_sret as u32;
-    let (mut mir, num_spills, used_callee_saved) =
-        RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
-
-    // Apply peephole optimizations after register allocation
-    peephole::optimize(mir.instructions_vec_mut());
-
-    // Schedule instructions for better performance
-    schedule::schedule(&mut mir);
-
-    // Verify stack alignment. This is a correctness check (a misaligned call
-    // violates the AAPCS64 ABI and can crash at runtime) and already returns a
-    // real ice_error, so it runs in release too — not gated on
-    // debug_assertions (RUE-45).
-    verify::verify_stack_alignment(&mir)?;
-
-    // Emit machine code bytes
-    let total_locals = num_locals + num_spills;
-    let (code, relocations) = Emitter::new(
-        &mir,
-        total_locals,
-        num_locals,
-        num_params,
-        &used_callee_saved,
-        strings,
-    )
-    .with_sret(has_sret)
-    .emit()?;
-
-    Ok(MachineCode {
-        code,
-        relocations,
-        strings: strings.to_vec(),
+    generate_inner(cfg, type_pool, strings, interner, target, |emitter| {
+        // Keep the normal path allocation-free with respect to assembly text.
+        let (code, relocations) = emitter.emit()?;
+        Ok(MachineCode {
+            code,
+            relocations,
+            strings: strings.to_vec(),
+        })
     })
 }
 
@@ -107,52 +114,16 @@ pub fn generate_with_asm(
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<(MachineCode, String)> {
-    let num_locals = cfg.num_locals();
-    let num_params = cfg.num_params();
-    let has_sret =
-        crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, cfg_lower::RET_REGS.len() as u32);
-
-    // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, interner, target).lower()?;
-
-    // Allocate physical registers
-    let existing_slots = num_locals + num_params + has_sret as u32;
-    let (mut mir, num_spills, used_callee_saved) =
-        RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
-
-    // Apply peephole optimizations after register allocation
-    peephole::optimize(mir.instructions_vec_mut());
-
-    // Schedule instructions for better performance
-    schedule::schedule(&mut mir);
-
-    // Verify stack alignment. This is a correctness check (a misaligned call
-    // violates the AAPCS64 ABI and can crash at runtime) and already returns a
-    // real ice_error, so it runs in release too — not gated on
-    // debug_assertions (RUE-45).
-    verify::verify_stack_alignment(&mir)?;
-
-    // Emit machine code bytes with assembly text
-    let total_locals = num_locals + num_spills;
-    let emitted = Emitter::new(
-        &mir,
-        total_locals,
-        num_locals,
-        num_params,
-        &used_callee_saved,
-        strings,
-    )
-    .with_sret(has_sret)
-    .emit_all()?;
-
-    let asm = emitted.to_asm();
-    let machine_code = MachineCode {
-        code: emitted.to_bytes(),
-        relocations: emitted.relocations,
-        strings: strings.to_vec(),
-    };
-
-    Ok((machine_code, asm))
+    generate_inner(cfg, type_pool, strings, interner, target, |emitter| {
+        let emitted = emitter.emit_all()?;
+        let asm = emitted.to_asm();
+        let machine_code = MachineCode {
+            code: emitted.to_bytes(),
+            relocations: emitted.relocations,
+            strings: strings.to_vec(),
+        };
+        Ok((machine_code, asm))
+    })
 }
 
 /// Generate register allocation debug info from CFG.

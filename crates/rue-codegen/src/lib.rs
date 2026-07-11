@@ -41,6 +41,7 @@ macro_rules! end_inst {
     };
 }
 
+mod codegen_pipeline;
 mod schedule_core;
 mod stack_frame;
 mod stack_verify;
@@ -339,12 +340,11 @@ pub use x86_64::{Operand, Reg, X86Inst, X86Mir};
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
-    use rue_air::{Air, AirInst, AirInstData, Type};
-    use rue_cfg::CfgBuilder;
+    use rue_air::{Air, AirInst, AirInstData, Type, TypeInternPool};
+    use rue_cfg::{Cfg, CfgBuilder};
     use rue_span::Span;
 
-    #[test]
-    fn test_generate_x86_64() {
+    fn test_cfg() -> (Cfg, TypeInternPool, ThreadedRodeo) {
         let mut air = Air::new(Type::I32);
 
         let const_ref = air.add_inst(AirInst {
@@ -359,14 +359,70 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        // Build CFG from AIR (no struct/array types in this simple test)
         let interner = ThreadedRodeo::new();
-        let type_pool = rue_air::TypeInternPool::new();
+        let type_pool = TypeInternPool::new();
         let cfg_output =
             CfgBuilder::build(&air, 0, 0, "main", &type_pool, vec![], &interner, false);
+        (cfg_output.cfg, type_pool, interner)
+    }
+
+    fn syscall_cfg() -> (Cfg, TypeInternPool, ThreadedRodeo) {
+        let type_pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let mut air = Air::new(Type::I64);
+        let span = Span::new(0, 2);
+        let number = air.add_inst(AirInst {
+            data: AirInstData::Const(1),
+            ty: Type::I64,
+            span,
+        });
+        let args_start = air.add_extra(&[number.as_u32()]);
+        let result = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name: interner.get_or_intern("syscall"),
+                args_start,
+                args_len: 1,
+            },
+            ty: Type::I64,
+            span,
+        });
+        air.add_inst(AirInst {
+            data: AirInstData::Ret(Some(result)),
+            ty: Type::I64,
+            span,
+        });
+
+        let cfg_output = CfgBuilder::build(
+            &air,
+            0,
+            0,
+            "syscall_parity",
+            &type_pool,
+            vec![],
+            &interner,
+            false,
+        );
+        (cfg_output.cfg, type_pool, interner)
+    }
+
+    fn assert_same_machine_code(normal: &MachineCode, with_asm: &MachineCode) {
+        assert_eq!(normal.code, with_asm.code);
+        assert_eq!(normal.strings, with_asm.strings);
+        assert_eq!(normal.relocations.len(), with_asm.relocations.len());
+        for (normal, with_asm) in normal.relocations.iter().zip(&with_asm.relocations) {
+            assert_eq!(normal.offset, with_asm.offset);
+            assert_eq!(normal.symbol, with_asm.symbol);
+            assert_eq!(normal.kind, with_asm.kind);
+            assert_eq!(normal.addend, with_asm.addend);
+        }
+    }
+
+    #[test]
+    fn test_generate_x86_64() {
+        let (cfg, type_pool, interner) = test_cfg();
 
         // Test the generate function
-        let machine_code = generate(&cfg_output.cfg, &type_pool, &[], &interner).unwrap();
+        let machine_code = generate(&cfg, &type_pool, &[], &interner).unwrap();
 
         // Should generate working code
         assert!(!machine_code.code.is_empty());
@@ -383,5 +439,75 @@ mod tests {
 
         // Should have no strings
         assert!(machine_code.strings.is_empty());
+    }
+
+    #[test]
+    fn normal_and_assembly_entry_points_emit_identical_machine_code() {
+        let (cfg, type_pool, interner) = test_cfg();
+        let strings = vec!["pipeline parity sentinel".to_owned()];
+
+        let x86 = x86_64::generate(&cfg, &type_pool, &strings, &interner)
+            .expect("x86 normal generation should succeed");
+        let (x86_asm_code, x86_asm) =
+            x86_64::generate_with_asm(&cfg, &type_pool, &strings, &interner)
+                .expect("x86 assembly generation should succeed");
+        assert_same_machine_code(&x86, &x86_asm_code);
+        assert!(!x86_asm.is_empty());
+
+        for target in [
+            rue_target::Target::Aarch64Linux,
+            rue_target::Target::Aarch64Macos,
+        ] {
+            let arm = aarch64::generate(&cfg, &type_pool, &strings, &interner, target)
+                .expect("AArch64 normal generation should succeed");
+            let (arm_asm_code, arm_asm) =
+                aarch64::generate_with_asm(&cfg, &type_pool, &strings, &interner, target)
+                    .expect("AArch64 assembly generation should succeed");
+            assert_same_machine_code(&arm, &arm_asm_code);
+            assert!(!arm_asm.is_empty());
+        }
+    }
+
+    #[test]
+    fn aarch64_entry_points_preserve_target_specific_syscall_lowering() {
+        let (cfg, type_pool, interner) = syscall_cfg();
+        let linux = aarch64::generate(
+            &cfg,
+            &type_pool,
+            &[],
+            &interner,
+            rue_target::Target::Aarch64Linux,
+        )
+        .expect("AArch64 Linux normal generation should succeed");
+        let (linux_asm_code, linux_asm) = aarch64::generate_with_asm(
+            &cfg,
+            &type_pool,
+            &[],
+            &interner,
+            rue_target::Target::Aarch64Linux,
+        )
+        .expect("AArch64 Linux assembly generation should succeed");
+        assert_same_machine_code(&linux, &linux_asm_code);
+        assert!(linux_asm.contains("svc #0x0"));
+
+        let macos = aarch64::generate(
+            &cfg,
+            &type_pool,
+            &[],
+            &interner,
+            rue_target::Target::Aarch64Macos,
+        )
+        .expect("AArch64 macOS normal generation should succeed");
+        let (macos_asm_code, macos_asm) = aarch64::generate_with_asm(
+            &cfg,
+            &type_pool,
+            &[],
+            &interner,
+            rue_target::Target::Aarch64Macos,
+        )
+        .expect("AArch64 macOS assembly generation should succeed");
+        assert_same_machine_code(&macos, &macos_asm_code);
+        assert!(macos_asm.contains("svc #0x80"));
+        assert_ne!(linux.code, macos.code);
     }
 }
