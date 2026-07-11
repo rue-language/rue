@@ -27,6 +27,7 @@ the raw JSON contains both leaf passes and their aggregate parents:
     |  `- merge_symbols             <- leaf
     |- astgen                       <- leaf
     |- semantic_astgen              <- leaf
+    |- rir_declaration_index        <- leaf
     |- sema                         <- leaf
     |- cfg_construction             <- leaf
     |- codegen                      <- leaf
@@ -89,6 +90,7 @@ CANONICAL_LEAF_ORDER = [
     "merge_symbols",
     "astgen",
     "semantic_astgen",
+    "rir_declaration_index",
     "sema",
     "cfg_construction",
     "codegen",

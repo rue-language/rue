@@ -713,7 +713,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn real_snapshot_and_unit_spans_preserve_parse_boundaries() {
+    fn real_compiler_phase_spans_preserve_leaf_boundaries() {
         let sources = vec![SourceFile::new(
             "main.rue",
             "fn main() -> i32 { 42 }",
@@ -758,8 +758,10 @@ mod tests {
             tracing_subscriber::registry().with(TimingLayer::new(unit_data.clone()));
         tracing::subscriber::with_default(unit_subscriber, || {
             let mut unit =
-                CompilationUnit::from_source_snapshot(snapshot, CompileOptions::default());
+                CompilationUnit::from_source_snapshot(snapshot.clone(), CompileOptions::default());
             unit.parse().unwrap();
+            unit.lower().unwrap();
+            unit.analyze().unwrap();
         });
 
         let unit_edges = unit_data.parent_edges();
@@ -792,12 +794,76 @@ mod tests {
             .iter()
             .find(|pass| pass.name == "definition_snapshot")
             .unwrap();
+        let rir_declaration_index = unit_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "rir_declaration_index")
+            .unwrap();
+        let sema = unit_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "sema")
+            .unwrap();
         assert_eq!(unit_parse.invocations, 1);
         assert_eq!(unit_parse.root_invocations, 1);
         assert_eq!(definition_snapshot.invocations, 1);
         assert_eq!(definition_snapshot.root_invocations, 0);
         assert_eq!(definition_snapshot.leaf_invocations, 1);
         assert_eq!(merge.root_invocations, 0);
+        assert_eq!(rir_declaration_index.invocations, 1);
+        assert_eq!(rir_declaration_index.root_invocations, 1);
+        assert_eq!(rir_declaration_index.leaf_invocations, 1);
+        assert_eq!(sema.invocations, 1);
+        assert_eq!(sema.root_invocations, 1);
+        assert_eq!(sema.leaf_invocations, 1);
+        assert!(
+            !unit_edges.contains(&("sema".to_owned(), "rir_declaration_index".to_owned())),
+            "the index and sema analysis must remain sibling leaves: {unit_edges:?}"
+        );
+
+        let compile_data = TimingData::new();
+        let compile_subscriber =
+            tracing_subscriber::registry().with(TimingLayer::new(compile_data.clone()));
+        tracing::subscriber::with_default(compile_subscriber, || {
+            rue_compiler::compile_source_snapshot_with_options(
+                &snapshot,
+                &CompileOptions::default(),
+            )
+            .unwrap();
+        });
+
+        let compile_edges = compile_data.parent_edges();
+        for child in ["rir_declaration_index", "sema"] {
+            assert!(
+                compile_edges.contains(&("compile".to_owned(), child.to_owned())),
+                "missing compile -> {child} in production edges: {compile_edges:?}"
+            );
+        }
+        assert!(
+            !compile_edges.contains(&("sema".to_owned(), "rir_declaration_index".to_owned())),
+            "the production index and sema spans must remain siblings: {compile_edges:?}"
+        );
+
+        let compile_timing =
+            compile_data.to_benchmark_timing_with_metrics("test", "test", None, None);
+        let compile = compile_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "compile")
+            .unwrap();
+        assert_eq!(compile.invocations, 1);
+        assert_eq!(compile.root_invocations, 1);
+        assert_eq!(compile.leaf_invocations, 0);
+        for phase in ["rir_declaration_index", "sema"] {
+            let timing = compile_timing
+                .passes
+                .iter()
+                .find(|pass| pass.name == phase)
+                .unwrap();
+            assert_eq!(timing.invocations, 1, "{phase}");
+            assert_eq!(timing.root_invocations, 0, "{phase}");
+            assert_eq!(timing.leaf_invocations, 1, "{phase}");
+        }
     }
 
     #[test]
