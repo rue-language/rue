@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
+use std::sync::Arc;
 
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -14,13 +15,13 @@ mod timing;
 
 use rue_compiler::{
     CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind, FileId, Lexer,
-    LinkerMode, MultiFileFormatter, MultiFileJsonFormatter, OptLevel, ParsedProgram,
-    PreviewFeature, PreviewFeatures, SourceFile, SourceInfo, SourceMetadata, Span, TokenKind,
-    compile_multi_file_with_source_metadata_and_options,
-    compile_multi_file_with_source_metadata_and_options_and_stats, configure_thread_pool,
-    generate_emitted_asm, generate_liveness_info, generate_lowering_info, generate_mir,
-    generate_regalloc_info, generate_stack_frame_info, import_candidate_groups, merge_symbols,
-    parse_all_files_with_source_metadata,
+    LinkerMode, MAX_SOURCE_BYTES, MultiFileFormatter, MultiFileJsonFormatter, OptLevel,
+    ParsedProgram, PreviewFeature, PreviewFeatures, SourceInfo, SourceMetadata, SourceSnapshot,
+    Span, TokenKind, compile_source_snapshot_with_options,
+    compile_source_snapshot_with_options_and_stats, configure_thread_pool, generate_emitted_asm,
+    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
+    generate_stack_frame_info, import_candidate_groups, merge_symbols,
+    parse_all_files_with_source_snapshot,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -1348,6 +1349,30 @@ impl DependencyGraph {
     }
 }
 
+/// Reject a source before discovery lexing if Rue's span representation cannot
+/// describe its byte offsets.
+fn validate_source_len_before_discovery(
+    file_id: FileId,
+    path: &str,
+    source: &str,
+    error_format: ErrorFormat,
+) -> Result<(), ()> {
+    if source.len() <= MAX_SOURCE_BYTES {
+        return Ok(());
+    }
+
+    let error = CompileError::without_span(ErrorKind::InvalidCompilerInput(format!(
+        "source text for file ID {} ({path:?}) is {} bytes, exceeding the maximum supported length of {} bytes",
+        file_id.index(),
+        source.len(),
+        MAX_SOURCE_BYTES
+    )));
+    let diagnostics =
+        DiagnosticOutput::new(error_format, vec![(file_id, SourceInfo::new(source, path))]);
+    diagnostics.print_error(&error);
+    Err(())
+}
+
 /// Discover `@import("...")` references in the given sources and load the
 /// referenced module files from disk, transitively, appending them to
 /// `sources`.
@@ -1380,6 +1405,7 @@ fn discover_and_load_imports(
     sources: &mut Vec<(String, String)>,
     source_manifest: Option<&SourceManifest>,
     dependency_graph: &mut DependencyGraph,
+    error_format: ErrorFormat,
 ) -> Result<ImportDiscoveryResult, ()> {
     use std::collections::HashSet;
 
@@ -1403,13 +1429,23 @@ fn discover_and_load_imports(
 
     let mut i = 0;
     while i < sources.len() {
+        let source_index = i;
         let importer_file_id = FileId::new((i + 1) as u32);
-        let (importer_path, content) = (sources[i].0.clone(), sources[i].1.clone());
+        let importer_path = sources[source_index].0.clone();
         let importer_canonical = fs::canonicalize(&importer_path).ok();
         i += 1;
 
-        let lexer = Lexer::new(&content);
-        let Ok((tokens, interner)) = lexer.tokenize() else {
+        let tokenized = {
+            let content = &sources[source_index].1;
+            validate_source_len_before_discovery(
+                importer_file_id,
+                &importer_path,
+                content,
+                error_format,
+            )?;
+            Lexer::new(content).tokenize()
+        };
+        let Ok((tokens, interner)) = tokenized else {
             // Lex errors will be reported properly during compilation.
             continue;
         };
@@ -1650,6 +1686,7 @@ fn main() {
         &mut sources,
         source_manifest.as_ref(),
         &mut dependency_graph,
+        options.error_format,
     ) {
         Ok(result) => result,
         Err(()) => std::process::exit(1),
@@ -1686,51 +1723,78 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Build SourceFile structs for multi-file compilation. Physical paths stay
+    // Give every loaded source a stable ID in caller order. Physical paths stay
     // available for imports and diagnostics; generated symbols use a separate,
     // relocation-stable identity (RUE-618).
-    let source_files: Vec<SourceFile<'_>> = sources
-        .iter()
-        .enumerate()
-        .map(|(i, (path, content))| {
-            SourceFile::new(path.as_str(), content.as_str(), FileId::new((i + 1) as u32))
-        })
+    let file_ids: Vec<_> = (1..=sources.len())
+        .map(|index| FileId::new(index as u32))
         .collect();
-    // Create multi-file diagnostic formatters for diagnostics that may span multiple files.
-    let source_infos: Vec<_> = sources
-        .iter()
-        .enumerate()
-        .map(|(i, (path, content))| {
-            (
-                FileId::new((i + 1) as u32),
-                SourceInfo::new(content.as_str(), path.as_str()),
-            )
-        })
-        .collect();
-    let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
     let symbol_paths = match derive_symbol_paths(&sources) {
         Ok(paths) => paths,
         Err(message) => {
+            let source_infos = sources
+                .iter()
+                .zip(file_ids.iter().copied())
+                .map(|((path, content), file_id)| {
+                    (file_id, SourceInfo::new(content.as_str(), path.as_str()))
+                })
+                .collect();
+            let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
             diagnostics.print_error(&CompileError::without_span(
                 ErrorKind::InvalidCompilerInput(message),
             ));
             std::process::exit(1);
         }
     };
-    let symbol_path_map: std::collections::HashMap<FileId, String> = source_files
+    let physical_path_map = sources
         .iter()
-        .zip(symbol_paths)
-        .map(|(source, symbol_path)| (source.file_id, symbol_path))
+        .zip(file_ids.iter().copied())
+        .map(|((path, _), file_id)| (file_id, path.clone()))
         .collect();
+    let logical_path_map = file_ids.iter().copied().zip(symbol_paths).collect();
     let source_metadata =
-        match SourceMetadata::from_sources(&source_files, source_files[0].file_id, symbol_path_map)
-        {
+        match SourceMetadata::new(file_ids[0], physical_path_map, logical_path_map) {
             Ok(source_metadata) => source_metadata,
             Err(error) => {
+                let source_infos = sources
+                    .iter()
+                    .zip(file_ids.iter().copied())
+                    .map(|((path, content), file_id)| {
+                        (file_id, SourceInfo::new(content.as_str(), path.as_str()))
+                    })
+                    .collect();
+                let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
                 diagnostics.print_error(&error);
                 std::process::exit(1);
             }
         };
+
+    // Move each loaded String directly behind an Arc: this transfers its
+    // allocation without copying the source bytes. The snapshot now owns the
+    // complete, immutable compiler input used by every compilation path.
+    let source_contents = sources
+        .into_iter()
+        .zip(file_ids)
+        .map(|((_path, content), file_id)| (file_id, Arc::new(content)))
+        .collect();
+    let source_snapshot = match SourceSnapshot::new(source_metadata, source_contents) {
+        Ok(source_snapshot) => source_snapshot,
+        Err(error) => {
+            // Snapshot validation errors are unspanned. At this point the
+            // snapshot constructor owns the source buffers on both paths, so
+            // no borrowed source view remains available for formatting.
+            let diagnostics = DiagnosticOutput::new(options.error_format, Vec::new());
+            diagnostics.print_error(&error);
+            std::process::exit(1);
+        }
+    };
+    // Create multi-file diagnostic formatters from the snapshot's borrowed
+    // views so diagnostics and compilation necessarily observe the same input.
+    let source_infos = source_snapshot
+        .files()
+        .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
+        .collect();
+    let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
 
     if options.emit_stages.contains(&EmitStage::Deps) {
         if options.emit_stages.len() != 1 {
@@ -1783,9 +1847,7 @@ fn main() {
 
     // Handle emit modes with multi-file support
     if !options.emit_stages.is_empty() {
-        if let Err(()) =
-            handle_emit_multi_file(&source_files, &source_metadata, &options, &diagnostics)
-        {
+        if let Err(()) = handle_emit_multi_file(&source_snapshot, &options, &diagnostics) {
             std::process::exit(1);
         }
         print_timing_output(
@@ -1806,19 +1868,11 @@ fn main() {
         preview_features: options.preview_features.clone(),
     };
     let compile_result = if options.benchmark_json {
-        compile_multi_file_with_source_metadata_and_options_and_stats(
-            &source_files,
-            &source_metadata,
-            &compile_options,
-        )
-        .map(|(output, stats)| (output, Some(stats)))
+        compile_source_snapshot_with_options_and_stats(&source_snapshot, &compile_options)
+            .map(|(output, stats)| (output, Some(stats)))
     } else {
-        compile_multi_file_with_source_metadata_and_options(
-            &source_files,
-            &source_metadata,
-            &compile_options,
-        )
-        .map(|output| (output, None))
+        compile_source_snapshot_with_options(&source_snapshot, &compile_options)
+            .map(|output| (output, None))
     };
     match compile_result {
         Ok((output, source_stats)) => {
@@ -1938,8 +1992,7 @@ fn main() {
 /// For early stages (tokens, ast), each file is processed and labeled individually.
 /// For later stages (rir, air, cfg, etc.), the merged program is used.
 fn handle_emit_multi_file(
-    sources: &[SourceFile<'_>],
-    source_metadata: &SourceMetadata,
+    source_snapshot: &SourceSnapshot,
     options: &Options,
     diagnostics: &DiagnosticOutput<'_>,
 ) -> Result<(), ()> {
@@ -1964,8 +2017,8 @@ fn handle_emit_multi_file(
     // For tokens, we need to lex each file separately (before parsing merges interners)
     // We'll collect per-file tokens if needed
     let per_file_tokens: Option<Vec<(String, Vec<rue_compiler::Token>)>> = if needs_tokens {
-        let mut file_tokens = Vec::with_capacity(sources.len());
-        for source in sources {
+        let mut file_tokens = Vec::with_capacity(source_snapshot.len());
+        for source in source_snapshot.files() {
             // Lex with the file's real FileId so a lex error in the Nth file
             // is attributed to that file, not to the first one (RUE-38).
             let lexer = Lexer::with_file_id(source.source, source.file_id);
@@ -1986,7 +2039,7 @@ fn handle_emit_multi_file(
 
     // Parse all files (needed for AST output or later stages)
     let mut parsed: Option<ParsedProgram> = if needs_ast || needs_later_stages {
-        match parse_all_files_with_source_metadata(sources, source_metadata) {
+        match parse_all_files_with_source_snapshot(source_snapshot) {
             Ok(program) => Some(program),
             Err(errors) => {
                 diagnostics.print_errors(&errors);
@@ -2031,7 +2084,7 @@ fn handle_emit_multi_file(
             options.opt_level,
             &options.preview_features,
             options.target,
-            source_metadata,
+            source_snapshot.metadata(),
         ) {
             Ok(state) => state,
             Err(errors) => {
@@ -2629,7 +2682,7 @@ mod tests {
             fs::read_to_string(&main_path).unwrap(),
         )];
         let mut graph = DependencyGraph::default();
-        let result = discover_and_load_imports(&mut sources, None, &mut graph);
+        let result = discover_and_load_imports(&mut sources, None, &mut graph, ErrorFormat::Text);
         assert!(
             result.is_err(),
             "unreadable existing candidate must error, not resolve or vanish"
@@ -2642,7 +2695,7 @@ mod tests {
             fs::read_to_string(&main_path).unwrap(),
         )];
         let mut graph = DependencyGraph::default();
-        let result = discover_and_load_imports(&mut sources, None, &mut graph);
+        let result = discover_and_load_imports(&mut sources, None, &mut graph, ErrorFormat::Text);
         assert!(result.is_ok());
         assert_eq!(sources.len(), 2, "helper must be discovered and loaded");
 

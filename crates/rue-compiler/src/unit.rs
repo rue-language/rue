@@ -31,7 +31,7 @@
 //! // Or, equivalently: let output = unit.run_all()?;
 //! ```
 
-use std::collections::HashMap;
+use std::{collections::HashMap, marker::PhantomData};
 
 use lasso::ThreadedRodeo;
 use tracing::{info, info_span};
@@ -39,7 +39,7 @@ use tracing::{info, info_span};
 use crate::{
     Ast, AstGen, CompileErrors, CompileOptions, CompileOutput, CompileResult, CompileWarning,
     FunctionWithCfg, Lexer, MultiErrorResult, Parser, Rir, Sema, SourceFile, SourceMetadata,
-    TypeInternPool, build_functions_and_cfgs, compile_backend,
+    SourceSnapshot, TypeInternPool, build_functions_and_cfgs, compile_backend,
 };
 use rue_span::FileId;
 
@@ -82,12 +82,12 @@ pub struct CompilationUnit<'src> {
     options: CompileOptions,
 
     // === Source ===
-    /// Source files being compiled.
-    sources: Vec<SourceFile<'src>>,
+    /// Immutable source contents and validated identities being compiled.
+    source_snapshot: SourceSnapshot,
     /// Work metrics collected from those sources and the live parse.
     source_stats: SourceStats,
-    /// Validated physical paths, logical identities, and designated root.
-    source_metadata: SourceMetadata,
+    /// Retains the lifetime-shaped API of the borrowed compatibility constructors.
+    _source_lifetime: PhantomData<&'src ()>,
 
     // === Phase 1: Parsing ===
     /// Merged AST containing all items (populated by `parse()`).
@@ -107,6 +107,16 @@ pub struct CompilationUnit<'src> {
     strings: Option<Vec<String>>,
     /// Warnings collected during compilation.
     warnings: Vec<CompileWarning>,
+}
+
+impl CompilationUnit<'static> {
+    /// Create a compilation unit from an already validated, immutable snapshot.
+    ///
+    /// Unlike the borrowed compatibility constructors, the returned unit does
+    /// not retain a source lifetime: the snapshot owns and shares its contents.
+    pub fn from_source_snapshot(source_snapshot: SourceSnapshot, options: CompileOptions) -> Self {
+        Self::from_validated_snapshot(source_snapshot, options)
+    }
 }
 
 impl<'src> CompilationUnit<'src> {
@@ -132,11 +142,8 @@ impl<'src> CompilationUnit<'src> {
             .map(|source| source.file_id)
             .unwrap_or(FileId::DEFAULT);
         let source_metadata = SourceMetadata::from_sources(&sources, root_file_id, HashMap::new())?;
-        Ok(Self::from_validated_metadata(
-            sources,
-            source_metadata,
-            options,
-        ))
+        let source_snapshot = SourceSnapshot::from_sources(&sources, source_metadata)?;
+        Ok(Self::from_validated_snapshot(source_snapshot, options))
     }
 
     /// Create a compilation unit with validated, caller-provided source identities.
@@ -155,23 +162,17 @@ impl<'src> CompilationUnit<'src> {
         source_metadata: SourceMetadata,
         options: CompileOptions,
     ) -> CompileResult<Self> {
-        source_metadata.validate_sources(&sources)?;
-
-        Ok(Self::from_validated_metadata(
-            sources,
-            source_metadata,
-            options,
-        ))
+        let source_snapshot = SourceSnapshot::from_sources(&sources, source_metadata)?;
+        Ok(Self::from_validated_snapshot(source_snapshot, options))
     }
 
-    fn from_validated_metadata(
-        sources: Vec<SourceFile<'src>>,
-        source_metadata: SourceMetadata,
-        options: CompileOptions,
-    ) -> Self {
+    fn from_validated_snapshot(source_snapshot: SourceSnapshot, options: CompileOptions) -> Self {
         let source_stats = SourceStats {
-            files: sources.len(),
-            bytes: sources.iter().map(|source| source.source.len()).sum(),
+            files: source_snapshot.len(),
+            bytes: source_snapshot
+                .files()
+                .map(|source| source.source.len())
+                .sum(),
             // Count lines lazily in source_stats(); ordinary compilation does
             // not need to scan every source solely for benchmark metadata.
             lines: 0,
@@ -180,9 +181,9 @@ impl<'src> CompilationUnit<'src> {
 
         Self {
             options,
-            sources,
+            source_snapshot,
             source_stats,
-            source_metadata,
+            _source_lifetime: PhantomData,
             merged_ast: None,
             interner: None,
             rir: None,
@@ -209,15 +210,15 @@ impl<'src> CompilationUnit<'src> {
     /// - Any file fails to lex or parse
     /// - Duplicate function, struct, or enum definitions are found
     pub fn parse(&mut self) -> MultiErrorResult<()> {
-        let _span = info_span!("parse", file_count = self.sources.len()).entered();
+        let _span = info_span!("parse", file_count = self.source_snapshot.len()).entered();
 
         // Parse all files with a shared interner
-        let mut parsed_files = Vec::with_capacity(self.sources.len());
+        let mut parsed_files = Vec::with_capacity(self.source_snapshot.len());
         let mut interner = ThreadedRodeo::new();
         let mut errors = CompileErrors::new();
         self.source_stats.tokens = 0;
 
-        for source in &self.sources {
+        for source in self.source_snapshot.files() {
             let _file_span = info_span!("parse_file", path = %source.path).entered();
 
             // Create lexer with shared interner and file ID
@@ -364,7 +365,7 @@ impl<'src> CompilationUnit<'src> {
         // while sema consumes a private logical-path-ordered lowering. This
         // makes allocation and artifact layout canonical without changing the
         // caller-visible AST/RIR contract (RUE-624).
-        let semantic_ast = crate::semantic_order::for_sema(ast, &self.source_metadata);
+        let semantic_ast = crate::semantic_order::for_sema(ast, self.source_snapshot.metadata());
         let semantic_rir = {
             let _span = info_span!("semantic_astgen").entered();
             AstGen::new(&semantic_ast, interner).generate()
@@ -379,9 +380,9 @@ impl<'src> CompilationUnit<'src> {
                 self.options.preview_features.clone(),
                 self.options.target,
             );
-            sema.set_root_file_id(self.source_metadata.root_file_id());
-            sema.set_file_paths(self.source_metadata.physical_path_map().clone());
-            sema.set_symbol_paths(self.source_metadata.logical_path_map().clone());
+            sema.set_root_file_id(self.source_snapshot.metadata().root_file_id());
+            sema.set_file_paths(self.source_snapshot.metadata().physical_path_map().clone());
+            sema.set_symbol_paths(self.source_snapshot.metadata().logical_path_map().clone());
             let output = sema.analyze_all()?;
             info!(
                 function_count = output.functions.len(),
@@ -551,20 +552,25 @@ impl<'src> CompilationUnit<'src> {
 
     /// Get the file paths map.
     pub fn file_paths(&self) -> &HashMap<FileId, String> {
-        self.source_metadata.physical_path_map()
+        self.source_snapshot.metadata().physical_path_map()
     }
 
     /// Get the validated source identities and designated semantic root.
     pub fn source_metadata(&self) -> &SourceMetadata {
-        &self.source_metadata
+        self.source_snapshot.metadata()
+    }
+
+    /// Get the immutable source snapshot owned by this compilation unit.
+    pub fn source_snapshot(&self) -> &SourceSnapshot {
+        &self.source_snapshot
     }
 
     /// Get source metrics collected by the live frontend.
     pub fn source_stats(&self) -> SourceStats {
         SourceStats {
             lines: self
-                .sources
-                .iter()
+                .source_snapshot
+                .files()
                 .map(|source| source.source.lines().count())
                 .sum(),
             ..self.source_stats
@@ -635,7 +641,7 @@ impl<'src> CompilationUnit<'src> {
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write as _;
+    use std::{fmt::Write as _, sync::Arc};
 
     use super::*;
     use crate::{FileId, RirPrinter};
@@ -659,6 +665,39 @@ mod tests {
         assert!(unit.is_lowered());
         assert!(unit.is_analyzed());
         assert_eq!(unit.functions().len(), 1);
+    }
+
+    #[test]
+    fn source_snapshot_unit_owns_and_shares_source_text() {
+        let file_id = FileId::new(1);
+        let metadata = SourceMetadata::new(
+            file_id,
+            HashMap::from([(file_id, "main.rue".to_string())]),
+            HashMap::from([(file_id, "main.rue".to_string())]),
+        )
+        .unwrap();
+
+        let mut unit = {
+            let source = Arc::new("fn main() -> i32 { 42 }".to_string());
+            let snapshot =
+                SourceSnapshot::new(metadata, vec![(file_id, Arc::clone(&source))]).unwrap();
+            let unit = CompilationUnit::from_source_snapshot(snapshot, CompileOptions::default());
+            let retained = unit
+                .source_snapshot()
+                .shared_source_text(file_id)
+                .expect("snapshot should retain the source");
+
+            assert!(Arc::ptr_eq(&source, &retained));
+            unit
+        };
+
+        fn assert_static<T: 'static>(_: &T) {}
+        assert_static(&unit);
+        assert_eq!(
+            unit.source_snapshot().source_text(file_id),
+            Some("fn main() -> i32 { 42 }")
+        );
+        unit.run_frontend().unwrap();
     }
 
     #[test]
@@ -824,6 +863,12 @@ mod tests {
         artifact: Vec<u8>,
     }
 
+    #[derive(Clone, Copy)]
+    enum SourceRoute {
+        Borrowed,
+        Snapshot,
+    }
+
     fn compile_repro_fingerprint(
         physical_root: &str,
         root_id: FileId,
@@ -831,6 +876,7 @@ mod tests {
         right_id: FileId,
         shared_id: FileId,
         reverse_siblings: bool,
+        source_route: SourceRoute,
     ) -> ReproFingerprint {
         let main_path = format!("{physical_root}/main.rue");
         let left_path = format!("{physical_root}/left/types.rue");
@@ -901,12 +947,18 @@ mod tests {
             ]),
         )
         .unwrap();
-        let mut unit = CompilationUnit::with_source_metadata(
-            sources,
-            source_metadata,
-            CompileOptions::default(),
-        )
-        .unwrap();
+        let mut unit = match source_route {
+            SourceRoute::Borrowed => CompilationUnit::with_source_metadata(
+                sources,
+                source_metadata,
+                CompileOptions::default(),
+            )
+            .unwrap(),
+            SourceRoute::Snapshot => {
+                let snapshot = SourceSnapshot::from_sources(&sources, source_metadata).unwrap();
+                CompilationUnit::from_source_snapshot(snapshot, CompileOptions::default())
+            }
+        };
         unit.run_frontend().expect("frontend should compile");
 
         let pool = unit.type_pool();
@@ -971,6 +1023,7 @@ mod tests {
             FileId::new(3),
             FileId::new(4),
             false,
+            SourceRoute::Borrowed,
         );
         let reversed = compile_repro_fingerprint(
             "/tmp/a-deliberately-much-longer-relocated-rue-root",
@@ -979,6 +1032,7 @@ mod tests {
             FileId::new(7),
             FileId::new(55),
             true,
+            SourceRoute::Borrowed,
         );
 
         assert_eq!(forward.type_symbols, reversed.type_symbols);
@@ -1032,6 +1086,35 @@ mod tests {
             forward.artifact.len(),
             reversed.artifact.len()
         );
+    }
+
+    #[test]
+    fn borrowed_and_snapshot_units_match_adversarial_frontend_artifacts() {
+        let borrowed = compile_repro_fingerprint(
+            "/tmp/rue-snapshot-parity",
+            FileId::new(40),
+            FileId::new(9),
+            FileId::new(2),
+            FileId::new(77),
+            true,
+            SourceRoute::Borrowed,
+        );
+        let snapshot = compile_repro_fingerprint(
+            "/tmp/rue-snapshot-parity",
+            FileId::new(40),
+            FileId::new(9),
+            FileId::new(2),
+            FileId::new(77),
+            true,
+            SourceRoute::Snapshot,
+        );
+
+        assert_eq!(borrowed.type_symbols, snapshot.type_symbols);
+        assert_eq!(borrowed.function_names, snapshot.function_names);
+        assert_eq!(borrowed.strings, snapshot.strings);
+        assert_eq!(borrowed.observable_rir, snapshot.observable_rir);
+        assert_eq!(borrowed.textual_frontend, snapshot.textual_frontend);
+        assert_eq!(borrowed.artifact, snapshot.artifact);
     }
 
     #[test]
