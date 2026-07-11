@@ -231,6 +231,38 @@ impl EmittedInst {
     }
 }
 
+/// Replace assembly-mode instruction snapshots with the final bytes after
+/// label fixups have patched the emitter's contiguous code buffer.
+///
+/// Instruction sizes never change during fixup: x86-64 uses fixed-width rel32
+/// jumps and AArch64 branches are always four bytes. Labels and comments have
+/// zero-length snapshots, so walking the recorded lengths reconstructs the
+/// exact byte range belonging to every instruction without target knowledge.
+pub(crate) fn synchronize_emitted_bytes(
+    instructions: &mut [EmittedInst],
+    code: &[u8],
+) -> rue_error::CompileResult<()> {
+    let recorded_len: usize = instructions.iter().map(|inst| inst.bytes.len()).sum();
+    if recorded_len != code.len() {
+        return Err(rue_error::ice_error!(
+            "assembly instruction byte coverage mismatch",
+            phase: "codegen/emit",
+            details: {
+                "recorded_bytes" => recorded_len.to_string(),
+                "emitted_bytes" => code.len().to_string()
+            }
+        ));
+    }
+
+    let mut offset = 0;
+    for inst in instructions {
+        let end = offset + inst.bytes.len();
+        inst.bytes.copy_from_slice(&code[offset..end]);
+        offset = end;
+    }
+    Ok(())
+}
+
 /// Result of emitting a function's machine code.
 ///
 /// This holds all emitted instructions along with metadata needed for
@@ -366,6 +398,63 @@ mod tests {
         (cfg_output.cfg, type_pool, interner)
     }
 
+    fn aggregate_cfg(len: u64) -> (Cfg, TypeInternPool, ThreadedRodeo) {
+        let type_pool = TypeInternPool::new();
+        let array_id = type_pool.intern_array_from_type(Type::I64, len);
+        let array_ty = Type::new_array(array_id);
+        let mut air = Air::new(array_ty);
+        let span = Span::new(0, 2);
+
+        let seed = air.add_inst(AirInst {
+            data: AirInstData::Const(1),
+            ty: Type::I64,
+            span,
+        });
+        let mut elements = Vec::with_capacity(len as usize);
+        for value in 0..len {
+            let rhs = air.add_inst(AirInst {
+                data: AirInstData::Const(value),
+                ty: Type::I64,
+                span,
+            });
+            elements.push(
+                air.add_inst(AirInst {
+                    data: AirInstData::Add(seed, rhs),
+                    ty: Type::I64,
+                    span,
+                })
+                .as_u32(),
+            );
+        }
+        let elements_start = air.add_extra(&elements);
+        let array = air.add_inst(AirInst {
+            data: AirInstData::ArrayInit {
+                elems_start: elements_start,
+                elems_len: len as u32,
+            },
+            ty: array_ty,
+            span,
+        });
+        air.add_inst(AirInst {
+            data: AirInstData::Ret(Some(array)),
+            ty: array_ty,
+            span,
+        });
+
+        let interner = ThreadedRodeo::new();
+        let cfg_output = CfgBuilder::build(
+            &air,
+            3,
+            2,
+            "pipeline_parity",
+            &type_pool,
+            vec![false, false],
+            &interner,
+            false,
+        );
+        (cfg_output.cfg, type_pool, interner)
+    }
+
     fn syscall_cfg() -> (Cfg, TypeInternPool, ThreadedRodeo) {
         let type_pool = TypeInternPool::new();
         let interner = ThreadedRodeo::new();
@@ -418,6 +507,30 @@ mod tests {
     }
 
     #[test]
+    fn emitted_byte_synchronization_handles_labels_and_rejects_gaps() {
+        let mut instructions = vec![
+            EmittedInst::comment("before"),
+            EmittedInst::new([0, 0], "first"),
+            EmittedInst::label("target"),
+            EmittedInst::new([0], "second"),
+        ];
+        synchronize_emitted_bytes(&mut instructions, &[1, 2, 3])
+            .expect("recorded instruction lengths cover the final code");
+        assert_eq!(instructions[0].bytes, []);
+        assert_eq!(instructions[1].bytes, [1, 2]);
+        assert_eq!(instructions[2].bytes, []);
+        assert_eq!(instructions[3].bytes, [3]);
+
+        let error = synchronize_emitted_bytes(&mut instructions, &[1, 2, 3, 4])
+            .expect_err("a byte-coverage gap must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("assembly instruction byte coverage mismatch")
+        );
+    }
+
+    #[test]
     fn test_generate_x86_64() {
         let (cfg, type_pool, interner) = test_cfg();
 
@@ -442,8 +555,41 @@ mod tests {
     }
 
     #[test]
-    fn normal_and_assembly_entry_points_emit_identical_machine_code() {
-        let (cfg, type_pool, interner) = test_cfg();
+    fn normal_and_assembly_entry_points_match_with_sret_and_spills() {
+        let (threshold_cfg, threshold_types, _) = aggregate_cfg(7);
+        assert!(cfg_lower::fn_uses_sret_return(
+            &threshold_cfg,
+            &threshold_types,
+            6
+        ));
+        assert!(!cfg_lower::fn_uses_sret_return(
+            &threshold_cfg,
+            &threshold_types,
+            8
+        ));
+
+        let (cfg, type_pool, interner) = aggregate_cfg(40);
+        assert!(cfg_lower::fn_uses_sret_return(&cfg, &type_pool, 6));
+        assert!(cfg_lower::fn_uses_sret_return(&cfg, &type_pool, 8));
+        assert!(
+            !x86_64::generate_regalloc_info(&cfg, &type_pool, &interner)
+                .expect("x86 register allocation should succeed")
+                .spills
+                .is_empty(),
+            "fixture must exercise x86 spills"
+        );
+        assert!(
+            !aarch64::generate_regalloc_info(
+                &cfg,
+                &type_pool,
+                &interner,
+                rue_target::Target::Aarch64Linux,
+            )
+            .expect("AArch64 register allocation should succeed")
+            .spills
+            .is_empty(),
+            "fixture must exercise AArch64 spills"
+        );
         let strings = vec!["pipeline parity sentinel".to_owned()];
 
         let x86 = x86_64::generate(&cfg, &type_pool, &strings, &interner)
@@ -453,6 +599,7 @@ mod tests {
                 .expect("x86 assembly generation should succeed");
         assert_same_machine_code(&x86, &x86_asm_code);
         assert!(!x86_asm.is_empty());
+        assert!(x86_asm.contains("jno "), "fixture must retain rel32 fixups");
 
         for target in [
             rue_target::Target::Aarch64Linux,
@@ -465,6 +612,10 @@ mod tests {
                     .expect("AArch64 assembly generation should succeed");
             assert_same_machine_code(&arm, &arm_asm_code);
             assert!(!arm_asm.is_empty());
+            assert!(
+                arm_asm.contains("b.vc "),
+                "fixture must retain AArch64 branch fixups"
+            );
         }
     }
 

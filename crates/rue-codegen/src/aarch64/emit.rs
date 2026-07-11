@@ -466,6 +466,7 @@ impl<'a> Emitter<'a> {
     pub fn emit_all(mut self) -> CompileResult<EmittedCode> {
         self.emit_asm = true;
         self.emit_internal()?;
+        crate::synchronize_emitted_bytes(&mut self.instructions, &self.code)?;
         Ok(EmittedCode {
             instructions: self.instructions,
             relocations: self.relocations,
