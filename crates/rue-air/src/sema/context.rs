@@ -570,6 +570,25 @@ impl ScopedContext for AnalysisContext<'_> {
 }
 
 impl<'a> AnalysisContext<'a> {
+    /// Run one nested analysis with an explicit expected-type context, then
+    /// restore the caller's context before returning its result.
+    ///
+    /// Expected types are expression-directed: structural result positions
+    /// inherit them, while operands such as a call's arguments establish
+    /// their own context from the callee contract. Keeping the save/restore in
+    /// one helper prevents an early `Err` from leaking either context into a
+    /// sibling expression.
+    pub(crate) fn with_expected_type<T>(
+        &mut self,
+        expected_type: Option<Type>,
+        analyze: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = std::mem::replace(&mut self.expected_type, expected_type);
+        let result = analyze(self);
+        self.expected_type = previous;
+        result
+    }
+
     /// Bind a `let`-bound comptime type alias (`let P = Point();`), saving
     /// the name's previous binding (or absence) in the current scope's alias
     /// frame so `pop_scope` restores it — the alias is lexically scoped like

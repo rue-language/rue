@@ -5834,9 +5834,14 @@ impl<'a> Sema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = self.rir.get(inst_ref).clone();
 
-        match &inst.data {
+        // A call has a declared result type; an expectation on that result
+        // must not become the context of its receiver or arguments. The
+        // callee's parameter analyzer establishes a fresh context for each
+        // operand instead. Keep the isolation at this shared dispatch so it
+        // covers direct, module, method, associated, builtin, and enum calls.
+        ctx.with_expected_type(None, |ctx| match &inst.data {
             InstData::Call {
                 name,
                 args_start,
@@ -5880,7 +5885,7 @@ impl<'a> Sema<'a> {
                 )),
                 inst.span,
             )),
-        }
+        })
     }
 
     /// Analyze a function call.
@@ -6682,16 +6687,26 @@ impl<'a> Sema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = self.rir.get(inst_ref).clone();
+        let result_expected = ctx.expected_type;
 
         match &inst.data {
             InstData::Intrinsic {
                 name,
                 args_start,
                 args_len,
-            } => {
-                self.analyze_intrinsic(air, inst_ref, *name, *args_start, *args_len, inst.span, ctx)
-            }
+            } => ctx.with_expected_type(None, |ctx| {
+                self.analyze_intrinsic(
+                    air,
+                    inst_ref,
+                    *name,
+                    *args_start,
+                    *args_len,
+                    inst.span,
+                    result_expected,
+                    ctx,
+                )
+            }),
 
             InstData::TypeIntrinsic { name, type_arg } => {
                 self.analyze_type_intrinsic(air, *name, *type_arg, inst.span)
@@ -6864,10 +6879,20 @@ impl<'a> Sema<'a> {
         args_start: u32,
         args_len: u32,
         span: Span,
+        result_expected: Option<Type>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // Delegate to the main implementation in analysis.rs
-        self.analyze_intrinsic_impl(air, inst_ref, name, args_start, args_len, span, ctx)
+        self.analyze_intrinsic_impl(
+            air,
+            inst_ref,
+            name,
+            args_start,
+            args_len,
+            span,
+            result_expected,
+            ctx,
+        )
     }
 
     // ========================================================================

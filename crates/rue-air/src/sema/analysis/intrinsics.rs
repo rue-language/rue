@@ -52,6 +52,7 @@ impl<'a> Sema<'a> {
         args_start: u32,
         args_len: u32,
         span: Span,
+        result_expected: Option<Type>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // Intrinsic arguments are stored as plain InstRefs
@@ -110,11 +111,20 @@ impl<'a> Sema<'a> {
         } else if name == known.test_preview_gate {
             self.analyze_test_preview_gate_intrinsic(air, &args, span)
         } else if name == known.read_line {
-            self.analyze_read_line_intrinsic(air, name, inst_ref, &args, span, ctx)
+            self.analyze_read_line_intrinsic(air, name, inst_ref, &args, span, result_expected, ctx)
         } else if name == known.to_string {
             self.analyze_to_string_intrinsic(air, &args, span, ctx)
         } else if let Some(intrinsic_name_str) = known.get_parse_intrinsic_name(name) {
-            self.analyze_parse_intrinsic(air, name, inst_ref, intrinsic_name_str, &args, span, ctx)
+            self.analyze_parse_intrinsic(
+                air,
+                name,
+                inst_ref,
+                intrinsic_name_str,
+                &args,
+                span,
+                result_expected,
+                ctx,
+            )
         } else if name == known.cast {
             self.analyze_cast_intrinsic(air, inst_ref, &args, span, ctx)
         } else if name == known.panic {
@@ -790,6 +800,7 @@ impl<'a> Sema<'a> {
     pub(super) fn resolve_option_result_type(
         &mut self,
         ctx: &AnalysisContext,
+        result_expected: Option<Type>,
         inst_ref: InstRef,
         expected_payload: Type,
         intrinsic_display: &str,
@@ -801,7 +812,7 @@ impl<'a> Sema<'a> {
         // `Option` reaches us. Without one, there is no context to infer the
         // Option type from — report that plainly rather than letting an
         // unresolved inference variable decay to `<error>` (E9000).
-        let (ty, from_expected) = match ctx.expected_type {
+        let (ty, from_expected) = match result_expected {
             Some(ty) => (ty, true),
             None => (
                 Self::get_resolved_type(ctx, inst_ref, span, intrinsic_display)?,
@@ -874,6 +885,7 @@ impl<'a> Sema<'a> {
         inst_ref: InstRef,
         args: &[RirCallArg],
         span: Span,
+        result_expected: Option<Type>,
         ctx: &AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // @read_line() - reads a line from stdin. Takes no arguments and
@@ -893,6 +905,7 @@ impl<'a> Sema<'a> {
         let string_type = self.builtin_string_type();
         let option_ty = self.resolve_option_result_type(
             ctx,
+            result_expected,
             inst_ref,
             string_type,
             "read_line",
@@ -1015,6 +1028,7 @@ impl<'a> Sema<'a> {
         intrinsic_name_str: &str,
         args: &[RirCallArg],
         span: Span,
+        result_expected: Option<Type>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // Expects exactly one argument
@@ -1060,6 +1074,7 @@ impl<'a> Sema<'a> {
         // context and is validated to carry the matching integer payload.
         let option_ty = self.resolve_option_result_type(
             ctx,
+            result_expected,
             inst_ref,
             payload_type,
             intrinsic_name_str,
