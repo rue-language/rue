@@ -44,7 +44,7 @@ mod generator;
 mod trap;
 
 use rue_error::{PreviewFeature, PreviewFeatures};
-use rue_oracle::{RunSourceError, run_source_with_preview_features};
+use rue_oracle::{RunSourceError, TrapKind, run_source_with_preview_features};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -112,6 +112,30 @@ enum CaseOutcome {
     FrontendFailure(String),
     /// The oracle ran but disagreed with the expected behavior.
     Disagreement(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrapComparison {
+    Match,
+    UnmodeledExpectation,
+    Mismatch {
+        expected: TrapKind,
+        actual: Option<TrapKind>,
+    },
+}
+
+fn compare_trap_expectation(
+    expected: trap::TrapExpectation,
+    actual: Option<TrapKind>,
+) -> TrapComparison {
+    match expected {
+        trap::TrapExpectation::Undeclared => TrapComparison::Match,
+        trap::TrapExpectation::Unmodeled => TrapComparison::UnmodeledExpectation,
+        trap::TrapExpectation::Modeled(expected) if actual == Some(expected) => {
+            TrapComparison::Match
+        }
+        trap::TrapExpectation::Modeled(expected) => TrapComparison::Mismatch { expected, actual },
+    }
 }
 
 #[derive(Default)]
@@ -378,6 +402,7 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
         .any(|(i, n, _)| *i == ident && *n == case.name);
 
     let preview_features = spec_preview_features(case);
+    let expected_trap = trap::trap_expectation(case.runtime_error.iter().map(String::as_str));
 
     match run_source_with_preview_features(&case.source, &preview_features) {
         // Unsupported means the interpreter cannot model a valid program.
@@ -388,6 +413,7 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
             record_oracle_error(&context, error)
         }
         Ok(outcome) => {
+            let trap_comparison = compare_trap_expectation(expected_trap, outcome.panic);
             let exit_ok = outcome.exit_code == expected_exit;
             // Compare stdout the way the spec runner itself does: byte-exact
             // modulo the single `"""` block-boundary newline. NOT
@@ -399,7 +425,8 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
                 rue_test_runner::strip_block_boundary_newlines(&outcome.stdout)
                     == rue_test_runner::strip_block_boundary_newlines(s)
             });
-            let agrees = exit_ok && stdout_ok;
+            let trap_ok = trap_comparison == TrapComparison::Match;
+            let agrees = exit_ok && stdout_ok && trap_ok;
 
             if is_known_gap {
                 // xfail semantics (mirroring rue-cli-tests `known_bug`): the case
@@ -421,6 +448,14 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
                 };
             }
 
+            // A missing trap model cannot erase a concrete exit/stdout
+            // disagreement or bypass the known-gap registry above. Only
+            // classify it as coverage when every independently modeled
+            // observation agrees.
+            if exit_ok && stdout_ok && trap_comparison == TrapComparison::UnmodeledExpectation {
+                return CaseOutcome::Unmodeled;
+            }
+
             if agrees {
                 CaseOutcome::Agree
             } else {
@@ -437,6 +472,9 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
                         case.expected_stdout.as_deref().unwrap_or(""),
                         outcome.stdout
                     );
+                }
+                if let TrapComparison::Mismatch { expected, actual } = trap_comparison {
+                    msg += &format!("\n      trap: expected {expected:?}, oracle got {actual:?}");
                 }
                 CaseOutcome::Disagreement(msg)
             }
@@ -505,6 +543,8 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
         return CaseOutcome::Ineligible;
     };
     let source = &case.files[0].source;
+    let expected_trap =
+        trap::trap_expectation(case.runtime_error_contains.iter().map(String::as_str));
 
     // A program that expects a runtime panic exits 101 by convention.
     let expected_exit = case
@@ -521,13 +561,22 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
             record_oracle_error(&context, error)
         }
         Ok(outcome) => {
+            let trap_comparison = compare_trap_expectation(expected_trap, outcome.panic);
             let exit_ok = outcome.exit_code == expected_exit;
             let stdout_ok = case.stdout.as_ref().is_none_or(|s| &outcome.stdout == s);
             let missing_stdout = case
                 .stdout_contains
                 .iter()
                 .find(|expected| !outcome.stdout.contains(expected.as_str()));
-            if exit_ok && stdout_ok && missing_stdout.is_none() {
+            let trap_ok = trap_comparison == TrapComparison::Match;
+            if exit_ok
+                && stdout_ok
+                && missing_stdout.is_none()
+                && trap_comparison == TrapComparison::UnmodeledExpectation
+            {
+                return CaseOutcome::Unmodeled;
+            }
+            if exit_ok && stdout_ok && missing_stdout.is_none() && trap_ok {
                 CaseOutcome::Agree
             } else {
                 let mut msg = format!("{} :: {}", rel(path), case.name);
@@ -549,6 +598,9 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
                         "\n      stdout: missing required substring {expected:?} in {:?}",
                         outcome.stdout
                     );
+                }
+                if let TrapComparison::Mismatch { expected, actual } = trap_comparison {
+                    msg += &format!("\n      trap: expected {expected:?}, oracle got {actual:?}");
                 }
                 CaseOutcome::Disagreement(msg)
             }
@@ -1031,6 +1083,110 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         };
         assert!(message.contains("missing required substring \"missing\""));
         assert!(message.contains("42\\n"));
+    }
+
+    #[test]
+    fn cli_runtime_trap_expectations_distinguish_same_exit_code_causes() {
+        let mut case = corpus_case("fn main() -> i32 { let z = 0; 10 / z }", false);
+        case.exit_code = None;
+        case.runtime_error_contains = vec!["division by zero".to_string()];
+        assert!(matches!(
+            check_case(Path::new("trap.toml"), &case),
+            CaseOutcome::Agree
+        ));
+
+        case.runtime_error_contains = vec!["integer overflow".to_string()];
+        let CaseOutcome::Disagreement(message) = check_case(Path::new("trap.toml"), &case) else {
+            panic!("wrong trap category did not produce a disagreement");
+        };
+        assert!(message.contains("ArithmeticOverflow"));
+        assert!(message.contains("DivisionByZero"));
+
+        case = corpus_case("fn main() -> i32 { 101 }", false);
+        case.exit_code = None;
+        case.runtime_error_contains = vec!["division by zero".to_string()];
+        let CaseOutcome::Disagreement(message) = check_case(Path::new("trap.toml"), &case) else {
+            panic!("normal return 101 was accepted as an expected trap");
+        };
+        assert!(message.contains("oracle got None"));
+    }
+
+    #[test]
+    fn spec_runtime_trap_expectations_use_the_same_typed_comparison() {
+        let mut case = rue_test_runner::Case {
+            name: "spec trap probe".to_string(),
+            source: "fn main() -> i32 { let z = 0; 10 % z }".to_string(),
+            runtime_error: Some("division by zero".to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            check_spec_case("test:1", &case),
+            CaseOutcome::Agree
+        ));
+
+        case.runtime_error = Some("integer overflow".to_string());
+        let CaseOutcome::Disagreement(message) = check_spec_case("test:1", &case) else {
+            panic!("wrong spec trap category did not produce a disagreement");
+        };
+        assert!(message.contains("ArithmeticOverflow"));
+        assert!(message.contains("DivisionByZero"));
+
+        case.source = "fn main() -> i32 { 101 }".to_string();
+        case.runtime_error = Some("division by zero".to_string());
+        let CaseOutcome::Disagreement(message) = check_spec_case("test:1", &case) else {
+            panic!("normal return 101 was accepted as a spec trap");
+        };
+        assert!(message.contains("oracle got None"));
+
+        case.source = "fn main() -> i32 { let x: i32 = 2147483647; x + 1 }".to_string();
+        case.runtime_error = Some("panic: integer overflow".to_string());
+        assert!(matches!(
+            check_spec_case("test:1", &case),
+            CaseOutcome::Unmodeled
+        ));
+
+        case.expected_stdout = Some("required output\n".to_string());
+        assert!(matches!(
+            check_spec_case("test:1", &case),
+            CaseOutcome::Disagreement(_)
+        ));
+
+        case.source = "fn main() -> i32 { 0 }".to_string();
+        case.expected_stdout = None;
+        assert!(matches!(
+            check_spec_case("test:1", &case),
+            CaseOutcome::Disagreement(_)
+        ));
+    }
+
+    #[test]
+    fn unknown_runtime_expectations_are_counted_as_unmodeled() {
+        let mut case = corpus_case("fn main() -> i32 { let x: i32 = 2147483647; x + 1 }", false);
+        case.exit_code = None;
+        case.runtime_error_contains = vec!["panic: integer overflow".to_string()];
+
+        let mut report = Report::default();
+        report.record(check_case(Path::new("trap.toml"), &case));
+
+        assert_eq!(report.unmodeled, 1);
+        assert!(report.disagreements.is_empty());
+        assert_eq!(report.modeled_eligible_count(), 0);
+
+        // The same ordering applies to substring output contracts.
+        case.stdout_contains = vec!["required output".to_string()];
+        assert!(matches!(
+            check_case(Path::new("trap.toml"), &case),
+            CaseOutcome::Disagreement(_)
+        ));
+
+        // The unknown category does not hide a separately provable exit
+        // disagreement.
+        case.files[0].source = "fn main() -> i32 { 0 }".to_string();
+        case.stdout_contains.clear();
+        assert!(matches!(
+            check_case(Path::new("trap.toml"), &case),
+            CaseOutcome::Disagreement(_)
+        ));
     }
 
     #[test]
