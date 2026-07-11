@@ -30,13 +30,11 @@ use std::collections::HashMap;
 use lasso::ThreadedRodeo;
 use rue_air::{TypeInternPool, TypeKind};
 use rue_builtins::BinOp;
-use rue_cfg::{
-    BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, Type,
-};
+use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, Terminator, Type};
 use rue_error::{CompileError, CompileResult};
 
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
-use crate::cfg_lower::{CfgLowerContext, IndexLevel};
+use crate::cfg_lower::CfgLowerContext;
 use crate::types;
 use crate::vreg::BLOCK_LABEL_BASE;
 
@@ -1833,9 +1831,9 @@ impl<'a> CfgLower<'a> {
                 if let Some(slot_vregs) = aggregate_vregs {
                     // Check if this slot corresponds to an inout parameter
                     if let Some(param_index) = self.slot_to_inout_param_index(*slot) {
-                        // Whole-aggregate store through the inout pointer. Caller
-                        // slots descend from the pointer (stack grows down), so
-                        // slot i lives at ptr - i*8 — matching the place-read path.
+                        // Whole-aggregate store through the inout pointer. The
+                        // pointer denotes the value's low end, so logical slot i
+                        // lives at ptr + i*8 (ADR-0040 / RUE-311).
                         let ptr_vreg = self.ensure_inout_param_ptr(param_index);
                         crate::agg_slots::store_slots_through_ptr(self, &slot_vregs, ptr_vreg, 0);
                     } else {
@@ -1883,9 +1881,10 @@ impl<'a> CfgLower<'a> {
                 // Whole-value reassignment of a multi-slot aggregate (struct,
                 // builtin String, or array) through inout must write ALL slots
                 // through the pointer, not just the first — same shape as the
-                // aggregate branch of Store above. Caller slots descend from
-                // the pointer (stack grows down), so slot i lives at ptr - i*8.
-                // Unmodeled sources fall back to single-slot. (RUE-145)
+                // aggregate branch of Store above. The pointer denotes the
+                // value's low end, so logical slot i lives at ptr + i*8
+                // (ADR-0040 / RUE-311). Unmodeled sources fall back to
+                // single-slot. (RUE-145)
                 let val_type = self.ctx.cfg.get_inst(*val).ty;
                 let aggregate_vregs = if self.ctx.is_multislot_aggregate(val_type) {
                     self.get_or_compute_field_vregs(*val)
@@ -2511,9 +2510,9 @@ impl<'a> CfgLower<'a> {
 
                     // The result type is the pointee type. An aggregate pointee
                     // (struct/array/payload enum) occupies several 8-byte slots;
-                    // read EVERY slot at its descending byte offset (slot i at
-                    // ptr - i*8, matching how @raw addresses the place and the
-                    // by-ref aggregate load path). Reading only slot 0 dropped
+                    // read EVERY logical slot at its ascending byte offset
+                    // (slot i at ptr + i*8, matching @raw and the by-ref
+                    // aggregate load path). Reading only slot 0 dropped
                     // every field but the first (RUE-242).
                     let result_ty = self.ctx.cfg.get_inst(value).ty;
                     let slot_count = self.ctx.type_slot_count(result_ty);
@@ -2550,8 +2549,8 @@ impl<'a> CfgLower<'a> {
                     let ptr_vreg = self.get_vreg(ptr_val);
 
                     // An aggregate value spans several 8-byte slots; store EVERY
-                    // slot at its descending byte offset (slot i at ptr - i*8),
-                    // symmetric with @ptr_read. Storing only slot 0 dropped
+                    // logical slot at its ascending byte offset (slot i at
+                    // ptr + i*8), symmetric with @ptr_read. Storing only slot 0 dropped
                     // every field but the first (RUE-242).
                     let value_ty = self.ctx.cfg.get_inst(value_val).ty;
                     let slot_count = self.ctx.type_slot_count(value_ty);
@@ -2846,7 +2845,7 @@ impl<'a> CfgLower<'a> {
                         // ADR-0030: Handle PlaceRead for @raw
                         // Compute the address of the place instead of reading from it
                         let result_vreg = self.mir.alloc_vreg();
-                        self.lower_place_addr(result_vreg, place);
+                        crate::place_lower::lower_place_addr(self, result_vreg, place);
                         self.value_map.insert(value, result_vreg);
                     } else if let CfgInstData::Param { index } = &lvalue_inst.data {
                         // @raw of a function parameter: take the ADDRESS of the
@@ -3404,7 +3403,7 @@ impl<'a> CfgLower<'a> {
             CfgInstData::PlaceRead { place } => {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
-                self.lower_place_read(vreg, place, ty);
+                crate::place_lower::lower_place_read(self, vreg, place, ty);
             }
 
             CfgInstData::PlaceWrite { place, value: val } => {
@@ -3426,7 +3425,7 @@ impl<'a> CfgLower<'a> {
                 } else {
                     vec![self.get_vreg(*val)]
                 };
-                self.lower_place_write(place, &vals);
+                crate::place_lower::lower_place_write(self, place, &vals);
             }
         }
     }
@@ -4185,588 +4184,6 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    // ========================================================================
-    // Place operations (ADR-0030)
-    // ========================================================================
-
-    /// Lower a PlaceRead instruction.
-    ///
-    /// A place consists of a base (local slot or param slot) and zero or more
-    /// projections (field accesses and array indices). This function computes
-    /// the final memory address and loads from it.
-    fn lower_place_read(&mut self, dst: VReg, place: &Place, ty: Type) {
-        // A zero-sized read has no bytes to load (RUE-577): define dst as the
-        // canonical 0 — matching UnitConst's lowering, so unit equality
-        // compares 0 == 0 — and skip address formation entirely (a ZST root's
-        // `root_count - 1` origin shift would underflow, and an 8-byte MovRM
-        // would read a neighbor's slot or out of frame).
-        if self.ctx.type_slot_count(ty) == 0 {
-            self.mir.push(X86Inst::MovRI64 {
-                dst: Operand::Virtual(dst),
-                imm: 0,
-            });
-            return;
-        }
-        let projections = self.ctx.cfg.get_place_projections(place);
-
-        // Simple case: no projections, just load from the base slot
-        if projections.is_empty() {
-            match place.base {
-                PlaceBase::Local(slot) => {
-                    let offset = self.ctx.local_offset(slot);
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(dst),
-                        base: Reg::Rbp,
-                        offset,
-                    });
-                }
-                PlaceBase::Param(param_slot) => {
-                    // Check if this is an inout parameter
-                    if self.ctx.cfg.is_param_inout(param_slot) {
-                        // Inout param - load through the pointer
-                        let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
-                        self.mir.push(X86Inst::MovRMIndexed {
-                            dst: Operand::Virtual(dst),
-                            base: ptr_vreg,
-                            offset: 0,
-                        });
-                    } else {
-                        // Normal param - load from local slot
-                        let slot = self.ctx.num_locals + param_slot;
-                        let offset = self.ctx.local_offset(slot);
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(dst),
-                            base: Reg::Rbp,
-                            offset,
-                        });
-                    }
-                }
-            }
-            return;
-        }
-
-        // Complex case: has projections - compute the address
-        self.lower_place_read_with_projections(dst, place, projections);
-    }
-
-    /// Lower a PlaceRead with projections (field accesses and/or array indices).
-    fn lower_place_read_with_projections(
-        &mut self,
-        dst: VReg,
-        place: &Place,
-        projections: &[Projection],
-    ) {
-        // Calculate the static field offset (sum of all Field projection offsets)
-        let mut static_slot_offset: u32 = 0;
-
-        // Collect index projections for dynamic offset calculation
-        let mut index_levels: Vec<IndexLevel> = Vec::new();
-
-        for proj in projections {
-            match proj {
-                Projection::Field {
-                    struct_id,
-                    field_index,
-                } => {
-                    let field_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
-                    static_slot_offset += field_offset;
-                }
-                Projection::Index { array_type, index } => {
-                    // Emit bounds check for this index
-                    let index_vreg = self.get_vreg(*index);
-                    let array_length = self.ctx.array_length(*array_type);
-                    self.emit_bounds_check(index_vreg, array_length);
-
-                    let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
-                    // Ascending layout (ADR-0040 / RUE-311): the element's byte
-                    // offset from the array's low-end origin is `index*size`,
-                    // added below. The single root-object origin shift (applied
-                    // when forming the base address) already places us at the
-                    // low end, so no per-array `(N-1)` shift is needed.
-                    index_levels.push(IndexLevel {
-                        index: *index,
-                        elem_slot_count,
-                        array_type: *array_type,
-                    });
-                }
-            }
-        }
-
-        // Origin shift to the ROOT object's low end (ADR-0040 / RUE-311): a
-        // frame-resident aggregate's low-address end is its highest-numbered
-        // slot, `root_base + root_count - 1`. Field offsets then move UP in
-        // address (toward higher addresses = lower slot numbers).
-        let root_count = crate::agg_slots::root_slot_count(self, place);
-
-        // Calculate dynamic offset from index projections
-        let dynamic_offset_vreg = if !index_levels.is_empty() {
-            Some(self.compute_index_offset(&index_levels))
-        } else {
-            None
-        };
-
-        // Compute final address based on base type
-        match place.base {
-            PlaceBase::Local(slot) => {
-                let base_slot = slot + (root_count - 1) - static_slot_offset;
-                let base_offset = self.ctx.local_offset(base_slot);
-
-                if let Some(dyn_offset) = dynamic_offset_vreg {
-                    // Compute address: rbp + base_offset + dynamic_offset (ascending, ADR-0040)
-                    let addr_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::Lea {
-                        dst: Operand::Virtual(addr_vreg),
-                        base: Reg::Rbp,
-                        disp: base_offset,
-                    });
-                    // Ascending layout: element i is at base + i*size, so ADD
-                    // the scaled index to the (lowest-address) origin (ADR-0040).
-                    self.mir.push(X86Inst::AddRR64 {
-                        dst: Operand::Virtual(addr_vreg),
-                        src: Operand::Virtual(dyn_offset),
-                    });
-                    self.mir.push(X86Inst::MovRMIndexed {
-                        dst: Operand::Virtual(dst),
-                        base: addr_vreg,
-                        offset: 0,
-                    });
-                } else {
-                    // Static offset only
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(dst),
-                        base: Reg::Rbp,
-                        offset: base_offset,
-                    });
-                }
-            }
-            PlaceBase::Param(param_slot) => {
-                if self.ctx.cfg.is_param_inout(param_slot) {
-                    // Inout param - use pointer. The received pointer is the
-                    // caller place's low end, so field offsets and the scaled
-                    // index both ADD (ascending, ADR-0040 / RUE-311).
-                    let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
-                    let static_byte_offset = (static_slot_offset as i32) * 8;
-
-                    if let Some(dyn_offset) = dynamic_offset_vreg {
-                        // Compute address: ptr + static_offset + dynamic_offset (ascending)
-                        let addr_vreg = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Virtual(addr_vreg),
-                            src: Operand::Virtual(ptr_vreg),
-                        });
-                        if static_byte_offset != 0 {
-                            let offset_vreg = self.mir.alloc_vreg();
-                            self.mir.push(X86Inst::MovRI64 {
-                                dst: Operand::Virtual(offset_vreg),
-                                imm: static_byte_offset as i64,
-                            });
-                            self.mir.push(X86Inst::AddRR64 {
-                                dst: Operand::Virtual(addr_vreg),
-                                src: Operand::Virtual(offset_vreg),
-                            });
-                        }
-                        self.mir.push(X86Inst::AddRR64 {
-                            dst: Operand::Virtual(addr_vreg),
-                            src: Operand::Virtual(dyn_offset),
-                        });
-                        self.mir.push(X86Inst::MovRMIndexed {
-                            dst: Operand::Virtual(dst),
-                            base: addr_vreg,
-                            offset: 0,
-                        });
-                    } else {
-                        // Static offset only (ascending: field at ptr + off)
-                        self.mir.push(X86Inst::MovRMIndexed {
-                            dst: Operand::Virtual(dst),
-                            base: ptr_vreg,
-                            offset: static_byte_offset,
-                        });
-                    }
-                } else {
-                    // Normal param - treat like local
-                    let base_slot =
-                        self.ctx.num_locals + param_slot + (root_count - 1) - static_slot_offset;
-                    let base_offset = self.ctx.local_offset(base_slot);
-
-                    if let Some(dyn_offset) = dynamic_offset_vreg {
-                        let addr_vreg = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::Lea {
-                            dst: Operand::Virtual(addr_vreg),
-                            base: Reg::Rbp,
-                            disp: base_offset,
-                        });
-                        self.mir.push(X86Inst::AddRR64 {
-                            dst: Operand::Virtual(addr_vreg),
-                            src: Operand::Virtual(dyn_offset),
-                        });
-                        self.mir.push(X86Inst::MovRMIndexed {
-                            dst: Operand::Virtual(dst),
-                            base: addr_vreg,
-                            offset: 0,
-                        });
-                    } else {
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(dst),
-                            base: Reg::Rbp,
-                            offset: base_offset,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    /// Lower a PlaceWrite instruction.
-    ///
-    /// This stores a value to the memory location described by the place. `vals`
-    /// holds one vreg per slot of the value (a single element for scalars); all
-    /// slots are stored to consecutive locations. Slot i of an rbp-relative place
-    /// lives at `local_offset(slot + i)`; through a pointer it lives at
-    /// `ptr_offset - i*8` (caller slots descend, stack grows down). (RUE-118)
-    fn lower_place_write(&mut self, place: &Place, vals: &[VReg]) {
-        let projections = self.ctx.cfg.get_place_projections(place);
-
-        // Simple case: no projections, just store to the base slot(s)
-        if projections.is_empty() {
-            match place.base {
-                PlaceBase::Local(slot) => {
-                    crate::agg_slots::store_slots(self, vals, slot);
-                }
-                PlaceBase::Param(param_slot) => {
-                    if self.ctx.cfg.is_param_inout(param_slot) {
-                        // Inout param - store through the pointer
-                        let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
-                        crate::agg_slots::store_slots_through_ptr(self, vals, ptr_vreg, 0);
-                    } else {
-                        // Normal param - store to local slot
-                        let slot = self.ctx.num_locals + param_slot;
-                        crate::agg_slots::store_slots(self, vals, slot);
-                    }
-                }
-            }
-            return;
-        }
-
-        // Complex case: has projections - compute the address
-        self.lower_place_write_with_projections(place, projections, vals);
-    }
-
-    /// Lower a PlaceWrite with projections.
-    fn lower_place_write_with_projections(
-        &mut self,
-        place: &Place,
-        projections: &[Projection],
-        vals: &[VReg],
-    ) {
-        // Calculate the static field offset
-        let mut static_slot_offset: u32 = 0;
-
-        // Collect index projections for dynamic offset calculation
-        let mut index_levels: Vec<IndexLevel> = Vec::new();
-
-        for proj in projections {
-            match proj {
-                Projection::Field {
-                    struct_id,
-                    field_index,
-                } => {
-                    let field_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
-                    static_slot_offset += field_offset;
-                }
-                Projection::Index { array_type, index } => {
-                    // Emit bounds check for this index
-                    let index_vreg = self.get_vreg(*index);
-                    let array_length = self.ctx.array_length(*array_type);
-                    self.emit_bounds_check(index_vreg, array_length);
-
-                    let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
-                    // Ascending layout (ADR-0040 / RUE-311): the element's byte
-                    // offset from the low-end origin is `index*size`, added
-                    // below; the single root-object origin shift covers the
-                    // array's own origin (no per-array `(N-1)` shift).
-                    index_levels.push(IndexLevel {
-                        index: *index,
-                        elem_slot_count,
-                        array_type: *array_type,
-                    });
-                }
-            }
-        }
-
-        // Origin shift to the ROOT object's low end (ADR-0040 / RUE-311).
-        let root_count = crate::agg_slots::root_slot_count(self, place);
-
-        // Calculate dynamic offset from index projections
-        let dynamic_offset_vreg = if !index_levels.is_empty() {
-            Some(self.compute_index_offset(&index_levels))
-        } else {
-            None
-        };
-
-        // Compute final address based on base type
-        match place.base {
-            PlaceBase::Local(slot) => {
-                // The accessed value's low-end (slot-0) frame slot.
-                let base_low_slot = slot + (root_count - 1) - static_slot_offset;
-                let base_offset = self.ctx.local_offset(base_low_slot);
-
-                if let Some(dyn_offset) = dynamic_offset_vreg {
-                    let addr_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::Lea {
-                        dst: Operand::Virtual(addr_vreg),
-                        base: Reg::Rbp,
-                        disp: base_offset,
-                    });
-                    // Ascending layout: element i is at base + i*size, so ADD
-                    // the scaled index to the (lowest-address) origin (ADR-0040).
-                    self.mir.push(X86Inst::AddRR64 {
-                        dst: Operand::Virtual(addr_vreg),
-                        src: Operand::Virtual(dyn_offset),
-                    });
-                    crate::agg_slots::store_slots_through_ptr(self, vals, addr_vreg, 0);
-                } else {
-                    crate::agg_slots::store_slots_at_low(self, vals, base_low_slot);
-                }
-            }
-            PlaceBase::Param(param_slot) => {
-                if self.ctx.cfg.is_param_inout(param_slot) {
-                    // Received pointer is the caller place's low end; field
-                    // offsets and the scaled index both ADD (ascending).
-                    let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
-                    let static_byte_offset = (static_slot_offset as i32) * 8;
-
-                    if let Some(dyn_offset) = dynamic_offset_vreg {
-                        let addr_vreg = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Virtual(addr_vreg),
-                            src: Operand::Virtual(ptr_vreg),
-                        });
-                        if static_byte_offset != 0 {
-                            let offset_vreg = self.mir.alloc_vreg();
-                            self.mir.push(X86Inst::MovRI64 {
-                                dst: Operand::Virtual(offset_vreg),
-                                imm: static_byte_offset as i64,
-                            });
-                            self.mir.push(X86Inst::AddRR64 {
-                                dst: Operand::Virtual(addr_vreg),
-                                src: Operand::Virtual(offset_vreg),
-                            });
-                        }
-                        self.mir.push(X86Inst::AddRR64 {
-                            dst: Operand::Virtual(addr_vreg),
-                            src: Operand::Virtual(dyn_offset),
-                        });
-                        crate::agg_slots::store_slots_through_ptr(self, vals, addr_vreg, 0);
-                    } else {
-                        crate::agg_slots::store_slots_through_ptr(
-                            self,
-                            vals,
-                            ptr_vreg,
-                            static_byte_offset,
-                        );
-                    }
-                } else {
-                    let base_low_slot =
-                        self.ctx.num_locals + param_slot + (root_count - 1) - static_slot_offset;
-                    let base_offset = self.ctx.local_offset(base_low_slot);
-
-                    if let Some(dyn_offset) = dynamic_offset_vreg {
-                        let addr_vreg = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::Lea {
-                            dst: Operand::Virtual(addr_vreg),
-                            base: Reg::Rbp,
-                            disp: base_offset,
-                        });
-                        self.mir.push(X86Inst::AddRR64 {
-                            dst: Operand::Virtual(addr_vreg),
-                            src: Operand::Virtual(dyn_offset),
-                        });
-                        crate::agg_slots::store_slots_through_ptr(self, vals, addr_vreg, 0);
-                    } else {
-                        crate::agg_slots::store_slots_at_low(self, vals, base_low_slot);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Compute the byte offset for a series of index projections.
-    ///
-    /// Returns a vreg containing the total byte offset (index * stride for each level).
-    fn compute_index_offset(&mut self, levels: &[IndexLevel]) -> VReg {
-        let mut total_offset_vreg: Option<VReg> = None;
-
-        for level in levels {
-            let level_index_vreg = self.get_vreg(level.index);
-            let level_stride = level.elem_slot_count;
-
-            // Scale this level's index by its stride
-            let scaled = self.mir.alloc_vreg();
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Virtual(scaled),
-                src: Operand::Virtual(level_index_vreg),
-            });
-
-            if level_stride == 1 {
-                // Simple case: just shift by 3 (multiply by 8)
-                let shift_count = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::MovRI32 {
-                    dst: Operand::Virtual(shift_count),
-                    imm: 3,
-                });
-                self.mir.push(X86Inst::Shl {
-                    dst: Operand::Virtual(scaled),
-                    count: Operand::Virtual(shift_count),
-                });
-            } else {
-                // Multiply by stride * 8
-                let stride_vreg = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::MovRI64 {
-                    dst: Operand::Virtual(stride_vreg),
-                    imm: (level_stride * 8) as i64,
-                });
-                self.mir.push(X86Inst::ImulRR64 {
-                    dst: Operand::Virtual(scaled),
-                    src: Operand::Virtual(stride_vreg),
-                });
-            }
-
-            // Add to running total
-            if let Some(prev_total) = total_offset_vreg {
-                self.mir.push(X86Inst::AddRR64 {
-                    dst: Operand::Virtual(prev_total),
-                    src: Operand::Virtual(scaled),
-                });
-                // prev_total is modified in place
-            } else {
-                total_offset_vreg = Some(scaled);
-            }
-        }
-
-        total_offset_vreg.expect("compute_index_offset called with empty levels")
-    }
-
-    /// Compute the address of a place (for the @raw intrinsic and for by-ref
-    /// call arguments via `crate::byref_args`, RUE-143).
-    ///
-    /// This is similar to lower_place_read but returns the address instead of
-    /// loading. Index projections are NOT bounds-checked here (@raw is
-    /// deliberately unchecked); by-ref arguments bounds-check first in
-    /// `byref_args::lower_byref_arg_addr`.
-    fn lower_place_addr(&mut self, dst: VReg, place: &Place) {
-        let projections = self.ctx.cfg.get_place_projections(place);
-
-        // Calculate static slot offset from field projections
-        let mut static_slot_offset: u32 = 0;
-        let mut index_levels: Vec<IndexLevel> = Vec::new();
-
-        for proj in projections {
-            match proj {
-                Projection::Field {
-                    struct_id,
-                    field_index,
-                } => {
-                    let field_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
-                    static_slot_offset += field_offset;
-                }
-                Projection::Index { array_type, index } => {
-                    let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
-                    // Ascending layout (ADR-0040 / RUE-311): the element's byte
-                    // offset from the low-end origin is `index*size`, added
-                    // below; the single root-object origin shift covers the
-                    // array's own origin (no per-array `(N-1)` shift).
-                    index_levels.push(IndexLevel {
-                        index: *index,
-                        elem_slot_count,
-                        array_type: *array_type,
-                    });
-                }
-            }
-        }
-
-        // Origin shift to the ROOT object's low end (ADR-0040 / RUE-311); the
-        // resulting address is the accessed place's LOW end, from which slots
-        // ascend. The place's explicit logical base type supplies root_count.
-        let root_count = crate::agg_slots::root_slot_count(self, place);
-
-        // Calculate dynamic offset from index projections
-        let dynamic_offset_vreg = if !index_levels.is_empty() {
-            Some(self.compute_index_offset(&index_levels))
-        } else {
-            None
-        };
-
-        // Compute address based on base type
-        match place.base {
-            PlaceBase::Local(slot) => {
-                let base_low_slot = slot + (root_count - 1) - static_slot_offset;
-                let base_offset = self.ctx.local_offset(base_low_slot);
-
-                self.mir.push(X86Inst::Lea {
-                    dst: Operand::Virtual(dst),
-                    base: Reg::Rbp,
-                    disp: base_offset,
-                });
-
-                if let Some(dyn_offset) = dynamic_offset_vreg {
-                    self.mir.push(X86Inst::AddRR64 {
-                        dst: Operand::Virtual(dst),
-                        src: Operand::Virtual(dyn_offset),
-                    });
-                }
-            }
-            PlaceBase::Param(param_slot) => {
-                if self.ctx.cfg.is_param_inout(param_slot) {
-                    // Received pointer is the caller place's low end; field
-                    // offset and scaled index both ADD (ascending).
-                    let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
-                    let static_byte_offset = (static_slot_offset as i32) * 8;
-
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(dst),
-                        src: Operand::Virtual(ptr_vreg),
-                    });
-
-                    if static_byte_offset != 0 {
-                        let offset_vreg = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRI64 {
-                            dst: Operand::Virtual(offset_vreg),
-                            imm: static_byte_offset as i64,
-                        });
-                        self.mir.push(X86Inst::AddRR64 {
-                            dst: Operand::Virtual(dst),
-                            src: Operand::Virtual(offset_vreg),
-                        });
-                    }
-
-                    if let Some(dyn_offset) = dynamic_offset_vreg {
-                        self.mir.push(X86Inst::AddRR64 {
-                            dst: Operand::Virtual(dst),
-                            src: Operand::Virtual(dyn_offset),
-                        });
-                    }
-                } else {
-                    let base_low_slot =
-                        self.ctx.num_locals + param_slot + (root_count - 1) - static_slot_offset;
-                    let base_offset = self.ctx.local_offset(base_low_slot);
-
-                    self.mir.push(X86Inst::Lea {
-                        dst: Operand::Virtual(dst),
-                        base: Reg::Rbp,
-                        disp: base_offset,
-                    });
-
-                    if let Some(dyn_offset) = dynamic_offset_vreg {
-                        self.mir.push(X86Inst::AddRR64 {
-                            dst: Operand::Virtual(dst),
-                            src: Operand::Virtual(dyn_offset),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
     /// Get the vreg for a CFG value.
     fn get_vreg(&mut self, value: CfgValue) -> VReg {
         if let Some(&vreg) = self.value_map.get(&value) {
@@ -4854,7 +4271,80 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
         CfgLower::emit_bounds_check(self, index_vreg, length)
     }
     fn emit_place_addr(&mut self, dst: VReg, place: &Place) {
-        CfgLower::lower_place_addr(self, dst, place)
+        crate::place_lower::lower_place_addr(self, dst, place)
+    }
+}
+
+impl crate::place_lower::PlaceLowerBackend for CfgLower<'_> {
+    fn ensure_inout_param_ptr(&mut self, param_slot: u32) -> VReg {
+        CfgLower::ensure_inout_param_ptr(self, param_slot)
+    }
+
+    fn emit_frame_addr(&mut self, dst: VReg, slot: u32) {
+        let offset = self.ctx.local_offset(slot);
+        self.mir.push(X86Inst::Lea {
+            dst: Operand::Virtual(dst),
+            base: Reg::Rbp,
+            disp: offset,
+        });
+    }
+
+    fn emit_addr_add(&mut self, dst: VReg, rhs: VReg) {
+        self.mir.push(X86Inst::AddRR64 {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(rhs),
+        });
+    }
+
+    fn emit_addr_add_imm(&mut self, dst: VReg, byte_offset: i32) {
+        let offset = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(offset),
+            imm: byte_offset as i64,
+        });
+        self.mir.push(X86Inst::AddRR64 {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(offset),
+        });
+    }
+
+    fn emit_scale_index_bytes(&mut self, scaled: VReg, elem_slot_count: u32) {
+        if elem_slot_count == 1 {
+            let shift_count = self.mir.alloc_vreg();
+            self.mir.push(X86Inst::MovRI32 {
+                dst: Operand::Virtual(shift_count),
+                imm: 3,
+            });
+            self.mir.push(X86Inst::Shl {
+                dst: Operand::Virtual(scaled),
+                count: Operand::Virtual(shift_count),
+            });
+        } else {
+            let stride = self.mir.alloc_vreg();
+            self.mir.push(X86Inst::MovRI64 {
+                dst: Operand::Virtual(stride),
+                imm: (elem_slot_count * 8) as i64,
+            });
+            self.mir.push(X86Inst::ImulRR64 {
+                dst: Operand::Virtual(scaled),
+                src: Operand::Virtual(stride),
+            });
+        }
+    }
+
+    fn emit_zero_sized_place(&mut self, dst: VReg) {
+        self.mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(dst),
+            imm: 0,
+        });
+    }
+
+    fn emit_load_ptr_base(&mut self, dst: VReg, ptr: VReg) {
+        self.mir.push(X86Inst::MovRMIndexed {
+            dst: Operand::Virtual(dst),
+            base: ptr,
+            offset: 0,
+        });
     }
 }
 
@@ -4912,17 +4402,6 @@ impl crate::aggregate_eq::AggregateEqBackend for CfgLower<'_> {
 }
 
 impl crate::byref_args::ByrefAddrBackend for CfgLower<'_> {
-    fn ensure_inout_param_ptr(&mut self, param_slot: u32) -> VReg {
-        CfgLower::ensure_inout_param_ptr(self, param_slot)
-    }
-    fn emit_frame_addr(&mut self, dst: VReg, slot: u32) {
-        let offset = self.ctx.local_offset(slot);
-        self.mir.push(X86Inst::Lea {
-            dst: Operand::Virtual(dst),
-            base: Reg::Rbp,
-            disp: offset,
-        });
-    }
     fn record_deferred_error(&mut self, err: CompileError) {
         self.deferred_error.get_or_insert(err);
     }

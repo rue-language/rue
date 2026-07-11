@@ -11,9 +11,10 @@
 //! Like [`crate::agg_slots`], the decision logic here is target-independent —
 //! which argument shapes are addressable, that every index projection is
 //! bounds-checked before the address is formed — so backends only provide
-//! the leaf operations: take a frame slot's address and fetch a received
-//! by-ref pointer (via [`ByrefAddrBackend`]), plus the bounds check and
-//! projected-place address formation that now live on [`SlotBackend`]
+//! the leaf operations in [`crate::place_lower::PlaceLowerBackend`], plus the
+//! deferred-diagnostic hook on [`ByrefAddrBackend`]. Bounds checks and
+//! projected-place address formation are shared through
+//! [`crate::agg_slots::SlotBackend`]
 //! (the indexed-place-read materialization in `agg_slots` needs them too,
 //! RUE-188). `emit_place_addr` is the same math the backend's
 //! `PlaceRead`/`PlaceWrite` lowering uses: it yields the place's LOW-end
@@ -23,21 +24,12 @@
 use rue_cfg::{CfgInstData, CfgValue, Place, Projection};
 use rue_error::{CompileError, ErrorKind};
 
-use crate::agg_slots::SlotBackend;
+use crate::place_lower::PlaceLowerBackend;
 use crate::vreg::VReg;
 
-/// The per-backend leaf operations by-ref address formation needs, on top of
-/// the [`SlotBackend`] basics (`ctx`, `alloc_vreg`, `get_vreg`,
-/// `emit_reg_move`, `emit_bounds_check`, `emit_place_addr`).
-pub trait ByrefAddrBackend: SlotBackend {
-    /// Get (or lazily materialize) the pointer vreg of a by-ref (inout or
-    /// borrow) parameter of the CURRENT function.
-    fn ensure_inout_param_ptr(&mut self, param_slot: u32) -> VReg;
-
-    /// Emit `dst = address of frame slot` (`lea dst, [rbp+off]` /
-    /// `add dst, fp, #off`).
-    fn emit_frame_addr(&mut self, dst: VReg, slot: u32);
-
+/// The deferred-diagnostic hook by-ref argument lowering needs on top of the
+/// shared place-lowering operations.
+pub trait ByrefAddrBackend: PlaceLowerBackend {
     /// Record a user-facing diagnostic discovered during the (infallible)
     /// lowering pass, to be surfaced by `generate()` once lowering finishes.
     /// Only the FIRST recorded error is kept. See [`lower_byref_arg_addr`].

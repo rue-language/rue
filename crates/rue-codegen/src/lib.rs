@@ -52,6 +52,7 @@ pub mod byref_args;
 pub mod cfg_lower;
 pub mod index_map;
 pub mod liveness;
+pub mod place_lower;
 pub mod regalloc;
 pub mod types;
 pub mod vreg;
