@@ -114,6 +114,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -164,6 +165,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -290,6 +292,7 @@ fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -371,6 +374,7 @@ fn text_projection_gaps_require_exact_representation_metadata() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -438,6 +442,7 @@ fn text_projection_gaps_require_exact_representation_metadata() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -453,6 +458,7 @@ fn text_projection_gaps_require_exact_representation_metadata() {
                 stdout: String::new(),
                 stdout_bytes: 0,
                 stdout_cap: MAX_STDOUT_BYTES,
+                stderr_cap: MAX_STDERR_BYTES,
                 budget: STEP_BUDGET,
                 depth: 0,
             };
@@ -542,6 +548,7 @@ fn text_projection_gap_requires_the_complete_place_chain_to_be_well_typed() {
             stdout: String::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
         };
@@ -661,6 +668,7 @@ fn place_write_contracts_precede_rhs_model_gaps() {
             stdout: String::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
         };
@@ -732,6 +740,7 @@ fn place_read_base_contract_precedes_index_model_gap() {
             stdout: String::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
         };
@@ -782,6 +791,7 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
             stdout: String::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
         };
@@ -814,6 +824,7 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -896,6 +907,7 @@ fn whole_place_write_requires_exact_type_and_writable_storage() {
             stdout: String::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
         };
@@ -968,6 +980,7 @@ fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
             stdout: String::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
         };
@@ -1005,6 +1018,7 @@ fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };

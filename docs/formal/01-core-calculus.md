@@ -1234,8 +1234,11 @@ result is fixed by running `main`:
 `main`'s returned `i32` is masked to a byte for the process exit code, and a
 `unit`-returning `main` exits 0 (`Interp::run`, `lib.rs:165`); any trap exits 101
 (`lib.rs:172`). These two rules, plus the observable `@dbg` output accumulated
-during reduction, are precisely the `Outcome` (`exit_code`, `stdout`, `panic`) the
-differential harness compares against the compiled binary (RUE-50).
+during reduction and the exact runtime diagnostic emitted by a trap, are
+precisely the `Outcome` (`exit_code`, `stdout`, `stderr`, `panic`) the differential
+harness compares against the compiled binary (RUE-50). Both executions retain
+stderr only up to the same fixed bound and reject overflow or a truncated native
+prefix, so bounded observation cannot manufacture agreement.
 
 The interpreter implementing this whole relation is the executable oracle
 (`crates/rue-oracle`; README § "The executable oracle" / RUE-50). Every rule group

@@ -2,7 +2,7 @@
 //!
 //! Runs the concrete [`rue-cli-tests`] corpus through the [`rue_oracle`]
 //! reference interpreter and checks the oracle agrees with each case's expected
-//! exit code / stdout. Those expectations are what the *compiled binary*
+//! exit code / stdout / stderr. Those expectations are what the *compiled binary*
 //! already produces (the CLI suite enforces that), so a disagreement here means
 //! the oracle and the compiler disagree — which, since the oracle is an
 //! independent implementation of the semantics operating *before* codegen,
@@ -23,7 +23,7 @@
 //!   preview assertions — so we lean on [`rue_test_runner`] (the spec runner's
 //!   own crate) to parse and template-expand every case exactly as the spec
 //!   suite does, then filter to the eligible subset the oracle can model
-//!   (concrete `source` + expected exit/stdout; golden-IR-only, `compile_fail`,
+//!   (concrete `source` + expected exit/stdout/stderr; golden-IR-only, `compile_fail`,
 //!   multi-file and stdin cases are ineligible, not disagreements). Preview-gated
 //!   cases run with their declared preview feature.
 //!   Dir resolution mirrors corpus mode: argv; else `RUE_ORACLE_DIFF_SPEC_CASES`
@@ -200,7 +200,6 @@ enum CaseOutcome {
 enum UnmodeledReason {
     ModelGap(ModelGapKind),
     TrapExpectation,
-    SpecStderrExpectation,
 }
 
 impl fmt::Display for UnmodeledReason {
@@ -208,7 +207,6 @@ impl fmt::Display for UnmodeledReason {
         match self {
             Self::ModelGap(kind) => write!(f, "oracle model gap ({kind:?})"),
             Self::TrapExpectation => f.write_str("runtime trap expectation"),
-            Self::SpecStderrExpectation => f.write_str("spec stderr expectation"),
         }
     }
 }
@@ -355,7 +353,8 @@ fn run() -> ExitCode {
 }
 
 /// The original corpus differential: run each rue-cli-tests case through the
-/// oracle and check it agrees with the case's expected exit code / stdout.
+/// oracle and check it agrees with the case's expected exit code / stdout /
+/// stderr.
 fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
     let dirs: Vec<PathBuf> = {
         let args: Vec<String> = raw_args;
@@ -607,9 +606,17 @@ fn check_spec_case_with_known_gap(
                 rue_test_runner::strip_block_boundary_newlines(&outcome.stdout)
                     == rue_test_runner::strip_block_boundary_newlines(s)
             });
+            // Match the real spec runner's two stderr paths: `runtime_error`
+            // checks its own substring and returns early there; otherwise the
+            // generic `stderr_contains` assertion participates.
+            let expected_stderr = case
+                .runtime_error
+                .as_ref()
+                .or(case.stderr_contains.as_ref());
+            let stderr_ok =
+                expected_stderr.is_none_or(|expected| outcome.stderr.contains(expected));
             let trap_ok = trap_comparison == TrapComparison::Match;
-            let modeled_observations_agree = exit_ok && stdout_ok && trap_ok;
-            let stderr_unmodeled = has_unmodeled_spec_stderr_expectation(case);
+            let modeled_observations_agree = exit_ok && stdout_ok && stderr_ok && trap_ok;
 
             if is_known_gap {
                 // xfail semantics (mirroring rue-cli-tests `known_bug`): the case
@@ -633,21 +640,16 @@ fn check_spec_case_with_known_gap(
                 };
             }
 
-            // A missing trap model cannot erase a concrete exit/stdout
+            // A missing trap model cannot erase a concrete exit/stdout/stderr
             // disagreement or bypass the known-gap registry above. Only
             // classify it as coverage when every independently modeled
             // observation agrees.
-            if exit_ok && stdout_ok && trap_comparison == TrapComparison::UnmodeledExpectation {
+            if exit_ok
+                && stdout_ok
+                && stderr_ok
+                && trap_comparison == TrapComparison::UnmodeledExpectation
+            {
                 return CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation);
-            }
-
-            // `Outcome` has no stderr channel. Preserve a normal-path stderr
-            // assertion as explicit coverage until the oracle models that
-            // observation, but only after every observation it can judge has
-            // agreed. The real spec runner ignores generic `stderr_contains`
-            // on its separate `runtime_error` path.
-            if modeled_observations_agree && stderr_unmodeled {
-                return CaseOutcome::Unmodeled(UnmodeledReason::SpecStderrExpectation);
             }
 
             if modeled_observations_agree {
@@ -667,6 +669,13 @@ fn check_spec_case_with_known_gap(
                         outcome.stdout
                     );
                 }
+                if !stderr_ok {
+                    msg += &format!(
+                        "\n      stderr: missing required substring {:?} in {:?}",
+                        expected_stderr.map(String::as_str).unwrap_or(""),
+                        outcome.stderr
+                    );
+                }
                 if let TrapComparison::Mismatch { expected, actual } = trap_comparison {
                     msg += &format!("\n      trap: expected {expected:?}, oracle got {actual:?}");
                 }
@@ -674,10 +683,6 @@ fn check_spec_case_with_known_gap(
             }
         }
     }
-}
-
-fn has_unmodeled_spec_stderr_expectation(case: &rue_test_runner::Case) -> bool {
-    case.runtime_error.is_none() && case.stderr_contains.is_some()
 }
 
 fn spec_preview_features(case: &rue_test_runner::Case) -> PreviewFeatures {
@@ -792,15 +797,25 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
                 .stdout_contains
                 .iter()
                 .find(|expected| !outcome.stdout.contains(expected.as_str()));
+            let missing_stderr = case
+                .runtime_error_contains
+                .iter()
+                .find(|expected| !outcome.stderr.contains(expected.as_str()));
             let trap_ok = trap_comparison == TrapComparison::Match;
             if exit_ok
                 && stdout_ok
                 && missing_stdout.is_none()
+                && missing_stderr.is_none()
                 && trap_comparison == TrapComparison::UnmodeledExpectation
             {
                 return CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation);
             }
-            if exit_ok && stdout_ok && missing_stdout.is_none() && trap_ok {
+            if exit_ok
+                && stdout_ok
+                && missing_stdout.is_none()
+                && missing_stderr.is_none()
+                && trap_ok
+            {
                 CaseOutcome::Agree
             } else {
                 let mut msg = format!("{} :: {}", rel(path), case.name);
@@ -821,6 +836,12 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
                     msg += &format!(
                         "\n      stdout: missing required substring {expected:?} in {:?}",
                         outcome.stdout
+                    );
+                }
+                if let Some(expected) = missing_stderr {
+                    msg += &format!(
+                        "\n      stderr: missing required substring {expected:?} in {:?}",
+                        outcome.stderr
                     );
                 }
                 if let TrapComparison::Mismatch { expected, actual } = trap_comparison {
@@ -1623,7 +1644,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         case.runtime_error = Some("panic: integer overflow".to_string());
         assert!(matches!(
             check_spec_case("test:1", &case),
-            CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation)
+            CaseOutcome::Disagreement(_)
         ));
 
         case.expected_stdout = Some("required output\n".to_string());
@@ -1641,7 +1662,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     }
 
     #[test]
-    fn spec_stderr_is_unmodeled_only_after_modeled_observations_agree() {
+    fn spec_stderr_expectations_are_enforced_as_modeled_observations() {
         let mut case = rue_test_runner::Case {
             name: "stderr coverage probe".to_string(),
             source: "fn main() -> i32 { 0 }".to_string(),
@@ -1649,10 +1670,11 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
             stderr_contains: Some("required notice".to_string()),
             ..Default::default()
         };
-        assert_eq!(
-            check_spec_case("test:1", &case),
-            CaseOutcome::Unmodeled(UnmodeledReason::SpecStderrExpectation)
-        );
+        let CaseOutcome::Disagreement(message) = check_spec_case("test:1", &case) else {
+            panic!("missing modeled stderr did not disagree");
+        };
+        assert!(message.contains("missing required substring"));
+        assert!(message.contains("required notice"));
 
         case.exit_code = Some(1);
         assert!(matches!(
@@ -1707,17 +1729,15 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         );
 
         case.exit_code = Some(0);
-        let CaseOutcome::Disagreement(message) =
-            check_spec_case_with_known_gap("test:1", &case, true)
-        else {
-            panic!("generic stderr coverage hid a stale known-gap entry");
-        };
-        assert!(message.contains("KNOWN_ORACLE_GAPS entry is stale"));
         assert_eq!(
-            check_spec_case_with_known_gap("test:1", &case, false),
-            CaseOutcome::Unmodeled(UnmodeledReason::SpecStderrExpectation),
-            "deleting a stale wrong-result exemption must expose stderr coverage"
+            check_spec_case_with_known_gap("test:1", &case, true),
+            CaseOutcome::Ineligible(IneligibleReason::KnownOracleGap),
+            "the remaining stderr mismatch keeps the tracked wrong-result entry live"
         );
+        assert!(matches!(
+            check_spec_case_with_known_gap("test:1", &case, false),
+            CaseOutcome::Disagreement(_)
+        ));
     }
 
     #[test]
@@ -1811,7 +1831,10 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     fn unknown_runtime_expectations_are_counted_as_unmodeled() {
         let mut case = corpus_case("fn main() -> i32 { let x: i32 = 2147483647; x + 1 }", false);
         case.exit_code = None;
-        case.runtime_error_contains = vec!["custom trap wording".to_string()];
+        // This fragment pins the exact emitted stderr but is intentionally not
+        // part of the typed trap vocabulary, so category coverage alone remains
+        // explicit.
+        case.runtime_error_contains = vec!["error: integer overflow".to_string()];
 
         let mut report = Report::default();
         report.record(check_case(Path::new("trap.toml"), &case));
@@ -1819,6 +1842,13 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         assert_eq!(report.unmodeled_count(), 1);
         assert!(report.disagreements.is_empty());
         assert_eq!(report.modeled_eligible_count(), 0);
+
+        case.runtime_error_contains = vec!["custom trap wording".to_string()];
+        assert!(matches!(
+            check_case(Path::new("trap.toml"), &case),
+            CaseOutcome::Disagreement(_)
+        ));
+        case.runtime_error_contains = vec!["error: integer overflow".to_string()];
 
         // The same ordering applies to substring output contracts.
         case.stdout_contains = vec!["required output".to_string()];
@@ -1892,7 +1922,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     }
 
     #[test]
-    fn non_oracle_unmodeled_reasons_remain_distinct() {
+    fn modeled_stderr_mismatches_are_not_unmodeled_coverage() {
         let mut trap_case =
             corpus_case("fn main() -> i32 { let x: i32 = 2147483647; x + 1 }", false);
         trap_case.exit_code = None;
@@ -1908,26 +1938,14 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         };
         let stderr_outcome = check_spec_case("test:1", &stderr_case);
 
-        assert_eq!(
-            trap_outcome,
-            CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation)
-        );
-        assert_eq!(
-            stderr_outcome,
-            CaseOutcome::Unmodeled(UnmodeledReason::SpecStderrExpectation)
-        );
+        assert!(matches!(trap_outcome, CaseOutcome::Disagreement(_)));
+        assert!(matches!(stderr_outcome, CaseOutcome::Disagreement(_)));
 
         let mut report = Report::default();
         report.record(trap_outcome);
         report.record(stderr_outcome);
-        assert_eq!(report.unmodeled_count(), 2);
-        assert_eq!(
-            report.unmodeled_breakdown_lines(),
-            vec![
-                "    runtime trap expectation: 1",
-                "    spec stderr expectation: 1",
-            ]
-        );
+        assert_eq!(report.unmodeled_count(), 0);
+        assert_eq!(report.disagreements.len(), 2);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! control-flow IR, produced by [`rue_compiler::compile_to_cfg`], *before* the
 //! MIR/codegen lowering where every miscompile of the 2026-07 work lived).
 //! Running a program through this interpreter and through the compiled binary
-//! and comparing the observable behavior (exit code, `@dbg` output, panic-or-not)
+//! and comparing the observable behavior (exit code, stdout, stderr, trap cause)
 //! is the differential-testing oracle of RUE-50, and the executable form of the
 //! operational semantics in `docs/formal/01-core-calculus.md` §6.
 //!
@@ -115,6 +115,10 @@ pub struct Outcome {
     pub exit_code: i32,
     /// Everything `@dbg` wrote, in order, newline-terminated per call.
     pub stdout: String,
+    /// Everything the modeled runtime wrote to stderr, decoded with the same
+    /// lossy UTF-8 boundary as the native differential runner so the resulting
+    /// observation remains exactly comparable.
+    pub stderr: String,
     /// `Some(kind)` if execution ended in a modeled trap, `None` on normal
     /// completion. Runtime-handled kinds mirror the runtime's trap categories.
     pub panic: Option<TrapKind>,
@@ -128,6 +132,14 @@ pub struct Outcome {
 /// remains exact; crossing it is surfaced explicitly and never accepted by
 /// comparing a truncated prefix.
 pub const MAX_STDOUT_BYTES: usize = 256 * 1024;
+
+/// Maximum number of raw bytes accepted from modeled runtime stderr.
+///
+/// Rue currently writes stderr only when terminating in a runtime trap. The
+/// bound matches the native differential runner's retained stderr limit so a
+/// long user panic cannot consume unbounded harness memory or manufacture
+/// agreement from a retained prefix.
+pub const MAX_STDERR_BYTES: usize = 8 * 1024;
 
 /// The policy class of a typed oracle execution failure.
 ///
@@ -227,6 +239,7 @@ pub enum ModelGapKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ResourceLimitKind {
     StdoutBytes,
+    StderrBytes,
     RecursionDepth,
     InterpreterSteps,
 }
@@ -424,6 +437,15 @@ fn run_state_with_limits(
     budget: u64,
     stdout_cap: usize,
 ) -> Result<Outcome, Unsupported> {
+    run_state_with_output_limits(state, budget, stdout_cap, MAX_STDERR_BYTES)
+}
+
+fn run_state_with_output_limits(
+    state: CompileState,
+    budget: u64,
+    stdout_cap: usize,
+    stderr_cap: usize,
+) -> Result<Outcome, Unsupported> {
     // Interpret on a dedicated large-stack worker thread. The tree-walking
     // interpreter recurses per expression *and* per call, so deep-but-valid
     // programs need far more stack than a default thread provides. Running on
@@ -440,6 +462,7 @@ fn run_state_with_limits(
                     stdout: String::new(),
                     stdout_bytes: 0,
                     stdout_cap,
+                    stderr_cap,
                     budget,
                     depth: 0,
                 }
@@ -543,8 +566,44 @@ impl Value {
     }
 }
 
-/// A runtime panic, carrying its category (mirrors the runtime's panic classes).
-struct Panic(TrapKind);
+/// A runtime panic, carrying its typed category and exact stderr observation.
+struct Panic {
+    kind: TrapKind,
+    stderr: String,
+    raw_stderr_bytes: usize,
+}
+
+impl Panic {
+    fn runtime(kind: TrapKind) -> Self {
+        let stderr = match kind {
+            TrapKind::ArithmeticOverflow => "error: integer overflow\n",
+            TrapKind::DivisionByZero => "error: division by zero\n",
+            TrapKind::IntegerCastOverflow => "error: integer cast overflow\n",
+            TrapKind::IndexOutOfBounds => "error: index out of bounds\n",
+            TrapKind::InvalidUtf8 => "error: invalid UTF-8\n",
+            // User-authored panics and assertions require a dynamic diagnostic.
+            // Reaching this fixed-message constructor would erase that
+            // observation, so keep the invariant loud in debug builds.
+            TrapKind::UserPanic | TrapKind::AssertionFailure => {
+                debug_assert!(false, "dynamic trap stderr must be supplied explicitly");
+                ""
+            }
+            // `Unreachable` represents defensive malformed-CFG behavior whose
+            // native counterpart generally faults rather than using the Rue
+            // runtime error channel.
+            TrapKind::Unreachable => "",
+        };
+        Self::with_stderr(kind, stderr.to_string(), stderr.len())
+    }
+
+    fn with_stderr(kind: TrapKind, stderr: String, raw_stderr_bytes: usize) -> Self {
+        Self {
+            kind,
+            stderr,
+            raw_stderr_bytes,
+        }
+    }
+}
 
 type Step<T> = Result<T, Flow>;
 
@@ -624,6 +683,9 @@ struct Interp<'a> {
     /// UTF-8 bytes render as the three-byte replacement character.
     stdout_bytes: usize,
     stdout_cap: usize,
+    /// Maximum raw bytes retained for the single terminating runtime stderr
+    /// observation.
+    stderr_cap: usize,
     /// Remaining total step budget (see [`STEP_BUDGET`]). Shared across every
     /// activation and decremented per instruction, so it bounds total work
     /// including recursion, not just per-frame loops.
@@ -1230,13 +1292,26 @@ impl<'a> Interp<'a> {
             Ok((v, _)) => Ok(Outcome {
                 exit_code: (v.as_int() & 0xFF) as i32,
                 stdout: self.stdout,
+                stderr: String::new(),
                 panic: None,
             }),
-            Err(Flow::Panic(Panic(reason))) => Ok(Outcome {
-                exit_code: 101,
-                stdout: self.stdout,
-                panic: Some(reason),
-            }),
+            Err(Flow::Panic(panic)) => {
+                if panic.raw_stderr_bytes > self.stderr_cap {
+                    return Err(Unsupported::new(
+                        UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes),
+                        format!(
+                            "stderr byte limit exceeded ({}-byte limit)",
+                            self.stderr_cap
+                        ),
+                    ));
+                }
+                Ok(Outcome {
+                    exit_code: 101,
+                    stdout: self.stdout,
+                    stderr: panic.stderr,
+                    panic: Some(panic.kind),
+                })
+            }
             Err(Flow::Unsupported(u)) => Err(u),
         }
     }
@@ -1409,7 +1484,7 @@ impl<'a> Interp<'a> {
                     incoming = Vec::new();
                 }
                 Terminator::Unreachable => {
-                    return Err(Flow::Panic(Panic(TrapKind::Unreachable)));
+                    return Err(Flow::Panic(Panic::runtime(TrapKind::Unreachable)));
                 }
                 Terminator::None => {
                     return Err(unsupported(
@@ -1634,7 +1709,7 @@ impl<'a> Interp<'a> {
                 let bytes = s(&args[0])?;
                 let idx = args[1].as_int();
                 if idx < 0 || idx as u128 >= bytes.len() as u128 {
-                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
+                    return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
                 }
                 Value::Int(bytes[idx as usize] as i128)
             }
@@ -1647,7 +1722,7 @@ impl<'a> Interp<'a> {
                 let bytes = s(&args[0])?;
                 let idx = args[1].as_int();
                 if idx < 0 || idx as u128 >= bytes.len() as u128 {
-                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
+                    return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
                 }
                 Value::Int(bytes[idx as usize] as i128)
             }
@@ -1657,7 +1732,7 @@ impl<'a> Interp<'a> {
                 let bytes = s(&args[0])?;
                 match char_at(&bytes, args[1].as_int()) {
                     Some((scalar, _)) => Value::Int(scalar as i128),
-                    None => return Err(Flow::Panic(Panic(TrapKind::InvalidUtf8))),
+                    None => return Err(Flow::Panic(Panic::runtime(TrapKind::InvalidUtf8))),
                 }
             }
             "__rue_String_char_next" => {
@@ -1665,7 +1740,7 @@ impl<'a> Interp<'a> {
                 let offset = args[1].as_int();
                 match char_at(&bytes, offset) {
                     Some((_, width)) => Value::Int(offset + width as i128),
-                    None => return Err(Flow::Panic(Panic(TrapKind::InvalidUtf8))),
+                    None => return Err(Flow::Panic(Panic::runtime(TrapKind::InvalidUtf8))),
                 }
             }
             // The lossy character view never traps: invalid UTF-8 becomes U+FFFD
@@ -2162,7 +2237,7 @@ impl<'a> Interp<'a> {
                     )
                 })?;
                 if x < lo || x > hi {
-                    return Err(Flow::Panic(Panic(TrapKind::IntegerCastOverflow)));
+                    return Err(Flow::Panic(Panic::runtime(TrapKind::IntegerCastOverflow)));
                 }
                 Value::Int(x)
             }
@@ -2205,14 +2280,14 @@ impl<'a> Interp<'a> {
         let x = self.eval(cfg, frame, a)?.as_int();
         let y = self.eval(cfg, frame, b)?.as_int();
         if y == 0 {
-            return Err(Flow::Panic(Panic(TrapKind::DivisionByZero)));
+            return Err(Flow::Panic(Panic::runtime(TrapKind::DivisionByZero)));
         }
         // MIN / -1 (and MIN % -1) trap at the operand width: the hardware `idiv`
         // faults even though the mathematical remainder is 0. Our i128 model
         // wouldn't otherwise catch it (the value fits in i128).
         if let Some((lo, _)) = int_bounds(ty) {
             if ty.is_signed() && x == lo && y == -1 {
-                return Err(Flow::Panic(Panic(TrapKind::ArithmeticOverflow)));
+                return Err(Flow::Panic(Panic::runtime(TrapKind::ArithmeticOverflow)));
             }
         }
         let r = if is_mod {
@@ -2340,7 +2415,7 @@ impl<'a> Interp<'a> {
                 Projection::Index { index, .. } => {
                     let i = self.eval(cfg, frame, index)?.as_int();
                     if i < 0 {
-                        return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
+                        return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
                     }
                     path.push((i as usize, p));
                 }
@@ -2375,7 +2450,7 @@ impl<'a> Interp<'a> {
             cur = match cur {
                 Value::Aggregate(mut v) if idx < v.len() => v.swap_remove(idx),
                 Value::Aggregate(_) => {
-                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
+                    return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
                 }
                 Value::Str { slots, .. } if self.is_matching_text_projection(projection, slots) => {
                     return Err(unsupported(
@@ -2419,7 +2494,7 @@ impl<'a> Interp<'a> {
             cur = match cur {
                 Value::Aggregate(v) if *idx < v.len() => &mut v[*idx],
                 Value::Aggregate(_) => {
-                    return Err(Flow::Panic(Panic(TrapKind::IndexOutOfBounds)));
+                    return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
                 }
                 _ => {
                     return Err(unsupported(
@@ -2604,9 +2679,11 @@ fn int_bounds(ty: Type) -> Option<(i128, i128)> {
 /// `None` (a checked-arithmetic overflow) or an out-of-range result traps as a
 /// runtime overflow panic (spec 3.1:6/13); otherwise the value is returned.
 fn range_check(v: Option<i128>, ty: Type) -> Step<Value> {
-    let n = v.ok_or(Flow::Panic(Panic(TrapKind::ArithmeticOverflow)))?;
+    let n = v.ok_or(Flow::Panic(Panic::runtime(TrapKind::ArithmeticOverflow)))?;
     match int_bounds(ty) {
-        Some((lo, hi)) if n < lo || n > hi => Err(Flow::Panic(Panic(TrapKind::ArithmeticOverflow))),
+        Some((lo, hi)) if n < lo || n > hi => {
+            Err(Flow::Panic(Panic::runtime(TrapKind::ArithmeticOverflow)))
+        }
         _ => Ok(Value::Int(n)),
     }
 }
