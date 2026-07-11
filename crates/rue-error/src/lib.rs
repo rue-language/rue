@@ -59,6 +59,7 @@ use thiserror::Error;
 /// - **E1100-E1199**: Preview feature errors
 /// - **E1200-E1299**: Comptime errors
 /// - **E1300-E1399**: Unchecked-code errors (raw pointers, `checked` blocks)
+/// - **E1400-E1499**: Compiler-input errors
 /// - **E9000-E9999**: Internal compiler errors
 ///
 /// Once assigned, error codes must never change to maintain stability for
@@ -376,6 +377,12 @@ impl ErrorCode {
     // Unchecked-code errors (E1300-E1399)
     // ========================================================================
     pub const UNCHECKED_OP_REQUIRES_CHECKED: Self = Self(1300);
+
+    // ========================================================================
+    // Compiler-input errors (E1400-E1499)
+    // ========================================================================
+    /// Invalid metadata supplied at a compiler API boundary.
+    pub const INVALID_COMPILER_INPUT: Self = Self(1400);
 
     // ========================================================================
     // Internal compiler errors (E9000-E9999)
@@ -1567,6 +1574,10 @@ pub enum ErrorKind {
     #[error("{what} requires a `checked` block")]
     UncheckedOpRequiresChecked { what: String },
 
+    // Compiler-input errors
+    #[error("invalid compiler input: {0}")]
+    InvalidCompilerInput(String),
+
     // Internal compiler errors (bugs in the compiler itself)
     #[error("internal compiler error: {0}")]
     InternalError(String),
@@ -1743,9 +1754,14 @@ impl ErrorKind {
             // Comptime errors (E1200-E1299)
             ErrorKind::ComptimeEvaluationFailed { .. } => ErrorCode::COMPTIME_EVALUATION_FAILED,
             ErrorKind::ComptimeArgNotConst { .. } => ErrorCode::COMPTIME_ARG_NOT_CONST,
+
+            // Unchecked-code errors (E1300-E1399)
             ErrorKind::UncheckedOpRequiresChecked { .. } => {
                 ErrorCode::UNCHECKED_OP_REQUIRES_CHECKED
             }
+
+            // Compiler-input errors (E1400-E1499)
+            ErrorKind::InvalidCompilerInput(_) => ErrorCode::INVALID_COMPILER_INPUT,
 
             // Internal compiler errors (E9000-E9999)
             ErrorKind::InternalError(_) => ErrorCode::INTERNAL_ERROR,
@@ -2952,6 +2968,17 @@ mod tests {
         set.insert(ErrorCode::UNDEFINED_VARIABLE);
         assert_eq!(set.len(), 2);
         assert!(set.contains(&ErrorCode::TYPE_MISMATCH));
+    }
+
+    #[test]
+    fn test_invalid_compiler_input_error_code_and_message() {
+        let kind = ErrorKind::InvalidCompilerInput("duplicate file ID 7".into());
+        assert_eq!(kind.code(), ErrorCode::INVALID_COMPILER_INPUT);
+        assert_eq!(ErrorCode::INVALID_COMPILER_INPUT.0, 1400);
+        assert_eq!(
+            kind.to_string(),
+            "invalid compiler input: duplicate file ID 7"
+        );
     }
 
     // ========================================================================

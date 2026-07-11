@@ -21,8 +21,9 @@
 //! ];
 //!
 //! // Run the phases IN ORDER — skipping one (e.g. analyze() before lower())
-//! // panics. `new` is infallible; the phase methods return results.
-//! let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+//! // panics. Construction validates source identities, and the phase methods
+//! // return results.
+//! let mut unit = CompilationUnit::new(sources, CompileOptions::default())?;
 //! unit.parse()?;
 //! unit.lower()?;
 //! unit.analyze()?;
@@ -36,9 +37,9 @@ use lasso::ThreadedRodeo;
 use tracing::{info, info_span};
 
 use crate::{
-    Ast, AstGen, CompileErrors, CompileOptions, CompileOutput, CompileWarning, FunctionWithCfg,
-    Lexer, MultiErrorResult, Parser, Rir, Sema, SourceFile, TypeInternPool,
-    build_functions_and_cfgs, compile_backend,
+    Ast, AstGen, CompileErrors, CompileOptions, CompileOutput, CompileResult, CompileWarning,
+    FunctionWithCfg, Lexer, MultiErrorResult, Parser, Rir, Sema, SourceFile, SourceMetadata,
+    TypeInternPool, build_functions_and_cfgs, compile_backend,
 };
 use rue_span::FileId;
 
@@ -85,19 +86,14 @@ pub struct CompilationUnit<'src> {
     sources: Vec<SourceFile<'src>>,
     /// Work metrics collected from those sources and the live parse.
     source_stats: SourceStats,
-    /// Designated semantic root (the first source), independent of FileId rank.
-    root_file_id: FileId,
+    /// Validated physical paths, logical identities, and designated root.
+    source_metadata: SourceMetadata,
 
     // === Phase 1: Parsing ===
     /// Merged AST containing all items (populated by `parse()`).
     merged_ast: Option<Ast>,
     /// String interner shared across all files.
     interner: Option<ThreadedRodeo>,
-    /// Maps FileId to source file path (for error messages).
-    file_paths: HashMap<FileId, String>,
-    /// Maps FileId to a relocation-stable path for generated symbols.
-    symbol_paths: HashMap<FileId, String>,
-
     // === Phase 2: RIR Generation ===
     /// Untyped intermediate representation (populated by `lower()`).
     rir: Option<Rir>,
@@ -125,16 +121,54 @@ impl<'src> CompilationUnit<'src> {
     /// * `sources` - Source files to compile. The first entry is the designated
     ///   root for root-relative import fallback.
     /// * `options` - Compilation options (target, optimization, etc.)
-    pub fn new(sources: Vec<SourceFile<'src>>, options: CompileOptions) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-compiler-input error if there are no sources, source
+    /// IDs are duplicated, or physical paths do not form unique identities.
+    pub fn new(sources: Vec<SourceFile<'src>>, options: CompileOptions) -> CompileResult<Self> {
         let root_file_id = sources
             .first()
             .map(|source| source.file_id)
             .unwrap_or(FileId::DEFAULT);
-        let file_paths: HashMap<FileId, String> = sources
-            .iter()
-            .map(|s| (s.file_id, s.path.to_string()))
-            .collect();
-        let symbol_paths = file_paths.clone();
+        let source_metadata = SourceMetadata::from_sources(&sources, root_file_id, HashMap::new())?;
+        Ok(Self::from_validated_metadata(
+            sources,
+            source_metadata,
+            options,
+        ))
+    }
+
+    /// Create a compilation unit with validated, caller-provided source identities.
+    ///
+    /// Unlike [`Self::new`], this constructor lets callers designate a root that
+    /// is not the first or numerically smallest file and provide relocation-stable
+    /// logical paths. The metadata must describe exactly the supplied sources,
+    /// including their physical paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-compiler-input error if `source_metadata` does not
+    /// describe exactly the supplied source IDs and physical paths.
+    pub fn with_source_metadata(
+        sources: Vec<SourceFile<'src>>,
+        source_metadata: SourceMetadata,
+        options: CompileOptions,
+    ) -> CompileResult<Self> {
+        source_metadata.validate_sources(&sources)?;
+
+        Ok(Self::from_validated_metadata(
+            sources,
+            source_metadata,
+            options,
+        ))
+    }
+
+    fn from_validated_metadata(
+        sources: Vec<SourceFile<'src>>,
+        source_metadata: SourceMetadata,
+        options: CompileOptions,
+    ) -> Self {
         let source_stats = SourceStats {
             files: sources.len(),
             bytes: sources.iter().map(|source| source.source.len()).sum(),
@@ -148,11 +182,9 @@ impl<'src> CompilationUnit<'src> {
             options,
             sources,
             source_stats,
-            root_file_id,
+            source_metadata,
             merged_ast: None,
             interner: None,
-            file_paths,
-            symbol_paths,
             rir: None,
             functions: None,
             type_pool: None,
@@ -332,12 +364,7 @@ impl<'src> CompilationUnit<'src> {
         // while sema consumes a private logical-path-ordered lowering. This
         // makes allocation and artifact layout canonical without changing the
         // caller-visible AST/RIR contract (RUE-624).
-        let semantic_ast = crate::semantic_order::for_sema(
-            ast,
-            &self.file_paths,
-            &self.symbol_paths,
-            self.root_file_id,
-        );
+        let semantic_ast = crate::semantic_order::for_sema(ast, &self.source_metadata);
         let semantic_rir = {
             let _span = info_span!("semantic_astgen").entered();
             AstGen::new(&semantic_ast, interner).generate()
@@ -352,9 +379,9 @@ impl<'src> CompilationUnit<'src> {
                 self.options.preview_features.clone(),
                 self.options.target,
             );
-            sema.set_root_file_id(self.root_file_id);
-            sema.set_file_paths(self.file_paths.clone());
-            sema.set_symbol_paths(self.symbol_paths.clone());
+            sema.set_root_file_id(self.source_metadata.root_file_id());
+            sema.set_file_paths(self.source_metadata.physical_path_map().clone());
+            sema.set_symbol_paths(self.source_metadata.logical_path_map().clone());
             let output = sema.analyze_all()?;
             info!(
                 function_count = output.functions.len(),
@@ -524,7 +551,12 @@ impl<'src> CompilationUnit<'src> {
 
     /// Get the file paths map.
     pub fn file_paths(&self) -> &HashMap<FileId, String> {
-        &self.file_paths
+        self.source_metadata.physical_path_map()
+    }
+
+    /// Get the validated source identities and designated semantic root.
+    pub fn source_metadata(&self) -> &SourceMetadata {
+        &self.source_metadata
     }
 
     /// Get source metrics collected by the live frontend.
@@ -542,14 +574,6 @@ impl<'src> CompilationUnit<'src> {
     /// Get counters collected during compilation without scanning source text.
     pub(crate) fn collected_source_stats(&self) -> SourceStats {
         self.source_stats
-    }
-
-    /// Replace the paths used to qualify otherwise-colliding generated names.
-    ///
-    /// These identities do not affect diagnostics or module resolution. Any
-    /// missing entry falls back to the corresponding physical file path.
-    pub fn set_symbol_paths(&mut self, symbol_paths: HashMap<FileId, String>) {
-        self.symbol_paths = symbol_paths;
     }
 
     /// Take the interner out of the compilation unit.
@@ -623,7 +647,7 @@ mod tests {
     #[test]
     fn test_compilation_unit_basic() {
         let sources = make_sources("fn main() -> i32 { 42 }");
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
 
         assert!(!unit.is_parsed());
         assert!(!unit.is_lowered());
@@ -638,9 +662,39 @@ mod tests {
     }
 
     #[test]
+    fn explicit_source_metadata_preserves_a_nonminimum_root() {
+        let helper_id = FileId::new(2);
+        let root_id = FileId::new(40);
+        let sources = vec![
+            SourceFile::new("helper.rue", "fn helper() -> i32 { 1 }", helper_id),
+            SourceFile::new("main.rue", "fn main() -> i32 { 42 }", root_id),
+        ];
+        let metadata = SourceMetadata::from_sources(
+            &sources,
+            root_id,
+            HashMap::from([
+                (helper_id, "stable/helper.rue".to_string()),
+                (root_id, "stable/main.rue".to_string()),
+            ]),
+        )
+        .unwrap();
+
+        let mut unit =
+            CompilationUnit::with_source_metadata(sources, metadata, CompileOptions::default())
+                .unwrap();
+
+        assert_eq!(unit.source_metadata().root_file_id(), root_id);
+        assert_eq!(
+            unit.source_metadata().logical_path(helper_id),
+            Some("stable/helper.rue")
+        );
+        unit.run_frontend().unwrap();
+    }
+
+    #[test]
     fn test_phase_ordering() {
         let sources = make_sources("fn main() -> i32 { 42 }");
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
 
         // Parse first
         unit.parse().unwrap();
@@ -667,7 +721,7 @@ mod tests {
             SourceFile::new("main.rue", first, FileId::new(1)),
             SourceFile::new("helper.rue", second, FileId::new(2)),
         ];
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
 
         assert_eq!(
             unit.source_stats(),
@@ -695,7 +749,7 @@ mod tests {
             "fn foo() -> i32 { 1 } fn foo() -> i32 { 2 }",
             FileId::new(1),
         )];
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
 
         let result = unit.parse();
         assert!(result.is_err());
@@ -710,7 +764,7 @@ mod tests {
             SourceFile::new("parse.rue", "fn parse( { }", FileId::new(2)),
             SourceFile::new("good.rue", "fn good() -> i32 { 42 }", FileId::new(3)),
         ];
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
 
         let errors = unit.parse().expect_err("both broken files should report");
         assert_eq!(errors.len(), 2);
@@ -733,7 +787,7 @@ mod tests {
             "fn lex() -> i32 { $ # }",
             FileId::new(1),
         )];
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
 
         let errors = unit
             .parse()
@@ -753,7 +807,7 @@ mod tests {
     #[test]
     fn test_warnings_collected() {
         let sources = make_sources("fn main() -> i32 { let x = 42; 0 }");
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
         unit.run_frontend().unwrap();
 
         assert_eq!(unit.warnings().len(), 1);
@@ -836,13 +890,23 @@ mod tests {
             sources.swap(1, 2);
         }
 
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
-        unit.set_symbol_paths(std::collections::HashMap::from([
-            (root_id, "main.rue".to_string()),
-            (left_id, "left/types.rue".to_string()),
-            (right_id, "right/types.rue".to_string()),
-            (shared_id, "shared.rue".to_string()),
-        ]));
+        let source_metadata = SourceMetadata::from_sources(
+            &sources,
+            root_id,
+            HashMap::from([
+                (root_id, "main.rue".to_string()),
+                (left_id, "left/types.rue".to_string()),
+                (right_id, "right/types.rue".to_string()),
+                (shared_id, "shared.rue".to_string()),
+            ]),
+        )
+        .unwrap();
+        let mut unit = CompilationUnit::with_source_metadata(
+            sources,
+            source_metadata,
+            CompileOptions::default(),
+        )
+        .unwrap();
         unit.run_frontend().expect("frontend should compile");
 
         let pool = unit.type_pool();
@@ -974,7 +1038,7 @@ mod tests {
     #[should_panic(expected = "lower() called before parse()")]
     fn test_lower_before_parse_panics() {
         let sources = make_sources("fn main() -> i32 { 42 }");
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
         unit.lower().unwrap();
     }
 
@@ -982,7 +1046,7 @@ mod tests {
     #[should_panic(expected = "analyze() called before lower()")]
     fn test_analyze_before_lower_panics() {
         let sources = make_sources("fn main() -> i32 { 42 }");
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
         unit.parse().unwrap();
         unit.analyze().unwrap();
     }

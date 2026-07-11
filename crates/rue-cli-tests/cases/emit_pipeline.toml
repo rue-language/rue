@@ -77,6 +77,22 @@ compile_stderr_contains = [
     "unexpected character: #",
 ]
 
+[[case]]
+name = "emit_tokens_rejects_duplicate_normalized_source_identity_before_output"
+description = "RUE-644: invalid source identity is E1400 and fails before --emit tokens prints partial output."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 0 }
+""" }]
+args = ["--emit", "tokens", "--error-format", "json", "main.rue", "./main.rue"]
+compile_fail = true
+compile_stderr_contains = [
+    '"severity":"error"',
+    '"code":"E1400"',
+    'physical paths for 1 and 2 normalize to the same identity',
+]
+compile_stderr_not_contains = ["error[E1400]", "-->"]
+compile_stdout_not_contains = ["=== Tokens"]
+
 # RUE-352: `-j`/`--jobs` was silently ignored under --emit. The jobs setting was
 # only applied inside compile_multi_file_with_options, which the --emit path
 # never calls, so `--emit asm -j1` ran multi-threaded. The pool config is now
