@@ -46,7 +46,7 @@ mod generator;
 mod trap;
 
 use rue_error::{PreviewFeature, PreviewFeatures};
-use rue_oracle::{RunSourceError, TrapKind, run_source_with_preview_features};
+use rue_oracle::{ModelGapKind, RunSourceError, TrapKind, run_source_with_preview_features};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -180,7 +180,7 @@ impl fmt::Display for IneligibleReason {
 enum CaseOutcome {
     Agree,
     /// The case has an executable shape, but the oracle does not model it yet.
-    Unmodeled,
+    Unmodeled(UnmodeledReason),
     /// The case does not describe a single concrete execution this harness can drive.
     Ineligible(IneligibleReason),
     /// An eligible case was rejected by the shared compiler front end.
@@ -189,6 +189,28 @@ enum CaseOutcome {
     OracleFailure(String),
     /// The oracle ran but disagreed with the expected behavior.
     Disagreement(String),
+}
+
+/// Why an otherwise executable case could not be fully judged.
+///
+/// Keep this closed: oracle model gaps are registry-ready typed causes, while
+/// harness observation gaps remain distinct and cannot be mistaken for oracle
+/// implementation debt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum UnmodeledReason {
+    ModelGap(ModelGapKind),
+    TrapExpectation,
+    SpecStderrExpectation,
+}
+
+impl fmt::Display for UnmodeledReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ModelGap(kind) => write!(f, "oracle model gap ({kind:?})"),
+            Self::TrapExpectation => f.write_str("runtime trap expectation"),
+            Self::SpecStderrExpectation => f.write_str("spec stderr expectation"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,7 +243,7 @@ fn compare_trap_expectation(
 #[derive(Default)]
 struct Report {
     agree: u32,
-    unmodeled: u32,
+    unmodeled_reasons: BTreeMap<UnmodeledReason, u32>,
     ineligible_reasons: BTreeMap<IneligibleReason, u32>,
     frontend_failures: Vec<String>,
     oracle_failures: Vec<String>,
@@ -235,7 +257,9 @@ impl Report {
     fn record(&mut self, outcome: CaseOutcome) {
         match outcome {
             CaseOutcome::Agree => self.agree += 1,
-            CaseOutcome::Unmodeled => self.unmodeled += 1,
+            CaseOutcome::Unmodeled(reason) => {
+                *self.unmodeled_reasons.entry(reason).or_default() += 1;
+            }
             CaseOutcome::Ineligible(reason) => {
                 *self.ineligible_reasons.entry(reason).or_default() += 1;
             }
@@ -256,9 +280,13 @@ impl Report {
         self.ineligible_reasons.values().sum()
     }
 
+    fn unmodeled_count(&self) -> u32 {
+        self.unmodeled_reasons.values().sum()
+    }
+
     fn classified_case_count(&self) -> u32 {
         self.agree
-            + self.unmodeled
+            + self.unmodeled_count()
             + self.ineligible_count()
             + self.frontend_failures.len() as u32
             + self.oracle_failures.len() as u32
@@ -267,6 +295,13 @@ impl Report {
 
     fn ineligible_breakdown_lines(&self) -> Vec<String> {
         self.ineligible_reasons
+            .iter()
+            .map(|(reason, count)| format!("    {reason}: {count}"))
+            .collect()
+    }
+
+    fn unmodeled_breakdown_lines(&self) -> Vec<String> {
+        self.unmodeled_reasons
             .iter()
             .map(|(reason, count)| format!("    {reason}: {count}"))
             .collect()
@@ -370,7 +405,10 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
     let total = report.classified_case_count();
     println!("\n=== rue-oracle-diff: {corpus} corpus classification audit ({total} cases) ===");
     println!("  agree (modeled eligible): {}", report.agree);
-    println!("  unmodeled eligible:       {}", report.unmodeled);
+    println!("  unmodeled eligible:       {}", report.unmodeled_count());
+    for line in report.unmodeled_breakdown_lines() {
+        println!("{line}");
+    }
     println!("  ineligible:               {}", report.ineligible_count());
     for line in report.ineligible_breakdown_lines() {
         println!("{line}");
@@ -600,7 +638,7 @@ fn check_spec_case_with_known_gap(
             // classify it as coverage when every independently modeled
             // observation agrees.
             if exit_ok && stdout_ok && trap_comparison == TrapComparison::UnmodeledExpectation {
-                return CaseOutcome::Unmodeled;
+                return CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation);
             }
 
             // `Outcome` has no stderr channel. Preserve a normal-path stderr
@@ -609,7 +647,7 @@ fn check_spec_case_with_known_gap(
             // agreed. The real spec runner ignores generic `stderr_contains`
             // on its separate `runtime_error` path.
             if modeled_observations_agree && stderr_unmodeled {
-                return CaseOutcome::Unmodeled;
+                return CaseOutcome::Unmodeled(UnmodeledReason::SpecStderrExpectation);
             }
 
             if modeled_observations_agree {
@@ -760,7 +798,7 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
                 && missing_stdout.is_none()
                 && trap_comparison == TrapComparison::UnmodeledExpectation
             {
-                return CaseOutcome::Unmodeled;
+                return CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation);
             }
             if exit_ok && stdout_ok && missing_stdout.is_none() && trap_ok {
                 CaseOutcome::Agree
@@ -804,14 +842,17 @@ fn record_oracle_error(context: &str, error: RunSourceError) -> CaseOutcome {
         RunSourceError::Compile(errors) => {
             CaseOutcome::FrontendFailure(format!("{context}\n      {errors:#?}"))
         }
-        RunSourceError::Unsupported(unsupported) if unsupported.model_gap().is_some() => {
-            CaseOutcome::Unmodeled
+        RunSourceError::Unsupported(unsupported) => {
+            if let Some(kind) = unsupported.model_gap() {
+                CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(kind))
+            } else {
+                CaseOutcome::OracleFailure(format!(
+                    "{context}\n      {:?}: {}",
+                    unsupported.kind(),
+                    unsupported.detail()
+                ))
+            }
         }
-        RunSourceError::Unsupported(unsupported) => CaseOutcome::OracleFailure(format!(
-            "{context}\n      {:?}: {}",
-            unsupported.kind(),
-            unsupported.detail()
-        )),
     }
 }
 
@@ -1211,7 +1252,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
 
         assert_eq!(report.frontend_failures.len(), 1);
         assert!(report.frontend_failures[0].contains("classification.toml"));
-        assert_eq!(report.unmodeled, 0);
+        assert_eq!(report.unmodeled_count(), 0);
         assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
     }
 
@@ -1488,7 +1529,9 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         case.source = "fn main() -> u32 { let value: u32 = @random_u32(); value }".to_string();
         assert_eq!(
             check_spec_case_with_known_gap("test:1", &case, true),
-            CaseOutcome::Unmodeled,
+            CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(ModelGapKind::ExternalDependency(
+                rue_oracle::ExternalDependencyKind::RandomU32
+            ))),
             "a known-gap entry must not absorb a genuine oracle coverage gap"
         );
 
@@ -1580,7 +1623,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         case.runtime_error = Some("panic: integer overflow".to_string());
         assert!(matches!(
             check_spec_case("test:1", &case),
-            CaseOutcome::Unmodeled
+            CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation)
         ));
 
         case.expected_stdout = Some("required output\n".to_string());
@@ -1606,7 +1649,10 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
             stderr_contains: Some("required notice".to_string()),
             ..Default::default()
         };
-        assert_eq!(check_spec_case("test:1", &case), CaseOutcome::Unmodeled);
+        assert_eq!(
+            check_spec_case("test:1", &case),
+            CaseOutcome::Unmodeled(UnmodeledReason::SpecStderrExpectation)
+        );
 
         case.exit_code = Some(1);
         assert!(matches!(
@@ -1669,7 +1715,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         assert!(message.contains("KNOWN_ORACLE_GAPS entry is stale"));
         assert_eq!(
             check_spec_case_with_known_gap("test:1", &case, false),
-            CaseOutcome::Unmodeled,
+            CaseOutcome::Unmodeled(UnmodeledReason::SpecStderrExpectation),
             "deleting a stale wrong-result exemption must expose stderr coverage"
         );
     }
@@ -1691,7 +1737,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         let mut report = Report::default();
         report.record(CaseOutcome::Agree);
         report.record(outcome);
-        assert_eq!(report.unmodeled, 0);
+        assert_eq!(report.unmodeled_count(), 0);
         assert_eq!(report.disagreements.len(), 1);
         assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
     }
@@ -1742,7 +1788,9 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         let unsupported_cli = corpus_case(unsupported_source, false);
         assert!(matches!(
             check_case(Path::new("unsupported.toml"), &unsupported_cli),
-            CaseOutcome::Unmodeled
+            CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(ModelGapKind::ExternalDependency(
+                rue_oracle::ExternalDependencyKind::RandomU32
+            )))
         ));
 
         let unsupported_spec = rue_test_runner::Case {
@@ -1753,7 +1801,9 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         };
         assert!(matches!(
             check_spec_case("test:1", &unsupported_spec),
-            CaseOutcome::Unmodeled
+            CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(ModelGapKind::ExternalDependency(
+                rue_oracle::ExternalDependencyKind::RandomU32
+            )))
         ));
     }
 
@@ -1766,7 +1816,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         let mut report = Report::default();
         report.record(check_case(Path::new("trap.toml"), &case));
 
-        assert_eq!(report.unmodeled, 1);
+        assert_eq!(report.unmodeled_count(), 1);
         assert!(report.disagreements.is_empty());
         assert_eq!(report.modeled_eligible_count(), 0);
 
@@ -1791,7 +1841,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     fn report_records_each_outcome_and_formats_reasons_deterministically() {
         let mut report = Report::default();
         report.record(CaseOutcome::Agree);
-        report.record(CaseOutcome::Unmodeled);
+        report.record(CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation));
         report.record(CaseOutcome::Ineligible(IneligibleReason::CliInvocation(
             CliInvocationReason::UnsupportedFlag,
         )));
@@ -1807,7 +1857,11 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         report.record(CaseOutcome::Disagreement("disagreement".to_string()));
 
         assert_eq!(report.agree, 1);
-        assert_eq!(report.unmodeled, 1);
+        assert_eq!(report.unmodeled_count(), 1);
+        assert_eq!(
+            report.unmodeled_breakdown_lines(),
+            vec!["    runtime trap expectation: 1"]
+        );
         assert_eq!(report.ineligible_count(), 4);
         assert_eq!(report.classified_case_count(), 9);
         assert_eq!(
@@ -1824,6 +1878,59 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     }
 
     #[test]
+    fn exact_model_gap_kind_survives_case_classification() {
+        let error =
+            rue_oracle::run_source("fn main() -> u32 { let value: u32 = @random_u32(); value }")
+                .expect_err("randomness must remain outside the deterministic oracle");
+
+        assert_eq!(
+            record_oracle_error("typed gap probe", error),
+            CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(ModelGapKind::ExternalDependency(
+                rue_oracle::ExternalDependencyKind::RandomU32
+            )))
+        );
+    }
+
+    #[test]
+    fn non_oracle_unmodeled_reasons_remain_distinct() {
+        let mut trap_case =
+            corpus_case("fn main() -> i32 { let x: i32 = 2147483647; x + 1 }", false);
+        trap_case.exit_code = None;
+        trap_case.runtime_error_contains = vec!["panic: integer overflow".to_string()];
+        let trap_outcome = check_case(Path::new("trap.toml"), &trap_case);
+
+        let stderr_case = rue_test_runner::Case {
+            name: "stderr coverage probe".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            exit_code: Some(0),
+            stderr_contains: Some("required notice".to_string()),
+            ..Default::default()
+        };
+        let stderr_outcome = check_spec_case("test:1", &stderr_case);
+
+        assert_eq!(
+            trap_outcome,
+            CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation)
+        );
+        assert_eq!(
+            stderr_outcome,
+            CaseOutcome::Unmodeled(UnmodeledReason::SpecStderrExpectation)
+        );
+
+        let mut report = Report::default();
+        report.record(trap_outcome);
+        report.record(stderr_outcome);
+        assert_eq!(report.unmodeled_count(), 2);
+        assert_eq!(
+            report.unmodeled_breakdown_lines(),
+            vec![
+                "    runtime trap expectation: 1",
+                "    spec stderr expectation: 1",
+            ]
+        );
+    }
+
+    #[test]
     fn an_all_unmodeled_corpus_fails_closed() {
         let mut report = Report::default();
         let error = rue_oracle::run_source(
@@ -1833,7 +1940,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
 
         report.record(record_oracle_error("unsupported probe", error));
 
-        assert_eq!(report.unmodeled, 1);
+        assert_eq!(report.unmodeled_count(), 1);
         assert_eq!(report.modeled_eligible_count(), 0);
         assert!(report.frontend_failures.is_empty());
         assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
@@ -1843,7 +1950,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     fn agreement_plus_unmodeled_coverage_is_successful() {
         let mut report = Report::default();
         report.record(CaseOutcome::Agree);
-        report.record(CaseOutcome::Unmodeled);
+        report.record(CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation));
 
         assert_eq!(report.modeled_eligible_count(), 1);
         assert_eq!(finish_report(&report, "test"), ExitCode::SUCCESS);
@@ -1867,7 +1974,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         report.record(outcome);
 
         assert_eq!(report.agree, 1);
-        assert_eq!(report.unmodeled, 0);
+        assert_eq!(report.unmodeled_count(), 0);
         assert_eq!(report.oracle_failures.len(), 1);
         assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
     }
@@ -1884,7 +1991,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
             report.ineligible_breakdown_lines(),
             vec!["    expected compile failure: 1"]
         );
-        assert_eq!(report.unmodeled, 0);
+        assert_eq!(report.unmodeled_count(), 0);
         assert_eq!(report.modeled_eligible_count(), 0);
         assert!(report.frontend_failures.is_empty());
         assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
@@ -1904,7 +2011,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
             report.ineligible_breakdown_lines(),
             vec!["    compiler environment: 1"]
         );
-        assert_eq!(report.unmodeled, 0);
+        assert_eq!(report.unmodeled_count(), 0);
         assert!(report.frontend_failures.is_empty());
     }
 }
