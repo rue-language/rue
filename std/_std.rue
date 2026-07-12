@@ -23,6 +23,13 @@ pub const option = @import("option.rue");
 pub const result = @import("result.rue");
 pub const arraybuf = @import("arraybuf.rue");
 
+// Collections (Standard library v1, M2).
+pub const stack = @import("stack.rue");
+pub const queue = @import("queue.rue");
+pub const grid = @import("grid.rue");
+pub const binary_heap = @import("binary_heap.rue");
+pub const intmap = @import("intmap.rue");
+
 fn _exit_syscall_number() -> u64 {
     match @target_arch() {
         Arch.X86_64 => {

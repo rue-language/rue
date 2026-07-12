@@ -1,0 +1,61 @@
+// std.collections — Stack(T): a LIFO stack over ArrayBuf.
+//
+//     const std = @import("std");
+//     let S = std.stack.Stack(i64);
+//     let mut s = S.new();
+//     s.push(10);
+//     s.push(20);
+//     let top = s.pop();     // Some(20)
+//
+// `push`/`pop` work for any element type. `peek` reads the top element BY COPY,
+// so it is usable only for trivially-droppable (`Copy`) `T` — reading an owned
+// element by copy is rejected (RUE-651); use `pop` to move an owned element out.
+
+const arraybuf = @import("arraybuf.rue");
+const option = @import("option.rue");
+
+pub fn Stack(comptime T: type) -> type {
+    let Buf = arraybuf.ArrayBuf(T);
+    struct {
+        buf: Buf,
+
+        fn new() -> Self {
+            let b = arraybuf.ArrayBuf(T);
+            Self { buf: b.new() }
+        }
+
+        fn len(borrow self) -> u64 {
+            self.buf.len()
+        }
+
+        fn is_empty(borrow self) -> bool {
+            self.buf.is_empty()
+        }
+
+        // Push `x` onto the top.
+        fn push(inout self, x: T) {
+            self.buf.push(x);
+        }
+
+        // Remove and return the top element, or `None` when empty.
+        fn pop(inout self) -> option.Option(T) {
+            self.buf.pop()
+        }
+
+        // The top element by copy, or `None` when empty. COPY-`T` ONLY (RUE-651).
+        fn peek(borrow self) -> option.Option(T) {
+            let O = option.Option(T);
+            let n = self.buf.len();
+            if n == 0 {
+                O.None
+            } else {
+                self.buf.get(n - 1)
+            }
+        }
+
+        // Drop all elements, keeping capacity.
+        fn clear(inout self) {
+            self.buf.clear();
+        }
+    }
+}
