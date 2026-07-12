@@ -1476,7 +1476,30 @@ pub fn compile_source_snapshot_with_options(
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
     compile_source_snapshot_with_options_impl(snapshot, options, false)
-        .map(|(output, _stats)| output)
+        .map(|(output, _stats, _work)| output)
+}
+
+/// Composable structural work from the canonical snapshot batch pipeline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CanonicalPipelineWork {
+    pub parsed: ParsedModulesWork,
+    pub merged: CanonicalMergeWork,
+    pub lowered: CanonicalRirWork,
+    pub semantic: CanonicalSemanticWork,
+}
+
+/// Compile a snapshot and return compatible source stats plus canonical phase work.
+pub fn compile_source_snapshot_with_options_and_work(
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+) -> MultiErrorResult<(CompileOutput, SourceStats, CanonicalPipelineWork)> {
+    let (output, stats, work) = compile_source_snapshot_with_options_impl(snapshot, options, true)?;
+    let mut stats = stats.expect("source stats requested");
+    stats.lines = snapshot
+        .files()
+        .map(|source| source.source.lines().count())
+        .sum();
+    Ok((output, stats, work))
 }
 
 /// Compile an immutable owned source snapshot and return live frontend metrics.
@@ -1484,7 +1507,8 @@ pub fn compile_source_snapshot_with_options_and_stats(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
 ) -> MultiErrorResult<(CompileOutput, SourceStats)> {
-    let (output, stats) = compile_source_snapshot_with_options_impl(snapshot, options, true)?;
+    let (output, stats, _work) =
+        compile_source_snapshot_with_options_impl(snapshot, options, true)?;
     let mut stats = stats.expect("source stats requested");
     stats.lines = snapshot
         .files()
@@ -1497,7 +1521,7 @@ fn compile_source_snapshot_with_options_impl(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
     collect_stats: bool,
-) -> MultiErrorResult<(CompileOutput, Option<SourceStats>)> {
+) -> MultiErrorResult<(CompileOutput, Option<SourceStats>, CanonicalPipelineWork)> {
     // NOTE: the Rayon global thread pool is deliberately NOT configured here.
     // `build_global()` panics if called twice, and the `--emit` driver path
     // never reaches this function, so it was silently ignoring `-j`/`--jobs`
@@ -1513,11 +1537,49 @@ fn compile_source_snapshot_with_options_impl(
     )
     .entered();
 
-    // Use CompilationUnit for the entire pipeline
-    let mut unit = CompilationUnit::from_source_snapshot(snapshot.clone(), options.clone());
-    let output = unit.run_all()?;
-    let stats = collect_stats.then(|| unit.collected_source_stats());
-    Ok((output, stats))
+    let (parsed, parsed_work) = parsed_modules::parse_source_snapshot_modules_for_batch(snapshot)?;
+    let diagnostic_order = snapshot
+        .files()
+        .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
+        .collect::<Vec<_>>();
+    let merged = canonical_merge::merge_parsed_modules_for_batch(&parsed, &diagnostic_order)?;
+    let merged_work = merged.work();
+    let rir = {
+        // Preserve the established production timing phase name while the
+        // canonical lowering replaces the unit pipeline's second AST walk.
+        let _span = info_span!("semantic_astgen").entered();
+        lower_canonical_rir(&merged).map_err(CompileErrors::from)?
+    };
+    let lowered_work = rir.work();
+    let semantic = analyze_canonical_program(&merged, &rir, options, false)?;
+    let semantic_work = semantic.work();
+    debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
+    debug_assert_eq!(semantic_work.manifest.build_invocations, 0);
+    debug_assert!(semantic.bound_definitions().is_none());
+    let output = compile_backend(
+        semantic.functions(),
+        semantic.type_pool(),
+        semantic.strings(),
+        rir.semantic_symbols().interner(),
+        options,
+        semantic.warnings(),
+    )?;
+    let stats = collect_stats.then_some(SourceStats {
+        files: snapshot.len(),
+        bytes: total_source_bytes,
+        lines: 0,
+        tokens: parsed_work.syntax.tokens,
+    });
+    Ok((
+        output,
+        stats,
+        CanonicalPipelineWork {
+            parsed: parsed_work,
+            merged: merged_work,
+            lowered: lowered_work,
+            semantic: semantic_work,
+        },
+    ))
 }
 
 /// Link using the internal linker.
@@ -2410,6 +2472,209 @@ mod tests {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn error_fingerprint(errors: &CompileErrors) -> Vec<(String, Option<Span>, String, String)> {
+        errors
+            .iter()
+            .map(|error| {
+                (
+                    error.kind.code().to_string(),
+                    error.span(),
+                    error.to_string(),
+                    format!("{:?}", error.diagnostic()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn canonical_batch_reports_one_pass_structural_work() {
+        let root = FileId::new(7);
+        let helper = FileId::new(2);
+        let sources = [
+            SourceFile::new(
+                "/checkout/main.rue",
+                "const helper = @import(\"helper.rue\"); fn main() -> i32 { helper.answer() }",
+                root,
+            ),
+            SourceFile::new(
+                "/checkout/helper.rue",
+                "pub fn answer() -> i32 { 42 }",
+                helper,
+            ),
+        ];
+        let metadata = SourceMetadata::from_sources(
+            &sources,
+            root,
+            std::collections::HashMap::from([
+                (root, "main.rue".to_string()),
+                (helper, "helper.rue".to_string()),
+            ]),
+        )
+        .unwrap();
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+
+        let (_output, stats, work) =
+            compile_source_snapshot_with_options_and_work(&snapshot, &CompileOptions::default())
+                .unwrap();
+
+        assert_eq!(stats.files, sources.len());
+        assert_eq!(work.parsed.modules_considered, sources.len());
+        assert_eq!(work.parsed.modules_reparsed, sources.len());
+        assert_eq!(work.parsed.syntax.lexer_invocations, sources.len());
+        assert_eq!(work.parsed.syntax.parser_invocations, sources.len());
+        assert_eq!(work.merged.parser_invocations, 0);
+        assert_eq!(work.merged.ast_payload_clones, 0);
+        assert_eq!(work.merged.source_text_clones, 0);
+        assert_eq!(work.merged.source_bytes_rehashed, 0);
+        assert_eq!(work.lowered.parser_invocations, 0);
+        assert_eq!(work.lowered.ast_payload_clones, 0);
+        assert_eq!(work.lowered.source_text_clones, 0);
+        assert_eq!(work.semantic.binding.bind_invocations, 1);
+        assert_eq!(work.semantic.manifest.build_invocations, 0);
+        assert!(!work.semantic.stable_ids_requested);
+        assert!(work.semantic.bound_definitions.is_none());
+    }
+
+    #[test]
+    fn canonical_batch_preserves_legacy_caller_order_for_frontend_errors() {
+        let cases = [
+            ("fn z() -> i32 { # }", "fn main() -> i32 { $ }"),
+            (
+                "fn dup() {} fn dup() {} fn main() -> i32 { 0 }",
+                "fn helper() {}",
+            ),
+            (
+                "struct Dup {} struct Dup {} fn main() -> i32 { 0 }",
+                "fn helper() {}",
+            ),
+            (
+                "struct clash {} fn clash() {} fn main() -> i32 { 0 }",
+                "fn helper() {}",
+            ),
+            ("fn main() -> i32 { 1 }", "fn main() -> i32 { 2 }"),
+            ("fn main() -> i32 { missing_name }", "fn helper() {}"),
+        ];
+        for (left, right) in cases {
+            for reversed in [false, true] {
+                let mut sources = vec![
+                    SourceFile::new("z.rue", left, FileId::new(9)),
+                    SourceFile::new("a.rue", right, FileId::new(2)),
+                ];
+                if reversed {
+                    sources.reverse();
+                }
+                let metadata = SourceMetadata::from_sources(
+                    &sources,
+                    sources[0].file_id,
+                    std::collections::HashMap::new(),
+                )
+                .unwrap();
+                let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+                let options = CompileOptions::default();
+                let mut legacy =
+                    CompilationUnit::from_source_snapshot(snapshot.clone(), options.clone());
+
+                let legacy_errors = legacy.run_all().unwrap_err();
+                let canonical_errors =
+                    compile_source_snapshot_with_options(&snapshot, &options).unwrap_err();
+                assert_eq!(
+                    error_fingerprint(&legacy_errors),
+                    error_fingerprint(&canonical_errors),
+                    "reversed={reversed}, left={left}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_batch_matches_legacy_output_for_import_graph() {
+        let snapshot = |root: FileId, helper: FileId, directory: &str, reversed: bool| {
+            let main_path = format!("{directory}/main.rue");
+            let helper_path = format!("{directory}/helper.rue");
+            let mut sources = vec![
+                SourceFile::new(
+                    &main_path,
+                    "const helper = @import(\"helper.rue\"); fn main() -> i32 { let unused = 1; helper.answer() }",
+                    root,
+                ),
+                SourceFile::new(&helper_path, "pub fn answer() -> i32 { 42 }", helper),
+            ];
+            if reversed {
+                sources.reverse();
+            }
+            let metadata = SourceMetadata::from_sources(
+                &sources,
+                root,
+                std::collections::HashMap::from([
+                    (root, "main.rue".to_string()),
+                    (helper, "helper.rue".to_string()),
+                ]),
+            )
+            .unwrap();
+            SourceSnapshot::from_sources(&sources, metadata).unwrap()
+        };
+        let snapshots = [
+            snapshot(FileId::new(7), FileId::new(2), "/first/checkout", false),
+            snapshot(FileId::new(31), FileId::new(80), "/moved/checkout", true),
+        ];
+
+        for opt_level in [OptLevel::O0, OptLevel::O1] {
+            let options = CompileOptions {
+                opt_level,
+                ..CompileOptions::default()
+            };
+            let mut expected = None;
+            for snapshot in &snapshots {
+                let mut legacy =
+                    CompilationUnit::from_source_snapshot(snapshot.clone(), options.clone());
+                let legacy = legacy.run_all().unwrap();
+                let canonical = compile_source_snapshot_with_options(snapshot, &options).unwrap();
+                let warnings = canonical
+                    .warnings
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+
+                assert_eq!(legacy.elf, canonical.elf);
+                assert_eq!(
+                    legacy
+                        .warnings
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                    warnings
+                );
+                if let Some((elf, expected_warnings)) = &expected {
+                    assert_eq!(elf, &canonical.elf);
+                    assert_eq!(expected_warnings, &warnings);
+                } else {
+                    expected = Some((canonical.elf, warnings));
+                }
+            }
+        }
+
+        for options in [
+            CompileOptions {
+                linker: LinkerMode::System("/definitely/missing/rue-linker".to_string()),
+                ..CompileOptions::default()
+            },
+            CompileOptions {
+                target: *Target::all()
+                    .iter()
+                    .find(|&&target| target != Target::host().unwrap())
+                    .expect("at least one non-host target"),
+                ..CompileOptions::default()
+            },
+        ] {
+            let mut legacy =
+                CompilationUnit::from_source_snapshot(snapshots[0].clone(), options.clone());
+            let legacy = legacy.run_all().unwrap_err();
+            let canonical =
+                compile_source_snapshot_with_options(&snapshots[0], &options).unwrap_err();
+            assert_eq!(error_fingerprint(&legacy), error_fingerprint(&canonical));
+        }
     }
 
     #[test]

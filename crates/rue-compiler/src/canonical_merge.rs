@@ -90,6 +90,20 @@ struct CandidateDef {
 pub fn merge_parsed_modules(
     program: &ParsedProgram,
 ) -> Result<CanonicalMergedProgram, CompileErrors> {
+    merge_parsed_modules_in_order(program, None)
+}
+
+pub(crate) fn merge_parsed_modules_for_batch(
+    program: &ParsedProgram,
+    diagnostic_order: &[ModuleId],
+) -> Result<CanonicalMergedProgram, CompileErrors> {
+    merge_parsed_modules_in_order(program, Some(diagnostic_order))
+}
+
+fn merge_parsed_modules_in_order(
+    program: &ParsedProgram,
+    diagnostic_order: Option<&[ModuleId]>,
+) -> Result<CanonicalMergedProgram, CompileErrors> {
     let work = CanonicalMergeWork {
         modules_visited: program.modules().len(),
         items_visited: program
@@ -104,7 +118,22 @@ pub fn merge_parsed_modules(
             .sum(),
         ..CanonicalMergeWork::default()
     };
-    let errors = canonical_duplicate_errors(program);
+    let ordered_modules = if let Some(order) = diagnostic_order {
+        order
+            .iter()
+            .map(|module_id| {
+                program
+                    .modules()
+                    .binary_search_by(|module| module.module_id().cmp(module_id))
+                    .ok()
+                    .map(|index| &program.modules()[index])
+                    .expect("batch diagnostic order contains every parsed module")
+            })
+            .collect::<Vec<_>>()
+    } else {
+        program.modules().iter().collect()
+    };
+    let errors = canonical_duplicate_errors(&ordered_modules);
     if !errors.is_empty() {
         return Err(CompileErrors::from(errors));
     }
@@ -120,10 +149,10 @@ pub fn merge_parsed_modules(
     })
 }
 
-fn canonical_duplicate_errors(program: &ParsedProgram) -> Vec<CompileError> {
+fn canonical_duplicate_errors(modules: &[&Arc<ParsedModule>]) -> Vec<CompileError> {
     let mut errors = Vec::new();
     let mut program_main: Option<CandidateDef> = None;
-    for module in program.modules() {
+    for module in modules {
         let mut functions = HashMap::<&str, CandidateDef>::new();
         let mut function_names = HashMap::<&str, CandidateDef>::new();
         let mut type_names = HashMap::<&str, CandidateDef>::new();
