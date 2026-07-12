@@ -84,7 +84,6 @@ impl SourceId {
         self.0.digest
     }
 
-    #[cfg(test)]
     pub(crate) fn shared_text(&self) -> Arc<String> {
         self.0.text.clone()
     }
