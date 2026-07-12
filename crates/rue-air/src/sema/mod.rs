@@ -42,6 +42,7 @@ mod known_symbols;
 mod module_path;
 mod output;
 mod sema_ctx_builder;
+mod semantic_body_export;
 mod typeck;
 mod visibility;
 
@@ -116,6 +117,7 @@ pub struct Sema<'a> {
     pub(crate) named_method_declarations: HashMap<(StructId, Spur), rue_rir::InstRef>,
     pub(crate) body_analysis_work: BodyAnalysisWork,
     pub(crate) analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
+    pub(crate) ordinary_body_exports: Vec<crate::SemanticBodyExport>,
     pub(crate) body_dependency_observer: Option<AnalyzedBodyOwnerEvent>,
     pub(crate) body_owner_tokens:
         HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>,
@@ -293,6 +295,7 @@ impl<'a> Sema<'a> {
             named_method_declarations: HashMap::new(),
             body_analysis_work: BodyAnalysisWork::default(),
             analyzed_body_owners: Vec::new(),
+            ordinary_body_exports: Vec::new(),
             body_dependency_observer: None,
             body_owner_tokens: HashMap::new(),
             body_named_dependencies: Vec::new(),

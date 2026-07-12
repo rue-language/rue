@@ -4,6 +4,23 @@ Status: RUE-720 trunk audit after RUE-719. This note records the live ownership
 and identity boundaries before any body or CFG artifact is retained. It does
 not authorize reuse.
 
+## Durable ordinary-body observation boundary
+
+Ordinary non-generic free-function AIR is decoded before specialization mutates
+`CallGeneric`. AIR publishes only a neutral structured DTO keyed by the
+authoritative opaque owner token. The compiler joins callable and nominal
+identity to `StableDefinitionKey`, converts types to `DurableType`, owns
+strings, stores body-relative anchors, and links the artifact to the exact
+per-owner semantic dependency input record. Warning-producing and unsupported
+bodies fail closed without changing ordinary artifacts or diagnostics.
+
+The compiler schema is distinct from AIR's DTO and contains no `FileId`,
+`Span`, `Spur`, `Type`, nominal ID, `AirRef`, packed `extra`, string-pool ID, or
+discovery-order identity. Projection and atomic fresh-epoch import are
+observational validation only. No AIR/CFG is cached, no body analysis is
+skipped, global unused and CFG warnings are not imported, and reuse counters
+remain zero.
+
 ## Conclusion
 
 The canonical frontend has one semantic path, but its body-analysis result is
@@ -298,11 +315,13 @@ Required tests for that PR:
 8. The benchmark schema and process document enumerate every new field and do
    not infer work from elapsed time.
 
-Only after this PR lands should the next PR thread `StableDefinitionKey` through
+At the time of this audit, the next planned PR was to thread `StableDefinitionKey` through
 ordinary body dispatch and translate direct dependency observations at the
 point they are produced. That second PR should still retain no AIR: its gate is
 an exact, complete per-owner dependency/input manifest with unsupported owners
-failing closed. Durable body export/import is the following slice.
+failing closed. Durable body export/import was planned as the following slice;
+the observational export/import slice described below has since been
+implemented, without enabling production reuse.
 
 ## Later sequence
 

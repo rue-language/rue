@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Reproducible in-process invalidation workload for `CanonicalFrontendSession`.
 
 use std::{collections::HashMap, env, process, sync::Arc, time::Instant};
@@ -241,6 +243,36 @@ fn semantic_work_json(work: &CanonicalFrontendSessionWork, from: usize) -> Value
         "specialized_bodies_attempted": records.iter().map(|record| record.work.body_analysis.specialized_bodies_attempted).sum::<usize>(),
         "specialized_bodies_succeeded": records.iter().map(|record| record.work.body_analysis.specialized_bodies_succeeded).sum::<usize>(),
         "specialized_bodies_failed": records.iter().map(|record| record.work.body_analysis.specialized_bodies_failed).sum::<usize>(),
+        "durable_bodies": {
+            "export_attempts": records.iter().map(|record| record.work.durable_bodies.export_attempts).sum::<usize>(),
+            "export_successes": records.iter().map(|record| record.work.durable_bodies.export_successes).sum::<usize>(),
+            "export_rejections": records.iter().map(|record| record.work.durable_bodies.export_rejections).sum::<usize>(),
+            "instructions_exported": records.iter().map(|record| record.work.durable_bodies.instructions_exported).sum::<usize>(),
+            "places_exported": records.iter().map(|record| record.work.durable_bodies.places_exported).sum::<usize>(),
+            "strings_exported": records.iter().map(|record| record.work.durable_bodies.strings_exported).sum::<usize>(),
+            "conversion_attempts": records.iter().map(|record| record.work.durable_bodies.conversion_attempts).sum::<usize>(),
+            "conversion_completions": records.iter().map(|record| record.work.durable_bodies.conversion_completions).sum::<usize>(),
+            "conversion_failures": records.iter().map(|record| record.work.durable_bodies.conversion_failures).sum::<usize>(),
+            "finalization_attempts": records.iter().map(|record| record.work.durable_bodies.finalization_attempts).sum::<usize>(),
+            "finalization_completions": records.iter().map(|record| record.work.durable_bodies.finalization_completions).sum::<usize>(),
+            "finalization_failures": records.iter().map(|record| record.work.durable_bodies.finalization_failures).sum::<usize>(),
+            "stable_key_joins": records.iter().map(|record| record.work.durable_bodies.stable_key_joins).sum::<usize>(),
+            "projection_attempts": records.iter().map(|record| record.work.durable_bodies.projection_attempts).sum::<usize>(),
+            "projection_completions": records.iter().map(|record| record.work.durable_bodies.projection_completions).sum::<usize>(),
+            "projection_failures": records.iter().map(|record| record.work.durable_bodies.projection_failures).sum::<usize>(),
+            "instructions_projected": records.iter().map(|record| record.work.durable_bodies.instructions_projected).sum::<usize>(),
+            "places_projected": records.iter().map(|record| record.work.durable_bodies.places_projected).sum::<usize>(),
+            "strings_projected": records.iter().map(|record| record.work.durable_bodies.strings_projected).sum::<usize>(),
+            "import_attempts": records.iter().map(|record| record.work.durable_bodies.import_attempts).sum::<usize>(),
+            "import_successes": records.iter().map(|record| record.work.durable_bodies.import_successes).sum::<usize>(),
+            "import_failures": records.iter().map(|record| record.work.durable_bodies.import_failures).sum::<usize>(),
+            "installed_instructions": records.iter().map(|record| record.work.durable_bodies.installed_instructions).sum::<usize>(),
+            "installed_places": records.iter().map(|record| record.work.durable_bodies.installed_places).sum::<usize>(),
+            "installed_strings": records.iter().map(|record| record.work.durable_bodies.installed_strings).sum::<usize>(),
+            "atomic_discards": records.iter().map(|record| record.work.durable_bodies.atomic_discards).sum::<usize>(),
+            "reused_bodies": records.iter().map(|record| record.work.durable_bodies.reused_bodies).sum::<usize>(),
+            "skipped_body_analyses": records.iter().map(|record| record.work.durable_bodies.skipped_body_analyses).sum::<usize>(),
+        },
         "cfg": {
             "drop_glue_functions_synthesized": records.iter().map(|record| record.work.cfg.drop_glue_functions_synthesized).sum::<usize>(),
             "functions_considered": records.iter().map(|record| record.work.cfg.functions_considered).sum::<usize>(),
@@ -473,6 +505,26 @@ fn measure_manifest_plan(
                 "body_named_events_translated": manifest_work.body_named_events_translated,
                 "body_dependency_records_built": manifest_work.body_dependency_records_built,
                 "extra_rir_instructions_visited": manifest_work.extra_rir_instructions_visited,
+                "durable_bodies": {
+                    "finalization_attempts": manifest_work.durable_bodies.finalization_attempts,
+                    "finalization_completions": manifest_work.durable_bodies.finalization_completions,
+                    "finalization_failures": manifest_work.durable_bodies.finalization_failures,
+                    "projection_attempts": manifest_work.durable_bodies.projection_attempts,
+                    "projection_completions": manifest_work.durable_bodies.projection_completions,
+                    "projection_failures": manifest_work.durable_bodies.projection_failures,
+                    "instructions_projected": manifest_work.durable_bodies.instructions_projected,
+                    "places_projected": manifest_work.durable_bodies.places_projected,
+                    "strings_projected": manifest_work.durable_bodies.strings_projected,
+                    "import_attempts": manifest_work.durable_bodies.import_attempts,
+                    "import_successes": manifest_work.durable_bodies.import_successes,
+                    "import_failures": manifest_work.durable_bodies.import_failures,
+                    "installed_instructions": manifest_work.durable_bodies.installed_instructions,
+                    "installed_places": manifest_work.durable_bodies.installed_places,
+                    "installed_strings": manifest_work.durable_bodies.installed_strings,
+                    "atomic_discards": manifest_work.durable_bodies.atomic_discards,
+                    "reused_bodies": manifest_work.durable_bodies.reused_bodies,
+                    "skipped_body_analyses": manifest_work.durable_bodies.skipped_body_analyses,
+                },
             },
             "planner_queries": after_plan.delta(after_manifest).json(),
             "plan": invalidation_plan_json(&plan),
@@ -872,6 +924,10 @@ fn assert_body_cfg_work_equal(left: &Value, right: &Value) {
         left["semantic_work"]["cfg"], right["semantic_work"]["cfg"],
         "CFG work differs before CFG reuse exists"
     );
+    assert_eq!(
+        left["semantic_work"]["durable_bodies"], right["semantic_work"]["durable_bodies"],
+        "durable body observation work differs before body reuse exists"
+    );
 }
 
 fn assert_production_incremental_plan(
@@ -1025,7 +1081,7 @@ fn main() {
     println!(
         "{}",
         json!({
-            "schema_version": 6,
+            "schema_version": 7,
             "workload": "canonical_frontend_session_invalidation",
             "configuration": {
                 "modules": config.modules,

@@ -40,8 +40,10 @@ the requesting record, never by silently dropping an edge.
 ## Durable recursive type and value algebra
 
 The query boundary uses the versioned `DurableType` and `DurableConstValue`
-algebra in `rue-compiler`; schema version 1 is part of every future persistent
-key. It contains only scalar data, `ModuleId`, `StableDefinitionKey`, owned
+algebra in `rue-compiler`; schema version 2 is part of every future persistent
+key. Version 2 adds a closed builtin nominal tag validated against
+`rue-builtins` name and kind, rather than inventing source definition keys for
+synthetic types. The algebra otherwise contains only scalar data, `ModuleId`, `StableDefinitionKey`, owned
 structural children, and source-order generic-parameter indices. It is
 `Send + Sync + Eq + Ord + Hash`. It never contains `FileId`, `Span`, `Spur`,
 `InstRef`, request-local `Type`, `StructId`, `EnumId`, or type-pool indices.
@@ -164,6 +166,27 @@ tokens fail the entire manifest before publication.
 Tests cover duplicate member names in sibling modules, reordered inputs,
 physical relocation, reassigned FileIds, foreign issuers, and fresh durable
 fallback epochs. AIR and CFG are still not retained or reused.
+
+The next observational boundary is implemented for supported ordinary
+non-generic free functions. Before specialization, AIR exhaustively decodes a
+body into a neutral structured exchange DTO. `CallGeneric`, anonymous or
+unmapped identity, foreign spans, warning-producing bodies, and malformed
+payloads reject only the candidate. Anchors are relative to the authoritative
+source body, so relocation and unrelated surrounding edits do not change the
+artifact.
+
+The compiler converts that DTO into its own versioned `DurableOrdinaryBody`
+algebra using `StableDefinitionKey`, `DurableType`, `ModuleId`, owned strings,
+structured places/projections and relative anchors. Conversion validates the
+owner token, current source revision, exact body-input fingerprint and complete
+dependency record. Projection and atomic fresh-epoch installation prove
+remapping without retaining AIR IDs or packed extras. This slice installs no
+production cache entry, skips no analysis, retains no CFG, and recomputes
+global unused and CFG warnings.
+
+The body algebra is independently versioned; schema version 2 admits the same
+closed builtin nominal identity used by durable declaration semantics. Unknown
+or wrong-kind builtin tags reject before AIR installation.
 3. Define durable canonical type/comptime specialization arguments and record
    generic-origin edges.
 4. ~~Split declaration/signature and body fingerprints at parsed syntax boundaries.~~

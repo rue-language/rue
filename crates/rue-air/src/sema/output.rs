@@ -4,6 +4,7 @@
 //! - [`AnalyzedFunction`] - A single analyzed function with typed IR
 //! - [`SemaOutput`] - Complete output from analyzing a program
 
+use crate::SemanticBodyExport;
 use crate::inst::Air;
 use crate::intern_pool::TypeInternPool;
 use rue_error::CompileWarning;
@@ -324,6 +325,9 @@ impl From<Vec<bool>> for ParamSlotModes {
 #[derive(Debug)]
 pub struct AnalyzedFunction {
     pub name: String,
+    /// Authoritative identity of a source-level ordinary body. Specialized,
+    /// synthesized, and anonymous functions deliberately carry no token.
+    pub ordinary_owner: Option<BodyOwnerToken>,
     /// Definition-level provenance used by CFG dependency capture.
     pub implicit_drop_source: Option<ImplicitDropDependencySourceEvent>,
     pub air: Air,
@@ -358,6 +362,8 @@ pub struct SemaOutput {
     pub type_pool: TypeInternPool,
     /// Exact structural work performed while dispatching reachable bodies.
     pub body_analysis_work: BodyAnalysisWork,
+    /// Pre-specialization durable candidates for supported ordinary bodies.
+    pub ordinary_body_exports: Vec<SemanticBodyExport>,
     /// Stable-capable provenance for every successfully analyzed source body.
     pub analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
     pub body_named_dependencies: Vec<BodyNamedDependencyEvent>,
@@ -393,6 +399,12 @@ pub struct BodyAnalysisWork {
     pub air_instructions_produced: usize,
     pub body_dependency_air_instructions_observed: usize,
     pub local_strings_produced: usize,
+    pub ordinary_body_exports_attempted: usize,
+    pub ordinary_body_exports_succeeded: usize,
+    pub ordinary_body_exports_rejected: usize,
+    pub ordinary_body_export_instructions_emitted: usize,
+    pub ordinary_body_export_places_emitted: usize,
+    pub ordinary_body_export_strings_emitted: usize,
     pub string_ids_remapped: usize,
     pub specialization_air_instructions_scanned: usize,
     pub generic_calls_observed: usize,

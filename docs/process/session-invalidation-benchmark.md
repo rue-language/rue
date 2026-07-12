@@ -95,3 +95,10 @@ Schema version 6 adds `semantic_work.body_owner_tokens`, with exact provisional,
 authoritative, validated, installed, and failed-validation counts. Ordinary and
 durable-fallback semantic epochs each receive a fresh issuer; the benchmark
 continues to claim no AIR or CFG retention or reuse.
+
+Schema version 7 adds `semantic_work.durable_bodies`. It counts ordinary-body
+export attempts, successful publications and fail-closed rejections; emitted
+instructions, places and strings; compiler-owned durable conversions and
+stable-key joins; projections into AIR's neutral import DTO; atomic fresh-epoch
+imports and installed contents. `reused_bodies` and `skipped_body_analyses` are
+explicitly zero in this observational slice.

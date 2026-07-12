@@ -19,7 +19,7 @@ use rue_span::FileId;
 pub type DurableSemanticImportEpoch = SemanticImportEpoch<StableDefinitionKey, Arc<str>>;
 
 impl DurableType {
-    fn import_dto(&self) -> SemanticImportType<StableDefinitionKey, Arc<str>> {
+    pub(crate) fn import_dto(&self) -> SemanticImportType<StableDefinitionKey, Arc<str>> {
         match self {
             Self::I8 => SemanticImportType::I8,
             Self::I16 => SemanticImportType::I16,
@@ -33,6 +33,10 @@ impl DurableType {
             Self::Unit => SemanticImportType::Unit,
             Self::Never => SemanticImportType::Never,
             Self::ComptimeType => SemanticImportType::ComptimeType,
+            Self::BuiltinNominal { name, kind } => SemanticImportType::BuiltinNominal {
+                name: name.clone(),
+                kind: *kind,
+            },
             Self::Nominal(key) => SemanticImportType::Nominal(key.clone()),
             Self::Array { element, len } => SemanticImportType::Array {
                 element: Box::new(element.import_dto()),
@@ -113,6 +117,7 @@ pub fn import_durable_declaration_semantics(
     }
     fn collect_modules(ty: &DurableType, modules: &mut std::collections::BTreeSet<Arc<str>>) {
         match ty {
+            DurableType::BuiltinNominal { .. } => {}
             DurableType::Module(module) => {
                 modules.insert(Arc::from(module.as_str()));
             }
@@ -262,7 +267,17 @@ use crate::{
 };
 
 /// Version of the canonical durable type/value encoding.
-pub const DURABLE_SEMANTIC_SCHEMA_VERSION: u32 = 1;
+pub const DURABLE_SEMANTIC_SCHEMA_VERSION: u32 = 2;
+
+pub(crate) fn builtin_nominal_kind(name: &str) -> Option<SemanticImportNominalKind> {
+    if rue_builtins::get_builtin_type(name).is_some() {
+        Some(SemanticImportNominalKind::Struct)
+    } else if rue_builtins::get_builtin_enum(name).is_some() {
+        Some(SemanticImportNominalKind::Enum)
+    } else {
+        None
+    }
+}
 
 /// An owned, request-independent Rue type.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -279,6 +294,12 @@ pub enum DurableType {
     Unit,
     Never,
     ComptimeType,
+    /// A compiler-injected nominal, identified by the canonical builtin
+    /// registry rather than by a source definition key.
+    BuiltinNominal {
+        name: Arc<str>,
+        kind: SemanticImportNominalKind,
+    },
     /// A named struct or enum in the exact stable definition universe.
     Nominal(StableDefinitionKey),
     Array {
@@ -599,6 +620,17 @@ fn project_type(
         DurableType::Unit => SemanticExportType::Unit,
         DurableType::Never => SemanticExportType::Never,
         DurableType::ComptimeType => SemanticExportType::ComptimeType,
+        DurableType::BuiltinNominal { name, kind } => {
+            let kind = match kind {
+                SemanticImportNominalKind::Struct => SemanticBindingKind::Struct,
+                SemanticImportNominalKind::Enum => SemanticBindingKind::Enum,
+            };
+            SemanticExportType::Nominal(rue_air::SemanticNominalIdentity {
+                file_id: FileId::new(0),
+                name: name.clone(),
+                kind,
+            })
+        }
         DurableType::GenericParameter(index) => SemanticExportType::GenericParameter(*index),
         DurableType::Nominal(key) => {
             SemanticExportType::Nominal(current_nominal(key, definitions, module_files)?)
@@ -789,6 +821,22 @@ pub(crate) fn convert_declaration_semantics(
         definitions: &BoundDefinitionSet,
     ) -> Result<DurableType, DurableSemanticExportFailure> {
         let nominal = |identity: &rue_air::SemanticNominalIdentity| {
+            if identity.file_id == FileId::new(0) {
+                let kind = match identity.kind {
+                    SemanticBindingKind::Struct => SemanticImportNominalKind::Struct,
+                    SemanticBindingKind::Enum => SemanticImportNominalKind::Enum,
+                    _ => {
+                        return Err(DurableSemanticExportFailure::MissingStableNominalDefinition);
+                    }
+                };
+                if builtin_nominal_kind(&identity.name) != Some(kind) {
+                    return Err(DurableSemanticExportFailure::MissingStableNominalDefinition);
+                }
+                return Ok(DurableType::BuiltinNominal {
+                    name: identity.name.clone(),
+                    kind,
+                });
+            }
             let module = merged
                 .ast()
                 .modules()

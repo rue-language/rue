@@ -64,6 +64,263 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_body_exports_are_owned_pre_specialization_and_counted_exactly() {
+        let output = compile_to_air("fn leaf() -> i32 { 1 }\nfn main() -> i32 { leaf() }").unwrap();
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_attempted, 2);
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_succeeded, 2);
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_rejected, 0);
+        assert_eq!(output.ordinary_body_exports.len(), 2);
+        assert_eq!(
+            output
+                .body_analysis_work
+                .ordinary_body_export_instructions_emitted,
+            output
+                .ordinary_body_exports
+                .iter()
+                .map(|export| export.body.instructions.len())
+                .sum()
+        );
+        assert_eq!(
+            output
+                .body_analysis_work
+                .ordinary_body_export_places_emitted,
+            output
+                .ordinary_body_exports
+                .iter()
+                .map(|export| export.body.places.len())
+                .sum()
+        );
+        assert_eq!(
+            output
+                .body_analysis_work
+                .ordinary_body_export_strings_emitted,
+            0
+        );
+
+        let main = output
+            .ordinary_body_exports
+            .iter()
+            .find(|export| {
+                output
+                    .analyzed_body_owners
+                    .iter()
+                    .any(|owner| owner.token() == Some(export.owner))
+                    && export.body.instructions.iter().any(|inst| {
+                        matches!(
+                            &inst.data,
+                            crate::SemanticBodyInstData::Call { function, .. }
+                                if function.name.as_ref() == "leaf"
+                        )
+                    })
+            })
+            .expect("main durable body");
+        assert!(main.body.strings.is_empty());
+        assert!(
+            main.body
+                .instructions
+                .iter()
+                .all(|inst| { !matches!(inst.data, crate::SemanticBodyInstData::CallGeneric) })
+        );
+    }
+
+    #[test]
+    fn unresolved_generic_call_rejects_only_its_durable_candidate() {
+        let output = compile_to_air(
+            "fn id(comptime T: type, value: T) -> T { value }\nfn main() -> i32 { id(i32, 1) }",
+        )
+        .unwrap();
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_attempted, 1);
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_succeeded, 0);
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_rejected, 1);
+        assert!(output.ordinary_body_exports.is_empty());
+        assert!(
+            output
+                .functions
+                .iter()
+                .any(|function| function.name == "main")
+        );
+        assert_eq!(
+            output
+                .body_analysis_work
+                .ordinary_body_export_instructions_emitted,
+            0
+        );
+        assert_eq!(
+            output
+                .body_analysis_work
+                .ordinary_body_export_places_emitted,
+            0
+        );
+        assert_eq!(
+            output
+                .body_analysis_work
+                .ordinary_body_export_strings_emitted,
+            0
+        );
+    }
+
+    #[test]
+    fn durable_body_anchors_ignore_surrounding_source_relocation() {
+        let original = compile_to_air("fn main() -> i32 { 42 }").unwrap();
+        let relocated = compile_to_air("\n\nfn main() -> i32 { 42 }\n").unwrap();
+        assert_eq!(original.ordinary_body_exports.len(), 1);
+        assert_eq!(relocated.ordinary_body_exports.len(), 1);
+        assert_eq!(
+            original.ordinary_body_exports[0].body,
+            relocated.ordinary_body_exports[0].body
+        );
+    }
+
+    #[test]
+    fn warning_body_is_rejected_without_losing_ordinary_warning() {
+        let output = compile_to_air("fn main() { let unused = 1; }").unwrap();
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_attempted, 1);
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_succeeded, 0);
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_rejected, 1);
+        assert!(output.ordinary_body_exports.is_empty());
+        assert!(output.warnings.iter().any(|warning| {
+            matches!(warning.kind, rue_error::WarningKind::UnusedVariable(ref name) if name == "unused")
+        }));
+        assert_eq!(
+            output
+                .body_analysis_work
+                .ordinary_body_export_instructions_emitted,
+            0
+        );
+        assert_eq!(
+            output
+                .body_analysis_work
+                .ordinary_body_export_places_emitted,
+            0
+        );
+        assert_eq!(
+            output
+                .body_analysis_work
+                .ordinary_body_export_strings_emitted,
+            0
+        );
+    }
+
+    #[test]
+    fn exported_supported_body_round_trips_through_a_fresh_air_epoch_exactly() {
+        let source = "fn main() -> i32 { if 1 < 2 { (3 + 4) * 5 } else { 6 - 7 } }";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().unwrap();
+        let rir = AstGen::new(&ast, &mut interner).generate();
+        let main = interner.get("main").unwrap();
+        let body_span = rir
+            .iter()
+            .find_map(|(_, inst)| match inst.data {
+                rue_rir::InstData::FnDecl { name, body, .. } if name == main => {
+                    Some(rir.get(body).span)
+                }
+                _ => None,
+            })
+            .expect("main body span");
+        let output = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+            .analyze_all()
+            .unwrap();
+        let export = output
+            .ordinary_body_exports
+            .iter()
+            .find(|export| {
+                output
+                    .analyzed_body_owners
+                    .iter()
+                    .any(|owner| owner.token() == Some(export.owner))
+            })
+            .expect("warning-free main export");
+        let epoch = crate::SemanticImportEpoch::<
+            crate::SemanticBodyDefinitionIdentity,
+            std::sync::Arc<str>,
+        >::new(vec![], vec![], vec![])
+        .unwrap();
+        let imported = epoch.import_body(&export.body, body_span).unwrap();
+        let source = output
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .unwrap();
+
+        assert_eq!(source.air.return_type(), imported.air.return_type());
+        assert_eq!(source.air.len(), imported.air.len());
+        for ((source_ref, source_inst), (imported_ref, imported_inst)) in
+            source.air.iter().zip(imported.air.iter())
+        {
+            assert_eq!(source_ref.as_u32(), imported_ref.as_u32());
+            assert_eq!(
+                format!("{:?}", source_inst.data),
+                format!("{:?}", imported_inst.data)
+            );
+            assert_eq!(source_inst.ty, imported_inst.ty);
+            assert_eq!(source_inst.span, imported_inst.span);
+        }
+        assert_eq!(
+            format!("{:?}", source.air.places()),
+            format!("{:?}", imported.air.places())
+        );
+        assert_eq!(
+            format!("{:?}", source.air.projections()),
+            format!("{:?}", imported.air.projections())
+        );
+        assert_eq!(source.air.param_drops(), imported.air.param_drops());
+        assert_eq!(source.num_locals, imported.num_locals);
+        assert_eq!(source.num_param_slots, imported.num_param_slots);
+        assert_eq!(source.param_modes, imported.param_modes);
+        assert_eq!(
+            source.allow_unreachable_code,
+            imported.allow_unreachable_code
+        );
+        assert_eq!(output.strings, imported.strings);
+        assert!(imported.warnings.is_empty());
+        for slot in 0..source.num_locals {
+            assert_eq!(
+                source.air.is_borrow_slot(slot),
+                imported.air.is_borrow_slot(slot)
+            );
+        }
+    }
+
+    #[test]
+    fn strbuf_literal_body_uses_explicit_builtin_identity_and_imports_fresh() {
+        let source = "fn main() -> StrBuf { \"hello\" }";
+        let output = compile_to_air(source).unwrap();
+        assert_eq!(output.ordinary_body_exports.len(), 1);
+        let body = &output.ordinary_body_exports[0].body;
+        assert!(matches!(
+            &body.return_type,
+            crate::SemanticImportType::BuiltinNominal { name, kind }
+                if name.as_ref() == "StrBuf"
+                    && *kind == crate::SemanticImportNominalKind::Struct
+        ));
+        assert_eq!(body.strings.as_ref(), &[std::sync::Arc::from("hello")]);
+        assert!(
+            body.instructions
+                .iter()
+                .all(|inst| !matches!(inst.ty, crate::SemanticImportType::Nominal(_)))
+        );
+
+        let epoch = crate::SemanticImportEpoch::<
+            crate::SemanticBodyDefinitionIdentity,
+            std::sync::Arc<str>,
+        >::new(vec![], vec![], vec![])
+        .unwrap();
+        let imported = epoch
+            .import_body(
+                body,
+                rue_span::Span::with_file(rue_span::FileId::DEFAULT, 0, source.len() as u32),
+            )
+            .unwrap();
+        assert_eq!(imported.strings, vec!["hello"]);
+        assert_eq!(
+            imported.air.return_type(),
+            output.functions[0].air.return_type()
+        );
+    }
+
+    #[test]
     fn specialization_work_separates_unique_and_duplicate_requests() {
         let output = compile_to_air(
             "fn identity(comptime T: type, value: T) -> T { value }\nfn main() -> i32 { identity(i32, 1) + identity(i32, 2) }",

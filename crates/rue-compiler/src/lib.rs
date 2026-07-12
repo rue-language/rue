@@ -32,6 +32,7 @@ mod canonical_semantic;
 mod definition_snapshot;
 mod diagnostic;
 mod drop_glue;
+mod durable_body;
 mod durable_semantics;
 mod frontend_session;
 mod import_graph;
@@ -61,6 +62,13 @@ pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
     DefinitionRecord, DefinitionShard, DefinitionShardWork, DefinitionSnapshot, ModuleDefinition,
     ModuleKey,
+};
+pub use durable_body::{
+    DURABLE_ORDINARY_BODY_SCHEMA_VERSION, DurableAirInst, DurableAirInstData, DurableAirRef,
+    DurableBodyAnchor, DurableBodyConversionFailure, DurableBodyProjectionFailure, DurableBodyWork,
+    DurableCallArg, DurableMatchArm, DurableOrdinaryBody, DurableOrdinaryBodyPayload,
+    DurablePattern, DurablePlace, DurablePlaceRef, DurableProjection,
+    convert_semantic_body_exports, finalize_durable_ordinary_bodies,
 };
 pub use durable_semantics::{
     DURABLE_SEMANTIC_SCHEMA_VERSION, DurableConstValue, DurableDeclarationPayload,

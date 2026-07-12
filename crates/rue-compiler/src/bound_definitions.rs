@@ -170,6 +170,12 @@ impl BoundDefinitionRecord {
     pub(crate) fn input_partition(&self) -> BoundDefinitionInputPartition {
         self.input_partition.clone()
     }
+    pub(crate) fn body_span(&self) -> Option<Span> {
+        match self.input_partition {
+            BoundDefinitionInputPartition::Body { body, .. } => Some(body),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
