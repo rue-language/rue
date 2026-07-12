@@ -280,6 +280,10 @@ impl ParsedModule {
     pub fn resolve(&self, symbol: &ParsedSymbol) -> CompileResult<&str> {
         self.resolver.resolve(symbol)
     }
+
+    pub(crate) fn parsed_symbol(&self, spur: Spur) -> CompileResult<ParsedSymbol> {
+        self.resolver.symbol(spur)
+    }
 }
 
 /// Deterministically ordered collection of independently parsed modules.

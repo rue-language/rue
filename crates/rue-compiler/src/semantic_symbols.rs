@@ -1,6 +1,7 @@
 //! Provenance-safe translation from parsed-module symbols into one request.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, ErrorKind};
@@ -39,20 +40,25 @@ pub struct SemanticSymbolUniverse {
     admitted_modules: Arc<[Arc<crate::parsed_modules::ParsedModule>]>,
     interner: ThreadedRodeo,
     provenance: Arc<SemanticSymbolProvenance>,
-    work: SemanticTranslationWork,
+    local_symbol_resolutions: AtomicUsize,
+    semantic_intern_attempts: AtomicUsize,
+    unique_semantic_strings: AtomicUsize,
 }
 
 impl SemanticSymbolUniverse {
     /// Start a destination universe for one canonical program traversal.
     pub fn new(program: &ParsedProgram) -> Self {
+        Self::from_modules(program.modules())
+    }
+
+    pub(crate) fn from_modules(modules: &[Arc<crate::parsed_modules::ParsedModule>]) -> Self {
         Self {
-            admitted_modules: program.modules().to_vec().into(),
+            admitted_modules: modules.to_vec().into(),
             interner: ThreadedRodeo::new(),
             provenance: Arc::new(SemanticSymbolProvenance),
-            work: SemanticTranslationWork {
-                modules_visited: program.modules().len(),
-                ..SemanticTranslationWork::default()
-            },
+            local_symbol_resolutions: AtomicUsize::new(0),
+            semantic_intern_attempts: AtomicUsize::new(0),
+            unique_semantic_strings: AtomicUsize::new(0),
         }
     }
 
@@ -61,6 +67,16 @@ impl SemanticSymbolUniverse {
     /// This API deliberately accepts no naked local `Spur`.
     pub fn translate(
         &mut self,
+        owner: &ParsedAstView,
+        symbol: &ParsedSymbol,
+    ) -> CompileResult<SemanticSymbol> {
+        self.translate_shared(owner, symbol)
+    }
+
+    /// Canonical lowering is a single-threaded builder even though its frozen
+    /// output remains `Send + Sync`.
+    fn translate_shared(
+        &self,
         owner: &ParsedAstView,
         symbol: &ParsedSymbol,
     ) -> CompileResult<SemanticSymbol> {
@@ -74,10 +90,12 @@ impl SemanticSymbolUniverse {
             ));
         }
         let text = owner.module().resolve(symbol)?;
-        self.work.local_symbol_resolutions += 1;
-        self.work.semantic_intern_attempts += 1;
+        self.local_symbol_resolutions
+            .fetch_add(1, Ordering::Relaxed);
+        self.semantic_intern_attempts
+            .fetch_add(1, Ordering::Relaxed);
         if self.interner.get(text).is_none() {
-            self.work.unique_semantic_strings += 1;
+            self.unique_semantic_strings.fetch_add(1, Ordering::Relaxed);
         }
         Ok(SemanticSymbol {
             spur: self.interner.get_or_intern(text),
@@ -98,7 +116,33 @@ impl SemanticSymbolUniverse {
     }
 
     pub fn work(&self) -> SemanticTranslationWork {
-        self.work
+        SemanticTranslationWork {
+            modules_visited: self.admitted_modules.len(),
+            local_symbol_resolutions: self.local_symbol_resolutions.load(Ordering::Relaxed),
+            semantic_intern_attempts: self.semantic_intern_attempts.load(Ordering::Relaxed),
+            unique_semantic_strings: self.unique_semantic_strings.load(Ordering::Relaxed),
+            ast_payload_clones: 0,
+            parser_invocations: 0,
+        }
+    }
+
+    pub(crate) fn translate_ast_symbol(
+        &self,
+        owner: &ParsedAstView,
+        symbol: Spur,
+    ) -> CompileResult<SemanticSymbol> {
+        let symbol = owner.module().parsed_symbol(symbol)?;
+        self.translate_shared(owner, &symbol)
+    }
+
+    pub(crate) fn interner(&self) -> &ThreadedRodeo {
+        &self.interner
+    }
+}
+
+impl SemanticSymbol {
+    pub(crate) fn spur(&self) -> Spur {
+        self.spur
     }
 }
 
