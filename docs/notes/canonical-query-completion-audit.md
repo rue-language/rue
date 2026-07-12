@@ -15,22 +15,22 @@ incremental-compilation goal is complete.
 | Immutable per-file/query inputs | Satisfied. `SourceSnapshot` owns `Arc<String>` text plus validated metadata. `SemanticInputDescriptor` owns source revision, module-resolution inputs, target, and stable preview features; `CodegenInputDescriptor` adds optimization level. |
 | Batch compatibility | Satisfied with deliberate diagnostic-order adapters. `compile_source_snapshot_with_options_impl` uses `parse_source_snapshot_modules_for_batch` and `merge_parsed_modules_for_batch`; batch/borrowed compatibility tests compare artifacts and diagnostics. |
 | Reusable in-process invalidation | Satisfied at whole-query granularity, not fine-grained semantic granularity. `CanonicalFrontendSession::update` reuses parsed module Arcs, preserves the last good revision after syntax failure, and invalidates merge/RIR/semantic/definition caches when the published program changes. The benchmark makes this behavior measurable. |
-| Tooling seams | Partially satisfied. Backend-free `published`, `merge`, `rir`, `semantic`, and `stable_definitions` queries exist; semantic output exposes warnings. This slice adds binary-search `ParsedProgram::module(ModuleId)` and `BoundDefinitionSet::definition_by_key(StableDefinitionKey)`. Diagnostics remain returned errors rather than a retained query result. |
+| Tooling seams | Partially satisfied. Backend-free `published`, `import_graph`, `merge`, `rir`, `semantic`, and `stable_definitions` queries exist; semantic output exposes warnings. Import resolution is lazy, memoized, keyed by owned source/resolution/std-dir inputs, and consumes canonical parsed import sites without RIR. Binary-search `ParsedProgram::module(ModuleId)` and `BoundDefinitionSet::definition_by_key(StableDefinitionKey)` support keyed artifact access. Diagnostics remain returned errors rather than a retained query result. |
 | No disk cache or full-LSP shortcut | Satisfied by scope. Session caches are process-owned values only; the benchmark performs no measured filesystem discovery and no backend/link. No persistent cache format, watcher, protocol server, or LSP is introduced. |
 | Small mergeable, tracked delivery | Satisfied operationally: the stack is split into described RUE-719 jj changes and independently gated slices. This audit cannot prove external Linear state; commit descriptions are the locally falsifiable tracking evidence. |
 
 ## Ranked remaining gaps
 
-1. **Must finish: import-resolution invalidation is over-broad and not directly
-   session-gated.** `SemanticInputDescriptor::new` includes all physical paths in
-   `ModuleResolutionInputs`, while `CanonicalFrontendSession::update` clears all
-   downstream queries whenever parsed-program pointer equivalence changes.
-   `import_graph::explicit_resolution_changes_graph_but_not_source_identity`
-   proves graph sensitivity and the session root/relocation test proves broad
-   invalidation, but no session test changes only an import resolution input and
-   asserts the exact graph/query outcome. Acceptance: a session-level test changes
-   one resolution mapping, observes no lex/parse, observes the intended import
-   graph change, and documents whether semantic execution is required.
+1. **Must finish: resolution-only downstream invalidation remains broad.** The
+   direct `CanonicalFrontendSession::import_graph` query now has session tests for
+   physical relocation, root and std-dir variants, pointer reuse, failed syntax,
+   empty graphs, and zero lower/bind work. A physical-only change performs zero
+   lex/parse and recomputes import resolution exactly once. It still invalidates
+   merge/RIR/semantic artifacts because canonical merged and RIR provenance owns
+   exact rebound parsed-module/source-snapshot inputs. Acceptance: either prove
+   and implement a relocation-independent merged/RIR artifact boundary, or retain
+   current invalidation and make the first dependency-keyed semantic slice reuse
+   only values whose provenance excludes physical resolution.
 
 2. **Must finish: semantic invalidation is still revision-wide.** One leaf edit
    reparses one module but clears and reruns merge, RIR, binding, and reachable

@@ -5,13 +5,15 @@ use std::sync::Arc;
 use rue_air::{DeclarationBindingWork, SemanticBindingManifestWork};
 
 use crate::{
-    BoundDefinitionSet, BoundDefinitionWork, CanonicalMergeWork, CanonicalMergedProgram,
-    CanonicalParseSession, CanonicalRirOutput, CanonicalRirWork, CanonicalSemanticOutput,
-    CanonicalSemanticWork, CodegenInputDescriptor, CompileError, CompileErrors, CompileOptions,
-    ErrorKind, ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor,
+    BoundDefinitionSet, BoundDefinitionWork, CanonicalImportGraph, CanonicalImportGraphValidation,
+    CanonicalMergeWork, CanonicalMergedProgram, CanonicalParseSession, CanonicalRirOutput,
+    CanonicalRirWork, CanonicalSemanticOutput, CanonicalSemanticWork, CodegenInputDescriptor,
+    CompileError, CompileErrors, CompileOptions, ErrorKind, ModuleResolutionInputs,
+    ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor, SourceRevision,
     SourceSnapshot, analyze_canonical_program,
     bound_definitions::bind_canonical_definitions_with_work, lower_canonical_rir,
-    merge_parsed_modules, parsed_modules::ParsedProgram,
+    merge_parsed_modules, parsed_modules::ParsedProgram, resolve_canonical_import_graph,
+    validate_canonical_import_graph,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -26,6 +28,9 @@ pub struct CanonicalFrontendSessionWork {
     pub updates: usize,
     pub last_parse: ParsedModulesWork,
     pub last_invalidation: ParseInvalidationSummary,
+    pub imports: FrontendQueryWork,
+    pub import_entries: usize,
+    pub import_entries_invalidated: usize,
     pub merge: FrontendQueryWork,
     pub rir: FrontendQueryWork,
     pub downstream_invalidations: usize,
@@ -39,6 +44,32 @@ pub struct CanonicalFrontendSessionWork {
     pub definition_entries: usize,
     pub definition_entries_invalidated: usize,
     pub definition_records: Vec<DefinitionQueryRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ImportGraphInputDescriptor {
+    pub sources: SourceRevision,
+    pub resolution: ModuleResolutionInputs,
+    pub std_dir: Option<Arc<str>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CanonicalImportGraphOutput {
+    input: ImportGraphInputDescriptor,
+    graph: CanonicalImportGraph,
+    validation: CanonicalImportGraphValidation,
+}
+
+impl CanonicalImportGraphOutput {
+    pub fn input(&self) -> &ImportGraphInputDescriptor {
+        &self.input
+    }
+    pub fn graph(&self) -> &CanonicalImportGraph {
+        &self.graph
+    }
+    pub fn validation(&self) -> &CanonicalImportGraphValidation {
+        &self.validation
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,9 +120,16 @@ pub struct CanonicalFrontendSession {
     published: Option<Arc<ParsedProgram>>,
     merge_cache: Option<Result<Arc<CanonicalMergedProgram>, CompileErrors>>,
     rir_cache: Option<Arc<CanonicalRirOutput>>,
+    import_cache: Vec<ImportCacheEntry>,
     semantic_cache: Vec<SemanticCacheEntry>,
     definition_cache: Vec<DefinitionCacheEntry>,
     work: CanonicalFrontendSessionWork,
+}
+
+#[derive(Debug)]
+struct ImportCacheEntry {
+    input: ImportGraphInputDescriptor,
+    result: Result<Arc<CanonicalImportGraphOutput>, CompileErrors>,
 }
 
 #[derive(Debug)]
@@ -143,6 +181,9 @@ impl CanonicalFrontendSession {
                     }
                     self.merge_cache = None;
                     self.rir_cache = None;
+                    self.work.import_entries_invalidated += self.import_cache.len();
+                    self.import_cache.clear();
+                    self.work.import_entries = 0;
                     self.work.semantic_entries_invalidated += self.semantic_cache.len();
                     self.semantic_cache.clear();
                     self.work.definition_entries_invalidated += self.definition_cache.len();
@@ -169,6 +210,54 @@ impl CanonicalFrontendSession {
                 downstream_invalidated: false,
             },
         }
+    }
+
+    /// Resolve canonical parsed import sites without lowering or semantic work.
+    pub fn import_graph(
+        &mut self,
+        std_dir: Option<&str>,
+    ) -> Result<Arc<CanonicalImportGraphOutput>, CompileErrors> {
+        self.work.imports.calls += 1;
+        let parsed = self.published.as_deref().ok_or_else(no_published_program)?;
+        let resolution = ModuleResolutionInputs::new(
+            parsed.root().clone(),
+            parsed
+                .modules()
+                .iter()
+                .map(|module| crate::ModuleResolutionInput {
+                    module: module.module_id().clone(),
+                    physical_path: Arc::from(module.physical_path()),
+                })
+                .collect(),
+        )
+        .expect("published parsed modules have validated resolution inputs");
+        let input = ImportGraphInputDescriptor {
+            sources: parsed.source_revision().clone(),
+            resolution,
+            std_dir: std_dir.map(Arc::from),
+        };
+        if let Some(entry) = self.import_cache.iter().find(|entry| entry.input == input) {
+            self.work.imports.reuses += 1;
+            return entry.result.clone();
+        }
+        self.work.imports.executions += 1;
+        let result =
+            resolve_canonical_import_graph(parsed.import_directives(), &input.resolution, std_dir)
+                .map(|graph| {
+                    let validation = validate_canonical_import_graph(&graph, &input.resolution);
+                    Arc::new(CanonicalImportGraphOutput {
+                        input: input.clone(),
+                        graph,
+                        validation,
+                    })
+                })
+                .map_err(CompileErrors::from);
+        self.import_cache.push(ImportCacheEntry {
+            input,
+            result: result.clone(),
+        });
+        self.work.import_entries = self.import_cache.len();
+        result
     }
 
     pub fn merge(&mut self) -> Result<Arc<CanonicalMergedProgram>, CompileErrors> {
@@ -361,8 +450,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        LinkerMode, ModuleId, OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata,
-        SourceSnapshot, Target,
+        CanonicalImportResolution, LinkerMode, ModuleId, OptLevel, PreviewFeature, PreviewFeatures,
+        SourceMetadata, SourceSnapshot, Target,
     };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -831,6 +920,131 @@ mod tests {
                 .expect("definition by stable key"),
             record
         ));
+    }
+
+    #[test]
+    fn import_graph_query_reuses_and_recomputes_only_after_resolution_changes() {
+        let original = snapshot(
+            &[
+                (
+                    1,
+                    "/p/app/main.rue",
+                    "app/main.rue",
+                    "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }",
+                ),
+                (2, "/p/app/helper.rue", "app/helper.rue", "fn helper() {}"),
+            ],
+            1,
+        );
+        let relocated = snapshot(
+            &[
+                (
+                    1,
+                    "/p/app/main.rue",
+                    "app/main.rue",
+                    "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }",
+                ),
+                (2, "/else/helper.rue", "app/helper.rue", "fn helper() {}"),
+            ],
+            1,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&original).into_result().unwrap();
+        let first = session.import_graph(None).unwrap();
+        let reused = session.import_graph(None).unwrap();
+        assert!(Arc::ptr_eq(&first, &reused));
+        assert!(matches!(
+            first.graph().records()[0].resolution(),
+            CanonicalImportResolution::Resolved(module) if module.as_str() == "app/helper.rue"
+        ));
+
+        let update = session.update(&relocated);
+        assert_eq!(update.work().syntax.lexer_invocations, 0);
+        assert_eq!(update.work().syntax.parser_invocations, 0);
+        assert_eq!(update.work().modules_rebound, 1);
+        assert!(update.downstream_invalidated());
+        update.into_result().unwrap();
+        let moved = session.import_graph(None).unwrap();
+        assert!(matches!(
+            moved.graph().records()[0].resolution(),
+            CanonicalImportResolution::Missing
+        ));
+        assert_eq!(session.work().imports.calls, 3);
+        assert_eq!(session.work().imports.executions, 2);
+        assert_eq!(session.work().imports.reuses, 1);
+        assert_eq!(session.work().import_entries_invalidated, 1);
+        assert_eq!(session.work().merge.executions, 0);
+        assert_eq!(session.work().rir.executions, 0);
+        assert_eq!(session.work().semantic.executions, 0);
+        assert_eq!(session.work().definitions.executions, 0);
+    }
+
+    #[test]
+    fn import_graph_keys_root_std_context_and_preserves_last_good_graph() {
+        let source = snapshot(
+            &[
+                (
+                    1,
+                    "/p/main.rue",
+                    "main.rue",
+                    "fn main() -> i32 { let s = @import(\"std\"); 0 }",
+                ),
+                (2, "/sdk/_std.rue", "std/_std.rue", "fn helper() {}"),
+            ],
+            1,
+        );
+        let other_root = snapshot(
+            &[
+                (
+                    1,
+                    "/p/main.rue",
+                    "main.rue",
+                    "fn main() -> i32 { let s = @import(\"std\"); 0 }",
+                ),
+                (2, "/sdk/_std.rue", "std/_std.rue", "fn helper() {}"),
+            ],
+            2,
+        );
+        let broken = snapshot(&[(1, "/p/main.rue", "main.rue", "fn main( {")], 1);
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let missing = session.import_graph(None).unwrap();
+        let resolved = session.import_graph(Some("/sdk")).unwrap();
+        assert!(matches!(
+            missing.graph().records()[0].resolution(),
+            CanonicalImportResolution::Missing
+        ));
+        assert!(matches!(
+            resolved.graph().records()[0].resolution(),
+            CanonicalImportResolution::Resolved(_)
+        ));
+        assert_eq!(session.work().import_entries, 2);
+        assert!(session.update(&broken).result().is_err());
+        assert!(Arc::ptr_eq(
+            &resolved,
+            &session.import_graph(Some("/sdk")).unwrap()
+        ));
+
+        session.update(&other_root).into_result().unwrap();
+        let rerooted = session.import_graph(Some("/sdk")).unwrap();
+        assert_eq!(rerooted.graph().root().as_str(), "std/_std.rue");
+        assert_ne!(
+            resolved.input().sources.root(),
+            rerooted.input().sources.root()
+        );
+    }
+
+    #[test]
+    fn empty_import_graph_is_send_sync_and_concurrently_readable() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<CanonicalImportGraphOutput>();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&base()).into_result().unwrap();
+        let graph = session.import_graph(None).unwrap();
+        assert!(graph.graph().records().is_empty());
+        std::thread::spawn(move || assert!(graph.validation().is_valid()))
+            .join()
+            .unwrap();
     }
 
     #[test]
