@@ -28,6 +28,7 @@
 mod analysis;
 mod analyze_ops;
 mod anon_structs;
+mod binding_manifest;
 mod builtins;
 mod comptime_eval;
 mod context;
@@ -45,6 +46,10 @@ mod typeck;
 mod visibility;
 
 // Public re-exports
+pub use binding_manifest::{
+    BoundSema, SemanticBinding, SemanticBindingKind, SemanticBindingManifest,
+    SemanticBindingManifestWork, SemanticBindingNamespace,
+};
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
 pub use gather::GatherOutput;
@@ -262,7 +267,12 @@ impl<'a> Sema<'a> {
     ///
     /// This is the main entry point for semantic analysis. It returns analyzed
     /// functions, struct definitions, enum definitions, and any warnings.
-    pub fn analyze_all(mut self) -> MultiErrorResult<SemaOutput> {
+    pub fn analyze_all(self) -> MultiErrorResult<SemaOutput> {
+        self.bind_declarations()?.analyze_all_bodies()
+    }
+
+    /// Complete all declaration and namespace binding without analyzing bodies.
+    pub fn bind_declarations(mut self) -> MultiErrorResult<BoundSema<'a>> {
         // Phase 0a: Reject a top-level name claimed by two of function /
         // struct / enum, order-independently (spec 10.3:1, 10.5:1, RUE-239).
         // Runs before builtin injection so it scans only user RIR. Value
@@ -282,7 +292,7 @@ impl<'a> Sema<'a> {
         self.resolve_declarations().map_err(CompileErrors::from)?;
 
         // Delegate to the analysis module for function body analysis
-        analysis::analyze_all_function_bodies(self)
+        Ok(self.into_bound())
     }
 
     /// Analyze all function bodies, assuming declarations are already collected.

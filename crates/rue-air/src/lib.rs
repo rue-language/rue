@@ -37,9 +37,10 @@ pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};
 pub use path_norm::normalize_module_path;
 pub use sema::{
-    AnalyzedFunction, BodyAnalysisWork, ConstValue, DirResolution, FunctionInfo, GatherOutput,
-    MethodInfo, ModulePath, ParamSlotModes, RirDeclarationIndexWork, Sema, SemaOutput,
-    import_candidate_groups,
+    AnalyzedFunction, BodyAnalysisWork, BoundSema, ConstValue, DirResolution, FunctionInfo,
+    GatherOutput, MethodInfo, ModulePath, ParamSlotModes, RirDeclarationIndexWork, Sema,
+    SemaOutput, SemanticBinding, SemanticBindingKind, SemanticBindingManifest,
+    SemanticBindingManifestWork, SemanticBindingNamespace, import_candidate_groups,
 };
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,
