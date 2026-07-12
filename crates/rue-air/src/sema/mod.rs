@@ -47,8 +47,8 @@ mod visibility;
 
 // Public re-exports
 pub use binding_manifest::{
-    BoundSema, SemanticBinding, SemanticBindingKind, SemanticBindingManifest,
-    SemanticBindingManifestWork, SemanticBindingNamespace,
+    BoundSema, DeclarationBindingWork, SemanticBinding, SemanticBindingKind,
+    SemanticBindingManifest, SemanticBindingManifestWork, SemanticBindingNamespace,
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
