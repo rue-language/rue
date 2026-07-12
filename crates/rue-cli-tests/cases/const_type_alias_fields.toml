@@ -1,8 +1,9 @@
 # A module-level `const Alias = SomeType;` used as a struct FIELD type resolves
 # on the context-free type path (declaration/collection pass), matching the
-# context-aware path — same-file and cross-module (RUE-706, partial: covers a
-# const alias to a simple/builtin type; a const alias to a cross-module GENERIC
-# instantiation as a field type is a deeper RUE-630-family follow-up).
+# context-aware path — same-file and cross-module, for both a simple/builtin
+# type AND a cross-module GENERIC instantiation (`const Words =
+# std.arraybuf.ArrayBuf(u64)`), the RUE-706 motivating case (a non-generic
+# collection written as a top-level named struct with a generic-alias field).
 
 [section]
 id = "cli.const_type_alias_fields"
@@ -46,6 +47,38 @@ pub struct Holder {
     v: W,
     fn new() -> Self { Self { v: 5 } }
     fn get(borrow self) -> i64 { self.v }
+}
+""" },
+]
+
+# RUE-706 motivating case: a non-generic collection expressed as a top-level
+# named struct whose field type is a const alias to a cross-module GENERIC
+# instantiation. This is the spelling RUE-706 tracked as failing (E0204); it now
+# resolves (a top-level `pub fn Name() -> type` constructor, RUE-696, also works
+# and is what std.bitset uses).
+[[case]]
+name = "cross_module_generic_alias_field"
+description = "A named struct with a `const Words = std.arraybuf.ArrayBuf(u64)`-typed field compiles and runs (RUE-706)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 3
+files = [
+  { path = "main.rue", source = """
+const bits = @import("bits.rue");
+fn main() -> i32 {
+    let mut b = bits.Bits.new();
+    b.push_word(1); b.push_word(2); b.push_word(4);
+    @intCast(b.count())
+}
+""" },
+  { path = "bits.rue", source = """
+const std = @import("std");
+const Words = std.arraybuf.ArrayBuf(u64);
+pub struct Bits {
+    words: Words,
+    fn new() -> Self { let w = std.arraybuf.ArrayBuf(u64); Self { words: w.new() } }
+    fn push_word(inout self, x: u64) { self.words.push(x); }
+    fn count(borrow self) -> u64 { self.words.len() }
 }
 """ },
 ]
