@@ -46,6 +46,10 @@ incremental-compilation goal is complete.
    a stable ordered destination universe, explicit semantic inputs, and complete
    resolved/missing/ambiguous module-import edges. Definition-level edges and
    body/CFG reuse remain intentionally absent.
+   Ordinary free-function bodies now retain request-local direct free-call
+   events at the worklist boundary, but the completeness bit remains false until
+   specialization and method/destructor caller branches plus stable-key
+   translation land.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now

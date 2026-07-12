@@ -1,7 +1,8 @@
 //! One-pass canonical declaration binding, body analysis, and CFG lowering.
 
 use rue_air::{
-    BodyAnalysisWork, DeclarationBindingWork, RirDeclarationIndexWork, SemanticBindingManifestWork,
+    BodyAnalysisWork, DeclarationBindingWork, OrdinaryFreeFunctionDependencyEvent,
+    RirDeclarationIndexWork, SemanticBindingManifestWork,
 };
 use tracing::info_span;
 
@@ -40,6 +41,8 @@ pub struct CanonicalSemanticOutput {
     warnings: Vec<CompileWarning>,
     bound_definitions: Option<BoundDefinitionSet>,
     work: CanonicalSemanticWork,
+    ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
+    ordinary_free_function_dependencies_complete: bool,
 }
 
 impl CanonicalSemanticOutput {
@@ -62,6 +65,12 @@ impl CanonicalSemanticOutput {
     /// Semantic and CFG warnings in canonical output order.
     pub fn warnings(&self) -> &[CompileWarning] {
         &self.warnings
+    }
+    pub fn ordinary_free_function_dependencies(&self) -> &[OrdinaryFreeFunctionDependencyEvent] {
+        &self.ordinary_free_function_dependencies
+    }
+    pub fn ordinary_free_function_dependencies_complete(&self) -> bool {
+        self.ordinary_free_function_dependencies_complete
     }
     /// Stable definition identities when requested for this run.
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
@@ -139,6 +148,10 @@ pub fn analyze_canonical_program(
 
     let sema_output = bound.analyze_all_bodies()?;
     let body_analysis = sema_output.body_analysis_work;
+    let ordinary_free_function_dependencies =
+        sema_output.ordinary_free_function_dependencies.clone();
+    let ordinary_free_function_dependencies_complete =
+        sema_output.ordinary_free_function_dependencies_complete;
     drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
@@ -161,6 +174,8 @@ pub fn analyze_canonical_program(
         warnings: cfg.warnings,
         bound_definitions,
         work,
+        ordinary_free_function_dependencies,
+        ordinary_free_function_dependencies_complete,
     })
 }
 

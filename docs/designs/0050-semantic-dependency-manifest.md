@@ -92,3 +92,14 @@ translate future definition-level edges; it makes no body or CFG reuse claim.
 
 Acceptance requires one existing semantic execution to emit the complete
 manifest with no second whole-RIR traversal and unchanged diagnostic bytes/order.
+
+### Free-function capture progress
+
+The first request-local capture seam now records free-function references from
+ordinary reachable free-function bodies at the existing worklist boundary. Its
+neutral endpoints are the defining FileId epoch plus owned source name; methods,
+constructors and intrinsics remain excluded by their separate channels. The
+output explicitly reports incomplete because generic-specialized, method and
+destructor callers have separate driver branches not yet carrying a stable
+owner. These events are not translated to `StableDefinitionKey` and must not
+drive reuse until every branch is captured and unique translation fails closed.
