@@ -530,15 +530,15 @@ struct PendingDefinition {
 }
 
 #[derive(Clone, Copy)]
-struct DefinitionParts {
-    namespace: DefinitionNamespace,
-    kind: DefinitionKind,
-    visibility: Option<Visibility>,
-    name: Ident,
-    declaration_span: Span,
+pub(crate) struct DefinitionParts {
+    pub(crate) namespace: DefinitionNamespace,
+    pub(crate) kind: DefinitionKind,
+    pub(crate) visibility: Option<Visibility>,
+    pub(crate) name: Ident,
+    pub(crate) declaration_span: Span,
 }
 
-fn definition_parts(item: &Item) -> Option<DefinitionParts> {
+pub(crate) fn definition_parts(item: &Item) -> Option<DefinitionParts> {
     let parts = match item {
         Item::Function(function) => DefinitionParts {
             namespace: DefinitionNamespace::ModuleItem,
@@ -652,7 +652,7 @@ fn validate_file_membership(
     Ok(())
 }
 
-fn validate_span(
+pub(crate) fn validate_span(
     kind: &str,
     span: Span,
     containing_file_id: FileId,
