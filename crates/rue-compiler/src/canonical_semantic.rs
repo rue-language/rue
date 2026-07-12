@@ -1,9 +1,9 @@
 //! One-pass canonical declaration binding, body analysis, and CFG lowering.
 
 use rue_air::{
-    BodyAnalysisWork, DeclarationBindingWork, OrdinaryFreeFunctionDependencyEvent,
-    RirDeclarationIndexWork, SemanticBindingManifestWork, SpecializedFreeFunctionDependencyEvent,
-    SpecializedFreeFunctionOrigin,
+    BodyAnalysisWork, DeclarationBindingWork, NamedMethodDependencyEvent,
+    OrdinaryFreeFunctionDependencyEvent, RirDeclarationIndexWork, SemanticBindingManifestWork,
+    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
 use tracing::info_span;
 
@@ -47,6 +47,9 @@ pub struct CanonicalSemanticOutput {
     specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
     specialized_free_function_dependencies: Vec<SpecializedFreeFunctionDependencyEvent>,
     specialized_free_function_dependencies_complete: bool,
+    named_method_dependencies: Vec<NamedMethodDependencyEvent>,
+    non_generic_named_method_dependencies_complete: bool,
+    generic_named_method_dependencies_complete: bool,
 }
 
 impl CanonicalSemanticOutput {
@@ -86,6 +89,15 @@ impl CanonicalSemanticOutput {
     }
     pub fn specialized_free_function_dependencies_complete(&self) -> bool {
         self.specialized_free_function_dependencies_complete
+    }
+    pub fn named_method_dependencies(&self) -> &[NamedMethodDependencyEvent] {
+        &self.named_method_dependencies
+    }
+    pub fn non_generic_named_method_dependencies_complete(&self) -> bool {
+        self.non_generic_named_method_dependencies_complete
+    }
+    pub fn generic_named_method_dependencies_complete(&self) -> bool {
+        self.generic_named_method_dependencies_complete
     }
     /// Stable definition identities when requested for this run.
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
@@ -172,6 +184,11 @@ pub fn analyze_canonical_program(
         sema_output.specialized_free_function_dependencies.clone();
     let specialized_free_function_dependencies_complete =
         sema_output.specialized_free_function_dependencies_complete;
+    let named_method_dependencies = sema_output.named_method_dependencies.clone();
+    let non_generic_named_method_dependencies_complete =
+        sema_output.non_generic_named_method_dependencies_complete;
+    let generic_named_method_dependencies_complete =
+        sema_output.generic_named_method_dependencies_complete;
     drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
@@ -199,6 +216,9 @@ pub fn analyze_canonical_program(
         specialized_free_function_origins,
         specialized_free_function_dependencies,
         specialized_free_function_dependencies_complete,
+        named_method_dependencies,
+        non_generic_named_method_dependencies_complete,
+        generic_named_method_dependencies_complete,
     })
 }
 
@@ -498,6 +518,31 @@ mod tests {
         assert_eq!(many.body_analysis.reachable_declaration_rir_visits, 0);
         assert!(many.binding.input_rir_instructions > one.binding.input_rir_instructions);
         assert!(many.binding.indexed_free_functions > one.binding.indexed_free_functions);
+    }
+
+    fn named_method_capture_with_irrelevant_declarations(count: usize) -> CanonicalSemanticWork {
+        let mut source = String::from(
+            "fn helper() -> i32 { 1 } struct Value { fn run(borrow self) -> i32 { helper() } } fn main() -> i32 { let value = Value {}; value.run() }",
+        );
+        for index in 0..count {
+            source.push_str(&format!(" fn irrelevant{index}() -> i32 {{ {index} }}"));
+        }
+        let snapshot = snapshot(&[(1, "/main.rue", "main.rue", &source)], 1);
+        canonical(&snapshot, &CompileOptions::default(), false)
+            .0
+            .work()
+    }
+
+    #[test]
+    fn named_method_capture_work_is_constant_with_128_irrelevant_declarations() {
+        let one = named_method_capture_with_irrelevant_declarations(1);
+        let many = named_method_capture_with_irrelevant_declarations(128);
+        assert_eq!(one.body_analysis.named_method_dependency_events, 1);
+        assert_eq!(many.body_analysis.named_method_dependency_events, 1);
+        assert_eq!(one.body_analysis.named_method_record_lookups, 1);
+        assert_eq!(many.body_analysis.named_method_record_lookups, 1);
+        assert_eq!(one.body_analysis.reachable_declaration_rir_visits, 0);
+        assert_eq!(many.body_analysis.reachable_declaration_rir_visits, 0);
     }
 
     #[test]
