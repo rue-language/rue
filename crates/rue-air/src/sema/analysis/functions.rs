@@ -520,6 +520,28 @@ impl<'a> Sema<'a> {
             });
         }
 
+        // AIR emission can select a nominal type through paths which already
+        // carry a resolved `Type` (match patterns, inferred expressions, and
+        // comptime type values) without calling the textual type resolver.
+        // Observe those types while the current body owner is still installed;
+        // this walks produced AIR values, never RIR, and retains no AIR.
+        if self
+            .declaration_type_observer
+            .as_ref()
+            .is_some_and(|observer| observer.4 == crate::DeclarationTypeDependencyKind::Body)
+        {
+            let mut observed_types =
+                Vec::with_capacity(1 + param_vec.len() + air.instructions().len());
+            observed_types.push(return_type);
+            observed_types.extend(param_vec.iter().map(|param| param.ty));
+            observed_types.extend(air.instructions().iter().map(|inst| inst.ty));
+            self.body_analysis_work
+                .body_dependency_air_instructions_observed += air.instructions().len();
+            for ty in observed_types {
+                self.record_resolved_declaration_type(ty);
+            }
+        }
+
         Ok((
             air,
             ctx.next_slot,

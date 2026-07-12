@@ -14,7 +14,7 @@ use crate::{
     CodegenInputDescriptor, CompileError, CompileErrors, CompileOptions, CompileWarning,
     DurableDeclarationSemantic, ErrorKind, ModuleResolutionInputs, ParseInvalidationSummary,
     ParsedModulesWork, SemanticInputDescriptor, SourceRevision, SourceSnapshot,
-    StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace,
+    StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace, StablePreviewFeatures,
     bound_definitions::bind_canonical_definitions_with_work,
     canonical_merge::merge_parsed_modules_reusing_definitions,
     canonical_semantic::{
@@ -86,6 +86,9 @@ pub struct SemanticDependencyManifestWork {
     pub builtin_type_call_head_inputs_translated: usize,
     pub named_const_events_translated: usize,
     pub implicit_named_destructor_events_translated: usize,
+    pub body_owner_events_translated: usize,
+    pub body_named_events_translated: usize,
+    pub body_dependency_records_built: usize,
     pub extra_rir_instructions_visited: usize,
 }
 
@@ -154,6 +157,45 @@ pub struct StableNamedConstDependency {
     pub target: StableNamedConstDependencyTarget,
 }
 
+/// Complete stable inputs observed for one successfully analyzed ordinary body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StableBodyDependencyInputRecord {
+    owner: StableDefinitionKey,
+    fingerprint: StableDefinitionInputFingerprint,
+    target: crate::Target,
+    preview_features: StablePreviewFeatures,
+    direct_dependency_inputs: Arc<[StableDefinitionInputFingerprint]>,
+    builtin_type_call_heads: Arc<[StableBuiltinTypeCallHeadInput]>,
+    blockers: Arc<[SemanticDependencyBlocker]>,
+}
+
+impl StableBodyDependencyInputRecord {
+    pub fn owner(&self) -> &StableDefinitionKey {
+        &self.owner
+    }
+    pub fn fingerprint(&self) -> &StableDefinitionInputFingerprint {
+        &self.fingerprint
+    }
+    pub fn target(&self) -> crate::Target {
+        self.target
+    }
+    pub fn preview_features(&self) -> &StablePreviewFeatures {
+        &self.preview_features
+    }
+    pub fn direct_dependency_inputs(&self) -> &[StableDefinitionInputFingerprint] {
+        &self.direct_dependency_inputs
+    }
+    pub fn builtin_type_call_heads(&self) -> &[StableBuiltinTypeCallHeadInput] {
+        &self.builtin_type_call_heads
+    }
+    pub fn blockers(&self) -> &[SemanticDependencyBlocker] {
+        &self.blockers
+    }
+    pub fn reusable_boundary_supported(&self) -> bool {
+        self.blockers.is_empty()
+    }
+}
+
 /// Versioned digest of one immutable semantic input fragment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StableDefinitionFingerprint([u8; 32]);
@@ -218,6 +260,7 @@ pub enum StableModuleImportDependency {
 /// A semantic dependency surface whose captured edges may be incomplete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticDependencySurface {
+    BodyOwner,
     FreeFunctionCall,
     NonGenericNamedMethodCall,
     GenericNamedMethodCall,
@@ -232,6 +275,7 @@ pub enum SemanticDependencySurface {
 /// The production evidence which prevents a dependency surface from being trusted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticDependencyIncompleteReason {
+    AnonymousBodyOwnerUnavailable,
     CallerEndpointUnavailable,
     GenericSubstitutionIdentityUnavailable,
     DestructorEndpointUnavailable,
@@ -277,6 +321,8 @@ pub struct SemanticDependencyInputManifest {
     declaration_type_call_head_dependencies: Arc<[StableDeclarationTypeCallHeadDependency]>,
     builtin_type_call_head_inputs: Arc<[StableBuiltinTypeCallHeadInput]>,
     named_const_dependencies: Arc<[StableNamedConstDependency]>,
+    body_dependencies: Arc<[StableBodyDependencyInputRecord]>,
+    body_dependency_blockers: Arc<[SemanticDependencyBlocker]>,
     dependency_blockers: Arc<[SemanticDependencyBlocker]>,
     definition_universe_complete: bool,
     work: SemanticDependencyManifestWork,
@@ -349,6 +395,12 @@ impl SemanticDependencyInputManifest {
     }
     pub fn named_const_dependencies(&self) -> &[StableNamedConstDependency] {
         &self.named_const_dependencies
+    }
+    pub fn body_dependencies(&self) -> &[StableBodyDependencyInputRecord] {
+        &self.body_dependencies
+    }
+    pub fn body_dependency_blockers(&self) -> &[SemanticDependencyBlocker] {
+        &self.body_dependency_blockers
     }
     pub fn named_value_const_dependencies_complete(&self) -> bool {
         self.surface_complete(SemanticDependencySurface::NamedValueConst)
@@ -939,7 +991,7 @@ impl CanonicalFrontendSession {
         if let Ok(output) = &result {
             debug_assert_eq!(output.input(), &input);
             debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
-            debug_assert_eq!(semantic_work.manifest.build_invocations, 0);
+            debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
             debug_assert!(!semantic_work.stable_ids_requested);
             let reuse = semantic_work.declaration_reuse;
             self.work.durable_records_reused += reuse.durable_records_reused;
@@ -1164,6 +1216,11 @@ impl CanonicalFrontendSession {
                         "semantic dependency translation used a foreign definition revision",
                     ));
                 }
+                if semantic.body_owner_issuer().source_revision() != &input.sources {
+                    return Err(invalid_dependency_manifest(
+                        "semantic dependency translation used a stale body-owner issuer revision",
+                    ));
+                }
                 let mut edges = Vec::new();
                 for origin in semantic.specialized_free_function_origins() {
                     stable_free_function_endpoint(
@@ -1173,12 +1230,13 @@ impl CanonicalFrontendSession {
                     )?;
                 }
                 for event in semantic.ordinary_free_function_dependencies() {
+                    let provenance = stable_free_function_endpoint(
+                        definitions,
+                        event.caller_file,
+                        &event.caller_name,
+                    )?;
                     edges.push(StableFreeFunctionDependency {
-                        caller: stable_free_function_endpoint(
-                            definitions,
-                            event.caller_file,
-                            &event.caller_name,
-                        )?,
+                        caller: stable_token_endpoint(semantic, event.caller_token, &provenance)?,
                         callee: stable_free_function_endpoint(
                             definitions,
                             event.callee_file,
@@ -1202,12 +1260,13 @@ impl CanonicalFrontendSession {
                 }
                 let mut method_edges = Vec::new();
                 for event in semantic.named_method_dependencies() {
-                    let caller = stable_named_method_endpoint(
+                    let provenance = stable_named_method_endpoint(
                         definitions,
                         event.caller_file,
                         &event.caller_owner_name,
                         &event.caller_method_name,
                     )?;
+                    let caller = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
                     let target = match &event.target {
                         rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
                             StableNamedMethodDependencyTarget::FreeFunction(
@@ -1231,11 +1290,12 @@ impl CanonicalFrontendSession {
                 }
                 let mut destructor_edges = Vec::new();
                 for event in semantic.named_destructor_dependencies() {
-                    let caller = stable_named_destructor_endpoint(
+                    let provenance = stable_named_destructor_endpoint(
                         definitions,
                         event.caller_file,
                         &event.caller_owner_name,
                     )?;
+                    let caller = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
                     let target = match &event.target {
                         rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
                             StableNamedMethodDependencyTarget::FreeFunction(
@@ -1259,22 +1319,30 @@ impl CanonicalFrontendSession {
                 }
                 let mut type_edges = Vec::new();
                 for event in semantic.declaration_type_dependencies() {
+                    let provenance = stable_declaration_source_endpoint(definitions, event)?;
                     type_edges.push(StableDeclarationTypeDependency {
-                        source: stable_declaration_source_endpoint(definitions, event)?,
+                        source: match event.source_token {
+                            Some(token) => stable_token_endpoint(semantic, token, &provenance)?,
+                            None => provenance,
+                        },
                         target: stable_named_type_endpoint(definitions, event)?,
                         kind: event.dependency_kind,
                     });
                 }
                 let mut type_call_head_edges = Vec::new();
                 for event in semantic.declaration_type_call_head_dependencies() {
+                    let provenance = stable_declaration_type_source_endpoint(
+                        definitions,
+                        event.source_file,
+                        &event.source_name,
+                        event.source_owner_name.as_deref(),
+                        event.source_kind,
+                    )?;
                     type_call_head_edges.push(StableDeclarationTypeCallHeadDependency {
-                        source: stable_declaration_type_source_endpoint(
-                            definitions,
-                            event.source_file,
-                            &event.source_name,
-                            event.source_owner_name.as_deref(),
-                            event.source_kind,
-                        )?,
+                        source: match event.source_token {
+                            Some(token) => stable_token_endpoint(semantic, token, &provenance)?,
+                            None => provenance,
+                        },
                         callable: stable_free_function_endpoint(
                             definitions,
                             event.callable_file,
@@ -1285,14 +1353,18 @@ impl CanonicalFrontendSession {
                 }
                 let mut builtin_head_inputs = Vec::new();
                 for event in semantic.declaration_builtin_type_call_head_dependencies() {
+                    let provenance = stable_declaration_type_source_endpoint(
+                        definitions,
+                        event.source_file,
+                        &event.source_name,
+                        event.source_owner_name.as_deref(),
+                        event.source_kind,
+                    )?;
                     builtin_head_inputs.push(StableBuiltinTypeCallHeadInput {
-                        source: stable_declaration_type_source_endpoint(
-                            definitions,
-                            event.source_file,
-                            &event.source_name,
-                            event.source_owner_name.as_deref(),
-                            event.source_kind,
-                        )?,
+                        source: match event.source_token {
+                            Some(token) => stable_token_endpoint(semantic, token, &provenance)?,
+                            None => provenance,
+                        },
                         builtin: event.builtin,
                         kind: event.dependency_kind,
                     });
@@ -1367,7 +1439,11 @@ impl CanonicalFrontendSession {
                 let mut implicit_destructor_edges = Vec::new();
                 for event in semantic.implicit_named_destructor_dependencies() {
                     implicit_destructor_edges.push(StableImplicitNamedDestructorDependency {
-                        source: stable_implicit_drop_source_endpoint(definitions, &event.source)?,
+                        source: stable_implicit_drop_source_endpoint(
+                            semantic,
+                            definitions,
+                            &event.source,
+                        )?,
                         target: stable_named_destructor_endpoint(
                             definitions,
                             event.target_file,
@@ -1437,6 +1513,68 @@ impl CanonicalFrontendSession {
                 false,
             ),
         };
+        let (mut analyzed_body_owners, anonymous_body_owners) = match (&semantic, &definitions) {
+            (Ok(semantic), Ok(definitions)) => {
+                let mut owners = Vec::new();
+                let mut anonymous = 0usize;
+                for event in semantic.analyzed_body_owners() {
+                    let owner = match stable_body_owner_endpoint(semantic, definitions, event)? {
+                        Some(owner) => Some(owner),
+                        None => {
+                            anonymous += 1;
+                            None
+                        }
+                    };
+                    if let Some(owner) = owner {
+                        owners.push(owner);
+                    }
+                }
+                (owners, anonymous)
+            }
+            _ => (Vec::new(), 0),
+        };
+        analyzed_body_owners.sort();
+        analyzed_body_owners.dedup();
+        let mut body_named_dependencies = Vec::new();
+        if let (Ok(semantic), Ok(definitions)) = (&semantic, &definitions) {
+            for event in semantic.body_named_dependencies() {
+                let Some((source, _)) =
+                    stable_body_owner_endpoint(semantic, definitions, &event.source)?
+                else {
+                    continue;
+                };
+                let target = match &event.target {
+                    rue_air::NamedConstDependencyTargetEvent::ValueConst { file, name } => {
+                        stable_top_level_endpoint(
+                            definitions,
+                            *file,
+                            name,
+                            StableDefinitionNamespace::Value,
+                            StableDefinitionKind::ValueConst,
+                        )?
+                    }
+                    rue_air::NamedConstDependencyTargetEvent::ModuleBinding { file, name } => {
+                        stable_top_level_endpoint(
+                            definitions,
+                            *file,
+                            name,
+                            StableDefinitionNamespace::Value,
+                            StableDefinitionKind::ModuleBinding,
+                        )?
+                    }
+                    // Body observers currently emit only value/module choices.
+                    // Keep all other variants fail-closed if that contract changes.
+                    _ => {
+                        return Err(invalid_dependency_manifest(
+                            "unsupported body-local named dependency target",
+                        ));
+                    }
+                };
+                body_named_dependencies.push((source, target));
+            }
+        }
+        body_named_dependencies.sort();
+        body_named_dependencies.dedup();
         free_function_dependencies.sort();
         free_function_dependencies.dedup();
         named_method_dependencies.sort();
@@ -1453,6 +1591,187 @@ impl CanonicalFrontendSession {
         named_const_dependencies.dedup();
         implicit_named_destructor_dependencies.sort();
         implicit_named_destructor_dependencies.dedup();
+        // A per-body record cannot authorize reuse when an observer-backed
+        // dependency surface for this semantic execution is incomplete. The
+        // current completeness evidence is whole-graph rather than per-owner,
+        // so conservatively retain its ownerless blockers on every record.
+        let mut whole_graph_body_blockers = BTreeSet::new();
+        let mut block_body_surface =
+            |complete: bool,
+             surface: SemanticDependencySurface,
+             reason: SemanticDependencyIncompleteReason| {
+                if !complete {
+                    whole_graph_body_blockers.insert(SemanticDependencyBlocker {
+                        owner: None,
+                        surface,
+                        reason,
+                    });
+                }
+            };
+        block_body_surface(
+            free_function_caller_dependencies_complete,
+            SemanticDependencySurface::FreeFunctionCall,
+            SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
+        );
+        block_body_surface(
+            named_method_dependencies_complete,
+            SemanticDependencySurface::NonGenericNamedMethodCall,
+            SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
+        );
+        block_body_surface(
+            generic_named_method_dependencies_complete,
+            SemanticDependencySurface::GenericNamedMethodCall,
+            SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable,
+        );
+        block_body_surface(
+            named_destructor_dependencies_complete,
+            SemanticDependencySurface::NamedDestructorCall,
+            SemanticDependencyIncompleteReason::DestructorEndpointUnavailable,
+        );
+        block_body_surface(
+            implicit_named_destructor_dependencies_complete,
+            SemanticDependencySurface::ImplicitNamedDestructor,
+            SemanticDependencyIncompleteReason::AnonymousDropOwnerUnavailable,
+        );
+        block_body_surface(
+            declaration_type_dependencies_complete,
+            SemanticDependencySurface::DeclarationType,
+            SemanticDependencyIncompleteReason::ResolvedTypeIdentityUnavailable,
+        );
+        block_body_surface(
+            declaration_type_call_head_dependencies_complete,
+            SemanticDependencySurface::DeclarationTypeCallHead,
+            SemanticDependencyIncompleteReason::TypeCallHeadIdentityUnavailable,
+        );
+        block_body_surface(
+            supported_type_call_heads_complete,
+            SemanticDependencySurface::SupportedTypeCallHead,
+            SemanticDependencyIncompleteReason::UnsupportedDynamicTypeCallHead,
+        );
+        block_body_surface(
+            named_value_const_dependencies_complete,
+            SemanticDependencySurface::NamedValueConst,
+            SemanticDependencyIncompleteReason::ConstEndpointUnavailable,
+        );
+        let mut body_dependencies = Vec::new();
+        for (owner, generic) in &analyzed_body_owners {
+            let fingerprint = definition_fingerprints
+                .iter()
+                .find(|fingerprint| &fingerprint.key == owner)
+                .cloned()
+                .ok_or_else(|| {
+                    invalid_dependency_manifest(
+                        "analyzed body owner is absent from definition fingerprints",
+                    )
+                })?;
+            let mut direct_dependencies = Vec::new();
+            direct_dependencies.extend(
+                free_function_dependencies
+                    .iter()
+                    .filter(|edge| &edge.caller == owner)
+                    .map(|edge| edge.callee.clone()),
+            );
+            for edge in named_method_dependencies
+                .iter()
+                .filter(|edge| &edge.caller == owner)
+            {
+                direct_dependencies.push(match &edge.target {
+                    StableNamedMethodDependencyTarget::FreeFunction(target)
+                    | StableNamedMethodDependencyTarget::NamedMethod(target) => target.clone(),
+                });
+            }
+            for edge in named_destructor_dependencies
+                .iter()
+                .filter(|edge| &edge.caller == owner)
+            {
+                direct_dependencies.push(match &edge.target {
+                    StableNamedMethodDependencyTarget::FreeFunction(target)
+                    | StableNamedMethodDependencyTarget::NamedMethod(target) => target.clone(),
+                });
+            }
+            direct_dependencies.extend(
+                implicit_named_destructor_dependencies
+                    .iter()
+                    .filter(|edge| &edge.source == owner)
+                    .map(|edge| edge.target.clone()),
+            );
+            direct_dependencies.extend(
+                declaration_type_dependencies
+                    .iter()
+                    .filter(|edge| &edge.source == owner)
+                    .map(|edge| edge.target.clone()),
+            );
+            direct_dependencies.extend(
+                declaration_type_call_head_dependencies
+                    .iter()
+                    .filter(|edge| &edge.source == owner)
+                    .map(|edge| edge.callable.clone()),
+            );
+            direct_dependencies.extend(
+                body_named_dependencies
+                    .iter()
+                    .filter(|(source, _)| source == owner)
+                    .map(|(_, target)| target.clone()),
+            );
+            direct_dependencies.sort();
+            direct_dependencies.dedup();
+            let direct_dependency_inputs = direct_dependencies
+                .into_iter()
+                .map(|dependency| {
+                    definition_fingerprints
+                        .iter()
+                        .find(|fingerprint| fingerprint.key == dependency)
+                        .cloned()
+                        .ok_or_else(|| {
+                            invalid_dependency_manifest(
+                                "body dependency is absent from definition fingerprints",
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let builtin_inputs = builtin_type_call_head_inputs
+                .iter()
+                .filter(|input| &input.source == owner)
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut blockers = whole_graph_body_blockers
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            if *generic {
+                blockers.push(SemanticDependencyBlocker {
+                    owner: Some(owner.clone()),
+                    surface: SemanticDependencySurface::GenericNamedMethodCall,
+                    reason:
+                        SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable,
+                });
+            }
+            blockers.sort();
+            blockers.dedup();
+            body_dependencies.push(StableBodyDependencyInputRecord {
+                owner: owner.clone(),
+                fingerprint,
+                target: input.target,
+                preview_features: input.preview_features.clone(),
+                direct_dependency_inputs: direct_dependency_inputs.into(),
+                builtin_type_call_heads: builtin_inputs.into(),
+                blockers: blockers.into(),
+            });
+        }
+        body_dependencies.sort_by(|left, right| left.owner.cmp(&right.owner));
+        let mut body_dependency_blockers = body_dependencies
+            .iter()
+            .flat_map(|record| record.blockers.iter().cloned())
+            .collect::<Vec<_>>();
+        if anonymous_body_owners != 0 {
+            body_dependency_blockers.push(SemanticDependencyBlocker {
+                owner: None,
+                surface: SemanticDependencySurface::BodyOwner,
+                reason: SemanticDependencyIncompleteReason::AnonymousBodyOwnerUnavailable,
+            });
+        }
+        body_dependency_blockers.sort();
+        body_dependency_blockers.dedup();
         let work = SemanticDependencyManifestWork {
             definition_records_visited: definition_records.len(),
             import_records_visited: imports.graph().records().len(),
@@ -1465,6 +1784,9 @@ impl CanonicalFrontendSession {
             builtin_type_call_head_inputs_translated,
             named_const_events_translated,
             implicit_named_destructor_events_translated,
+            body_owner_events_translated: analyzed_body_owners.len() + anonymous_body_owners,
+            body_named_events_translated: body_named_dependencies.len(),
+            body_dependency_records_built: body_dependencies.len(),
             extra_rir_instructions_visited: 0,
         };
         self.work.dependency_manifest_records_visited += work.definition_records_visited;
@@ -1496,7 +1818,7 @@ impl CanonicalFrontendSession {
                 },
             })
             .collect::<Vec<_>>();
-        let mut dependency_blockers = BTreeSet::new();
+        let mut dependency_blockers = whole_graph_body_blockers;
         let mut block = |complete: bool,
                          surface: SemanticDependencySurface,
                          reason: SemanticDependencyIncompleteReason| {
@@ -1567,6 +1889,8 @@ impl CanonicalFrontendSession {
             declaration_type_call_head_dependencies: declaration_type_call_head_dependencies.into(),
             builtin_type_call_head_inputs: builtin_type_call_head_inputs.into(),
             named_const_dependencies: named_const_dependencies.into(),
+            body_dependencies: body_dependencies.into(),
+            body_dependency_blockers: body_dependency_blockers.into(),
             dependency_blockers: dependency_blockers.into_iter().collect::<Vec<_>>().into(),
             definition_universe_complete,
             work,
@@ -1953,7 +2277,70 @@ fn stable_free_function_endpoint(
     Ok(record.stable_key().clone())
 }
 
+fn stable_body_owner_endpoint(
+    semantic: &CanonicalSemanticOutput,
+    definitions: &BoundDefinitionSet,
+    event: &rue_air::AnalyzedBodyOwnerEvent,
+) -> Result<Option<(StableDefinitionKey, bool)>, CompileErrors> {
+    let (token, provenance, generic) = match event {
+        rue_air::AnalyzedBodyOwnerEvent::FreeFunction { token, file, name } => (
+            *token,
+            stable_free_function_endpoint(definitions, *file, name)?,
+            false,
+        ),
+        rue_air::AnalyzedBodyOwnerEvent::NamedMethod {
+            token,
+            file,
+            owner_name,
+            method_name,
+            generic,
+        } => (
+            *token,
+            stable_named_method_endpoint(definitions, *file, owner_name, method_name)?,
+            *generic,
+        ),
+        rue_air::AnalyzedBodyOwnerEvent::NamedDestructor {
+            token,
+            file,
+            owner_name,
+        } => (
+            *token,
+            stable_named_destructor_endpoint(definitions, *file, owner_name)?,
+            false,
+        ),
+        rue_air::AnalyzedBodyOwnerEvent::Anonymous => return Ok(None),
+    };
+    let authoritative = semantic
+        .body_owner_issuer()
+        .key_for_body_token(token)
+        .map_err(CompileErrors::from)?;
+    if authoritative != &provenance {
+        return Err(invalid_dependency_manifest(
+            "body owner token does not match its checked source provenance",
+        ));
+    }
+    Ok(Some((authoritative.clone(), generic)))
+}
+
+fn stable_token_endpoint(
+    semantic: &CanonicalSemanticOutput,
+    token: rue_air::BodyOwnerToken,
+    provenance: &StableDefinitionKey,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    let authoritative = semantic
+        .body_owner_issuer()
+        .key_for_body_token(token)
+        .map_err(CompileErrors::from)?;
+    if authoritative != provenance {
+        return Err(invalid_dependency_manifest(
+            "body-local observation token does not match its checked source provenance",
+        ));
+    }
+    Ok(authoritative.clone())
+}
+
 fn stable_implicit_drop_source_endpoint(
+    semantic: &CanonicalSemanticOutput,
     definitions: &BoundDefinitionSet,
     source: &rue_air::ImplicitDropDependencySourceEvent,
 ) -> Result<StableDefinitionKey, CompileErrors> {
@@ -1961,16 +2348,27 @@ fn stable_implicit_drop_source_endpoint(
         rue_air::ImplicitDropDependencySourceEvent::Anonymous => Err(invalid_dependency_manifest(
             "anonymous drop-dependency source has no stable endpoint",
         )),
-        rue_air::ImplicitDropDependencySourceEvent::FreeFunction { file, name } => {
-            stable_free_function_endpoint(definitions, *file, name)
+        rue_air::ImplicitDropDependencySourceEvent::FreeFunction { token, file, name } => {
+            let provenance = stable_free_function_endpoint(definitions, *file, name)?;
+            stable_token_endpoint(semantic, *token, &provenance)
         }
         rue_air::ImplicitDropDependencySourceEvent::NamedMethod {
+            token,
             file,
             owner_name,
             method_name,
-        } => stable_named_method_endpoint(definitions, *file, owner_name, method_name),
-        rue_air::ImplicitDropDependencySourceEvent::NamedDestructor { file, owner_name } => {
-            stable_named_destructor_endpoint(definitions, *file, owner_name)
+        } => {
+            let provenance =
+                stable_named_method_endpoint(definitions, *file, owner_name, method_name)?;
+            stable_token_endpoint(semantic, *token, &provenance)
+        }
+        rue_air::ImplicitDropDependencySourceEvent::NamedDestructor {
+            token,
+            file,
+            owner_name,
+        } => {
+            let provenance = stable_named_destructor_endpoint(definitions, *file, owner_name)?;
+            stable_token_endpoint(semantic, *token, &provenance)
         }
         rue_air::ImplicitDropDependencySourceEvent::NamedStruct { file, name } => {
             stable_top_level_endpoint(
@@ -2274,7 +2672,7 @@ mod tests {
         let cold = session.semantic(&options).unwrap();
         assert_eq!(cold.work().binding.bind_invocations, 1);
         assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
-        assert_eq!(cold.work().manifest.rir_instructions_visited, 0);
+        assert_eq!(cold.work().manifest.rir_instructions_visited, 256);
         assert_eq!(session.work().durable_cache_population_bindings, 0);
         session.update(&second).into_result().unwrap();
         let reused = session.semantic(&options).unwrap();
@@ -2339,9 +2737,15 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CanonicalFrontendSession::new();
         session.update(&first).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        let first_output = session.semantic(&options).unwrap();
+        let first_issuer = first_output.analyzed_body_owners()[0]
+            .token()
+            .unwrap()
+            .issuer();
         session.update(&second).into_result().unwrap();
         let output = session.semantic(&options).unwrap();
+        let second_issuer = output.analyzed_body_owners()[0].token().unwrap().issuer();
+        assert_ne!(first_issuer, second_issuer);
         assert_eq!(output.work().binding.declaration_resolution_invocations, 1);
         assert_eq!(output.work().binding.durable_install_invocations, 0);
         assert_eq!(output.work().declaration_reuse.durable_records_reused, 0);
@@ -2831,7 +3235,7 @@ mod tests {
         assert_eq!(session.work().merge.executions, 1);
         assert_eq!(session.work().rir.executions, 1);
         assert_eq!(first.work().binding.bind_invocations, 1);
-        assert_eq!(first.work().manifest.build_invocations, 0);
+        assert_eq!(first.work().manifest.build_invocations, 1);
 
         let published = first.clone();
         std::thread::spawn(move || assert!(!published.functions().is_empty()))
@@ -2876,7 +3280,7 @@ mod tests {
         assert!(work.semantic_records.iter().all(|record| {
             !record.failed
                 && record.work.binding.bind_invocations == 1
-                && record.work.manifest.build_invocations == 0
+                && record.work.manifest.build_invocations == 1
         }));
         for (index, left) in work.semantic_records.iter().enumerate() {
             assert!(
@@ -2950,6 +3354,33 @@ mod tests {
         assert_eq!(session.work().semantic.executions, 2);
         assert_eq!(session.work().semantic_entries, 1);
         assert_eq!(session.work().semantic_entries_invalidated, 1);
+    }
+
+    #[test]
+    fn token_preparation_error_recovery_publishes_only_failure_diagnostics() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "const value: i32 = 1; const value: i32 = 2; fn main() {}",
+            )],
+            1,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let errors = session.semantic(&CompileOptions::default()).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.kind.code().to_string() != "E1400")
+        );
+        assert_eq!(session.work().semantic_entries, 1);
+        assert_eq!(session.work().semantic_records.len(), 1);
+        assert!(session.work().semantic_records[0].failed);
+        let diagnostics = session.latest_diagnostics().unwrap();
+        assert!(!diagnostics.is_success());
+        assert!(diagnostics.warnings().is_empty());
     }
 
     #[test]
@@ -3992,6 +4423,7 @@ mod tests {
         assert_send_sync::<StableNamedMethodDependencyTarget>();
         assert_send_sync::<StableNamedConstDependency>();
         assert_send_sync::<StableNamedConstDependencyTarget>();
+        assert_send_sync::<StableBodyDependencyInputRecord>();
     }
 
     #[test]
@@ -4195,6 +4627,151 @@ mod tests {
                 == SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable
         }));
         assert_eq!(first.work().named_method_events_translated, 1);
+        let choose = first
+            .body_dependencies()
+            .iter()
+            .find(|record| record.owner().name() == "choose")
+            .expect("analyzed named method has one body input record");
+        assert!(!choose.reusable_boundary_supported());
+        assert!(choose.blockers().iter().any(|blocker| {
+            blocker.owner() == Some(choose.owner())
+                && blocker.reason()
+                    == SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable
+        }));
+        assert!(
+            first
+                .body_dependency_blockers()
+                .contains(&choose.blockers()[0])
+        );
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn ordinary_body_inputs_are_stable_complete_and_per_owner() {
+        let program =
+            "fn leaf() -> i32 { 1 } fn middle() -> i32 { leaf() } fn main() -> i32 { middle() }";
+        let build = |file, path: &str| {
+            let source = snapshot(&[(file, path, "main.rue", program)], file);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(1, "/one/main.rue");
+        let moved = build(99, "/else/main.rue");
+        assert_eq!(first.body_dependencies(), moved.body_dependencies());
+        assert_eq!(first.body_dependencies().len(), 3);
+        let dependency_names = |owner: &str| {
+            first
+                .body_dependencies()
+                .iter()
+                .find(|record| record.owner().name() == owner)
+                .unwrap()
+                .direct_dependency_inputs()
+                .iter()
+                .map(|dependency| dependency.key.name().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(dependency_names("leaf"), Vec::<String>::new());
+        assert_eq!(dependency_names("middle"), vec!["leaf"]);
+        assert_eq!(dependency_names("main"), vec!["middle"]);
+        assert!(first.body_dependencies().iter().all(|record| {
+            record.reusable_boundary_supported()
+                && record.fingerprint().body_or_initializer.is_some()
+                && record.target() == crate::Target::default()
+                && record.preview_features()
+                    == &StablePreviewFeatures::new(&crate::PreviewFeatures::default())
+        }));
+        assert_eq!(first.work().body_owner_events_translated, 3);
+        assert_eq!(first.work().body_dependency_records_built, 3);
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn body_only_named_type_and_const_inputs_are_exact_and_relocation_stable() {
+        let program = "struct Point { x: i32 } const ANSWER: i32 = 42; fn main() -> i32 { let p = Point { x: ANSWER }; p.x }";
+        let build = |file, path: &str| {
+            let source = snapshot(&[(file, path, "main.rue", program)], file);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(7, "/one/main.rue");
+        let moved = build(91, "/else/main.rue");
+        assert_eq!(first.body_dependencies(), moved.body_dependencies());
+        let main = first
+            .body_dependencies()
+            .iter()
+            .find(|record| record.owner().name() == "main")
+            .unwrap();
+        let dependencies = main
+            .direct_dependency_inputs()
+            .iter()
+            .map(|dependency| dependency.key.name())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(dependencies, BTreeSet::from(["ANSWER", "Point"]));
+        assert!(main.reusable_boundary_supported());
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn body_owner_join_disambiguates_duplicate_names_across_modules_and_order() {
+        let main = r#"const lib = @import("lib.rue");
+                       const other = @import("other.rue");
+                       fn main() -> i32 { lib.BASE + other.BASE }"#;
+        let first_source = snapshot(
+            &[
+                (3, "/p/main.rue", "main.rue", main),
+                (9, "/p/lib.rue", "lib.rue", "pub const BASE: i32 = 4;"),
+                (11, "/p/other.rue", "other.rue", "pub const BASE: i32 = 5;"),
+            ],
+            3,
+        );
+        let moved_source = snapshot(
+            &[
+                (
+                    81,
+                    "/else/other.rue",
+                    "other.rue",
+                    "pub const BASE: i32 = 5;",
+                ),
+                (77, "/else/lib.rue", "lib.rue", "pub const BASE: i32 = 4;"),
+                (99, "/else/main.rue", "main.rue", main),
+            ],
+            99,
+        );
+        let build = |source: &SourceSnapshot| {
+            let mut session = CanonicalFrontendSession::new();
+            session.update(source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(&first_source);
+        let moved = build(&moved_source);
+        assert_eq!(first.body_dependencies(), moved.body_dependencies());
+        let main = first
+            .body_dependencies()
+            .iter()
+            .find(|record| record.owner().name() == "main")
+            .unwrap();
+        let dependencies = main
+            .direct_dependency_inputs()
+            .iter()
+            .map(|dependency| (dependency.key.module().as_str(), dependency.key.name()))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            dependencies,
+            BTreeSet::from([
+                ("lib.rue", "BASE"),
+                ("main.rue", "lib"),
+                ("main.rue", "other"),
+                ("other.rue", "BASE"),
+            ])
+        );
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
     }
 
@@ -4312,6 +4889,12 @@ mod tests {
             SemanticDependencyIncompleteReason::AnonymousDropOwnerUnavailable
         );
         assert!(!manifest.implicit_named_destructor_dependencies_complete());
+        assert!(manifest.body_dependency_blockers().iter().any(|blocker| {
+            blocker.owner().is_none()
+                && blocker.surface() == SemanticDependencySurface::BodyOwner
+                && blocker.reason()
+                    == SemanticDependencyIncompleteReason::AnonymousBodyOwnerUnavailable
+        }));
         assert_eq!(manifest.work().extra_rir_instructions_visited, 0);
         let plan = session.semantic_invalidation_plan(&manifest, &manifest);
         assert!(matches!(

@@ -732,7 +732,7 @@ impl<'a> Sema<'a> {
         }
     }
 
-    fn record_resolved_declaration_type(&mut self, ty: Type) {
+    pub(crate) fn record_resolved_declaration_type(&mut self, ty: Type) {
         match ty.kind() {
             TypeKind::Struct(id) => {
                 let def = self.type_pool.struct_def(id);
@@ -778,6 +778,10 @@ impl<'a> Sema<'a> {
         };
         self.declaration_type_dependencies
             .push(super::DeclarationTypeDependencyEvent {
+                source_token: self
+                    .body_dependency_observer
+                    .as_ref()
+                    .and_then(super::AnalyzedBodyOwnerEvent::token),
                 source_file: source_file.index(),
                 source_name,
                 source_owner_name,
@@ -2088,6 +2092,10 @@ impl<'a> Sema<'a> {
         };
         self.declaration_builtin_type_call_head_dependencies.push(
             super::DeclarationBuiltinTypeCallHeadDependencyEvent {
+                source_token: self
+                    .body_dependency_observer
+                    .as_ref()
+                    .and_then(super::AnalyzedBodyOwnerEvent::token),
                 source_file: source_file.index(),
                 source_name,
                 source_owner_name,
@@ -2525,6 +2533,10 @@ impl<'a> Sema<'a> {
         };
         self.declaration_type_call_head_dependencies.push(
             super::DeclarationTypeCallHeadDependencyEvent {
+                source_token: self
+                    .body_dependency_observer
+                    .as_ref()
+                    .and_then(super::AnalyzedBodyOwnerEvent::token),
                 source_file: source_file.index(),
                 source_name,
                 source_owner_name,

@@ -678,6 +678,13 @@ fn create_specialized_function(
             name: specialized_name_str,
             implicit_drop_source: Some(
                 crate::sema::ImplicitDropDependencySourceEvent::FreeFunction {
+                    token: sema.body_owner_token(
+                        base_info.file_id,
+                        sema.interner
+                            .resolve(&sema.source_function_name(key.base_name)),
+                        None,
+                        crate::sema::BodyOwnerKind::FreeFunction,
+                    ),
                     file: base_info.file_id.index(),
                     name: sema
                         .interner

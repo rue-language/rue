@@ -7,8 +7,89 @@
 use crate::inst::Air;
 use crate::intern_pool::TypeInternPool;
 use rue_error::CompileWarning;
+/// Opaque identity issued by the compiler for one supported ordinary body.
+///
+/// Neither component has meaning to AIR.  The issuer prevents tokens from
+/// being joined across semantic epochs; the slot is interpreted only by the
+/// compiler-side issuer map retained with the canonical output.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BodyOwnerToken {
+    issuer: u64,
+    slot: u32,
+}
+impl std::fmt::Debug for BodyOwnerToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("BodyOwnerToken")
+            .field(&self.slot)
+            .finish()
+    }
+}
+
+impl BodyOwnerToken {
+    pub fn new(issuer: u64, slot: u32) -> Self {
+        Self { issuer, slot }
+    }
+    pub fn issuer(self) -> u64 {
+        self.issuer
+    }
+    pub fn slot(self) -> u32 {
+        self.slot
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BodyOwnerKind {
+    FreeFunction,
+    Method,
+    AssociatedFunction,
+    Destructor,
+}
+
+/// Validated installation endpoint.  Text and file identity are checked
+/// provenance used only to attach the opaque token to AIR's bound declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyOwnerEndpoint {
+    pub token: BodyOwnerToken,
+    pub kind: BodyOwnerKind,
+    pub file: u32,
+    pub name: String,
+    pub owner_name: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AnalyzedBodyOwnerEvent {
+    FreeFunction {
+        token: BodyOwnerToken,
+        file: u32,
+        name: String,
+    },
+    NamedMethod {
+        token: BodyOwnerToken,
+        file: u32,
+        owner_name: String,
+        method_name: String,
+        generic: bool,
+    },
+    NamedDestructor {
+        token: BodyOwnerToken,
+        file: u32,
+        owner_name: String,
+    },
+    Anonymous,
+}
+impl AnalyzedBodyOwnerEvent {
+    pub fn token(&self) -> Option<BodyOwnerToken> {
+        match self {
+            Self::FreeFunction { token, .. }
+            | Self::NamedMethod { token, .. }
+            | Self::NamedDestructor { token, .. } => Some(*token),
+            Self::Anonymous => None,
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OrdinaryFreeFunctionDependencyEvent {
+    pub caller_token: BodyOwnerToken,
     pub caller_file: u32,
     pub caller_name: String,
     pub callee_file: u32,
@@ -46,6 +127,7 @@ pub enum NamedMethodDependencyTargetEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NamedMethodDependencyEvent {
+    pub caller_token: BodyOwnerToken,
     pub caller_file: u32,
     pub caller_owner_name: String,
     pub caller_method_name: String,
@@ -53,6 +135,7 @@ pub struct NamedMethodDependencyEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NamedDestructorDependencyEvent {
+    pub caller_token: BodyOwnerToken,
     pub caller_file: u32,
     pub caller_owner_name: String,
     pub target: NamedMethodDependencyTargetEvent,
@@ -76,6 +159,7 @@ pub enum DeclarationTypeDependencyTargetKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeclarationTypeDependencyKind {
     Signature,
+    Body,
     Field,
     Payload,
     DeclaredType,
@@ -83,6 +167,7 @@ pub enum DeclarationTypeDependencyKind {
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeclarationTypeDependencyEvent {
+    pub source_token: Option<BodyOwnerToken>,
     pub source_file: u32,
     pub source_name: String,
     pub source_owner_name: Option<String>,
@@ -94,6 +179,7 @@ pub struct DeclarationTypeDependencyEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeclarationTypeCallHeadDependencyEvent {
+    pub source_token: Option<BodyOwnerToken>,
     pub source_file: u32,
     pub source_name: String,
     pub source_owner_name: Option<String>,
@@ -110,6 +196,7 @@ pub enum BuiltinTypeCallHead {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeclarationBuiltinTypeCallHeadDependencyEvent {
+    pub source_token: Option<BodyOwnerToken>,
     pub source_file: u32,
     pub source_name: String,
     pub source_owner_name: Option<String>,
@@ -145,6 +232,11 @@ pub struct NamedConstDependencyEvent {
     pub source_name: String,
     pub target: NamedConstDependencyTargetEvent,
 }
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BodyNamedDependencyEvent {
+    pub source: AnalyzedBodyOwnerEvent,
+    pub target: NamedConstDependencyTargetEvent,
+}
 
 /// Stable-capable owner of an analyzed body or synthesized named-type glue.
 ///
@@ -155,15 +247,18 @@ pub struct NamedConstDependencyEvent {
 pub enum ImplicitDropDependencySourceEvent {
     Anonymous,
     FreeFunction {
+        token: BodyOwnerToken,
         file: u32,
         name: String,
     },
     NamedMethod {
+        token: BodyOwnerToken,
         file: u32,
         owner_name: String,
         method_name: String,
     },
     NamedDestructor {
+        token: BodyOwnerToken,
         file: u32,
         owner_name: String,
     },
@@ -263,6 +358,9 @@ pub struct SemaOutput {
     pub type_pool: TypeInternPool,
     /// Exact structural work performed while dispatching reachable bodies.
     pub body_analysis_work: BodyAnalysisWork,
+    /// Stable-capable provenance for every successfully analyzed source body.
+    pub analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
+    pub body_named_dependencies: Vec<BodyNamedDependencyEvent>,
     pub ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
     pub ordinary_free_function_dependencies_complete: bool,
     pub specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
@@ -293,6 +391,7 @@ pub struct BodyAnalysisWork {
     pub bodies_succeeded: usize,
     pub bodies_failed: usize,
     pub air_instructions_produced: usize,
+    pub body_dependency_air_instructions_observed: usize,
     pub local_strings_produced: usize,
     pub string_ids_remapped: usize,
     pub specialization_air_instructions_scanned: usize,

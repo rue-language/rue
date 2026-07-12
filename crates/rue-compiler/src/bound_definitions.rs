@@ -1,7 +1,10 @@
 //! Stable source-definition identities issued only after semantic binding.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use rue_air::{
     DeclarationBindingWork, Sema, SemanticBinding, SemanticBindingKind,
@@ -18,7 +21,10 @@ use crate::{
 };
 
 #[derive(Debug)]
-struct DefinitionIssuer;
+struct DefinitionIssuer {
+    id: u64,
+}
+static NEXT_DEFINITION_ISSUER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StableDefinitionNamespace {
@@ -200,6 +206,75 @@ impl BoundDefinitionSet {
     }
     pub fn work(&self) -> BoundDefinitionWork {
         self.work
+    }
+
+    pub(crate) fn body_owner_endpoints(&self) -> Vec<rue_air::BodyOwnerEndpoint> {
+        self.definitions
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, record)| {
+                let key = record.stable_key();
+                let (kind, name, owner_name) = match key.kind() {
+                    StableDefinitionKind::Function => (
+                        rue_air::BodyOwnerKind::FreeFunction,
+                        key.name().to_owned(),
+                        None,
+                    ),
+                    StableDefinitionKind::Method => (
+                        rue_air::BodyOwnerKind::Method,
+                        key.name().to_owned(),
+                        Some(key.owner()?.name().to_owned()),
+                    ),
+                    StableDefinitionKind::AssociatedFunction => (
+                        rue_air::BodyOwnerKind::AssociatedFunction,
+                        key.name().to_owned(),
+                        Some(key.owner()?.name().to_owned()),
+                    ),
+                    StableDefinitionKind::Destructor => {
+                        let owner = key.owner().map(|o| o.name()).unwrap_or(key.name());
+                        (
+                            rue_air::BodyOwnerKind::Destructor,
+                            owner.to_owned(),
+                            Some(owner.to_owned()),
+                        )
+                    }
+                    _ => return None,
+                };
+                Some(rue_air::BodyOwnerEndpoint {
+                    token: rue_air::BodyOwnerToken::new(self.issuer.id, slot as u32),
+                    kind,
+                    file: record.declaration_span.file_id.index(),
+                    name,
+                    owner_name,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn key_for_body_token(
+        &self,
+        token: rue_air::BodyOwnerToken,
+    ) -> Result<&StableDefinitionKey, CompileError> {
+        if token.issuer() != self.issuer.id {
+            return Err(invalid("body owner token belongs to a foreign issuer"));
+        }
+        let key = self
+            .definitions
+            .get(token.slot() as usize)
+            .map(BoundDefinitionRecord::stable_key)
+            .ok_or_else(|| invalid("body owner token has an invalid slot"))?;
+        if !matches!(
+            key.kind(),
+            StableDefinitionKind::Function
+                | StableDefinitionKind::Method
+                | StableDefinitionKind::AssociatedFunction
+                | StableDefinitionKind::Destructor
+        ) {
+            return Err(invalid(
+                "body owner token refers to a non-body definition kind",
+            ));
+        }
+        Ok(key)
     }
 
     /// Look up a definition by its stable, issuer-independent source key.
@@ -479,7 +554,9 @@ pub(crate) fn issue_bound_definitions(
         .iter()
         .map(|module| (module.file_id(), module))
         .collect::<HashMap<_, _>>();
-    let issuer = Arc::new(DefinitionIssuer);
+    let issuer = Arc::new(DefinitionIssuer {
+        id: NEXT_DEFINITION_ISSUER.fetch_add(1, Ordering::Relaxed),
+    });
     let mut records = Vec::with_capacity(bindings.len());
     let mut work = BoundDefinitionWork {
         modules_validated: modules.len(),
@@ -1251,6 +1328,16 @@ mod tests {
                 .is_err()
         );
         assert!(first.definition(&first_id, first.source_revision()).is_ok());
+
+        let first_token = first.body_owner_endpoints()[0].token;
+        let second_token = second.body_owner_endpoints()[0].token;
+        assert!(first.key_for_body_token(first_token).is_ok());
+        assert!(first.key_for_body_token(second_token).is_err());
+        assert!(
+            first
+                .key_for_body_token(rue_air::BodyOwnerToken::new(first_token.issuer(), u32::MAX,))
+                .is_err()
+        );
     }
 
     #[test]

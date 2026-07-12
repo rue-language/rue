@@ -3064,7 +3064,13 @@ impl<'a> Sema<'a> {
         // @import("math")`). Module bindings are per-file scoped (RUE-113),
         // so the lookup is keyed by the reference's own file and takes
         // precedence over the global value-const table.
-        if let Some(binding) = self.module_bindings.get(&(span.file_id, name)) {
+        if let Some(binding) = self.module_bindings.get(&(span.file_id, name)).cloned() {
+            self.record_body_named_dependency(
+                super::NamedConstDependencyTargetEvent::ModuleBinding {
+                    file: span.file_id.index(),
+                    name: name_str.to_string(),
+                },
+            );
             let ty = binding.ty;
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::TypeConst(ty),
@@ -3080,7 +3086,7 @@ impl<'a> Sema<'a> {
         // checked above. The value was evaluated once during declaration
         // gathering (RUE-171); materialize it directly — the initializer is
         // never re-analyzed at use sites.
-        if let Some(const_info) = self.resolve_const_info_in_file(name, span.file_id) {
+        if let Some(const_info) = self.resolve_const_info_in_file(name, span.file_id).cloned() {
             // Privacy (E0460, RUE-183): fallback bare-name lookup can still
             // resolve to a globally unique private constant defined in another
             // directory — reject it, privacy is uniform across item kinds
@@ -3092,6 +3098,10 @@ impl<'a> Sema<'a> {
                 const_info.is_pub,
                 span,
             )?;
+            self.record_body_named_dependency(super::NamedConstDependencyTargetEvent::ValueConst {
+                file: const_info.span.file_id.index(),
+                name: name_str.to_string(),
+            });
             if matches!(const_info.value, ConstValue::Function(_)) {
                 return Err(CompileError::new(
                     ErrorKind::ConstExprNotSupported {
@@ -3562,6 +3572,7 @@ impl<'a> Sema<'a> {
         };
 
         // Get struct def (returns owned copy from pool)
+        self.record_resolved_declaration_type(Type::new_struct(struct_id));
         let struct_def = self.type_pool.struct_def(struct_id);
         let struct_type = Type::new_struct(struct_id);
 
@@ -4401,7 +4412,7 @@ impl<'a> Sema<'a> {
                 module_file_id
                     .and_then(|file_id| self.constants_by_file_name.get(&(file_id, member_name)))
             });
-        if let Some(const_info) = member_const {
+        if let Some(const_info) = member_const.cloned() {
             if !const_info.is_pub {
                 let same_dir = match &accessing_file_path {
                     Some(accessing) => {
@@ -4421,6 +4432,18 @@ impl<'a> Sema<'a> {
                     ));
                 }
             }
+
+            self.record_body_named_dependency(if const_info.ty.is_module() {
+                super::NamedConstDependencyTargetEvent::ModuleBinding {
+                    file: const_info.span.file_id.index(),
+                    name: member_name_str.clone(),
+                }
+            } else {
+                super::NamedConstDependencyTargetEvent::ValueConst {
+                    file: const_info.span.file_id.index(),
+                    name: member_name_str.clone(),
+                }
+            });
 
             if const_info.ty.is_module() {
                 // AIR doesn't have a ModuleConst instruction, so we use
@@ -5929,7 +5952,7 @@ impl<'a> Sema<'a> {
         let source_name = name;
         let mut name = name;
         let mut resolved_alias = false;
-        if let Some(const_info) = self.resolve_const_info_in_file(name, span.file_id)
+        if let Some(const_info) = self.resolve_const_info_in_file(name, span.file_id).cloned()
             && let Some(callee) = const_info.value.as_function()
         {
             let alias_name = self.interner.resolve(&name).to_string();
@@ -5940,6 +5963,10 @@ impl<'a> Sema<'a> {
                 const_info.is_pub,
                 span,
             )?;
+            self.record_body_named_dependency(super::NamedConstDependencyTargetEvent::ValueConst {
+                file: const_info.span.file_id.index(),
+                name: alias_name,
+            });
             name = callee;
             resolved_alias = true;
         }

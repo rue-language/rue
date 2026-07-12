@@ -81,3 +81,17 @@ filtered, CFG attempts/successes/failures, AIR consumed, optimization attempts
 and completions (including non-O0 attempts), warnings, and implicit destructor
 targets. Counts describe completed semantic records; failed requests cannot yet
 be retained by the session record API and are tested at their owning phase.
+
+Schema version 5 adds `manifest_work.body_owner_events_translated`,
+`body_named_events_translated`, and `body_dependency_records_built`. The
+manifest now publishes one ordered stable input record for each supported
+ordinary body analyzed in the existing semantic pass, and the benchmark
+hard-gates zero extra RIR traversal.
+`semantic_work.body_dependency_air_instructions_observed` records the explicit
+post-emission type observation needed for already-resolved inferred/comptime
+nominal types; it is bounded by produced AIR and is not a second RIR pass.
+
+Schema version 6 adds `semantic_work.body_owner_tokens`, with exact provisional,
+authoritative, validated, installed, and failed-validation counts. Ordinary and
+durable-fallback semantic epochs each receive a fresh issuer; the benchmark
+continues to claim no AIR or CFG retention or reuse.

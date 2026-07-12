@@ -874,6 +874,10 @@ impl<'a> Sema<'a> {
         if let Some((target_file, target_name, target_kind)) = target {
             self.declaration_type_dependencies
                 .push(super::DeclarationTypeDependencyEvent {
+                    source_token: self
+                        .body_dependency_observer
+                        .as_ref()
+                        .and_then(super::AnalyzedBodyOwnerEvent::token),
                     source_file: source_file.index(),
                     source_name,
                     source_owner_name,
@@ -2187,6 +2191,18 @@ impl<'a> Sema<'a> {
                 source_name: name,
                 target,
             });
+        self.body_analysis_work.named_const_dependency_events += 1;
+    }
+
+    pub(crate) fn record_body_named_dependency(
+        &mut self,
+        target: super::NamedConstDependencyTargetEvent,
+    ) {
+        let Some(source) = self.body_dependency_observer.clone() else {
+            return;
+        };
+        self.body_named_dependencies
+            .push(super::BodyNamedDependencyEvent { source, target });
         self.body_analysis_work.named_const_dependency_events += 1;
     }
 

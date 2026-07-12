@@ -1,11 +1,12 @@
 //! One-pass canonical declaration binding, body analysis, and CFG lowering.
 
 use rue_air::{
-    BodyAnalysisWork, DeclarationBindingWork, DeclarationBuiltinTypeCallHeadDependencyEvent,
-    DeclarationTypeCallHeadDependencyEvent, DeclarationTypeDependencyEvent,
-    NamedConstDependencyEvent, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
-    OrdinaryFreeFunctionDependencyEvent, RirDeclarationIndexWork, SemanticBindingManifestWork,
-    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
+    AnalyzedBodyOwnerEvent, BodyAnalysisWork, BodyNamedDependencyEvent, DeclarationBindingWork,
+    DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
+    DeclarationTypeDependencyEvent, NamedConstDependencyEvent, NamedDestructorDependencyEvent,
+    NamedMethodDependencyEvent, OrdinaryFreeFunctionDependencyEvent, RirDeclarationIndexWork,
+    SemanticBindingManifestWork, SpecializedFreeFunctionDependencyEvent,
+    SpecializedFreeFunctionOrigin,
 };
 use tracing::info_span;
 
@@ -61,8 +62,14 @@ pub(crate) fn prepare_canonical_declarations<'a>(
     let declaration_index = sema.rir_declaration_index_work();
     let shells = sema.predeclare_declaration_shells()?;
     let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
-    let definitions = issue_shell_definitions(merged, rir.source_revision(), &shell_records)
-        .map_err(crate::CompileErrors::from)?;
+    let definitions = match issue_shell_definitions(merged, rir.source_revision(), &shell_records) {
+        Ok(definitions) => definitions,
+        Err(preparation_error) => {
+            let preparation_error = crate::CompileErrors::from(preparation_error);
+            let bound = shells.resolve_declarations()?;
+            return recover_body_diagnostics(bound, preparation_error);
+        }
+    };
     Ok(CanonicalPreparedDeclarations {
         shells,
         shell_records,
@@ -84,10 +91,12 @@ pub struct CanonicalSemanticWork {
     pub declaration_index: RirDeclarationIndexWork,
     /// Completed declaration binding, independent of optional manifest work.
     pub binding: DeclarationBindingWork,
-    /// Optional stable-ID manifest traversal; zero when IDs were not requested.
+    /// Authoritative binding-manifest traversal used to validate body tokens.
     pub manifest: SemanticBindingManifestWork,
-    /// Stable identity issuance work, absent when IDs were not requested.
+    /// Public stable-ID issuance work, absent when IDs were not requested.
     pub bound_definitions: Option<BoundDefinitionWork>,
+    /// Exact work performed to make AIR body ownership authoritative.
+    pub body_owner_tokens: BodyOwnerTokenWork,
     /// Demand-driven function-body analysis work.
     pub body_analysis: BodyAnalysisWork,
     /// Drop-glue, CFG construction, and optimization work.
@@ -95,6 +104,15 @@ pub struct CanonicalSemanticWork {
     /// Whether this request asked for stable source definition IDs.
     pub stable_ids_requested: bool,
     pub declaration_reuse: CanonicalDeclarationReuseWork,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BodyOwnerTokenWork {
+    pub provisional_slots: usize,
+    pub authoritative_slots: usize,
+    pub slots_validated: usize,
+    pub tokens_installed: usize,
+    pub validation_failures: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -122,7 +140,10 @@ pub struct CanonicalSemanticOutput {
     strings: Vec<String>,
     warnings: Vec<CompileWarning>,
     bound_definitions: Option<BoundDefinitionSet>,
+    body_owner_issuer: BoundDefinitionSet,
     work: CanonicalSemanticWork,
+    analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
+    body_named_dependencies: Vec<BodyNamedDependencyEvent>,
     ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
     ordinary_free_function_dependencies_complete: bool,
     specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
@@ -169,6 +190,12 @@ impl CanonicalSemanticOutput {
     }
     pub fn ordinary_free_function_dependencies(&self) -> &[OrdinaryFreeFunctionDependencyEvent] {
         &self.ordinary_free_function_dependencies
+    }
+    pub fn analyzed_body_owners(&self) -> &[AnalyzedBodyOwnerEvent] {
+        &self.analyzed_body_owners
+    }
+    pub fn body_named_dependencies(&self) -> &[BodyNamedDependencyEvent] {
+        &self.body_named_dependencies
     }
     pub fn ordinary_free_function_dependencies_complete(&self) -> bool {
         self.ordinary_free_function_dependencies_complete
@@ -239,6 +266,9 @@ impl CanonicalSemanticOutput {
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
         self.bound_definitions.as_ref()
     }
+    pub(crate) fn body_owner_issuer(&self) -> &BoundDefinitionSet {
+        &self.body_owner_issuer
+    }
     /// Structural work performed by this request.
     pub fn work(&self) -> CanonicalSemanticWork {
         self.work
@@ -279,9 +309,14 @@ pub fn analyze_canonical_program(
         ),
         opt_level: options.opt_level.into(),
     };
-    let sema = configure_timed_canonical_sema(merged, rir, options)?;
-    let declaration_index = sema.rir_declaration_index_work();
-    let bound = sema.bind_declarations()?;
+    let prepared = prepare_canonical_declarations(merged, rir, options)?;
+    let CanonicalPreparedDeclarations {
+        shells,
+        shell_records: _,
+        definitions,
+        declaration_index,
+    } = prepared;
+    let bound = shells.resolve_declarations()?;
     finish_canonical_analysis(
         input,
         merged,
@@ -290,6 +325,7 @@ pub fn analyze_canonical_program(
         request_stable_ids,
         declaration_index,
         bound,
+        definitions,
         CanonicalDeclarationReuseWork::default(),
         info_span!("sema").entered(),
     )
@@ -337,6 +373,7 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
         false,
         declaration_index,
         bound,
+        definitions.clone(),
         CanonicalDeclarationReuseWork {
             semantic_epochs_started: 1,
             declaration_indexes_built: declaration_index.build_invocations,
@@ -383,9 +420,10 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     let CanonicalPreparedDeclarations {
         shells,
         shell_records,
-        definitions: _,
+        definitions: prepared_definitions,
         declaration_index,
     } = prepared;
+    let mut selected_definitions = prepared_definitions;
     reuse.declaration_indexes_built = declaration_index.build_invocations;
     let bound = match crate::project_durable_declaration_semantics(
         merged,
@@ -416,7 +454,15 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
                     let fallback = configure_timed_canonical_sema(merged, rir, options)?;
                     reuse.declaration_indexes_built +=
                         fallback.rir_declaration_index_work().build_invocations;
-                    fallback.bind_declarations()?
+                    let fallback_shells = fallback.predeclare_declaration_shells()?;
+                    let fallback_records = fallback_shells
+                        .declaration_shells()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    selected_definitions =
+                        issue_shell_definitions(merged, rir.source_revision(), &fallback_records)
+                            .map_err(crate::CompileErrors::from)?;
+                    fallback_shells.resolve_declarations()?
                 }
             }
         }
@@ -430,6 +476,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         false,
         declaration_index,
         bound,
+        selected_definitions,
         reuse,
         sema_span,
     )
@@ -462,27 +509,90 @@ fn finish_canonical_analysis(
     request_stable_ids: bool,
     declaration_index: RirDeclarationIndexWork,
     bound: rue_air::BoundSema<'_>,
+    provisional_definitions: BoundDefinitionSet,
     declaration_reuse: CanonicalDeclarationReuseWork,
     sema_span: tracing::span::EnteredSpan,
 ) -> MultiErrorResult<CanonicalSemanticOutput> {
     let binding = bound.binding_work();
-    let (bound_definitions, manifest_work) = if request_stable_ids {
-        let manifest = bound.binding_manifest();
-        let definitions = issue_bound_definitions(
-            merged,
-            rir.source_revision(),
-            manifest.bindings(),
-            manifest.work(),
-        )
-        .map_err(crate::CompileErrors::from)?;
-        (Some(definitions), manifest.work())
-    } else {
-        debug_assert!(!bound.manifest_is_materialized());
-        (None, SemanticBindingManifestWork::default())
+    let manifest = bound.binding_manifest();
+    let authoritative_definitions = match issue_bound_definitions(
+        merged,
+        rir.source_revision(),
+        manifest.bindings(),
+        manifest.work(),
+    ) {
+        Ok(definitions) => definitions,
+        Err(preparation_error) => {
+            return recover_body_diagnostics(bound, crate::CompileErrors::from(preparation_error));
+        }
     };
+    let provisional_keys = provisional_definitions
+        .definitions()
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.stable_key().kind(),
+                crate::StableDefinitionKind::Function
+                    | crate::StableDefinitionKind::Method
+                    | crate::StableDefinitionKind::AssociatedFunction
+                    | crate::StableDefinitionKind::Destructor
+            )
+        })
+        .map(|r| r.stable_key())
+        .collect::<Vec<_>>();
+    let authoritative_keys = authoritative_definitions
+        .definitions()
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.stable_key().kind(),
+                crate::StableDefinitionKind::Function
+                    | crate::StableDefinitionKind::Method
+                    | crate::StableDefinitionKind::AssociatedFunction
+                    | crate::StableDefinitionKind::Destructor
+            )
+        })
+        .map(|r| r.stable_key())
+        .collect::<Vec<_>>();
+    if provisional_keys != authoritative_keys {
+        let first_difference = provisional_keys
+            .iter()
+            .zip(&authoritative_keys)
+            .position(|(a, b)| a != b);
+        let preparation_error = crate::CompileErrors::from(crate::CompileError::without_span(
+            rue_error::ErrorKind::InternalError(format!(
+                "prepared declaration shells do not exactly match authoritative bound definitions: provisional={} authoritative={} first_difference={:?} provisional_key={:?} authoritative_key={:?}",
+                provisional_keys.len(),
+                authoritative_keys.len(),
+                first_difference,
+                first_difference.and_then(|index| provisional_keys.get(index)),
+                first_difference.and_then(|index| authoritative_keys.get(index)),
+            )),
+        ));
+        return recover_body_diagnostics(bound, preparation_error);
+    }
+    let manifest_work = manifest.work();
+    let bound_definitions = request_stable_ids.then(|| authoritative_definitions.clone());
+    let endpoints = authoritative_definitions.body_owner_endpoints();
+    let body_owner_tokens = BodyOwnerTokenWork {
+        provisional_slots: provisional_keys.len(),
+        authoritative_slots: authoritative_keys.len(),
+        slots_validated: authoritative_keys.len(),
+        tokens_installed: endpoints.len(),
+        validation_failures: 0,
+    };
+    let bound = bound.install_body_owner_tokens(&endpoints).map_err(|_| {
+        crate::CompileErrors::from(crate::CompileError::without_span(
+            rue_error::ErrorKind::InternalError(
+                "failed to install authoritative body-owner tokens".into(),
+            ),
+        ))
+    })?;
 
     let sema_output = bound.analyze_all_bodies()?;
     let body_analysis = sema_output.body_analysis_work;
+    let analyzed_body_owners = sema_output.analyzed_body_owners.clone();
+    let body_named_dependencies = sema_output.body_named_dependencies.clone();
     let ordinary_free_function_dependencies =
         sema_output.ordinary_free_function_dependencies.clone();
     let ordinary_free_function_dependencies_complete =
@@ -547,6 +657,7 @@ fn finish_canonical_analysis(
         binding,
         manifest: manifest_work,
         bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
+        body_owner_tokens,
         body_analysis,
         cfg: cfg.work,
         stable_ids_requested: request_stable_ids,
@@ -559,7 +670,10 @@ fn finish_canonical_analysis(
         strings: cfg.strings,
         warnings,
         bound_definitions,
+        body_owner_issuer: authoritative_definitions,
         work,
+        analyzed_body_owners,
+        body_named_dependencies,
         ordinary_free_function_dependencies,
         ordinary_free_function_dependencies_complete,
         specialized_free_function_origins,
@@ -584,6 +698,19 @@ fn finish_canonical_analysis(
     })
 }
 
+/// Preserve ordinary source diagnostics when strict token preparation rejects
+/// an already-bound epoch. The semantic result is consumed and discarded: it
+/// can recover diagnostics, but can never publish a partially prepared output.
+fn recover_body_diagnostics<T>(
+    bound: rue_air::BoundSema<'_>,
+    preparation_error: crate::CompileErrors,
+) -> MultiErrorResult<T> {
+    match bound.analyze_all_bodies() {
+        Err(source_errors) => Err(source_errors),
+        Ok(_) => Err(preparation_error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -591,7 +718,10 @@ mod tests {
 
     use rue_span::FileId;
 
-    use super::{CanonicalSemanticOutput, CanonicalSemanticWork, analyze_canonical_program};
+    use super::{
+        BodyOwnerTokenWork, CanonicalSemanticOutput, CanonicalSemanticWork,
+        analyze_canonical_program,
+    };
     use crate::parsed_modules::parse_source_snapshot_modules;
     use crate::{
         CanonicalRirOutput, CompilationUnit, CompileOptions, FunctionWithCfg, SourceMetadata,
@@ -616,6 +746,43 @@ mod tests {
                 .collect(),
         )
         .unwrap()
+    }
+
+    fn assert_token_preparation_preserves_source_errors(source: &str) {
+        let source = snapshot(&[(1, "/main.rue", "main.rue", source)], 1);
+        let parsed = parse_source_snapshot_modules(&source).unwrap();
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let rir = lower_canonical_rir(&merged).unwrap();
+        let options = CompileOptions::default();
+
+        let ordinary = match crate::bound_definitions::configure_canonical_sema(
+            &merged,
+            &rir,
+            options.preview_features.clone(),
+            options.target,
+        )
+        .unwrap()
+        .bind_declarations()
+        {
+            Err(errors) => errors,
+            Ok(_) => panic!("test input must fail ordinary declaration binding"),
+        };
+        let canonical = analyze_canonical_program(&merged, &rir, &options, false).unwrap_err();
+        let messages = |errors: crate::CompileErrors| {
+            errors.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        assert_eq!(messages(canonical), messages(ordinary));
+    }
+
+    #[test]
+    fn token_preparation_failures_recover_ordinary_binding_diagnostics() {
+        for source in [
+            "const value: i32 = 1; const value: i32 = 2; fn main() {}",
+            "struct Value {} drop fn Value(self) {} drop fn Value(self) {} fn main() {}",
+            "drop fn Missing(self) {} fn main() {}",
+        ] {
+            assert_token_preparation_preserves_source_errors(source);
+        }
     }
 
     fn canonical(
@@ -790,6 +957,16 @@ mod tests {
         );
         let options = CompileOptions::default();
         let (canonical, canonical_rir) = canonical(&source, &options, false);
+        assert_eq!(
+            canonical.work().body_owner_tokens,
+            BodyOwnerTokenWork {
+                provisional_slots: 2,
+                authoritative_slots: 2,
+                slots_validated: 2,
+                tokens_installed: 2,
+                validation_failures: 0,
+            }
+        );
         let mut legacy = CompilationUnit::from_source_snapshot(source, options);
         legacy.run_frontend().unwrap();
 
@@ -815,7 +992,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(canonical.work().binding.bind_invocations, 1);
-        assert_eq!(canonical.work().manifest.build_invocations, 0);
+        assert_eq!(canonical.work().manifest.build_invocations, 1);
         assert!(canonical.bound_definitions().is_none());
     }
 
@@ -835,7 +1012,7 @@ mod tests {
         let (with_ids, with_ids_rir) = canonical(&source, &options, true);
         assert_eq!(ordinary.work().binding.bind_invocations, 1);
         assert_eq!(with_ids.work().binding.bind_invocations, 1);
-        assert_eq!(ordinary.work().manifest.build_invocations, 0);
+        assert_eq!(ordinary.work().manifest.build_invocations, 1);
         assert_eq!(with_ids.work().manifest.build_invocations, 1);
         assert!(ordinary.bound_definitions().is_none());
         assert!(with_ids.bound_definitions().is_some());
@@ -870,8 +1047,8 @@ mod tests {
         assert_eq!(many.binding.bind_invocations, 1);
         assert_eq!(one.declaration_index.build_invocations, 1);
         assert_eq!(many.declaration_index.build_invocations, 1);
-        assert_eq!(one.manifest.build_invocations, 0);
-        assert_eq!(many.manifest.build_invocations, 0);
+        assert_eq!(one.manifest.build_invocations, 1);
+        assert_eq!(many.manifest.build_invocations, 1);
         assert_eq!(
             one.body_analysis.free_function_record_lookups,
             many.body_analysis.free_function_record_lookups

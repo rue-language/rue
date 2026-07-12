@@ -55,7 +55,7 @@ pub use canonical_merge::{
     CanonicalMergeWork, CanonicalMergedAst, CanonicalMergedProgram, merge_parsed_modules,
 };
 pub use canonical_semantic::{
-    CanonicalSemanticOutput, CanonicalSemanticWork, analyze_canonical_program,
+    BodyOwnerTokenWork, CanonicalSemanticOutput, CanonicalSemanticWork, analyze_canonical_program,
 };
 pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
@@ -76,12 +76,12 @@ pub use frontend_session::{
     SemanticDependencyBlocker, SemanticDependencyIncompleteReason, SemanticDependencyInputManifest,
     SemanticDependencyManifestWork, SemanticDependencySurface, SemanticFullInvalidationReason,
     SemanticInvalidationPlan, SemanticInvalidationScope, SemanticInvalidationWork,
-    SemanticQueryRecord, StableBuiltinTypeCallHeadInput, StableDeclarationTypeCallHeadDependency,
-    StableDeclarationTypeDependency, StableDefinitionFingerprint,
-    StableDefinitionFingerprintPrecision, StableDefinitionInputFingerprint,
-    StableFreeFunctionDependency, StableModuleImportDependency, StableNamedConstDependency,
-    StableNamedConstDependencyTarget, StableNamedDestructorDependency, StableNamedMethodDependency,
-    StableNamedMethodDependencyTarget,
+    SemanticQueryRecord, StableBodyDependencyInputRecord, StableBuiltinTypeCallHeadInput,
+    StableDeclarationTypeCallHeadDependency, StableDeclarationTypeDependency,
+    StableDefinitionFingerprint, StableDefinitionFingerprintPrecision,
+    StableDefinitionInputFingerprint, StableFreeFunctionDependency, StableModuleImportDependency,
+    StableNamedConstDependency, StableNamedConstDependencyTarget, StableNamedDestructorDependency,
+    StableNamedMethodDependency, StableNamedMethodDependencyTarget,
 };
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,
@@ -1675,7 +1675,7 @@ fn compile_source_snapshot_with_options_impl(
     let semantic = analyze_canonical_program(&merged, &rir, options, false)?;
     let semantic_work = semantic.work();
     debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
-    debug_assert_eq!(semantic_work.manifest.build_invocations, 0);
+    debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
     debug_assert!(semantic.bound_definitions().is_none());
     let output = compile_backend(
         semantic.functions(),
@@ -2653,7 +2653,7 @@ mod tests {
         assert_eq!(work.lowered.ast_payload_clones, 0);
         assert_eq!(work.lowered.source_text_clones, 0);
         assert_eq!(work.semantic.binding.bind_invocations, 1);
-        assert_eq!(work.semantic.manifest.build_invocations, 0);
+        assert_eq!(work.semantic.manifest.build_invocations, 1);
         assert!(!work.semantic.stable_ids_requested);
         assert!(work.semantic.bound_definitions.is_none());
     }

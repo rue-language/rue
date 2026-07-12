@@ -926,7 +926,7 @@ mod tests {
         assert_eq!(initial.lower.executions, 1);
         assert_eq!(initial.analyze.executions, 1);
         assert_eq!(initial.semantic.binding.bind_invocations, 1);
-        assert_eq!(initial.semantic.manifest.build_invocations, 0);
+        assert_eq!(initial.semantic.manifest.build_invocations, 1);
         assert!(!initial.semantic.stable_ids_requested);
         assert_eq!(initial.definition_snapshot_builds, 1);
         assert_eq!(initial.compatibility_projections, 0);
