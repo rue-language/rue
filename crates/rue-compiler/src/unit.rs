@@ -38,9 +38,9 @@ use tracing::{info, info_span};
 
 use crate::{
     AstGen, CompileErrors, CompileOptions, CompileOutput, CompileResult, CompileWarning,
-    DefinitionSnapshot, FunctionWithCfg, MergedAst, MultiErrorResult, Rir, SourceFile,
-    SourceMetadata, SourceSnapshot, SyntaxWork, TypeInternPool, build_functions_and_cfgs,
-    build_sema_for_target, compile_backend,
+    DefinitionSnapshot, FunctionWithCfg, ImportDirectives, MergedAst, MultiErrorResult, Rir,
+    SourceFile, SourceMetadata, SourceSnapshot, SyntaxWork, TypeInternPool,
+    build_functions_and_cfgs, build_sema_for_target, compile_backend, extract_import_directives,
 };
 use rue_span::FileId;
 
@@ -104,6 +104,8 @@ pub struct CompilationUnit<'src> {
     // === Phase 2: RIR Generation ===
     /// Untyped intermediate representation (populated by `lower()`).
     rir: Option<Rir>,
+    /// Canonical, resolution-independent import sites derived from positional RIR.
+    import_directives: Option<ImportDirectives>,
 
     // === Phase 3: Semantic Analysis + CFG ===
     /// Analyzed functions with typed IR and control flow graphs.
@@ -196,6 +198,7 @@ impl<'src> CompilationUnit<'src> {
             interner: None,
             definition_snapshot: None,
             rir: None,
+            import_directives: None,
             functions: None,
             type_pool: None,
             strings: None,
@@ -222,6 +225,7 @@ impl<'src> CompilationUnit<'src> {
         // A failed syntax pass must not leave a snapshot that appears to
         // describe the latest attempt.
         self.definition_snapshot = None;
+        self.import_directives = None;
 
         // Keep symbol merging nested under the compilation unit's historical
         // `parse` timing boundary. Direct snapshot parsing owns a narrower
@@ -264,11 +268,16 @@ impl<'src> CompilationUnit<'src> {
 
         let _span = info_span!("astgen").entered();
 
+        self.import_directives = None;
         let rir = AstGen::generate_items(interner, ast.items());
+        let import_directives =
+            extract_import_directives(&rir, interner, self.source_snapshot.metadata())
+                .map_err(CompileErrors::from)?;
 
         info!(instruction_count = rir.len(), "RIR generation complete");
 
         self.rir = Some(rir);
+        self.import_directives = Some(import_directives);
         Ok(())
     }
 
@@ -466,6 +475,15 @@ impl<'src> CompilationUnit<'src> {
     /// Panics if called before [`lower()`](Self::lower).
     pub fn rir(&self) -> &Rir {
         self.rir.as_ref().expect("rir() called before lower()")
+    }
+
+    /// Canonical import sites derived by the most recent successful lowering.
+    ///
+    /// Returns `None` before lowering, and after a new parse attempt invalidates
+    /// the prior lowering. Import resolution and diagnostics remain semantic
+    /// analysis responsibilities.
+    pub fn import_directives(&self) -> Option<&ImportDirectives> {
+        self.import_directives.as_ref()
     }
 
     /// Get the analyzed functions with CFGs (after analysis).
