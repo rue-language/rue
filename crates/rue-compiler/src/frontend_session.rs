@@ -1215,12 +1215,20 @@ impl CanonicalFrontendSession {
                                 rue_air::DeclarationTypeDependencyTargetKind::Enum => {
                                     StableDefinitionKind::Enum
                                 }
+                                rue_air::DeclarationTypeDependencyTargetKind::ValueConst => {
+                                    StableDefinitionKind::ValueConst
+                                }
+                            };
+                            let namespace = if matches!(kind, StableDefinitionKind::ValueConst) {
+                                StableDefinitionNamespace::Value
+                            } else {
+                                StableDefinitionNamespace::Type
                             };
                             StableNamedConstDependencyTarget::NamedType(stable_top_level_endpoint(
                                 definitions,
                                 *file,
                                 name,
-                                StableDefinitionNamespace::Type,
+                                namespace,
                                 kind,
                             )?)
                         }
@@ -1951,6 +1959,15 @@ fn stable_named_type_endpoint(
     let kind = match event.target_kind {
         rue_air::DeclarationTypeDependencyTargetKind::Struct => StableDefinitionKind::Struct,
         rue_air::DeclarationTypeDependencyTargetKind::Enum => StableDefinitionKind::Enum,
+        rue_air::DeclarationTypeDependencyTargetKind::ValueConst => {
+            return stable_top_level_endpoint(
+                definitions,
+                event.target_file,
+                &event.target_name,
+                StableDefinitionNamespace::Value,
+                StableDefinitionKind::ValueConst,
+            );
+        }
     };
     stable_top_level_endpoint(
         definitions,
@@ -3057,18 +3074,11 @@ mod tests {
                 .iter()
                 .map(|blocker| (blocker.owner(), blocker.surface(), blocker.reason()))
                 .collect::<Vec<_>>(),
-            vec![
-                (
-                    None,
-                    SemanticDependencySurface::DeclarationType,
-                    SemanticDependencyIncompleteReason::ResolvedTypeIdentityUnavailable,
-                ),
-                (
-                    None,
-                    SemanticDependencySurface::DeclarationTypeCallHead,
-                    SemanticDependencyIncompleteReason::TypeCallHeadIdentityUnavailable,
-                ),
-            ]
+            vec![(
+                None,
+                SemanticDependencySurface::DeclarationTypeCallHead,
+                SemanticDependencyIncompleteReason::TypeCallHeadIdentityUnavailable,
+            ),]
         );
         assert!(first.reusable().is_empty());
         assert!(first.invalidated().is_empty());
@@ -3861,7 +3871,7 @@ mod tests {
             "Holder".into(),
             rue_air::DeclarationTypeDependencyKind::Owner
         )));
-        assert!(!manifest.declaration_type_dependencies_complete());
+        assert!(manifest.declaration_type_dependencies_complete());
         assert_eq!(manifest.work().extra_rir_instructions_visited, 0);
     }
 
@@ -3909,6 +3919,70 @@ mod tests {
         );
         assert!(!first.declaration_type_call_head_dependencies_complete());
         assert_eq!(first.work().declaration_type_call_head_events_translated, 2);
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn deferred_nested_nominal_and_alias_types_keep_stable_declaration_edges() {
+        let build = |main_id, lib_id, root: &str, reversed: bool| {
+            let main = (
+                main_id,
+                format!("{root}/main.rue"),
+                "main.rue",
+                r#"const lib = @import("lib.rue");
+                   const Alias = lib.Leaf;
+                   fn consume(comptime N: i32, values: [Alias; N]) -> i32 { 0 }
+                   fn main() -> i32 { 0 }"#,
+            );
+            let lib = (
+                lib_id,
+                format!("{root}/lib.rue"),
+                "lib.rue",
+                "pub struct Leaf { value: i32 }",
+            );
+            let owned = if reversed {
+                vec![lib, main]
+            } else {
+                vec![main, lib]
+            };
+            let entries = owned
+                .iter()
+                .map(|(id, path, module, text)| (*id, path.as_str(), *module, *text))
+                .collect::<Vec<_>>();
+            let source = snapshot(&entries, main_id);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(3, 8, "/p", false);
+        let moved = build(91, 4, "/elsewhere", true);
+        assert_eq!(
+            first.declaration_type_dependencies(),
+            moved.declaration_type_dependencies()
+        );
+        let consume_targets = first
+            .declaration_type_dependencies()
+            .iter()
+            .filter(|edge| edge.source.name() == "consume")
+            .map(|edge| {
+                (
+                    edge.target.module().as_str(),
+                    edge.target.name(),
+                    edge.target.kind(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(consume_targets.contains(&("main.rue", "Alias", StableDefinitionKind::ValueConst)));
+        assert!(consume_targets.contains(&("lib.rue", "Leaf", StableDefinitionKind::Struct)));
+        assert!(first.declaration_type_dependencies_complete());
+        assert!(
+            !first
+                .dependency_blockers()
+                .iter()
+                .any(|blocker| { blocker.surface() == SemanticDependencySurface::DeclarationType })
+        );
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
     }
 

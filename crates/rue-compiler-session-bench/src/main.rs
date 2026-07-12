@@ -646,7 +646,7 @@ fn assert_production_full_plan(scenario: &Value, executions: u64, changed: u64, 
     assert!(
         scenario["plan"]["dependency_blockers"]
             .as_array()
-            .is_some_and(|blockers| blockers.len() >= 2)
+            .is_some_and(|blockers| !blockers.is_empty())
     );
     assert_eq!(count(scenario, &["plan", "reusable"]), 0);
     assert_eq!(count(scenario, &["plan", "invalidated"]), 0);

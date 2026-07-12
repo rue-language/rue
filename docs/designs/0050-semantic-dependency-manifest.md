@@ -233,14 +233,14 @@ Compiler translation joins both endpoints against the exact bound-definition
 revision and retains the field/payload/signature/declared-type/owner edge kind,
 with zero additional RIR traversal.
 
-This slice deliberately reports `declaration_type_dependencies_complete=false`.
-Generic signatures replace any type mentioning a comptime parameter with
-`COMPTIME_TYPE`, so outer type-constructor syntax such as `Option(Result(T))`
-is not present in the resolved table. In Rue those heads are comptime type
-functions rather than named type definitions. A future pre-substitution
-observer must classify stable type-function dependencies and aliases before
-this surface can become complete; the conservative resolved edges must not
-drive reuse meanwhile.
+Declaration-type capture is complete for successful named declarations.
+Resolver-time observation retains nominal leaves before deferred generic
+signatures become `COMPTIME_TYPE`, recursively including arrays and pointers;
+the resolved declaration-table sweep remains a parity backstop. Type aliases
+retain both the exact value-constant declaration endpoint and the resolved
+nominal target. All endpoints join the same bound-definition revision, and no
+RIR rescan or source-text inference is involved. Type-call heads remain a
+separate, independently fail-closed surface.
 
 The pre-substitution observer now classifies every type-call head accepted by
 the current resolver. User-defined free and module-qualified free comptime

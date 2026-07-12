@@ -583,11 +583,22 @@ impl<'a> Sema<'a> {
             let (file_id, is_pub) = (info.span.file_id, info.is_pub);
             let type_name = self.interner.resolve(&type_sym).to_string();
             self.check_unqualified_visibility("constant", &type_name, file_id, is_pub, span)?;
+            self.record_resolved_declaration_type_target(
+                file_id,
+                type_name,
+                super::DeclarationTypeDependencyTargetKind::ValueConst,
+            );
         }
         Ok(Some(alias_ty))
     }
 
     pub(crate) fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
+        let ty = self.resolve_type_inner(type_sym, span)?;
+        self.record_resolved_declaration_type(ty);
+        Ok(ty)
+    }
+
+    fn resolve_type_inner(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
         // Own the name so the read-only branches below borrow this local rather
         // than `self.interner`, leaving `self` free for the `&mut self` slice
         // path (`try_resolve_slice_type` lazily registers a synthetic struct).
@@ -719,6 +730,64 @@ impl<'a> Sema<'a> {
                 ))
             }
         }
+    }
+
+    fn record_resolved_declaration_type(&mut self, ty: Type) {
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                let def = self.type_pool.struct_def(id);
+                if !def.is_builtin && !def.name.starts_with("__anon_struct_") {
+                    self.record_resolved_declaration_type_target(
+                        def.file_id,
+                        def.name,
+                        super::DeclarationTypeDependencyTargetKind::Struct,
+                    );
+                }
+            }
+            TypeKind::Enum(id) => {
+                let def = self.type_pool.enum_def(id);
+                self.record_resolved_declaration_type_target(
+                    def.file_id,
+                    def.name,
+                    super::DeclarationTypeDependencyTargetKind::Enum,
+                );
+            }
+            TypeKind::Array(id) => {
+                self.record_resolved_declaration_type(self.type_pool.array_def(id).0)
+            }
+            TypeKind::PtrConst(id) => {
+                self.record_resolved_declaration_type(self.type_pool.ptr_const_def(id));
+            }
+            TypeKind::PtrMut(id) => {
+                self.record_resolved_declaration_type(self.type_pool.ptr_mut_def(id));
+            }
+            _ => {}
+        }
+    }
+
+    fn record_resolved_declaration_type_target(
+        &mut self,
+        target_file: FileId,
+        target_name: String,
+        target_kind: super::DeclarationTypeDependencyTargetKind,
+    ) {
+        let Some((source_file, source_name, source_owner_name, source_kind, dependency_kind)) =
+            self.declaration_type_observer.clone()
+        else {
+            return;
+        };
+        self.declaration_type_dependencies
+            .push(super::DeclarationTypeDependencyEvent {
+                source_file: source_file.index(),
+                source_name,
+                source_owner_name,
+                source_kind,
+                dependency_kind,
+                target_file: target_file.index(),
+                target_name,
+                target_kind,
+            });
+        self.body_analysis_work.declaration_type_dependency_events += 1;
     }
 
     /// Resolve a type-annotation symbol to a `Type`, consulting the analysis
