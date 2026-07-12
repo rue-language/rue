@@ -117,6 +117,34 @@ pub struct DeclarationBuiltinTypeCallHeadDependencyEvent {
     pub builtin: BuiltinTypeCallHead,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NamedConstDependencyTargetEvent {
+    ValueConst {
+        file: u32,
+        name: String,
+    },
+    FreeFunction {
+        file: u32,
+        name: String,
+    },
+    NamedType {
+        file: u32,
+        name: String,
+        kind: DeclarationTypeDependencyTargetKind,
+    },
+    ModuleBinding {
+        file: u32,
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NamedConstDependencyEvent {
+    pub source_file: u32,
+    pub source_name: String,
+    pub target: NamedConstDependencyTargetEvent,
+}
+
 /// Per-ABI-slot parameter access metadata preserved into CFG.
 ///
 /// `by_ref` describes the physical calling convention: both `borrow` and
@@ -211,6 +239,8 @@ pub struct SemaOutput {
     pub declaration_builtin_type_call_head_dependencies:
         Vec<DeclarationBuiltinTypeCallHeadDependencyEvent>,
     pub supported_type_call_heads_complete: bool,
+    pub named_const_dependencies: Vec<NamedConstDependencyEvent>,
+    pub named_value_const_dependencies_complete: bool,
 }
 
 /// Value-only workload counters for demand-driven body dispatch.
@@ -225,6 +255,7 @@ pub struct BodyAnalysisWork {
     pub named_destructor_dependency_events: usize,
     pub declaration_type_dependency_events: usize,
     pub declaration_type_call_head_dependency_events: usize,
+    pub named_const_dependency_events: usize,
     /// Indexed declaration-record lookups for reachable, non-generic free functions.
     pub free_function_record_lookups: usize,
     /// Private declaration-record lookups for reachable named-struct methods.

@@ -213,6 +213,18 @@ fn finalize_function_body_analysis(
             sema.declaration_builtin_type_call_head_dependencies.clone()
         },
         supported_type_call_heads_complete: true,
+        named_const_dependencies: {
+            sema.named_const_dependencies.retain(|event| {
+                sema.constants_by_file_name.keys().any(|(file, name)| {
+                    file.index() == event.source_file
+                        && sema.interner.resolve(name) == event.source_name
+                })
+            });
+            sema.named_const_dependencies.sort();
+            sema.named_const_dependencies.dedup();
+            sema.named_const_dependencies.clone()
+        },
+        named_value_const_dependencies_complete: true,
     };
 
     errors.into_result_with(output)
@@ -1634,6 +1646,8 @@ mod error_invariant_tests {
             declaration_type_call_head_dependencies_complete: false,
             declaration_builtin_type_call_head_dependencies: Vec::new(),
             supported_type_call_heads_complete: false,
+            named_const_dependencies: Vec::new(),
+            named_value_const_dependencies_complete: false,
         }
     }
 

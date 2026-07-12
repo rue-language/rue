@@ -76,6 +76,13 @@ incremental-compilation goal is complete.
    (dotted heads resolve only through modules), which tests pin as fail-closed.
    A narrow supported-head completeness bit is therefore true, while broader
    declaration-type and overall graph completeness remain false.
+   Named value-constant initializers now retain direct tagged dependencies on
+   constants, comptime functions/type constructors, named types, and module
+   bindings at the existing collector/evaluator seams. Recursive source context
+   is preserved, cycles fail before publishing, and exact stable translation
+   adds zero RIR visits. Module bindings remain import-topology inputs rather
+   than value-constant sources. The value-constant slice is narrowly complete;
+   the overall graph remains false for dynamic/anonymous surfaces.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now

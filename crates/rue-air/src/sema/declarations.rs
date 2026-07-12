@@ -1808,6 +1808,9 @@ impl<'a> Sema<'a> {
         };
         let (file_id, name) = key;
         let name_str = self.interner.resolve(&name).to_string();
+        let previous_dependency_source = self
+            .named_const_dependency_source
+            .replace((file_id, name_str.clone()));
 
         // A value-constant name that collides with a function, struct, or enum
         // is a top-level name collision (E0436), but that decision is made
@@ -1829,6 +1832,7 @@ impl<'a> Sema<'a> {
 
         st.in_progress.push(key);
         let outcome = self.eval_const_initializer(p.init, file_id, st, declared_ty);
+        self.named_const_dependency_source = previous_dependency_source;
         st.in_progress.pop();
         let outcome = outcome?;
         st.done.insert(key);
@@ -2049,12 +2053,24 @@ impl<'a> Sema<'a> {
             InstData::VarRef { name } => {
                 let name = *name;
                 self.ensure_const_collected(name, file_id, st)?;
-                if let Some(binding) = self.module_bindings.get(&(file_id, name)) {
+                if let Some(binding) = self.module_bindings.get(&(file_id, name)).cloned() {
+                    self.record_named_const_dependency(
+                        super::NamedConstDependencyTargetEvent::ModuleBinding {
+                            file: file_id.index(),
+                            name: self.interner.resolve(&name).to_string(),
+                        },
+                    );
                     // `const m2 = m;` — aliasing a module binding declared in
                     // this file yields the same module (RUE-160).
                     return Ok(ConstInit::Module(binding.ty));
                 }
-                if let Some(info) = self.resolve_const_info_in_file(name, file_id) {
+                if let Some(info) = self.resolve_const_info_in_file(name, file_id).cloned() {
+                    self.record_named_const_dependency(
+                        super::NamedConstDependencyTargetEvent::ValueConst {
+                            file: info.span.file_id.index(),
+                            name: self.interner.resolve(&name).to_string(),
+                        },
+                    );
                     // Privacy (E0460, RUE-183): fallback bare-name lookup can
                     // still find a globally unique constant from another
                     // directory. The initializer's own span locates the
@@ -2071,6 +2087,12 @@ impl<'a> Sema<'a> {
                 if let Some((fn_file_id, is_pub)) =
                     self.ensure_free_function_signature(name, Some(file_id))?
                 {
+                    self.record_named_const_dependency(
+                        super::NamedConstDependencyTargetEvent::FreeFunction {
+                            file: fn_file_id.index(),
+                            name: self.interner.resolve(&name).to_string(),
+                        },
+                    );
                     let function_key = self
                         .resolve_function_name_local(name, file_id)
                         .unwrap_or_else(|| self.internal_function_name(name, fn_file_id));
@@ -2150,6 +2172,22 @@ impl<'a> Sema<'a> {
             // evaluated by the comptime engine.
             _ => self.eval_const_value_expr(init, file_id, st, span, declared_ty),
         }
+    }
+
+    pub(crate) fn record_named_const_dependency(
+        &mut self,
+        target: super::NamedConstDependencyTargetEvent,
+    ) {
+        let Some((file, name)) = self.named_const_dependency_source.clone() else {
+            return;
+        };
+        self.named_const_dependencies
+            .push(super::NamedConstDependencyEvent {
+                source_file: file.index(),
+                source_name: name,
+                target,
+            });
+        self.body_analysis_work.named_const_dependency_events += 1;
     }
 
     /// Evaluate a (non-module) constant initializer through the comptime
@@ -2614,6 +2652,12 @@ impl<'a> Sema<'a> {
                     accessing_file,
                     span,
                 )?;
+                self.record_named_const_dependency(
+                    super::NamedConstDependencyTargetEvent::ModuleBinding {
+                        file: mfile.index(),
+                        name: member_str.clone(),
+                    },
+                );
                 return Ok(ConstInit::Module(ty));
             }
         }
@@ -2629,6 +2673,12 @@ impl<'a> Sema<'a> {
                     accessing_file,
                     span,
                 )?;
+                self.record_named_const_dependency(
+                    super::NamedConstDependencyTargetEvent::ValueConst {
+                        file: mfile.index(),
+                        name: member_str.clone(),
+                    },
+                );
                 return Ok(ConstInit::Value(value));
             }
         }
@@ -2646,6 +2696,12 @@ impl<'a> Sema<'a> {
                     accessing_file,
                     span,
                 )?;
+                self.record_named_const_dependency(
+                    super::NamedConstDependencyTargetEvent::FreeFunction {
+                        file: mfile.index(),
+                        name: member_str.clone(),
+                    },
+                );
                 let function_key = self.internal_function_name(member, mfile);
                 return Ok(ConstInit::Value(ConstValue::Function(function_key)));
             }
@@ -2668,6 +2724,13 @@ impl<'a> Sema<'a> {
                     accessing_file,
                     span,
                 )?;
+                self.record_named_const_dependency(
+                    super::NamedConstDependencyTargetEvent::NamedType {
+                        file: mfile.index(),
+                        name: member_str.clone(),
+                        kind: super::DeclarationTypeDependencyTargetKind::Struct,
+                    },
+                );
                 return Ok(ConstInit::Value(ConstValue::Type(Type::new_struct(
                     struct_id,
                 ))));
@@ -2682,6 +2745,13 @@ impl<'a> Sema<'a> {
                     accessing_file,
                     span,
                 )?;
+                self.record_named_const_dependency(
+                    super::NamedConstDependencyTargetEvent::NamedType {
+                        file: mfile.index(),
+                        name: member_str.clone(),
+                        kind: super::DeclarationTypeDependencyTargetKind::Enum,
+                    },
+                );
                 return Ok(ConstInit::Value(ConstValue::Type(Type::new_enum(enum_id))));
             }
         }
@@ -2758,6 +2828,10 @@ impl<'a> Sema<'a> {
                 span,
             ));
         };
+        self.record_named_const_dependency(super::NamedConstDependencyTargetEvent::FreeFunction {
+            file: fn_info.file_id.index(),
+            name: member_str.clone(),
+        });
         if fn_info.return_type != Type::COMPTIME_TYPE {
             return Err(CompileError::new(
                 ErrorKind::ConstExprNotSupported {

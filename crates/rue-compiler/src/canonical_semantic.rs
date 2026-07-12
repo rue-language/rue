@@ -3,7 +3,7 @@
 use rue_air::{
     BodyAnalysisWork, DeclarationBindingWork, DeclarationBuiltinTypeCallHeadDependencyEvent,
     DeclarationTypeCallHeadDependencyEvent, DeclarationTypeDependencyEvent,
-    NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
+    NamedConstDependencyEvent, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
     OrdinaryFreeFunctionDependencyEvent, RirDeclarationIndexWork, SemanticBindingManifestWork,
     SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
@@ -61,6 +61,8 @@ pub struct CanonicalSemanticOutput {
     declaration_builtin_type_call_head_dependencies:
         Vec<DeclarationBuiltinTypeCallHeadDependencyEvent>,
     supported_type_call_heads_complete: bool,
+    named_const_dependencies: Vec<NamedConstDependencyEvent>,
+    named_value_const_dependencies_complete: bool,
 }
 
 impl CanonicalSemanticOutput {
@@ -137,6 +139,12 @@ impl CanonicalSemanticOutput {
     }
     pub fn supported_type_call_heads_complete(&self) -> bool {
         self.supported_type_call_heads_complete
+    }
+    pub fn named_const_dependencies(&self) -> &[NamedConstDependencyEvent] {
+        &self.named_const_dependencies
+    }
+    pub fn named_value_const_dependencies_complete(&self) -> bool {
+        self.named_value_const_dependencies_complete
     }
     /// Stable definition identities when requested for this run.
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
@@ -240,6 +248,9 @@ pub fn analyze_canonical_program(
         .declaration_builtin_type_call_head_dependencies
         .clone();
     let supported_type_call_heads_complete = sema_output.supported_type_call_heads_complete;
+    let named_const_dependencies = sema_output.named_const_dependencies.clone();
+    let named_value_const_dependencies_complete =
+        sema_output.named_value_const_dependencies_complete;
     drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
@@ -278,6 +289,8 @@ pub fn analyze_canonical_program(
         declaration_type_call_head_dependencies_complete,
         declaration_builtin_type_call_head_dependencies,
         supported_type_call_heads_complete,
+        named_const_dependencies,
+        named_value_const_dependencies_complete,
     })
 }
 
