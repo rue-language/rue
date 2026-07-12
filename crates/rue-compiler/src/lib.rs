@@ -62,8 +62,8 @@ pub use definition_snapshot::{
 };
 pub use frontend_session::{
     CanonicalFrontendSession, CanonicalFrontendSessionWork, CanonicalFrontendUpdate,
-    CanonicalImportGraphOutput, DefinitionQueryRecord, FrontendQueryWork,
-    ImportGraphInputDescriptor, SemanticQueryRecord,
+    CanonicalImportGraphOutput, DefinitionQueryRecord, FrontendDiagnosticSnapshot,
+    FrontendDiagnosticStage, FrontendQueryWork, ImportGraphInputDescriptor, SemanticQueryRecord,
 };
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,
