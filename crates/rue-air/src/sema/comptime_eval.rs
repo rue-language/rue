@@ -1151,7 +1151,17 @@ impl Sema<'_> {
                 //    VarRef's own span locates the referencing file;
                 //    speculative callers (`try_evaluate_const*`) swallow the
                 //    error and defer to runtime analysis, which re-checks.
-                if let Some(info) = self.constants_by_file_name.get(&(span.file_id, *name)) {
+                if let Some(info) = self
+                    .constants_by_file_name
+                    .get(&(span.file_id, *name))
+                    .cloned()
+                {
+                    self.record_named_const_dependency(
+                        super::NamedConstDependencyTargetEvent::ValueConst {
+                            file: info.span.file_id.index(),
+                            name: self.interner.resolve(name).to_string(),
+                        },
+                    );
                     self.check_unqualified_visibility(
                         "constant",
                         self.interner.resolve(name),
@@ -1163,9 +1173,33 @@ impl Sema<'_> {
                 }
                 // 7. Type names used as values (e.g. `Point` in
                 //    `fn make_type() -> type { Point }`)
-                Ok(self
-                    .resolve_named_type_value(*name, span)?
-                    .map(ConstValue::Type))
+                let resolved = self.resolve_named_type_value(*name, span)?;
+                if let Some(ty) = resolved {
+                    match ty.kind() {
+                        TypeKind::Struct(id) => {
+                            let def = self.type_pool.struct_def(id);
+                            self.record_named_const_dependency(
+                                super::NamedConstDependencyTargetEvent::NamedType {
+                                    file: def.file_id.index(),
+                                    name: def.name,
+                                    kind: super::DeclarationTypeDependencyTargetKind::Struct,
+                                },
+                            );
+                        }
+                        TypeKind::Enum(id) => {
+                            let def = self.type_pool.enum_def(id);
+                            self.record_named_const_dependency(
+                                super::NamedConstDependencyTargetEvent::NamedType {
+                                    file: def.file_id.index(),
+                                    name: def.name,
+                                    kind: super::DeclarationTypeDependencyTargetKind::Enum,
+                                },
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(resolved.map(ConstValue::Type))
             }
 
             // Call to a `-> type` function: reduce it to the resulting type
@@ -1495,6 +1529,13 @@ impl Sema<'_> {
             (key, info)
         };
         let is_type_fn = self.function_returns_type(&fn_info);
+        self.record_named_const_dependency(super::NamedConstDependencyTargetEvent::FreeFunction {
+            file: fn_info.file_id.index(),
+            name: self
+                .interner
+                .resolve(&self.source_function_name(name_key))
+                .to_string(),
+        });
         let params = fn_info.params;
         let param_names = self.param_arena.names(params).to_vec();
         let param_modes = self.param_arena.modes(params).to_vec();

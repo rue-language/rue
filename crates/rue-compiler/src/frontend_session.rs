@@ -64,6 +64,7 @@ pub struct SemanticDependencyManifestWork {
     pub declaration_type_events_translated: usize,
     pub declaration_type_call_head_events_translated: usize,
     pub builtin_type_call_head_inputs_translated: usize,
+    pub named_const_events_translated: usize,
     pub extra_rir_instructions_visited: usize,
 }
 
@@ -113,6 +114,20 @@ pub struct StableBuiltinTypeCallHeadInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StableNamedConstDependencyTarget {
+    ValueConst(StableDefinitionKey),
+    FreeFunction(StableDefinitionKey),
+    NamedType(StableDefinitionKey),
+    ModuleBinding(StableDefinitionKey),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableNamedConstDependency {
+    pub source: StableDefinitionKey,
+    pub target: StableNamedConstDependencyTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StableModuleImportDependency {
     Resolved {
         importer: crate::ModuleId,
@@ -150,6 +165,8 @@ pub struct SemanticDependencyInputManifest {
     declaration_type_call_head_dependencies_complete: bool,
     builtin_type_call_head_inputs: Arc<[StableBuiltinTypeCallHeadInput]>,
     supported_type_call_heads_complete: bool,
+    named_const_dependencies: Arc<[StableNamedConstDependency]>,
+    named_value_const_dependencies_complete: bool,
     semantic_dependency_graph_complete: bool,
     definition_universe_complete: bool,
     work: SemanticDependencyManifestWork,
@@ -208,6 +225,12 @@ impl SemanticDependencyInputManifest {
     }
     pub fn supported_type_call_heads_complete(&self) -> bool {
         self.supported_type_call_heads_complete
+    }
+    pub fn named_const_dependencies(&self) -> &[StableNamedConstDependency] {
+        &self.named_const_dependencies
+    }
+    pub fn named_value_const_dependencies_complete(&self) -> bool {
+        self.named_value_const_dependencies_complete
     }
     pub fn semantic_dependency_graph_complete(&self) -> bool {
         self.semantic_dependency_graph_complete
@@ -804,6 +827,7 @@ impl CanonicalFrontendSession {
             mut declaration_type_dependencies,
             mut declaration_type_call_head_dependencies,
             mut builtin_type_call_head_inputs,
+            mut named_const_dependencies,
             free_function_events_translated,
             specialization_origins_validated,
             named_method_events_translated,
@@ -811,12 +835,14 @@ impl CanonicalFrontendSession {
             declaration_type_events_translated,
             declaration_type_call_head_events_translated,
             builtin_type_call_head_inputs_translated,
+            named_const_events_translated,
             free_function_caller_dependencies_complete,
             named_method_dependencies_complete,
             named_destructor_dependencies_complete,
             declaration_type_dependencies_complete,
             declaration_type_call_head_dependencies_complete,
             supported_type_call_heads_complete,
+            named_value_const_dependencies_complete,
         ) = match (&semantic, &definitions) {
             (Ok(semantic), Ok(definitions)) => {
                 if definitions.source_revision() != &input.sources {
@@ -957,6 +983,65 @@ impl CanonicalFrontendSession {
                         kind: event.dependency_kind,
                     });
                 }
+                let mut const_edges = Vec::new();
+                for event in semantic.named_const_dependencies() {
+                    let source = stable_top_level_endpoint(
+                        definitions,
+                        event.source_file,
+                        &event.source_name,
+                        StableDefinitionNamespace::Value,
+                        StableDefinitionKind::ValueConst,
+                    )?;
+                    let target = match &event.target {
+                        rue_air::NamedConstDependencyTargetEvent::ValueConst { file, name } => {
+                            StableNamedConstDependencyTarget::ValueConst(stable_top_level_endpoint(
+                                definitions,
+                                *file,
+                                name,
+                                StableDefinitionNamespace::Value,
+                                StableDefinitionKind::ValueConst,
+                            )?)
+                        }
+                        rue_air::NamedConstDependencyTargetEvent::FreeFunction { file, name } => {
+                            StableNamedConstDependencyTarget::FreeFunction(
+                                stable_free_function_endpoint(definitions, *file, name)?,
+                            )
+                        }
+                        rue_air::NamedConstDependencyTargetEvent::NamedType {
+                            file,
+                            name,
+                            kind,
+                        } => {
+                            let kind = match kind {
+                                rue_air::DeclarationTypeDependencyTargetKind::Struct => {
+                                    StableDefinitionKind::Struct
+                                }
+                                rue_air::DeclarationTypeDependencyTargetKind::Enum => {
+                                    StableDefinitionKind::Enum
+                                }
+                            };
+                            StableNamedConstDependencyTarget::NamedType(stable_top_level_endpoint(
+                                definitions,
+                                *file,
+                                name,
+                                StableDefinitionNamespace::Type,
+                                kind,
+                            )?)
+                        }
+                        rue_air::NamedConstDependencyTargetEvent::ModuleBinding { file, name } => {
+                            StableNamedConstDependencyTarget::ModuleBinding(
+                                stable_top_level_endpoint(
+                                    definitions,
+                                    *file,
+                                    name,
+                                    StableDefinitionNamespace::Value,
+                                    StableDefinitionKind::ModuleBinding,
+                                )?,
+                            )
+                        }
+                    };
+                    const_edges.push(StableNamedConstDependency { source, target });
+                }
                 (
                     edges,
                     method_edges,
@@ -964,6 +1049,7 @@ impl CanonicalFrontendSession {
                     type_edges,
                     type_call_head_edges,
                     builtin_head_inputs,
+                    const_edges,
                     semantic.ordinary_free_function_dependencies().len()
                         + semantic.specialized_free_function_dependencies().len(),
                     semantic.specialized_free_function_origins().len(),
@@ -974,6 +1060,7 @@ impl CanonicalFrontendSession {
                     semantic
                         .declaration_builtin_type_call_head_dependencies()
                         .len(),
+                    semantic.named_const_dependencies().len(),
                     semantic.ordinary_free_function_dependencies_complete()
                         && semantic.specialized_free_function_dependencies_complete(),
                     semantic.non_generic_named_method_dependencies_complete(),
@@ -981,6 +1068,7 @@ impl CanonicalFrontendSession {
                     semantic.declaration_type_dependencies_complete(),
                     semantic.declaration_type_call_head_dependencies_complete(),
                     semantic.supported_type_call_heads_complete(),
+                    semantic.named_value_const_dependencies_complete(),
                 )
             }
             _ => (
@@ -990,6 +1078,7 @@ impl CanonicalFrontendSession {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 0,
                 0,
                 0,
@@ -997,6 +1086,8 @@ impl CanonicalFrontendSession {
                 0,
                 0,
                 0,
+                0,
+                false,
                 false,
                 false,
                 false,
@@ -1017,6 +1108,8 @@ impl CanonicalFrontendSession {
         declaration_type_call_head_dependencies.dedup();
         builtin_type_call_head_inputs.sort();
         builtin_type_call_head_inputs.dedup();
+        named_const_dependencies.sort();
+        named_const_dependencies.dedup();
         let work = SemanticDependencyManifestWork {
             definition_records_visited: definition_records.len(),
             import_records_visited: imports.graph().records().len(),
@@ -1027,6 +1120,7 @@ impl CanonicalFrontendSession {
             declaration_type_events_translated,
             declaration_type_call_head_events_translated,
             builtin_type_call_head_inputs_translated,
+            named_const_events_translated,
             extra_rir_instructions_visited: 0,
         };
         self.work.dependency_manifest_records_visited += work.definition_records_visited;
@@ -1076,6 +1170,8 @@ impl CanonicalFrontendSession {
             declaration_type_call_head_dependencies_complete,
             builtin_type_call_head_inputs: builtin_type_call_head_inputs.into(),
             supported_type_call_heads_complete,
+            named_const_dependencies: named_const_dependencies.into(),
+            named_value_const_dependencies_complete,
             semantic_dependency_graph_complete: false,
             definition_universe_complete,
             work,
@@ -2302,6 +2398,8 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<StableNamedMethodDependency>();
         assert_send_sync::<StableNamedMethodDependencyTarget>();
+        assert_send_sync::<StableNamedConstDependency>();
+        assert_send_sync::<StableNamedConstDependencyTarget>();
     }
 
     #[test]
@@ -2698,6 +2796,198 @@ mod tests {
             session.semantic(&CompileOptions::default()).is_err(),
             "dotted type-call heads are module-qualified free functions, not associated functions"
         );
+    }
+
+    #[test]
+    fn named_const_initializer_edges_are_stable_direct_and_zero_scan() {
+        let program = r#"
+            struct Point { x: i32 }
+            fn inc(comptime n: i32) -> i32 { n + 1 }
+            const A: i32 = 1;
+            const B: i32 = inc(A);
+            const C: i32 = A + B;
+            const D: i32 = B + C;
+            const P = Point;
+            fn main() -> i32 { D }
+        "#;
+        let build = |file, path| {
+            let source = snapshot(&[(file, path, "main.rue", program)], file);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(2, "/one/main.rue");
+        let moved = build(88, "/moved/main.rue");
+        assert_eq!(
+            first.named_const_dependencies(),
+            moved.named_const_dependencies()
+        );
+        let names = first
+            .named_const_dependencies()
+            .iter()
+            .map(|edge| {
+                let target = match &edge.target {
+                    StableNamedConstDependencyTarget::ValueConst(key)
+                    | StableNamedConstDependencyTarget::FreeFunction(key)
+                    | StableNamedConstDependencyTarget::NamedType(key)
+                    | StableNamedConstDependencyTarget::ModuleBinding(key) => key.name(),
+                };
+                (edge.source.name(), target)
+            })
+            .collect::<Vec<_>>();
+        for edge in [
+            ("B", "A"),
+            ("B", "inc"),
+            ("C", "A"),
+            ("C", "B"),
+            ("D", "B"),
+            ("D", "C"),
+            ("P", "Point"),
+        ] {
+            assert!(
+                names.contains(&edge),
+                "missing direct edge {edge:?}: {names:?}"
+            );
+        }
+        assert!(first.named_value_const_dependencies_complete());
+        assert_eq!(first.work().named_const_events_translated, names.len());
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+
+        let renamed_program = program
+            .replace("const A: i32 = 1", "const Z: i32 = 1")
+            .replace("inc(A)", "inc(Z)")
+            .replace("A + B", "Z + B");
+        let renamed_source = snapshot(&[(2, "/one/main.rue", "main.rue", &renamed_program)], 2);
+        let mut renamed_session = CanonicalFrontendSession::new();
+        renamed_session
+            .update(&renamed_source)
+            .into_result()
+            .unwrap();
+        let renamed = renamed_session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        assert_ne!(
+            first.named_const_dependencies(),
+            renamed.named_const_dependencies()
+        );
+        assert!(renamed.named_const_dependencies().iter().any(|edge| {
+            edge.source.name() == "B"
+                && matches!(&edge.target, StableNamedConstDependencyTarget::ValueConst(key) if key.name() == "Z")
+        }));
+    }
+
+    #[test]
+    fn cyclic_const_initializers_publish_no_partial_dependency_graph() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "const A: i32 = B; const B: i32 = A; fn main() -> i32 { 0 }",
+            )],
+            1,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        assert!(session.semantic(&CompileOptions::default()).is_err());
+        let manifest = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        assert!(manifest.named_const_dependencies().is_empty());
+        assert!(!manifest.named_value_const_dependencies_complete());
+        assert!(!manifest.definition_universe_complete());
+    }
+
+    #[test]
+    fn qualified_const_edges_keep_module_binding_and_exact_member_identity() {
+        let source = snapshot(
+            &[
+                (
+                    3,
+                    "/p/main.rue",
+                    "main.rue",
+                    r#"const lib = @import("lib.rue");
+                       const other = @import("other.rue");
+                       const X: i32 = lib.BASE;
+                       const Y: i32 = other.BASE;
+                       const T = lib.Row;
+                       fn main() -> i32 { X + Y }"#,
+                ),
+                (11, "/p/other.rue", "other.rue", "pub const BASE: i32 = 5;"),
+                (
+                    9,
+                    "/p/lib.rue",
+                    "lib.rue",
+                    "pub const BASE: i32 = 4; pub struct Row { n: i32 }",
+                ),
+            ],
+            3,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let manifest = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        let tags = manifest
+            .named_const_dependencies()
+            .iter()
+            .map(|edge| {
+                let (tag, target) = match &edge.target {
+                    StableNamedConstDependencyTarget::ValueConst(key) => ("const", key),
+                    StableNamedConstDependencyTarget::NamedType(key) => ("type", key),
+                    StableNamedConstDependencyTarget::ModuleBinding(key) => ("module", key),
+                    StableNamedConstDependencyTarget::FreeFunction(key) => ("fn", key),
+                };
+                (
+                    edge.source.name(),
+                    tag,
+                    target.module().as_str(),
+                    target.name(),
+                )
+            })
+            .collect::<Vec<_>>();
+        for expected in [
+            ("X", "module", "main.rue", "lib"),
+            ("X", "const", "lib.rue", "BASE"),
+            ("T", "module", "main.rue", "lib"),
+            ("T", "type", "lib.rue", "Row"),
+            ("Y", "module", "main.rue", "other"),
+            ("Y", "const", "other.rue", "BASE"),
+        ] {
+            assert!(tags.contains(&expected), "missing {expected:?}: {tags:?}");
+        }
+        assert!(
+            tags.iter()
+                .all(|(source, _, _, _)| *source != "lib" && *source != "other")
+        );
+    }
+
+    #[test]
+    fn const_dependency_capture_work_is_edge_proportional() {
+        let build = |extra: usize| {
+            let mut program = "const A: i32 = 1; const B: i32 = A;".to_string();
+            for i in 0..extra {
+                program.push_str(&format!(" const UNUSED_{i}: i32 = {i};"));
+            }
+            program.push_str(" fn main() -> i32 { B }");
+            let source = snapshot(&[(1, "/p/main.rue", "main.rue", &program)], 1);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let one = build(1);
+        let many = build(128);
+        assert_eq!(
+            one.named_const_dependencies(),
+            many.named_const_dependencies()
+        );
+        assert_eq!(one.work().named_const_events_translated, 1);
+        assert_eq!(many.work().named_const_events_translated, 1);
+        assert_eq!(many.work().extra_rir_instructions_visited, 0);
     }
 
     #[test]

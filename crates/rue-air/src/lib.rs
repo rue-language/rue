@@ -42,11 +42,12 @@ pub use sema::{
     DeclarationTypeCallHeadDependencyEvent, DeclarationTypeDependencyEvent,
     DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
     DeclarationTypeDependencyTargetKind, DirResolution, FunctionInfo, GatherOutput, MethodInfo,
-    ModulePath, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
-    NamedMethodDependencyTargetEvent, OrdinaryFreeFunctionDependencyEvent, ParamSlotModes,
-    RirDeclarationIndexWork, Sema, SemaOutput, SemanticBinding, SemanticBindingKind,
-    SemanticBindingManifest, SemanticBindingManifestWork, SemanticBindingNamespace,
-    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin, import_candidate_groups,
+    ModulePath, NamedConstDependencyEvent, NamedConstDependencyTargetEvent,
+    NamedDestructorDependencyEvent, NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
+    OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, RirDeclarationIndexWork, Sema, SemaOutput,
+    SemanticBinding, SemanticBindingKind, SemanticBindingManifest, SemanticBindingManifestWork,
+    SemanticBindingNamespace, SpecializedFreeFunctionDependencyEvent,
+    SpecializedFreeFunctionOrigin, import_candidate_groups,
 };
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,

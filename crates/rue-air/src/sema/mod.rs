@@ -62,7 +62,8 @@ pub use output::{
     DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
     DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
     DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind,
-    NamedDestructorDependencyEvent, NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
+    NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent,
+    NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
     OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, SemaOutput,
     SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
@@ -118,6 +119,8 @@ pub struct Sema<'a> {
     pub(crate) declaration_type_call_head_dependencies: Vec<DeclarationTypeCallHeadDependencyEvent>,
     pub(crate) declaration_builtin_type_call_head_dependencies:
         Vec<DeclarationBuiltinTypeCallHeadDependencyEvent>,
+    pub(crate) named_const_dependencies: Vec<NamedConstDependencyEvent>,
+    pub(crate) named_const_dependency_source: Option<(FileId, String)>,
     pub(crate) declaration_type_observer: Option<(
         FileId,
         String,
@@ -260,6 +263,8 @@ impl<'a> Sema<'a> {
             declaration_type_dependencies: Vec::new(),
             declaration_type_call_head_dependencies: Vec::new(),
             declaration_builtin_type_call_head_dependencies: Vec::new(),
+            named_const_dependencies: Vec::new(),
+            named_const_dependency_source: None,
             declaration_type_observer: None,
             constants: HashMap::new(),
             constants_by_file_name: HashMap::new(),

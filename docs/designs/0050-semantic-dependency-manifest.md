@@ -186,3 +186,18 @@ are not successful language forms and emit no partial dependency edge.
 `supported_type_call_heads_complete=true` is intentionally narrow: it covers
 successfully resolved call heads only. Broader declaration-type and semantic
 graph completeness remain false.
+
+Named value-constant initializers record direct dependencies while the existing
+dependency-ordered constant collector and comptime evaluator resolve them.
+Targets are tagged as value constants, free comptime functions/type
+constructors, named struct/enum types, or module bindings. Recursive collection
+temporarily changes and then restores the exact `(FileId, name)` source, so
+chains and diamonds retain direct edges rather than a transitive approximation.
+Compiler translation joins every source and target against the exact bound
+definition revision; module-binding targets are real binding identities whose
+resolved import topology remains in the existing module-import edge channel.
+Module bindings are not value-constant sources and are filtered from this
+surface. Cyclic or otherwise rejected initializers publish no partial manifest.
+`named_value_const_dependencies_complete=true` covers successful named value
+constants; anonymous/dynamic values and the overall semantic graph remain
+explicitly incomplete. Capture is sorted/deduplicated and adds no RIR scan.
