@@ -2025,8 +2025,32 @@ impl<'a> ConstraintGenerator<'a> {
                                 }),
                             _ => None,
                         };
-                        match member_const_ty {
-                            Some(const_ty) => self.type_to_infer(const_ty),
+                        // A module member that is itself a (re-exported) module:
+                        // `std.cmp` where std's file has `pub const cmp =
+                        // @import("cmp.rue")`. Resolve it to the member module's
+                        // type so a nested call `std.cmp.min(..)` reaches the
+                        // module-member call path and its arguments are
+                        // constrained to the callee's parameters — without this
+                        // the receiver was a fresh variable, so a generic std call
+                        // with a literal (`std.cmp.min(i64, 3, 7)`) left the
+                        // literal unconstrained and defaulted to i32 (RUE-693).
+                        let member_module_ty = match &base_info.ty {
+                            InferType::Concrete(ty) if ty.is_module() => ty
+                                .as_module()
+                                .and_then(|module_id| {
+                                    self.module_file_ids
+                                        .and_then(|ids| ids.get(&module_id))
+                                        .copied()
+                                })
+                                .and_then(|file_id| {
+                                    self.module_binding_types
+                                        .and_then(|m| m.get(&(file_id, *field)))
+                                        .copied()
+                                }),
+                            _ => None,
+                        };
+                        match member_const_ty.or(member_module_ty) {
+                            Some(member_ty) => self.type_to_infer(member_ty),
                             None => InferType::Var(self.fresh_var()),
                         }
                     }
@@ -2307,9 +2331,78 @@ impl<'a> ConstraintGenerator<'a> {
                                         arg_info.span,
                                     ));
                                 }
+                            } else if func.is_generic {
+                                // Generic module-member callee (RUE-693): mirror
+                                // the direct-Call generic path. Build the type
+                                // substitution from the comptime type arguments,
+                                // then constrain each runtime argument to its
+                                // *substituted* parameter type. Without this, a
+                                // literal argument to `h.min(i64, 3, 7)` stayed
+                                // unconstrained across the module boundary and
+                                // defaulted to i32, clashing with the instantiated
+                                // i64 parameter (the non-generic path above already
+                                // constrains, and same-file generic Calls do too).
+                                let arg_infos: Vec<ExprInfo> = args
+                                    .iter()
+                                    .map(|arg| self.generate(arg.value, ctx))
+                                    .collect();
+                                let mut type_subst: std::collections::HashMap<lasso::Spur, Type> =
+                                    std::collections::HashMap::new();
+                                let mut value_subst: std::collections::HashMap<lasso::Spur, i128> =
+                                    std::collections::HashMap::new();
+                                for (i, arg) in args.iter().enumerate() {
+                                    if i >= func.param_comptime.len()
+                                        || !func.param_comptime[i]
+                                        || i >= func.param_names.len()
+                                    {
+                                        continue;
+                                    }
+                                    if func.param_comptime_type.get(i) == Some(&true) {
+                                        if let Some(concrete_ty) =
+                                            self.extract_type_argument(arg.value, ctx)
+                                        {
+                                            type_subst.insert(func.param_names[i], concrete_ty);
+                                        }
+                                    } else if let Some(v) = self.extract_int_argument(arg.value) {
+                                        value_subst.insert(func.param_names[i], v);
+                                    }
+                                }
+                                for (i, arg_info) in arg_infos.iter().enumerate() {
+                                    if i >= func.param_types.len() || i >= func.param_comptime.len()
+                                    {
+                                        break;
+                                    }
+                                    if func.param_comptime_type.get(i) == Some(&true) {
+                                        continue;
+                                    }
+                                    let declared = &func.param_types[i];
+                                    let expected =
+                                        if *declared == InferType::Concrete(Type::COMPTIME_TYPE) {
+                                            match func.param_type_syms.get(i).and_then(|sym| {
+                                                self.resolve_type_sym_with_subst(
+                                                    *sym,
+                                                    &type_subst,
+                                                    &value_subst,
+                                                )
+                                            }) {
+                                                Some(ty) => ty,
+                                                None => continue,
+                                            }
+                                        } else {
+                                            declared.clone()
+                                        };
+                                    if self.is_slice_struct_type(expected.clone()) {
+                                        continue;
+                                    }
+                                    self.add_constraint(Constraint::equal(
+                                        arg_info.ty.clone(),
+                                        expected,
+                                        arg_info.span,
+                                    ));
+                                }
                             } else {
-                                // Generic callee or arity mismatch: just
-                                // process the arguments; sema checks the rest.
+                                // Arity mismatch: just process the arguments;
+                                // sema checks the rest.
                                 for arg in args.iter() {
                                     self.generate(arg.value, ctx);
                                 }

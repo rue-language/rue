@@ -1,0 +1,57 @@
+# RUE-693: a cross-module call now coerces integer-literal arguments to the
+# callee's parameter type — for a generic (`comptime T`) callee, and for a
+# concrete parameter with a literal that exceeds i32 range. Covers direct
+# imports, aliased/nested module receivers, and the std re-export chain.
+
+[section]
+id = "cli.rue693"
+name = "Cross-module call literal coercion (RUE-693)"
+description = "Integer literals passed to a cross-module callee are coerced to the parameter type."
+
+[[case]]
+name = "direct_import_generic_literal"
+description = "h.mn(i64, 3, 7) with bare literals through a direct import compiles and runs."
+args = ["main.rue", "-o", "prog"]
+exit_code = 3
+files = [
+  { path = "main.rue", source = """
+const h = @import("helper.rue");
+fn main() -> i32 { @intCast(h.mn(i64, 3, 7)) }
+""" },
+  { path = "helper.rue", source = """
+pub fn mn(comptime T: type, a: T, b: T) -> T { if a < b { a } else { b } }
+""" },
+]
+
+[[case]]
+name = "nested_module_generic_literal"
+description = "mid.inner.mn(i64, 3, 7) through a re-exported nested module compiles and runs."
+args = ["main.rue", "-o", "prog"]
+exit_code = 3
+files = [
+  { path = "main.rue", source = """
+const mid = @import("mid.rue");
+fn main() -> i32 { @intCast(mid.inner.mn(i64, 3, 7)) }
+""" },
+  { path = "mid.rue", source = """
+pub const inner = @import("inner.rue");
+""" },
+  { path = "inner.rue", source = """
+pub fn mn(comptime T: type, a: T, b: T) -> T { if a < b { a } else { b } }
+""" },
+]
+
+[[case]]
+name = "concrete_param_large_literal"
+description = "A cross-module concrete-i64 param accepts a literal exceeding i32 range (was E0800)."
+args = ["main.rue", "-o", "prog"]
+exit_code = 1
+files = [
+  { path = "main.rue", source = """
+const h = @import("helper.rue");
+fn main() -> i32 { @intCast(h.hibit(9223372036854775807)) }
+""" },
+  { path = "helper.rue", source = """
+pub fn hibit(x: i64) -> i64 { if x > 0 { 1 } else { 0 } }
+""" },
+]
