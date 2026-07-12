@@ -1,0 +1,87 @@
+# Standard library v1 — M2 collections (std.stack / std.queue / std.grid /
+# std.binary_heap / std.intmap + ArrayBuf ops), through the real std bundle.
+#
+# BitSet (RUE-671) and Deque (RUE-669) are deferred: BitSet needs a non-generic
+# source-level std type, blocked on RUE-696 (cross-module zero-arg `-> type`
+# call not comptime-classified); a compacting Deque wants in-place element moves
+# (RUE-662). Reads (peek/get/dequeue/first/index_of) are Copy-element only per
+# RUE-651 — the cases below use i64 elements.
+
+[section]
+id = "cli.std_collections"
+name = "Standard library v1 — M2 collections"
+description = "Stack, Queue, Grid2D, BinaryHeap, PriorityQueue, IntMap, and ArrayBuf ops through @import(\"std\")."
+
+[[case]]
+name = "std_collections_m2_smoke"
+description = "All M2 collections produce correct results (17 checks -> exit 42)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut score: i64 = 0;
+    let OI = std.option.Option(i64);
+    let OU = std.option.Option(u64);
+
+    // Stack
+    let S = std.stack.Stack(i64);
+    let mut st = S.new();
+    st.push(10); st.push(20); st.push(30);
+    if st.len() == 3 { score = score + 1; }
+    match st.peek() { OI.Some(v) => { if v == 30 { score = score + 1; } }, OI.None => {} }
+    match st.pop() { OI.Some(v) => { if v == 30 { score = score + 1; } }, OI.None => {} }
+
+    // Grid2D
+    let G = std.grid.Grid2D(i64);
+    let mut g = G.new(3, 4, 0);
+    g.set(2, 3, 42);
+    match g.get(2, 3) { OI.Some(v) => { if v == 42 { score = score + 1; } }, OI.None => {} }
+    if g.rows() == 3 { if g.cols() == 4 { score = score + 1; } }
+
+    // Queue
+    let Q = std.queue.Queue(i64);
+    let mut q = Q.new();
+    q.enqueue(1); q.enqueue(2); q.enqueue(3);
+    match q.dequeue() { OI.Some(v) => { if v == 1 { score = score + 1; } }, OI.None => {} }
+    if q.len() == 2 { score = score + 1; }
+
+    // BinaryHeap (min)
+    let H = std.binary_heap.BinaryHeap(i64);
+    let mut h = H.new();
+    h.push(5); h.push(1); h.push(3); h.push(2);
+    match h.pop() { OI.Some(v) => { if v == 1 { score = score + 1; } }, OI.None => {} }
+    match h.pop() { OI.Some(v) => { if v == 2 { score = score + 1; } }, OI.None => {} }
+
+    // PriorityQueue (int priority + payload)
+    let PQ = std.binary_heap.PriorityQueue(i64, i64);
+    let Item = std.tuple.Pair(i64, i64);
+    let OP = std.option.Option(Item);
+    let mut pq = PQ.new();
+    pq.push(5, 500); pq.push(1, 100); pq.push(3, 300);
+    match pq.pop() { OP.Some(it) => { if it.first == 1 { if it.second == 100 { score = score + 1; } } }, OP.None => {} }
+
+    // IntMap
+    let M = std.intmap.IntMap(i64);
+    let mut m = M.new(0);
+    m.insert(42, 100); m.insert(7, 70); m.insert(42, 999);
+    match m.get(42) { OI.Some(v) => { if v == 999 { score = score + 1; } }, OI.None => {} }
+    if m.len() == 2 { score = score + 1; }
+    if m.contains(7) { score = score + 1; }
+    m.remove(7);
+    if !m.contains(7) { score = score + 1; }
+
+    // ArrayBuf ops
+    let AB = std.arraybuf.ArrayBuf(i64);
+    let mut a = AB.new();
+    a.push(3); a.push(1); a.push(2);
+    a.reverse();
+    match a.first() { OI.Some(v) => { if v == 2 { score = score + 1; } }, OI.None => {} }
+    if a.contains(3) { score = score + 1; }
+    match a.index_of(1) { OU.Some(i) => { if i == 1 { score = score + 1; } }, OU.None => {} }
+
+    if score == 17 { 42 } else { @intCast(score) }
+}
+""" }]

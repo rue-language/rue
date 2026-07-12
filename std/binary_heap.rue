@@ -1,0 +1,204 @@
+// std.collections — BinaryHeap(T): a natural-order (min-`<`) binary heap over
+// ArrayBuf(T), and PriorityQueue(P, V): a min-heap keyed by an integer priority
+// `P` carrying a payload `V`.
+//
+// Both read elements by copy while sifting, so they are for trivially-droppable
+// (`Copy`) element/payload types (RUE-651). A custom-comparator heap is the M4
+// follow-up (needs function values, RUE-643).
+//
+//     const std = @import("std");
+//     let H = std.binary_heap.BinaryHeap(i64);
+//     let mut h = H.new();
+//     h.push(5); h.push(1); h.push(3);
+//     h.pop();      // Some(1)  — smallest first
+
+const arraybuf = @import("arraybuf.rue");
+const option = @import("option.rue");
+const tuple = @import("tuple.rue");
+
+pub fn BinaryHeap(comptime T: type) -> type {
+    let Buf = arraybuf.ArrayBuf(T);
+    struct {
+        data: Buf,
+
+        fn new() -> Self {
+            let b = arraybuf.ArrayBuf(T);
+            Self { data: b.new() }
+        }
+
+        fn len(borrow self) -> u64 {
+            self.data.len()
+        }
+        fn is_empty(borrow self) -> bool {
+            self.data.is_empty()
+        }
+
+        // Whether element `i` orders before element `j`.
+        fn _less(borrow self, i: u64, j: u64) -> bool {
+            let O = option.Option(T);
+            match self.data.get(i) {
+                O.Some(a) => {
+                    match self.data.get(j) {
+                        O.Some(b) => a < b,
+                        O.None => false,
+                    }
+                },
+                O.None => false,
+            }
+        }
+
+        fn _sift_down(inout self, start: u64) {
+            let mut i = start;
+            let n = self.data.len();
+            loop {
+                let l = 2 * i + 1;
+                let r = 2 * i + 2;
+                let mut smallest = i;
+                if l < n {
+                    if self._less(l, smallest) {
+                        smallest = l;
+                    }
+                }
+                if r < n {
+                    if self._less(r, smallest) {
+                        smallest = r;
+                    }
+                }
+                if smallest == i {
+                    break;
+                }
+                self.data.swap(i, smallest);
+                i = smallest;
+            }
+        }
+
+        // Insert `x`.
+        fn push(inout self, x: T) {
+            self.data.push(x);
+            let mut i = self.data.len() - 1;
+            while i > 0 {
+                let parent = (i - 1) / 2;
+                if self._less(i, parent) {
+                    self.data.swap(i, parent);
+                    i = parent;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // The smallest element by copy, or `None`. COPY-`T` ONLY.
+        fn peek(borrow self) -> option.Option(T) {
+            self.data.get(0)
+        }
+
+        // Remove and return the smallest element, or `None` when empty.
+        fn pop(inout self) -> option.Option(T) {
+            let O = option.Option(T);
+            let n = self.data.len();
+            if n == 0 {
+                O.None
+            } else if n == 1 {
+                self.data.pop()
+            } else {
+                self.data.swap(0, n - 1);
+                let smallest = self.data.pop();
+                self._sift_down(0);
+                smallest
+            }
+        }
+    }
+}
+
+// A min-priority queue: a `BinaryHeap` of `(priority, payload)` pairs ordered by
+// priority. `P` and `V` must be `Copy` (RUE-651). `pop` returns the whole
+// `Pair(P, V)` — read `.first` (priority) and `.second` (payload).
+pub fn PriorityQueue(comptime P: type, comptime V: type) -> type {
+    let Item = tuple.Pair(P, V);
+    let Buf = arraybuf.ArrayBuf(Item);
+    struct {
+        data: Buf,
+
+        fn new() -> Self {
+            let b = arraybuf.ArrayBuf(Item);
+            Self { data: b.new() }
+        }
+
+        fn len(borrow self) -> u64 {
+            self.data.len()
+        }
+        fn is_empty(borrow self) -> bool {
+            self.data.is_empty()
+        }
+
+        fn _less(borrow self, i: u64, j: u64) -> bool {
+            let O = option.Option(Item);
+            match self.data.get(i) {
+                O.Some(a) => {
+                    match self.data.get(j) {
+                        O.Some(b) => a.first < b.first,
+                        O.None => false,
+                    }
+                },
+                O.None => false,
+            }
+        }
+
+        fn _sift_down(inout self, start: u64) {
+            let mut i = start;
+            let n = self.data.len();
+            loop {
+                let l = 2 * i + 1;
+                let r = 2 * i + 2;
+                let mut smallest = i;
+                if l < n {
+                    if self._less(l, smallest) {
+                        smallest = l;
+                    }
+                }
+                if r < n {
+                    if self._less(r, smallest) {
+                        smallest = r;
+                    }
+                }
+                if smallest == i {
+                    break;
+                }
+                self.data.swap(i, smallest);
+                i = smallest;
+            }
+        }
+
+        // Insert `payload` with priority `prio`.
+        fn push(inout self, prio: P, payload: V) {
+            let it = Item.new(prio, payload);
+            self.data.push(it);
+            let mut i = self.data.len() - 1;
+            while i > 0 {
+                let parent = (i - 1) / 2;
+                if self._less(i, parent) {
+                    self.data.swap(i, parent);
+                    i = parent;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Remove and return the min-priority `(priority, payload)` pair.
+        fn pop(inout self) -> option.Option(Item) {
+            let O = option.Option(Item);
+            let n = self.data.len();
+            if n == 0 {
+                O.None
+            } else if n == 1 {
+                self.data.pop()
+            } else {
+                self.data.swap(0, n - 1);
+                let smallest = self.data.pop();
+                self._sift_down(0);
+                smallest
+            }
+        }
+    }
+}

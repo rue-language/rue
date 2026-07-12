@@ -1,0 +1,70 @@
+// std.collections — Queue(T): a FIFO queue over ArrayBuf.
+//
+// Implemented as a growing buffer with a front cursor (`enqueue` pushes at the
+// back, `dequeue` advances a head index). `dequeue`/`peek` read the front
+// element by copy, so they are for trivially-droppable (`Copy`) `T` (RUE-651).
+//
+// NOTE (v1): consumed slots at the front are not reclaimed until the queue
+// empties — the head cursor only advances. A compacting/circular variant is a
+// follow-up (it wants in-place element moves; RUE-662).
+//
+//     const std = @import("std");
+//     let Q = std.queue.Queue(i64);
+//     let mut q = Q.new();
+//     q.enqueue(1); q.enqueue(2);
+//     q.dequeue();      // Some(1)
+
+const arraybuf = @import("arraybuf.rue");
+const option = @import("option.rue");
+
+pub fn Queue(comptime T: type) -> type {
+    let Buf = arraybuf.ArrayBuf(T);
+    struct {
+        buf: Buf,
+        head: u64,
+
+        fn new() -> Self {
+            let b = arraybuf.ArrayBuf(T);
+            Self { buf: b.new(), head: 0 }
+        }
+
+        fn len(borrow self) -> u64 {
+            self.buf.len() - self.head
+        }
+        fn is_empty(borrow self) -> bool {
+            self.buf.len() == self.head
+        }
+
+        // Add `x` at the back.
+        fn enqueue(inout self, x: T) {
+            self.buf.push(x);
+        }
+
+        // Remove and return the front element, or `None` when empty. COPY-`T`.
+        fn dequeue(inout self) -> option.Option(T) {
+            let O = option.Option(T);
+            if self.head >= self.buf.len() {
+                O.None
+            } else {
+                let front = self.buf.get(self.head);
+                self.head = self.head + 1;
+                // Reset to empty once fully drained, reclaiming the buffer.
+                if self.head >= self.buf.len() {
+                    self.buf.clear();
+                    self.head = 0;
+                }
+                front
+            }
+        }
+
+        // The front element by copy, or `None`. COPY-`T` ONLY.
+        fn peek(borrow self) -> option.Option(T) {
+            let O = option.Option(T);
+            if self.head >= self.buf.len() {
+                O.None
+            } else {
+                self.buf.get(self.head)
+            }
+        }
+    }
+}

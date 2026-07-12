@@ -1,0 +1,62 @@
+// std.collections — Grid2D(T): a row-major dynamic 2D grid over a single
+// ArrayBuf(T). Reads return elements BY COPY, so `get` is usable for
+// trivially-droppable (`Copy`) `T` only (RUE-651); `set` works for any `T`.
+//
+//     const std = @import("std");
+//     let G = std.grid.Grid2D(i64);
+//     let mut g = G.new(3, 3, 0);
+//     g.set(1, 2, 42);
+//     g.get(1, 2);          // Some(42)
+
+const arraybuf = @import("arraybuf.rue");
+const option = @import("option.rue");
+
+pub fn Grid2D(comptime T: type) -> type {
+    let Buf = arraybuf.ArrayBuf(T);
+    struct {
+        cells: Buf,
+        rows: u64,
+        cols: u64,
+
+        // A `rows`x`cols` grid with every cell initialised to `fill`.
+        fn new(rows: u64, cols: u64, fill: T) -> Self {
+            let b = arraybuf.ArrayBuf(T);
+            let mut cells = b.new();
+            let total = rows * cols;
+            let mut i: u64 = 0;
+            while i < total {
+                cells.push(fill);
+                i = i + 1;
+            }
+            Self { cells: cells, rows: rows, cols: cols }
+        }
+
+        fn rows(borrow self) -> u64 {
+            self.rows
+        }
+        fn cols(borrow self) -> u64 {
+            self.cols
+        }
+
+        fn in_bounds(borrow self, r: u64, c: u64) -> bool {
+            r < self.rows && c < self.cols
+        }
+
+        // Cell `(r, c)` by copy, or `None` when out of bounds. COPY-`T` ONLY.
+        fn get(borrow self, r: u64, c: u64) -> option.Option(T) {
+            let O = option.Option(T);
+            if r < self.rows && c < self.cols {
+                self.cells.get(r * self.cols + c)
+            } else {
+                O.None
+            }
+        }
+
+        // Set cell `(r, c)` to `x`. Out-of-bounds indices are ignored.
+        fn set(inout self, r: u64, c: u64, x: T) {
+            if r < self.rows && c < self.cols {
+                self.cells.set(r * self.cols + c, x);
+            }
+        }
+    }
+}

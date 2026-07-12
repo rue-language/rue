@@ -233,6 +233,72 @@ pub fn ArrayBuf(comptime T: type) -> type {
             }
         }
 
+        // --- extra operations (Standard library v1, RUE-673) ---
+
+        // Exchange the elements at `i` and `j` (both must be in bounds). Uses a
+        // by-copy read of each slot, so this is for trivially-droppable (`Copy`)
+        // `T` (RUE-651); a swap of owned elements would need in-place borrows.
+        fn swap(inout self, i: u64, j: u64) {
+            if i < self.len && j < self.len && i != j {
+                let a = checked { @ptr_read(@ptr_offset(self.buf, i)) };
+                let b = checked { @ptr_read(@ptr_offset(self.buf, j)) };
+                checked {
+                    @ptr_write(@ptr_offset(self.buf, i), b);
+                    @ptr_write(@ptr_offset(self.buf, j), a);
+                };
+            }
+        }
+
+        // Reverse the elements in place. COPY-`T` (uses `swap`).
+        fn reverse(inout self) {
+            if self.len > 1 {
+                let mut i: u64 = 0;
+                let mut j: u64 = self.len - 1;
+                while i < j {
+                    self.swap(i, j);
+                    i = i + 1;
+                    j = j - 1;
+                }
+            }
+        }
+
+        // The first / last element by copy, or `None` when empty. COPY-`T` ONLY.
+        fn first(borrow self) -> option.Option(T) {
+            self.get(0)
+        }
+        fn last(borrow self) -> option.Option(T) {
+            let O = option.Option(T);
+            if self.len == 0 {
+                O.None
+            } else {
+                self.get(self.len - 1)
+            }
+        }
+
+        // Index of the first element equal to `x`, or `None`. COPY-`T` ONLY
+        // (compares by-copy reads with `==`).
+        fn index_of(borrow self, x: T) -> option.Option(u64) {
+            let O = option.Option(u64);
+            let mut i: u64 = 0;
+            while i < self.len {
+                let e = checked { @ptr_read(@ptr_offset(self.buf, i)) };
+                if e == x {
+                    return O.Some(i);
+                }
+                i = i + 1;
+            }
+            O.None
+        }
+
+        // Whether any element equals `x`. COPY-`T` ONLY.
+        fn contains(borrow self, x: T) -> bool {
+            let O = option.Option(u64);
+            match self.index_of(x) {
+                O.Some(i) => true,
+                O.None => false,
+            }
+        }
+
         // Drop all elements (keeps the allocated capacity). Each live element's
         // drop glue runs before the length is reset (RUE-646); for a `Copy` `T`
         // this is just resetting the length.
