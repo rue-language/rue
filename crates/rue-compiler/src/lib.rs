@@ -32,6 +32,7 @@ mod canonical_semantic;
 mod definition_snapshot;
 mod diagnostic;
 mod drop_glue;
+mod frontend_session;
 mod import_graph;
 pub mod parsed_modules;
 mod semantic_order;
@@ -57,6 +58,10 @@ pub use canonical_semantic::{
 pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
     DefinitionRecord, DefinitionSnapshot, ModuleDefinition, ModuleKey,
+};
+pub use frontend_session::{
+    CanonicalFrontendSession, CanonicalFrontendSessionWork, CanonicalFrontendUpdate,
+    FrontendQueryWork,
 };
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,
