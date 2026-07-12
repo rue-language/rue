@@ -32,6 +32,74 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     platform::exit(101)
 }
 
+/// SIGSEGV handler installed by `_start` to turn a stack overflow into a clean
+/// abort (RUE-645).
+///
+/// # Why this exists
+///
+/// Deep/unbounded recursion exhausts the main stack; the next push faults on the
+/// kernel guard page and raises `SIGSEGV`. With no handler the default
+/// disposition kills the process, and the shell reports the raw crash (exit code
+/// 139 = 128 + SIGSEGV). Rust and Go instead catch this and print a readable
+/// "stack overflow" message before exiting non-zero. This handler does the same:
+/// it writes `"stack overflow\n"` to stderr and exits with code 101 — the same
+/// abort code the other runtime traps use (division by zero, overflow, bounds).
+///
+/// # Running on an exhausted stack
+///
+/// The handler cannot run on the main stack, which is what overflowed. `_start`
+/// registers a small alternate signal stack via `sigaltstack` and installs this
+/// handler with `SA_ONSTACK`, so the kernel switches to that alt stack to deliver
+/// the signal. See each platform's `install_stack_overflow_handler`.
+///
+/// # Treating any SIGSEGV as stack overflow
+///
+/// We do not inspect `siginfo.si_addr` to confirm the fault is near the stack
+/// pointer. In safe Rue there is no other way to reach `SIGSEGV`: array accesses
+/// are bounds-checked, there are no null/raw-pointer dereferences, and arithmetic
+/// traps rather than corrupting memory. So any `SIGSEGV` a compiled Rue program
+/// can produce is a stack overflow, and reporting it as such is correct. This
+/// keeps the handler freestanding (no `SA_SIGINFO`, no `siginfo_t` layout).
+///
+/// The signal-number argument is unused for the same reason: this handler is
+/// only ever registered for `SIGSEGV`.
+///
+/// # Never returns
+///
+/// The handler calls `platform::exit` and does not return. Because it never
+/// returns, the kernel's signal-return trampoline is never executed, so no
+/// `sa_restorer` needs to be supplied on Linux.
+#[cfg(all(
+    not(test),
+    any(
+        all(target_arch = "x86_64", target_os = "linux"),
+        all(target_arch = "aarch64", target_os = "macos"),
+        all(target_arch = "aarch64", target_os = "linux")
+    )
+))]
+pub(crate) extern "C" fn __rue_stack_overflow_handler(_sig: i32) -> ! {
+    // "stack overflow\n" built byte-by-byte to avoid the macOS byte-string
+    // linker bug (mirrors the message handlers in `error.rs`).
+    let mut msg = [0u8; 15];
+    msg[0] = b's';
+    msg[1] = b't';
+    msg[2] = b'a';
+    msg[3] = b'c';
+    msg[4] = b'k';
+    msg[5] = b' ';
+    msg[6] = b'o';
+    msg[7] = b'v';
+    msg[8] = b'e';
+    msg[9] = b'r';
+    msg[10] = b'f';
+    msg[11] = b'l';
+    msg[12] = b'o';
+    msg[13] = b'w';
+    msg[14] = b'\n';
+    platform::write_stderr(&msg);
+    platform::exit(101)
+}
+
 /// Program entry point for Linux x86-64.
 ///
 /// The Linux kernel starts execution here with RSP 16-byte aligned.
@@ -61,6 +129,12 @@ pub unsafe extern "C" fn _start() -> ! {
     unsafe extern "C" {
         fn main() -> i32;
     }
+
+    // Install the stack-overflow SIGSEGV handler before running user code so a
+    // deep-recursion overflow aborts cleanly (RUE-645) instead of dying with a
+    // raw SIGSEGV (exit 139). Best-effort: if setup fails the program simply
+    // keeps the default SIGSEGV disposition.
+    platform::install_stack_overflow_handler(__rue_stack_overflow_handler);
 
     let exit_code: i32;
     // SAFETY: This is the program entry point called by the kernel.
@@ -108,6 +182,10 @@ pub unsafe extern "C" fn _main() -> ! {
         fn main() -> i32;
     }
 
+    // Install the stack-overflow SIGSEGV handler before running user code.
+    // (Currently a no-op on macOS — see the platform stub for why. RUE-645.)
+    platform::install_stack_overflow_handler(__rue_stack_overflow_handler);
+
     let exit_code: i32;
     // SAFETY: This is the program entry point called by the kernel.
     // - The kernel starts execution with SP 16-byte aligned
@@ -142,6 +220,12 @@ pub unsafe extern "C" fn _start() -> ! {
     unsafe extern "C" {
         fn main() -> i32;
     }
+
+    // Install the stack-overflow SIGSEGV handler before running user code so a
+    // deep-recursion overflow aborts cleanly (RUE-645) instead of dying with a
+    // raw SIGSEGV (exit 139). Best-effort: if setup fails the program simply
+    // keeps the default SIGSEGV disposition.
+    platform::install_stack_overflow_handler(__rue_stack_overflow_handler);
 
     let exit_code: i32;
     // SAFETY: This is the program entry point called by the kernel.

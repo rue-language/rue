@@ -1,0 +1,52 @@
+# Stack overflow aborts cleanly (RUE-645).
+#
+# Deep/unbounded recursion exhausts the main stack; the next push faults on the
+# kernel guard page and raises SIGSEGV. Before this fix there was no handler, so
+# the default disposition killed the process and the program "died by signal"
+# (the shell reports exit 139 = 128 + SIGSEGV) — an ugly crash, not a diagnosable
+# abort.
+#
+# The runtime now installs, in `_start`, an alternate signal stack (`sigaltstack`)
+# plus a SIGSEGV handler (`rt_sigaction`, `SA_ONSTACK`) that runs on that alt
+# stack even though the main stack is exhausted. The handler writes
+# "stack overflow" to stderr and exits 101 — the same clean-abort code the other
+# runtime traps use (division by zero, overflow, bounds, @panic). This matches
+# how Rust and Go report a blown stack. Any SIGSEGV from safe Rue is treated as a
+# stack overflow: safe Rue has no other way to segfault (bounds-checked, no null
+# derefs, arithmetic traps). See crates/rue-runtime/src/entry.rs.
+#
+# Platform scope (`only_on` the two Linux targets): the handler is implemented
+# for x86-64 Linux and aarch64 Linux. macOS is a documented TODO — Darwin's
+# `sigaction(2)` requires a caller-supplied signal trampoline that cannot be
+# verified on a Linux host, so its `install_stack_overflow_handler` is a no-op
+# there (a macOS stack overflow still exits 139). We use `only_on` rather than
+# `known_bug_on = ["aarch64-macos"]` because a program that dies by signal is a
+# FATAL failure the harness cannot mask with a known_bug marker, so the case is
+# simply not run on macOS. See the macOS stub in
+# crates/rue-runtime/src/aarch64_macos.rs.
+
+[section]
+id = "cli.stack_overflow"
+name = "Stack overflow clean abort"
+description = "Deep recursion aborts with 'stack overflow' + exit 101, not a raw SIGSEGV (exit 139) (RUE-645)."
+
+# Unbounded-depth recursion (10 million frames, far past any reasonable stack)
+# blows the stack and must abort cleanly: "stack overflow" on stderr, exit 101,
+# no stdout. `1 + depth(n - 1)` is not a tail call, so every level is a real
+# frame that consumes stack.
+[[case]]
+name = "deep_recursion_aborts_cleanly"
+description = "depth(10_000_000) overflows the stack and aborts with 'stack overflow' + exit 101 (not SIGSEGV/139)."
+only_on = ["x86-64-linux", "aarch64-linux"]
+files = [{ path = "prog.rue", source = """
+fn depth(n: i64) -> i64 { if n == 0 { 0 } else { 1 + depth(n - 1) } }
+fn main() -> i32 { @dbg(depth(10000000)); 0 }
+""" }]
+stdout = ""
+exit_code = 101
+runtime_error_contains = ["stack overflow"]
+
+# (The "handler doesn't disturb ordinary recursion / normal programs" control is
+# the rest of the suite: every CLI and spec case runs on this handler-installed
+# runtime. A dedicated shallow-recursion control is omitted because its depth
+# exceeds the in-process oracle's recursion budget, making it oracle-ineligible.)

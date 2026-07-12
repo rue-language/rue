@@ -880,6 +880,18 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
     if !case.env.is_empty() {
         return CaseOutcome::Ineligible(IneligibleReason::CompilerEnvironment);
     }
+    // A stack-overflow trap (deep/unbounded recursion) is structurally
+    // un-modelable: reproducing it means actually exhausting the machine stack,
+    // which the in-process interpreter cannot do — its own recursion budget
+    // aborts first with a ResourceLimit. So a case expecting this trap is an
+    // oracle gap, not a case the harness can judge (RUE-645).
+    if case
+        .runtime_error_contains
+        .iter()
+        .any(|fragment| fragment == "stack overflow")
+    {
+        return CaseOutcome::Ineligible(IneligibleReason::KnownOracleGap);
+    }
     // `source_path` names a repository input that the oracle-diff Buck target
     // does not own; do not silently substitute an inline file.
     if case.source_path.is_some() {

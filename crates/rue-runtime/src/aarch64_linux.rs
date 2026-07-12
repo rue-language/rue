@@ -366,6 +366,129 @@ pub fn munmap(addr: *mut u8, size: usize) -> i64 {
     result
 }
 
+// ============================================================================
+// Stack-overflow trapping (RUE-645)
+// ============================================================================
+//
+// A stack overflow faults on the guard page and raises SIGSEGV. With no handler
+// the kernel kills the process (exit 139). To abort cleanly we register a small
+// alternate signal stack and a SIGSEGV handler that runs on it (SA_ONSTACK),
+// prints "stack overflow", and exits 101. See `entry::__rue_stack_overflow_handler`
+// for why any SIGSEGV from safe Rue is treated as a stack overflow.
+//
+// Unlike x86-64, aarch64 Linux needs no user-supplied signal-return trampoline:
+// the kernel installs the sigreturn trampoline from the vDSO automatically when
+// `SA_RESTORER` is absent, so we leave `sa_restorer` null. (Our handler exits
+// and never returns, so it is never reached regardless.)
+
+/// Linux aarch64 syscall number for rt_sigaction (from asm-generic/unistd.h).
+const SYS_RT_SIGACTION: u64 = 134;
+
+/// Linux aarch64 syscall number for sigaltstack (from asm-generic/unistd.h).
+const SYS_SIGALTSTACK: u64 = 132;
+
+/// `SIGSEGV` signal number on Linux.
+const SIGSEGV: u64 = 11;
+
+/// `SA_ONSTACK`: run the handler on the alternate signal stack.
+const SA_ONSTACK: u64 = 0x0800_0000;
+
+/// Kernel `struct sigaction` layout on aarch64 Linux (asm-generic ABI): handler,
+/// flags, restorer, then mask last.
+#[repr(C)]
+struct KernelSigaction {
+    sa_handler: usize,
+    sa_flags: u64,
+    sa_restorer: usize,
+    sa_mask: u64,
+}
+
+/// `stack_t` layout for `sigaltstack` on aarch64 Linux.
+#[repr(C)]
+struct StackT {
+    ss_sp: *mut u8,
+    ss_flags: i32,
+    ss_size: usize,
+}
+
+/// Register the alternate signal stack with `sigaltstack(2)`.
+///
+/// Returns 0 on success or a negative errno on failure.
+///
+/// # Safety
+///
+/// `ss` must point to a valid `StackT` describing a live, writable region.
+unsafe fn sigaltstack(ss: *const StackT) -> i64 {
+    let result: i64;
+    // SAFETY: sigaltstack(ss, oldss=NULL); the kernel validates the pointer.
+    unsafe {
+        asm!(
+            "svc #0",
+            in("x8") SYS_SIGALTSTACK,
+            inlateout("x0") ss => result,
+            in("x1") 0u64, // oldss = NULL
+        );
+    }
+    result
+}
+
+/// Install a signal handler with `rt_sigaction(2)`.
+///
+/// Returns 0 on success or a negative errno on failure.
+///
+/// # Safety
+///
+/// `act` must point to a valid `KernelSigaction`.
+unsafe fn rt_sigaction(sig: u64, act: *const KernelSigaction) -> i64 {
+    let result: i64;
+    // SAFETY: rt_sigaction(sig, act, oldact=NULL, sigsetsize=8).
+    unsafe {
+        asm!(
+            "svc #0",
+            in("x8") SYS_RT_SIGACTION,
+            inlateout("x0") sig => result,
+            in("x1") act,
+            in("x2") 0u64, // oldact = NULL
+            in("x3") 8u64, // sigsetsize
+        );
+    }
+    result
+}
+
+/// Install the stack-overflow SIGSEGV handler (see module comment above).
+///
+/// Best-effort: if the alt stack cannot be mapped or a syscall fails, we return
+/// without installing anything and keep the default SIGSEGV disposition.
+pub fn install_stack_overflow_handler(handler: extern "C" fn(i32) -> !) {
+    /// Size of the alternate signal stack (16 KiB).
+    const ALT_STACK_SIZE: usize = 16 * 1024;
+
+    let stack = mmap(ALT_STACK_SIZE);
+    if stack.is_null() {
+        return;
+    }
+
+    let ss = StackT {
+        ss_sp: stack,
+        ss_flags: 0,
+        ss_size: ALT_STACK_SIZE,
+    };
+    // SAFETY: `ss` describes the region just mmap'd, mapped for the rest of the
+    // process lifetime.
+    if unsafe { sigaltstack(&ss) } < 0 {
+        return;
+    }
+
+    let act = KernelSigaction {
+        sa_handler: handler as usize,
+        sa_flags: SA_ONSTACK,
+        sa_restorer: 0,
+        sa_mask: 0,
+    };
+    // SAFETY: `act` is a valid KernelSigaction; SIGSEGV is a valid signal.
+    let _ = unsafe { rt_sigaction(SIGSEGV, &act) };
+}
+
 /// Exit the process with the given status code.
 ///
 /// This performs a direct syscall to `exit(2)` and never returns.
@@ -526,5 +649,16 @@ mod tests {
         // Zero-size mmap should fail (returns EINVAL on Linux)
         let ptr = mmap(0);
         assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn stack_overflow_handler_is_installable() {
+        // Reference the installer (and, transitively, its `sigaltstack` /
+        // `rt_sigaction` wrappers and structs) so the RUE-645 stack-overflow
+        // trap machinery is type-checked by the unit-test build. We only take
+        // its address: calling it would install a process-wide SIGSEGV handler,
+        // which must not happen inside the test harness.
+        let installer: fn(extern "C" fn(i32) -> !) = install_stack_overflow_handler;
+        assert!(installer as usize != 0);
     }
 }
