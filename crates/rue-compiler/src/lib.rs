@@ -65,9 +65,10 @@ pub use frontend_session::{
     CanonicalImportGraphOutput, DefinitionQueryRecord, FrontendDiagnosticSnapshot,
     FrontendDiagnosticStage, FrontendQueryWork, ImportGraphInputDescriptor,
     SemanticDependencyInputManifest, SemanticDependencyManifestWork, SemanticQueryRecord,
-    StableDeclarationTypeCallHeadDependency, StableDeclarationTypeDependency,
-    StableFreeFunctionDependency, StableModuleImportDependency, StableNamedDestructorDependency,
-    StableNamedMethodDependency, StableNamedMethodDependencyTarget,
+    StableBuiltinTypeCallHeadInput, StableDeclarationTypeCallHeadDependency,
+    StableDeclarationTypeDependency, StableFreeFunctionDependency, StableModuleImportDependency,
+    StableNamedDestructorDependency, StableNamedMethodDependency,
+    StableNamedMethodDependencyTarget,
 };
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,

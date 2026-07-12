@@ -58,7 +58,8 @@ pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub use module_path::{DirResolution, ModulePath, import_candidate_groups};
 pub use output::{
-    AnalyzedFunction, BodyAnalysisWork, DeclarationTypeCallHeadDependencyEvent,
+    AnalyzedFunction, BodyAnalysisWork, BuiltinTypeCallHead,
+    DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
     DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
     DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind,
     NamedDestructorDependencyEvent, NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
@@ -115,6 +116,8 @@ pub struct Sema<'a> {
     pub(crate) named_destructor_dependencies: Vec<NamedDestructorDependencyEvent>,
     pub(crate) declaration_type_dependencies: Vec<DeclarationTypeDependencyEvent>,
     pub(crate) declaration_type_call_head_dependencies: Vec<DeclarationTypeCallHeadDependencyEvent>,
+    pub(crate) declaration_builtin_type_call_head_dependencies:
+        Vec<DeclarationBuiltinTypeCallHeadDependencyEvent>,
     pub(crate) declaration_type_observer: Option<(
         FileId,
         String,
@@ -256,6 +259,7 @@ impl<'a> Sema<'a> {
             named_destructor_dependencies: Vec::new(),
             declaration_type_dependencies: Vec::new(),
             declaration_type_call_head_dependencies: Vec::new(),
+            declaration_builtin_type_call_head_dependencies: Vec::new(),
             declaration_type_observer: None,
             constants: HashMap::new(),
             constants_by_file_name: HashMap::new(),

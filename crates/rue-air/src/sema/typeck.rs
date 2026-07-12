@@ -2005,7 +2005,30 @@ impl<'a> Sema<'a> {
                 ));
             }
         };
+        self.record_declaration_builtin_type_call_head(
+            super::BuiltinTypeCallHead::FixedCapacityString,
+        );
         self.get_or_create_str_fixed_struct(capacity, span)
+    }
+
+    fn record_declaration_builtin_type_call_head(&mut self, builtin: super::BuiltinTypeCallHead) {
+        let Some((source_file, source_name, source_owner_name, source_kind, dependency_kind)) =
+            self.declaration_type_observer.clone()
+        else {
+            return;
+        };
+        self.declaration_builtin_type_call_head_dependencies.push(
+            super::DeclarationBuiltinTypeCallHeadDependencyEvent {
+                source_file: source_file.index(),
+                source_name,
+                source_owner_name,
+                source_kind,
+                dependency_kind,
+                builtin,
+            },
+        );
+        self.body_analysis_work
+            .declaration_type_call_head_dependency_events += 1;
     }
 
     /// Resolve the capacity argument `N` of a fixed-capacity string `Str(N)`

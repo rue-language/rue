@@ -69,9 +69,13 @@ incremental-compilation goal is complete.
    `Option(Result(T))` retains both stable function endpoints, and qualified
    `lib.Box(T)` retains the exact defining module. These events are sorted and
    deduplicated and add zero RIR visits. This surface remains explicitly
-   incomplete until builtin/intrinsic constructors, associated constructors,
-   and anonymous, unnameable, or dynamic heads have explicit fail-closed input
-   classifications.
+   `Str(N)` is retained separately as a stable fixed-capacity-string builtin
+   input whose preview identity is part of the semantic key; it does not invent
+   a definition. No intrinsic returns a type today. Named-owner associated,
+   anonymous, unnameable, and dynamic heads are not successful type syntax
+   (dotted heads resolve only through modules), which tests pin as fail-closed.
+   A narrow supported-head completeness bit is therefore true, while broader
+   declaration-type and overall graph completeness remain false.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now

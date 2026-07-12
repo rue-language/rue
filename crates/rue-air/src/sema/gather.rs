@@ -148,6 +148,7 @@ impl<'a> GatherOutput<'a> {
             named_destructor_dependencies: Vec::new(),
             declaration_type_dependencies: Vec::new(),
             declaration_type_call_head_dependencies: Vec::new(),
+            declaration_builtin_type_call_head_dependencies: Vec::new(),
             declaration_type_observer: None,
             constants: self.constants,
             constants_by_file_name: self.constants_by_file_name,

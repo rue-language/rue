@@ -102,6 +102,21 @@ pub struct DeclarationTypeCallHeadDependencyEvent {
     pub callable_name: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BuiltinTypeCallHead {
+    FixedCapacityString,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeclarationBuiltinTypeCallHeadDependencyEvent {
+    pub source_file: u32,
+    pub source_name: String,
+    pub source_owner_name: Option<String>,
+    pub source_kind: DeclarationTypeDependencySourceKind,
+    pub dependency_kind: DeclarationTypeDependencyKind,
+    pub builtin: BuiltinTypeCallHead,
+}
+
 /// Per-ABI-slot parameter access metadata preserved into CFG.
 ///
 /// `by_ref` describes the physical calling convention: both `borrow` and
@@ -193,6 +208,9 @@ pub struct SemaOutput {
     pub declaration_type_dependencies_complete: bool,
     pub declaration_type_call_head_dependencies: Vec<DeclarationTypeCallHeadDependencyEvent>,
     pub declaration_type_call_head_dependencies_complete: bool,
+    pub declaration_builtin_type_call_head_dependencies:
+        Vec<DeclarationBuiltinTypeCallHeadDependencyEvent>,
+    pub supported_type_call_heads_complete: bool,
 }
 
 /// Value-only workload counters for demand-driven body dispatch.
