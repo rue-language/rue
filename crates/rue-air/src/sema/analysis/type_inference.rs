@@ -459,9 +459,56 @@ impl<'a> Sema<'a> {
         // indexing without checking if the element type is Copy. This enables
         // accessing Copy fields of non-Copy array elements.
         if let InstData::IndexGet { base, index } = &inst.data {
+            // Snapshot the base root's move state before analysis, in case this
+            // is a String/str/slice byte index in projection mode (RUE-700).
+            let base_root = self.extract_root_variable(*base);
+            let base_move_state_before = base_root.and_then(|v| ctx.moved_vars.get(&v).cloned());
+
             // Recursively analyze the base in projection mode
             let base_result = self.analyze_inst_for_projection(air, *base, ctx)?;
             let base_type = base_result.ty;
+
+            // Binary-op operands are analyzed in projection mode (see
+            // `analyze_builtin_binary_op`), so a String/str/slice byte index used
+            // inside a condition — `if s[0] == 45`, `while s[i] != 0` — reaches
+            // here with a non-array base. Mirror `analyze_index_get`'s non-array
+            // delegation (`s[i] -> byte_at`) instead of rejecting it with E0900
+            // (RUE-700); a let-bound `let c = s[0]` already goes through the
+            // String-aware path.
+            if self.is_builtin_string(base_type) {
+                return self.analyze_string_index_get(
+                    air,
+                    base_result,
+                    base_root,
+                    base_move_state_before,
+                    *index,
+                    inst.span,
+                    ctx,
+                );
+            }
+            if self.is_str_like(base_type) {
+                return self.analyze_str_index_get(
+                    air,
+                    base_result,
+                    base_root,
+                    base_move_state_before,
+                    *index,
+                    inst.span,
+                    ctx,
+                );
+            }
+            if let Some(elem_ty) = self.slice_element_type(base_type) {
+                return self.analyze_slice_index_get(
+                    air,
+                    base_result,
+                    base_root,
+                    base_move_state_before,
+                    *index,
+                    elem_ty,
+                    inst.span,
+                    ctx,
+                );
+            }
 
             let array_type_id = match base_type.kind() {
                 TypeKind::Array(id) => id,
