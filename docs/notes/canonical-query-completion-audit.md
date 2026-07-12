@@ -63,10 +63,15 @@ incremental-compilation goal is complete.
    destructors plus declaration/type/const/drop surfaces keep the overall graph
    explicitly incomplete and prevent body/CFG reuse.
    A conservative resolved declaration-type slice now translates nominal
-   signature/field/payload/constant/owner edges without rescanning RIR. Generic
-   composites are still erased to `COMPTIME_TYPE` before this observer, and Rue
-   type-call heads are functions rather than named types, so this surface stays
-   explicitly incomplete pending a pre-substitution constructor/alias model.
+   signature/field/payload/constant/owner edges without rescanning RIR. A
+   separate resolver-time observer records resolved user-defined type-call
+   heads before generic composites are erased to `COMPTIME_TYPE`: nested
+   `Option(Result(T))` retains both stable function endpoints, and qualified
+   `lib.Box(T)` retains the exact defining module. These events are sorted and
+   deduplicated and add zero RIR visits. This surface remains explicitly
+   incomplete until builtin/intrinsic constructors, associated constructors,
+   and anonymous, unnameable, or dynamic heads have explicit fail-closed input
+   classifications.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now

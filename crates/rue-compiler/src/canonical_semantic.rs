@@ -1,8 +1,8 @@
 //! One-pass canonical declaration binding, body analysis, and CFG lowering.
 
 use rue_air::{
-    BodyAnalysisWork, DeclarationBindingWork, DeclarationTypeDependencyEvent,
-    NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
+    BodyAnalysisWork, DeclarationBindingWork, DeclarationTypeCallHeadDependencyEvent,
+    DeclarationTypeDependencyEvent, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
     OrdinaryFreeFunctionDependencyEvent, RirDeclarationIndexWork, SemanticBindingManifestWork,
     SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
@@ -55,6 +55,8 @@ pub struct CanonicalSemanticOutput {
     named_destructor_dependencies_complete: bool,
     declaration_type_dependencies: Vec<DeclarationTypeDependencyEvent>,
     declaration_type_dependencies_complete: bool,
+    declaration_type_call_head_dependencies: Vec<DeclarationTypeCallHeadDependencyEvent>,
+    declaration_type_call_head_dependencies_complete: bool,
 }
 
 impl CanonicalSemanticOutput {
@@ -115,6 +117,14 @@ impl CanonicalSemanticOutput {
     }
     pub fn declaration_type_dependencies_complete(&self) -> bool {
         self.declaration_type_dependencies_complete
+    }
+    pub fn declaration_type_call_head_dependencies(
+        &self,
+    ) -> &[DeclarationTypeCallHeadDependencyEvent] {
+        &self.declaration_type_call_head_dependencies
+    }
+    pub fn declaration_type_call_head_dependencies_complete(&self) -> bool {
+        self.declaration_type_call_head_dependencies_complete
     }
     /// Stable definition identities when requested for this run.
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
@@ -210,6 +220,10 @@ pub fn analyze_canonical_program(
     let named_destructor_dependencies_complete = sema_output.named_destructor_dependencies_complete;
     let declaration_type_dependencies = sema_output.declaration_type_dependencies.clone();
     let declaration_type_dependencies_complete = sema_output.declaration_type_dependencies_complete;
+    let declaration_type_call_head_dependencies =
+        sema_output.declaration_type_call_head_dependencies.clone();
+    let declaration_type_call_head_dependencies_complete =
+        sema_output.declaration_type_call_head_dependencies_complete;
     drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
@@ -244,6 +258,8 @@ pub fn analyze_canonical_program(
         named_destructor_dependencies_complete,
         declaration_type_dependencies,
         declaration_type_dependencies_complete,
+        declaration_type_call_head_dependencies,
+        declaration_type_call_head_dependencies_complete,
     })
 }
 

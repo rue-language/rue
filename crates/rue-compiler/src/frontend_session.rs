@@ -62,6 +62,7 @@ pub struct SemanticDependencyManifestWork {
     pub named_method_events_translated: usize,
     pub named_destructor_events_translated: usize,
     pub declaration_type_events_translated: usize,
+    pub declaration_type_call_head_events_translated: usize,
     pub extra_rir_instructions_visited: usize,
 }
 
@@ -93,6 +94,13 @@ pub struct StableNamedDestructorDependency {
 pub struct StableDeclarationTypeDependency {
     pub source: StableDefinitionKey,
     pub target: StableDefinitionKey,
+    pub kind: rue_air::DeclarationTypeDependencyKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableDeclarationTypeCallHeadDependency {
+    pub source: StableDefinitionKey,
+    pub callable: StableDefinitionKey,
     pub kind: rue_air::DeclarationTypeDependencyKind,
 }
 
@@ -130,6 +138,8 @@ pub struct SemanticDependencyInputManifest {
     named_destructor_dependencies_complete: bool,
     declaration_type_dependencies: Arc<[StableDeclarationTypeDependency]>,
     declaration_type_dependencies_complete: bool,
+    declaration_type_call_head_dependencies: Arc<[StableDeclarationTypeCallHeadDependency]>,
+    declaration_type_call_head_dependencies_complete: bool,
     semantic_dependency_graph_complete: bool,
     definition_universe_complete: bool,
     work: SemanticDependencyManifestWork,
@@ -174,6 +184,14 @@ impl SemanticDependencyInputManifest {
     }
     pub fn declaration_type_dependencies_complete(&self) -> bool {
         self.declaration_type_dependencies_complete
+    }
+    pub fn declaration_type_call_head_dependencies(
+        &self,
+    ) -> &[StableDeclarationTypeCallHeadDependency] {
+        &self.declaration_type_call_head_dependencies
+    }
+    pub fn declaration_type_call_head_dependencies_complete(&self) -> bool {
+        self.declaration_type_call_head_dependencies_complete
     }
     pub fn semantic_dependency_graph_complete(&self) -> bool {
         self.semantic_dependency_graph_complete
@@ -768,15 +786,18 @@ impl CanonicalFrontendSession {
             mut named_method_dependencies,
             mut named_destructor_dependencies,
             mut declaration_type_dependencies,
+            mut declaration_type_call_head_dependencies,
             free_function_events_translated,
             specialization_origins_validated,
             named_method_events_translated,
             named_destructor_events_translated,
             declaration_type_events_translated,
+            declaration_type_call_head_events_translated,
             free_function_caller_dependencies_complete,
             named_method_dependencies_complete,
             named_destructor_dependencies_complete,
             declaration_type_dependencies_complete,
+            declaration_type_call_head_dependencies_complete,
         ) = match (&semantic, &definitions) {
             (Ok(semantic), Ok(definitions)) => {
                 if definitions.source_revision() != &input.sources {
@@ -885,22 +906,43 @@ impl CanonicalFrontendSession {
                         kind: event.dependency_kind,
                     });
                 }
+                let mut type_call_head_edges = Vec::new();
+                for event in semantic.declaration_type_call_head_dependencies() {
+                    type_call_head_edges.push(StableDeclarationTypeCallHeadDependency {
+                        source: stable_declaration_type_source_endpoint(
+                            definitions,
+                            event.source_file,
+                            &event.source_name,
+                            event.source_owner_name.as_deref(),
+                            event.source_kind,
+                        )?,
+                        callable: stable_free_function_endpoint(
+                            definitions,
+                            event.callable_file,
+                            &event.callable_name,
+                        )?,
+                        kind: event.dependency_kind,
+                    });
+                }
                 (
                     edges,
                     method_edges,
                     destructor_edges,
                     type_edges,
+                    type_call_head_edges,
                     semantic.ordinary_free_function_dependencies().len()
                         + semantic.specialized_free_function_dependencies().len(),
                     semantic.specialized_free_function_origins().len(),
                     semantic.named_method_dependencies().len(),
                     semantic.named_destructor_dependencies().len(),
                     semantic.declaration_type_dependencies().len(),
+                    semantic.declaration_type_call_head_dependencies().len(),
                     semantic.ordinary_free_function_dependencies_complete()
                         && semantic.specialized_free_function_dependencies_complete(),
                     semantic.non_generic_named_method_dependencies_complete(),
                     semantic.named_destructor_dependencies_complete(),
                     semantic.declaration_type_dependencies_complete(),
+                    semantic.declaration_type_call_head_dependencies_complete(),
                 )
             }
             _ => (
@@ -908,11 +950,14 @@ impl CanonicalFrontendSession {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 0,
                 0,
                 0,
                 0,
                 0,
+                0,
+                false,
                 false,
                 false,
                 false,
@@ -927,6 +972,8 @@ impl CanonicalFrontendSession {
         named_destructor_dependencies.dedup();
         declaration_type_dependencies.sort();
         declaration_type_dependencies.dedup();
+        declaration_type_call_head_dependencies.sort();
+        declaration_type_call_head_dependencies.dedup();
         let work = SemanticDependencyManifestWork {
             definition_records_visited: definition_records.len(),
             import_records_visited: imports.graph().records().len(),
@@ -935,6 +982,7 @@ impl CanonicalFrontendSession {
             named_method_events_translated,
             named_destructor_events_translated,
             declaration_type_events_translated,
+            declaration_type_call_head_events_translated,
             extra_rir_instructions_visited: 0,
         };
         self.work.dependency_manifest_records_visited += work.definition_records_visited;
@@ -980,6 +1028,8 @@ impl CanonicalFrontendSession {
             named_destructor_dependencies_complete,
             declaration_type_dependencies: declaration_type_dependencies.into(),
             declaration_type_dependencies_complete,
+            declaration_type_call_head_dependencies: declaration_type_call_head_dependencies.into(),
+            declaration_type_call_head_dependencies_complete,
             semantic_dependency_graph_complete: false,
             definition_universe_complete,
             work,
@@ -1070,43 +1120,54 @@ fn stable_declaration_source_endpoint(
     definitions: &BoundDefinitionSet,
     event: &rue_air::DeclarationTypeDependencyEvent,
 ) -> Result<StableDefinitionKey, CompileErrors> {
+    stable_declaration_type_source_endpoint(
+        definitions,
+        event.source_file,
+        &event.source_name,
+        event.source_owner_name.as_deref(),
+        event.source_kind,
+    )
+}
+
+fn stable_declaration_type_source_endpoint(
+    definitions: &BoundDefinitionSet,
+    source_file: u32,
+    source_name: &str,
+    source_owner_name: Option<&str>,
+    source_kind: rue_air::DeclarationTypeDependencySourceKind,
+) -> Result<StableDefinitionKey, CompileErrors> {
     use rue_air::DeclarationTypeDependencySourceKind as K;
-    match event.source_kind {
-        K::Function => {
-            stable_free_function_endpoint(definitions, event.source_file, &event.source_name)
-        }
+    match source_kind {
+        K::Function => stable_free_function_endpoint(definitions, source_file, source_name),
         K::Method | K::AssociatedFunction => stable_named_method_endpoint(
             definitions,
-            event.source_file,
-            event.source_owner_name.as_deref().unwrap_or(""),
-            &event.source_name,
+            source_file,
+            source_owner_name.unwrap_or(""),
+            source_name,
         ),
         K::Destructor => stable_named_destructor_endpoint(
             definitions,
-            event.source_file,
-            event
-                .source_owner_name
-                .as_deref()
-                .unwrap_or(&event.source_name),
+            source_file,
+            source_owner_name.unwrap_or(source_name),
         ),
         K::Struct => stable_top_level_endpoint(
             definitions,
-            event.source_file,
-            &event.source_name,
+            source_file,
+            source_name,
             StableDefinitionNamespace::Type,
             StableDefinitionKind::Struct,
         ),
         K::Enum => stable_top_level_endpoint(
             definitions,
-            event.source_file,
-            &event.source_name,
+            source_file,
+            source_name,
             StableDefinitionNamespace::Type,
             StableDefinitionKind::Enum,
         ),
         K::ValueConst => stable_top_level_endpoint(
             definitions,
-            event.source_file,
-            &event.source_name,
+            source_file,
+            source_name,
             StableDefinitionNamespace::Value,
             StableDefinitionKind::ValueConst,
         ),
@@ -2448,6 +2509,89 @@ mod tests {
         )));
         assert!(!manifest.declaration_type_dependencies_complete());
         assert_eq!(manifest.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn deferred_nested_type_call_heads_survive_placeholder_erasure() {
+        let program = r#"
+            fn Result(comptime T: type) -> type { enum { Ok(T), Err } }
+            fn Option(comptime T: type) -> type { enum { Some(T), None } }
+            fn consume(comptime T: type, value: Option(Result(T))) -> i32 { 0 }
+            fn main() -> i32 { 0 }
+        "#;
+        let build = |file_id, path| {
+            let source = snapshot(&[(file_id, path, "main.rue", program)], file_id);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(7, "/one/main.rue");
+        let moved = build(91, "/moved/main.rue");
+        assert_eq!(
+            first.declaration_type_call_head_dependencies(),
+            moved.declaration_type_call_head_dependencies()
+        );
+        let names = first
+            .declaration_type_call_head_dependencies()
+            .iter()
+            .map(|edge| (edge.source.name(), edge.callable.name(), edge.kind))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                (
+                    "consume",
+                    "Option",
+                    rue_air::DeclarationTypeDependencyKind::Signature
+                ),
+                (
+                    "consume",
+                    "Result",
+                    rue_air::DeclarationTypeDependencyKind::Signature
+                ),
+            ]
+        );
+        assert!(!first.declaration_type_call_head_dependencies_complete());
+        assert_eq!(first.work().declaration_type_call_head_events_translated, 2);
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn module_qualified_type_call_head_uses_exact_callable_endpoint() {
+        let source = snapshot(
+            &[
+                (
+                    3,
+                    "/p/main.rue",
+                    "main.rue",
+                    r#"const lib = @import("lib.rue");
+                       fn consume(comptime T: type, value: lib.Box(T)) -> i32 { 0 }
+                       fn main() -> i32 { 0 }"#,
+                ),
+                (
+                    8,
+                    "/p/lib.rue",
+                    "lib.rue",
+                    "pub fn Box(comptime T: type) -> type { struct { value: T } }",
+                ),
+            ],
+            3,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let manifest = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        let [edge] = manifest.declaration_type_call_head_dependencies() else {
+            panic!("expected one module-qualified type-call head");
+        };
+        assert_eq!(edge.source.module().as_str(), "main.rue");
+        assert_eq!(edge.source.name(), "consume");
+        assert_eq!(edge.callable.module().as_str(), "lib.rue");
+        assert_eq!(edge.callable.name(), "Box");
+        assert_eq!(edge.callable.kind(), StableDefinitionKind::Function);
     }
 
     #[test]
