@@ -5,6 +5,7 @@
 //! program and resolves them only against an explicit, immutable source
 //! snapshot.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -123,6 +124,19 @@ pub struct CanonicalImportRecord {
 }
 
 impl CanonicalImportRecord {
+    /// Create a durable record, canonicalizing the import spelling lexically.
+    pub fn new(
+        importer: ModuleId,
+        specifier: impl AsRef<str>,
+        resolution: CanonicalImportResolution,
+    ) -> Self {
+        Self {
+            importer,
+            normalized_specifier: Arc::from(normalize_module_path(specifier.as_ref())),
+            resolution,
+        }
+    }
+
     pub fn importer(&self) -> &ModuleId {
         &self.importer
     }
@@ -151,6 +165,100 @@ impl CanonicalImportGraph {
     /// Records sorted by importer, normalized spelling, then outcome.
     pub fn records(&self) -> &[CanonicalImportRecord] {
         &self.records
+    }
+
+    /// Validate and canonicalize an explicitly supplied graph, failing closed.
+    ///
+    /// Cycles are legal Rue topology and do not make construction fail. Query
+    /// [`validate_canonical_import_graph`] to obtain their stable components.
+    pub fn from_supplied(
+        root: ModuleId,
+        records: Vec<CanonicalImportRecord>,
+        inputs: &ModuleResolutionInputs,
+    ) -> Result<Self, CanonicalImportGraphValidation> {
+        let validation = validate_records(&root, &records, inputs);
+        if !validation.is_valid() {
+            return Err(validation);
+        }
+        let mut records = records;
+        records.sort();
+        records.dedup();
+        Ok(Self {
+            root,
+            records: records.into(),
+        })
+    }
+}
+
+/// Stable malformed-topology finding for a canonical import graph.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CanonicalImportGraphProblem {
+    RootMismatch {
+        expected: ModuleId,
+        found: ModuleId,
+    },
+    RootNotInModuleSet(ModuleId),
+    ForeignImporter {
+        importer: ModuleId,
+        normalized_specifier: Arc<str>,
+    },
+    ForeignResolvedTarget {
+        importer: ModuleId,
+        normalized_specifier: Arc<str>,
+        target: ModuleId,
+    },
+    MissingResolution {
+        importer: ModuleId,
+        normalized_specifier: Arc<str>,
+    },
+    AmbiguousResolution {
+        importer: ModuleId,
+        normalized_specifier: Arc<str>,
+        file_module: ModuleId,
+        directory_module: ModuleId,
+    },
+    DuplicateRecord(CanonicalImportRecord),
+    ConflictingCanonicalKey {
+        importer: ModuleId,
+        normalized_specifier: Arc<str>,
+        resolutions: Arc<[CanonicalImportResolution]>,
+    },
+}
+
+/// One deterministic strongly connected component in legal cyclic topology.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CanonicalImportCycle {
+    modules: Arc<[ModuleId]>,
+}
+
+impl CanonicalImportCycle {
+    pub fn modules(&self) -> &[ModuleId] {
+        &self.modules
+    }
+}
+
+/// Pure deterministic validation result.
+///
+/// `problems` are malformed/unresolved topology. `cycles` are legal topology,
+/// reported separately. Acyclic reconvergence (including diamonds) is valid and
+/// appears in neither collection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct CanonicalImportGraphValidation {
+    problems: Arc<[CanonicalImportGraphProblem]>,
+    cycles: Arc<[CanonicalImportCycle]>,
+}
+
+impl CanonicalImportGraphValidation {
+    pub fn is_valid(&self) -> bool {
+        self.problems.is_empty()
+    }
+
+    pub fn problems(&self) -> &[CanonicalImportGraphProblem] {
+        &self.problems
+    }
+
+    pub fn cycles(&self) -> &[CanonicalImportCycle] {
+        &self.cycles
     }
 }
 
@@ -414,18 +522,216 @@ pub fn resolve_canonical_import_graph(
             },
             DirResolution::NotFound => CanonicalImportResolution::Missing,
         };
-        records.push(CanonicalImportRecord {
-            importer: directive.importer().clone(),
-            normalized_specifier: Arc::from(normalize_module_path(directive.specifier())),
+        records.push(CanonicalImportRecord::new(
+            directive.importer().clone(),
+            directive.specifier(),
             resolution,
-        });
+        ));
     }
     records.sort();
     records.dedup();
-    Ok(CanonicalImportGraph {
+    let graph = CanonicalImportGraph {
         root: inputs.root().clone(),
         records: records.into(),
-    })
+    };
+    let validation = validate_canonical_import_graph(&graph, inputs);
+    debug_assert!(
+        validation.problems().iter().all(|problem| matches!(
+            problem,
+            CanonicalImportGraphProblem::MissingResolution { .. }
+                | CanonicalImportGraphProblem::AmbiguousResolution { .. }
+        )),
+        "derived canonical graph may be unresolved, but cannot be structurally malformed"
+    );
+    Ok(graph)
+}
+
+/// Validate a canonical graph against the explicit resolved module set.
+pub fn validate_canonical_import_graph(
+    graph: &CanonicalImportGraph,
+    inputs: &ModuleResolutionInputs,
+) -> CanonicalImportGraphValidation {
+    validate_records(graph.root(), graph.records(), inputs)
+}
+
+fn validate_records(
+    root: &ModuleId,
+    records: &[CanonicalImportRecord],
+    inputs: &ModuleResolutionInputs,
+) -> CanonicalImportGraphValidation {
+    let modules: BTreeSet<_> = inputs
+        .modules()
+        .iter()
+        .map(|entry| entry.module.clone())
+        .collect();
+    let mut problems = Vec::new();
+    if root != inputs.root() {
+        problems.push(CanonicalImportGraphProblem::RootMismatch {
+            expected: inputs.root().clone(),
+            found: root.clone(),
+        });
+    }
+    if !modules.contains(root) {
+        problems.push(CanonicalImportGraphProblem::RootNotInModuleSet(
+            root.clone(),
+        ));
+    }
+
+    let mut sorted = records.to_vec();
+    sorted.sort();
+    for pair in sorted.windows(2) {
+        if pair[0] == pair[1] {
+            problems.push(CanonicalImportGraphProblem::DuplicateRecord(
+                pair[0].clone(),
+            ));
+        }
+    }
+    let mut by_key: BTreeMap<(ModuleId, Arc<str>), BTreeSet<CanonicalImportResolution>> =
+        BTreeMap::new();
+    let mut adjacency: BTreeMap<ModuleId, BTreeSet<ModuleId>> = modules
+        .iter()
+        .cloned()
+        .map(|module| (module, BTreeSet::new()))
+        .collect();
+    for record in &sorted {
+        let key = (record.importer.clone(), record.normalized_specifier.clone());
+        by_key
+            .entry(key.clone())
+            .or_default()
+            .insert(record.resolution.clone());
+        if !modules.contains(&record.importer) {
+            problems.push(CanonicalImportGraphProblem::ForeignImporter {
+                importer: key.0,
+                normalized_specifier: key.1,
+            });
+        }
+        match &record.resolution {
+            CanonicalImportResolution::Resolved(target) => {
+                if !modules.contains(target) {
+                    problems.push(CanonicalImportGraphProblem::ForeignResolvedTarget {
+                        importer: record.importer.clone(),
+                        normalized_specifier: record.normalized_specifier.clone(),
+                        target: target.clone(),
+                    });
+                } else if modules.contains(&record.importer) {
+                    adjacency
+                        .get_mut(&record.importer)
+                        .expect("known importer has adjacency entry")
+                        .insert(target.clone());
+                }
+            }
+            CanonicalImportResolution::Missing => {
+                problems.push(CanonicalImportGraphProblem::MissingResolution {
+                    importer: record.importer.clone(),
+                    normalized_specifier: record.normalized_specifier.clone(),
+                });
+            }
+            CanonicalImportResolution::Ambiguous {
+                file_module,
+                directory_module,
+            } => {
+                for target in [file_module, directory_module] {
+                    if !modules.contains(target) {
+                        problems.push(CanonicalImportGraphProblem::ForeignResolvedTarget {
+                            importer: record.importer.clone(),
+                            normalized_specifier: record.normalized_specifier.clone(),
+                            target: target.clone(),
+                        });
+                    }
+                }
+                problems.push(CanonicalImportGraphProblem::AmbiguousResolution {
+                    importer: record.importer.clone(),
+                    normalized_specifier: record.normalized_specifier.clone(),
+                    file_module: file_module.clone(),
+                    directory_module: directory_module.clone(),
+                });
+            }
+        }
+    }
+    for ((importer, normalized_specifier), resolutions) in by_key {
+        if resolutions.len() > 1 {
+            problems.push(CanonicalImportGraphProblem::ConflictingCanonicalKey {
+                importer,
+                normalized_specifier,
+                resolutions: resolutions.into_iter().collect::<Vec<_>>().into(),
+            });
+        }
+    }
+    problems.sort();
+    problems.dedup();
+    CanonicalImportGraphValidation {
+        problems: problems.into(),
+        cycles: cycle_components(&adjacency).into(),
+    }
+}
+
+fn cycle_components(
+    adjacency: &BTreeMap<ModuleId, BTreeSet<ModuleId>>,
+) -> Vec<CanonicalImportCycle> {
+    let mut visited = BTreeSet::new();
+    let mut order = Vec::new();
+    for node in adjacency.keys() {
+        if visited.contains(node) {
+            continue;
+        }
+        // Explicit enter/exit frames preserve recursive DFS postorder without
+        // making supplied graph depth consume the process stack.
+        let mut stack = vec![(node.clone(), false)];
+        while let Some((current, exiting)) = stack.pop() {
+            if exiting {
+                order.push(current);
+                continue;
+            }
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            stack.push((current.clone(), true));
+            stack.extend(
+                adjacency[&current]
+                    .iter()
+                    .rev()
+                    .map(|next| (next.clone(), false)),
+            );
+        }
+    }
+    let mut reverse: BTreeMap<ModuleId, BTreeSet<ModuleId>> = adjacency
+        .keys()
+        .cloned()
+        .map(|module| (module, BTreeSet::new()))
+        .collect();
+    for (from, targets) in adjacency {
+        for target in targets {
+            reverse
+                .get_mut(target)
+                .expect("known target has reverse adjacency entry")
+                .insert(from.clone());
+        }
+    }
+    let mut assigned = BTreeSet::new();
+    let mut cycles = Vec::new();
+    while let Some(node) = order.pop() {
+        if assigned.contains(&node) {
+            continue;
+        }
+        let mut stack = vec![node];
+        let mut component = Vec::new();
+        while let Some(current) = stack.pop() {
+            if !assigned.insert(current.clone()) {
+                continue;
+            }
+            component.push(current.clone());
+            stack.extend(reverse[&current].iter().rev().cloned());
+        }
+        component.sort();
+        let self_cycle = component.len() == 1 && adjacency[&component[0]].contains(&component[0]);
+        if component.len() > 1 || self_cycle {
+            cycles.push(CanonicalImportCycle {
+                modules: component.into(),
+            });
+        }
+    }
+    cycles.sort();
+    cycles
 }
 
 /// Pure lexical counterpart of `ModulePath` loaded-file resolution.
@@ -1183,5 +1489,209 @@ fn main() -> i32 {
         assert_eq!(first_graph, moved_graph);
         assert_eq!(value_hash(&first_graph), value_hash(&moved_graph));
         assert_ne!(first_revision, moved_revision);
+    }
+
+    fn supplied_inputs(names: &[&str], root: &str) -> ModuleResolutionInputs {
+        ModuleResolutionInputs::new(
+            ModuleId::from_logical_path(root).unwrap(),
+            names
+                .iter()
+                .map(|name| crate::ModuleResolutionInput {
+                    module: ModuleId::from_logical_path(name).unwrap(),
+                    physical_path: Arc::from(format!("/p/{name}")),
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn resolved(importer: &str, specifier: &str, target: &str) -> CanonicalImportRecord {
+        CanonicalImportRecord::new(
+            ModuleId::from_logical_path(importer).unwrap(),
+            specifier,
+            CanonicalImportResolution::Resolved(ModuleId::from_logical_path(target).unwrap()),
+        )
+    }
+
+    #[test]
+    fn derived_and_supplied_equivalent_graphs_validate_identically() {
+        let unit = graph_unit(
+            &[
+                (
+                    1,
+                    "/p/main.rue",
+                    "main.rue",
+                    "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }",
+                ),
+                (2, "/p/helper.rue", "helper.rue", "fn helper() {}"),
+            ],
+            1,
+        );
+        let inputs = ModuleResolutionInputs::from_metadata(unit.source_metadata());
+        let derived =
+            resolve_canonical_import_graph(unit.import_directives().unwrap(), &inputs, None)
+                .unwrap();
+        let supplied = CanonicalImportGraph::from_supplied(
+            derived.root().clone(),
+            derived.records().to_vec(),
+            &inputs,
+        )
+        .unwrap();
+        assert_eq!(derived, supplied);
+        assert_eq!(
+            validate_canonical_import_graph(&derived, &inputs),
+            validate_canonical_import_graph(&supplied, &inputs)
+        );
+    }
+
+    #[test]
+    fn cycles_are_legal_stable_components_while_diamonds_are_acyclic() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<CanonicalImportGraphValidation>();
+
+        let inputs = supplied_inputs(&["a.rue", "b.rue", "c.rue", "d.rue"], "a.rue");
+        let cycle = CanonicalImportGraph::from_supplied(
+            ModuleId::from_logical_path("a.rue").unwrap(),
+            vec![
+                resolved("b.rue", "a.rue", "a.rue"),
+                resolved("a.rue", "b.rue", "b.rue"),
+            ],
+            &inputs,
+        )
+        .expect("cycles are valid Rue topology");
+        let report = validate_canonical_import_graph(&cycle, &inputs);
+        assert!(report.is_valid());
+        assert_eq!(report.cycles().len(), 1);
+        assert_eq!(
+            report.cycles()[0]
+                .modules()
+                .iter()
+                .map(ModuleId::as_str)
+                .collect::<Vec<_>>(),
+            ["a.rue", "b.rue"]
+        );
+
+        let diamond = CanonicalImportGraph::from_supplied(
+            ModuleId::from_logical_path("a.rue").unwrap(),
+            vec![
+                resolved("c.rue", "d.rue", "d.rue"),
+                resolved("a.rue", "c.rue", "c.rue"),
+                resolved("b.rue", "d.rue", "d.rue"),
+                resolved("a.rue", "b.rue", "b.rue"),
+            ],
+            &inputs,
+        )
+        .expect("diamonds are valid acyclic topology");
+        let report = validate_canonical_import_graph(&diamond, &inputs);
+        assert!(report.is_valid());
+        assert!(report.cycles().is_empty());
+    }
+
+    #[test]
+    fn deep_acyclic_graph_validation_does_not_use_the_process_stack() {
+        const MODULE_COUNT: usize = 20_000;
+        let modules: Vec<_> = (0..MODULE_COUNT)
+            .map(|index| ModuleId::from_logical_path(&format!("module-{index:05}.rue")).unwrap())
+            .collect();
+        let mut adjacency: BTreeMap<_, BTreeSet<_>> = modules
+            .iter()
+            .cloned()
+            .map(|module| (module, BTreeSet::new()))
+            .collect();
+        for pair in modules.windows(2) {
+            adjacency.get_mut(&pair[0]).unwrap().insert(pair[1].clone());
+        }
+
+        assert!(cycle_components(&adjacency).is_empty());
+    }
+
+    #[test]
+    fn supplied_malformed_findings_are_typed_sorted_and_fail_closed() {
+        let inputs = supplied_inputs(&["a.rue", "b.rue", "c.rue"], "a.rue");
+        let a = ModuleId::from_logical_path("a.rue").unwrap();
+        let b = ModuleId::from_logical_path("b.rue").unwrap();
+        let c = ModuleId::from_logical_path("c.rue").unwrap();
+        let foreign = ModuleId::from_logical_path("foreign.rue").unwrap();
+        let duplicate = resolved("a.rue", "duplicate", "b.rue");
+        let mut records = vec![
+            duplicate.clone(),
+            CanonicalImportRecord::new(a.clone(), "missing", CanonicalImportResolution::Missing),
+            CanonicalImportRecord::new(
+                a.clone(),
+                "ambiguous",
+                CanonicalImportResolution::Ambiguous {
+                    file_module: b.clone(),
+                    directory_module: foreign.clone(),
+                },
+            ),
+            resolved("a.rue", "conflict", "b.rue"),
+            resolved("a.rue", "conflict", "c.rue"),
+            CanonicalImportRecord::new(
+                foreign.clone(),
+                "from-foreign",
+                CanonicalImportResolution::Resolved(b.clone()),
+            ),
+            CanonicalImportRecord::new(
+                a,
+                "to-foreign",
+                CanonicalImportResolution::Resolved(foreign.clone()),
+            ),
+            duplicate,
+        ];
+        let run = |records: Vec<CanonicalImportRecord>| {
+            CanonicalImportGraph::from_supplied(foreign.clone(), records, &inputs).unwrap_err()
+        };
+        let first = run(records.clone());
+        records.reverse();
+        let reversed = run(records);
+        assert_eq!(first, reversed);
+        assert!(!first.is_valid());
+        assert!(first.cycles().is_empty());
+        assert!(first.problems().windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(
+            first
+                .problems()
+                .iter()
+                .any(|problem| matches!(problem, CanonicalImportGraphProblem::RootMismatch { .. }))
+        );
+        assert!(
+            first.problems().iter().any(|problem| matches!(
+                problem,
+                CanonicalImportGraphProblem::RootNotInModuleSet(_)
+            ))
+        );
+        assert!(
+            first
+                .problems()
+                .iter()
+                .any(|problem| matches!(problem, CanonicalImportGraphProblem::DuplicateRecord(_)))
+        );
+        assert!(first.problems().iter().any(|problem| matches!(
+            problem,
+            CanonicalImportGraphProblem::ConflictingCanonicalKey { resolutions, .. }
+                if resolutions.as_ref()
+                    == [
+                        CanonicalImportResolution::Resolved(b.clone()),
+                        CanonicalImportResolution::Resolved(c.clone()),
+                    ]
+        )));
+        assert!(first.problems().iter().any(|problem| matches!(
+            problem,
+            CanonicalImportGraphProblem::MissingResolution { .. }
+        )));
+        assert!(first.problems().iter().any(|problem| matches!(
+            problem,
+            CanonicalImportGraphProblem::AmbiguousResolution { .. }
+        )));
+        assert!(
+            first.problems().iter().any(|problem| matches!(
+                problem,
+                CanonicalImportGraphProblem::ForeignImporter { .. }
+            ))
+        );
+        assert!(first.problems().iter().any(|problem| matches!(
+            problem,
+            CanonicalImportGraphProblem::ForeignResolvedTarget { .. }
+        )));
     }
 }
