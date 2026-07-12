@@ -48,18 +48,34 @@ pub struct SemanticSymbolUniverse {
 impl SemanticSymbolUniverse {
     /// Start a destination universe for one canonical program traversal.
     pub fn new(program: &ParsedProgram) -> Self {
-        Self::from_modules(program.modules())
+        let universe = Self::from_modules(program.modules());
+        if let Some(symbols) = program.shared_symbol_strings() {
+            for symbol in symbols {
+                universe.interner.get_or_intern(symbol);
+            }
+        }
+        universe
     }
 
     pub(crate) fn from_modules(modules: &[Arc<crate::parsed_modules::ParsedModule>]) -> Self {
-        Self {
+        let universe = Self {
             admitted_modules: modules.to_vec().into(),
             interner: ThreadedRodeo::new(),
             provenance: Arc::new(SemanticSymbolProvenance),
             local_symbol_resolutions: AtomicUsize::new(0),
             semantic_intern_attempts: AtomicUsize::new(0),
             unique_semantic_strings: AtomicUsize::new(0),
+        };
+        if let Some(first) = modules.first()
+            && modules
+                .iter()
+                .all(|module| module.shares_resolver_with(first))
+        {
+            for symbol in first.resolver_strings() {
+                universe.interner.get_or_intern(symbol);
+            }
         }
+        universe
     }
 
     /// Translate a provenanced local symbol through its owning module view.

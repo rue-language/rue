@@ -31,16 +31,24 @@
 //! // Or, equivalently: let output = unit.run_all()?;
 //! ```
 
-use std::{collections::HashMap, marker::PhantomData};
+use std::{
+    collections::HashMap,
+    marker::PhantomData,
+    sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
-use lasso::ThreadedRodeo;
+use lasso::{Key, Spur, ThreadedRodeo};
 use tracing::{info, info_span};
 
 use crate::{
-    AstGen, CompileErrors, CompileOptions, CompileOutput, CompileResult, CompileWarning,
-    DefinitionSnapshot, FunctionWithCfg, ImportDirectives, ImportGraph, MergedAst,
-    MultiErrorResult, Rir, SourceFile, SourceMetadata, SourceSnapshot, SyntaxWork, TypeInternPool,
-    build_functions_and_cfgs, build_sema_for_target, compile_backend, extract_import_directives,
+    CanonicalMergeWork, CanonicalMergedProgram, CanonicalRirOutput, CanonicalRirWork,
+    CanonicalSemanticWork, CompileErrors, CompileOptions, CompileOutput, CompileResult,
+    CompileWarning, DefinitionSnapshot, FunctionWithCfg, ImportDirectives, ImportGraph, MergedAst,
+    MultiErrorResult, ParsedModulesWork, Rir, SourceFile, SourceMetadata, SourceSnapshot,
+    SyntaxWork, TypeInternPool, analyze_canonical_program, compile_backend, lower_canonical_rir,
     resolve_import_graph,
 };
 use rue_span::FileId;
@@ -60,6 +68,31 @@ pub struct SourceStats {
     /// Tokens produced by successful lexer invocations, matching
     /// [`SyntaxWork::tokens`] for the most recent parse attempt.
     pub tokens: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PhaseReuseWork {
+    pub calls: usize,
+    pub executions: usize,
+    pub reuses: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompilationUnitWork {
+    pub parsed: ParsedModulesWork,
+    pub merged: CanonicalMergeWork,
+    pub lowered: CanonicalRirWork,
+    pub semantic: CanonicalSemanticWork,
+    pub parse: PhaseReuseWork,
+    pub lower: PhaseReuseWork,
+    pub analyze: PhaseReuseWork,
+    pub compatibility_projections: usize,
+}
+
+#[derive(Debug)]
+struct CompatibilityProjection {
+    ast: MergedAst,
+    interner: ThreadedRodeo,
 }
 
 /// A unified compilation unit that owns all artifacts from source to machine code.
@@ -95,16 +128,20 @@ pub struct CompilationUnit<'src> {
     _source_lifetime: PhantomData<&'src ()>,
 
     // === Phase 1: Parsing ===
-    /// Merged AST containing all items (populated by `parse()`).
-    merged_ast: Option<MergedAst>,
-    /// String interner shared across all files.
-    interner: Option<ThreadedRodeo>,
+    parsed: Option<crate::CanonicalParsedProgram>,
+    merged: Option<CanonicalMergedProgram>,
+    compatibility_ast_files: Vec<std::sync::Arc<crate::Ast>>,
+    compatibility_symbols: Vec<String>,
+    compatibility: OnceLock<CompatibilityProjection>,
+    compatibility_ast_after_interner_take: Option<MergedAst>,
+    interner_taken: bool,
+    compatibility_projection_count: AtomicUsize,
     /// Durable module/name keys and snapshot-local definition occurrences from
     /// the latest syntactically successful parse attempt.
     definition_snapshot: Option<DefinitionSnapshot>,
     // === Phase 2: RIR Generation ===
     /// Untyped intermediate representation (populated by `lower()`).
-    rir: Option<Rir>,
+    canonical_rir: Option<CanonicalRirOutput>,
     /// Canonical, resolution-independent import sites derived from positional RIR.
     import_directives: Option<ImportDirectives>,
 
@@ -117,6 +154,7 @@ pub struct CompilationUnit<'src> {
     strings: Option<Vec<String>>,
     /// Warnings collected during compilation.
     warnings: Vec<CompileWarning>,
+    work: CompilationUnitWork,
 }
 
 impl CompilationUnit<'static> {
@@ -195,15 +233,22 @@ impl<'src> CompilationUnit<'src> {
             source_stats,
             syntax_work: SyntaxWork::default(),
             _source_lifetime: PhantomData,
-            merged_ast: None,
-            interner: None,
+            parsed: None,
+            merged: None,
+            compatibility_ast_files: Vec::new(),
+            compatibility_symbols: Vec::new(),
+            compatibility: OnceLock::new(),
+            compatibility_ast_after_interner_take: None,
+            interner_taken: false,
+            compatibility_projection_count: AtomicUsize::new(0),
             definition_snapshot: None,
-            rir: None,
+            canonical_rir: None,
             import_directives: None,
             functions: None,
             type_pool: None,
             strings: None,
             warnings: Vec::new(),
+            work: CompilationUnitWork::default(),
         }
     }
 
@@ -223,6 +268,13 @@ impl<'src> CompilationUnit<'src> {
     /// - Any file fails to lex or parse
     /// - Duplicate function, struct, or enum definitions are found
     pub fn parse(&mut self) -> MultiErrorResult<()> {
+        self.work.parse.calls += 1;
+        if self.merged.is_some() {
+            self.work.parse.reuses += 1;
+            self.import_directives = None;
+            return Ok(());
+        }
+        self.work.parse.executions += 1;
         // A failed syntax pass must not leave a snapshot that appears to
         // describe the latest attempt.
         self.definition_snapshot = None;
@@ -232,19 +284,58 @@ impl<'src> CompilationUnit<'src> {
         // `parse` timing boundary. Direct snapshot parsing owns a narrower
         // `parse` span around syntax work only.
         let _span = info_span!("parse", file_count = self.source_snapshot.len()).entered();
-        let parsed = crate::syntax::run_snapshot_unspanned(&self.source_snapshot);
-        self.syntax_work = parsed.work;
-        self.source_stats.tokens = parsed.work.tokens;
-
-        let parsed = parsed.result?;
-        let definition_snapshot =
-            DefinitionSnapshot::from_parsed_program(&parsed, &self.source_snapshot)
-                .map_err(CompileErrors::from)?;
+        let (parsed, parsed_work) =
+            crate::parsed_modules::parse_source_snapshot_modules_for_unit(&self.source_snapshot);
+        self.work.parsed = parsed_work;
+        self.syntax_work = parsed_work.syntax;
+        self.source_stats.tokens = parsed_work.syntax.tokens;
+        let parsed = parsed?;
+        {
+            // Retain the historical public timing leaf while the canonical
+            // snapshot builder reports its more precise modules traversal.
+            let _span = info_span!("definition_snapshot").entered();
+        }
+        let definition_snapshot = DefinitionSnapshot::from_parsed_modules(&parsed.program)
+            .map_err(CompileErrors::from)?;
         self.definition_snapshot = Some(definition_snapshot);
-
-        let merged = crate::merge_symbols(parsed)?;
-        self.merged_ast = Some(merged.ast);
-        self.interner = Some(merged.interner);
+        let diagnostic_order = self
+            .source_snapshot
+            .files()
+            .map(|source| {
+                self.source_snapshot
+                    .module_id(source.file_id)
+                    .unwrap()
+                    .clone()
+            })
+            .collect::<Vec<_>>();
+        self.work.merged = CanonicalMergeWork {
+            modules_visited: parsed.program.modules().len(),
+            items_visited: parsed
+                .program
+                .modules()
+                .iter()
+                .map(|module| module.ast().items.len())
+                .sum(),
+            candidates_visited: parsed
+                .program
+                .modules()
+                .iter()
+                .map(|module| module.definitions().candidates().len())
+                .sum(),
+            ..CanonicalMergeWork::default()
+        };
+        let merged = {
+            let _span = info_span!("merge_symbols").entered();
+            crate::canonical_merge::merge_parsed_modules_for_batch(
+                &parsed.program,
+                &diagnostic_order,
+            )?
+        };
+        debug_assert_eq!(self.work.merged, merged.work());
+        self.compatibility_ast_files = parsed.ast_files;
+        self.compatibility_symbols = parsed.symbol_strings;
+        self.parsed = Some(parsed.program);
+        self.merged = Some(merged);
         Ok(())
     }
 
@@ -261,23 +352,39 @@ impl<'src> CompilationUnit<'src> {
     ///
     /// Panics if called before [`parse()`](Self::parse).
     pub fn lower(&mut self) -> MultiErrorResult<()> {
-        let ast = self
-            .merged_ast
-            .as_ref()
-            .expect("lower() called before parse()");
-        let interner = self.interner.as_ref().expect("interner not initialized");
+        self.work.lower.calls += 1;
+        let merged = self.merged.as_ref().expect("lower() called before parse()");
+        if self.canonical_rir.is_some() {
+            self.work.lower.reuses += 1;
+            self.import_directives = Some(
+                self.parsed
+                    .as_ref()
+                    .expect("canonical parsed program retained")
+                    .import_directives()
+                    .clone(),
+            );
+            return Ok(());
+        }
+        self.work.lower.executions += 1;
 
         let _span = info_span!("astgen").entered();
 
         self.import_directives = None;
-        let rir = AstGen::generate_items(interner, ast.items());
-        let import_directives =
-            extract_import_directives(&rir, interner, self.source_snapshot.metadata())
-                .map_err(CompileErrors::from)?;
+        let rir = lower_canonical_rir(merged).map_err(CompileErrors::from)?;
+        let import_directives = self
+            .parsed
+            .as_ref()
+            .expect("canonical parsed program retained")
+            .import_directives()
+            .clone();
 
-        info!(instruction_count = rir.len(), "RIR generation complete");
+        info!(
+            instruction_count = rir.rir().len(),
+            "RIR generation complete"
+        );
 
-        self.rir = Some(rir);
+        self.work.lowered = rir.work();
+        self.canonical_rir = Some(rir);
         self.import_directives = Some(import_directives);
         Ok(())
     }
@@ -296,74 +403,28 @@ impl<'src> CompilationUnit<'src> {
     ///
     /// Panics if called before [`lower()`](Self::lower).
     pub fn analyze(&mut self) -> MultiErrorResult<()> {
-        self.rir.as_ref().expect("analyze() called before lower()");
-        let ast = self
-            .merged_ast
+        self.work.analyze.calls += 1;
+        let rir = self
+            .canonical_rir
+            .as_ref()
+            .expect("analyze() called before lower()");
+        if self.functions.is_some() {
+            self.work.analyze.reuses += 1;
+            return Ok(());
+        }
+        self.work.analyze.executions += 1;
+        let merged = self
+            .merged
             .as_ref()
             .expect("analyze() called before parse()");
-        let interner = self.interner.as_ref().expect("interner not initialized");
-
-        // Keep `self.rir` in positional order for the public phase accessor,
-        // while sema consumes a private logical-path-ordered lowering. This
-        // makes allocation and artifact layout canonical without changing the
-        // caller-visible AST/RIR contract (RUE-624).
-        let semantic_rir = {
-            let _span = info_span!("semantic_astgen").entered();
-            let order = crate::semantic_order::SemanticItemOrder::from_items(
-                ast.items(),
-                self.source_snapshot.metadata(),
-            );
-            let work = order.work();
-            let rir = AstGen::generate_items(interner, order.iter());
-            info!(
-                items_indexed = work.items_indexed,
-                item_payloads_cloned = work.item_payloads_cloned,
-                "semantic item order lowered"
-            );
-            rir
-        };
-
-        let mut sema = build_sema_for_target(
-            &semantic_rir,
-            interner,
-            self.options.preview_features.clone(),
-            self.options.target,
-        );
-
-        // Semantic analysis
-        let sema_output = {
-            let _span = info_span!("sema").entered();
-            sema.set_root_file_id(self.source_snapshot.metadata().root_file_id());
-            sema.set_file_paths(self.source_snapshot.metadata().physical_path_map().clone());
-            sema.set_symbol_paths(self.source_snapshot.metadata().logical_path_map().clone());
-            let output = sema.analyze_all()?;
-            info!(
-                function_count = output.functions.len(),
-                struct_count = output.type_pool.stats().struct_count,
-                free_function_record_lookups =
-                    output.body_analysis_work.free_function_record_lookups,
-                named_method_record_lookups = output.body_analysis_work.named_method_record_lookups,
-                anonymous_method_record_lookups =
-                    output.body_analysis_work.anonymous_method_record_lookups,
-                named_destructor_declarations_visited = output
-                    .body_analysis_work
-                    .named_destructor_declarations_visited,
-                named_destructor_selection_rir_visits = output
-                    .body_analysis_work
-                    .named_destructor_selection_rir_visits,
-                reachable_declaration_rir_visits =
-                    output.body_analysis_work.reachable_declaration_rir_visits,
-                "semantic analysis complete"
-            );
-            output
-        };
-
-        let cfg_output = build_functions_and_cfgs(sema_output, self.options.opt_level, interner)?;
-
-        self.functions = Some(cfg_output.functions);
-        self.type_pool = Some(cfg_output.type_pool);
-        self.strings = Some(cfg_output.strings);
-        self.warnings.extend(cfg_output.warnings);
+        let semantic = analyze_canonical_program(merged, rir, &self.options, false)?;
+        let (functions, type_pool, strings, warnings, semantic_work) =
+            semantic.into_codegen_parts();
+        self.work.semantic = semantic_work;
+        self.functions = Some(functions);
+        self.type_pool = Some(type_pool);
+        self.strings = Some(strings);
+        self.warnings.extend(warnings);
 
         Ok(())
     }
@@ -387,7 +448,12 @@ impl<'src> CompilationUnit<'src> {
             .expect("compile() called before analyze()");
         let type_pool = self.type_pool.as_ref().expect("type_pool not available");
         let strings = self.strings.as_ref().expect("strings not available");
-        let interner = self.interner.as_ref().expect("interner not available");
+        let interner = self
+            .canonical_rir
+            .as_ref()
+            .expect("interner not available")
+            .semantic_symbols()
+            .interner();
 
         compile_backend(
             functions,
@@ -425,12 +491,12 @@ impl<'src> CompilationUnit<'src> {
 
     /// Check if parsing has been completed.
     pub fn is_parsed(&self) -> bool {
-        self.merged_ast.is_some()
+        self.merged.is_some()
     }
 
     /// Check if RIR generation has been completed.
     pub fn is_lowered(&self) -> bool {
-        self.rir.is_some()
+        self.canonical_rir.is_some()
     }
 
     /// Check if semantic analysis has been completed.
@@ -453,20 +519,36 @@ impl<'src> CompilationUnit<'src> {
     ///
     /// Panics if called before [`parse()`](Self::parse).
     pub fn ast(&self) -> &MergedAst {
-        self.merged_ast
-            .as_ref()
-            .expect("ast() called before parse()")
+        self.merged.as_ref().expect("ast() called before parse()");
+        if let Some(ast) = self.compatibility_ast_after_interner_take.as_ref() {
+            return ast;
+        }
+        &self.compatibility_projection().ast
     }
 
-    /// Get the string interner.
+    /// Get the symbol interner for the latest completed phase.
+    ///
+    /// After parsing this is the lazy compatibility interner paired with
+    /// [`Self::ast`]. After lowering it is the canonical semantic interner
+    /// paired with [`Self::rir`], AIR, and CFG artifacts. Raw symbol keys and
+    /// RIR instruction indices are phase-local implementation details, not
+    /// durable identities.
     ///
     /// # Panics
     ///
     /// Panics if called before [`parse()`](Self::parse).
     pub fn interner(&self) -> &ThreadedRodeo {
-        self.interner
+        self.merged
             .as_ref()
-            .expect("interner() called before parse()")
+            .expect("interner() called before parse()");
+        assert!(
+            !self.interner_taken,
+            "interner() called after take_interner()"
+        );
+        if let Some(rir) = &self.canonical_rir {
+            return rir.semantic_symbols().interner();
+        }
+        &self.compatibility_projection().interner
     }
 
     /// Get the RIR (after lowering).
@@ -475,7 +557,10 @@ impl<'src> CompilationUnit<'src> {
     ///
     /// Panics if called before [`lower()`](Self::lower).
     pub fn rir(&self) -> &Rir {
-        self.rir.as_ref().expect("rir() called before lower()")
+        self.canonical_rir
+            .as_ref()
+            .expect("rir() called before lower()")
+            .rir()
     }
 
     /// Canonical import sites derived by the most recent successful lowering.
@@ -573,6 +658,14 @@ impl<'src> CompilationUnit<'src> {
         self.syntax_work
     }
 
+    /// Canonical phase work and reuse performed by this unit.
+    pub fn work(&self) -> CompilationUnitWork {
+        CompilationUnitWork {
+            compatibility_projections: self.compatibility_projection_count.load(Ordering::Relaxed),
+            ..self.work
+        }
+    }
+
     /// Get source metrics collected by the live frontend.
     pub fn source_stats(&self) -> SourceStats {
         SourceStats {
@@ -588,16 +681,31 @@ impl<'src> CompilationUnit<'src> {
     /// Take the interner out of the compilation unit.
     ///
     /// This is useful when you need ownership of the interner (e.g., for
-    /// code generation).
+    /// code generation). Before lowering it takes the parser compatibility
+    /// interner. After lowering it returns an ordinal-preserving owned copy of
+    /// the canonical interner, leaving the canonical artifact available to
+    /// later phases.
     ///
     /// # Panics
     ///
     /// Panics if called before [`parse()`](Self::parse) or if the interner
     /// has already been taken.
     pub fn take_interner(&mut self) -> ThreadedRodeo {
-        self.interner
+        assert!(
+            self.merged.is_some() && !self.interner_taken,
+            "interner not available (not parsed or already taken)"
+        );
+        self.interner_taken = true;
+        if let Some(rir) = &self.canonical_rir {
+            return clone_interner_by_ordinal(rir.semantic_symbols().interner());
+        }
+
+        let ast = self.compatibility_projection().ast.clone();
+        self.compatibility_ast_after_interner_take = Some(ast);
+        self.compatibility
             .take()
-            .expect("interner not available (not parsed or already taken)")
+            .expect("compatibility projection initialized")
+            .interner
     }
 
     /// Take the functions out of the compilation unit.
@@ -640,6 +748,41 @@ impl<'src> CompilationUnit<'src> {
     pub fn take_warnings(&mut self) -> Vec<CompileWarning> {
         std::mem::take(&mut self.warnings)
     }
+
+    fn compatibility_projection(&self) -> &CompatibilityProjection {
+        self.compatibility.get_or_init(|| {
+            self.compatibility_projection_count
+                .fetch_add(1, Ordering::Relaxed);
+            let interner = ThreadedRodeo::new();
+            for symbol in &self.compatibility_symbols {
+                interner.get_or_intern(symbol);
+            }
+            CompatibilityProjection {
+                ast: MergedAst {
+                    files: self.compatibility_ast_files.clone(),
+                },
+                interner,
+            }
+        })
+    }
+}
+
+fn clone_interner_by_ordinal(source: &ThreadedRodeo) -> ThreadedRodeo {
+    let mut symbols = source
+        .iter()
+        .map(|(key, value)| (key.into_usize(), value))
+        .collect::<Vec<_>>();
+    symbols.sort_by_key(|(ordinal, _)| *ordinal);
+    let cloned = ThreadedRodeo::new();
+    for (expected, (ordinal, value)) in symbols.into_iter().enumerate() {
+        assert_eq!(
+            ordinal, expected,
+            "interner keys must form a dense sequence"
+        );
+        let cloned_key: Spur = cloned.get_or_intern(value);
+        assert_eq!(cloned_key.into_usize(), ordinal);
+    }
+    cloned
 }
 
 #[cfg(test)]
@@ -753,6 +896,99 @@ mod tests {
         // Then analyze
         unit.analyze().unwrap();
         assert!(unit.is_analyzed());
+    }
+
+    #[test]
+    fn canonical_phases_execute_once_and_legacy_projection_is_lazy() {
+        let sources = make_sources("fn main() -> i32 { let unused = 1; 42 }");
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
+
+        unit.run_all().unwrap();
+        let initial = unit.work();
+        assert_eq!(initial.parsed.modules_reparsed, 1);
+        assert_eq!(initial.parsed.syntax.lexer_invocations, 1);
+        assert_eq!(initial.parsed.syntax.parser_invocations, 1);
+        assert_eq!(initial.parse.executions, 1);
+        assert_eq!(initial.lower.executions, 1);
+        assert_eq!(initial.analyze.executions, 1);
+        assert_eq!(initial.semantic.binding.bind_invocations, 1);
+        assert_eq!(initial.semantic.manifest.build_invocations, 0);
+        assert!(!initial.semantic.stable_ids_requested);
+        assert_eq!(initial.compatibility_projections, 0);
+
+        unit.parse().unwrap();
+        unit.lower().unwrap();
+        unit.analyze().unwrap();
+        let reused = unit.work();
+        assert_eq!(reused.parse.reuses, 1);
+        assert_eq!(reused.lower.reuses, 1);
+        assert_eq!(reused.analyze.reuses, 1);
+        assert_eq!(reused.semantic.binding.bind_invocations, 1);
+        assert_eq!(reused.compatibility_projections, 0);
+
+        assert_eq!(unit.ast().item_count(), 1);
+        assert_eq!(unit.ast().item_count(), 1);
+        assert_eq!(unit.work().compatibility_projections, 1);
+    }
+
+    #[test]
+    fn taking_legacy_interner_does_not_poison_canonical_phases() {
+        let sources = make_sources("fn main() -> i32 { 42 }");
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
+        unit.parse().unwrap();
+        let expected = interner_sequence(unit.interner());
+        let interner = unit.take_interner();
+        assert_eq!(interner_sequence(&interner), expected);
+        assert!(interner.get("main").is_some());
+        assert_eq!(unit.ast().item_count(), 1);
+
+        unit.lower().unwrap();
+        unit.analyze().unwrap();
+        assert_eq!(unit.functions().len(), 1);
+        unit.compile().unwrap();
+        assert_eq!(unit.work().compatibility_projections, 1);
+    }
+
+    #[test]
+    fn taking_canonical_interner_preserves_generated_symbols_and_ordinals() {
+        let source = "struct Payload { value: i32 fn score(borrow self) -> i32 { self.value } } fn main() -> i32 { let payload = Payload { value: 42 }; payload.score() }";
+        let mut unit =
+            CompilationUnit::new(make_sources(source), CompileOptions::default()).unwrap();
+        unit.run_frontend().unwrap();
+        assert_eq!(unit.work().compatibility_projections, 0);
+
+        let expected = interner_sequence(unit.interner());
+        assert!(
+            expected.iter().any(|(_, symbol)| symbol == "Payload.score"),
+            "fixture must exercise semantic synthesized symbols: {expected:?}"
+        );
+        let rir_before = RirPrinter::new(unit.rir(), unit.interner()).to_string();
+        let interner = unit.take_interner();
+
+        assert_eq!(interner_sequence(&interner), expected);
+        assert_eq!(
+            RirPrinter::new(unit.rir(), &interner).to_string(),
+            rir_before
+        );
+        for function in unit.functions() {
+            let _ = function
+                .analyzed
+                .air
+                .display_with_interner(&interner)
+                .to_string();
+            let _ = function.cfg.display_with_interner(&interner).to_string();
+        }
+        assert_eq!(unit.work().compatibility_projections, 0);
+        unit.compile().unwrap();
+    }
+
+    fn interner_sequence(interner: &ThreadedRodeo) -> Vec<(usize, String)> {
+        let mut symbols = interner
+            .iter()
+            .map(|(key, value)| (key.into_usize(), value.to_owned()))
+            .collect::<Vec<_>>();
+        symbols.sort_by_key(|(ordinal, _)| *ordinal);
+        symbols
     }
 
     #[test]
@@ -1172,9 +1408,9 @@ mod tests {
         assert_eq!(forward.function_names, reversed.function_names);
         assert_eq!(forward.strings, reversed.strings);
         assert_eq!(forward.textual_frontend, reversed.textual_frontend);
-        assert_ne!(
+        assert_eq!(
             forward.observable_rir, reversed.observable_rir,
-            "caller-facing RIR should retain positional source order"
+            "caller-facing RIR is canonical; instruction order is phase-local, not durable identity"
         );
         let forward_left = forward
             .observable_rir
@@ -1193,7 +1429,7 @@ mod tests {
             .find("right-value")
             .expect("reversed RIR should contain the right literal");
         assert!(forward_left < forward_right);
-        assert!(reversed_right < reversed_left);
+        assert!(reversed_left < reversed_right);
         assert!(forward.function_names.is_sorted());
         assert!(forward.strings.is_sorted());
         for expected_name in [

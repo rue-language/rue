@@ -7,7 +7,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-#[cfg(test)]
 use lasso::Key;
 use lasso::{RodeoResolver, Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
@@ -19,7 +18,7 @@ use rue_span::{FileId, Span};
 use crate::definition_snapshot::{definition_parts, validate_span};
 use crate::{
     DefinitionKind, DefinitionNamespace, ImportDirective, ImportDirectives, ModuleId,
-    ModuleRevision, SourceId, SourceRevision, SourceSnapshot, SyntaxWork,
+    ModuleRevision, MultiErrorResult, SourceId, SourceRevision, SourceSnapshot, SyntaxWork,
 };
 
 #[derive(Debug)]
@@ -42,7 +41,7 @@ impl ParsedSymbol {
 /// Immutable symbol resolver for one parsed module.
 #[derive(Debug)]
 pub struct FrozenSymbolResolver {
-    resolver: RodeoResolver<Spur>,
+    resolver: Arc<RodeoResolver<Spur>>,
     provenance: Arc<SymbolProvenance>,
 }
 
@@ -260,6 +259,21 @@ impl ParsedItemView {
 }
 
 impl ParsedModule {
+    pub(crate) fn shares_resolver_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(
+            &self.payload.resolver.resolver,
+            &other.payload.resolver.resolver,
+        )
+    }
+
+    pub(crate) fn resolver_strings(&self) -> impl Iterator<Item = &str> {
+        self.payload
+            .resolver
+            .resolver
+            .iter()
+            .map(|(_, value)| value)
+    }
+
     pub fn revision(&self) -> &ModuleRevision {
         &self.revision
     }
@@ -397,6 +411,28 @@ impl ParsedProgram {
     pub fn import_directives(&self) -> &ImportDirectives {
         &self.imports
     }
+
+    pub(crate) fn shared_symbol_strings(&self) -> Option<Vec<&str>> {
+        let first = self.modules.first()?;
+        if self.modules.iter().all(|module| {
+            Arc::ptr_eq(
+                &module.payload.resolver.resolver,
+                &first.payload.resolver.resolver,
+            )
+        }) {
+            Some(
+                first
+                    .payload
+                    .resolver
+                    .resolver
+                    .iter()
+                    .map(|(_, value)| value)
+                    .collect(),
+            )
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) struct ParsedModulesOutcome {
@@ -435,6 +471,89 @@ pub(crate) fn parse_source_snapshot_modules_for_batch(
     let outcome =
         parse_source_snapshot_modules_reusing_with_work(snapshot, None, DiagnosticOrder::Snapshot);
     outcome.result.map(|program| (program, outcome.work))
+}
+
+/// Canonical modules plus the cheap inputs for the legacy unit AST/interner view.
+pub(crate) struct UnitParsedModules {
+    pub program: ParsedProgram,
+    pub ast_files: Vec<Arc<Ast>>,
+    pub symbol_strings: Vec<String>,
+}
+
+/// Parse once with a shared symbol universe for `CompilationUnit` compatibility.
+pub(crate) fn parse_source_snapshot_modules_for_unit(
+    snapshot: &SourceSnapshot,
+) -> (MultiErrorResult<UnitParsedModules>, ParsedModulesWork) {
+    let outcome = crate::syntax::run_snapshot_unspanned(snapshot);
+    let syntax = outcome.work;
+    let work = ParsedModulesWork {
+        syntax,
+        modules_considered: snapshot.len(),
+        modules_reparsed: snapshot.len(),
+        ..ParsedModulesWork::default()
+    };
+    let legacy = match outcome.result {
+        Ok(legacy) => legacy,
+        Err(errors) => return (Err(errors), work),
+    };
+    let mut symbol_strings = legacy
+        .interner
+        .iter()
+        .map(|(key, value)| (key.into_usize(), value.to_owned()))
+        .collect::<Vec<_>>();
+    symbol_strings.sort_by_key(|(key, _)| *key);
+    let symbol_strings = symbol_strings
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect::<Vec<_>>();
+    let import_sites = legacy
+        .files
+        .iter()
+        .map(|file| {
+            let module = snapshot
+                .module_id(file.file_id)
+                .expect("snapshot membership");
+            collect_imports(&file.ast, module, &legacy.interner)
+        })
+        .collect::<CompileResult<Vec<_>>>();
+    let import_sites = match import_sites {
+        Ok(import_sites) => import_sites,
+        Err(error) => return (Err(CompileErrors::from(error)), work),
+    };
+    let resolver = Arc::new(legacy.interner.into_resolver());
+    let provenance = Arc::new(SymbolProvenance);
+    let ast_files = legacy
+        .files
+        .iter()
+        .map(|file| file.ast.clone())
+        .collect::<Vec<_>>();
+    let mut modules = Vec::with_capacity(legacy.files.len());
+    for (file, import_sites) in legacy.files.into_iter().zip(import_sites) {
+        let module = build_module_with_resolver(
+            snapshot,
+            file.file_id,
+            file.ast,
+            resolver.clone(),
+            provenance.clone(),
+            import_sites,
+        );
+        match module {
+            Ok(module) => modules.push(module),
+            Err(error) => return (Err(CompileErrors::from(error)), work),
+        }
+    }
+    let program = match ParsedProgram::new(snapshot.source_revision().root().clone(), modules) {
+        Ok(program) => program,
+        Err(error) => return (Err(CompileErrors::from(error)), work),
+    };
+    (
+        Ok(UnitParsedModules {
+            program,
+            ast_files,
+            symbol_strings,
+        }),
+        work,
+    )
 }
 
 /// Parse canonical modules and return the exact syntax work performed.
@@ -577,6 +696,21 @@ fn build_module(
     ast: Arc<Ast>,
     interner: ThreadedRodeo,
 ) -> CompileResult<Arc<ParsedModule>> {
+    let token = Arc::new(SymbolProvenance);
+    let module = snapshot.module_id(file_id).expect("snapshot membership");
+    let import_sites = collect_imports(&ast, module, &interner)?;
+    let resolver = Arc::new(interner.into_resolver());
+    build_module_with_resolver(snapshot, file_id, ast, resolver, token, import_sites)
+}
+
+fn build_module_with_resolver(
+    snapshot: &SourceSnapshot,
+    file_id: FileId,
+    ast: Arc<Ast>,
+    resolver: Arc<RodeoResolver<Spur>>,
+    token: Arc<SymbolProvenance>,
+    import_sites: Vec<ParsedImportSite>,
+) -> CompileResult<Arc<ParsedModule>> {
     let module = snapshot
         .module_id(file_id)
         .expect("snapshot membership")
@@ -588,12 +722,8 @@ fn build_module(
     let source_text = snapshot
         .shared_source_text(file_id)
         .expect("snapshot membership");
-
-    let import_sites = collect_imports(&ast, &module, &interner)?;
-
-    let token = Arc::new(SymbolProvenance);
     let resolver = FrozenSymbolResolver {
-        resolver: interner.into_resolver(),
+        resolver,
         provenance: token.clone(),
     };
     let provenanced_ast = ProvenancedAst {
@@ -1156,7 +1286,7 @@ mod tests {
             let provenance = Arc::new(SymbolProvenance);
             (
                 FrozenSymbolResolver {
-                    resolver: rodeo.into_resolver(),
+                    resolver: Arc::new(rodeo.into_resolver()),
                     provenance: provenance.clone(),
                 },
                 ParsedSymbol { spur, provenance },
@@ -1187,7 +1317,7 @@ mod tests {
             "invalid compiler input: parsed AST and resolver have foreign provenance"
         );
         let own_resolver = FrozenSymbolResolver {
-            resolver: ThreadedRodeo::new().into_resolver(),
+            resolver: Arc::new(ThreadedRodeo::new().into_resolver()),
             provenance: ast.provenance.clone(),
         };
         let foreign_revision = ModuleRevision {
