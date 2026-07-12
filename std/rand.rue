@@ -1,0 +1,68 @@
+// std.rand — a small seedable pseudo-random generator (RUE-678).
+//
+// `Lcg` is a linear congruential generator with 32 bits of state, using the
+// Numerical Recipes constants. The recurrence is
+//
+//     state = (state * 1664525 + 1013904223) % 2^32
+//
+// with the modulus written explicitly as `% 4294967296` so the multiply of a
+// 32-bit state by 1664525 stays well within `u64` (max product ~7.15e15) before
+// the reduction — i.e. it never overflows and never needs a wrapping multiply.
+//
+//     const std = @import("std");
+//     let mut rng = std.rand.Lcg.new(12345);
+//     let x = rng.next_u64();          // a value in [0, 2^32)
+//     let r = rng.next_below(6);       // a value in [0, 6)
+//     let flag = rng.next_bool();      // true/false
+//
+// SHAPE NOTE (compiler limitation): `Lcg` is a plain named `struct`, NOT a
+// zero-argument `pub fn Lcg() -> type` type-function. A generator has no type
+// parameter, so the type-function form would take no comptime arguments — and a
+// cross-module call to a zero-comptime-argument type function is currently
+// mis-evaluated at runtime instead of comptime (E1200 "cannot store type value
+// in variable"; the identical LOCAL call folds fine). A named struct is both
+// idiomatic for a non-generic type and sidesteps that bug: `std.rand.Lcg` names
+// the type directly, so `std.rand.Lcg.new(seed)` needs no `let L = ...()`
+// binding dance. Minimal repro of the underlying bug (filed for the compiler
+// team):
+//
+//     // mod.rue:  pub fn Lcg() -> type { struct { state: u64, ... } }
+//     // main.rue: const m = @import("mod.rue");
+//     //           let L = m.Lcg();   // E1200, but `fn Lcg` defined locally works
+//
+// LIMITATION: this is a 32-bit-state LCG, so `next_u64` returns values only in
+// `[0, 2^32)` and the low bits cycle quickly (a known LCG weakness). A true
+// 64-bit-state generator needs a wrapping 64-bit multiply, which the language
+// does not expose yet — so it is deliberately not attempted here. This
+// generator is for tests, sampling, and shuffling, NOT for cryptography.
+
+pub struct Lcg {
+    state: u64,
+
+    // A generator seeded with `seed` (reduced into the 32-bit state space).
+    fn new(seed: u64) -> Self {
+        Self { state: seed % 4294967296 }
+    }
+
+    // Advance the state and return it: a value in `[0, 2^32)`.
+    fn next_u64(inout self) -> u64 {
+        self.state = (self.state * 1664525 + 1013904223) % 4294967296;
+        self.state
+    }
+
+    // A value uniformly in `[0, bound)`. Returns 0 when `bound == 0`. Uses the
+    // low-bias `% bound` reduction (fine for the small bounds this generator
+    // targets).
+    fn next_below(inout self, bound: u64) -> u64 {
+        if bound == 0 {
+            0
+        } else {
+            self.next_u64() % bound
+        }
+    }
+
+    // A pseudo-random boolean (the low bit of the next output).
+    fn next_bool(inout self) -> bool {
+        self.next_u64() % 2 == 1
+    }
+}
