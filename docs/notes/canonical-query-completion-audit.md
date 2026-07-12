@@ -41,6 +41,11 @@ incremental-compilation goal is complete.
    to one request-global universe. Acceptance: introduce fragment-local handles
    plus deterministic global remapping, or choose a dependency-keyed declaration
    or body boundary whose outputs contain no request-global handles.
+   ADR-0050 audits the missing const/type/call/method/destructor/generic capture
+   surfaces. The first tooling-only `semantic_dependency_inputs` slice supplies
+   a stable ordered destination universe, explicit semantic inputs, and complete
+   resolved/missing/ambiguous module-import edges. Definition-level edges and
+   body/CFG reuse remain intentionally absent.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now

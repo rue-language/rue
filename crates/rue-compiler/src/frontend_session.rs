@@ -6,11 +6,11 @@ use rue_air::{DeclarationBindingWork, SemanticBindingManifestWork};
 
 use crate::{
     BoundDefinitionSet, BoundDefinitionWork, CanonicalImportGraph, CanonicalImportGraphValidation,
-    CanonicalMergeWork, CanonicalMergedProgram, CanonicalParseSession, CanonicalRirOutput,
-    CanonicalRirWork, CanonicalSemanticOutput, CanonicalSemanticWork, CodegenInputDescriptor,
-    CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind, ModuleResolutionInputs,
-    ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor, SourceRevision,
-    SourceSnapshot, analyze_canonical_program,
+    CanonicalImportResolution, CanonicalMergeWork, CanonicalMergedProgram, CanonicalParseSession,
+    CanonicalRirOutput, CanonicalRirWork, CanonicalSemanticOutput, CanonicalSemanticWork,
+    CodegenInputDescriptor, CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind,
+    ModuleResolutionInputs, ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor,
+    SourceRevision, SourceSnapshot, StableDefinitionKey, analyze_canonical_program,
     bound_definitions::bind_canonical_definitions_with_work,
     canonical_merge::merge_parsed_modules_reusing_definitions, lower_canonical_rir,
     parsed_modules::ParsedProgram, resolve_canonical_import_graph, validate_canonical_import_graph,
@@ -47,6 +47,66 @@ pub struct CanonicalFrontendSessionWork {
     pub diagnostic_publications: usize,
     pub diagnostic_reuses: usize,
     pub diagnostic_invalidations: usize,
+    pub dependency_manifests: FrontendQueryWork,
+    pub dependency_manifest_records_visited: usize,
+    pub dependency_manifest_import_records_visited: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SemanticDependencyManifestWork {
+    pub definition_records_visited: usize,
+    pub import_records_visited: usize,
+    pub extra_rir_instructions_visited: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StableModuleImportDependency {
+    Resolved {
+        importer: crate::ModuleId,
+        normalized_specifier: Arc<str>,
+        target: crate::ModuleId,
+    },
+    Missing {
+        importer: crate::ModuleId,
+        normalized_specifier: Arc<str>,
+    },
+    Ambiguous {
+        importer: crate::ModuleId,
+        normalized_specifier: Arc<str>,
+        file_module: crate::ModuleId,
+        directory_module: crate::ModuleId,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SemanticDependencyInputManifest {
+    input: SemanticInputDescriptor,
+    imports: CanonicalImportGraph,
+    definitions: Arc<[StableDefinitionKey]>,
+    module_imports: Arc<[StableModuleImportDependency]>,
+    definition_universe_complete: bool,
+    work: SemanticDependencyManifestWork,
+}
+
+impl SemanticDependencyInputManifest {
+    pub fn input(&self) -> &SemanticInputDescriptor {
+        &self.input
+    }
+    pub fn imports(&self) -> &CanonicalImportGraph {
+        &self.imports
+    }
+    pub fn definitions(&self) -> &[StableDefinitionKey] {
+        &self.definitions
+    }
+    pub fn module_imports(&self) -> &[StableModuleImportDependency] {
+        &self.module_imports
+    }
+    pub fn definition_universe_complete(&self) -> bool {
+        self.definition_universe_complete
+    }
+    pub fn work(&self) -> SemanticDependencyManifestWork {
+        self.work
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -171,6 +231,7 @@ pub struct CanonicalFrontendSession {
     work: CanonicalFrontendSessionWork,
     diagnostic_cache: Vec<Arc<FrontendDiagnosticSnapshot>>,
     latest_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
+    dependency_manifest_cache: Vec<Arc<SemanticDependencyInputManifest>>,
 }
 
 #[derive(Debug)]
@@ -297,6 +358,7 @@ impl CanonicalFrontendSession {
                     self.work.semantic_records.clear();
                     self.work.definition_entries = 0;
                     self.work.definition_records.clear();
+                    self.dependency_manifest_cache.clear();
                     self.published = Some(candidate.clone());
                     self.published_snapshot = Some(snapshot.clone());
                     CanonicalFrontendUpdate {
@@ -582,6 +644,91 @@ impl CanonicalFrontendSession {
             failed: result.is_err(),
         });
         result
+    }
+
+    /// Materialize stable semantic inputs for future dependency-edge capture.
+    ///
+    /// This tooling-only query shares the existing import and stable-definition
+    /// queries. It performs no additional RIR traversal; reference edges are not
+    /// yet claimed until every semantic reference surface can be captured.
+    pub fn semantic_dependency_inputs(
+        &mut self,
+        options: &CompileOptions,
+        std_dir: Option<&str>,
+    ) -> Result<Arc<SemanticDependencyInputManifest>, CompileErrors> {
+        self.work.dependency_manifests.calls += 1;
+        let imports = self.import_graph(std_dir)?;
+        let snapshot = self
+            .published_snapshot
+            .as_ref()
+            .expect("stable definitions retain a published source snapshot");
+        let input =
+            SemanticInputDescriptor::new(snapshot, options.target, &options.preview_features);
+        if let Some(cached) = self
+            .dependency_manifest_cache
+            .iter()
+            .find(|manifest| manifest.input == input && manifest.imports == *imports.graph())
+        {
+            self.work.dependency_manifests.reuses += 1;
+            return Ok(cached.clone());
+        }
+        self.work.dependency_manifests.executions += 1;
+        let definitions = self.stable_definitions(options);
+        let definition_universe_complete = definitions.is_ok();
+        let definition_records = definitions
+            .as_ref()
+            .map(|definitions| definitions.definitions())
+            .unwrap_or(&[]);
+        let mut keys = definition_records
+            .iter()
+            .map(|record| record.stable_key().clone())
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys.dedup();
+        let work = SemanticDependencyManifestWork {
+            definition_records_visited: definition_records.len(),
+            import_records_visited: imports.graph().records().len(),
+            extra_rir_instructions_visited: 0,
+        };
+        self.work.dependency_manifest_records_visited += work.definition_records_visited;
+        self.work.dependency_manifest_import_records_visited += work.import_records_visited;
+        let module_imports = imports
+            .graph()
+            .records()
+            .iter()
+            .map(|record| match record.resolution() {
+                CanonicalImportResolution::Resolved(target) => {
+                    StableModuleImportDependency::Resolved {
+                        importer: record.importer().clone(),
+                        normalized_specifier: Arc::from(record.normalized_specifier()),
+                        target: target.clone(),
+                    }
+                }
+                CanonicalImportResolution::Missing => StableModuleImportDependency::Missing {
+                    importer: record.importer().clone(),
+                    normalized_specifier: Arc::from(record.normalized_specifier()),
+                },
+                CanonicalImportResolution::Ambiguous {
+                    file_module,
+                    directory_module,
+                } => StableModuleImportDependency::Ambiguous {
+                    importer: record.importer().clone(),
+                    normalized_specifier: Arc::from(record.normalized_specifier()),
+                    file_module: file_module.clone(),
+                    directory_module: directory_module.clone(),
+                },
+            })
+            .collect::<Vec<_>>();
+        let manifest = Arc::new(SemanticDependencyInputManifest {
+            input,
+            imports: imports.graph().clone(),
+            definitions: keys.into(),
+            module_imports: module_imports.into(),
+            definition_universe_complete,
+            work,
+        });
+        self.dependency_manifest_cache.push(manifest.clone());
+        Ok(manifest)
     }
 }
 
@@ -1323,6 +1470,87 @@ mod tests {
         let record = &session.work().definition_records[0];
         assert_eq!(record.binding.bind_invocations, 1);
         assert_eq!(record.manifest.build_invocations, 1);
+    }
+
+    #[test]
+    fn dependency_input_manifest_is_stable_ordered_and_adds_no_rir_scan() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SemanticDependencyInputManifest>();
+        let source = base();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let first = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        let second = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(first.definitions().windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(
+            first.work().definition_records_visited,
+            first.definitions().len()
+        );
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+        assert_eq!(session.work().dependency_manifests.executions, 1);
+        assert_eq!(session.work().dependency_manifests.reuses, 1);
+        assert_eq!(session.work().rir.executions, 1);
+        assert_eq!(session.work().semantic.executions, 1);
+    }
+
+    #[test]
+    fn dependency_manifest_carries_resolved_and_fail_closed_module_edges() {
+        let original = snapshot(
+            &[
+                (
+                    1,
+                    "/p/app/main.rue",
+                    "app/main.rue",
+                    "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }",
+                ),
+                (2, "/p/app/helper.rue", "app/helper.rue", "fn helper() {}"),
+            ],
+            1,
+        );
+        let moved = snapshot(
+            &[
+                (
+                    1,
+                    "/p/app/main.rue",
+                    "app/main.rue",
+                    "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }",
+                ),
+                (2, "/else/helper.rue", "app/helper.rue", "fn helper() {}"),
+            ],
+            1,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&original).into_result().unwrap();
+        let resolved = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        assert!(resolved.definition_universe_complete());
+        assert!(matches!(
+            &resolved.module_imports()[0],
+            StableModuleImportDependency::Resolved { importer, target, .. }
+                if importer.as_str() == "app/main.rue" && target.as_str() == "app/helper.rue"
+        ));
+
+        let update = session.update(&moved);
+        assert_eq!(update.work().syntax.lexer_invocations, 0);
+        update.into_result().unwrap();
+        let missing = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        assert!(!missing.definition_universe_complete());
+        assert!(matches!(
+            &missing.module_imports()[0],
+            StableModuleImportDependency::Missing { importer, .. }
+                if importer.as_str() == "app/main.rue"
+        ));
+        assert_eq!(missing.work().import_records_visited, 1);
+        assert_eq!(missing.work().extra_rir_instructions_visited, 0);
+        assert_eq!(session.work().dependency_manifests.executions, 2);
     }
 
     #[test]
