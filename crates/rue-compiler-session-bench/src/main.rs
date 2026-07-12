@@ -611,7 +611,7 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
         ),
         1
     );
-    assert_production_full_plan(plan_cold, 1, 0, modules);
+    assert_production_incremental_plan(plan_cold, 1, 0, 0, modules, modules, 0);
     let plan_noop = get("invalidation_plan_exact_noop");
     assert_reuse_parse_is_all_zero(plan_noop);
     assert_eq!(
@@ -625,31 +625,32 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
         count(plan_noop, &["planner_queries", "invalidation_plan_reuses"]),
         1
     );
-    assert_production_full_plan(plan_noop, 0, 0, modules);
+    assert_production_incremental_plan(plan_noop, 0, 0, 0, modules, modules, 0);
     let plan_leaf = get("invalidation_plan_leaf_body_edit");
     assert_eq!(count(plan_leaf, &["parse", "modules_reparsed"]), 1);
-    assert_production_full_plan(plan_leaf, 1, 1, modules);
+    assert_production_incremental_plan(plan_leaf, 1, 1, 1, modules - 1, modules, 1);
     let plan_identity = get("invalidation_plan_module_identity_change");
     assert_eq!(count(plan_identity, &["parse", "modules_rebound"]), 1);
-    assert_production_full_plan(plan_identity, 1, 0, modules - 1);
+    assert_production_incremental_plan(plan_identity, 1, 0, 2, modules - 1, modules - 1, 2);
 }
 
-fn assert_production_full_plan(scenario: &Value, executions: u64, changed: u64, compared: usize) {
-    assert_eq!(scenario["plan"]["scope"], "full");
-    assert!(
-        scenario["plan"]["full_reasons"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|reason| reason == "incomplete_dependency_graph")
+fn assert_production_incremental_plan(
+    scenario: &Value,
+    executions: u64,
+    changed: u64,
+    invalidated: usize,
+    reusable: usize,
+    compared: usize,
+    closure: usize,
+) {
+    assert_eq!(scenario["plan"]["scope"], "incremental");
+    assert_eq!(scenario["plan"]["full_reasons"], json!([]));
+    assert_eq!(scenario["plan"]["dependency_blockers"], json!([]));
+    assert_eq!(count(scenario, &["plan", "reusable"]), reusable as u64);
+    assert_eq!(
+        count(scenario, &["plan", "invalidated"]),
+        invalidated as u64
     );
-    assert!(
-        scenario["plan"]["dependency_blockers"]
-            .as_array()
-            .is_some_and(|blockers| !blockers.is_empty())
-    );
-    assert_eq!(count(scenario, &["plan", "reusable"]), 0);
-    assert_eq!(count(scenario, &["plan", "invalidated"]), 0);
     assert_eq!(count(scenario, &["plan", "changed"]), changed);
     assert_eq!(
         count(
@@ -671,7 +672,7 @@ fn assert_production_full_plan(scenario: &Value, executions: u64, changed: u64, 
     );
     assert_eq!(
         count(scenario, &["plan", "work", "reverse_closure_nodes_visited"]),
-        0
+        closure as u64
     );
     assert_eq!(count(scenario, &["planner_queries", "rir_executions"]), 0);
     assert_eq!(
