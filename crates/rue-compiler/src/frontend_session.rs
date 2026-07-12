@@ -8,7 +8,7 @@ use crate::{
     BoundDefinitionSet, BoundDefinitionWork, CanonicalImportGraph, CanonicalImportGraphValidation,
     CanonicalMergeWork, CanonicalMergedProgram, CanonicalParseSession, CanonicalRirOutput,
     CanonicalRirWork, CanonicalSemanticOutput, CanonicalSemanticWork, CodegenInputDescriptor,
-    CompileError, CompileErrors, CompileOptions, ErrorKind, ModuleResolutionInputs,
+    CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind, ModuleResolutionInputs,
     ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor, SourceRevision,
     SourceSnapshot, analyze_canonical_program,
     bound_definitions::bind_canonical_definitions_with_work,
@@ -44,6 +44,45 @@ pub struct CanonicalFrontendSessionWork {
     pub definition_entries: usize,
     pub definition_entries_invalidated: usize,
     pub definition_records: Vec<DefinitionQueryRecord>,
+    pub diagnostic_publications: usize,
+    pub diagnostic_reuses: usize,
+    pub diagnostic_invalidations: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FrontendDiagnosticStage {
+    Syntax,
+    Merge,
+    Semantic(CodegenInputDescriptor),
+}
+
+#[derive(Debug, Clone)]
+pub struct FrontendDiagnosticSnapshot {
+    source: SourceSnapshot,
+    stage: FrontendDiagnosticStage,
+    errors: Arc<[CompileError]>,
+    warnings: Arc<[CompileWarning]>,
+}
+
+impl FrontendDiagnosticSnapshot {
+    pub fn source(&self) -> &SourceSnapshot {
+        &self.source
+    }
+    pub fn source_revision(&self) -> &SourceRevision {
+        self.source.source_revision()
+    }
+    pub fn stage(&self) -> &FrontendDiagnosticStage {
+        &self.stage
+    }
+    pub fn errors(&self) -> &[CompileError] {
+        &self.errors
+    }
+    pub fn warnings(&self) -> &[CompileWarning] {
+        &self.warnings
+    }
+    pub fn is_success(&self) -> bool {
+        self.errors.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -94,6 +133,7 @@ pub struct CanonicalFrontendUpdate {
     work: ParsedModulesWork,
     invalidation: ParseInvalidationSummary,
     downstream_invalidated: bool,
+    diagnostics: Arc<FrontendDiagnosticSnapshot>,
 }
 
 impl CanonicalFrontendUpdate {
@@ -112,12 +152,16 @@ impl CanonicalFrontendUpdate {
     pub fn downstream_invalidated(&self) -> bool {
         self.downstream_invalidated
     }
+    pub fn diagnostics(&self) -> &Arc<FrontendDiagnosticSnapshot> {
+        &self.diagnostics
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct CanonicalFrontendSession {
     parse: CanonicalParseSession,
     published: Option<Arc<ParsedProgram>>,
+    published_snapshot: Option<SourceSnapshot>,
     merge_cache: Option<Result<Arc<CanonicalMergedProgram>, CompileErrors>>,
     definition_shard_baseline: Option<crate::DefinitionSnapshot>,
     rir_cache: Option<Arc<CanonicalRirOutput>>,
@@ -125,6 +169,8 @@ pub struct CanonicalFrontendSession {
     semantic_cache: Vec<SemanticCacheEntry>,
     definition_cache: Vec<DefinitionCacheEntry>,
     work: CanonicalFrontendSessionWork,
+    diagnostic_cache: Vec<Arc<FrontendDiagnosticSnapshot>>,
+    latest_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
 }
 
 #[derive(Debug)]
@@ -155,6 +201,54 @@ impl CanonicalFrontendSession {
     pub fn work(&self) -> &CanonicalFrontendSessionWork {
         &self.work
     }
+    pub fn latest_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        self.latest_diagnostics.as_ref()
+    }
+    pub fn diagnostics_for(
+        &self,
+        source: &SourceSnapshot,
+        stage: &FrontendDiagnosticStage,
+    ) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        self.diagnostic_cache
+            .iter()
+            .rev()
+            .find(|entry| same_attempt(entry.source(), source) && entry.stage() == stage)
+    }
+
+    fn publish_diagnostics(
+        &mut self,
+        source: &SourceSnapshot,
+        stage: FrontendDiagnosticStage,
+        errors: Option<&CompileErrors>,
+        warnings: &[CompileWarning],
+    ) -> Arc<FrontendDiagnosticSnapshot> {
+        if let Some(existing) = self
+            .diagnostic_cache
+            .iter()
+            .find(|entry| same_attempt(entry.source(), source) && entry.stage() == &stage)
+        {
+            self.work.diagnostic_reuses += 1;
+            let existing = existing.clone();
+            self.latest_diagnostics = Some(existing.clone());
+            return existing;
+        }
+        if self.latest_diagnostics.is_some() {
+            self.work.diagnostic_invalidations += 1;
+        }
+        let snapshot = Arc::new(FrontendDiagnosticSnapshot {
+            source: source.clone(),
+            stage,
+            errors: errors
+                .map(|errors| errors.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+                .into(),
+            warnings: warnings.to_vec().into(),
+        });
+        self.work.diagnostic_publications += 1;
+        self.diagnostic_cache.push(snapshot.clone());
+        self.latest_diagnostics = Some(snapshot.clone());
+        snapshot
+    }
 
     pub fn update(&mut self, snapshot: &SourceSnapshot) -> CanonicalFrontendUpdate {
         self.work.updates += 1;
@@ -163,7 +257,14 @@ impl CanonicalFrontendSession {
         let invalidation = update.invalidation().clone();
         self.work.last_parse = parse_work;
         self.work.last_invalidation = invalidation.clone();
-        match update.into_result() {
+        let result = update.into_result();
+        let diagnostics = self.publish_diagnostics(
+            snapshot,
+            FrontendDiagnosticStage::Syntax,
+            result.as_ref().err(),
+            &[],
+        );
+        match result {
             Ok(candidate) => {
                 let exact = self.published.as_deref().is_some_and(|published| {
                     programs_are_pointer_equivalent(published, &candidate)
@@ -175,6 +276,7 @@ impl CanonicalFrontendSession {
                         work: parse_work,
                         invalidation,
                         downstream_invalidated: false,
+                        diagnostics,
                     }
                 } else {
                     if downstream_invalidated {
@@ -196,11 +298,13 @@ impl CanonicalFrontendSession {
                     self.work.definition_entries = 0;
                     self.work.definition_records.clear();
                     self.published = Some(candidate.clone());
+                    self.published_snapshot = Some(snapshot.clone());
                     CanonicalFrontendUpdate {
                         result: Ok(candidate),
                         work: parse_work,
                         invalidation,
                         downstream_invalidated,
+                        diagnostics,
                     }
                 }
             }
@@ -209,6 +313,7 @@ impl CanonicalFrontendSession {
                 work: parse_work,
                 invalidation,
                 downstream_invalidated: false,
+                diagnostics,
             },
         }
     }
@@ -265,7 +370,18 @@ impl CanonicalFrontendSession {
         self.work.merge.calls += 1;
         if let Some(cached) = &self.merge_cache {
             self.work.merge.reuses += 1;
-            return cached.clone();
+            let cached = cached.clone();
+            let source = self
+                .published_snapshot
+                .clone()
+                .expect("published program retains source snapshot");
+            self.publish_diagnostics(
+                &source,
+                FrontendDiagnosticStage::Merge,
+                cached.as_ref().err(),
+                &[],
+            );
+            return cached;
         }
         let parsed = self.published.as_deref().ok_or_else(no_published_program)?;
         self.work.merge.executions += 1;
@@ -280,6 +396,16 @@ impl CanonicalFrontendSession {
             self.definition_shard_baseline = Some(merged.definitions().clone());
         }
         self.merge_cache = Some(merged.clone());
+        let source = self
+            .published_snapshot
+            .clone()
+            .expect("published program retains source snapshot");
+        self.publish_diagnostics(
+            &source,
+            FrontendDiagnosticStage::Merge,
+            merged.as_ref().err(),
+            &[],
+        );
         merged
     }
 
@@ -324,7 +450,21 @@ impl CanonicalFrontendSession {
             .find(|entry| entry.input == input)
         {
             self.work.semantic.reuses += 1;
-            return entry.result.clone();
+            let result = entry.result.clone();
+            let source = self
+                .published_snapshot
+                .clone()
+                .expect("semantic query retains source snapshot");
+            self.publish_diagnostics(
+                &source,
+                FrontendDiagnosticStage::Semantic(input),
+                result.as_ref().err(),
+                result
+                    .as_ref()
+                    .map(|output| output.warnings())
+                    .unwrap_or(&[]),
+            );
+            return result;
         }
 
         self.work.semantic.executions += 1;
@@ -345,10 +485,23 @@ impl CanonicalFrontendSession {
         });
         self.work.semantic_entries = self.semantic_cache.len();
         self.work.semantic_records.push(SemanticQueryRecord {
-            input,
+            input: input.clone(),
             work: semantic_work,
             failed: result.is_err(),
         });
+        let source = self
+            .published_snapshot
+            .clone()
+            .expect("semantic query retains source snapshot");
+        self.publish_diagnostics(
+            &source,
+            FrontendDiagnosticStage::Semantic(input),
+            result.as_ref().err(),
+            result
+                .as_ref()
+                .map(|output| output.warnings())
+                .unwrap_or(&[]),
+        );
         result
     }
 
@@ -430,6 +583,10 @@ impl CanonicalFrontendSession {
         });
         result
     }
+}
+
+fn same_attempt(left: &SourceSnapshot, right: &SourceSnapshot) -> bool {
+    left.source_revision() == right.source_revision() && left.metadata() == right.metadata()
 }
 
 fn programs_are_pointer_equivalent(left: &ParsedProgram, right: &ParsedProgram) -> bool {
@@ -1297,5 +1454,147 @@ mod tests {
         session.update(&valid).into_result().unwrap();
         assert!(session.stable_definitions(&options).is_ok());
         assert_eq!(session.work().definitions.executions, 2);
+    }
+
+    #[test]
+    fn diagnostic_artifacts_retain_attempt_provenance_and_query_identity() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<FrontendDiagnosticSnapshot>();
+
+        let valid = base();
+        let syntax_bad = snapshot(&[(7, "/attempt/bad.rue", "bad.rue", "fn main( {")], 7);
+        let semantic_bad = snapshot(
+            &[(
+                7,
+                "/attempt/semantic.rue",
+                "semantic.rue",
+                "fn main() -> i32 { missing_name }",
+            )],
+            7,
+        );
+        let warning_source = snapshot(
+            &[(
+                7,
+                "/attempt/warning.rue",
+                "warning.rue",
+                "fn main() -> i32 { let unused = 1; 0 }",
+            )],
+            7,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&valid).into_result().unwrap();
+        let published = session.published().unwrap().clone();
+
+        let failed = session.update(&syntax_bad);
+        let syntax_diagnostics = failed.diagnostics().clone();
+        assert_eq!(
+            syntax_diagnostics.source().metadata(),
+            syntax_bad.metadata()
+        );
+        assert_eq!(
+            syntax_diagnostics.source_revision(),
+            syntax_bad.source_revision()
+        );
+        assert!(!syntax_diagnostics.errors().is_empty());
+        assert!(Arc::ptr_eq(session.published().unwrap(), &published));
+        assert!(Arc::ptr_eq(
+            session
+                .diagnostics_for(&syntax_bad, &FrontendDiagnosticStage::Syntax)
+                .unwrap(),
+            &syntax_diagnostics
+        ));
+
+        session.update(&semantic_bad).into_result().unwrap();
+        let options = CompileOptions::default();
+        session.semantic(&options).unwrap_err();
+        let first = session.latest_diagnostics().unwrap().clone();
+        let first_fingerprint = first
+            .errors()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        session.semantic(&options).unwrap_err();
+        let reused = session.latest_diagnostics().unwrap().clone();
+        assert!(Arc::ptr_eq(&first, &reused));
+        assert_eq!(
+            first_fingerprint,
+            reused
+                .errors()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        );
+        let FrontendDiagnosticStage::Semantic(input) = first.stage() else {
+            panic!("semantic diagnostic stage");
+        };
+        assert_eq!(input.opt_level, crate::StableOptLevel::O0);
+
+        session.update(&warning_source).into_result().unwrap();
+        session.semantic(&options).unwrap();
+        let warning = session.latest_diagnostics().unwrap().clone();
+        assert!(warning.is_success());
+        assert!(!warning.warnings().is_empty());
+        session
+            .semantic(&CompileOptions {
+                linker: LinkerMode::Internal,
+                ..options.clone()
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&warning, session.latest_diagnostics().unwrap()));
+        session
+            .semantic(&CompileOptions {
+                opt_level: OptLevel::O1,
+                ..options.clone()
+            })
+            .unwrap();
+        let optimized = session.latest_diagnostics().unwrap().clone();
+        assert!(!Arc::ptr_eq(&warning, &optimized));
+        session
+            .semantic(&CompileOptions {
+                preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
+                ..options.clone()
+            })
+            .unwrap();
+        let featured = session.latest_diagnostics().unwrap().clone();
+        assert!(!Arc::ptr_eq(&warning, &featured));
+        let other_target = *Target::all()
+            .iter()
+            .find(|&&target| target != options.target)
+            .unwrap();
+        session
+            .semantic(&CompileOptions {
+                target: other_target,
+                ..options
+            })
+            .unwrap();
+        assert!(!Arc::ptr_eq(
+            &warning,
+            session.latest_diagnostics().unwrap()
+        ));
+        let old = syntax_diagnostics.clone();
+        std::thread::spawn(move || {
+            assert_eq!(old.source().metadata().root_file_id(), FileId::new(7));
+            assert!(!old.errors().is_empty());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn merge_diagnostics_are_memoized_pointer_identically() {
+        let duplicate = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() {} fn main() {}")],
+            1,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&duplicate).into_result().unwrap();
+        session.merge().unwrap_err();
+        let first = session.latest_diagnostics().unwrap().clone();
+        session.merge().unwrap_err();
+        let second = session.latest_diagnostics().unwrap().clone();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(matches!(first.stage(), FrontendDiagnosticStage::Merge));
+        assert_eq!(session.work().merge.executions, 1);
+        assert_eq!(session.work().diagnostic_reuses, 1);
     }
 }

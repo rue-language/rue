@@ -15,7 +15,7 @@ incremental-compilation goal is complete.
 | Immutable per-file/query inputs | Satisfied. `SourceSnapshot` owns `Arc<String>` text plus validated metadata. `SemanticInputDescriptor` owns source revision, module-resolution inputs, target, and stable preview features; `CodegenInputDescriptor` adds optimization level. |
 | Batch compatibility | Satisfied with deliberate diagnostic-order adapters. `compile_source_snapshot_with_options_impl` uses `parse_source_snapshot_modules_for_batch` and `merge_parsed_modules_for_batch`; batch/borrowed compatibility tests compare artifacts and diagnostics. |
 | Reusable in-process invalidation | Partially satisfied below whole-query granularity. `CanonicalFrontendSession::update` reuses parsed module Arcs and preserves the last good revision after syntax failure. Canonical merge now retains immutable definition-surface shards keyed by module identity, FileId epoch, and ordered definition surface; body-only edits reuse all shards and a module rename rebuilds only its shard. Merge/RIR/semantic queries still execute revision-wide. The benchmark makes both reuse and remaining work measurable. |
-| Tooling seams | Partially satisfied. Backend-free `published`, `import_graph`, `merge`, `rir`, `semantic`, and `stable_definitions` queries exist; semantic output exposes warnings. Import resolution is lazy, memoized, keyed by owned source/resolution/std-dir inputs, and consumes canonical parsed import sites without RIR. Binary-search `ParsedProgram::module(ModuleId)` and `BoundDefinitionSet::definition_by_key(StableDefinitionKey)` support keyed artifact access. Diagnostics remain returned errors rather than a retained query result. |
+| Tooling seams | Substantially satisfied. Backend-free `published`, `import_graph`, `merge`, `rir`, `semantic`, and `stable_definitions` queries exist. Immutable `FrontendDiagnosticSnapshot` artifacts retain exact attempted source metadata/text identity plus syntax, merge, or semantic query identity, errors, and successful warnings; failed syntax does not replace last-good compilation artifacts. Import resolution is lazy, memoized, keyed by owned source/resolution/std-dir inputs, and retains deterministic validation separately. Binary-search module and stable-definition lookup support keyed artifact access. |
 | No disk cache or full-LSP shortcut | Satisfied by scope. Session caches are process-owned values only; the benchmark performs no measured filesystem discovery and no backend/link. No persistent cache format, watcher, protocol server, or LSP is introduced. |
 | Small mergeable, tracked delivery | Satisfied operationally: the stack is split into described RUE-719 jj changes and independently gated slices. This audit cannot prove external Linear state; commit descriptions are the locally falsifiable tracking evidence. |
 
@@ -42,13 +42,14 @@ incremental-compilation goal is complete.
    plus deterministic global remapping, or choose a dependency-keyed declaration
    or body boundary whose outputs contain no request-global handles.
 
-3. **Must finish: frontend diagnostics are not durable query artifacts.** Syntax,
-   merge, and semantic failures return `CompileErrors`; only successful semantic
-   output retains warnings. A tooling client must own errors and correlate them
-   with the attempted snapshot, while the session keeps the prior published
-   revision. Acceptance: expose an immutable attempted-revision diagnostic result
-   (including warnings on success) whose provenance can be checked without
-   backend work and whose failed query is safely memoized.
+3. **Later tooling integration: import validation and compiler diagnostics remain
+   distinct artifact families.** Syntax, merge, and semantic diagnostics are now
+   durable attempted-source artifacts with memoized error/warning identity.
+   Import resolution retains deterministic missing/ambiguous findings on its
+   separately keyed `CanonicalImportGraphOutput`; these are not compiler errors
+   until a language query consumes them. Acceptance for a unified IDE report is
+   an explicit aggregation view that preserves both keys and does not relabel an
+   import finding as a syntax/semantic error or trigger RIR/backend work.
 
 4. **Later tooling consumer: indexed source-position lookup.** Stable module and
    definition-key lookup now avoid consumer scans, but there is no session query
