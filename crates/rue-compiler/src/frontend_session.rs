@@ -11,13 +11,19 @@ use crate::{
     BoundDefinitionSet, BoundDefinitionWork, CanonicalImportGraph, CanonicalImportGraphValidation,
     CanonicalImportResolution, CanonicalMergeWork, CanonicalMergedProgram, CanonicalParseSession,
     CanonicalRirOutput, CanonicalRirWork, CanonicalSemanticOutput, CanonicalSemanticWork,
-    CodegenInputDescriptor, CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind,
-    ModuleResolutionInputs, ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor,
-    SourceRevision, SourceSnapshot, StableDefinitionKey, StableDefinitionKind,
-    StableDefinitionNamespace, analyze_canonical_program,
+    CodegenInputDescriptor, CompileError, CompileErrors, CompileOptions, CompileWarning,
+    DurableDeclarationSemantic, ErrorKind, ModuleResolutionInputs, ParseInvalidationSummary,
+    ParsedModulesWork, SemanticInputDescriptor, SourceRevision, SourceSnapshot,
+    StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace,
     bound_definitions::bind_canonical_definitions_with_work,
-    canonical_merge::merge_parsed_modules_reusing_definitions, lower_canonical_rir,
-    parsed_modules::ParsedProgram, resolve_canonical_import_graph, validate_canonical_import_graph,
+    canonical_merge::merge_parsed_modules_reusing_definitions,
+    canonical_semantic::{
+        analyze_prepared_canonical_program_reusing_declarations,
+        analyze_prepared_canonical_program_with_durable_export, prepare_canonical_declarations,
+    },
+    lower_canonical_rir,
+    parsed_modules::ParsedProgram,
+    resolve_canonical_import_graph, validate_canonical_import_graph,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -55,6 +61,16 @@ pub struct CanonicalFrontendSessionWork {
     pub dependency_manifest_records_visited: usize,
     pub dependency_manifest_import_records_visited: usize,
     pub invalidation_plans: FrontendQueryWork,
+    pub declaration_reuse_plans: usize,
+    pub durable_records_compared: usize,
+    pub durable_records_reused: usize,
+    pub ordinary_declaration_resolutions_skipped: usize,
+    pub durable_installs: usize,
+    pub declaration_reuse_fallbacks: usize,
+    /// Extra ordinary declaration binds currently used to populate the
+    /// successful durable baseline. Kept explicit until export is folded into
+    /// the primary ordinary bind.
+    pub durable_cache_population_bindings: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -546,6 +562,16 @@ pub struct CanonicalFrontendSession {
     latest_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
     dependency_manifest_cache: Vec<Arc<SemanticDependencyInputManifest>>,
     invalidation_plan_cache: Vec<InvalidationPlanCacheEntry>,
+    durable_declaration_cache: Option<DurableDeclarationCache>,
+}
+
+#[derive(Debug)]
+struct DurableDeclarationCache {
+    root: crate::ModuleId,
+    target: crate::Target,
+    preview_features: crate::PreviewFeatures,
+    fingerprints: Arc<[StableDefinitionInputFingerprint]>,
+    semantics: Arc<[DurableDeclarationSemantic]>,
 }
 
 #[derive(Debug)]
@@ -851,7 +877,61 @@ impl CanonicalFrontendSession {
         }
 
         self.work.semantic.executions += 1;
-        let result = analyze_canonical_program(&merged, &rir, options, false).map(Arc::new);
+        let prepared = prepare_canonical_declarations(&merged, &rir, options);
+        let current_fingerprints: Result<Vec<StableDefinitionInputFingerprint>, CompileErrors> =
+            match &prepared {
+                Ok(definitions) => definitions
+                    .definitions()
+                    .definitions()
+                    .iter()
+                    .map(|record| {
+                        stable_definition_input_fingerprint(
+                            merged.definitions().source_snapshot(),
+                            record,
+                        )
+                    })
+                    .collect(),
+                Err(errors) => Err(errors.clone()),
+            };
+        let reusable = self.durable_declaration_cache.as_ref().and_then(|cache| {
+            self.work.declaration_reuse_plans += 1;
+            if cache.root != *merged.ast().root()
+                || cache.target != options.target
+                || cache.preview_features != options.preview_features
+            {
+                return None;
+            }
+            let fingerprints = current_fingerprints.as_ref().ok()?;
+            let (matches, compared) = declaration_surfaces_match(&cache.fingerprints, fingerprints);
+            self.work.durable_records_compared += compared;
+            matches.then(|| cache.semantics.clone())
+        });
+        let mut cold_durable = None;
+        let result = prepared
+            .and_then(|prepared| {
+                if let Some(durable) = reusable {
+                    let definitions = prepared.definitions().clone();
+                    analyze_prepared_canonical_program_reusing_declarations(
+                        &merged,
+                        &rir,
+                        options,
+                        prepared,
+                        &definitions,
+                        &durable,
+                    )
+                } else {
+                    analyze_prepared_canonical_program_with_durable_export(
+                        &merged, &rir, options, prepared,
+                    )
+                    .map(|analysis| {
+                        cold_durable = analysis
+                            .durable_declarations
+                            .map(|semantics| (analysis.definitions, semantics));
+                        analysis.output
+                    })
+                }
+            })
+            .map(Arc::new);
         let semantic_work = result
             .as_ref()
             .map(|output| output.work())
@@ -861,6 +941,44 @@ impl CanonicalFrontendSession {
             debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
             debug_assert_eq!(semantic_work.manifest.build_invocations, 0);
             debug_assert!(!semantic_work.stable_ids_requested);
+            let reuse = semantic_work.declaration_reuse;
+            self.work.durable_records_reused += reuse.durable_records_reused;
+            self.work.ordinary_declaration_resolutions_skipped +=
+                reuse.ordinary_declaration_resolutions_skipped;
+            self.work.durable_installs += reuse.install_invocations;
+            self.work.declaration_reuse_fallbacks += reuse.fallbacks;
+
+            // Populate or refresh the durable baseline only after a successful
+            // ordinary execution. Reused executions retain the stable payload
+            // and merely advance its exact provenance below.
+            if reuse.ordinary_declaration_resolutions_skipped == 0 {
+                if let Some((definitions, semantics)) = cold_durable {
+                    if let Ok(fingerprints) = definitions
+                        .definitions()
+                        .iter()
+                        .map(|record| {
+                            stable_definition_input_fingerprint(
+                                merged.definitions().source_snapshot(),
+                                record,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                    {
+                        self.durable_declaration_cache = Some(DurableDeclarationCache {
+                            root: merged.ast().root().clone(),
+                            target: options.target,
+                            preview_features: options.preview_features.clone(),
+                            fingerprints: fingerprints.into(),
+                            semantics,
+                        });
+                    }
+                }
+            } else if let (Some(cache), Ok(fingerprints)) = (
+                self.durable_declaration_cache.as_mut(),
+                current_fingerprints,
+            ) {
+                cache.fingerprints = fingerprints.into();
+            }
         }
         self.semantic_cache.push(SemanticCacheEntry {
             input: input.clone(),
@@ -1719,6 +1837,42 @@ fn stable_definition_input_fingerprint(
     })
 }
 
+fn declaration_surfaces_match(
+    previous: &[StableDefinitionInputFingerprint],
+    current: &[StableDefinitionInputFingerprint],
+) -> (bool, usize) {
+    if previous.len() != current.len() {
+        return (false, 0);
+    }
+    let mut compared = 0;
+    for (left, right) in previous.iter().zip(current) {
+        compared += 1;
+        let supported = matches!(
+            left.key.kind(),
+            StableDefinitionKind::Function
+                | StableDefinitionKind::Struct
+                | StableDefinitionKind::Enum
+                | StableDefinitionKind::Destructor
+                | StableDefinitionKind::Method
+                | StableDefinitionKind::AssociatedFunction
+        ) && !matches!(
+            left.precision,
+            StableDefinitionFingerprintPrecision::SignatureAndInitializer
+                | StableDefinitionFingerprintPrecision::ConservativeFullDeclaration
+        );
+        let matches = supported
+            && left.schema_version == right.schema_version
+            && left.key == right.key
+            && left.declaration == right.declaration
+            && left.signature == right.signature
+            && left.precision == right.precision;
+        if !matches {
+            return (false, compared);
+        }
+    }
+    (true, compared)
+}
+
 struct FramedDefinitionHasher(Sha256);
 
 impl FramedDefinitionHasher {
@@ -2069,6 +2223,311 @@ mod tests {
             ],
             7,
         )
+    }
+
+    fn function_modules(count: usize, edited: Option<usize>) -> SourceSnapshot {
+        let owned = (0..count)
+            .map(|index| {
+                let id = u32::try_from(index + 1).unwrap();
+                let logical = if index == 0 {
+                    "main.rue".to_owned()
+                } else {
+                    format!("m{index}.rue")
+                };
+                let physical = format!("/p/{logical}");
+                let body = if index == 0 {
+                    format!(
+                        "fn main() -> i32 {{ {} }}",
+                        usize::from(edited == Some(index))
+                    )
+                } else {
+                    format!(
+                        "fn f{index}() -> i32 {{ {} }}",
+                        if edited == Some(index) {
+                            index + 1
+                        } else {
+                            index
+                        }
+                    )
+                };
+                (id, physical, logical, body)
+            })
+            .collect::<Vec<_>>();
+        let borrowed = owned
+            .iter()
+            .map(|(id, physical, logical, body)| {
+                (*id, physical.as_str(), logical.as_str(), body.as_str())
+            })
+            .collect::<Vec<_>>();
+        snapshot(&borrowed, 1)
+    }
+
+    #[test]
+    fn leaf_body_edit_reuses_128_durable_declarations_and_skips_ordinary_resolution() {
+        let options = CompileOptions::default();
+        let first = function_modules(128, None);
+        // Edit the reachable entry body while retaining all 128 declarations;
+        // this proves reuse does not accidentally pass by changing dead code.
+        let second = function_modules(128, Some(0));
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&first).into_result().unwrap();
+        let cold = session.semantic(&options).unwrap();
+        assert_eq!(cold.work().binding.bind_invocations, 1);
+        assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(cold.work().manifest.rir_instructions_visited, 0);
+        assert_eq!(session.work().durable_cache_population_bindings, 0);
+        session.update(&second).into_result().unwrap();
+        let reused = session.semantic(&options).unwrap();
+
+        assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(reused.work().binding.bind_invocations, 1);
+        assert_eq!(reused.work().declaration_reuse.semantic_epochs_started, 1);
+        assert_eq!(reused.work().declaration_reuse.declaration_indexes_built, 1);
+        assert_eq!(
+            reused.work().declaration_reuse.shell_predeclaration_epochs,
+            1
+        );
+        assert_eq!(reused.work().declaration_reuse.fallback_epochs_started, 0);
+        assert_eq!(reused.work().binding.durable_payloads_installed, 128);
+        assert_eq!(reused.work().declaration_reuse.durable_records_reused, 128);
+        assert_eq!(
+            reused
+                .work()
+                .declaration_reuse
+                .ordinary_declaration_resolutions_skipped,
+            1
+        );
+        let mut fresh = CanonicalFrontendSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let ordinary = fresh.semantic(&options).unwrap();
+        assert_eq!(
+            ordinary.work().binding.declaration_resolution_invocations,
+            1
+        );
+        assert_eq!(reused.work().body_analysis, ordinary.work().body_analysis);
+        assert_eq!(
+            format!("{:?}", reused.functions()),
+            format!("{:?}", ordinary.functions())
+        );
+        assert_eq!(reused.strings(), ordinary.strings());
+        assert_eq!(
+            format!("{:?}", reused.warnings()),
+            format!("{:?}", ordinary.warnings())
+        );
+    }
+
+    #[test]
+    fn const_presence_forces_fresh_ordinary_resolution_without_partial_install() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "const n: i32 = 1; fn main() -> i32 { n }",
+            )],
+            1,
+        );
+        let second = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "const n: i32 = 1; fn main() -> i32 { n + 1 }",
+            )],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&first).into_result().unwrap();
+        session.semantic(&options).unwrap();
+        session.update(&second).into_result().unwrap();
+        let output = session.semantic(&options).unwrap();
+        assert_eq!(output.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(output.work().binding.durable_install_invocations, 0);
+        assert_eq!(output.work().declaration_reuse.durable_records_reused, 0);
+    }
+
+    fn assert_semantic_artifact_parity(
+        session: &CanonicalFrontendSession,
+        actual: &CanonicalSemanticOutput,
+        fresh: &CanonicalSemanticOutput,
+    ) {
+        assert_eq!(
+            format!("{:?}", actual.functions()),
+            format!("{:?}", fresh.functions())
+        );
+        assert_eq!(actual.strings(), fresh.strings());
+        assert_eq!(
+            format!("{:?}", actual.warnings()),
+            format!("{:?}", fresh.warnings())
+        );
+        let diagnostics = session
+            .latest_diagnostics()
+            .expect("semantic query publishes diagnostics");
+        assert!(diagnostics.is_success());
+        assert_eq!(
+            format!("{:?}", diagnostics.warnings()),
+            format!("{:?}", fresh.warnings())
+        );
+    }
+
+    #[test]
+    fn generic_named_method_reuse_fails_closed_without_poisoning_recovery() {
+        let source = |body: &str| snapshot(&[(1, "/p/main.rue", "main.rue", body)], 1);
+        let first = source(
+            "struct Value { fn choose(borrow self, comptime n: i32) -> i32 { n } } fn main() -> i32 { let value = Value {}; value.choose(1) }",
+        );
+        let edited = source(
+            "struct Value { fn choose(borrow self, comptime n: i32) -> i32 { n + 1 } } fn main() -> i32 { let value = Value {}; value.choose(1) }",
+        );
+        let supported = source("fn main() -> i32 { 1 }");
+        let supported_edit = source("fn main() -> i32 { 2 }");
+        let options = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&first).into_result().unwrap();
+        let cold = session.semantic(&options).unwrap();
+        assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(cold.work().binding.durable_install_invocations, 0);
+
+        session.update(&edited).into_result().unwrap();
+        let ordinary = session.semantic(&options).unwrap();
+        assert_eq!(
+            ordinary.work().binding.declaration_resolution_invocations,
+            1
+        );
+        assert_eq!(ordinary.work().binding.durable_install_invocations, 0);
+        assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 0);
+        let mut fresh = CanonicalFrontendSession::new();
+        fresh.update(&edited).into_result().unwrap();
+        let expected = fresh.semantic(&options).unwrap();
+        assert_semantic_artifact_parity(&session, &ordinary, &expected);
+
+        // Unsupported revisions did not leave a partial baseline: a supported
+        // revision seeds normally, and its next body edit can reuse normally.
+        session.update(&supported).into_result().unwrap();
+        let seeded = session.semantic(&options).unwrap();
+        assert_eq!(seeded.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(seeded.work().binding.durable_install_invocations, 0);
+        session.update(&supported_edit).into_result().unwrap();
+        let recovered = session.semantic(&options).unwrap();
+        assert_eq!(
+            recovered.work().binding.declaration_resolution_invocations,
+            0
+        );
+        assert_eq!(recovered.work().binding.durable_payloads_installed, 1);
+    }
+
+    #[test]
+    fn anonymous_structural_reuse_fails_closed_without_partial_install() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn Box(comptime T: type) -> type { struct { value: T, fn get(borrow self) -> T { self.value } } } fn main() -> i32 { let B = Box(i32); let value = B { value: 1 }; value.get() }",
+            )],
+            1,
+        );
+        let edited = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn Box(comptime T: type) -> type { struct { value: T, fn get(borrow self) -> T { self.value } } } fn main() -> i32 { let B = Box(i32); let value = B { value: 2 }; value.get() }",
+            )],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&first).into_result().unwrap();
+        let cold = session.semantic(&options).unwrap();
+        assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(cold.work().binding.durable_install_invocations, 0);
+
+        session.update(&edited).into_result().unwrap();
+        let ordinary = session.semantic(&options).unwrap();
+        assert_eq!(
+            ordinary.work().binding.declaration_resolution_invocations,
+            1
+        );
+        assert_eq!(ordinary.work().binding.durable_install_invocations, 0);
+        assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 0);
+        let mut fresh = CanonicalFrontendSession::new();
+        fresh.update(&edited).into_result().unwrap();
+        let expected = fresh.semantic(&options).unwrap();
+        assert_semantic_artifact_parity(&session, &ordinary, &expected);
+
+        let supported = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
+            1,
+        );
+        let supported_edit = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 2 }")],
+            1,
+        );
+        session.update(&supported).into_result().unwrap();
+        let seeded = session.semantic(&options).unwrap();
+        assert_eq!(seeded.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(seeded.work().binding.durable_install_invocations, 0);
+        session.update(&supported_edit).into_result().unwrap();
+        let recovered = session.semantic(&options).unwrap();
+        assert_eq!(
+            recovered.work().binding.declaration_resolution_invocations,
+            0
+        );
+        assert_eq!(recovered.work().binding.durable_payloads_installed, 1);
+    }
+
+    #[test]
+    fn signature_target_and_failed_body_changes_fail_closed_and_recovery_reuses() {
+        let base = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
+            1,
+        );
+        let signature = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i64 { 1 }")],
+            1,
+        );
+        let broken_body = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i64 { missing }")],
+            1,
+        );
+        let recovered = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i64 { 2 }")],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&base).into_result().unwrap();
+        session.semantic(&options).unwrap();
+
+        session.update(&signature).into_result().unwrap();
+        let changed = session.semantic(&options).unwrap();
+        assert_eq!(changed.work().binding.declaration_resolution_invocations, 1);
+
+        session.update(&broken_body).into_result().unwrap();
+        assert!(session.semantic(&options).is_err());
+        session.update(&recovered).into_result().unwrap();
+        let recovered = session.semantic(&options).unwrap();
+        assert_eq!(
+            recovered.work().binding.declaration_resolution_invocations,
+            0
+        );
+        assert_eq!(recovered.work().declaration_reuse.durable_records_reused, 1);
+
+        let mut other_target = options.clone();
+        other_target.target = *Target::all()
+            .iter()
+            .find(|target| **target != options.target)
+            .unwrap();
+        let target_changed = session.semantic(&other_target).unwrap();
+        assert_eq!(
+            target_changed
+                .work()
+                .binding
+                .declaration_resolution_invocations,
+            1
+        );
     }
 
     #[test]

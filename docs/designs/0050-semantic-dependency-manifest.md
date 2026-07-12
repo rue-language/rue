@@ -81,11 +81,14 @@ Records are projected in stable-key order; missing, duplicate, extra,
 ambiguous, namespace/kind/owner/module/visibility, and unsupported cases are
 typed failures. Work counters pin zero RIR traversal.
 
-The result feeds AIR's atomic installer only through a comparison seam today.
-That seam proves durable re-export equality and exercises body analysis in a
-fresh epoch. Constants, module values, function aliases, and anonymous owners
-remain explicit clean fallbacks; production does not cache or skip declaration
-resolution yet.
+The result now feeds AIR's atomic installer from the canonical in-process
+session for a deliberately narrow production subset. The session issues the
+current stable universe directly from pre-resolution shells, compares
+parser-authored declaration/signature fingerprints, projects retained durable
+payloads, and then runs current-revision body analysis and CFG construction.
+Function, method, associated-function, and destructor bodies are never cached.
+Constants, module values, function aliases, generics, and anonymous owners
+remain explicit clean fallbacks.
 
 ## Current capture audit
 
@@ -347,13 +350,33 @@ fresh binder and runs ordinary resolution rather than observing partial state.
 Installation and installed-payload counters distinguish this path from ordinary
 declaration resolution, and installation performs no additional RIR scan.
 
-This is not yet production declaration caching. Module types and constants
-(including function aliases) fail closed: module/value classification is not
+The canonical session now retains a successful stable-keyed durable baseline
+across source updates. Exact no-op/relocation and body-only edits of the
+supported universe install that baseline into current shells; a 128-module
+workload pins 128 records installed and zero ordinary declaration-resolution
+invocations while exact fresh-batch functions, strings, and canonically ordered
+warnings remain equal. Signature/declaration/root/target/feature changes fail
+closed before installation. Module types and constants (including function
+aliases) still fail closed because module/value classification is not
 authoritative until dependency-ordered initializer evaluation. AIR's reserved
-tuple/function forms also remain unsupported. A fresh-epoch comparison test
-proves exact exported-semantic equality and body-analysis readiness for the
-supported subset, but production resolution is not skipped and no saving is
-claimed yet.
+tuple/function forms also remain unsupported.
+
+Cold population exports stable-keyed declaration payloads from the primary
+ordinary binder before body analysis consumes it. The exporter uses the
+already captured declaration shells, so it neither materializes the optional
+binding manifest nor traverses RIR. The session publishes the semantic result
+and its durable baseline only after the whole ordinary request succeeds;
+failed requests leave the last-good baseline untouched. The legacy
+`durable_cache_population_bindings` work counter is hard-gated at zero to make
+an accidental second bind visible. Cold and successful reuse requests each
+construct exactly one semantic epoch, one declaration index, and one shell
+predeclaration epoch. Cold requests report one population export; reuse reports
+none. Projection failure is read-only and resolves the same unmutated shells.
+Only an installation failure, which consumes candidate shells to preserve
+atomicity, may report a second semantic/index epoch and one fallback epoch.
+These values, together with the exact plan/comparison/install/reuse counters,
+are serialized under `semantic_work.declaration_reuse` by the session benchmark
+and are treated as a checked schema rather than inferred timing data.
 
 The split-binding seam now predeclares free-callable, named-method/associated,
 named-const, and named-destructor identities in logical-path order. It retains
