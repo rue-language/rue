@@ -108,6 +108,9 @@ pub struct DefinitionId {
     definition_index: usize,
 }
 
+/// Explicit name for the snapshot-local occurrence locator.
+pub type DefinitionOccurrenceId = DefinitionId;
+
 impl DefinitionId {
     /// The issuing snapshot's logical-module index.
     #[inline]
