@@ -421,7 +421,19 @@ pub fn parse_source_snapshot_modules_reusing(
     snapshot: &SourceSnapshot,
     previous: Option<&ParsedProgram>,
 ) -> Result<(ParsedProgram, ParsedModulesWork), CompileErrors> {
-    let outcome = parse_source_snapshot_modules_reusing_with_work(snapshot, previous);
+    let outcome = parse_source_snapshot_modules_reusing_with_work(
+        snapshot,
+        previous,
+        DiagnosticOrder::Canonical,
+    );
+    outcome.result.map(|program| (program, outcome.work))
+}
+
+pub(crate) fn parse_source_snapshot_modules_for_batch(
+    snapshot: &SourceSnapshot,
+) -> Result<(ParsedProgram, ParsedModulesWork), CompileErrors> {
+    let outcome =
+        parse_source_snapshot_modules_reusing_with_work(snapshot, None, DiagnosticOrder::Snapshot);
     outcome.result.map(|program| (program, outcome.work))
 }
 
@@ -472,17 +484,30 @@ fn parse_snapshot_file(
     (result, work)
 }
 
+#[derive(Clone, Copy)]
+enum DiagnosticOrder {
+    Canonical,
+    Snapshot,
+}
+
 fn parse_source_snapshot_modules_reusing_with_work(
     snapshot: &SourceSnapshot,
     previous: Option<&ParsedProgram>,
+    diagnostic_order: DiagnosticOrder,
 ) -> ParsedModulesOutcome {
-    let mut file_ids: Vec<_> = snapshot.metadata().file_ids().collect();
-    file_ids.sort_by(|left, right| {
-        snapshot
-            .module_id(*left)
-            .unwrap()
-            .cmp(snapshot.module_id(*right).unwrap())
-    });
+    let mut file_ids = if matches!(diagnostic_order, DiagnosticOrder::Canonical) {
+        snapshot.metadata().file_ids().collect::<Vec<_>>()
+    } else {
+        snapshot.files().map(|source| source.file_id).collect()
+    };
+    if matches!(diagnostic_order, DiagnosticOrder::Canonical) {
+        file_ids.sort_by(|left, right| {
+            snapshot
+                .module_id(*left)
+                .unwrap()
+                .cmp(snapshot.module_id(*right).unwrap())
+        });
+    }
     let mut modules = Vec::with_capacity(file_ids.len());
     let mut errors = CompileErrors::new();
     let previous_by_file = previous
@@ -1087,7 +1112,11 @@ mod tests {
             ],
             20,
         );
-        let outcome = parse_source_snapshot_modules_reusing_with_work(&snapshot, None);
+        let outcome = parse_source_snapshot_modules_reusing_with_work(
+            &snapshot,
+            None,
+            DiagnosticOrder::Canonical,
+        );
         assert_eq!(outcome.work.syntax.lexer_invocations, 2);
         assert_eq!(outcome.work.syntax.parser_invocations, 2);
         let program = outcome.result.unwrap();
@@ -1182,7 +1211,11 @@ mod tests {
             ],
             7,
         );
-        let outcome = parse_source_snapshot_modules_reusing_with_work(&snapshot, None);
+        let outcome = parse_source_snapshot_modules_reusing_with_work(
+            &snapshot,
+            None,
+            DiagnosticOrder::Canonical,
+        );
         let work = outcome.work;
         let first = outcome.result.unwrap();
         let modules = first.modules().to_vec();

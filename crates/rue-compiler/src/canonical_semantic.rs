@@ -3,6 +3,7 @@
 use rue_air::{
     BodyAnalysisWork, DeclarationBindingWork, RirDeclarationIndexWork, SemanticBindingManifestWork,
 };
+use tracing::info_span;
 
 use crate::{
     BoundDefinitionSet, BoundDefinitionWork, CanonicalMergedProgram, CanonicalRirOutput,
@@ -88,12 +89,17 @@ pub fn analyze_canonical_program(
         ),
         opt_level: options.opt_level.into(),
     };
-    let sema = configure_canonical_sema(
-        merged,
-        rir,
-        options.preview_features.clone(),
-        options.target,
-    )?;
+    let sema = {
+        let _span =
+            info_span!("rir_declaration_index", instruction_count = rir.rir().len()).entered();
+        configure_canonical_sema(
+            merged,
+            rir,
+            options.preview_features.clone(),
+            options.target,
+        )?
+    };
+    let sema_span = info_span!("sema").entered();
     let declaration_index = sema.rir_declaration_index_work();
     let bound = sema.bind_declarations()?;
     let binding = bound.binding_work();
@@ -115,6 +121,7 @@ pub fn analyze_canonical_program(
 
     let sema_output = bound.analyze_all_bodies()?;
     let body_analysis = sema_output.body_analysis_work;
+    drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
         options.opt_level,

@@ -585,11 +585,6 @@ impl<'src> CompilationUnit<'src> {
         }
     }
 
-    /// Get counters collected during compilation without scanning source text.
-    pub(crate) fn collected_source_stats(&self) -> SourceStats {
-        self.source_stats
-    }
-
     /// Take the interner out of the compilation unit.
     ///
     /// This is useful when you need ownership of the interner (e.g., for
