@@ -250,6 +250,73 @@ pub struct DefinitionSnapshot {
 }
 
 impl DefinitionSnapshot {
+    /// Build durable definition candidates from self-contained parsed modules.
+    ///
+    /// Names are already owned values in each module's definition index; this
+    /// path performs no interner lookup, AST traversal, or source-byte hashing.
+    pub fn from_parsed_modules(
+        program: &crate::parsed_modules::ParsedProgram,
+    ) -> CompileResult<Self> {
+        let _span = info_span!(
+            "definition_snapshot_modules",
+            module_count = program.modules().len()
+        )
+        .entered();
+        let source_snapshot = SourceSnapshot::from_parsed_modules(program)?;
+        let mut modules = Vec::with_capacity(program.modules().len());
+        let definition_count = program
+            .modules()
+            .iter()
+            .map(|module| module.definitions().candidates().len())
+            .sum();
+        let mut definitions_by_name =
+            HashMap::<DefinitionNameKey, Vec<DefinitionId>>::with_capacity(definition_count);
+
+        for (module_index, module) in program.modules().iter().enumerate() {
+            let mut definitions = Vec::with_capacity(module.definitions().candidates().len());
+            for (definition_index, candidate) in
+                module.definitions().candidates().iter().enumerate()
+            {
+                debug_assert_eq!(candidate.occurrence().index(), definition_index);
+                let id = DefinitionId {
+                    module_index,
+                    definition_index,
+                };
+                let name_key = DefinitionNameKey::new(
+                    module.module_id().clone(),
+                    candidate.namespace(),
+                    candidate.name(),
+                );
+                definitions_by_name
+                    .entry(name_key.clone())
+                    .or_default()
+                    .push(id);
+                definitions.push(DefinitionRecord {
+                    id,
+                    name_key,
+                    kind: candidate.kind(),
+                    visibility: candidate.visibility(),
+                    file_id: module.file_id(),
+                    name_span: candidate.name_span(),
+                    declaration_span: candidate.declaration_span(),
+                });
+            }
+            modules.push(ModuleDefinition {
+                key: module.module_id().clone(),
+                file_id: module.file_id(),
+                definitions,
+            });
+        }
+
+        Ok(Self {
+            source_snapshot,
+            root_module: program.root().clone(),
+            modules,
+            definition_count,
+            definitions_by_name,
+        })
+    }
+
     /// Resolve a parsed program into durable name candidates and source records.
     ///
     /// The parsed-file ID multiset and physical paths must exactly match

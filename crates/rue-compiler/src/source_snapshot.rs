@@ -48,6 +48,86 @@ struct SourceRecord {
 }
 
 impl SourceSnapshot {
+    /// Reassemble diagnostic source records from already-validated parsed
+    /// artifacts without hashing source bytes again.
+    pub(crate) fn from_parsed_modules(
+        program: &crate::parsed_modules::ParsedProgram,
+    ) -> CompileResult<Self> {
+        let root_file_id = program
+            .modules()
+            .iter()
+            .find(|module| module.module_id() == program.root())
+            .expect("parsed program validates its root")
+            .file_id();
+        let physical_paths = program
+            .modules()
+            .iter()
+            .map(|module| (module.file_id(), module.physical_path().to_owned()))
+            .collect();
+        let logical_paths = program
+            .modules()
+            .iter()
+            .map(|module| (module.file_id(), module.module_id().as_str().to_owned()))
+            .collect();
+        let metadata = SourceMetadata::new(root_file_id, physical_paths, logical_paths)?;
+        validate_source_lengths(
+            program
+                .modules()
+                .iter()
+                .map(|module| (module.file_id(), module.source_text().len())),
+            &metadata,
+        )?;
+
+        let source_store = SourceStore::from_ids(
+            program
+                .modules()
+                .iter()
+                .map(|module| module.source_id().clone()),
+        );
+        let contents: Vec<_> = program
+            .modules()
+            .iter()
+            .map(|module| {
+                let module_text = module.shared_source_text();
+                if !Arc::ptr_eq(&module_text, &module.source_id().shared_text()) {
+                    return Err(invalid_input(format!(
+                        "parsed module {} source text has foreign identity provenance",
+                        module.module_id()
+                    )));
+                }
+                let source_id = source_store
+                    .get(module.source_id())
+                    .expect("store was built from every parsed module source")
+                    .clone();
+                let text = source_store
+                    .shared_text(&source_id)
+                    .expect("canonical store identity retains exact source text");
+                Ok(SourceRecord {
+                    file_id: module.file_id(),
+                    module_id: module.module_id().clone(),
+                    source_id,
+                    text,
+                })
+            })
+            .collect::<CompileResult<_>>()?;
+        let index = contents
+            .iter()
+            .enumerate()
+            .map(|(index, record)| (record.file_id, index))
+            .collect();
+        let revision = program.source_revision().clone();
+
+        Ok(Self {
+            data: Arc::new(SourceSnapshotData {
+                metadata,
+                contents,
+                index,
+                revision,
+                source_store,
+            }),
+        })
+    }
+
     /// Build a snapshot from validated metadata and owned source buffers.
     ///
     /// `contents` may be in any order, and that caller-supplied order is

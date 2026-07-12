@@ -195,6 +195,10 @@ pub struct ParsedAstView {
 }
 
 impl ParsedAstView {
+    pub(crate) fn from_module(module: Arc<ParsedModule>) -> Self {
+        Self { module }
+    }
+
     pub fn module(&self) -> &Arc<ParsedModule> {
         &self.module
     }
@@ -223,6 +227,11 @@ pub struct ParsedItemView {
 }
 
 impl ParsedItemView {
+    pub(crate) fn from_module_index(module: Arc<ParsedModule>, index: usize) -> Self {
+        debug_assert!(index < module.ast().items.len());
+        Self { module, index }
+    }
+
     pub fn module(&self) -> &Arc<ParsedModule> {
         &self.module
     }
@@ -254,6 +263,9 @@ impl ParsedModule {
     }
     pub fn source_text(&self) -> &str {
         &self.source_text
+    }
+    pub(crate) fn shared_source_text(&self) -> Arc<String> {
+        self.source_text.clone()
     }
     pub fn ast(&self) -> &Ast {
         &self.ast.ast
