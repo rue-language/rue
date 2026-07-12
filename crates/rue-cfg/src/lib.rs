@@ -48,4 +48,9 @@ pub struct CfgOutput {
     /// treat a non-empty `errors` as a hard failure and abort before
     /// optimizing or lowering the (now-discarded) CFG.
     pub errors: Vec<CompileError>,
+    /// Named user destructors required by implicit drops emitted in this CFG.
+    pub implicit_named_destructors: Vec<StructId>,
+    /// Whether an implicit destructor target was anonymous and therefore has
+    /// no stable definition endpoint.
+    pub anonymous_destructor_dependency_incomplete: bool,
 }

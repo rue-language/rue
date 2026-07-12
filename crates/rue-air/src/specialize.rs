@@ -651,6 +651,15 @@ fn create_specialized_function(
     Ok(SpecializedBody {
         function: AnalyzedFunction {
             name: specialized_name_str,
+            implicit_drop_source: Some(
+                crate::sema::ImplicitDropDependencySourceEvent::FreeFunction {
+                    file: base_info.file_id.index(),
+                    name: sema
+                        .interner
+                        .resolve(&sema.source_function_name(key.base_name))
+                        .to_string(),
+                },
+            ),
             air,
             num_locals,
             num_param_slots,

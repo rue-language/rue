@@ -93,6 +93,18 @@ translate future definition-level edges; it makes no body or CFG reuse claim.
 Acceptance requires one existing semantic execution to emit the complete
 manifest with no second whole-RIR traversal and unchanged diagnostic bytes/order.
 
+Implicit drop obligations are now observed where AIR is elaborated into CFG,
+including scope/parameter/overwrite drops, recursive struct/enum/array glue,
+and partial-drop destructor calls. Each analyzed body carries a neutral,
+stable-capable owner (ordinary or specialized-base function, named method, or
+named destructor); synthesized named struct/enum glue is owned by the named
+type definition. The compiler joins those owners and named destructor targets
+to exact-revision `StableDefinitionKey`s without rescanning RIR. Anonymous
+owners or destructor targets explicitly make this surface incomplete. This is
+separate from the current unconditional named-destructor analysis roots: roots
+ensure code exists, while these edges record which definitions actually require
+the destructor or its transitive glue.
+
 ### Free-function capture progress
 
 The first request-local capture seam now records free-function references from

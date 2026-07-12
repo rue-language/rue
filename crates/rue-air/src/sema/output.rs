@@ -145,6 +145,44 @@ pub struct NamedConstDependencyEvent {
     pub target: NamedConstDependencyTargetEvent,
 }
 
+/// Stable-capable owner of an analyzed body or synthesized named-type glue.
+///
+/// This deliberately contains no request-local symbols or type IDs. CFG
+/// lowering attaches destructor obligations to this owner; the compiler later
+/// joins it against the exact-revision stable-definition universe.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ImplicitDropDependencySourceEvent {
+    Anonymous,
+    FreeFunction {
+        file: u32,
+        name: String,
+    },
+    NamedMethod {
+        file: u32,
+        owner_name: String,
+        method_name: String,
+    },
+    NamedDestructor {
+        file: u32,
+        owner_name: String,
+    },
+    NamedStruct {
+        file: u32,
+        name: String,
+    },
+    NamedEnum {
+        file: u32,
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ImplicitNamedDestructorDependencyEvent {
+    pub source: ImplicitDropDependencySourceEvent,
+    pub target_file: u32,
+    pub target_owner_name: String,
+}
+
 /// Per-ABI-slot parameter access metadata preserved into CFG.
 ///
 /// `by_ref` describes the physical calling convention: both `borrow` and
@@ -190,6 +228,8 @@ impl From<Vec<bool>> for ParamSlotModes {
 #[derive(Debug)]
 pub struct AnalyzedFunction {
     pub name: String,
+    /// Definition-level provenance used by CFG dependency capture.
+    pub implicit_drop_source: Option<ImplicitDropDependencySourceEvent>,
     pub air: Air,
     /// Number of local variable slots needed
     pub num_locals: u32,

@@ -876,6 +876,8 @@ struct CfgFrontendOutput {
     strings: Vec<String>,
     /// Warnings collected during semantic analysis and CFG construction.
     warnings: Vec<CompileWarning>,
+    implicit_named_destructor_dependencies: Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
+    implicit_named_destructor_dependencies_complete: bool,
 }
 
 /// Lower semantic-analysis output through drop-glue synthesis, comptime filtering,
@@ -913,9 +915,20 @@ fn build_functions_and_cfgs(
 
     let _span = info_span!("cfg_construction").entered();
 
-    let results: Vec<Result<(FunctionWithCfg, Vec<CompileWarning>), CompileErrors>> = all_functions
+    let results: Vec<
+        Result<
+            (
+                FunctionWithCfg,
+                Vec<CompileWarning>,
+                Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
+                bool,
+            ),
+            CompileErrors,
+        >,
+    > = all_functions
         .into_par_iter()
         .map(|func| {
+            let dependency_source = func.implicit_drop_source.clone();
             let cfg_output = CfgBuilder::build(
                 &func.air,
                 func.num_locals,
@@ -941,22 +954,71 @@ fn build_functions_and_cfgs(
             let mut cfg = cfg_output.cfg;
             rue_cfg::opt::optimize(&mut cfg, opt_level);
 
+            let mut implicit_edges = Vec::new();
+            let mut complete = !cfg_output.anonymous_destructor_dependency_incomplete;
+            // A named struct definition globally owns its synthesized glue.
+            // Its own destructor is emitted as a direct AIR call rather than a
+            // CFG Drop, so retain that definition -> destructor edge here.
+            if let Some(rue_air::ImplicitDropDependencySourceEvent::NamedStruct { file, name }) =
+                &dependency_source
+            {
+                for struct_id in type_pool.all_struct_ids() {
+                    let target = type_pool.struct_def(struct_id);
+                    if target.file_id.index() == *file
+                        && target.name == *name
+                        && target.destructor.is_some()
+                        && !target.is_builtin
+                    {
+                        implicit_edges.push(rue_air::ImplicitNamedDestructorDependencyEvent {
+                            source: dependency_source.clone().unwrap(),
+                            target_file: *file,
+                            target_owner_name: name.clone(),
+                        });
+                    }
+                }
+            }
+            if !cfg_output.implicit_named_destructors.is_empty() {
+                if matches!(
+                    dependency_source,
+                    Some(rue_air::ImplicitDropDependencySourceEvent::Anonymous)
+                ) {
+                    complete = false;
+                } else if let Some(source) = dependency_source {
+                    for struct_id in cfg_output.implicit_named_destructors {
+                        let target = type_pool.struct_def(struct_id);
+                        implicit_edges.push(rue_air::ImplicitNamedDestructorDependencyEvent {
+                            source: source.clone(),
+                            target_file: target.file_id.index(),
+                            target_owner_name: target.name,
+                        });
+                    }
+                }
+            }
+
             Ok((
                 FunctionWithCfg {
                     analyzed: func,
                     cfg,
                 },
                 cfg_output.warnings,
+                implicit_edges,
+                complete,
             ))
         })
         .collect();
 
     let mut functions = Vec::with_capacity(results.len());
+    let mut implicit_named_destructor_dependencies = Vec::new();
+    let mut implicit_named_destructor_dependencies_complete = true;
     for result in results {
-        let (func, func_warnings) = result?;
+        let (func, func_warnings, mut implicit_edges, complete) = result?;
         functions.push(func);
         warnings.extend(func_warnings);
+        implicit_named_destructor_dependencies.append(&mut implicit_edges);
+        implicit_named_destructor_dependencies_complete &= complete;
     }
+    implicit_named_destructor_dependencies.sort();
+    implicit_named_destructor_dependencies.dedup();
 
     info!(
         function_count = functions.len(),
@@ -968,6 +1030,8 @@ fn build_functions_and_cfgs(
         type_pool,
         strings,
         warnings,
+        implicit_named_destructor_dependencies,
+        implicit_named_destructor_dependencies_complete,
     })
 }
 

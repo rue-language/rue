@@ -63,6 +63,8 @@ pub struct CanonicalSemanticOutput {
     supported_type_call_heads_complete: bool,
     named_const_dependencies: Vec<NamedConstDependencyEvent>,
     named_value_const_dependencies_complete: bool,
+    implicit_named_destructor_dependencies: Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
+    implicit_named_destructor_dependencies_complete: bool,
 }
 
 impl CanonicalSemanticOutput {
@@ -145,6 +147,14 @@ impl CanonicalSemanticOutput {
     }
     pub fn named_value_const_dependencies_complete(&self) -> bool {
         self.named_value_const_dependencies_complete
+    }
+    pub fn implicit_named_destructor_dependencies(
+        &self,
+    ) -> &[rue_air::ImplicitNamedDestructorDependencyEvent] {
+        &self.implicit_named_destructor_dependencies
+    }
+    pub fn implicit_named_destructor_dependencies_complete(&self) -> bool {
+        self.implicit_named_destructor_dependencies_complete
     }
     /// Stable definition identities when requested for this run.
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
@@ -291,6 +301,9 @@ pub fn analyze_canonical_program(
         supported_type_call_heads_complete,
         named_const_dependencies,
         named_value_const_dependencies_complete,
+        implicit_named_destructor_dependencies: cfg.implicit_named_destructor_dependencies,
+        implicit_named_destructor_dependencies_complete: cfg
+            .implicit_named_destructor_dependencies_complete,
     })
 }
 

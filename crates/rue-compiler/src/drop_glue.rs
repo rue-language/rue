@@ -338,6 +338,14 @@ fn create_struct_drop_glue_function(
 
     AnalyzedFunction {
         name: fn_name,
+        implicit_drop_source: if struct_def.name.starts_with("__anon_struct_") {
+            None
+        } else {
+            Some(rue_air::ImplicitDropDependencySourceEvent::NamedStruct {
+                file: struct_def.file_id.index(),
+                name: struct_def.name.clone(),
+            })
+        },
         air,
         num_locals: 0,
         num_param_slots,
@@ -471,6 +479,7 @@ fn create_array_drop_glue_function(
 
     AnalyzedFunction {
         name: fn_name,
+        implicit_drop_source: None,
         air,
         num_locals: 0,
         num_param_slots,
@@ -601,6 +610,10 @@ fn create_enum_drop_glue_function(enum_id: EnumId, type_pool: &TypeInternPool) -
 
     AnalyzedFunction {
         name: fn_name,
+        implicit_drop_source: Some(rue_air::ImplicitDropDependencySourceEvent::NamedEnum {
+            file: enum_def.file_id.index(),
+            name: enum_def.name.clone(),
+        }),
         air,
         num_locals: 0,
         num_param_slots,
