@@ -14,14 +14,14 @@ use tracing_subscriber::{EnvFilter, Layer as _, fmt};
 mod timing;
 
 use rue_compiler::{
-    CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind, FileId, Lexer,
-    LinkerMode, MAX_SOURCE_BYTES, MultiFileFormatter, MultiFileJsonFormatter, OptLevel,
-    ParsedProgram, PreviewFeature, PreviewFeatures, SourceInfo, SourceMetadata, SourceSnapshot,
-    Span, TokenKind, compile_source_snapshot_with_options,
-    compile_source_snapshot_with_options_and_stats, configure_thread_pool, generate_emitted_asm,
-    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
-    generate_stack_frame_info, import_candidate_groups, merge_symbols,
-    parse_all_files_with_source_snapshot,
+    CompilationUnit, CompilationUnitWork, CompileError, CompileErrors, CompileOptions,
+    CompileState, CompileWarning, ErrorKind, FileId, Lexer, LinkerMode, MAX_SOURCE_BYTES,
+    MultiFileFormatter, MultiFileJsonFormatter, OptLevel, ParsedProgram, PreviewFeature,
+    PreviewFeatures, SourceInfo, SourceMetadata, SourceSnapshot, Span, TokenKind,
+    compile_source_snapshot_with_options, compile_source_snapshot_with_options_and_stats,
+    configure_thread_pool, generate_emitted_asm, generate_liveness_info, generate_lowering_info,
+    generate_mir, generate_regalloc_info, generate_stack_frame_info, import_candidate_groups,
+    merge_symbols, parse_all_files_with_source_snapshot,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -54,6 +54,105 @@ enum EmitStage {
     StackFrame,
     /// Emit the source dependency graph discovered while loading imports.
     Deps,
+}
+
+enum EmitFrontend {
+    Canonical(Box<CompilationUnit<'static>>),
+    LegacyRir(Box<CompileState>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmitFrontendRoute {
+    None,
+    AstOnlyLegacy,
+    Canonical,
+    LegacyRir,
+}
+
+fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
+    if stages.contains(&EmitStage::Rir) {
+        EmitFrontendRoute::LegacyRir
+    } else if stages.iter().any(|stage| {
+        matches!(
+            stage,
+            EmitStage::Air
+                | EmitStage::Cfg
+                | EmitStage::Lowering
+                | EmitStage::Mir
+                | EmitStage::Liveness
+                | EmitStage::RegAlloc
+                | EmitStage::Asm
+                | EmitStage::StackFrame
+        )
+    }) {
+        EmitFrontendRoute::Canonical
+    } else if stages.contains(&EmitStage::Ast) {
+        EmitFrontendRoute::AstOnlyLegacy
+    } else {
+        EmitFrontendRoute::None
+    }
+}
+
+fn build_canonical_emit_frontend(
+    source_snapshot: &SourceSnapshot,
+    options: CompileOptions,
+) -> Result<CompilationUnit<'static>, CompileErrors> {
+    let mut unit = CompilationUnit::from_source_snapshot(source_snapshot.clone(), options);
+    unit.parse()?;
+    unit.lower()?;
+    unit.analyze()?;
+    Ok(unit)
+}
+
+impl EmitFrontend {
+    fn rir(&self) -> &rue_compiler::Rir {
+        match self {
+            Self::Canonical(unit) => unit.rir(),
+            Self::LegacyRir(state) => &state.rir,
+        }
+    }
+
+    fn interner(&self) -> &rue_compiler::ThreadedRodeo {
+        match self {
+            Self::Canonical(unit) => unit.interner(),
+            Self::LegacyRir(state) => &state.interner,
+        }
+    }
+
+    fn functions(&self) -> &[rue_compiler::FunctionWithCfg] {
+        match self {
+            Self::Canonical(unit) => unit.functions(),
+            Self::LegacyRir(state) => &state.functions,
+        }
+    }
+
+    fn type_pool(&self) -> &rue_compiler::TypeInternPool {
+        match self {
+            Self::Canonical(unit) => unit.type_pool(),
+            Self::LegacyRir(state) => &state.type_pool,
+        }
+    }
+
+    fn strings(&self) -> &[String] {
+        match self {
+            Self::Canonical(unit) => unit.strings(),
+            Self::LegacyRir(state) => &state.strings,
+        }
+    }
+
+    fn warnings(&self) -> &[CompileWarning] {
+        match self {
+            Self::Canonical(unit) => unit.warnings(),
+            Self::LegacyRir(state) => &state.warnings,
+        }
+    }
+
+    fn canonical_work(&self) -> Option<CompilationUnitWork> {
+        match self {
+            Self::Canonical(unit) => Some(unit.work()),
+            Self::LegacyRir(_) => None,
+        }
+    }
 }
 
 /// Error returned when parsing an emit stage name fails.
@@ -1999,20 +2098,6 @@ fn handle_emit_multi_file(
     // Determine which stages we need
     let needs_tokens = options.emit_stages.contains(&EmitStage::Tokens);
     let needs_ast = options.emit_stages.contains(&EmitStage::Ast);
-    let needs_later_stages = options.emit_stages.iter().any(|s| {
-        matches!(
-            s,
-            EmitStage::Rir
-                | EmitStage::Air
-                | EmitStage::Cfg
-                | EmitStage::Lowering
-                | EmitStage::Mir
-                | EmitStage::Liveness
-                | EmitStage::RegAlloc
-                | EmitStage::Asm
-                | EmitStage::StackFrame
-        )
-    });
 
     // For tokens, we need to lex each file separately (before parsing merges interners)
     // We'll collect per-file tokens if needed
@@ -2037,8 +2122,16 @@ fn handle_emit_multi_file(
         None
     };
 
-    // Parse all files (needed for AST output or later stages)
-    let mut parsed: Option<ParsedProgram> = if needs_ast || needs_later_stages {
+    // Exact RIR text remains caller-positional. Keep that one presentation
+    // route isolated until it has a read-only InstRef remapping printer; every
+    // other frontend emit consumes the canonical unit artifacts.
+    let frontend_route = emit_frontend_route(&options.emit_stages);
+    let needs_legacy_rir = frontend_route == EmitFrontendRoute::LegacyRir;
+    let needs_legacy_parse = matches!(
+        frontend_route,
+        EmitFrontendRoute::LegacyRir | EmitFrontendRoute::AstOnlyLegacy
+    );
+    let mut parsed: Option<ParsedProgram> = if needs_legacy_parse {
         match parse_all_files_with_source_snapshot(source_snapshot) {
             Ok(program) => Some(program),
             Err(errors) => {
@@ -2050,8 +2143,9 @@ fn handle_emit_multi_file(
         None
     };
 
-    // For AST output, collect the per-file AST info before merging (which consumes the program)
-    let per_file_asts: Option<Vec<(String, std::sync::Arc<rue_compiler::Ast>)>> = if needs_ast {
+    // AST-only preserves its syntax-only behavior (duplicates are printable).
+    // Combined AST+later canonical modes reuse the unit's once-only projection.
+    let mut per_file_asts: Option<Vec<(String, std::sync::Arc<rue_compiler::Ast>)>> = if needs_ast {
         parsed.as_ref().map(|program| {
             program
                 .files
@@ -2064,11 +2158,11 @@ fn handle_emit_multi_file(
     };
 
     // Merge symbols and compile frontend (needed for later stages)
-    let frontend_state = if needs_later_stages {
+    let frontend_state = if needs_legacy_rir {
         // Take ownership of the parsed program (already parsed above)
         let program = parsed
             .take()
-            .expect("parsed should be Some when needs_later_stages is true");
+            .expect("legacy RIR route parses before merging");
 
         let merged = match merge_symbols(program) {
             Ok(m) => m,
@@ -2094,13 +2188,44 @@ fn handle_emit_multi_file(
                 }
             };
 
-        // Warnings used to be silently dropped in all --emit modes (RUE-130).
-        diagnostics.print_warnings(&state.warnings);
-
-        Some(state)
+        Some(EmitFrontend::LegacyRir(Box::new(state)))
+    } else if frontend_route == EmitFrontendRoute::Canonical {
+        let compile_options = CompileOptions {
+            target: options.target,
+            linker: options.linker.clone(),
+            opt_level: options.opt_level,
+            preview_features: options.preview_features.clone(),
+        };
+        let unit = match build_canonical_emit_frontend(source_snapshot, compile_options) {
+            Ok(unit) => unit,
+            Err(errors) => {
+                diagnostics.print_errors(&errors);
+                return Err(());
+            }
+        };
+        if needs_ast {
+            per_file_asts = Some(
+                source_snapshot
+                    .files()
+                    .zip(unit.ast().files())
+                    .map(|(source, ast)| (source.path.to_string(), ast.clone()))
+                    .collect(),
+            );
+        }
+        Some(EmitFrontend::Canonical(Box::new(unit)))
     } else {
         None
     };
+    if let Some(state) = &frontend_state {
+        // Warnings used to be silently dropped in all --emit modes (RUE-130).
+        diagnostics.print_warnings(state.warnings());
+        if let Some(work) = state.canonical_work() {
+            debug_assert_eq!(work.parsed.syntax.parser_invocations, source_snapshot.len());
+            debug_assert_eq!(work.lowered.parser_invocations, 0);
+            debug_assert_eq!(work.semantic.binding.bind_invocations, 1);
+            debug_assert_eq!(work.semantic.manifest.build_invocations, 0);
+        }
+    }
 
     use std::fmt::Write as _;
 
@@ -2130,7 +2255,7 @@ fn handle_emit_multi_file(
             EmitStage::Rir => {
                 println!("=== RIR ===");
                 if let Some(ref state) = frontend_state {
-                    let printer = RirPrinter::new(&state.rir, &state.interner);
+                    let printer = RirPrinter::new(state.rir(), state.interner());
                     println!("{}", printer);
                 }
                 println!();
@@ -2138,11 +2263,11 @@ fn handle_emit_multi_file(
             EmitStage::Air => {
                 println!("=== AIR ===");
                 if let Some(ref state) = frontend_state {
-                    for func in &state.functions {
+                    for func in state.functions() {
                         println!("function {}:", func.analyzed.name);
                         println!(
                             "{}",
-                            func.analyzed.air.display_with_interner(&state.interner)
+                            func.analyzed.air.display_with_interner(state.interner())
                         );
                     }
                 }
@@ -2151,8 +2276,8 @@ fn handle_emit_multi_file(
             EmitStage::Cfg => {
                 println!("=== CFG ===");
                 if let Some(ref state) = frontend_state {
-                    for func in &state.functions {
-                        println!("{}", func.cfg.display_with_interner(&state.interner));
+                    for func in state.functions() {
+                        println!("{}", func.cfg.display_with_interner(state.interner()));
                     }
                 }
                 println!();
@@ -2160,11 +2285,11 @@ fn handle_emit_multi_file(
             EmitStage::Lowering => {
                 let mut output = String::new();
                 if let Some(ref state) = frontend_state {
-                    for func in &state.functions {
+                    for func in state.functions() {
                         let lowering_info = match generate_lowering_info(
                             &func.cfg,
-                            &state.type_pool,
-                            &state.interner,
+                            state.type_pool(),
+                            state.interner(),
                             options.target,
                         ) {
                             Ok(info) => info,
@@ -2183,11 +2308,11 @@ fn handle_emit_multi_file(
                 let mut output = String::new();
                 writeln!(&mut output, "=== MIR ({}) ===", options.target).expect("write to String");
                 if let Some(ref state) = frontend_state {
-                    for func in &state.functions {
+                    for func in state.functions() {
                         let mir = match generate_mir(
                             &func.cfg,
-                            &state.type_pool,
-                            &state.interner,
+                            state.type_pool(),
+                            state.interner(),
                             options.target,
                         ) {
                             Ok(mir) => mir,
@@ -2213,11 +2338,11 @@ fn handle_emit_multi_file(
                 )
                 .expect("write to String");
                 if let Some(ref state) = frontend_state {
-                    for func in &state.functions {
+                    for func in state.functions() {
                         let liveness_info = match generate_liveness_info(
                             &func.cfg,
-                            &state.type_pool,
-                            &state.interner,
+                            state.type_pool(),
+                            state.interner(),
                             options.target,
                         ) {
                             Ok(info) => info,
@@ -2243,11 +2368,11 @@ fn handle_emit_multi_file(
                 )
                 .expect("write to String");
                 if let Some(ref state) = frontend_state {
-                    for func in &state.functions {
+                    for func in state.functions() {
                         let regalloc_info = match generate_regalloc_info(
                             &func.cfg,
-                            &state.type_pool,
-                            &state.interner,
+                            state.type_pool(),
+                            state.interner(),
                             options.target,
                         ) {
                             Ok(info) => info,
@@ -2269,12 +2394,12 @@ fn handle_emit_multi_file(
                 writeln!(&mut output, "=== Assembly ({}) ===", options.target)
                     .expect("write to String");
                 if let Some(ref state) = frontend_state {
-                    for func in &state.functions {
+                    for func in state.functions() {
                         let asm = match generate_emitted_asm(
                             &func.cfg,
-                            &state.type_pool,
-                            &state.strings,
-                            &state.interner,
+                            state.type_pool(),
+                            state.strings(),
+                            state.interner(),
                             options.target,
                         ) {
                             Ok(asm) => asm,
@@ -2295,12 +2420,12 @@ fn handle_emit_multi_file(
             EmitStage::StackFrame => {
                 let mut output = String::new();
                 if let Some(ref state) = frontend_state {
-                    for func in &state.functions {
+                    for func in state.functions() {
                         let frame_info = match generate_stack_frame_info(
                             &func.cfg,
                             &func.analyzed.name,
-                            &state.type_pool,
-                            &state.interner,
+                            state.type_pool(),
+                            state.interner(),
                             options.target,
                         ) {
                             Ok(info) => info,
@@ -2642,6 +2767,76 @@ mod tests {
     }
 
     // ========== --emit tests ==========
+
+    #[test]
+    fn emit_frontend_routes_isolate_only_exact_rir_and_ast_only_compatibility() {
+        for stage in [
+            EmitStage::Air,
+            EmitStage::Cfg,
+            EmitStage::Lowering,
+            EmitStage::Mir,
+            EmitStage::Liveness,
+            EmitStage::RegAlloc,
+            EmitStage::Asm,
+            EmitStage::StackFrame,
+        ] {
+            assert_eq!(emit_frontend_route(&[stage]), EmitFrontendRoute::Canonical);
+        }
+        assert_eq!(
+            emit_frontend_route(&[EmitStage::Ast, EmitStage::Air]),
+            EmitFrontendRoute::Canonical
+        );
+        assert_eq!(
+            emit_frontend_route(&[EmitStage::Rir, EmitStage::Air]),
+            EmitFrontendRoute::LegacyRir
+        );
+        assert_eq!(
+            emit_frontend_route(&[EmitStage::Ast]),
+            EmitFrontendRoute::AstOnlyLegacy
+        );
+        assert_eq!(
+            emit_frontend_route(&[EmitStage::Tokens]),
+            EmitFrontendRoute::None
+        );
+    }
+
+    #[test]
+    fn canonical_emit_frontend_performs_one_parse_lower_and_bind() {
+        let root = FileId::new(9);
+        let helper = FileId::new(2);
+        let sources = [
+            rue_compiler::SourceFile::new(
+                "/checkout/main.rue",
+                "const helper = @import(\"helper.rue\"); fn main() -> i32 { helper.answer() }",
+                root,
+            ),
+            rue_compiler::SourceFile::new(
+                "/checkout/helper.rue",
+                "pub fn answer() -> i32 { 42 }",
+                helper,
+            ),
+        ];
+        let metadata = SourceMetadata::from_sources(
+            &sources,
+            root,
+            std::collections::HashMap::from([
+                (root, "main.rue".to_string()),
+                (helper, "helper.rue".to_string()),
+            ]),
+        )
+        .unwrap();
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+        let unit = build_canonical_emit_frontend(&snapshot, CompileOptions::default()).unwrap();
+        let work = unit.work();
+
+        assert_eq!(work.parsed.syntax.lexer_invocations, sources.len());
+        assert_eq!(work.parsed.syntax.parser_invocations, sources.len());
+        assert_eq!(work.lowered.parser_invocations, 0);
+        assert_eq!(work.lowered.ast_payload_clones, 0);
+        assert_eq!(work.semantic.binding.bind_invocations, 1);
+        assert_eq!(work.semantic.manifest.build_invocations, 0);
+        assert_eq!(work.compatibility_projections, 0);
+    }
 
     #[test]
     fn parse_emit_tokens() {
