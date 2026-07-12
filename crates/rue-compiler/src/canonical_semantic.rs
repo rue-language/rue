@@ -1,9 +1,10 @@
 //! One-pass canonical declaration binding, body analysis, and CFG lowering.
 
 use rue_air::{
-    BodyAnalysisWork, DeclarationBindingWork, NamedMethodDependencyEvent,
-    OrdinaryFreeFunctionDependencyEvent, RirDeclarationIndexWork, SemanticBindingManifestWork,
-    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
+    BodyAnalysisWork, DeclarationBindingWork, NamedDestructorDependencyEvent,
+    NamedMethodDependencyEvent, OrdinaryFreeFunctionDependencyEvent, RirDeclarationIndexWork,
+    SemanticBindingManifestWork, SpecializedFreeFunctionDependencyEvent,
+    SpecializedFreeFunctionOrigin,
 };
 use tracing::info_span;
 
@@ -50,6 +51,8 @@ pub struct CanonicalSemanticOutput {
     named_method_dependencies: Vec<NamedMethodDependencyEvent>,
     non_generic_named_method_dependencies_complete: bool,
     generic_named_method_dependencies_complete: bool,
+    named_destructor_dependencies: Vec<NamedDestructorDependencyEvent>,
+    named_destructor_dependencies_complete: bool,
 }
 
 impl CanonicalSemanticOutput {
@@ -98,6 +101,12 @@ impl CanonicalSemanticOutput {
     }
     pub fn generic_named_method_dependencies_complete(&self) -> bool {
         self.generic_named_method_dependencies_complete
+    }
+    pub fn named_destructor_dependencies(&self) -> &[NamedDestructorDependencyEvent] {
+        &self.named_destructor_dependencies
+    }
+    pub fn named_destructor_dependencies_complete(&self) -> bool {
+        self.named_destructor_dependencies_complete
     }
     /// Stable definition identities when requested for this run.
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
@@ -189,6 +198,8 @@ pub fn analyze_canonical_program(
         sema_output.non_generic_named_method_dependencies_complete;
     let generic_named_method_dependencies_complete =
         sema_output.generic_named_method_dependencies_complete;
+    let named_destructor_dependencies = sema_output.named_destructor_dependencies.clone();
+    let named_destructor_dependencies_complete = sema_output.named_destructor_dependencies_complete;
     drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
@@ -219,6 +230,8 @@ pub fn analyze_canonical_program(
         named_method_dependencies,
         non_generic_named_method_dependencies_complete,
         generic_named_method_dependencies_complete,
+        named_destructor_dependencies,
+        named_destructor_dependencies_complete,
     })
 }
 
@@ -543,6 +556,30 @@ mod tests {
         assert_eq!(many.body_analysis.named_method_record_lookups, 1);
         assert_eq!(one.body_analysis.reachable_declaration_rir_visits, 0);
         assert_eq!(many.body_analysis.reachable_declaration_rir_visits, 0);
+    }
+
+    #[test]
+    fn comptime_named_methods_are_single_runtime_bodies_not_specializations() {
+        let source = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct Value { fn choose(borrow self, comptime n: i32) -> i32 { n } } fn main() -> i32 { let value = Value {}; value.choose(1) + value.choose(2) }",
+            )],
+            1,
+        );
+        let (output, _) = canonical(&source, &CompileOptions::default(), false);
+        assert_eq!(
+            output
+                .functions()
+                .iter()
+                .filter(|function| function.analyzed.name.ends_with("Value.choose"))
+                .count(),
+            1
+        );
+        assert!(output.specialized_free_function_origins().is_empty());
+        assert!(!output.generic_named_method_dependencies_complete());
     }
 
     #[test]

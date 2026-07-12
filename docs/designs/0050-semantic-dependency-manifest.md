@@ -139,3 +139,19 @@ specialization/base-owner provenance equivalent to free functions, so
 `generic_named_method_dependencies_complete` remains false. Anonymous methods,
 destructors, constructors and intrinsics remain outside this surface and keep
 the overall semantic graph incomplete.
+
+Audit of comptime-parameter named methods found no specialization mechanism:
+receiver resolution records only `(StructId, method)`, coerces every explicit
+argument as a runtime argument, emits one direct `Call` symbol, and the lazy
+driver analyzes the declaration once. `MethodInfo` has no specialization key or
+substitution/origin fields. Tests pin two distinct comptime arguments producing
+one analyzed method body and no specialization origins. Until language support
+routes these methods through a real instantiation path, generic named-method
+stable provenance is unsupported rather than missing capture data.
+
+Named destructor bodies now use the same existing reference sets to capture
+tagged free-function and named-method targets. Their caller handle is the exact
+named owner declaration FileId/name and compiler translation joins the
+Destructor namespace/kind and owner in the exact `BoundDefinitionSet`.
+`named_destructor_dependencies_complete` covers named destructors; anonymous
+destructors remain a separate incomplete surface.

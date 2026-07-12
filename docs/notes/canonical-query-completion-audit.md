@@ -56,9 +56,12 @@ incremental-compilation goal is complete.
    events. This narrow free-function caller surface is complete, while method
    non-generic named-method callers now also translate exact named owner/method
    identities to tagged free-function or named-method stable targets. Generic
-   named methods still lack specialization-owner provenance; anonymous methods,
-   destructor callers, and declaration/type/const/drop surfaces keep the overall
-   graph explicitly incomplete and prevent body/CFG reuse.
+   named methods are proven to have no specialization path today: comptime
+   arguments still produce one runtime method body, so their generic provenance
+   is explicitly unsupported. Named destructor callers now translate exact
+   owner identities and tagged free/method targets. Anonymous methods and
+   destructors plus declaration/type/const/drop surfaces keep the overall graph
+   explicitly incomplete and prevent body/CFG reuse.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now

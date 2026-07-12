@@ -189,6 +189,12 @@ fn finalize_function_body_analysis(
         non_generic_named_method_dependencies_complete: sema
             .non_generic_named_method_dependencies_complete,
         generic_named_method_dependencies_complete: false,
+        named_destructor_dependencies: {
+            sema.named_destructor_dependencies.sort();
+            sema.named_destructor_dependencies.dedup();
+            sema.named_destructor_dependencies.clone()
+        },
+        named_destructor_dependencies_complete: true,
     };
 
     errors.into_result_with(output)
@@ -451,6 +457,65 @@ fn named_method_dependency_events(
             caller_file: caller_info.span.file_id.index(),
             caller_owner_name: caller_owner_name.clone(),
             caller_method_name: caller_method_name.clone(),
+            target: super::NamedMethodDependencyTargetEvent::NamedMethod {
+                file: info.span.file_id.index(),
+                owner_name,
+                method_name: sema.interner.resolve(callee_method).to_string(),
+            },
+        });
+    }
+    Ok(events)
+}
+
+fn named_destructor_dependency_events(
+    sema: &Sema<'_>,
+    caller_struct: StructId,
+    caller_span: rue_span::Span,
+    referenced_functions: &HashSet<Spur>,
+    referenced_methods: &HashSet<(StructId, Spur)>,
+) -> CompileResult<Vec<super::NamedDestructorDependencyEvent>> {
+    let caller_owner_name = sema.type_pool.struct_def(caller_struct).name.clone();
+    let mut events = Vec::new();
+    for callee in referenced_functions {
+        let info = sema.functions.get(callee).ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InvalidCompilerInput(
+                    "named destructor references an absent free function".into(),
+                ),
+                caller_span,
+            )
+        })?;
+        events.push(super::NamedDestructorDependencyEvent {
+            caller_file: caller_span.file_id.index(),
+            caller_owner_name: caller_owner_name.clone(),
+            target: super::NamedMethodDependencyTargetEvent::FreeFunction {
+                file: info.file_id.index(),
+                name: sema
+                    .interner
+                    .resolve(&sema.source_function_name(*callee))
+                    .to_string(),
+            },
+        });
+    }
+    for (callee_struct, callee_method) in referenced_methods {
+        let owner_name = sema.type_pool.struct_def(*callee_struct).name.clone();
+        if owner_name.starts_with("__anon_struct_") {
+            continue;
+        }
+        let info = sema
+            .methods
+            .get(&(*callee_struct, *callee_method))
+            .ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InvalidCompilerInput(
+                        "named destructor references an absent named method".into(),
+                    ),
+                    caller_span,
+                )
+            })?;
+        events.push(super::NamedDestructorDependencyEvent {
+            caller_file: caller_span.file_id.index(),
+            caller_owner_name: caller_owner_name.clone(),
             target: super::NamedMethodDependencyTargetEvent::NamedMethod {
                 file: info.span.file_id.index(),
                 owner_name,
@@ -920,6 +985,23 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     struct_type,
                 ) {
                     Ok((analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                        match named_destructor_dependency_events(
+                            sema,
+                            struct_id,
+                            destructor.span,
+                            &referenced_fns,
+                            &referenced_meths,
+                        ) {
+                            Ok(events) => {
+                                sema.body_analysis_work.named_destructor_dependency_events +=
+                                    events.len();
+                                sema.named_destructor_dependencies.extend(events);
+                            }
+                            Err(error) => {
+                                errors.push(error);
+                                continue;
+                            }
+                        }
                         functions_with_strings.push((analyzed, local_strings));
                         all_warnings.extend(warnings);
                         enqueue_references_sorted(
@@ -1526,6 +1608,8 @@ mod error_invariant_tests {
             named_method_dependencies: Vec::new(),
             non_generic_named_method_dependencies_complete: false,
             generic_named_method_dependencies_complete: false,
+            named_destructor_dependencies: Vec::new(),
+            named_destructor_dependencies_complete: false,
         }
     }
 
