@@ -1,0 +1,10 @@
+load("//crates:defs.bzl", "rue_binary")
+
+rue_binary(
+    name = "rue-compiler-session-bench",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-span:rue-span",
+        "//third-party:serde_json",
+    ],
+)
