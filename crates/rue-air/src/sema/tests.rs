@@ -67,6 +67,29 @@ mod tests {
         assert_eq!(many.reachable_declaration_rir_visits, 0);
     }
 
+    fn named_destructor_lookup_work(irrelevant: usize) -> crate::BodyAnalysisWork {
+        let mut source = String::from(
+            "struct Target { value: i32 }\n\
+             drop fn Target(self) {}\n\
+             fn main() -> i32 { 0 }\n",
+        );
+        for index in 0..irrelevant {
+            source.push_str(&format!("fn irrelevant{index}() -> i32 {{ {index} }}\n"));
+        }
+        compile_to_air(&source).unwrap().body_analysis_work
+    }
+
+    #[test]
+    fn named_destructor_selection_is_invariant_to_irrelevant_declarations() {
+        let one = named_destructor_lookup_work(1);
+        let many = named_destructor_lookup_work(128);
+
+        assert_eq!(one.named_destructor_declarations_visited, 1);
+        assert_eq!(many.named_destructor_declarations_visited, 1);
+        assert_eq!(one.named_destructor_selection_rir_visits, 0);
+        assert_eq!(many.named_destructor_selection_rir_visits, 0);
+    }
+
     #[test]
     fn panic_is_never_and_assert_is_unit_in_air() {
         // `@panic` diverges: its AIR result type is `!` (never), matching HM

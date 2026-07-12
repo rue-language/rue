@@ -272,8 +272,11 @@ impl RirDeclarationIndex {
         &self.anonymous_methods
     }
 
-    #[cfg(test)]
-    fn destructors(&self) -> &[RirDestructorDeclaration] {
+    /// Named destructor declarations in exact RIR order.
+    ///
+    /// These records remain private to one `Sema` invocation: their arena and
+    /// interner handles are not durable semantic identities.
+    pub(super) fn destructors(&self) -> &[RirDestructorDeclaration] {
         &self.destructors
     }
 
@@ -474,6 +477,43 @@ mod tests {
             rebuilt.const_candidates(second, same),
             index.const_candidates(second, same)
         );
+    }
+
+    #[test]
+    fn same_named_destructors_across_files_follow_exact_rir_order() {
+        let first = FileId::new(19);
+        let second = FileId::new(3);
+        let (rir, interner) = lower_files(&[
+            ("struct Same { value: i32 } drop fn Same(self) {}", first),
+            ("struct Same { value: bool } drop fn Same(self) {}", second),
+        ]);
+        let index = RirDeclarationIndex::new(&rir);
+        let destructors = index.destructors();
+
+        assert_eq!(destructors.len(), 2);
+        assert_eq!(
+            destructors
+                .iter()
+                .map(|record| record.span.file_id)
+                .collect::<Vec<_>>(),
+            [first, second]
+        );
+        assert!(
+            destructors
+                .windows(2)
+                .all(|pair| { pair[0].declaration.as_u32() < pair[1].declaration.as_u32() })
+        );
+        assert!(
+            destructors
+                .iter()
+                .all(|record| interner.resolve(&record.type_name) == "Same")
+        );
+        for record in destructors {
+            assert!(matches!(
+                rir.get(record.declaration).data,
+                InstData::DropFnDecl { body, .. } if body == record.body
+            ));
+        }
     }
 
     #[test]
