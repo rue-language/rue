@@ -1459,10 +1459,9 @@ impl CanonicalFrontendSession {
 
     /// Compare two immutable semantic manifests without lowering or scanning RIR.
     ///
-    /// Current production manifests deliberately report an incomplete dependency
-    /// graph, so this query returns a conservative full invalidation until capture
-    /// is complete. Keeping the planner real and cached makes that safety boundary
-    /// executable rather than an implicit promise made by a future cache.
+    /// Supported production manifests with complete dependency capture can produce
+    /// an incremental invalidation plan. Unsupported dependency surfaces, incomplete
+    /// capture, and global semantic-input changes fail closed to full invalidation.
     pub fn semantic_invalidation_plan(
         &mut self,
         previous: &Arc<SemanticDependencyInputManifest>,
@@ -3026,7 +3025,8 @@ mod tests {
     }
 
     #[test]
-    fn production_invalidation_is_cached_and_fails_closed_without_rir_work() {
+    fn production_invalidation_is_cached_incremental_and_closes_reverse_dependencies_without_rir_work()
+     {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SemanticInvalidationPlan>();
         let source = snapshot(
@@ -3060,34 +3060,78 @@ mod tests {
         let first = planner.semantic_invalidation_plan(&previous, &current);
         let second = planner.semantic_invalidation_plan(&previous, &current);
         assert!(Arc::ptr_eq(&first, &second));
-        assert!(matches!(
-            first.scope(),
-            SemanticInvalidationScope::Full { reasons }
-                if reasons.iter().any(|reason| matches!(reason,
-                    SemanticFullInvalidationReason::IncompleteDependencyGraph(blockers)
-                    if blockers.as_ref() == previous.dependency_blockers()
-                ))
-        ));
-        assert_eq!(
-            previous
-                .dependency_blockers()
-                .iter()
-                .map(|blocker| (blocker.owner(), blocker.surface(), blocker.reason()))
-                .collect::<Vec<_>>(),
-            vec![(
-                None,
-                SemanticDependencySurface::DeclarationTypeCallHead,
-                SemanticDependencyIncompleteReason::TypeCallHeadIdentityUnavailable,
-            ),]
-        );
+        assert_eq!(first.scope(), &SemanticInvalidationScope::Incremental);
+        assert!(previous.dependency_blockers().is_empty());
         assert!(first.reusable().is_empty());
-        assert!(first.invalidated().is_empty());
+        assert_eq!(definition_names(first.invalidated()), vec!["leaf", "main"]);
         assert_eq!(definition_names(first.changed()), vec!["leaf"]);
-        assert_eq!(first.work().dependency_edges_visited, 0);
-        assert_eq!(first.work().reverse_closure_nodes_visited, 0);
+        assert_eq!(first.work().dependency_edges_visited, 2);
+        assert_eq!(first.work().reverse_closure_nodes_visited, 2);
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
         assert_eq!(planner.work().invalidation_plans.executions, 1);
         assert_eq!(planner.work().invalidation_plans.reuses, 1);
+        assert_eq!(planner.work().rir.executions, 0);
+
+        let noop = planner.semantic_invalidation_plan(&previous, &previous);
+        assert_eq!(noop.scope(), &SemanticInvalidationScope::Incremental);
+        assert!(noop.changed().is_empty());
+        assert!(noop.invalidated().is_empty());
+        assert_eq!(definition_names(noop.reusable()), vec!["leaf", "main"]);
+        assert_eq!(noop.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn production_invalidation_closes_cross_module_edges_and_ignores_relocation_and_order() {
+        let build = |main_id, lib_id, root: &str, reversed: bool, leaf_value: i32| {
+            let main = (
+                main_id,
+                format!("{root}/main.rue"),
+                "main.rue",
+                r#"const lib = @import("lib.rue");
+                   fn main() -> i32 { lib.leaf() }"#
+                    .to_owned(),
+            );
+            let lib = (
+                lib_id,
+                format!("{root}/lib.rue"),
+                "lib.rue",
+                format!("pub fn leaf() -> i32 {{ {leaf_value} }}"),
+            );
+            let owned = if reversed {
+                vec![lib, main]
+            } else {
+                vec![main, lib]
+            };
+            let entries = owned
+                .iter()
+                .map(|(id, path, module, text)| (*id, path.as_str(), *module, text.as_str()))
+                .collect::<Vec<_>>();
+            let source = snapshot(&entries, main_id);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let previous = build(3, 8, "/one", false, 1);
+        let relocated = build(91, 4, "/elsewhere", true, 1);
+        let changed = build(91, 4, "/elsewhere", true, 2);
+        let mut planner = CanonicalFrontendSession::new();
+
+        let moved = planner.semantic_invalidation_plan(&previous, &relocated);
+        assert_eq!(moved.scope(), &SemanticInvalidationScope::Incremental);
+        assert!(moved.invalidated().is_empty());
+        assert_eq!(
+            definition_names(moved.reusable()),
+            vec!["leaf", "main", "lib"]
+        );
+
+        let plan = planner.semantic_invalidation_plan(&relocated, &changed);
+        assert_eq!(plan.scope(), &SemanticInvalidationScope::Incremental);
+        assert_eq!(definition_names(plan.changed()), vec!["leaf"]);
+        assert_eq!(definition_names(plan.invalidated()), vec!["leaf", "main"]);
+        assert_eq!(definition_names(plan.reusable()), vec!["lib"]);
+        assert_eq!(plan.work().extra_rir_instructions_visited, 0);
         assert_eq!(planner.work().rir.executions, 0);
     }
 
@@ -3151,8 +3195,8 @@ mod tests {
             session.update(source).into_result().unwrap();
             session.semantic_dependency_inputs(options, None).unwrap()
         };
-        let previous = synthetic_complete_manifest(&build(&original, &CompileOptions::default()));
-        let moved = synthetic_complete_manifest(&build(&relocated, &CompileOptions::default()));
+        let previous = build(&original, &CompileOptions::default());
+        let moved = build(&relocated, &CompileOptions::default());
         let mut planner = CanonicalFrontendSession::new();
         let plan = planner.semantic_invalidation_plan(&previous, &moved);
         assert_eq!(plan.scope(), &SemanticInvalidationScope::Incremental);
@@ -3164,25 +3208,25 @@ mod tests {
             .find(|&&target| target != moved.input().target)
             .expect("at least one supported target differs from the current target");
         assert_ne!(alternative_target, moved.input().target);
-        let target = synthetic_complete_manifest(&build(
+        let target = build(
             &relocated,
             &CompileOptions {
                 target: alternative_target,
                 ..CompileOptions::default()
             },
-        ));
+        );
         assert!(matches!(
             planner.semantic_invalidation_plan(&moved, &target).scope(),
             SemanticInvalidationScope::Full { reasons }
                 if reasons.contains(&SemanticFullInvalidationReason::TargetChanged)
         ));
-        let features = synthetic_complete_manifest(&build(
+        let features = build(
             &relocated,
             &CompileOptions {
                 preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
                 ..CompileOptions::default()
             },
-        ));
+        );
         assert!(matches!(
             planner.semantic_invalidation_plan(&moved, &features).scope(),
             SemanticInvalidationScope::Full { reasons }
@@ -3368,7 +3412,7 @@ mod tests {
             ]
         );
         assert!(first.free_function_caller_dependencies_complete());
-        assert!(!first.semantic_dependency_graph_complete());
+        assert!(first.semantic_dependency_graph_complete());
         assert_eq!(first.work().specialization_origins_validated, 4);
         assert_eq!(first.work().free_function_events_translated, 5);
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
@@ -3810,6 +3854,17 @@ mod tests {
         );
         assert!(!manifest.implicit_named_destructor_dependencies_complete());
         assert_eq!(manifest.work().extra_rir_instructions_visited, 0);
+        let plan = session.semantic_invalidation_plan(&manifest, &manifest);
+        assert!(matches!(
+            plan.scope(),
+            SemanticInvalidationScope::Full { reasons }
+                if reasons.as_ref() == [SemanticFullInvalidationReason::IncompleteDependencyGraph(
+                    Arc::from([blocker.clone()]),
+                )]
+        ));
+        assert!(plan.reusable().is_empty());
+        assert!(plan.invalidated().is_empty());
+        assert_eq!(plan.work().extra_rir_instructions_visited, 0);
     }
 
     #[test]
@@ -3917,7 +3972,7 @@ mod tests {
                 ),
             ]
         );
-        assert!(!first.declaration_type_call_head_dependencies_complete());
+        assert!(first.declaration_type_call_head_dependencies_complete());
         assert_eq!(first.work().declaration_type_call_head_events_translated, 2);
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
     }
@@ -4054,7 +4109,7 @@ mod tests {
                 .is_empty()
         );
         assert!(manifest.supported_type_call_heads_complete());
-        assert!(!manifest.declaration_type_call_head_dependencies_complete());
+        assert!(manifest.declaration_type_call_head_dependencies_complete());
         assert_eq!(manifest.work().builtin_type_call_head_inputs_translated, 1);
         assert_eq!(manifest.work().extra_rir_instructions_visited, 0);
     }

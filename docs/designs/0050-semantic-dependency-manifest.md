@@ -103,7 +103,7 @@ target, and preview-feature changes are unconditional full invalidations;
 physical relocation, FileId assignment, and input order are absent from its
 definition comparison.
 
-This is intentionally a safety seam, not incremental semantic reuse. A
+This is intentionally a safety seam, not yet retained semantic artifacts. A
 production manifest carries an immutable sorted set of
 `SemanticDependencyBlocker` records instead of a hard-coded global completeness
 bit. Each record identifies the dependency surface, the precise missing
@@ -111,16 +111,16 @@ semantic identity, and a stable owner when one exists. Compatibility
 `*_complete` accessors and whole-graph completeness are derived from that set.
 The planner unions both revisions' blockers into its
 `IncompleteDependencyGraph` reason, so endpoint loss fails closed and cannot be
-hidden by a boolean toggle. Production plans currently return `Full` with no
-reusable candidates because no production fixture has an empty blocker set.
-Synthetic complete-manifest tests exercise exact deltas and transitive closure;
-the incremental branch cannot authorize production reuse until every capture
-surface below is complete.
+hidden by a boolean toggle. Supported production programs now have an empty
+blocker set and produce `Incremental` plans for exact no-ops and body-only
+changes, including deterministic reverse-dependency closure and reusable-key
+cardinality. That plan is evidence for a later retained-artifact query; it does
+not itself reuse AIR or CFG results.
 
-The remaining unconditional production blockers are fully resolved
-declaration-type identity and complete declaration type-call-head identity.
-Individual programs can add evidence-based
-blockers, including anonymous drop owners and unsupported dynamic heads. The
+There are no unconditional production blockers. Individual programs can still
+add evidence-based blockers, including anonymous drop owners and any future
+unsupported dynamic or unnameable type-call heads. Such programs continue to
+return `Full` with the exact blocker union and no reusable candidates. The
 records are sorted/deduplicated, independent of FileId and physical location,
 and require no second RIR scan.
 
@@ -251,9 +251,12 @@ semantic input descriptor. No intrinsic currently returns a type. Dotted heads
 are exclusively module paths: `Owner.Make()` where `Owner` is a named type is
 rejected, so associated type constructors, dynamic heads, and unnameable heads
 are not successful language forms and emit no partial dependency edge.
-`supported_type_call_heads_complete=true` is intentionally narrow: it covers
-successfully resolved call heads only. Broader declaration-type and semantic
-graph completeness remain false.
+Both type-call-head completeness surfaces are true for successful programs:
+named heads retain their exact stable function endpoint, while `Str(N)` retains
+its tagged builtin input. Unsupported syntax is rejected before a manifest is
+published; if a successful dynamic/unnameable form is introduced later, its
+producer must emit an evidence-based blocker rather than silently broadening
+this claim. Supported programs can therefore have whole-graph completeness.
 
 Named value-constant initializers record direct dependencies while the existing
 dependency-ordered constant collector and comptime evaluator resolve them.

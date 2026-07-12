@@ -212,7 +212,12 @@ fn finalize_function_body_analysis(
             sema.declaration_type_call_head_dependencies.dedup();
             sema.declaration_type_call_head_dependencies.clone()
         },
-        declaration_type_call_head_dependencies_complete: false,
+        // Every successful declaration type-call is resolved through one of
+        // the observer-backed paths above: a named free type constructor or
+        // the separately tagged `Str(N)` builtin. Unsupported/dynamic heads
+        // fail type checking and therefore cannot produce a successful
+        // manifest that silently omits an edge.
+        declaration_type_call_head_dependencies_complete: true,
         declaration_builtin_type_call_head_dependencies: {
             sema.declaration_builtin_type_call_head_dependencies.sort();
             sema.declaration_builtin_type_call_head_dependencies.dedup();

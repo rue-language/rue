@@ -61,13 +61,15 @@ incremental-compilation goal is complete.
    is explicitly unsupported. Named destructor callers now translate exact
    owner identities and tagged free/method targets. Anonymous methods and
    destructors plus declaration/type/const/drop surfaces keep the overall graph
-   explicitly incomplete and prevent body/CFG reuse. Completeness is now a
+   explicitly fail closed and prevent body/CFG reuse when encountered.
+   Completeness is now a
    production-derived, sorted blocker set rather than an opaque global boolean;
-   the planner carries the exact union from both revisions. No production
-   fixture reaches `Incremental` yet: declaration type-call-head identity
-   remains the sole unconditional blocker, while
-   anonymous drop owners and unsupported heads add surface-specific blockers
-   when observed. Generic named methods now retain the authoritative reference
+   the planner carries the exact union from both revisions. Supported
+   production fixtures now reach `Incremental` for no-op and body-only deltas,
+   with exact reverse closure, reusable-key counts, and zero additional RIR
+   traversal. Anonymous drop owners and future unsupported heads still add
+   surface-specific blockers and force `Full` when observed. Generic named
+   methods now retain the authoritative reference
    sets from their single runtime body under the stable declaration caller key.
    A conservative resolved declaration-type slice now translates nominal
    signature/field/payload/constant/owner edges without rescanning RIR. A
@@ -84,15 +86,16 @@ incremental-compilation goal is complete.
    a definition. No intrinsic returns a type today. Named-owner associated,
    anonymous, unnameable, and dynamic heads are not successful type syntax
    (dotted heads resolve only through modules), which tests pin as fail-closed.
-   A narrow supported-head completeness bit is therefore true, while broader
-   overall graph completeness remains false.
+   Named and builtin call-head completeness are therefore true for successful
+   supported programs; successful programs without evidence-based blockers now
+   have overall graph completeness.
    Named value-constant initializers now retain direct tagged dependencies on
    constants, comptime functions/type constructors, named types, and module
    bindings at the existing collector/evaluator seams. Recursive source context
    is preserved, cycles fail before publishing, and exact stable translation
    adds zero RIR visits. Module bindings remain import-topology inputs rather
    than value-constant sources. The value-constant slice is narrowly complete;
-   the overall graph remains false for dynamic/anonymous surfaces.
+   dynamic/anonymous surfaces remain explicitly fail-closed when encountered.
    Stable definition input fingerprints are now schema-versioned and split at
    authoritative AST boundaries into identity/visibility, signature, and
    body-or-const-initializer components. Named struct signatures frame around
@@ -100,8 +103,8 @@ incremental-compilation goal is complete.
    than its owner type. Struct fields and enum variants remain exact
    signature-only inputs. Malformed joins fail closed, and hashes remain stable
    across relocation, FileId assignment, and input order. This improves delta
-   classification; it does not itself authorize semantic reuse while the graph
-   completeness bit is false.
+   classification and now drives production `Incremental` plans. Retaining and
+   reusing semantic artifacts remains a separate later slice.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now
