@@ -897,6 +897,7 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: Option<&AnalysisContext>,
     ) -> CompileResult<Type> {
+        let declaration_type_observer = self.declaration_type_observer.clone();
         let segments: Vec<&str> = call_path.split('.').collect();
         if segments.len() < 2 || segments.iter().any(|s| s.is_empty()) {
             return Err(CompileError::new(
@@ -926,6 +927,8 @@ impl<'a> Sema<'a> {
                 span,
             ));
         };
+        self.declaration_type_observer = declaration_type_observer;
+        self.record_declaration_type_call_head(function_key, fn_info);
         self.check_unqualified_visibility(
             "function",
             member,
@@ -1416,6 +1419,7 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: Option<&AnalysisContext>,
     ) -> CompileResult<Type> {
+        let declaration_type_observer = self.declaration_type_observer.clone();
         let name_sym = self.interner.get_or_intern(call_name);
         // The constructor may not be collected yet: struct-field and
         // enum-payload types, const initializers, and earlier function
@@ -1444,6 +1448,8 @@ impl<'a> Sema<'a> {
                 span,
             ));
         };
+        self.declaration_type_observer = declaration_type_observer;
+        self.record_declaration_type_call_head(name_key, fn_info);
         let is_type_ctor = self.function_returns_type(&fn_info);
         let params = fn_info.params;
         let ctor_file_id = fn_info.file_id;
@@ -2366,6 +2372,7 @@ impl<'a> Sema<'a> {
         call_name: &str,
         span: Span,
     ) -> CompileResult<(Spur, FunctionInfo)> {
+        let declaration_type_observer = self.declaration_type_observer.clone();
         let unknown =
             || CompileError::new(ErrorKind::UnknownType(format!("{}(...)", call_name)), span);
 
@@ -2413,7 +2420,33 @@ impl<'a> Sema<'a> {
             .get(&function_key)
             .copied()
             .ok_or_else(unknown)?;
+        self.declaration_type_observer = declaration_type_observer;
+        self.record_declaration_type_call_head(function_key, info);
         Ok((function_key, info))
+    }
+
+    fn record_declaration_type_call_head(&mut self, function_key: Spur, info: FunctionInfo) {
+        let Some((source_file, source_name, source_owner_name, source_kind, dependency_kind)) =
+            self.declaration_type_observer.clone()
+        else {
+            return;
+        };
+        self.declaration_type_call_head_dependencies.push(
+            super::DeclarationTypeCallHeadDependencyEvent {
+                source_file: source_file.index(),
+                source_name,
+                source_owner_name,
+                source_kind,
+                dependency_kind,
+                callable_file: info.file_id.index(),
+                callable_name: self
+                    .interner
+                    .resolve(&self.source_function_name(function_key))
+                    .to_string(),
+            },
+        );
+        self.body_analysis_work
+            .declaration_type_call_head_dependency_events += 1;
     }
 
     /// Whether the declaration's source return annotation is literally `type`.

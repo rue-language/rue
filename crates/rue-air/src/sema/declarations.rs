@@ -670,6 +670,7 @@ impl<'a> Sema<'a> {
         // (order-independent E0436, spec 10.3:1/10.5:1, RUE-239).
         self.check_const_cross_kind_collisions()?;
         self.capture_resolved_declaration_type_dependencies();
+        self.declaration_type_observer = None;
         Ok(())
     }
 
@@ -912,6 +913,15 @@ impl<'a> Sema<'a> {
         }
 
         for (name, payloads_start, payloads_len, span) in jobs {
+            let source_name = self.interner.resolve(&name).to_string();
+            self.declaration_type_observer =
+                (!source_name.starts_with("__anon_enum_")).then_some((
+                    span.file_id,
+                    source_name,
+                    None,
+                    super::DeclarationTypeDependencySourceKind::Enum,
+                    super::DeclarationTypeDependencyKind::Payload,
+                ));
             let words = self.rir.get_extra(payloads_start, payloads_len).to_vec();
             // Decode per-variant payload type symbols.
             let mut variant_payloads: Vec<Vec<Type>> = Vec::new();
@@ -1043,6 +1053,14 @@ impl<'a> Sema<'a> {
                 }
 
                 // Resolve field types
+                self.declaration_type_observer = (!name_str.starts_with("__anon_struct_"))
+                    .then_some((
+                        inst.span.file_id,
+                        name_str.clone(),
+                        None,
+                        super::DeclarationTypeDependencySourceKind::Struct,
+                        super::DeclarationTypeDependencyKind::Field,
+                    ));
                 let mut resolved_fields = Vec::new();
                 for (field_name, field_type) in &fields {
                     // A slice type `[T]` is second-class (ADR-0037, ADR-0043,
@@ -1485,6 +1503,13 @@ impl<'a> Sema<'a> {
                 span,
             ));
         }
+        self.declaration_type_observer = Some((
+            span.file_id,
+            name_str.to_string(),
+            None,
+            super::DeclarationTypeDependencySourceKind::Function,
+            super::DeclarationTypeDependencyKind::Signature,
+        ));
 
         let params = self.rir.get_params(params_start, params_len);
         let directives = self.rir.get_directives(directives_start, directives_len);
@@ -1657,6 +1682,19 @@ impl<'a> Sema<'a> {
                 ..
             } = &method_inst.data
             {
+                let owner_name = self.interner.resolve(&type_name).to_string();
+                self.declaration_type_observer = (!owner_name.starts_with("__anon_struct_"))
+                    .then_some((
+                        method_inst.span.file_id,
+                        self.interner.resolve(method_name).to_string(),
+                        Some(owner_name),
+                        if *has_self {
+                            super::DeclarationTypeDependencySourceKind::Method
+                        } else {
+                            super::DeclarationTypeDependencySourceKind::AssociatedFunction
+                        },
+                        super::DeclarationTypeDependencyKind::Signature,
+                    ));
                 // Use StructId in key to support anonymous struct methods
                 let key = (struct_id, *method_name);
                 if self.methods.contains_key(&key) {

@@ -201,6 +201,12 @@ fn finalize_function_body_analysis(
             sema.declaration_type_dependencies.clone()
         },
         declaration_type_dependencies_complete: false,
+        declaration_type_call_head_dependencies: {
+            sema.declaration_type_call_head_dependencies.sort();
+            sema.declaration_type_call_head_dependencies.dedup();
+            sema.declaration_type_call_head_dependencies.clone()
+        },
+        declaration_type_call_head_dependencies_complete: false,
     };
 
     errors.into_result_with(output)
@@ -1618,6 +1624,8 @@ mod error_invariant_tests {
             named_destructor_dependencies_complete: false,
             declaration_type_dependencies: Vec::new(),
             declaration_type_dependencies_complete: false,
+            declaration_type_call_head_dependencies: Vec::new(),
+            declaration_type_call_head_dependencies_complete: false,
         }
     }
 
