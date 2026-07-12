@@ -64,8 +64,8 @@ incremental-compilation goal is complete.
    explicitly incomplete and prevent body/CFG reuse. Completeness is now a
    production-derived, sorted blocker set rather than an opaque global boolean;
    the planner carries the exact union from both revisions. No production
-   fixture reaches `Incremental` yet: resolved declaration-type identity and
-   declaration type-call-head identity remain unconditional blockers, while
+   fixture reaches `Incremental` yet: declaration type-call-head identity
+   remains the sole unconditional blocker, while
    anonymous drop owners and unsupported heads add surface-specific blockers
    when observed. Generic named methods now retain the authoritative reference
    sets from their single runtime body under the stable declaration caller key.
@@ -75,14 +75,17 @@ incremental-compilation goal is complete.
    heads before generic composites are erased to `COMPTIME_TYPE`: nested
    `Option(Result(T))` retains both stable function endpoints, and qualified
    `lib.Box(T)` retains the exact defining module. These events are sorted and
-   deduplicated and add zero RIR visits. This surface remains explicitly
-   `Str(N)` is retained separately as a stable fixed-capacity-string builtin
+   deduplicated and add zero RIR visits. Resolved nominal leaves in deferred
+   generic arrays and pointers are retained before placeholder erasure, and
+   type aliases retain their exact value-constant identity as well as the
+   resolved nominal target. Declaration-type identity is therefore complete
+   for successful named declarations. `Str(N)` is retained separately as a stable fixed-capacity-string builtin
    input whose preview identity is part of the semantic key; it does not invent
    a definition. No intrinsic returns a type today. Named-owner associated,
    anonymous, unnameable, and dynamic heads are not successful type syntax
    (dotted heads resolve only through modules), which tests pin as fail-closed.
    A narrow supported-head completeness bit is therefore true, while broader
-   declaration-type and overall graph completeness remain false.
+   overall graph completeness remains false.
    Named value-constant initializers now retain direct tagged dependencies on
    constants, comptime functions/type constructors, named types, and module
    bindings at the existing collector/evaluator seams. Recursive source context

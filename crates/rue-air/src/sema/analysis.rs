@@ -206,7 +206,7 @@ fn finalize_function_body_analysis(
             sema.declaration_type_dependencies.dedup();
             sema.declaration_type_dependencies.clone()
         },
-        declaration_type_dependencies_complete: false,
+        declaration_type_dependencies_complete: true,
         declaration_type_call_head_dependencies: {
             sema.declaration_type_call_head_dependencies.sort();
             sema.declaration_type_call_head_dependencies.dedup();

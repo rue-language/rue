@@ -71,6 +71,7 @@ pub enum DeclarationTypeDependencySourceKind {
 pub enum DeclarationTypeDependencyTargetKind {
     Struct,
     Enum,
+    ValueConst,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeclarationTypeDependencyKind {
