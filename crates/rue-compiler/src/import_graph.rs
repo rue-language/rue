@@ -14,7 +14,10 @@ use rue_air::{DirResolution, ModulePath, normalize_module_path};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_rir::{InstData, Rir};
 
-use crate::{ModuleId, ModuleResolutionInputs, SemanticInputDescriptor, SourceMetadata};
+use crate::{
+    CompileOptions, ModuleId, ModuleResolutionInputs, SemanticInputDescriptor, SourceMetadata,
+    StableLinkerInput, StableOptLevel,
+};
 
 /// One valid import call, identified independently of request-local file IDs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -286,6 +289,91 @@ impl ResolvedProgramRevision {
     pub fn imports(&self) -> &CanonicalImportGraph {
         &self.imports
     }
+}
+
+/// Complete code-generation identity after canonical import resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResolvedCodegenRevision {
+    program: ResolvedProgramRevision,
+    opt_level: StableOptLevel,
+}
+
+impl ResolvedCodegenRevision {
+    pub fn new(program: ResolvedProgramRevision, opt_level: StableOptLevel) -> Self {
+        Self { program, opt_level }
+    }
+
+    /// Add code-generation options to an already-resolved program revision.
+    ///
+    /// Requiring `program` prevents this path from omitting canonical imports.
+    pub fn from_compile_options(
+        program: ResolvedProgramRevision,
+        options: &CompileOptions,
+    ) -> CompileResult<Self> {
+        validate_resolved_compile_options(&program, options)?;
+        Ok(Self::new(program, options.opt_level.into()))
+    }
+
+    pub fn program(&self) -> &ResolvedProgramRevision {
+        &self.program
+    }
+
+    pub fn opt_level(&self) -> StableOptLevel {
+        self.opt_level
+    }
+}
+
+/// Complete link identity after canonical import resolution and code generation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResolvedLinkRevision {
+    codegen: ResolvedCodegenRevision,
+    linker: StableLinkerInput,
+}
+
+impl ResolvedLinkRevision {
+    pub fn new(codegen: ResolvedCodegenRevision, linker: StableLinkerInput) -> Self {
+        Self { codegen, linker }
+    }
+
+    /// Add code-generation and linker options to an already-resolved program.
+    pub fn from_compile_options(
+        program: ResolvedProgramRevision,
+        options: &CompileOptions,
+    ) -> CompileResult<Self> {
+        Ok(Self::new(
+            ResolvedCodegenRevision::from_compile_options(program, options)?,
+            (&options.linker).into(),
+        ))
+    }
+
+    pub fn codegen(&self) -> &ResolvedCodegenRevision {
+        &self.codegen
+    }
+
+    pub fn linker(&self) -> &StableLinkerInput {
+        &self.linker
+    }
+}
+
+fn validate_resolved_compile_options(
+    program: &ResolvedProgramRevision,
+    options: &CompileOptions,
+) -> CompileResult<()> {
+    if program.semantic().target != options.target {
+        return Err(provenance_error(format!(
+            "resolved program target {} does not match compile options target {}",
+            program.semantic().target,
+            options.target
+        )));
+    }
+    let features = crate::StablePreviewFeatures::new(&options.preview_features);
+    if program.semantic().preview_features != features {
+        return Err(provenance_error(
+            "resolved program preview features do not match compile options preview features"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 impl ImportGraph {
@@ -1489,6 +1577,133 @@ fn main() -> i32 {
         assert_eq!(first_graph, moved_graph);
         assert_eq!(value_hash(&first_graph), value_hash(&moved_graph));
         assert_ne!(first_revision, moved_revision);
+    }
+
+    #[test]
+    fn resolved_codegen_and_link_revisions_layer_options_after_imports() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ResolvedCodegenRevision>();
+        assert_send_sync::<ResolvedLinkRevision>();
+
+        let (_, _, program) = relocated_revision("/one", 1, 2);
+        let base_options = crate::CompileOptions::default();
+        let mut optimized_options = base_options.clone();
+        optimized_options.opt_level = crate::OptLevel::O2;
+        let base_codegen =
+            ResolvedCodegenRevision::from_compile_options(program.clone(), &base_options).unwrap();
+        let optimized_codegen =
+            ResolvedCodegenRevision::from_compile_options(program.clone(), &optimized_options)
+                .unwrap();
+        assert_eq!(base_codegen.program(), optimized_codegen.program());
+        assert_ne!(base_codegen, optimized_codegen);
+        assert_eq!(base_codegen.opt_level(), StableOptLevel::O0);
+        assert_eq!(optimized_codegen.opt_level(), StableOptLevel::O2);
+
+        let base_link =
+            ResolvedLinkRevision::from_compile_options(program.clone(), &base_options).unwrap();
+        let optimized_link =
+            ResolvedLinkRevision::from_compile_options(program.clone(), &optimized_options)
+                .unwrap();
+        assert_ne!(base_link, optimized_link);
+        assert_eq!(base_link.codegen().program(), &program);
+
+        let mut system_options = base_options.clone();
+        system_options.linker = crate::LinkerMode::System("cc".to_owned());
+        let system_link =
+            ResolvedLinkRevision::from_compile_options(program.clone(), &system_options).unwrap();
+        assert_eq!(base_link.codegen(), system_link.codegen());
+        assert_ne!(base_link, system_link);
+        assert!(matches!(base_link.linker(), StableLinkerInput::Internal));
+        assert!(
+            matches!(system_link.linker(), StableLinkerInput::System(name) if name.as_ref() == "cc")
+        );
+
+        assert_eq!(base_codegen.program().semantic(), program.semantic());
+        assert_eq!(base_codegen.program().imports(), program.imports());
+        assert_eq!(base_codegen.clone(), base_codegen);
+        assert_eq!(value_hash(&base_codegen.clone()), value_hash(&base_codegen));
+        assert_eq!(value_hash(&base_link.clone()), value_hash(&base_link));
+    }
+
+    #[test]
+    fn graph_changes_propagate_through_resolved_codegen_and_link_identity() {
+        let (_, _, program) = relocated_revision("/one", 1, 2);
+        let empty_graph = CanonicalImportGraph::from_supplied(
+            program.imports().root().clone(),
+            Vec::new(),
+            &program.semantic().resolution,
+        )
+        .unwrap();
+        let changed_program = ResolvedProgramRevision::new(program.semantic().clone(), empty_graph);
+        let options = crate::CompileOptions::default();
+        let original_codegen =
+            ResolvedCodegenRevision::from_compile_options(program.clone(), &options).unwrap();
+        let changed_codegen =
+            ResolvedCodegenRevision::from_compile_options(changed_program.clone(), &options)
+                .unwrap();
+        assert_ne!(original_codegen, changed_codegen);
+        assert_ne!(
+            ResolvedLinkRevision::from_compile_options(program, &options).unwrap(),
+            ResolvedLinkRevision::from_compile_options(changed_program, &options).unwrap()
+        );
+    }
+
+    #[test]
+    fn resolved_compile_options_fail_closed_on_semantic_mismatch() {
+        let (_, _, program) = relocated_revision("/one", 1, 2);
+        let target_options = crate::CompileOptions {
+            target: if program.semantic().target == crate::Target::X86_64Linux {
+                crate::Target::Aarch64Linux
+            } else {
+                crate::Target::X86_64Linux
+            },
+            ..crate::CompileOptions::default()
+        };
+        let target_error =
+            ResolvedCodegenRevision::from_compile_options(program.clone(), &target_options)
+                .unwrap_err();
+        assert_eq!(
+            target_error.to_string(),
+            format!(
+                "invalid compiler input: resolved program target {} does not match compile options target {}",
+                program.semantic().target,
+                target_options.target
+            )
+        );
+
+        let mut feature_options = crate::CompileOptions::default();
+        feature_options
+            .preview_features
+            .insert(rue_error::PreviewFeature::TestInfra);
+        let feature_error =
+            ResolvedLinkRevision::from_compile_options(program.clone(), &feature_options)
+                .unwrap_err();
+        assert_eq!(
+            feature_error.to_string(),
+            "invalid compiler input: resolved program preview features do not match compile options preview features"
+        );
+        assert_eq!(
+            feature_error.to_string(),
+            ResolvedLinkRevision::from_compile_options(program, &feature_options)
+                .unwrap_err()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn resolved_codegen_and_link_identity_retain_relocation_sensitivity() {
+        let (_, first_graph, first_program) = relocated_revision("/one", 1, 2);
+        let (_, moved_graph, moved_program) = relocated_revision("/moved", 90, 7);
+        assert_eq!(first_graph, moved_graph);
+        let options = crate::CompileOptions::default();
+        assert_ne!(
+            ResolvedCodegenRevision::from_compile_options(first_program.clone(), &options).unwrap(),
+            ResolvedCodegenRevision::from_compile_options(moved_program.clone(), &options).unwrap()
+        );
+        assert_ne!(
+            ResolvedLinkRevision::from_compile_options(first_program, &options).unwrap(),
+            ResolvedLinkRevision::from_compile_options(moved_program, &options).unwrap()
+        );
     }
 
     fn supplied_inputs(names: &[&str], root: &str) -> ModuleResolutionInputs {
