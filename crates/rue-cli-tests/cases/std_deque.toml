@@ -1,0 +1,45 @@
+# std.collections.Deque(T) (RUE-669) — a growable double-ended ring buffer.
+# Copy-element only (RUE-651); `new(filler)` seeds unused slots.
+
+[section]
+id = "cli.std_deque"
+name = "Standard library v1 — Deque"
+description = "Double-ended queue over a growable ring buffer, through @import(\"std\")."
+
+[[case]]
+name = "deque_both_ends_grow_drain"
+description = "push_back/push_front across a grow, front/back/pop_front/pop_back, then drain -> exit 42."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let D = std.deque.Deque(i64);
+    let OI = std.option.Option(i64);
+    let mut d = D.new(0);
+    let mut score: i64 = 0;
+
+    let mut k: i64 = 0;
+    while k < 10 { d.push_back(k); k = k + 1; }   // forces a grow past cap 8
+    d.push_front(100);
+    d.push_front(200);
+    if d.len() == 12 { score = score + 1; }
+    match d.front() { OI.Some(v) => { if v == 200 { score = score + 1; } }, OI.None => {} }
+    match d.back() { OI.Some(v) => { if v == 9 { score = score + 1; } }, OI.None => {} }
+    match d.pop_front() { OI.Some(v) => { if v == 200 { score = score + 1; } }, OI.None => {} }
+    match d.pop_back() { OI.Some(v) => { if v == 9 { score = score + 1; } }, OI.None => {} }
+    if d.len() == 10 { score = score + 1; }
+
+    let mut sum: i64 = 0;
+    let mut done = false;
+    while !done {
+        match d.pop_front() { OI.Some(v) => { sum = sum + v; }, OI.None => { done = true; } }
+    }
+    if sum == 136 { score = score + 1; }
+    if d.is_empty() { score = score + 1; }
+
+    if score == 8 { 42 } else { @intCast(score) }
+}
+""" }]
