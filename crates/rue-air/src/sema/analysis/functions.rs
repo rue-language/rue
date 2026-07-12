@@ -59,6 +59,7 @@ impl<'a> Sema<'a> {
         Ok((
             AnalyzedFunction {
                 name: fn_name.to_string(),
+                implicit_drop_source: None,
                 air,
                 num_locals,
                 num_param_slots,
@@ -149,6 +150,7 @@ impl<'a> Sema<'a> {
         Ok((
             AnalyzedFunction {
                 name: full_name.to_string(),
+                implicit_drop_source: None,
                 air,
                 num_locals,
                 num_param_slots,
@@ -216,6 +218,7 @@ impl<'a> Sema<'a> {
         Ok((
             AnalyzedFunction {
                 name: full_name.to_string(),
+                implicit_drop_source: None,
                 air,
                 num_locals,
                 num_param_slots,

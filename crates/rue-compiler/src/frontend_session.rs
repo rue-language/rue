@@ -65,6 +65,7 @@ pub struct SemanticDependencyManifestWork {
     pub declaration_type_call_head_events_translated: usize,
     pub builtin_type_call_head_inputs_translated: usize,
     pub named_const_events_translated: usize,
+    pub implicit_named_destructor_events_translated: usize,
     pub extra_rir_instructions_visited: usize,
 }
 
@@ -90,6 +91,12 @@ pub struct StableNamedMethodDependency {
 pub struct StableNamedDestructorDependency {
     pub caller: StableDefinitionKey,
     pub target: StableNamedMethodDependencyTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableImplicitNamedDestructorDependency {
+    pub source: StableDefinitionKey,
+    pub target: StableDefinitionKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -159,6 +166,8 @@ pub struct SemanticDependencyInputManifest {
     generic_named_method_dependencies_complete: bool,
     named_destructor_dependencies: Arc<[StableNamedDestructorDependency]>,
     named_destructor_dependencies_complete: bool,
+    implicit_named_destructor_dependencies: Arc<[StableImplicitNamedDestructorDependency]>,
+    implicit_named_destructor_dependencies_complete: bool,
     declaration_type_dependencies: Arc<[StableDeclarationTypeDependency]>,
     declaration_type_dependencies_complete: bool,
     declaration_type_call_head_dependencies: Arc<[StableDeclarationTypeCallHeadDependency]>,
@@ -205,6 +214,14 @@ impl SemanticDependencyInputManifest {
     }
     pub fn named_destructor_dependencies_complete(&self) -> bool {
         self.named_destructor_dependencies_complete
+    }
+    pub fn implicit_named_destructor_dependencies(
+        &self,
+    ) -> &[StableImplicitNamedDestructorDependency] {
+        &self.implicit_named_destructor_dependencies
+    }
+    pub fn implicit_named_destructor_dependencies_complete(&self) -> bool {
+        self.implicit_named_destructor_dependencies_complete
     }
     pub fn declaration_type_dependencies(&self) -> &[StableDeclarationTypeDependency] {
         &self.declaration_type_dependencies
@@ -828,6 +845,7 @@ impl CanonicalFrontendSession {
             mut declaration_type_call_head_dependencies,
             mut builtin_type_call_head_inputs,
             mut named_const_dependencies,
+            mut implicit_named_destructor_dependencies,
             free_function_events_translated,
             specialization_origins_validated,
             named_method_events_translated,
@@ -836,6 +854,7 @@ impl CanonicalFrontendSession {
             declaration_type_call_head_events_translated,
             builtin_type_call_head_inputs_translated,
             named_const_events_translated,
+            implicit_named_destructor_events_translated,
             free_function_caller_dependencies_complete,
             named_method_dependencies_complete,
             named_destructor_dependencies_complete,
@@ -843,6 +862,7 @@ impl CanonicalFrontendSession {
             declaration_type_call_head_dependencies_complete,
             supported_type_call_heads_complete,
             named_value_const_dependencies_complete,
+            implicit_named_destructor_dependencies_complete,
         ) = match (&semantic, &definitions) {
             (Ok(semantic), Ok(definitions)) => {
                 if definitions.source_revision() != &input.sources {
@@ -1042,6 +1062,17 @@ impl CanonicalFrontendSession {
                     };
                     const_edges.push(StableNamedConstDependency { source, target });
                 }
+                let mut implicit_destructor_edges = Vec::new();
+                for event in semantic.implicit_named_destructor_dependencies() {
+                    implicit_destructor_edges.push(StableImplicitNamedDestructorDependency {
+                        source: stable_implicit_drop_source_endpoint(definitions, &event.source)?,
+                        target: stable_named_destructor_endpoint(
+                            definitions,
+                            event.target_file,
+                            &event.target_owner_name,
+                        )?,
+                    });
+                }
                 (
                     edges,
                     method_edges,
@@ -1050,6 +1081,7 @@ impl CanonicalFrontendSession {
                     type_call_head_edges,
                     builtin_head_inputs,
                     const_edges,
+                    implicit_destructor_edges,
                     semantic.ordinary_free_function_dependencies().len()
                         + semantic.specialized_free_function_dependencies().len(),
                     semantic.specialized_free_function_origins().len(),
@@ -1061,6 +1093,7 @@ impl CanonicalFrontendSession {
                         .declaration_builtin_type_call_head_dependencies()
                         .len(),
                     semantic.named_const_dependencies().len(),
+                    semantic.implicit_named_destructor_dependencies().len(),
                     semantic.ordinary_free_function_dependencies_complete()
                         && semantic.specialized_free_function_dependencies_complete(),
                     semantic.non_generic_named_method_dependencies_complete(),
@@ -1069,6 +1102,7 @@ impl CanonicalFrontendSession {
                     semantic.declaration_type_call_head_dependencies_complete(),
                     semantic.supported_type_call_heads_complete(),
                     semantic.named_value_const_dependencies_complete(),
+                    semantic.implicit_named_destructor_dependencies_complete(),
                 )
             }
             _ => (
@@ -1079,6 +1113,7 @@ impl CanonicalFrontendSession {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 0,
                 0,
                 0,
@@ -1087,6 +1122,8 @@ impl CanonicalFrontendSession {
                 0,
                 0,
                 0,
+                0,
+                false,
                 false,
                 false,
                 false,
@@ -1110,6 +1147,8 @@ impl CanonicalFrontendSession {
         builtin_type_call_head_inputs.dedup();
         named_const_dependencies.sort();
         named_const_dependencies.dedup();
+        implicit_named_destructor_dependencies.sort();
+        implicit_named_destructor_dependencies.dedup();
         let work = SemanticDependencyManifestWork {
             definition_records_visited: definition_records.len(),
             import_records_visited: imports.graph().records().len(),
@@ -1121,6 +1160,7 @@ impl CanonicalFrontendSession {
             declaration_type_call_head_events_translated,
             builtin_type_call_head_inputs_translated,
             named_const_events_translated,
+            implicit_named_destructor_events_translated,
             extra_rir_instructions_visited: 0,
         };
         self.work.dependency_manifest_records_visited += work.definition_records_visited;
@@ -1164,6 +1204,8 @@ impl CanonicalFrontendSession {
             generic_named_method_dependencies_complete: false,
             named_destructor_dependencies: named_destructor_dependencies.into(),
             named_destructor_dependencies_complete,
+            implicit_named_destructor_dependencies: implicit_named_destructor_dependencies.into(),
+            implicit_named_destructor_dependencies_complete,
             declaration_type_dependencies: declaration_type_dependencies.into(),
             declaration_type_dependencies_complete,
             declaration_type_call_head_dependencies: declaration_type_call_head_dependencies.into(),
@@ -1202,6 +1244,46 @@ fn stable_free_function_endpoint(
         )));
     };
     Ok(record.stable_key().clone())
+}
+
+fn stable_implicit_drop_source_endpoint(
+    definitions: &BoundDefinitionSet,
+    source: &rue_air::ImplicitDropDependencySourceEvent,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    match source {
+        rue_air::ImplicitDropDependencySourceEvent::Anonymous => Err(invalid_dependency_manifest(
+            "anonymous drop-dependency source has no stable endpoint",
+        )),
+        rue_air::ImplicitDropDependencySourceEvent::FreeFunction { file, name } => {
+            stable_free_function_endpoint(definitions, *file, name)
+        }
+        rue_air::ImplicitDropDependencySourceEvent::NamedMethod {
+            file,
+            owner_name,
+            method_name,
+        } => stable_named_method_endpoint(definitions, *file, owner_name, method_name),
+        rue_air::ImplicitDropDependencySourceEvent::NamedDestructor { file, owner_name } => {
+            stable_named_destructor_endpoint(definitions, *file, owner_name)
+        }
+        rue_air::ImplicitDropDependencySourceEvent::NamedStruct { file, name } => {
+            stable_top_level_endpoint(
+                definitions,
+                *file,
+                name,
+                StableDefinitionNamespace::Type,
+                StableDefinitionKind::Struct,
+            )
+        }
+        rue_air::ImplicitDropDependencySourceEvent::NamedEnum { file, name } => {
+            stable_top_level_endpoint(
+                definitions,
+                *file,
+                name,
+                StableDefinitionNamespace::Type,
+                StableDefinitionKind::Enum,
+            )
+        }
+    }
 }
 
 fn stable_named_method_endpoint(
@@ -2589,6 +2671,56 @@ mod tests {
         assert_eq!(target.name(), "cleanup");
         assert!(first.named_destructor_dependencies_complete());
         assert_eq!(first.work().named_destructor_events_translated, 1);
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn implicit_drop_edges_distinguish_body_obligations_from_global_glue() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<StableImplicitNamedDestructorDependency>();
+        let program = r#"
+            struct Leaf { n: i32 }
+            drop fn Leaf(self) {}
+            struct Wrapper { leaves: [Leaf; 2] }
+            fn consume() { let value = Wrapper { leaves: [Leaf { n: 1 }, Leaf { n: 2 }] }; }
+            fn main() { consume(); }
+        "#;
+        let build = |id, physical: &str| {
+            let source = snapshot(&[(id, physical, "main.rue", program)], id);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(4, "/one/main.rue");
+        let relocated = build(97, "/else/main.rue");
+        assert_eq!(
+            first.implicit_named_destructor_dependencies(),
+            relocated.implicit_named_destructor_dependencies()
+        );
+        let names = first
+            .implicit_named_destructor_dependencies()
+            .iter()
+            .map(|edge| {
+                (
+                    edge.source.kind(),
+                    edge.source.name().to_string(),
+                    edge.target.owner().unwrap().name().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(names.contains(&(
+            StableDefinitionKind::Function,
+            "consume".into(),
+            "Leaf".into(),
+        )));
+        assert!(names.contains(&(StableDefinitionKind::Struct, "Leaf".into(), "Leaf".into(),)));
+        assert!(first.implicit_named_destructor_dependencies_complete());
+        assert_eq!(
+            first.work().implicit_named_destructor_events_translated,
+            first.implicit_named_destructor_dependencies().len()
+        );
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
     }
 

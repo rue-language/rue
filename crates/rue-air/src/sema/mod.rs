@@ -62,6 +62,7 @@ pub use output::{
     DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
     DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
     DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind,
+    ImplicitDropDependencySourceEvent, ImplicitNamedDestructorDependencyEvent,
     NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent,
     NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
     OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, SemaOutput,

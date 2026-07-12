@@ -238,6 +238,8 @@ pub struct CfgBuilder<'a> {
     /// moving path skips it at runtime — drop exactly once on every path,
     /// and never a leak.
     moved: MoveState,
+    implicit_named_destructors: std::collections::HashSet<StructId>,
+    anonymous_destructor_dependency_incomplete: bool,
 }
 
 impl<'a> CfgBuilder<'a> {
@@ -278,6 +280,8 @@ impl<'a> CfgBuilder<'a> {
             ever_moved: std::collections::HashSet::new(),
             ever_field_moved: std::collections::HashSet::new(),
             moved: MoveState::default(),
+            implicit_named_destructors: std::collections::HashSet::new(),
+            anonymous_destructor_dependency_incomplete: false,
         };
 
         // Create entry block
@@ -334,10 +338,18 @@ impl<'a> CfgBuilder<'a> {
             builder.lower_inst(root);
         }
 
+        let mut implicit_named_destructors = builder
+            .implicit_named_destructors
+            .into_iter()
+            .collect::<Vec<_>>();
+        implicit_named_destructors.sort_by_key(|id| id.0);
         CfgOutput {
             cfg: builder.cfg,
             warnings: builder.warnings,
             errors: builder.errors,
+            implicit_named_destructors,
+            anonymous_destructor_dependency_incomplete: builder
+                .anonymous_destructor_dependency_incomplete,
         }
     }
 
@@ -2219,8 +2231,42 @@ impl<'a> CfgBuilder<'a> {
 
     /// Emit an instruction in the current block.
     fn emit(&mut self, data: CfgInstData, ty: Type, span: rue_span::Span) -> CfgValue {
+        if let CfgInstData::Drop { value } = &data {
+            self.record_implicit_destructors(self.cfg.get_inst(*value).ty);
+        }
         self.cfg
             .add_inst_to_block(self.current_block, CfgInst { data, ty, span })
+    }
+
+    fn record_implicit_destructors(&mut self, ty: Type) {
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
+                let def = self.type_pool.struct_def(struct_id);
+                if def.destructor.is_some() && !def.is_builtin {
+                    if def.name.starts_with("__anon_struct_") {
+                        self.anonymous_destructor_dependency_incomplete = true;
+                    } else {
+                        self.implicit_named_destructors.insert(struct_id);
+                    }
+                }
+                for field in def.fields {
+                    self.record_implicit_destructors(field.ty);
+                }
+            }
+            TypeKind::Enum(enum_id) => {
+                let def = self.type_pool.enum_def(enum_id);
+                for payload in def.variant_payloads {
+                    for field in payload {
+                        self.record_implicit_destructors(field);
+                    }
+                }
+            }
+            TypeKind::Array(array_id) => {
+                let (element, _) = self.type_pool.array_def(array_id);
+                self.record_implicit_destructors(element);
+            }
+            _ => {}
+        }
     }
 
     /// Lower a boolean short-circuit operation.
@@ -2928,6 +2974,7 @@ impl<'a> CfgBuilder<'a> {
 
         // 1. Run this struct's own destructor (without the field glue).
         if let Some(ref destructor_name) = struct_def.destructor {
+            self.record_implicit_destructors(ty);
             let whole_val = if projs.is_empty() {
                 match key {
                     MovedSlot::Local(slot) => self.emit(CfgInstData::Load { slot }, ty, span),

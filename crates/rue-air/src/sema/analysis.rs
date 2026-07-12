@@ -707,7 +707,12 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 fn_info.allow_unused_variable,
                 fn_info.allow_unreachable_code,
             ) {
-                Ok((analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                Ok((mut analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                    analyzed.implicit_drop_source =
+                        Some(super::ImplicitDropDependencySourceEvent::FreeFunction {
+                            file: fn_info.file_id.index(),
+                            name: sema.interner.resolve(&source_name).to_string(),
+                        });
                     for callee in &referenced_fns {
                         if let Some(callee_info) = sema.functions.get(callee) {
                             sema.ordinary_free_function_dependencies.push(
@@ -855,6 +860,9 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     )) => {
                         let analyzed = AnalyzedFunction {
                             name: full_name,
+                            implicit_drop_source: Some(
+                                super::ImplicitDropDependencySourceEvent::Anonymous,
+                            ),
                             air,
                             num_locals,
                             num_param_slots,
@@ -923,7 +931,13 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 *has_self,
                 *self_mode,
             ) {
-                Ok((analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                Ok((mut analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                    analyzed.implicit_drop_source =
+                        Some(super::ImplicitDropDependencySourceEvent::NamedMethod {
+                            file: method_info.span.file_id.index(),
+                            owner_name: type_name_str.clone(),
+                            method_name: method_name_str.clone(),
+                        });
                     let caller_is_generic = sema
                         .param_arena
                         .comptime(method_info.params)
@@ -1014,7 +1028,18 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     destructor.span,
                     struct_type,
                 ) {
-                    Ok((analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                    Ok((
+                        mut analyzed,
+                        warnings,
+                        local_strings,
+                        referenced_fns,
+                        referenced_meths,
+                    )) => {
+                        analyzed.implicit_drop_source =
+                            Some(super::ImplicitDropDependencySourceEvent::NamedDestructor {
+                                file: destructor.span.file_id.index(),
+                                owner_name: sema.type_pool.struct_def(struct_id).name.clone(),
+                            });
                         match named_destructor_dependency_events(
                             sema,
                             struct_id,
@@ -1654,6 +1679,7 @@ mod error_invariant_tests {
     fn func_named(name: &str, air: Air) -> AnalyzedFunction {
         AnalyzedFunction {
             name: name.to_string(),
+            implicit_drop_source: None,
             air,
             num_locals: 0,
             num_param_slots: 0,
