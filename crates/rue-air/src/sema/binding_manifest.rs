@@ -137,6 +137,9 @@ pub struct DeclarationBindingWork {
     pub declaration_resolution_invocations: usize,
     /// Construction of the body-analysis-ready state.
     pub body_readiness_finalization_invocations: usize,
+    /// Durable payload installation attempts at the declaration-shell seam.
+    pub durable_install_invocations: usize,
+    pub durable_payloads_installed: usize,
     /// Size of the input RIR, not a claim that binding visited every entry.
     pub input_rir_instructions: usize,
     pub declaration_index_build_invocations: usize,
@@ -192,6 +195,21 @@ pub(super) struct PendingDeclarationPayload {
 pub(super) struct PendingNominalPayload {
     pub shell: SemanticDeclarationShell,
     pub declaration: InstRef,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclarationInstallFailure {
+    DuplicatePayload,
+    MissingPayload,
+    UnexpectedPayload,
+    IdentityMismatch,
+    KindMismatch,
+    VisibilityMismatch,
+    CallableShapeMismatch,
+    NominalShapeMismatch,
+    MissingNominal,
+    UnsupportedType,
+    UnsupportedDeclaration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -338,6 +356,346 @@ impl<'a> DeclarationShells<'a> {
         self.binding_work.declaration_resolution_invocations += 1;
         self.binding_work.body_readiness_finalization_invocations += 1;
         Ok(self.sema.into_bound_with_work(self.binding_work))
+    }
+
+    /// Install a fully validated, current-revision projection of durable
+    /// declaration semantics into these freshly predeclared shells.
+    ///
+    /// Failure consumes the shells, so partially populated request-local state
+    /// can never escape. Callers fall back by creating a fresh binder and
+    /// taking [`Self::resolve_declarations`].
+    pub fn install_declaration_semantics(
+        mut self,
+        exports: &[SemanticDeclarationExport],
+    ) -> Result<BoundSema<'a>, DeclarationInstallFailure> {
+        use std::collections::BTreeMap;
+
+        self.binding_work.durable_install_invocations += 1;
+        let mut records = BTreeMap::new();
+        for export in exports {
+            let module_path = self
+                .sema
+                .get_symbol_path(export.identity.file_id)
+                .map(crate::path_norm::normalize_module_path)
+                .unwrap_or_else(|| format!("file{}", export.identity.file_id.index()));
+            let identity = SemanticDeclarationShellIdentity {
+                module_path: Arc::from(module_path),
+                namespace: export.identity.namespace,
+                kind: export.identity.kind,
+                name: export.identity.name.clone(),
+                owner: export.identity.owner.clone(),
+            };
+            if records.insert(identity, export).is_some() {
+                return Err(DeclarationInstallFailure::DuplicatePayload);
+            }
+        }
+        let expected = self.pending_nominals.len() + self.pending_payloads.len();
+        if records.len() != expected {
+            return Err(DeclarationInstallFailure::MissingPayload);
+        }
+        for shell in self.declaration_shells() {
+            let record = records
+                .get(&shell.identity)
+                .ok_or(DeclarationInstallFailure::MissingPayload)?;
+            if record.identity.is_public != shell.is_public {
+                return Err(DeclarationInstallFailure::VisibilityMismatch);
+            }
+        }
+
+        for pending in &self.pending_nominals {
+            let record = records[&pending.shell.identity];
+            let name = self
+                .sema
+                .interner
+                .get_or_intern(pending.shell.identity.name.as_ref());
+            match (
+                &record.payload,
+                &self.sema.rir.get(pending.declaration).data,
+            ) {
+                (
+                    SemanticDeclarationPayload::Struct {
+                        fields,
+                        is_copy,
+                        is_linear,
+                    },
+                    InstData::StructDecl {
+                        is_linear: syntax_linear,
+                        fields_start,
+                        fields_len,
+                        ..
+                    },
+                ) => {
+                    let id = *self
+                        .sema
+                        .structs_by_file_name
+                        .get(&(pending.shell.declaration_span.file_id, name))
+                        .ok_or(DeclarationInstallFailure::MissingNominal)?;
+                    let mut def = self.sema.type_pool.struct_def(id);
+                    if *syntax_linear != *is_linear || def.is_copy != *is_copy {
+                        return Err(DeclarationInstallFailure::NominalShapeMismatch);
+                    }
+                    if self
+                        .sema
+                        .rir
+                        .get_field_decls(*fields_start, *fields_len)
+                        .iter()
+                        .map(|(name, _)| self.sema.interner.resolve(name))
+                        .ne(fields.iter().map(|field| field.0.as_ref()))
+                    {
+                        return Err(DeclarationInstallFailure::NominalShapeMismatch);
+                    }
+                    def.fields = fields
+                        .iter()
+                        .map(|(name, ty)| {
+                            Ok(crate::StructField {
+                                name: name.to_string(),
+                                ty: self.sema.import_export_type(ty)?,
+                            })
+                        })
+                        .collect::<Result<_, DeclarationInstallFailure>>()?;
+                    self.sema.type_pool.update_struct_def(id, def);
+                }
+                (SemanticDeclarationPayload::Enum { variants }, InstData::EnumDecl { .. }) => {
+                    let id = *self
+                        .sema
+                        .enums_by_file_name
+                        .get(&(pending.shell.declaration_span.file_id, name))
+                        .ok_or(DeclarationInstallFailure::MissingNominal)?;
+                    let mut def = self.sema.type_pool.enum_def(id);
+                    if def
+                        .variants
+                        .iter()
+                        .map(String::as_str)
+                        .ne(variants.iter().map(|variant| variant.0.as_ref()))
+                    {
+                        return Err(DeclarationInstallFailure::NominalShapeMismatch);
+                    }
+                    def.variant_payloads = variants
+                        .iter()
+                        .map(|(_, payload)| {
+                            payload
+                                .iter()
+                                .map(|ty| self.sema.import_export_type(ty))
+                                .collect()
+                        })
+                        .collect::<Result<_, DeclarationInstallFailure>>()?;
+                    self.sema.type_pool.update_enum_def(id, def);
+                }
+                _ => return Err(DeclarationInstallFailure::KindMismatch),
+            }
+        }
+
+        for pending in &self.pending_payloads {
+            let record = records[&pending.shell.identity];
+            match (&record.payload, pending.source) {
+                (
+                    SemanticDeclarationPayload::Callable {
+                        parameters,
+                        result,
+                        has_self,
+                        is_unchecked,
+                    },
+                    DeclarationPayloadSource::Callable { body },
+                ) => {
+                    if parameters.len() != pending.shell.parameter_names.len()
+                        || *has_self != pending.shell.has_self
+                        || *is_unchecked != pending.shell.is_unchecked
+                    {
+                        return Err(DeclarationInstallFailure::CallableShapeMismatch);
+                    }
+                    for (parameter, (mode, comptime)) in parameters.iter().zip(
+                        pending
+                            .shell
+                            .parameter_modes
+                            .iter()
+                            .zip(pending.shell.parameter_comptime.iter()),
+                    ) {
+                        let mode = match mode {
+                            RirParamMode::Borrow => SemanticParameterMode::Borrow,
+                            RirParamMode::Inout => SemanticParameterMode::Inout,
+                            _ => SemanticParameterMode::Value,
+                        };
+                        if parameter.mode != mode || parameter.is_comptime != *comptime {
+                            return Err(DeclarationInstallFailure::CallableShapeMismatch);
+                        }
+                    }
+                    let names = pending
+                        .shell
+                        .parameter_names
+                        .iter()
+                        .map(|name| self.sema.interner.get_or_intern(name.as_ref()));
+                    let types = parameters
+                        .iter()
+                        .map(|parameter| self.sema.import_export_type(&parameter.ty))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let range = self.sema.param_arena.alloc(
+                        names,
+                        types,
+                        pending.shell.parameter_modes.iter().copied(),
+                        pending.shell.parameter_comptime.iter().copied(),
+                    );
+                    let InstData::FnDecl {
+                        name,
+                        return_type,
+                        params_start,
+                        params_len,
+                        self_mode,
+                        directives_start,
+                        directives_len,
+                        ..
+                    } = &self.sema.rir.get(pending.declaration).data
+                    else {
+                        return Err(DeclarationInstallFailure::KindMismatch);
+                    };
+                    let return_type_value = self.sema.import_export_type(result)?;
+                    if let Some(owner) = &pending.shell.identity.owner {
+                        let owner = self.sema.interner.get_or_intern(owner.as_ref());
+                        let id = *self
+                            .sema
+                            .structs_by_file_name
+                            .get(&(pending.shell.declaration_span.file_id, owner))
+                            .ok_or(DeclarationInstallFailure::MissingNominal)?;
+                        self.sema.methods.insert(
+                            (id, *name),
+                            super::MethodInfo {
+                                struct_type: Type::new_struct(id),
+                                has_self: *has_self,
+                                self_mode: *self_mode,
+                                params: range,
+                                return_type: return_type_value,
+                                body,
+                                span: pending.shell.declaration_span,
+                            },
+                        );
+                        self.sema
+                            .named_method_declarations
+                            .insert((id, *name), pending.declaration);
+                    } else {
+                        let internal = self
+                            .sema
+                            .internal_function_name(*name, pending.shell.declaration_span.file_id);
+                        let directives = self
+                            .sema
+                            .rir
+                            .get_directives(*directives_start, *directives_len);
+                        self.sema
+                            .functions_by_file_name
+                            .insert((pending.shell.declaration_span.file_id, *name), internal);
+                        self.sema.function_source_names.insert(internal, *name);
+                        self.sema.functions.insert(
+                            internal,
+                            super::FunctionInfo {
+                                params: range,
+                                return_type: return_type_value,
+                                return_type_sym: *return_type,
+                                body,
+                                rir_params_start: *params_start,
+                                rir_params_len: *params_len,
+                                span: pending.shell.declaration_span,
+                                is_generic: pending.shell.is_generic,
+                                is_pub: pending.shell.is_public,
+                                is_unchecked: pending.shell.is_unchecked,
+                                allow_unused_function: self
+                                    .sema
+                                    .has_allow_directive(&directives, "unused_function"),
+                                allow_unused_variable: self
+                                    .sema
+                                    .has_allow_directive(&directives, "unused_variable"),
+                                allow_unreachable_code: self
+                                    .sema
+                                    .has_allow_directive(&directives, "unreachable_code"),
+                                file_id: pending.shell.declaration_span.file_id,
+                            },
+                        );
+                    }
+                }
+                (
+                    SemanticDeclarationPayload::Destructor,
+                    DeclarationPayloadSource::Destructor { .. },
+                ) => {
+                    let owner = pending
+                        .shell
+                        .identity
+                        .owner
+                        .as_deref()
+                        .ok_or(DeclarationInstallFailure::IdentityMismatch)?;
+                    let owner = self.sema.interner.get_or_intern(owner);
+                    self.sema
+                        .collect_destructor(owner, pending.shell.declaration_span)
+                        .map_err(|_| DeclarationInstallFailure::NominalShapeMismatch)?;
+                }
+                (_, DeclarationPayloadSource::Const { .. }) => {
+                    return Err(DeclarationInstallFailure::UnsupportedDeclaration);
+                }
+                _ => return Err(DeclarationInstallFailure::KindMismatch),
+            }
+        }
+        self.sema
+            .check_recursive_value_types()
+            .map_err(|_| DeclarationInstallFailure::NominalShapeMismatch)?;
+        self.sema.propagate_field_linearity();
+        self.sema.capture_resolved_declaration_type_dependencies();
+        self.sema.declaration_type_observer = None;
+        self.binding_work.durable_payloads_installed = expected;
+        self.binding_work.body_readiness_finalization_invocations += 1;
+        Ok(self.sema.into_bound_with_work(self.binding_work))
+    }
+}
+
+impl Sema<'_> {
+    fn import_export_type(
+        &self,
+        value: &SemanticExportType,
+    ) -> Result<Type, DeclarationInstallFailure> {
+        Ok(match value {
+            SemanticExportType::I8 => Type::I8,
+            SemanticExportType::I16 => Type::I16,
+            SemanticExportType::I32 => Type::I32,
+            SemanticExportType::I64 => Type::I64,
+            SemanticExportType::U8 => Type::U8,
+            SemanticExportType::U16 => Type::U16,
+            SemanticExportType::U32 => Type::U32,
+            SemanticExportType::U64 => Type::U64,
+            SemanticExportType::Bool => Type::BOOL,
+            SemanticExportType::Unit => Type::UNIT,
+            SemanticExportType::Never => Type::NEVER,
+            SemanticExportType::ComptimeType | SemanticExportType::GenericParameter(_) => {
+                Type::COMPTIME_TYPE
+            }
+            SemanticExportType::Nominal(nominal) => {
+                let name = self.interner.get_or_intern(nominal.name.as_ref());
+                match nominal.kind {
+                    SemanticBindingKind::Struct => Type::new_struct(
+                        *self
+                            .structs_by_file_name
+                            .get(&(nominal.file_id, name))
+                            .ok_or(DeclarationInstallFailure::MissingNominal)?,
+                    ),
+                    SemanticBindingKind::Enum => Type::new_enum(
+                        *self
+                            .enums_by_file_name
+                            .get(&(nominal.file_id, name))
+                            .ok_or(DeclarationInstallFailure::MissingNominal)?,
+                    ),
+                    _ => return Err(DeclarationInstallFailure::KindMismatch),
+                }
+            }
+            SemanticExportType::Array { element, len } => Type::new_array(
+                self.type_pool
+                    .intern_array_from_type(self.import_export_type(element)?, *len),
+            ),
+            SemanticExportType::PtrConst(value) => Type::new_ptr_const(
+                self.type_pool
+                    .intern_ptr_const_from_type(self.import_export_type(value)?),
+            ),
+            SemanticExportType::PtrMut(value) => Type::new_ptr_mut(
+                self.type_pool
+                    .intern_ptr_mut_from_type(self.import_export_type(value)?),
+            ),
+            SemanticExportType::Module(_) => {
+                return Err(DeclarationInstallFailure::UnsupportedType);
+            }
+        })
     }
 }
 
@@ -1040,6 +1398,8 @@ impl DeclarationBindingWork {
             indexed_declaration_records_visited: 0,
             declaration_resolution_invocations: 0,
             body_readiness_finalization_invocations: 0,
+            durable_install_invocations: 0,
+            durable_payloads_installed: 0,
             input_rir_instructions,
             declaration_index_build_invocations: index.build_invocations,
             indexed_free_functions: index.free_functions_indexed,
@@ -1145,6 +1505,61 @@ mod tests {
         }));
         // The callback DTO contains no request-local Type/Spur/InstRef/nominal IDs.
         assert!(std::mem::size_of::<SemanticExportType>() > 0);
+    }
+
+    #[test]
+    fn durable_payload_install_matches_ordinary_binding_in_a_fresh_epoch() {
+        let source = r#"
+            struct Resource {
+                value: i32,
+                fn get(self) -> i32 { self.value }
+                fn make(value: i32) -> Resource { Resource { value } }
+            }
+            enum Choice { None, Some(Resource) }
+            drop fn Resource(self) {}
+            fn helper(value: ptr const Resource) -> i32 { value.value }
+            fn main() -> i32 { 0 }
+        "#;
+        let exports = export(source).unwrap().0;
+
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let rir = AstGen::new(&ast, &interner).generate();
+        let installed = Sema::new(&rir, &interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()
+            .unwrap()
+            .install_declaration_semantics(&exports)
+            .unwrap();
+        let work = installed.binding_work();
+        assert_eq!(work.declaration_resolution_invocations, 0);
+        assert_eq!(work.durable_install_invocations, 1);
+        assert_eq!(work.durable_payloads_installed, exports.len());
+        let installed_exports = installed
+            .with_declaration_semantics(|records, work| {
+                assert_eq!(work.rir_instructions_visited, 0);
+                records.to_vec()
+            })
+            .unwrap();
+        assert_eq!(installed_exports, exports);
+        installed.analyze_all_bodies().unwrap();
+
+        // A shape mismatch consumes the candidate shells and fails closed;
+        // ordinary resolution in another fresh epoch remains available.
+        let mut mismatched = exports.clone();
+        mismatched[0].identity.is_public = !mismatched[0].identity.is_public;
+        let failure = Sema::new(&rir, &interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()
+            .unwrap()
+            .install_declaration_semantics(&mismatched);
+        let Err(failure) = failure else {
+            panic!("mismatched durable payload unexpectedly installed")
+        };
+        assert_eq!(failure, DeclarationInstallFailure::VisibilityMismatch);
+        Sema::new(&rir, &interner, PreviewFeatures::new())
+            .bind_declarations()
+            .unwrap()
+            .analyze_all_bodies()
+            .unwrap();
     }
 
     fn bind_with_module_paths(source: &str) -> Result<SemanticBindingManifest, CompileErrors> {

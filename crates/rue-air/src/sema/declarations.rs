@@ -40,7 +40,7 @@ impl<'a> Sema<'a> {
             .unwrap_or(internal_name)
     }
 
-    fn internal_function_name(&self, source_name: Spur, file_id: FileId) -> Spur {
+    pub(super) fn internal_function_name(&self, source_name: Spur, file_id: FileId) -> Spur {
         let source = self.interner.resolve(&source_name);
         if source == "main" {
             return source_name;
@@ -674,7 +674,7 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
-    fn capture_resolved_declaration_type_dependencies(&mut self) {
+    pub(super) fn capture_resolved_declaration_type_dependencies(&mut self) {
         use super::{
             DeclarationTypeDependencyKind as Edge, DeclarationTypeDependencySourceKind as Source,
         };
@@ -1368,7 +1368,7 @@ impl<'a> Sema<'a> {
     }
 
     /// Collect a destructor definition and register it with its struct.
-    fn collect_destructor(&mut self, type_name: Spur, span: Span) -> CompileResult<()> {
+    pub(super) fn collect_destructor(&mut self, type_name: Spur, span: Span) -> CompileResult<()> {
         let type_name_str = self.interner.resolve(&type_name).to_string();
 
         // Get the struct ID from the lookup table
