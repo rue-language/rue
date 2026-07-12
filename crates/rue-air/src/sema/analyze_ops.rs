@@ -5336,7 +5336,7 @@ impl<'a> Sema<'a> {
     /// keeps later uses of `s` valid and ensures the String is dropped exactly
     /// once.
     #[allow(clippy::too_many_arguments)]
-    fn analyze_string_index_get(
+    pub(crate) fn analyze_string_index_get(
         &mut self,
         air: &mut Air,
         base_result: AnalysisResult,
@@ -5409,7 +5409,7 @@ impl<'a> Sema<'a> {
     /// Like `String` indexing, the read only *borrows* the receiver (a `str` is
     /// `Copy` anyway), so the pre-analysis move state is restored and the move
     /// marker cancelled.
-    fn analyze_str_index_get(
+    pub(crate) fn analyze_str_index_get(
         &mut self,
         air: &mut Air,
         base_result: AnalysisResult,
@@ -5481,7 +5481,7 @@ impl<'a> Sema<'a> {
     /// backend-specific work) is required; the fat pointer flows through the
     /// same struct/field/pointer paths the manual `{ptr,len}` form already uses.
     #[allow(clippy::too_many_arguments)]
-    fn analyze_slice_index_get(
+    pub(crate) fn analyze_slice_index_get(
         &mut self,
         air: &mut Air,
         base_result: AnalysisResult,

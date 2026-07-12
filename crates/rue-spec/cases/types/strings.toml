@@ -734,6 +734,24 @@ exit_code = 0
 expected_stdout = "104\n5\n101\n"
 
 [[case]]
+name = "string_index_in_condition"
+spec = ["3.7:16"]
+description = "A String byte index reads correctly in condition position (if/while), not only when let-bound first (RUE-700: binary-op operands are analyzed in projection mode, which previously rejected a non-array base with E0900)."
+source = """
+fn main() -> i32 {
+    let s = "a1b2";
+    let mut digits: i32 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        if s[i] >= 48 { if s[i] <= 57 { digits = digits + 1; } }
+        i = i + 1;
+    }
+    digits
+}
+"""
+exit_code = 2
+
+[[case]]
 name = "string_index_out_of_bounds_traps"
 spec = ["3.7:17"]
 source = """
