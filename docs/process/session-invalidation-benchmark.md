@@ -66,10 +66,18 @@ smoke test through
 `//crates/rue-compiler-session-bench:rue-compiler-session-bench-test`; the
 128-module timing workload remains opt-in.
 
-RUE-720 must extend this ledger before body or CFG reuse is introduced. The
+The
 [body-analysis and CFG incrementality audit](../notes/body-analysis-cfg-incrementality-audit.md)
-enumerates the missing body attempts/completions, specialization scans and
-rounds, string remaps, glue synthesis, CFG build/optimization attempts, failed
-work, import attempts, and fallbacks. Counters must describe actual operations,
-including discarded work, and parallel CFG counters must reduce deterministic
-per-function values rather than timing-dependent shared state.
+requires this ledger before body or CFG reuse is introduced. Counters describe
+actual operations, and parallel CFG counters reduce deterministic per-function
+values rather than timing-dependent shared state.
+
+Schema version 4 adds value-only body and CFG work. Top-level
+`semantic_work` records body attempts/successes/failures, AIR and local-string
+production, string remapping, specialization scans/calls/unique and duplicate
+requests/rewrites/rounds, and specialized-body attempts/successes/failures.
+`semantic_work.cfg` records synthesized glue, functions considered and
+filtered, CFG attempts/successes/failures, AIR consumed, optimization attempts
+and completions (including non-O0 attempts), warnings, and implicit destructor
+targets. Counts describe completed semantic records; failed requests cannot yet
+be retained by the session record API and are tested at their owning phase.

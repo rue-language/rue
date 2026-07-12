@@ -228,12 +228,17 @@ impl Specializer {
                     interner,
                     &mut self.specializations,
                     &mut pending,
+                    &mut sema.body_analysis_work,
                 );
             }
 
             // Previously scanned bodies have no CallGeneric instructions left.
             for (function, _) in &mut functions_with_strings[self.next_unscanned..scan_end] {
-                rewrite_call_generic(&mut function.air, &self.specializations);
+                rewrite_call_generic(
+                    &mut function.air,
+                    &self.specializations,
+                    &mut sema.body_analysis_work,
+                );
             }
             self.next_unscanned = scan_end;
 
@@ -242,6 +247,7 @@ impl Specializer {
             }
 
             self.rounds += 1;
+            sema.body_analysis_work.specialization_rounds += 1;
             if self.rounds > MAX_SPECIALIZATION_ROUNDS {
                 let key = &pending[0];
                 return Err(CompileError::new(
@@ -262,6 +268,7 @@ impl Specializer {
             // Create specialized function bodies by re-analyzing with type
             // substitution. Newly created bodies are scanned next round.
             for key in &pending {
+                sema.body_analysis_work.specialized_bodies_attempted += 1;
                 let info = &self.specializations[key];
                 let base_info = match sema.functions.get(&key.base_name) {
                     Some(info) => info.clone(),
@@ -273,14 +280,24 @@ impl Specializer {
                         ));
                     }
                 };
-                let specialized = create_specialized_function(
+                let specialized = match create_specialized_function(
                     sema,
                     infer_ctx,
                     key,
                     info.mangled_name,
                     &base_info,
                     interner,
-                )?;
+                ) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        sema.body_analysis_work.specialized_bodies_failed += 1;
+                        return Err(error);
+                    }
+                };
+                sema.body_analysis_work.specialized_bodies_succeeded += 1;
+                sema.body_analysis_work.air_instructions_produced +=
+                    specialized.function.air.instructions().len();
+                sema.body_analysis_work.local_strings_produced += specialized.local_strings.len();
                 let specialized_name = specialized.function.name.clone();
                 let base_name = interner
                     .resolve(&sema.source_function_name(key.base_name))
@@ -360,8 +377,10 @@ fn collect_specializations(
     interner: &ThreadedRodeo,
     specializations: &mut HashMap<SpecializationKey, SpecializationInfo>,
     pending: &mut Vec<SpecializationKey>,
+    work: &mut crate::BodyAnalysisWork,
 ) {
     for inst in air.instructions() {
+        work.specialization_air_instructions_scanned += 1;
         if let AirInstData::CallGeneric {
             name,
             type_args_start,
@@ -371,6 +390,7 @@ fn collect_specializations(
             ..
         } = &inst.data
         {
+            work.generic_calls_observed += 1;
             let type_args: Vec<Type> = air
                 .get_extra(*type_args_start, *type_args_len)
                 .iter()
@@ -385,6 +405,7 @@ fn collect_specializations(
             };
 
             if let Entry::Vacant(entry) = specializations.entry(key) {
+                work.specialization_requests_unique += 1;
                 let base_name = interner.resolve(name);
                 let mangled = mangle_specialized_name(
                     base_name,
@@ -397,6 +418,8 @@ fn collect_specializations(
                     mangled_name: mangled_sym,
                     call_site_span: inst.span,
                 });
+            } else {
+                work.specialization_requests_duplicate += 1;
             }
         }
     }
@@ -405,6 +428,7 @@ fn collect_specializations(
 fn rewrite_call_generic(
     air: &mut Air,
     specializations: &HashMap<SpecializationKey, SpecializationInfo>,
+    work: &mut crate::BodyAnalysisWork,
 ) {
     let mut rewrites: Vec<(usize, AirInstData)> = Vec::new();
 
@@ -446,6 +470,7 @@ fn rewrite_call_generic(
     }
 
     for (index, new_data) in rewrites {
+        work.specialization_rewrites += 1;
         air.rewrite_inst_data(index, new_data);
     }
 }

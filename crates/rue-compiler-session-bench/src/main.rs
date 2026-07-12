@@ -225,6 +225,35 @@ fn semantic_work_json(work: &CanonicalFrontendSessionWork, from: usize) -> Value
     json!({
         "bind_invocations": records.iter().map(|record| record.work.binding.bind_invocations).sum::<usize>(),
         "body_free_function_lookups": records.iter().map(|record| record.work.body_analysis.free_function_record_lookups).sum::<usize>(),
+        "bodies_attempted": records.iter().map(|record| record.work.body_analysis.bodies_attempted).sum::<usize>(),
+        "bodies_succeeded": records.iter().map(|record| record.work.body_analysis.bodies_succeeded).sum::<usize>(),
+        "bodies_failed": records.iter().map(|record| record.work.body_analysis.bodies_failed).sum::<usize>(),
+        "air_instructions_produced": records.iter().map(|record| record.work.body_analysis.air_instructions_produced).sum::<usize>(),
+        "local_strings_produced": records.iter().map(|record| record.work.body_analysis.local_strings_produced).sum::<usize>(),
+        "string_ids_remapped": records.iter().map(|record| record.work.body_analysis.string_ids_remapped).sum::<usize>(),
+        "specialization_air_instructions_scanned": records.iter().map(|record| record.work.body_analysis.specialization_air_instructions_scanned).sum::<usize>(),
+        "generic_calls_observed": records.iter().map(|record| record.work.body_analysis.generic_calls_observed).sum::<usize>(),
+        "specialization_requests_unique": records.iter().map(|record| record.work.body_analysis.specialization_requests_unique).sum::<usize>(),
+        "specialization_requests_duplicate": records.iter().map(|record| record.work.body_analysis.specialization_requests_duplicate).sum::<usize>(),
+        "specialization_rewrites": records.iter().map(|record| record.work.body_analysis.specialization_rewrites).sum::<usize>(),
+        "specialization_rounds": records.iter().map(|record| record.work.body_analysis.specialization_rounds).sum::<usize>(),
+        "specialized_bodies_attempted": records.iter().map(|record| record.work.body_analysis.specialized_bodies_attempted).sum::<usize>(),
+        "specialized_bodies_succeeded": records.iter().map(|record| record.work.body_analysis.specialized_bodies_succeeded).sum::<usize>(),
+        "specialized_bodies_failed": records.iter().map(|record| record.work.body_analysis.specialized_bodies_failed).sum::<usize>(),
+        "cfg": {
+            "drop_glue_functions_synthesized": records.iter().map(|record| record.work.cfg.drop_glue_functions_synthesized).sum::<usize>(),
+            "functions_considered": records.iter().map(|record| record.work.cfg.functions_considered).sum::<usize>(),
+            "comptime_functions_filtered": records.iter().map(|record| record.work.cfg.comptime_functions_filtered).sum::<usize>(),
+            "builds_attempted": records.iter().map(|record| record.work.cfg.cfg_builds_attempted).sum::<usize>(),
+            "builds_succeeded": records.iter().map(|record| record.work.cfg.cfg_builds_succeeded).sum::<usize>(),
+            "builds_failed": records.iter().map(|record| record.work.cfg.cfg_builds_failed).sum::<usize>(),
+            "air_instructions_consumed": records.iter().map(|record| record.work.cfg.air_instructions_consumed).sum::<usize>(),
+            "optimization_attempts": records.iter().map(|record| record.work.cfg.optimization_attempts).sum::<usize>(),
+            "optimization_completions": records.iter().map(|record| record.work.cfg.optimization_completions).sum::<usize>(),
+            "optimized_level_attempts": records.iter().map(|record| record.work.cfg.optimized_level_attempts).sum::<usize>(),
+            "warnings_emitted": records.iter().map(|record| record.work.cfg.cfg_warnings_emitted).sum::<usize>(),
+            "implicit_destructor_targets_emitted": records.iter().map(|record| record.work.cfg.implicit_destructor_targets_emitted).sum::<usize>(),
+        },
         "ordinary_free_function_dependency_events": records.iter().map(|record| record.work.body_analysis.ordinary_free_function_dependency_events).sum::<usize>(),
         "specialized_origin_records": records.iter().map(|record| record.work.body_analysis.specialized_origin_records).sum::<usize>(),
         "specialized_free_function_dependency_events": records.iter().map(|record| record.work.body_analysis.specialized_free_function_dependency_events).sum::<usize>(),
@@ -652,6 +681,7 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     assert_eq!(root_reuse["ordinary_declaration_resolutions_skipped"], 1);
     assert_eq!(root_reuse["install_invocations"], 1);
     assert_eq!(root_reuse["fallbacks"], 0);
+    assert_body_cfg_work_equal(cold, root_edit);
     assert_eq!(
         count(root_edit, &["semantic_work", "semantic_epochs_started"]),
         1
@@ -765,6 +795,35 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     let plan_identity = get("invalidation_plan_module_identity_change");
     assert_eq!(count(plan_identity, &["parse", "modules_rebound"]), 1);
     assert_production_incremental_plan(plan_identity, 1, 0, 2, modules - 1, modules - 1, 2);
+}
+
+fn assert_body_cfg_work_equal(left: &Value, right: &Value) {
+    for field in [
+        "bodies_attempted",
+        "bodies_succeeded",
+        "bodies_failed",
+        "air_instructions_produced",
+        "local_strings_produced",
+        "string_ids_remapped",
+        "specialization_air_instructions_scanned",
+        "generic_calls_observed",
+        "specialization_requests_unique",
+        "specialization_requests_duplicate",
+        "specialization_rewrites",
+        "specialization_rounds",
+        "specialized_bodies_attempted",
+        "specialized_bodies_succeeded",
+        "specialized_bodies_failed",
+    ] {
+        assert_eq!(
+            left["semantic_work"][field], right["semantic_work"][field],
+            "body work field {field} differs before body reuse exists"
+        );
+    }
+    assert_eq!(
+        left["semantic_work"]["cfg"], right["semantic_work"]["cfg"],
+        "CFG work differs before CFG reuse exists"
+    );
 }
 
 fn assert_production_incremental_plan(
@@ -918,7 +977,7 @@ fn main() {
     println!(
         "{}",
         json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "workload": "canonical_frontend_session_invalidation",
             "configuration": {
                 "modules": config.modules,
