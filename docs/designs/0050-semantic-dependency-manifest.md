@@ -37,6 +37,61 @@ Consumers compute deterministic reverse edges and transitive closure from sorted
 direct edges. Missing owners or unresolved targets fail closed by invalidating
 the requesting record, never by silently dropping an edge.
 
+## Durable recursive type and value algebra
+
+The query boundary uses the versioned `DurableType` and `DurableConstValue`
+algebra in `rue-compiler`; schema version 1 is part of every future persistent
+key. It contains only scalar data, `ModuleId`, `StableDefinitionKey`, owned
+structural children, and source-order generic-parameter indices. It is
+`Send + Sync + Eq + Ord + Hash`. It never contains `FileId`, `Span`, `Spur`,
+`InstRef`, request-local `Type`, `StructId`, `EnumId`, or type-pool indices.
+
+The current bound declaration inventory is: signed and unsigned integer widths,
+bool, unit, never, comptime `type`, named structs/enums, arrays, const/mut raw
+pointers, and modules. Constants additionally contain integers, booleans, type
+values, function aliases, and unit. Function/method/destructor signatures use
+the same type forms plus ordered parameter modes and comptime flags at the
+declaration-record layer. Struct fields and enum payloads preserve source order.
+Generic/comptime parameters preserve declaration order; concrete comptime
+arguments use the value algebra. Tuples and first-class function types are
+reserved algebra variants but are not presently emitted by AIR binding.
+
+Named structs and enums are encoded as a single nominal stable-key edge, never
+expanded. This makes self and mutual recursion finite without traversal-order
+backreferences. Structural children are recursively encoded; encountering a
+structural pool cycle is a typed failure. Ordered language constructs retain
+source order. Sets and maps in declaration records must be sorted by stable key
+before construction. No interner number, debug string, physical path, source
+offset, or discovery order participates in equality or hashing.
+
+Export is fail closed. Error types, unresolved modules, missing pool entries,
+anonymous/local nominal types, unjoinable function aliases, and unknown future
+type/value forms produce `DurableSemanticExportFailure`; they are never
+stringified. Adding or changing a variant increments the schema version.
+
+### Required producer seam
+
+The owned algebra is implemented, but one-way export is intentionally not yet
+wired: after successful declaration binding, `BoundSema` currently exposes only
+`SemanticBindingManifest` identity metadata. The resolved `FunctionInfo`,
+`MethodInfo`, `StructDef`, `EnumDef`, `ConstInfo`, parameter arena, and
+`TypeInternPool` remain private and are consumed with `BoundSema` by body
+analysis. Re-parsing type syntax or joining pool IDs by display name would be
+unsound.
+
+The required AIR API is an optional, lazily materialized
+`BoundSema::durable_declaration_export_inputs()` produced before consuming the
+binder. It must return owned request-local records containing binding identity
+(`FileId`, namespace/kind, source name and optional named owner), resolved type
+trees whose nominal leaves carry the defining `(FileId, kind, source name)`,
+resolved module file identity, and const function leaves carrying their defining
+`(FileId, source name)`. It must also expose ordered parameter modes/comptime
+flags and struct/enum members. The compiler then joins every leaf through the
+exact-revision `BoundDefinitionSet` and canonical module table, yielding only
+the durable public algebra. AIR must report typed anonymous/local/missing cases
+instead of substituting pool handles. Materialization work counters must prove
+zero RIR scan and ordinary batch compilation must not request the export.
+
 ## Current capture audit
 
 The existing compiler does not yet expose a complete sound graph:

@@ -32,6 +32,7 @@ mod canonical_semantic;
 mod definition_snapshot;
 mod diagnostic;
 mod drop_glue;
+mod durable_semantics;
 mod frontend_session;
 mod import_graph;
 pub mod parsed_modules;
@@ -59,6 +60,9 @@ pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
     DefinitionRecord, DefinitionShard, DefinitionShardWork, DefinitionSnapshot, ModuleDefinition,
     ModuleKey,
+};
+pub use durable_semantics::{
+    DURABLE_SEMANTIC_SCHEMA_VERSION, DurableConstValue, DurableSemanticExportFailure, DurableType,
 };
 pub use frontend_session::{
     CanonicalFrontendSession, CanonicalFrontendSessionWork, CanonicalFrontendUpdate,
