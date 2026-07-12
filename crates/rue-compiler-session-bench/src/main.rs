@@ -4,7 +4,8 @@ use std::{collections::HashMap, env, process, sync::Arc, time::Instant};
 
 use rue_compiler::{
     CanonicalFrontendSession, CanonicalFrontendSessionWork, CompileOptions, ParsedModulesWork,
-    SourceMetadata, SourceSnapshot,
+    SemanticDependencyInputManifest, SemanticFullInvalidationReason, SemanticInvalidationPlan,
+    SemanticInvalidationScope, SourceMetadata, SourceSnapshot,
 };
 use rue_span::FileId;
 use serde_json::{Value, json};
@@ -33,6 +34,10 @@ struct QueryCounts {
     downstream_invalidations: usize,
     semantic_entries_invalidated: usize,
     definition_entries_invalidated: usize,
+    dependency_manifest_executions: usize,
+    dependency_manifest_reuses: usize,
+    invalidation_plan_executions: usize,
+    invalidation_plan_reuses: usize,
 }
 
 impl QueryCounts {
@@ -49,6 +54,10 @@ impl QueryCounts {
             downstream_invalidations: work.downstream_invalidations,
             semantic_entries_invalidated: work.semantic_entries_invalidated,
             definition_entries_invalidated: work.definition_entries_invalidated,
+            dependency_manifest_executions: work.dependency_manifests.executions,
+            dependency_manifest_reuses: work.dependency_manifests.reuses,
+            invalidation_plan_executions: work.invalidation_plans.executions,
+            invalidation_plan_reuses: work.invalidation_plans.reuses,
         }
     }
 
@@ -68,6 +77,14 @@ impl QueryCounts {
                 - before.semantic_entries_invalidated,
             definition_entries_invalidated: self.definition_entries_invalidated
                 - before.definition_entries_invalidated,
+            dependency_manifest_executions: self.dependency_manifest_executions
+                - before.dependency_manifest_executions,
+            dependency_manifest_reuses: self.dependency_manifest_reuses
+                - before.dependency_manifest_reuses,
+            invalidation_plan_executions: self.invalidation_plan_executions
+                - before.invalidation_plan_executions,
+            invalidation_plan_reuses: self.invalidation_plan_reuses
+                - before.invalidation_plan_reuses,
         }
     }
 
@@ -84,6 +101,10 @@ impl QueryCounts {
             "downstream_invalidations": self.downstream_invalidations,
             "semantic_entries_invalidated": self.semantic_entries_invalidated,
             "definition_entries_invalidated": self.definition_entries_invalidated,
+            "dependency_manifest_executions": self.dependency_manifest_executions,
+            "dependency_manifest_reuses": self.dependency_manifest_reuses,
+            "invalidation_plan_executions": self.invalidation_plan_executions,
+            "invalidation_plan_reuses": self.invalidation_plan_reuses,
         })
     }
 }
@@ -219,6 +240,81 @@ where
     })
 }
 
+fn invalidation_plan_json(plan: &SemanticInvalidationPlan) -> Value {
+    let (scope, reasons) = match plan.scope() {
+        SemanticInvalidationScope::Full { reasons } => (
+            "full",
+            reasons
+                .iter()
+                .map(|reason| match reason {
+                    SemanticFullInvalidationReason::RootChanged => "root_changed",
+                    SemanticFullInvalidationReason::ModuleImportsChanged => {
+                        "module_imports_changed"
+                    }
+                    SemanticFullInvalidationReason::TargetChanged => "target_changed",
+                    SemanticFullInvalidationReason::PreviewFeaturesChanged => {
+                        "preview_features_changed"
+                    }
+                    SemanticFullInvalidationReason::IncompleteDefinitionUniverse => {
+                        "incomplete_definition_universe"
+                    }
+                    SemanticFullInvalidationReason::IncompleteDependencyGraph => {
+                        "incomplete_dependency_graph"
+                    }
+                })
+                .collect::<Vec<_>>(),
+        ),
+        SemanticInvalidationScope::Incremental => ("incremental", Vec::new()),
+    };
+    let work = plan.work();
+    json!({
+        "scope": scope,
+        "full_reasons": reasons,
+        "added": plan.added().len(),
+        "removed": plan.removed().len(),
+        "changed": plan.changed().len(),
+        "invalidated": plan.invalidated().len(),
+        "reusable": plan.reusable().len(),
+        "work": {
+            "definition_fingerprints_compared": work.definition_fingerprints_compared,
+            "dependency_edges_visited": work.dependency_edges_visited,
+            "reverse_closure_nodes_visited": work.reverse_closure_nodes_visited,
+            "extra_rir_instructions_visited": work.extra_rir_instructions_visited,
+        },
+    })
+}
+
+fn measure_manifest_plan(
+    session: &mut CanonicalFrontendSession,
+    source: &SourceSnapshot,
+    previous: Option<&Arc<SemanticDependencyInputManifest>>,
+    options: &CompileOptions,
+) -> (Value, Arc<SemanticDependencyInputManifest>) {
+    let before = QueryCounts::from(session.work());
+    let update = session.update(source);
+    let parse = update.work();
+    update.into_result().unwrap();
+    let manifest_started = Instant::now();
+    let current = session.semantic_dependency_inputs(options, None).unwrap();
+    let manifest_elapsed = manifest_started.elapsed();
+    let after_manifest = QueryCounts::from(session.work());
+    let plan_started = Instant::now();
+    let plan = session.semantic_invalidation_plan(previous.unwrap_or(&current), &current);
+    let plan_elapsed = plan_started.elapsed();
+    let after_plan = QueryCounts::from(session.work());
+    (
+        json!({
+            "manifest_wall_time_ns": manifest_elapsed.as_nanos(),
+            "plan_wall_time_ns": plan_elapsed.as_nanos(),
+            "parse": parse_json(parse),
+            "manifest_queries": after_manifest.delta(before).json(),
+            "planner_queries": after_plan.delta(after_manifest).json(),
+            "plan": invalidation_plan_json(&plan),
+        }),
+        current,
+    )
+}
+
 fn run_iteration(fixture: &Fixture) -> Vec<Value> {
     let options = CompileOptions::default();
     let mut session = CanonicalFrontendSession::new();
@@ -308,6 +404,30 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
             session.stable_definitions(&options).unwrap();
             ParsedModulesWork::default()
         }),
+    ));
+    let mut planner = CanonicalFrontendSession::new();
+    let (cold_plan, base_manifest) =
+        measure_manifest_plan(&mut planner, &fixture.base, None, &options);
+    scenarios.push(named("invalidation_plan_cold", cold_plan));
+    let (noop_plan, noop_manifest) =
+        measure_manifest_plan(&mut planner, &fixture.base, Some(&base_manifest), &options);
+    scenarios.push(named("invalidation_plan_exact_noop", noop_plan));
+    let (leaf_plan, leaf_manifest) = measure_manifest_plan(
+        &mut planner,
+        &fixture.leaf_edit,
+        Some(&noop_manifest),
+        &options,
+    );
+    scenarios.push(named("invalidation_plan_leaf_body_edit", leaf_plan));
+    let (identity_plan, _) = measure_manifest_plan(
+        &mut planner,
+        &fixture.identity_edit,
+        Some(&leaf_manifest),
+        &options,
+    );
+    scenarios.push(named(
+        "invalidation_plan_module_identity_change",
+        identity_plan,
     ));
     assert_structure(&scenarios, fixture.modules);
     scenarios
@@ -429,6 +549,80 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
         0
     );
     assert_eq!(count(stable_reuse, &["queries", "definition_reuses"]), 1);
+
+    let plan_cold = get("invalidation_plan_cold");
+    assert_eq!(
+        count(
+            plan_cold,
+            &["manifest_queries", "dependency_manifest_executions"]
+        ),
+        1
+    );
+    assert_production_full_plan(plan_cold, 1, 0, modules);
+    let plan_noop = get("invalidation_plan_exact_noop");
+    assert_reuse_parse_is_all_zero(plan_noop);
+    assert_eq!(
+        count(
+            plan_noop,
+            &["manifest_queries", "dependency_manifest_reuses"]
+        ),
+        1
+    );
+    assert_eq!(
+        count(plan_noop, &["planner_queries", "invalidation_plan_reuses"]),
+        1
+    );
+    assert_production_full_plan(plan_noop, 0, 0, modules);
+    let plan_leaf = get("invalidation_plan_leaf_body_edit");
+    assert_eq!(count(plan_leaf, &["parse", "modules_reparsed"]), 1);
+    assert_production_full_plan(plan_leaf, 1, 1, modules);
+    let plan_identity = get("invalidation_plan_module_identity_change");
+    assert_eq!(count(plan_identity, &["parse", "modules_rebound"]), 1);
+    assert_production_full_plan(plan_identity, 1, 0, modules - 1);
+}
+
+fn assert_production_full_plan(scenario: &Value, executions: u64, changed: u64, compared: usize) {
+    assert_eq!(scenario["plan"]["scope"], "full");
+    assert!(
+        scenario["plan"]["full_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "incomplete_dependency_graph")
+    );
+    assert_eq!(count(scenario, &["plan", "reusable"]), 0);
+    assert_eq!(count(scenario, &["plan", "invalidated"]), 0);
+    assert_eq!(count(scenario, &["plan", "changed"]), changed);
+    assert_eq!(
+        count(
+            scenario,
+            &["plan", "work", "definition_fingerprints_compared"]
+        ),
+        compared as u64
+    );
+    assert_eq!(
+        count(
+            scenario,
+            &["plan", "work", "extra_rir_instructions_visited"]
+        ),
+        0
+    );
+    assert_eq!(
+        count(scenario, &["plan", "work", "dependency_edges_visited"]),
+        0
+    );
+    assert_eq!(
+        count(scenario, &["plan", "work", "reverse_closure_nodes_visited"]),
+        0
+    );
+    assert_eq!(count(scenario, &["planner_queries", "rir_executions"]), 0);
+    assert_eq!(
+        count(
+            scenario,
+            &["planner_queries", "invalidation_plan_executions"]
+        ),
+        executions
+    );
 }
 
 fn assert_reuse_parse_is_all_zero(scenario: &Value) {
@@ -514,7 +708,7 @@ fn main() {
     println!(
         "{}",
         json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "workload": "canonical_frontend_session_invalidation",
             "configuration": {
                 "modules": config.modules,
@@ -535,11 +729,13 @@ mod tests {
     #[test]
     fn small_workload_is_a_structural_smoke_test() {
         let scenarios = run_iteration(&Fixture::new(4));
-        assert_eq!(scenarios.len(), 8);
+        assert_eq!(scenarios.len(), 12);
         assert!(
             scenarios
                 .iter()
-                .all(|scenario| scenario["wall_time_ns"].is_u64())
+                .all(|scenario| scenario["wall_time_ns"].is_u64()
+                    || (scenario["manifest_wall_time_ns"].is_u64()
+                        && scenario["plan_wall_time_ns"].is_u64()))
         );
     }
 }
