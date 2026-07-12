@@ -62,7 +62,10 @@ pub use import_graph::{
     extract_import_directives, resolve_canonical_import_graph, resolve_import_graph,
     validate_canonical_import_graph,
 };
-pub use parsed_modules::ParsedProgram as CanonicalParsedProgram;
+pub use parsed_modules::{
+    ParsedModulesWork, ParsedProgram as CanonicalParsedProgram,
+    parse_source_snapshot_modules_reusing,
+};
 pub use semantic_symbols::{SemanticSymbol, SemanticSymbolUniverse, SemanticTranslationWork};
 pub use source_identity::{
     CodegenInputDescriptor, LinkInputDescriptor, ModuleId, ModuleResolutionInput,
