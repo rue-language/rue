@@ -240,22 +240,74 @@ impl ModuleResolutionInputs {
     pub fn modules(&self) -> &[ModuleResolutionInput] {
         &self.modules
     }
+    /// Build canonical explicit module-resolution inputs.
+    pub fn new(root: ModuleId, mut modules: Vec<ModuleResolutionInput>) -> CompileResult<Self> {
+        modules.sort_by(|a, b| a.module.cmp(&b.module));
+        if let Some(module) = modules
+            .iter()
+            .find(|entry| entry.physical_path.is_empty())
+            .map(|entry| &entry.module)
+        {
+            return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("module resolution input {module:?} has an empty physical path"),
+            )));
+        }
+        if let Some(duplicate) = modules
+            .windows(2)
+            .find(|pair| pair[0].module == pair[1].module)
+            .map(|pair| &pair[0].module)
+        {
+            return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("module resolution inputs contain duplicate module ID {duplicate:?}"),
+            )));
+        }
+        if modules
+            .binary_search_by(|entry| entry.module.cmp(&root))
+            .is_err()
+        {
+            return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("module resolution root {root:?} is absent"),
+            )));
+        }
+        let mut physical_paths: Vec<_> = modules
+            .iter()
+            .map(|entry| (normalize_module_path(&entry.physical_path), &entry.module))
+            .collect();
+        physical_paths.sort();
+        if let Some((path, _)) = physical_paths
+            .windows(2)
+            .find(|pair| pair[0].0 == pair[1].0)
+            .map(|pair| &pair[0])
+        {
+            return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("module resolution inputs contain duplicate physical path {path:?}"),
+            )));
+        }
+        Ok(Self {
+            root,
+            modules: modules.into(),
+        })
+    }
+
+    pub fn physical_path(&self, module: &ModuleId) -> Option<&str> {
+        self.modules
+            .binary_search_by(|entry| entry.module.cmp(module))
+            .ok()
+            .map(|index| self.modules[index].physical_path.as_ref())
+    }
+
     pub fn from_metadata(metadata: &SourceMetadata) -> Self {
         let root = ModuleId::from_validated_canonical(
             metadata.logical_path(metadata.root_file_id()).unwrap(),
         );
-        let mut modules: Vec<_> = metadata
+        let modules: Vec<_> = metadata
             .file_ids()
             .map(|id| ModuleResolutionInput {
                 module: ModuleId::from_validated_canonical(metadata.logical_path(id).unwrap()),
                 physical_path: Arc::from(metadata.physical_path(id).unwrap()),
             })
             .collect();
-        modules.sort_by(|a, b| a.module.cmp(&b.module));
-        Self {
-            root,
-            modules: modules.into(),
-        }
+        Self::new(root, modules).expect("validated source metadata is canonical")
     }
 }
 
@@ -444,5 +496,47 @@ mod tests {
         )
         .unwrap_err();
         assert!(missing.to_string().contains("root module"));
+    }
+
+    #[test]
+    fn module_resolution_inputs_are_canonical_and_reject_ambiguous_provenance() {
+        let root = ModuleId::from_logical_path("root.rue").unwrap();
+        let helper = ModuleId::from_logical_path("helper.rue").unwrap();
+        let inputs = ModuleResolutionInputs::new(
+            root.clone(),
+            vec![
+                ModuleResolutionInput {
+                    module: helper.clone(),
+                    physical_path: Arc::from("/p/helper.rue"),
+                },
+                ModuleResolutionInput {
+                    module: root.clone(),
+                    physical_path: Arc::from("/p/root.rue"),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(inputs.modules()[0].module, helper);
+        assert_eq!(inputs.physical_path(&root), Some("/p/root.rue"));
+
+        let duplicate_path = ModuleResolutionInputs::new(
+            root.clone(),
+            vec![
+                ModuleResolutionInput {
+                    module: root,
+                    physical_path: Arc::from("/p/dir/../same.rue"),
+                },
+                ModuleResolutionInput {
+                    module: ModuleId::from_logical_path("other.rue").unwrap(),
+                    physical_path: Arc::from("/p/same.rue"),
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            duplicate_path
+                .to_string()
+                .contains("duplicate physical path")
+        );
     }
 }
