@@ -4,7 +4,7 @@
 //! remains the shared-interner compatibility representation until assembly
 //! symbol translation is introduced separately.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -160,6 +160,24 @@ pub struct ParsedImportDirective {
     specifier: Arc<str>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ParsedImportSite {
+    source_offset: u32,
+    specifier: Arc<str>,
+}
+
+/// Immutable parsed syntax whose spans and symbols belong to one FileId epoch.
+#[derive(Debug)]
+struct ParsedSyntaxPayload {
+    source: SourceId,
+    file_id: FileId,
+    source_text: Arc<String>,
+    ast: ProvenancedAst,
+    resolver: FrozenSymbolResolver,
+    definitions: ParsedDefinitionIndex,
+    import_sites: Arc<[ParsedImportSite]>,
+}
+
 impl ParsedImportDirective {
     pub fn importer(&self) -> &ModuleId {
         &self.importer
@@ -176,12 +194,8 @@ impl ParsedImportDirective {
 #[derive(Debug)]
 pub struct ParsedModule {
     revision: ModuleRevision,
-    file_id: FileId,
     physical_path: Arc<str>,
-    source_text: Arc<String>,
-    ast: ProvenancedAst,
-    resolver: FrozenSymbolResolver,
-    definitions: ParsedDefinitionIndex,
+    payload: Arc<ParsedSyntaxPayload>,
     imports: Arc<[ParsedImportDirective]>,
 }
 
@@ -256,34 +270,58 @@ impl ParsedModule {
         &self.revision.source
     }
     pub fn file_id(&self) -> FileId {
-        self.file_id
+        self.payload.file_id
     }
     pub fn physical_path(&self) -> &str {
         &self.physical_path
     }
     pub fn source_text(&self) -> &str {
-        &self.source_text
+        &self.payload.source_text
     }
     pub(crate) fn shared_source_text(&self) -> Arc<String> {
-        self.source_text.clone()
+        self.payload.source_text.clone()
     }
     pub fn ast(&self) -> &Ast {
-        &self.ast.ast
+        &self.payload.ast.ast
     }
     pub fn definitions(&self) -> &ParsedDefinitionIndex {
-        &self.definitions
+        &self.payload.definitions
     }
     pub fn imports(&self) -> &[ParsedImportDirective] {
         &self.imports
     }
 
     pub fn resolve(&self, symbol: &ParsedSymbol) -> CompileResult<&str> {
-        self.resolver.resolve(symbol)
+        self.payload.resolver.resolve(symbol)
     }
 
     pub(crate) fn parsed_symbol(&self, spur: Spur) -> CompileResult<ParsedSymbol> {
-        self.resolver.symbol(spur)
+        self.payload.resolver.symbol(spur)
     }
+
+    #[cfg(test)]
+    fn payload_ptr(&self) -> *const ParsedSyntaxPayload {
+        Arc::as_ptr(&self.payload)
+    }
+}
+
+/// Exact work performed while assembling reusable parsed modules.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParsedModulesWork {
+    /// Lexing and parsing performed for modules that could not be reused.
+    pub syntax: SyntaxWork,
+    /// Previous program modules inserted into the point-lookup index.
+    pub previous_modules_indexed: usize,
+    /// Snapshot modules classified by this assembly.
+    pub modules_considered: usize,
+    /// Point lookups performed against the previous-module index.
+    pub previous_module_lookups: usize,
+    /// Entire ParsedModule Arcs retained unchanged.
+    pub modules_reused: usize,
+    /// Cheap envelopes rebuilt around retained syntax payloads.
+    pub modules_rebound: usize,
+    /// Modules lexed and parsed because source or FileId epoch changed.
+    pub modules_reparsed: usize,
 }
 
 /// Deterministically ordered collection of independently parsed modules.
@@ -363,22 +401,36 @@ impl ParsedProgram {
 
 pub(crate) struct ParsedModulesOutcome {
     pub(crate) result: Result<ParsedProgram, CompileErrors>,
-    pub(crate) work: SyntaxWork,
+    pub(crate) work: ParsedModulesWork,
 }
 
 /// Parse every snapshot module independently and assemble canonical artifacts.
 pub fn parse_source_snapshot_modules(
     snapshot: &SourceSnapshot,
 ) -> Result<ParsedProgram, CompileErrors> {
-    parse_source_snapshot_modules_with_stats(snapshot).map(|(program, _)| program)
+    parse_source_snapshot_modules_reusing(snapshot, None).map(|(program, _)| program)
+}
+
+/// Reuse exact syntax payloads while preserving canonical ModuleId diagnostic order.
+///
+/// Previous modules are indexed once by FileId. Hash-map iteration never
+/// drives parsing, diagnostics, or artifact order; every snapshot module is
+/// visited in canonical ModuleId order and performs at most one point lookup.
+/// Legacy caller-order projections remain a separate compatibility concern.
+pub fn parse_source_snapshot_modules_reusing(
+    snapshot: &SourceSnapshot,
+    previous: Option<&ParsedProgram>,
+) -> Result<(ParsedProgram, ParsedModulesWork), CompileErrors> {
+    let outcome = parse_source_snapshot_modules_reusing_with_work(snapshot, previous);
+    outcome.result.map(|program| (program, outcome.work))
 }
 
 /// Parse canonical modules and return the exact syntax work performed.
 pub fn parse_source_snapshot_modules_with_stats(
     snapshot: &SourceSnapshot,
 ) -> Result<(ParsedProgram, SyntaxWork), CompileErrors> {
-    let outcome = parse_source_snapshot_modules_with_work(snapshot);
-    outcome.result.map(|program| (program, outcome.work))
+    parse_source_snapshot_modules_reusing(snapshot, None)
+        .map(|(program, work)| (program, work.syntax))
 }
 
 /// Parse one module selected by its stable logical identity.
@@ -415,15 +467,14 @@ fn parse_snapshot_file(
     let outcome = crate::syntax::parse_file(source, ThreadedRodeo::new());
     let work = outcome.work;
     let result = outcome.result.and_then(|file| {
-        build_module(snapshot, file_id, file.ast, outcome.interner)
-            .map(Arc::new)
-            .map_err(CompileErrors::from)
+        build_module(snapshot, file_id, file.ast, outcome.interner).map_err(CompileErrors::from)
     });
     (result, work)
 }
 
-pub(crate) fn parse_source_snapshot_modules_with_work(
+fn parse_source_snapshot_modules_reusing_with_work(
     snapshot: &SourceSnapshot,
+    previous: Option<&ParsedProgram>,
 ) -> ParsedModulesOutcome {
     let mut file_ids: Vec<_> = snapshot.metadata().file_ids().collect();
     file_ids.sort_by(|left, right| {
@@ -434,13 +485,49 @@ pub(crate) fn parse_source_snapshot_modules_with_work(
     });
     let mut modules = Vec::with_capacity(file_ids.len());
     let mut errors = CompileErrors::new();
-    let mut work = SyntaxWork::default();
+    let previous_by_file = previous
+        .map(|program| {
+            program
+                .modules()
+                .iter()
+                .map(|module| (module.file_id(), module))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut work = ParsedModulesWork {
+        previous_modules_indexed: previous_by_file.len(),
+        ..ParsedModulesWork::default()
+    };
     for file_id in file_ids {
-        let (result, file_work) = parse_snapshot_file(snapshot, file_id);
-        work.lexer_invocations += file_work.lexer_invocations;
-        work.parser_invocations += file_work.parser_invocations;
-        work.lexed_bytes += file_work.lexed_bytes;
-        work.tokens += file_work.tokens;
+        work.modules_considered += 1;
+        work.previous_module_lookups += usize::from(previous.is_some());
+        let module_id = snapshot.module_id(file_id).expect("snapshot membership");
+        let source_id = snapshot.source_id(file_id).expect("snapshot membership");
+        let physical_path = snapshot.metadata().physical_path(file_id).unwrap();
+        let previous_module = previous_by_file.get(&file_id).copied();
+        let exact = previous_module.filter(|module| {
+            module.module_id() == module_id
+                && module.source_id() == source_id
+                && module.physical_path() == physical_path
+        });
+        let result = if let Some(module) = exact {
+            work.modules_reused += 1;
+            Ok(module.clone())
+        } else if let Some(payload) = previous_module
+            .filter(|module| module.source_id() == source_id)
+            .map(|module| module.payload.clone())
+        {
+            work.modules_rebound += 1;
+            Ok(bind_payload(snapshot, file_id, payload))
+        } else {
+            work.modules_reparsed += 1;
+            let (result, file_work) = parse_snapshot_file(snapshot, file_id);
+            work.syntax.lexer_invocations += file_work.lexer_invocations;
+            work.syntax.parser_invocations += file_work.parser_invocations;
+            work.syntax.lexed_bytes += file_work.lexed_bytes;
+            work.syntax.tokens += file_work.tokens;
+            result
+        };
         match result {
             Ok(module) => modules.push(module),
             Err(file_errors) => errors.extend(file_errors),
@@ -452,6 +539,10 @@ pub(crate) fn parse_source_snapshot_modules_with_work(
     } else {
         Err(errors)
     };
+    debug_assert_eq!(
+        work.modules_considered,
+        work.modules_reused + work.modules_rebound + work.modules_reparsed
+    );
     ParsedModulesOutcome { result, work }
 }
 
@@ -460,7 +551,7 @@ fn build_module(
     file_id: FileId,
     ast: Arc<Ast>,
     interner: ThreadedRodeo,
-) -> CompileResult<ParsedModule> {
+) -> CompileResult<Arc<ParsedModule>> {
     let module = snapshot
         .module_id(file_id)
         .expect("snapshot membership")
@@ -472,9 +563,8 @@ fn build_module(
     let source_text = snapshot
         .shared_source_text(file_id)
         .expect("snapshot membership");
-    let physical_path = Arc::from(snapshot.metadata().physical_path(file_id).unwrap());
 
-    let imports = collect_imports(&ast, &module, &interner)?;
+    let import_sites = collect_imports(&ast, &module, &interner)?;
 
     let token = Arc::new(SymbolProvenance);
     let resolver = FrozenSymbolResolver {
@@ -486,18 +576,53 @@ fn build_module(
         provenance: token,
         source: source.clone(),
     };
-    let revision = ModuleRevision { module, source };
+    let revision = ModuleRevision {
+        module,
+        source: source.clone(),
+    };
     validate_pair(&provenanced_ast, &resolver, &revision)?;
     let definitions =
         build_definition_index(file_id, &source_text, &provenanced_ast.ast, &resolver)?;
-    Ok(ParsedModule {
-        revision,
+    let payload = Arc::new(ParsedSyntaxPayload {
+        source,
         file_id,
-        physical_path,
         source_text,
         ast: provenanced_ast,
         resolver,
         definitions,
+        import_sites: import_sites.into(),
+    });
+    Ok(bind_payload(snapshot, file_id, payload))
+}
+
+fn bind_payload(
+    snapshot: &SourceSnapshot,
+    file_id: FileId,
+    payload: Arc<ParsedSyntaxPayload>,
+) -> Arc<ParsedModule> {
+    debug_assert_eq!(payload.file_id, file_id);
+    debug_assert_eq!(snapshot.source_id(file_id), Some(&payload.source));
+    let module = snapshot
+        .module_id(file_id)
+        .expect("snapshot membership")
+        .clone();
+    let revision = ModuleRevision {
+        module: module.clone(),
+        source: payload.source.clone(),
+    };
+    let imports = payload
+        .import_sites
+        .iter()
+        .map(|site| ParsedImportDirective {
+            importer: module.clone(),
+            source_offset: site.source_offset,
+            specifier: site.specifier.clone(),
+        })
+        .collect::<Vec<_>>();
+    Arc::new(ParsedModule {
+        revision,
+        physical_path: Arc::from(snapshot.metadata().physical_path(file_id).unwrap()),
+        payload,
         imports: imports.into(),
     })
 }
@@ -506,7 +631,7 @@ fn collect_imports(
     ast: &Ast,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-) -> CompileResult<Vec<ParsedImportDirective>> {
+) -> CompileResult<Vec<ParsedImportSite>> {
     let mut imports = Vec::new();
     for item in &ast.items {
         match item {
@@ -561,7 +686,7 @@ fn walk_signature(
     return_type: Option<&TypeExpr>,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-    imports: &mut Vec<ParsedImportDirective>,
+    imports: &mut Vec<ParsedImportSite>,
 ) -> CompileResult<()> {
     for param in params {
         walk_type_expr(&param.ty, module, resolver, imports)?;
@@ -576,7 +701,7 @@ fn walk_type_expr(
     ty: &TypeExpr,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-    imports: &mut Vec<ParsedImportDirective>,
+    imports: &mut Vec<ParsedImportSite>,
 ) -> CompileResult<()> {
     match ty {
         TypeExpr::Named(_)
@@ -628,7 +753,7 @@ fn walk_args(
     args: &[rue_parser::ast::CallArg],
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-    imports: &mut Vec<ParsedImportDirective>,
+    imports: &mut Vec<ParsedImportSite>,
 ) -> CompileResult<()> {
     for arg in args {
         walk_expr(&arg.expr, module, resolver, imports)?;
@@ -640,7 +765,7 @@ fn walk_block(
     block: &rue_parser::ast::BlockExpr,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-    imports: &mut Vec<ParsedImportDirective>,
+    imports: &mut Vec<ParsedImportSite>,
 ) -> CompileResult<()> {
     for statement in &block.statements {
         match statement {
@@ -668,7 +793,7 @@ fn walk_expr(
     expr: &Expr,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-    imports: &mut Vec<ParsedImportDirective>,
+    imports: &mut Vec<ParsedImportSite>,
 ) -> CompileResult<()> {
     match expr {
         Expr::Int(_)
@@ -757,8 +882,7 @@ fn walk_expr(
                 let specifier = resolver.try_resolve(&literal.value).ok_or_else(|| {
                     invalid_input("import literal is absent from the module symbol universe")
                 })?;
-                imports.push(ParsedImportDirective {
-                    importer: module.clone(),
+                imports.push(ParsedImportSite {
                     source_offset: value.span.start,
                     specifier: Arc::from(specifier),
                 });
@@ -963,9 +1087,9 @@ mod tests {
             ],
             20,
         );
-        let outcome = parse_source_snapshot_modules_with_work(&snapshot);
-        assert_eq!(outcome.work.lexer_invocations, 2);
-        assert_eq!(outcome.work.parser_invocations, 2);
+        let outcome = parse_source_snapshot_modules_reusing_with_work(&snapshot, None);
+        assert_eq!(outcome.work.syntax.lexer_invocations, 2);
+        assert_eq!(outcome.work.syntax.parser_invocations, 2);
         let program = outcome.result.unwrap();
         assert_eq!(
             program
@@ -1058,7 +1182,7 @@ mod tests {
             ],
             7,
         );
-        let outcome = parse_source_snapshot_modules_with_work(&snapshot);
+        let outcome = parse_source_snapshot_modules_reusing_with_work(&snapshot, None);
         let work = outcome.work;
         let first = outcome.result.unwrap();
         let modules = first.modules().to_vec();
@@ -1103,8 +1227,156 @@ mod tests {
         assert_ne!(base.target, changed_target.target);
         assert_ne!(base.resolution, changed_resolution);
         assert_ne!(base.preview_features, changed_features.preview_features);
-        assert_eq!(work.lexer_invocations, 2);
-        assert_eq!(work.parser_invocations, 2);
+        assert_eq!(work.syntax.lexer_invocations, 2);
+        assert_eq!(work.syntax.parser_invocations, 2);
+        assert_eq!(work.modules_reparsed, 2);
+    }
+
+    #[test]
+    fn relocation_and_logical_rename_rebind_without_parsing() {
+        let first = snapshot(
+            &[(
+                7,
+                "/old/main.rue",
+                "old-name.rue",
+                "fn main() { @import(\"dep.rue\"); }",
+            )],
+            7,
+        );
+        let (first, initial) = parse_source_snapshot_modules_reusing(&first, None).unwrap();
+        assert_eq!(initial.modules_reparsed, 1);
+        let payload = first.modules()[0].payload_ptr();
+
+        let moved = snapshot(
+            &[(
+                7,
+                "/new/main.rue",
+                "new-name.rue",
+                "fn main() { @import(\"dep.rue\"); }",
+            )],
+            7,
+        );
+        let (moved, work) = parse_source_snapshot_modules_reusing(&moved, Some(&first)).unwrap();
+        assert_eq!(work.syntax, SyntaxWork::default());
+        assert_eq!(work.modules_reused, 0);
+        assert_eq!(work.modules_rebound, 1);
+        assert_eq!(work.modules_reparsed, 0);
+        assert_eq!(work.previous_modules_indexed, 1);
+        assert_eq!(work.modules_considered, 1);
+        assert_eq!(work.previous_module_lookups, 1);
+        assert_eq!(payload, moved.modules()[0].payload_ptr());
+        assert_eq!(moved.modules()[0].physical_path(), "/new/main.rue");
+        assert_eq!(moved.modules()[0].module_id().as_str(), "new-name.rue");
+        assert_eq!(
+            moved.modules()[0].imports()[0].importer(),
+            moved.modules()[0].module_id()
+        );
+    }
+
+    #[test]
+    fn file_id_epoch_change_reparses_equal_source() {
+        let first = snapshot(&[(1, "/main.rue", "main.rue", "fn main() {}")], 1);
+        let first = parse_source_snapshot_modules(&first).unwrap();
+        let changed = snapshot(&[(9, "/main.rue", "main.rue", "fn main() {}")], 9);
+        let (changed, work) =
+            parse_source_snapshot_modules_reusing(&changed, Some(&first)).unwrap();
+        assert_eq!(work.modules_reparsed, 1);
+        assert_eq!(work.modules_considered, 1);
+        assert_eq!(work.syntax.lexer_invocations, 1);
+        assert_eq!(work.syntax.parser_invocations, 1);
+        assert_ne!(
+            first.modules()[0].payload_ptr(),
+            changed.modules()[0].payload_ptr()
+        );
+        assert_eq!(changed.modules()[0].file_id(), FileId::new(9));
+    }
+
+    #[test]
+    fn one_edit_among_128_modules_parses_exactly_once() {
+        fn large(edited: bool) -> SourceSnapshot {
+            let mut physical = HashMap::new();
+            let mut logical = HashMap::new();
+            let mut contents = Vec::new();
+            for index in 0..129_u32 {
+                let file_id = FileId::new(index + 1);
+                physical.insert(file_id, format!("/p/m{index:03}.rue"));
+                logical.insert(file_id, format!("m{index:03}.rue"));
+                let source = if index == 64 && edited {
+                    "fn changed() -> i32 { 2 }".to_owned()
+                } else {
+                    format!("fn item{index}() -> i32 {{ 1 }}")
+                };
+                contents.push((file_id, Arc::new(source)));
+            }
+            let metadata = SourceMetadata::new(FileId::new(1), physical, logical).unwrap();
+            SourceSnapshot::new(metadata, contents).unwrap()
+        }
+        let first_snapshot = large(false);
+        let first = parse_source_snapshot_modules(&first_snapshot).unwrap();
+        let edited = large(true);
+        let (second, work) = parse_source_snapshot_modules_reusing(&edited, Some(&first)).unwrap();
+        assert_eq!(work.modules_reused, 128);
+        assert_eq!(work.modules_rebound, 0);
+        assert_eq!(work.modules_reparsed, 1);
+        assert_eq!(work.previous_modules_indexed, 129);
+        assert_eq!(work.modules_considered, 129);
+        assert_eq!(work.previous_module_lookups, 129);
+        assert_eq!(
+            work.modules_considered,
+            work.modules_reused + work.modules_rebound + work.modules_reparsed
+        );
+        assert_eq!(work.syntax.lexer_invocations, 1);
+        assert_eq!(work.syntax.parser_invocations, 1);
+        assert_eq!(second.modules().len(), 129);
+        assert_eq!(
+            first
+                .modules()
+                .iter()
+                .zip(second.modules())
+                .filter(|(left, right)| Arc::ptr_eq(left, right))
+                .count(),
+            128
+        );
+    }
+
+    #[test]
+    fn reuse_errors_keep_canonical_order_and_return_no_partial_program() {
+        let good = snapshot(
+            &[
+                (1, "/z.rue", "z.rue", "fn zed() {}"),
+                (2, "/a.rue", "a.rue", "fn alpha() {}"),
+            ],
+            2,
+        );
+        let previous = parse_source_snapshot_modules(&good).unwrap();
+        let broken = snapshot(
+            &[
+                (1, "/z.rue", "z.rue", "fn zed( {"),
+                (2, "/a.rue", "a.rue", "fn alpha() {}"),
+            ],
+            2,
+        );
+        let errors = parse_source_snapshot_modules_reusing(&broken, Some(&previous)).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors.iter().next().unwrap().span().unwrap().file_id,
+            FileId::new(1)
+        );
+
+        let both_broken = snapshot(
+            &[
+                (1, "/z.rue", "z.rue", "fn zed( {"),
+                (2, "/a.rue", "a.rue", "fn alpha( {"),
+            ],
+            2,
+        );
+        let errors =
+            parse_source_snapshot_modules_reusing(&both_broken, Some(&previous)).unwrap_err();
+        let order = errors
+            .iter()
+            .map(|error| error.span().unwrap().file_id)
+            .collect::<Vec<_>>();
+        assert_eq!(order, [FileId::new(2), FileId::new(1)]);
     }
 
     #[test]
