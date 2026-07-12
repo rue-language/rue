@@ -336,6 +336,10 @@ pub struct ParsedModulesWork {
     pub modules_rebound: usize,
     /// Modules lexed and parsed because source or FileId epoch changed.
     pub modules_reparsed: usize,
+    /// Deep source-buffer clones performed while reusing modules.
+    pub source_text_clones: usize,
+    /// Source bytes rehashed while classifying reusable modules.
+    pub source_bytes_rehashed: usize,
 }
 
 /// Deterministically ordered collection of independently parsed modules.
@@ -433,6 +437,164 @@ impl ParsedProgram {
             None
         }
     }
+}
+
+/// Stable-module invalidations for one parse-session update.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParseInvalidationSummary {
+    pub exact_reused: Vec<ModuleId>,
+    pub payload_rebound: Vec<ModuleId>,
+    pub reparsed: Vec<ModuleId>,
+    pub added: Vec<ModuleId>,
+    pub removed: Vec<ModuleId>,
+}
+
+/// Result and structural work from one canonical parse-session update.
+#[derive(Debug)]
+pub struct CanonicalParseUpdate {
+    result: Result<Arc<ParsedProgram>, CompileErrors>,
+    work: ParsedModulesWork,
+    invalidation: ParseInvalidationSummary,
+    baseline_advanced: bool,
+}
+
+impl CanonicalParseUpdate {
+    pub fn result(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
+        self.result.as_ref()
+    }
+
+    pub fn into_result(self) -> Result<Arc<ParsedProgram>, CompileErrors> {
+        self.result
+    }
+
+    pub fn work(&self) -> ParsedModulesWork {
+        self.work
+    }
+
+    pub fn invalidation(&self) -> &ParseInvalidationSummary {
+        &self.invalidation
+    }
+
+    pub fn baseline_advanced(&self) -> bool {
+        self.baseline_advanced
+    }
+}
+
+/// In-process immutable canonical parse baseline for tooling queries.
+#[derive(Debug, Default)]
+pub struct CanonicalParseSession {
+    baseline: Option<Arc<ParsedProgram>>,
+}
+
+impl CanonicalParseSession {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Seed a session only with a program belonging to this exact snapshot revision.
+    pub fn from_baseline(
+        snapshot: &SourceSnapshot,
+        baseline: Arc<ParsedProgram>,
+    ) -> CompileResult<Self> {
+        if baseline.source_revision() != snapshot.source_revision() {
+            return Err(invalid_input(
+                "parse-session baseline belongs to a foreign source revision",
+            ));
+        }
+        Ok(Self {
+            baseline: Some(baseline),
+        })
+    }
+
+    pub fn baseline(&self) -> Option<&Arc<ParsedProgram>> {
+        self.baseline.as_ref()
+    }
+
+    /// Update from an immutable snapshot, publishing only successful results.
+    /// Syntax diagnostics are complete and ordered by canonical `ModuleId`.
+    /// On failure, invalidations are still relative to the last successful
+    /// baseline and that baseline is not advanced.
+    pub fn update(&mut self, snapshot: &SourceSnapshot) -> CanonicalParseUpdate {
+        let invalidation = classify_invalidation(snapshot, self.baseline.as_deref());
+        let outcome = parse_source_snapshot_modules_reusing_with_work(
+            snapshot,
+            self.baseline.as_deref(),
+            DiagnosticOrder::Canonical,
+        );
+        match outcome.result {
+            Ok(program) => {
+                let program = Arc::new(program);
+                self.baseline = Some(program.clone());
+                CanonicalParseUpdate {
+                    result: Ok(program),
+                    work: outcome.work,
+                    invalidation,
+                    baseline_advanced: true,
+                }
+            }
+            Err(errors) => CanonicalParseUpdate {
+                result: Err(errors),
+                work: outcome.work,
+                invalidation,
+                baseline_advanced: false,
+            },
+        }
+    }
+}
+
+fn classify_invalidation(
+    snapshot: &SourceSnapshot,
+    baseline: Option<&ParsedProgram>,
+) -> ParseInvalidationSummary {
+    let mut current = snapshot
+        .metadata()
+        .file_ids()
+        .map(|file_id| {
+            (
+                snapshot.module_id(file_id).unwrap().clone(),
+                file_id,
+                snapshot.source_id(file_id).unwrap(),
+                snapshot.metadata().physical_path(file_id).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    current.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut summary = ParseInvalidationSummary::default();
+    let Some(baseline) = baseline else {
+        summary.added = current.into_iter().map(|(module, ..)| module).collect();
+        return summary;
+    };
+
+    for (module_id, file_id, source_id, physical_path) in &current {
+        match baseline
+            .modules()
+            .binary_search_by(|module| module.module_id().cmp(module_id))
+        {
+            Ok(index) => {
+                let previous = &baseline.modules()[index];
+                if previous.file_id() == *file_id
+                    && previous.source_id() == *source_id
+                    && previous.physical_path() == *physical_path
+                {
+                    summary.exact_reused.push(module_id.clone());
+                } else if previous.file_id() == *file_id && previous.source_id() == *source_id {
+                    summary.payload_rebound.push(module_id.clone());
+                } else {
+                    summary.reparsed.push(module_id.clone());
+                }
+            }
+            Err(_) => summary.added.push(module_id.clone()),
+        }
+    }
+    for previous in baseline.modules() {
+        if current
+            .binary_search_by(|(module, ..)| module.cmp(previous.module_id()))
+            .is_err()
+        {
+            summary.removed.push(previous.module_id().clone());
+        }
+    }
+    summary
 }
 
 pub(crate) struct ParsedModulesOutcome {
@@ -1779,5 +1941,213 @@ fn main() -> i32 {
 
         let legacy = crate::parse_all_files_with_source_snapshot(&canonical).unwrap_err();
         assert_eq!(error_fingerprint(&first), error_fingerprint(&legacy));
+    }
+
+    #[test]
+    fn parse_session_noop_reuses_exact_arcs_and_publishes_send_sync_result() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<CanonicalParseSession>();
+        assert_send_sync::<CanonicalParseUpdate>();
+        assert_send_sync::<ParseInvalidationSummary>();
+        assert_send_sync::<ParsedProgram>();
+
+        let source = snapshot(
+            &[
+                (7, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (2, "/p/a.rue", "a.rue", "fn a() {}"),
+            ],
+            7,
+        );
+        let mut session = CanonicalParseSession::new();
+        let first = session.update(&source).into_result().unwrap();
+        let second_update = session.update(&source);
+        let work = second_update.work();
+        let second = second_update.into_result().unwrap();
+
+        assert_eq!(work.previous_modules_indexed, 2);
+        assert_eq!(work.previous_module_lookups, 2);
+        assert_eq!(work.modules_reused, 2);
+        assert_eq!(work.modules_reparsed, 0);
+        assert_eq!(work.syntax.parser_invocations, 0);
+        assert_eq!(work.source_text_clones, 0);
+        assert_eq!(work.source_bytes_rehashed, 0);
+        for (left, right) in first.modules().iter().zip(second.modules()) {
+            assert!(Arc::ptr_eq(left, right));
+        }
+
+        let published = second.clone();
+        let readers = (0..4)
+            .map(|_| {
+                let published = published.clone();
+                std::thread::spawn(move || {
+                    (
+                        published.source_revision().clone(),
+                        published.modules().len(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for reader in readers {
+            let (revision, len) = reader.join().unwrap();
+            assert_eq!(&revision, published.source_revision());
+            assert_eq!(len, 2);
+        }
+    }
+
+    #[test]
+    fn parse_session_one_edit_among_128_parses_once() {
+        let make = |edited: bool| {
+            let physical = (0..128)
+                .map(|index| (FileId::new(index), format!("/p/m{index}.rue")))
+                .collect();
+            let logical = (0..128)
+                .map(|index| (FileId::new(index), format!("m{index}.rue")))
+                .collect();
+            let metadata = SourceMetadata::new(FileId::new(0), physical, logical).unwrap();
+            SourceSnapshot::new(
+                metadata,
+                (0..128)
+                    .map(|index| {
+                        let value = if edited && index == 73 { 2 } else { 1 };
+                        (
+                            FileId::new(index),
+                            Arc::new(format!("fn f{index}() -> i32 {{ {value} }}")),
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let mut session = CanonicalParseSession::new();
+        session.update(&make(false)).into_result().unwrap();
+        let update = session.update(&make(true));
+        let work = update.work();
+
+        assert_eq!(work.previous_modules_indexed, 128);
+        assert_eq!(work.previous_module_lookups, 128);
+        assert_eq!(work.modules_reused, 127);
+        assert_eq!(work.modules_reparsed, 1);
+        assert_eq!(work.syntax.lexer_invocations, 1);
+        assert_eq!(work.syntax.parser_invocations, 1);
+        assert_eq!(update.invalidation().exact_reused.len(), 127);
+        assert_eq!(update.invalidation().reparsed.len(), 1);
+    }
+
+    #[test]
+    fn parse_session_distinguishes_relocation_file_ids_and_stable_renames() {
+        let base = snapshot(
+            &[
+                (1, "/old/a.rue", "a.rue", "fn a() {}"),
+                (2, "/old/b.rue", "b.rue", "fn b() {}"),
+            ],
+            1,
+        );
+        let relocated = snapshot(
+            &[
+                (1, "/new/a.rue", "a.rue", "fn a() {}"),
+                (2, "/new/b.rue", "b.rue", "fn b() {}"),
+            ],
+            1,
+        );
+        let reassigned = snapshot(
+            &[
+                (11, "/new/a.rue", "a.rue", "fn a() {}"),
+                (12, "/new/b.rue", "b.rue", "fn b() {}"),
+            ],
+            11,
+        );
+        let mut session = CanonicalParseSession::new();
+        session.update(&base).into_result().unwrap();
+        let moved = session.update(&relocated);
+        assert_eq!(moved.work().modules_rebound, 2);
+        assert_eq!(moved.invalidation().payload_rebound.len(), 2);
+        moved.into_result().unwrap();
+        let ids = session.update(&reassigned);
+        assert_eq!(ids.work().modules_reparsed, 2);
+        assert_eq!(ids.invalidation().reparsed.len(), 2);
+
+        let renamed = snapshot(
+            &[
+                (11, "/new/a2.rue", "a2.rue", "fn a() {}"),
+                (13, "/new/c.rue", "c.rue", "fn c() {}"),
+            ],
+            11,
+        );
+        ids.into_result().unwrap();
+        let update = session.update(&renamed);
+        assert_eq!(update.work().modules_rebound, 1);
+        assert_eq!(update.work().modules_reparsed, 1);
+        assert_eq!(update.invalidation().added.len(), 2);
+        assert_eq!(update.invalidation().removed.len(), 2);
+        assert!(update.invalidation().payload_rebound.is_empty());
+    }
+
+    #[test]
+    fn failed_session_update_keeps_successful_baseline_for_recovery() {
+        let good = snapshot(
+            &[
+                (1, "/p/a.rue", "a.rue", "fn a() {}"),
+                (2, "/p/b.rue", "b.rue", "fn b() {}"),
+                (3, "/p/c.rue", "c.rue", "fn c() {}"),
+            ],
+            1,
+        );
+        let broken = snapshot(
+            &[
+                (1, "/p/a.rue", "a.rue", "fn a() {}"),
+                (2, "/p/b.rue", "b.rue", "fn b( {"),
+                (3, "/p/c.rue", "c.rue", "fn c() {}"),
+            ],
+            1,
+        );
+        let recovered = snapshot(
+            &[
+                (1, "/p/a.rue", "a.rue", "fn a() {}"),
+                (2, "/p/b.rue", "b.rue", "fn b() { let x = 1; }"),
+                (3, "/p/c.rue", "c.rue", "fn c() {}"),
+            ],
+            1,
+        );
+        let mut session = CanonicalParseSession::new();
+        let baseline = session.update(&good).into_result().unwrap();
+        let failed = session.update(&broken);
+        assert!(failed.result().is_err());
+        assert!(!failed.baseline_advanced());
+        assert_eq!(failed.work().modules_reused, 2);
+        assert!(Arc::ptr_eq(session.baseline().unwrap(), &baseline));
+
+        let recovered = session.update(&recovered);
+        assert_eq!(recovered.work().modules_reused, 2);
+        assert_eq!(recovered.work().modules_reparsed, 1);
+        assert!(recovered.baseline_advanced());
+        recovered.into_result().unwrap();
+    }
+
+    #[test]
+    fn parse_session_rejects_foreign_baseline_and_keeps_canonical_error_order() {
+        let first = snapshot(&[(1, "/a.rue", "a.rue", "fn a() {}")], 1);
+        let foreign = snapshot(&[(9, "/z.rue", "z.rue", "fn z() {}")], 9);
+        let parsed = Arc::new(parse_source_snapshot_modules(&first).unwrap());
+        assert_eq!(
+            CanonicalParseSession::from_baseline(&foreign, parsed)
+                .unwrap_err()
+                .to_string(),
+            "invalid compiler input: parse-session baseline belongs to a foreign source revision"
+        );
+
+        let broken = snapshot(
+            &[
+                (9, "/z.rue", "z.rue", "fn z( {"),
+                (2, "/a.rue", "a.rue", "fn a() { # }"),
+            ],
+            2,
+        );
+        let mut session = CanonicalParseSession::new();
+        let update = session.update(&broken);
+        let direct = parse_source_snapshot_modules(&broken).unwrap_err();
+        assert_eq!(
+            error_fingerprint(update.result().unwrap_err()),
+            error_fingerprint(&direct)
+        );
     }
 }
