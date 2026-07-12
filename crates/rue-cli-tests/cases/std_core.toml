@@ -78,14 +78,12 @@ fn main() -> i32 {
 }
 """ }]
 
-# RUE-693: a cross-module generic std call with a bare integer literal argument
-# fails to coerce the literal to the instantiated type param (E0206). When this
-# is fixed, the case will unexpectedly PASS and the suite will tell us to drop
-# the marker — turning it into a regression test that literal args work.
+# RUE-693 (FIXED): a cross-module generic std call with a bare integer literal
+# argument now coerces the literal to the instantiated type param — including
+# through the std re-export chain (`std.cmp.min`). Regression test.
 [[case]]
 name = "std_core_generic_literal_args"
-description = "std.cmp.min(i64, 3, 7) with bare literal args should compile once RUE-693 is fixed."
-known_bug = "RUE-693"
+description = "std.cmp.min(i64, 3, 7) with bare literal args compiles and runs (RUE-693)."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 exit_code = 3
