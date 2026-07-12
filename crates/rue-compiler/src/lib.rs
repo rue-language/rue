@@ -47,7 +47,7 @@ mod unit;
 pub use bound_definitions::{
     BoundDefinitionId, BoundDefinitionRecord, BoundDefinitionSet, BoundDefinitionWork,
     StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace, StableNamedTypeKey,
-    bind_canonical_definitions,
+    bind_canonical_declaration_semantics, bind_canonical_definitions,
 };
 pub use canonical_lower::{CanonicalRirOutput, CanonicalRirWork, lower_canonical_rir};
 pub use canonical_merge::{
@@ -62,7 +62,9 @@ pub use definition_snapshot::{
     ModuleKey,
 };
 pub use durable_semantics::{
-    DURABLE_SEMANTIC_SCHEMA_VERSION, DurableConstValue, DurableSemanticExportFailure, DurableType,
+    DURABLE_SEMANTIC_SCHEMA_VERSION, DurableConstValue, DurableDeclarationPayload,
+    DurableDeclarationSemantic, DurableParameterMode, DurableSemanticExportFailure,
+    DurableSemanticParameter, DurableType,
 };
 pub use frontend_session::{
     CanonicalFrontendSession, CanonicalFrontendSessionWork, CanonicalFrontendUpdate,
