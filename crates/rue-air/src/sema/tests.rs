@@ -41,6 +41,45 @@ mod tests {
         assert_eq!(air.len(), 2); // Const + Ret
     }
 
+    #[test]
+    fn body_work_counts_reachable_call_graph_exactly() {
+        let output = compile_to_air(
+            "fn leaf() -> i32 { 1 }\nfn middle() -> i32 { leaf() }\nfn main() -> i32 { middle() }",
+        )
+        .unwrap();
+        let work = output.body_analysis_work;
+        assert_eq!(work.bodies_attempted, 3);
+        assert_eq!(work.bodies_succeeded, 3);
+        assert_eq!(work.bodies_failed, 0);
+        assert_eq!(
+            work.air_instructions_produced,
+            output
+                .functions
+                .iter()
+                .map(|function| function.air.len())
+                .sum()
+        );
+        assert_eq!(work.local_strings_produced, 0);
+        assert_eq!(work.string_ids_remapped, 0);
+    }
+
+    #[test]
+    fn specialization_work_separates_unique_and_duplicate_requests() {
+        let output = compile_to_air(
+            "fn identity(comptime T: type, value: T) -> T { value }\nfn main() -> i32 { identity(i32, 1) + identity(i32, 2) }",
+        )
+        .unwrap();
+        let work = output.body_analysis_work;
+        assert_eq!(work.generic_calls_observed, 2);
+        assert_eq!(work.specialization_requests_unique, 1);
+        assert_eq!(work.specialization_requests_duplicate, 1);
+        assert_eq!(work.specialization_rewrites, 2);
+        assert_eq!(work.specialization_rounds, 1);
+        assert_eq!(work.specialized_bodies_attempted, 1);
+        assert_eq!(work.specialized_bodies_succeeded, 1);
+        assert_eq!(work.specialized_bodies_failed, 0);
+    }
+
     fn named_method_lookup_work(irrelevant: usize) -> crate::BodyAnalysisWork {
         let mut source = String::from(
             "struct Target { fn answer() -> i32 { 42 } }\n\

@@ -134,6 +134,7 @@ fn finalize_function_body_analysis(
 
     let mut functions: Vec<AnalyzedFunction> = Vec::new();
     for (mut analyzed, local_strings) in functions_with_strings {
+        sema.body_analysis_work.string_ids_remapped += local_strings.len();
         if !local_strings.is_empty() {
             let local_to_global: Vec<u32> = local_strings
                 .into_iter()
@@ -708,6 +709,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
 
             let params = sema.rir.get_params(params_start, params_len);
 
+            sema.body_analysis_work.bodies_attempted += 1;
             match sema.analyze_single_function(
                 &infer_ctx,
                 &fn_name_str,
@@ -719,6 +721,10 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 fn_info.allow_unreachable_code,
             ) {
                 Ok((mut analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                    sema.body_analysis_work.bodies_succeeded += 1;
+                    sema.body_analysis_work.air_instructions_produced +=
+                        analyzed.air.instructions().len();
+                    sema.body_analysis_work.local_strings_produced += local_strings.len();
                     analyzed.implicit_drop_source =
                         Some(super::ImplicitDropDependencySourceEvent::FreeFunction {
                             file: fn_info.file_id.index(),
@@ -755,7 +761,10 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                         &mut pending_methods,
                     );
                 }
-                Err(e) => errors.push(e),
+                Err(e) => {
+                    sema.body_analysis_work.bodies_failed += 1;
+                    errors.push(e)
+                }
             }
         }
 
@@ -858,6 +867,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     )
                 };
 
+                sema.body_analysis_work.bodies_attempted += 1;
                 match analysis_result {
                     Ok((
                         air,
@@ -869,6 +879,10 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                         referenced_fns,
                         referenced_meths,
                     )) => {
+                        sema.body_analysis_work.bodies_succeeded += 1;
+                        sema.body_analysis_work.air_instructions_produced +=
+                            air.instructions().len();
+                        sema.body_analysis_work.local_strings_produced += local_strings.len();
                         let analyzed = AnalyzedFunction {
                             name: full_name,
                             implicit_drop_source: Some(
@@ -893,7 +907,10 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                             &mut pending_methods,
                         );
                     }
-                    Err(e) => errors.push(e),
+                    Err(e) => {
+                        sema.body_analysis_work.bodies_failed += 1;
+                        errors.push(e)
+                    }
                 }
                 continue;
             }
@@ -931,6 +948,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
 
             let params = sema.rir.get_params(*params_start, *params_len);
             let full_name = sema.method_symbol(struct_id, &method_name_str, *has_self);
+            sema.body_analysis_work.bodies_attempted += 1;
             match sema.analyze_method_function(
                 &infer_ctx,
                 &full_name,
@@ -943,6 +961,10 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 *self_mode,
             ) {
                 Ok((mut analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                    sema.body_analysis_work.bodies_succeeded += 1;
+                    sema.body_analysis_work.air_instructions_produced +=
+                        analyzed.air.instructions().len();
+                    sema.body_analysis_work.local_strings_produced += local_strings.len();
                     analyzed.implicit_drop_source =
                         Some(super::ImplicitDropDependencySourceEvent::NamedMethod {
                             file: method_info.span.file_id.index(),
@@ -977,7 +999,10 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                         &mut pending_methods,
                     );
                 }
-                Err(e) => errors.push(e),
+                Err(e) => {
+                    sema.body_analysis_work.bodies_failed += 1;
+                    errors.push(e)
+                }
             }
         }
 
@@ -1023,6 +1048,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 let struct_type = Type::new_struct(struct_id);
                 let full_name = sema.destructor_symbol(struct_id);
 
+                sema.body_analysis_work.bodies_attempted += 1;
                 match sema.analyze_destructor_function(
                     &infer_ctx,
                     &full_name,
@@ -1037,6 +1063,10 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                         referenced_fns,
                         referenced_meths,
                     )) => {
+                        sema.body_analysis_work.bodies_succeeded += 1;
+                        sema.body_analysis_work.air_instructions_produced +=
+                            analyzed.air.instructions().len();
+                        sema.body_analysis_work.local_strings_produced += local_strings.len();
                         analyzed.implicit_drop_source =
                             Some(super::ImplicitDropDependencySourceEvent::NamedDestructor {
                                 file: destructor.span.file_id.index(),
@@ -1071,7 +1101,10 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                             &mut pending_methods,
                         );
                     }
-                    Err(e) => errors.push(e),
+                    Err(e) => {
+                        sema.body_analysis_work.bodies_failed += 1;
+                        errors.push(e)
+                    }
                 }
             }
             continue;

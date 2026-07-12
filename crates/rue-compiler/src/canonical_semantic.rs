@@ -90,9 +90,27 @@ pub struct CanonicalSemanticWork {
     pub bound_definitions: Option<BoundDefinitionWork>,
     /// Demand-driven function-body analysis work.
     pub body_analysis: BodyAnalysisWork,
+    /// Drop-glue, CFG construction, and optimization work.
+    pub cfg: CfgConstructionWork,
     /// Whether this request asked for stable source definition IDs.
     pub stable_ids_requested: bool,
     pub declaration_reuse: CanonicalDeclarationReuseWork,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CfgConstructionWork {
+    pub drop_glue_functions_synthesized: usize,
+    pub functions_considered: usize,
+    pub comptime_functions_filtered: usize,
+    pub cfg_builds_attempted: usize,
+    pub cfg_builds_succeeded: usize,
+    pub cfg_builds_failed: usize,
+    pub air_instructions_consumed: usize,
+    pub optimization_attempts: usize,
+    pub optimization_completions: usize,
+    pub optimized_level_attempts: usize,
+    pub cfg_warnings_emitted: usize,
+    pub implicit_destructor_targets_emitted: usize,
 }
 
 /// Owned semantic and optimized CFG artifacts from the canonical frontend.
@@ -530,6 +548,7 @@ fn finish_canonical_analysis(
         manifest: manifest_work,
         bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
         body_analysis,
+        cfg: cfg.work,
         stable_ids_requested: request_stable_ids,
         declaration_reuse,
     };
@@ -956,5 +975,42 @@ mod tests {
         let different_root = snapshot(&sources, 2);
         let (different_root, _) = canonical(&different_root, &base_options, false);
         assert_ne!(base.input(), different_root.input());
+    }
+
+    #[test]
+    fn cfg_work_is_exact_and_distinguishes_optimized_levels() {
+        let source = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 1 } fn main() -> i32 { helper() }",
+            )],
+            1,
+        );
+        let o0_options = CompileOptions::default();
+        let (o0, _) = canonical(&source, &o0_options, false);
+        let mut o1_options = o0_options.clone();
+        o1_options.opt_level = crate::OptLevel::O1;
+        let (o1, _) = canonical(&source, &o1_options, false);
+
+        let o0 = o0.work().cfg;
+        let o1 = o1.work().cfg;
+        assert_eq!(o0.functions_considered, 2);
+        assert_eq!(o0.comptime_functions_filtered, 0);
+        assert_eq!(o0.drop_glue_functions_synthesized, 0);
+        assert_eq!(o0.cfg_builds_attempted, 2);
+        assert_eq!(o0.cfg_builds_succeeded, 2);
+        assert_eq!(o0.cfg_builds_failed, 0);
+        assert_eq!(o0.optimization_attempts, 2);
+        assert_eq!(o0.optimization_completions, 2);
+        assert_eq!(o0.optimized_level_attempts, 0);
+
+        assert_eq!(o1.cfg_builds_attempted, o0.cfg_builds_attempted);
+        assert_eq!(o1.cfg_builds_succeeded, o0.cfg_builds_succeeded);
+        assert_eq!(o1.cfg_builds_failed, o0.cfg_builds_failed);
+        assert_eq!(o1.optimization_attempts, 2);
+        assert_eq!(o1.optimization_completions, 2);
+        assert_eq!(o1.optimized_level_attempts, 2);
     }
 }

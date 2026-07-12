@@ -289,6 +289,21 @@ pub struct SemaOutput {
 /// These counters deliberately expose no request-local RIR instruction handles.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BodyAnalysisWork {
+    pub bodies_attempted: usize,
+    pub bodies_succeeded: usize,
+    pub bodies_failed: usize,
+    pub air_instructions_produced: usize,
+    pub local_strings_produced: usize,
+    pub string_ids_remapped: usize,
+    pub specialization_air_instructions_scanned: usize,
+    pub generic_calls_observed: usize,
+    pub specialization_requests_unique: usize,
+    pub specialization_requests_duplicate: usize,
+    pub specialization_rewrites: usize,
+    pub specialization_rounds: usize,
+    pub specialized_bodies_attempted: usize,
+    pub specialized_bodies_succeeded: usize,
+    pub specialized_bodies_failed: usize,
     pub ordinary_free_function_dependency_events: usize,
     pub specialized_origin_records: usize,
     pub specialized_free_function_dependency_events: usize,

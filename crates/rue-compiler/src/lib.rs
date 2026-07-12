@@ -891,6 +891,7 @@ struct CfgFrontendOutput {
     warnings: Vec<CompileWarning>,
     implicit_named_destructor_dependencies: Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
     implicit_named_destructor_dependencies_complete: bool,
+    work: canonical_semantic::CfgConstructionWork,
 }
 
 /// Lower semantic-analysis output through drop-glue synthesis, comptime filtering,
@@ -914,6 +915,15 @@ fn build_functions_and_cfgs(
 
     // Synthesize drop glue functions.
     let drop_glue_functions = drop_glue::synthesize_drop_glue(&type_pool);
+    let mut work = canonical_semantic::CfgConstructionWork {
+        drop_glue_functions_synthesized: drop_glue_functions.len(),
+        functions_considered: functions.len() + drop_glue_functions.len(),
+        comptime_functions_filtered: functions
+            .iter()
+            .filter(|f| f.air.return_type() == Type::COMPTIME_TYPE)
+            .count(),
+        ..Default::default()
+    };
 
     // Combine user functions with drop glue, filtering out comptime-only functions.
     let mut all_functions: Vec<_> = functions
@@ -928,20 +938,15 @@ fn build_functions_and_cfgs(
 
     let _span = info_span!("cfg_construction").entered();
 
-    let results: Vec<
-        Result<
-            (
-                FunctionWithCfg,
-                Vec<CompileWarning>,
-                Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
-                bool,
-            ),
-            CompileErrors,
-        >,
-    > = all_functions
+    let results: Vec<_> = all_functions
         .into_par_iter()
         .map(|func| {
             let dependency_source = func.implicit_drop_source.clone();
+            let mut function_work = canonical_semantic::CfgConstructionWork {
+                cfg_builds_attempted: 1,
+                air_instructions_consumed: func.air.instructions().len(),
+                ..Default::default()
+            };
             let cfg_output = CfgBuilder::build(
                 &func.air,
                 func.num_locals,
@@ -957,15 +962,23 @@ fn build_functions_and_cfgs(
             // (an internal compiler error, RUE-7). Abort before optimizing
             // the discarded CFG rather than working on it.
             if !cfg_output.errors.is_empty() {
+                function_work.cfg_builds_failed = 1;
                 let mut errs = CompileErrors::new();
                 for e in cfg_output.errors {
                     errs.push(e);
                 }
-                return Err(errs);
+                return Err((errs, function_work));
             }
 
+            function_work.cfg_builds_succeeded = 1;
+            function_work.optimization_attempts = 1;
+            function_work.optimized_level_attempts = usize::from(opt_level != OptLevel::O0);
             let mut cfg = cfg_output.cfg;
             rue_cfg::opt::optimize(&mut cfg, opt_level);
+            function_work.optimization_completions = 1;
+            function_work.cfg_warnings_emitted = cfg_output.warnings.len();
+            function_work.implicit_destructor_targets_emitted =
+                cfg_output.implicit_named_destructors.len();
 
             let mut implicit_edges = Vec::new();
             let mut complete = !cfg_output.anonymous_destructor_dependency_incomplete;
@@ -1009,13 +1022,16 @@ fn build_functions_and_cfgs(
             }
 
             Ok((
-                FunctionWithCfg {
-                    analyzed: func,
-                    cfg,
-                },
-                cfg_output.warnings,
-                implicit_edges,
-                complete,
+                (
+                    FunctionWithCfg {
+                        analyzed: func,
+                        cfg,
+                    },
+                    cfg_output.warnings,
+                    implicit_edges,
+                    complete,
+                ),
+                function_work,
             ))
         })
         .collect();
@@ -1024,7 +1040,20 @@ fn build_functions_and_cfgs(
     let mut implicit_named_destructor_dependencies = Vec::new();
     let mut implicit_named_destructor_dependencies_complete = true;
     for result in results {
-        let (func, func_warnings, mut implicit_edges, complete) = result?;
+        let ((func, func_warnings, mut implicit_edges, complete), function_work) = match result {
+            Ok(value) => value,
+            Err((errors, _discarded_work)) => return Err(errors),
+        };
+        work.cfg_builds_attempted += function_work.cfg_builds_attempted;
+        work.cfg_builds_succeeded += function_work.cfg_builds_succeeded;
+        work.cfg_builds_failed += function_work.cfg_builds_failed;
+        work.air_instructions_consumed += function_work.air_instructions_consumed;
+        work.optimization_attempts += function_work.optimization_attempts;
+        work.optimization_completions += function_work.optimization_completions;
+        work.optimized_level_attempts += function_work.optimized_level_attempts;
+        work.cfg_warnings_emitted += function_work.cfg_warnings_emitted;
+        work.implicit_destructor_targets_emitted +=
+            function_work.implicit_destructor_targets_emitted;
         functions.push(func);
         warnings.extend(func_warnings);
         implicit_named_destructor_dependencies.append(&mut implicit_edges);
@@ -1045,6 +1074,7 @@ fn build_functions_and_cfgs(
         warnings,
         implicit_named_destructor_dependencies,
         implicit_named_destructor_dependencies_complete,
+        work,
     })
 }
 
