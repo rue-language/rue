@@ -117,9 +117,9 @@ Synthetic complete-manifest tests exercise exact deltas and transitive closure;
 the incremental branch cannot authorize production reuse until every capture
 surface below is complete.
 
-The remaining unconditional production blockers are generic named-method
-substitution identity, fully resolved declaration-type identity, and complete
-declaration type-call-head identity. Individual programs can add evidence-based
+The remaining unconditional production blockers are fully resolved
+declaration-type identity and complete declaration type-call-head identity.
+Individual programs can add evidence-based
 blockers, including anonymous drop owners and unsupported dynamic heads. The
 records are sorted/deduplicated, independent of FileId and physical location,
 and require no second RIR scan.
@@ -200,9 +200,8 @@ deduplicated without another RIR traversal.
 
 `non_generic_named_method_dependencies_complete` covers reachable named methods
 without comptime parameters calling free functions (including generic free
-function bases) or other named methods. Generic named-method bodies have no
-specialization/base-owner provenance equivalent to free functions, so
-`generic_named_method_dependencies_complete` remains false. Anonymous methods,
+function bases) or other named methods. The same authoritative reference sets
+now retain edges for named methods with comptime parameters. Anonymous methods,
 destructors, constructors and intrinsics remain outside this surface and keep
 the overall semantic graph incomplete.
 
@@ -211,9 +210,12 @@ receiver resolution records only `(StructId, method)`, coerces every explicit
 argument as a runtime argument, emits one direct `Call` symbol, and the lazy
 driver analyzes the declaration once. `MethodInfo` has no specialization key or
 substitution/origin fields. Tests pin two distinct comptime arguments producing
-one analyzed method body and no specialization origins. Until language support
-routes these methods through a real instantiation path, generic named-method
-stable provenance is unsupported rather than missing capture data.
+one analyzed method body and no specialization origins. The declaration is
+therefore the exact stable caller identity, and
+`generic_named_method_dependencies_complete` is production-derived from the
+same successful named-method traversal. Future method instantiation support
+must add substitution identity before this flag may remain true; rejected or
+endpoint-incomplete traversals still publish no manifest.
 
 Named destructor bodies now use the same existing reference sets to capture
 tagged free-function and named-method targets. Their caller handle is the exact
