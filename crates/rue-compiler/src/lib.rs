@@ -31,6 +31,7 @@ mod drop_glue;
 mod import_graph;
 pub mod parsed_modules;
 mod semantic_order;
+pub mod semantic_symbols;
 mod source_identity;
 mod source_metadata;
 mod source_snapshot;
@@ -50,6 +51,7 @@ pub use import_graph::{
     validate_canonical_import_graph,
 };
 pub use parsed_modules::ParsedProgram as CanonicalParsedProgram;
+pub use semantic_symbols::{SemanticSymbol, SemanticSymbolUniverse, SemanticTranslationWork};
 pub use source_identity::{
     CodegenInputDescriptor, LinkInputDescriptor, ModuleId, ModuleResolutionInput,
     ModuleResolutionInputs, ModuleRevision, SemanticInputDescriptor, SourceId, SourceIdVersion,

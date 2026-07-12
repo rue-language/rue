@@ -7,6 +7,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+use lasso::Key;
 use lasso::{RodeoResolver, Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
 use rue_parser::{
@@ -28,6 +30,13 @@ struct SymbolProvenance;
 pub struct ParsedSymbol {
     spur: Spur,
     provenance: Arc<SymbolProvenance>,
+}
+
+impl ParsedSymbol {
+    #[cfg(test)]
+    pub(crate) fn test_local_ordinal(&self) -> usize {
+        self.spur.into_usize()
+    }
 }
 
 /// Immutable symbol resolver for one parsed module.
@@ -176,6 +185,57 @@ pub struct ParsedModule {
     imports: Arc<[ParsedImportDirective]>,
 }
 
+/// An AST paired with the exact parsed module that owns all of its symbols.
+///
+/// Views are issued only by [`ParsedProgram`]; cloning a view retains the
+/// pointer-identical parsed module rather than copying its AST payload.
+#[derive(Debug, Clone)]
+pub struct ParsedAstView {
+    module: Arc<ParsedModule>,
+}
+
+impl ParsedAstView {
+    pub fn module(&self) -> &Arc<ParsedModule> {
+        &self.module
+    }
+
+    pub fn module_id(&self) -> &ModuleId {
+        self.module.module_id()
+    }
+
+    pub fn ast(&self) -> &Ast {
+        self.module.ast()
+    }
+
+    pub fn items(&self) -> impl ExactSizeIterator<Item = ParsedItemView> + '_ {
+        (0..self.module.ast().items.len()).map(|index| ParsedItemView {
+            module: self.module.clone(),
+            index,
+        })
+    }
+}
+
+/// One parsed item paired with the module that owns its local symbols.
+#[derive(Debug, Clone)]
+pub struct ParsedItemView {
+    module: Arc<ParsedModule>,
+    index: usize,
+}
+
+impl ParsedItemView {
+    pub fn module(&self) -> &Arc<ParsedModule> {
+        &self.module
+    }
+
+    pub fn module_id(&self) -> &ModuleId {
+        self.module.module_id()
+    }
+
+    pub fn item(&self) -> &Item {
+        &self.module.ast().items[self.index]
+    }
+}
+
 impl ParsedModule {
     pub fn revision(&self) -> &ModuleRevision {
         &self.revision
@@ -269,6 +329,14 @@ impl ParsedProgram {
     }
     pub fn modules(&self) -> &[Arc<ParsedModule>] {
         &self.modules
+    }
+
+    /// Traverse module-qualified ASTs in canonical logical-module order.
+    pub fn ast_views(&self) -> impl ExactSizeIterator<Item = ParsedAstView> + '_ {
+        self.modules
+            .iter()
+            .cloned()
+            .map(|module| ParsedAstView { module })
     }
 
     /// Canonical program-wide import occurrences, ready for graph resolution.
