@@ -60,6 +60,7 @@ pub struct SemanticDependencyManifestWork {
     pub free_function_events_translated: usize,
     pub specialization_origins_validated: usize,
     pub named_method_events_translated: usize,
+    pub named_destructor_events_translated: usize,
     pub extra_rir_instructions_visited: usize,
 }
 
@@ -77,6 +78,12 @@ pub enum StableNamedMethodDependencyTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StableNamedMethodDependency {
+    pub caller: StableDefinitionKey,
+    pub target: StableNamedMethodDependencyTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableNamedDestructorDependency {
     pub caller: StableDefinitionKey,
     pub target: StableNamedMethodDependencyTarget,
 }
@@ -111,6 +118,8 @@ pub struct SemanticDependencyInputManifest {
     named_method_dependencies: Arc<[StableNamedMethodDependency]>,
     non_generic_named_method_dependencies_complete: bool,
     generic_named_method_dependencies_complete: bool,
+    named_destructor_dependencies: Arc<[StableNamedDestructorDependency]>,
+    named_destructor_dependencies_complete: bool,
     semantic_dependency_graph_complete: bool,
     definition_universe_complete: bool,
     work: SemanticDependencyManifestWork,
@@ -143,6 +152,12 @@ impl SemanticDependencyInputManifest {
     }
     pub fn generic_named_method_dependencies_complete(&self) -> bool {
         self.generic_named_method_dependencies_complete
+    }
+    pub fn named_destructor_dependencies(&self) -> &[StableNamedDestructorDependency] {
+        &self.named_destructor_dependencies
+    }
+    pub fn named_destructor_dependencies_complete(&self) -> bool {
+        self.named_destructor_dependencies_complete
     }
     pub fn semantic_dependency_graph_complete(&self) -> bool {
         self.semantic_dependency_graph_complete
@@ -735,11 +750,14 @@ impl CanonicalFrontendSession {
         let (
             mut free_function_dependencies,
             mut named_method_dependencies,
+            mut named_destructor_dependencies,
             free_function_events_translated,
             specialization_origins_validated,
             named_method_events_translated,
+            named_destructor_events_translated,
             free_function_caller_dependencies_complete,
             named_method_dependencies_complete,
+            named_destructor_dependencies_complete,
         ) = match (&semantic, &definitions) {
             (Ok(semantic), Ok(definitions)) => {
                 if definitions.source_revision() != &input.sources {
@@ -812,30 +830,75 @@ impl CanonicalFrontendSession {
                     };
                     method_edges.push(StableNamedMethodDependency { caller, target });
                 }
+                let mut destructor_edges = Vec::new();
+                for event in semantic.named_destructor_dependencies() {
+                    let caller = stable_named_destructor_endpoint(
+                        definitions,
+                        event.caller_file,
+                        &event.caller_owner_name,
+                    )?;
+                    let target = match &event.target {
+                        rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
+                            StableNamedMethodDependencyTarget::FreeFunction(
+                                stable_free_function_endpoint(definitions, *file, name)?,
+                            )
+                        }
+                        rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
+                            file,
+                            owner_name,
+                            method_name,
+                        } => StableNamedMethodDependencyTarget::NamedMethod(
+                            stable_named_method_endpoint(
+                                definitions,
+                                *file,
+                                owner_name,
+                                method_name,
+                            )?,
+                        ),
+                    };
+                    destructor_edges.push(StableNamedDestructorDependency { caller, target });
+                }
                 (
                     edges,
                     method_edges,
+                    destructor_edges,
                     semantic.ordinary_free_function_dependencies().len()
                         + semantic.specialized_free_function_dependencies().len(),
                     semantic.specialized_free_function_origins().len(),
                     semantic.named_method_dependencies().len(),
+                    semantic.named_destructor_dependencies().len(),
                     semantic.ordinary_free_function_dependencies_complete()
                         && semantic.specialized_free_function_dependencies_complete(),
                     semantic.non_generic_named_method_dependencies_complete(),
+                    semantic.named_destructor_dependencies_complete(),
                 )
             }
-            _ => (Vec::new(), Vec::new(), 0, 0, 0, false, false),
+            _ => (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                0,
+                0,
+                0,
+                0,
+                false,
+                false,
+                false,
+            ),
         };
         free_function_dependencies.sort();
         free_function_dependencies.dedup();
         named_method_dependencies.sort();
         named_method_dependencies.dedup();
+        named_destructor_dependencies.sort();
+        named_destructor_dependencies.dedup();
         let work = SemanticDependencyManifestWork {
             definition_records_visited: definition_records.len(),
             import_records_visited: imports.graph().records().len(),
             free_function_events_translated,
             specialization_origins_validated,
             named_method_events_translated,
+            named_destructor_events_translated,
             extra_rir_instructions_visited: 0,
         };
         self.work.dependency_manifest_records_visited += work.definition_records_visited;
@@ -877,6 +940,8 @@ impl CanonicalFrontendSession {
             named_method_dependencies: named_method_dependencies.into(),
             non_generic_named_method_dependencies_complete: named_method_dependencies_complete,
             generic_named_method_dependencies_complete: false,
+            named_destructor_dependencies: named_destructor_dependencies.into(),
+            named_destructor_dependencies_complete,
             semantic_dependency_graph_complete: false,
             definition_universe_complete,
             work,
@@ -933,6 +998,31 @@ fn stable_named_method_endpoint(
     let [record] = matches.as_slice() else {
         return Err(invalid_dependency_manifest(&format!(
             "named-method dependency endpoint ({file}, '{owner_name}', '{method_name}') did not join exactly one bound method",
+        )));
+    };
+    Ok(record.stable_key().clone())
+}
+
+fn stable_named_destructor_endpoint(
+    definitions: &BoundDefinitionSet,
+    file: u32,
+    owner_name: &str,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    let matches = definitions
+        .definitions()
+        .iter()
+        .filter(|record| {
+            let key = record.stable_key();
+            record.declaration_span().file_id.index() == file
+                && key.name() == owner_name
+                && key.namespace() == StableDefinitionNamespace::Destructor
+                && key.kind() == StableDefinitionKind::Destructor
+                && key.owner().is_some_and(|owner| owner.name() == owner_name)
+        })
+        .collect::<Vec<_>>();
+    let [record] = matches.as_slice() else {
+        return Err(invalid_dependency_manifest(&format!(
+            "named-destructor dependency endpoint ({file}, '{owner_name}') did not join exactly one bound destructor",
         )));
     };
     Ok(record.stable_key().clone())
@@ -2134,6 +2224,38 @@ mod tests {
         assert!(first.non_generic_named_method_dependencies_complete());
         assert!(!first.generic_named_method_dependencies_complete());
         assert_eq!(first.work().named_method_events_translated, edges.len());
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn named_destructor_edges_translate_to_stable_owner_and_target() {
+        let program = "fn cleanup() {} struct Value { n: i32 } drop fn Value(self) { cleanup(); } fn main() -> i32 { let value = Value { n: 1 }; 0 }";
+        let first_source = snapshot(&[(3, "/one/main.rue", "main.rue", program)], 3);
+        let moved_source = snapshot(&[(71, "/else/main.rue", "main.rue", program)], 71);
+        let build = |source: &SourceSnapshot| {
+            let mut session = CanonicalFrontendSession::new();
+            session.update(source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(&first_source);
+        let moved = build(&moved_source);
+        assert_eq!(
+            first.named_destructor_dependencies(),
+            moved.named_destructor_dependencies()
+        );
+        let [edge] = first.named_destructor_dependencies() else {
+            panic!("expected one destructor dependency");
+        };
+        assert_eq!(edge.caller.owner().unwrap().name(), "Value");
+        assert_eq!(edge.caller.kind(), StableDefinitionKind::Destructor);
+        let StableNamedMethodDependencyTarget::FreeFunction(target) = &edge.target else {
+            panic!("cleanup is a free function");
+        };
+        assert_eq!(target.name(), "cleanup");
+        assert!(first.named_destructor_dependencies_complete());
+        assert_eq!(first.work().named_destructor_events_translated, 1);
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
     }
 

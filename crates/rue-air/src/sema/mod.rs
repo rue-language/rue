@@ -58,7 +58,7 @@ pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub use module_path::{DirResolution, ModulePath, import_candidate_groups};
 pub use output::{
-    AnalyzedFunction, BodyAnalysisWork, NamedMethodDependencyEvent,
+    AnalyzedFunction, BodyAnalysisWork, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
     NamedMethodDependencyTargetEvent, OrdinaryFreeFunctionDependencyEvent, ParamSlotModes,
     SemaOutput, SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
@@ -109,6 +109,7 @@ pub struct Sema<'a> {
     pub(crate) specialized_free_function_dependencies: Vec<SpecializedFreeFunctionDependencyEvent>,
     pub(crate) named_method_dependencies: Vec<NamedMethodDependencyEvent>,
     pub(crate) non_generic_named_method_dependencies_complete: bool,
+    pub(crate) named_destructor_dependencies: Vec<NamedDestructorDependencyEvent>,
     /// Compatibility value-constant table for globally unique bare names.
     /// Holds value constants only (e.g. `const MAX: i32 = 10`); module bindings
     /// live in [`Self::module_bindings`]. If a value-constant name appears in
@@ -240,6 +241,7 @@ impl<'a> Sema<'a> {
             specialized_free_function_dependencies: Vec::new(),
             named_method_dependencies: Vec::new(),
             non_generic_named_method_dependencies_complete: true,
+            named_destructor_dependencies: Vec::new(),
             constants: HashMap::new(),
             constants_by_file_name: HashMap::new(),
             module_bindings: HashMap::new(),

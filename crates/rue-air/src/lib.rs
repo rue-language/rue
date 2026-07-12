@@ -38,11 +38,12 @@ pub use param_arena::{ParamArena, ParamRange};
 pub use path_norm::normalize_module_path;
 pub use sema::{
     AnalyzedFunction, BodyAnalysisWork, BoundSema, ConstValue, DeclarationBindingWork,
-    DirResolution, FunctionInfo, GatherOutput, MethodInfo, ModulePath, NamedMethodDependencyEvent,
-    NamedMethodDependencyTargetEvent, OrdinaryFreeFunctionDependencyEvent, ParamSlotModes,
-    RirDeclarationIndexWork, Sema, SemaOutput, SemanticBinding, SemanticBindingKind,
-    SemanticBindingManifest, SemanticBindingManifestWork, SemanticBindingNamespace,
-    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin, import_candidate_groups,
+    DirResolution, FunctionInfo, GatherOutput, MethodInfo, ModulePath,
+    NamedDestructorDependencyEvent, NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
+    OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, RirDeclarationIndexWork, Sema, SemaOutput,
+    SemanticBinding, SemanticBindingKind, SemanticBindingManifest, SemanticBindingManifestWork,
+    SemanticBindingNamespace, SpecializedFreeFunctionDependencyEvent,
+    SpecializedFreeFunctionOrigin, import_candidate_groups,
 };
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,
