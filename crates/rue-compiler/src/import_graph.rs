@@ -28,6 +28,13 @@ pub struct ImportDirective {
 }
 
 impl ImportDirective {
+    pub(crate) fn new(importer: ModuleId, source_offset: u32, specifier: Arc<str>) -> Self {
+        Self {
+            importer,
+            source_offset,
+            specifier,
+        }
+    }
     /// Canonical logical identity of the module containing this call.
     pub fn importer(&self) -> &ModuleId {
         &self.importer
@@ -49,6 +56,10 @@ impl ImportDirective {
 pub struct ImportDirectives(Arc<[ImportDirective]>);
 
 impl ImportDirectives {
+    pub(crate) fn from_records(mut records: Vec<ImportDirective>) -> Self {
+        records.sort();
+        Self(records.into())
+    }
     /// Import sites ordered by logical module, source offset, then specifier.
     pub fn as_slice(&self) -> &[ImportDirective] {
         &self.0

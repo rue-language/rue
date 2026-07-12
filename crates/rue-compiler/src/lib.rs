@@ -29,6 +29,7 @@ mod definition_snapshot;
 mod diagnostic;
 mod drop_glue;
 mod import_graph;
+pub mod parsed_modules;
 mod semantic_order;
 mod source_identity;
 mod source_metadata;
@@ -48,6 +49,7 @@ pub use import_graph::{
     extract_import_directives, resolve_canonical_import_graph, resolve_import_graph,
     validate_canonical_import_graph,
 };
+pub use parsed_modules::ParsedProgram as CanonicalParsedProgram;
 pub use source_identity::{
     CodegenInputDescriptor, LinkInputDescriptor, ModuleId, ModuleResolutionInput,
     ModuleResolutionInputs, ModuleRevision, SemanticInputDescriptor, SourceId, SourceIdVersion,

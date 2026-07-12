@@ -29,10 +29,10 @@ pub struct SyntaxWork {
     pub tokens: usize,
 }
 
-struct FileParseOutcome {
-    result: MultiErrorResult<ParsedFile>,
-    interner: ThreadedRodeo,
-    work: SyntaxWork,
+pub(crate) struct FileParseOutcome {
+    pub(crate) result: MultiErrorResult<ParsedFile>,
+    pub(crate) interner: ThreadedRodeo,
+    pub(crate) work: SyntaxWork,
 }
 
 pub(crate) struct SnapshotParseOutcome {
@@ -40,7 +40,7 @@ pub(crate) struct SnapshotParseOutcome {
     pub(crate) work: SyntaxWork,
 }
 
-fn parse_file(source: SourceFile<'_>, interner: ThreadedRodeo) -> FileParseOutcome {
+pub(crate) fn parse_file(source: SourceFile<'_>, interner: ThreadedRodeo) -> FileParseOutcome {
     let _file_span = info_span!("parse_file", path = %source.path).entered();
     let mut work = SyntaxWork {
         lexer_invocations: 1,
