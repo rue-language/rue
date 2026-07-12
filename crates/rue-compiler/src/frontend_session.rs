@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use rue_air::{DeclarationBindingWork, SemanticBindingManifestWork};
+use rue_span::Span;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -147,20 +148,36 @@ impl StableDefinitionFingerprint {
     }
 }
 
-/// The authoritative source payload represented by a definition fingerprint.
+/// Precision of the parser-authored source partition represented by a
+/// definition fingerprint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum StableDefinitionPayloadKind {
-    /// The exact UTF-8 bytes covered by `BoundDefinitionRecord::declaration_span`.
-    FullDeclaration,
+pub enum StableDefinitionFingerprintPrecision {
+    SignatureAndBody,
+    SignatureAndInitializer,
+    /// All declaration bytes are semantic signature input and there is no
+    /// independently executable payload.
+    ExactSignature,
+    /// The parser has no authoritative executable-payload boundary for this
+    /// declaration kind, so its complete declaration is hashed as a signature.
+    ConservativeFullDeclaration,
 }
 
 /// Immutable, relocation-independent inputs for one stable definition.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StableDefinitionInputFingerprint {
+    /// Schema version for persisted consumers. Bump when domains or partition
+    /// semantics change.
+    pub schema_version: u16,
     pub key: StableDefinitionKey,
-    pub surface: StableDefinitionFingerprint,
-    pub payload: StableDefinitionFingerprint,
-    pub payload_kind: StableDefinitionPayloadKind,
+    /// Stable identity and visibility metadata, excluding source locations.
+    pub declaration: StableDefinitionFingerprint,
+    /// Signature/header bytes, or the full declaration under conservative
+    /// precision.
+    pub signature: StableDefinitionFingerprint,
+    /// Function/method/destructor body or const initializer when exact parser
+    /// boundaries are available.
+    pub body_or_initializer: Option<StableDefinitionFingerprint>,
+    pub precision: StableDefinitionFingerprintPrecision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1512,44 +1529,79 @@ fn collect_reverse_dependencies(
     }
 }
 
-const DEFINITION_SURFACE_DOMAIN_V1: &[u8] = b"rue.definition.surface\0v1\0sha256\0";
-const DEFINITION_PAYLOAD_DOMAIN_V1: &[u8] = b"rue.definition.payload\0v1\0sha256\0";
+const DEFINITION_FINGERPRINT_SCHEMA_V2: u16 = 2;
+const DEFINITION_DECLARATION_DOMAIN_V2: &[u8] = b"rue.definition.declaration\0v2\0sha256\0";
+const DEFINITION_SIGNATURE_DOMAIN_V2: &[u8] = b"rue.definition.signature\0v2\0sha256\0";
+const DEFINITION_BODY_DOMAIN_V2: &[u8] = b"rue.definition.body-or-initializer\0v2\0sha256\0";
 
 fn stable_definition_input_fingerprint(
     snapshot: &SourceSnapshot,
     record: &crate::BoundDefinitionRecord,
 ) -> Result<StableDefinitionInputFingerprint, CompileErrors> {
-    let span = record.declaration_span();
-    let source = snapshot.source_text(span.file_id).ok_or_else(|| {
-        invalid_dependency_manifest("definition fingerprint span references an absent source")
-    })?;
-    let start = usize::try_from(span.start).map_err(|_| {
-        invalid_dependency_manifest("definition fingerprint span start cannot address this host")
-    })?;
-    let end = usize::try_from(span.end).map_err(|_| {
-        invalid_dependency_manifest("definition fingerprint span end cannot address this host")
-    })?;
-    let payload = source.get(start..end).ok_or_else(|| {
-        invalid_dependency_manifest(
-            "definition fingerprint span is reversed, out of bounds, or not on UTF-8 boundaries",
-        )
-    })?;
+    let source_fragment = |span: Span| -> Result<&str, CompileErrors> {
+        let source = snapshot.source_text(span.file_id).ok_or_else(|| {
+            invalid_dependency_manifest("definition fingerprint span references an absent source")
+        })?;
+        let start = usize::try_from(span.start).map_err(|_| {
+            invalid_dependency_manifest(
+                "definition fingerprint span start cannot address this host",
+            )
+        })?;
+        let end = usize::try_from(span.end).map_err(|_| {
+            invalid_dependency_manifest("definition fingerprint span end cannot address this host")
+        })?;
+        source.get(start..end).ok_or_else(|| {
+            invalid_dependency_manifest(
+                "definition fingerprint span is reversed, out of bounds, or not on UTF-8 boundaries",
+            )
+        })
+    };
 
-    let mut surface = FramedDefinitionHasher::new(DEFINITION_SURFACE_DOMAIN_V1);
-    hash_stable_definition_key(&mut surface, record.stable_key());
-    surface.frame(&[match record.visibility() {
+    let mut declaration = FramedDefinitionHasher::new(DEFINITION_DECLARATION_DOMAIN_V2);
+    hash_stable_definition_key(&mut declaration, record.stable_key());
+    declaration.frame(&[match record.visibility() {
         None => 0,
         Some(rue_parser::ast::Visibility::Private) => 1,
         Some(rue_parser::ast::Visibility::Public) => 2,
     }]);
-
-    let mut declaration = FramedDefinitionHasher::new(DEFINITION_PAYLOAD_DOMAIN_V1);
-    declaration.frame(payload.as_bytes());
+    let (signature_spans, payload_span, precision) = match record.input_partition() {
+        crate::bound_definitions::BoundDefinitionInputPartition::Body { signature, body } => (
+            vec![signature],
+            Some(body),
+            StableDefinitionFingerprintPrecision::SignatureAndBody,
+        ),
+        crate::bound_definitions::BoundDefinitionInputPartition::Initializer {
+            signature,
+            initializer,
+        } => (
+            vec![signature],
+            Some(initializer),
+            StableDefinitionFingerprintPrecision::SignatureAndInitializer,
+        ),
+        crate::bound_definitions::BoundDefinitionInputPartition::ExactSignature(spans) => (
+            spans.to_vec(),
+            None,
+            StableDefinitionFingerprintPrecision::ExactSignature,
+        ),
+    };
+    let mut signature = FramedDefinitionHasher::new(DEFINITION_SIGNATURE_DOMAIN_V2);
+    for span in signature_spans {
+        signature.frame(source_fragment(span)?.as_bytes());
+    }
+    let body_or_initializer = payload_span
+        .map(|span| {
+            let mut payload = FramedDefinitionHasher::new(DEFINITION_BODY_DOMAIN_V2);
+            payload.frame(source_fragment(span)?.as_bytes());
+            Ok::<_, CompileErrors>(payload.finish())
+        })
+        .transpose()?;
     Ok(StableDefinitionInputFingerprint {
+        schema_version: DEFINITION_FINGERPRINT_SCHEMA_V2,
         key: record.stable_key().clone(),
-        surface: surface.finish(),
-        payload: declaration.finish(),
-        payload_kind: StableDefinitionPayloadKind::FullDeclaration,
+        declaration: declaration.finish(),
+        signature: signature.finish(),
+        body_or_initializer,
+        precision,
     })
 }
 
@@ -2631,13 +2683,15 @@ mod tests {
             left.definition_fingerprints(),
             right.definition_fingerprints()
         );
-        assert!(left.definition_fingerprints().iter().all(|fingerprint| {
-            fingerprint.payload_kind == StableDefinitionPayloadKind::FullDeclaration
-        }));
+        assert!(
+            left.definition_fingerprints()
+                .iter()
+                .all(|fingerprint| fingerprint.schema_version == DEFINITION_FINGERPRINT_SCHEMA_V2)
+        );
     }
 
     #[test]
-    fn definition_fingerprints_separate_surface_and_full_declaration_changes() {
+    fn definition_fingerprints_partition_function_signature_and_body_changes() {
         fn fingerprints(source: &str) -> StableDefinitionInputFingerprint {
             let source = snapshot(&[(7, "/p/main.rue", "main.rue", source)], 7);
             let mut session = CanonicalFrontendSession::new();
@@ -2650,15 +2704,188 @@ mod tests {
         }
 
         let original = fingerprints("fn main() -> i32 { 0 }");
-        let payload_changed = fingerprints("fn main() -> i32 { 1 }");
-        assert_eq!(original.key, payload_changed.key);
-        assert_eq!(original.surface, payload_changed.surface);
-        assert_ne!(original.payload, payload_changed.payload);
+        let body_changed = fingerprints("fn main() -> i32 { 1 }");
+        assert_eq!(original.key, body_changed.key);
+        assert_eq!(original.declaration, body_changed.declaration);
+        assert_eq!(original.signature, body_changed.signature);
+        assert_ne!(
+            original.body_or_initializer,
+            body_changed.body_or_initializer
+        );
+        assert_eq!(
+            original.precision,
+            StableDefinitionFingerprintPrecision::SignatureAndBody
+        );
 
-        let surface_changed = fingerprints("pub fn main() -> i32 { 0 }");
-        assert_eq!(original.key, surface_changed.key);
-        assert_ne!(original.surface, surface_changed.surface);
-        assert_ne!(original.payload, surface_changed.payload);
+        let visibility_changed = fingerprints("pub fn main() -> i32 { 0 }");
+        assert_eq!(original.key, visibility_changed.key);
+        assert_ne!(original.declaration, visibility_changed.declaration);
+        assert_ne!(original.signature, visibility_changed.signature);
+        assert_eq!(
+            original.body_or_initializer,
+            visibility_changed.body_or_initializer
+        );
+
+        let signature_changed = fingerprints("fn main() -> i64 { 0 }");
+        assert_eq!(original.declaration, signature_changed.declaration);
+        assert_ne!(original.signature, signature_changed.signature);
+        assert_eq!(
+            original.body_or_initializer,
+            signature_changed.body_or_initializer
+        );
+    }
+
+    #[test]
+    fn definition_fingerprints_partition_all_authoritative_named_payloads() {
+        fn fingerprint(
+            source: &str,
+            name: &str,
+            kind: StableDefinitionKind,
+        ) -> StableDefinitionInputFingerprint {
+            let source = snapshot(&[(7, "/p/main.rue", "main.rue", source)], 7);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            let manifest = session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap();
+            manifest
+                .definition_fingerprints()
+                .iter()
+                .find(|value| value.key.name() == name && value.key.kind() == kind)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing {name:?} {kind:?}; got {:?}",
+                        manifest
+                            .definition_fingerprints()
+                            .iter()
+                            .map(|value| (value.key.name(), value.key.kind()))
+                            .collect::<Vec<_>>()
+                    )
+                })
+                .clone()
+        }
+        fn assert_only_payload_changed(
+            before: &StableDefinitionInputFingerprint,
+            after: &StableDefinitionInputFingerprint,
+            precision: StableDefinitionFingerprintPrecision,
+        ) {
+            assert_eq!(before.key, after.key);
+            assert_eq!(before.declaration, after.declaration);
+            assert_eq!(before.signature, after.signature);
+            assert_ne!(before.body_or_initializer, after.body_or_initializer);
+            assert_eq!(before.precision, precision);
+            assert_eq!(after.precision, precision);
+        }
+
+        let constant = fingerprint(
+            "const answer: i32 = 1; fn main() -> i32 { answer }",
+            "answer",
+            StableDefinitionKind::ValueConst,
+        );
+        let constant_changed = fingerprint(
+            "const answer: i32 = 2; fn main() -> i32 { answer }",
+            "answer",
+            StableDefinitionKind::ValueConst,
+        );
+        assert_only_payload_changed(
+            &constant,
+            &constant_changed,
+            StableDefinitionFingerprintPrecision::SignatureAndInitializer,
+        );
+
+        let method = fingerprint(
+            "struct S { n: i32, fn get(self) -> i32 { self.n } fn make() -> S { S { n: 1 } } } fn main() -> i32 { S.make().get() }",
+            "get",
+            StableDefinitionKind::Method,
+        );
+        let method_changed = fingerprint(
+            "struct S { n: i32, fn get(self) -> i32 { self.n + 1 } fn make() -> S { S { n: 1 } } } fn main() -> i32 { S.make().get() }",
+            "get",
+            StableDefinitionKind::Method,
+        );
+        assert_only_payload_changed(
+            &method,
+            &method_changed,
+            StableDefinitionFingerprintPrecision::SignatureAndBody,
+        );
+        let method_owner = fingerprint(
+            "struct S { n: i32, fn get(self) -> i32 { self.n } fn make() -> S { S { n: 1 } } } fn main() -> i32 { S.make().get() }",
+            "S",
+            StableDefinitionKind::Struct,
+        );
+        let method_owner_after_body_edit = fingerprint(
+            "struct S { n: i32, fn get(self) -> i32 { self.n + 1 } fn make() -> S { S { n: 1 } } } fn main() -> i32 { S.make().get() }",
+            "S",
+            StableDefinitionKind::Struct,
+        );
+        assert_eq!(method_owner, method_owner_after_body_edit);
+
+        let comptime_function = fingerprint(
+            "fn id(comptime value: i32) -> i32 { value } fn main() -> i32 { id(1) }",
+            "id",
+            StableDefinitionKind::Function,
+        );
+        let runtime_function = fingerprint(
+            "fn id(value: i32) -> i32 { value } fn main() -> i32 { id(1) }",
+            "id",
+            StableDefinitionKind::Function,
+        );
+        assert_eq!(comptime_function.declaration, runtime_function.declaration);
+        assert_ne!(comptime_function.signature, runtime_function.signature);
+        assert_eq!(
+            comptime_function.body_or_initializer,
+            runtime_function.body_or_initializer
+        );
+
+        let destructor = fingerprint(
+            "struct S { n: i32 } drop fn S(self) {} fn main() -> i32 { let s = S { n: 1 }; 0 }",
+            "S",
+            StableDefinitionKind::Destructor,
+        );
+        let destructor_changed = fingerprint(
+            "fn cleanup() {} struct S { n: i32 } drop fn S(self) { cleanup(); } fn main() -> i32 { let s = S { n: 1 }; 0 }",
+            "S",
+            StableDefinitionKind::Destructor,
+        );
+        assert_only_payload_changed(
+            &destructor,
+            &destructor_changed,
+            StableDefinitionFingerprintPrecision::SignatureAndBody,
+        );
+
+        let structure = fingerprint(
+            "struct S { n: i32 } fn main() -> i32 { 0 }",
+            "S",
+            StableDefinitionKind::Struct,
+        );
+        let structure_changed = fingerprint(
+            "struct S { n: i64 } fn main() -> i32 { 0 }",
+            "S",
+            StableDefinitionKind::Struct,
+        );
+        assert_eq!(
+            structure.precision,
+            StableDefinitionFingerprintPrecision::ExactSignature
+        );
+        assert_ne!(structure.signature, structure_changed.signature);
+        assert_eq!(structure.body_or_initializer, None);
+
+        let enumeration = fingerprint(
+            "enum E { A(i32), B } fn main() -> i32 { 0 }",
+            "E",
+            StableDefinitionKind::Enum,
+        );
+        let enumeration_changed = fingerprint(
+            "enum E { A(i64), B } fn main() -> i32 { 0 }",
+            "E",
+            StableDefinitionKind::Enum,
+        );
+        assert_eq!(
+            enumeration.precision,
+            StableDefinitionFingerprintPrecision::ExactSignature
+        );
+        assert_ne!(enumeration.signature, enumeration_changed.signature);
+        assert_eq!(enumeration.body_or_initializer, None);
     }
 
     fn synthetic_complete_manifest(

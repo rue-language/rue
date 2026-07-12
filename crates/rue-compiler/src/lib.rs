@@ -68,10 +68,10 @@ pub use frontend_session::{
     SemanticFullInvalidationReason, SemanticInvalidationPlan, SemanticInvalidationScope,
     SemanticInvalidationWork, SemanticQueryRecord, StableBuiltinTypeCallHeadInput,
     StableDeclarationTypeCallHeadDependency, StableDeclarationTypeDependency,
-    StableDefinitionFingerprint, StableDefinitionInputFingerprint, StableDefinitionPayloadKind,
-    StableFreeFunctionDependency, StableModuleImportDependency, StableNamedConstDependency,
-    StableNamedConstDependencyTarget, StableNamedDestructorDependency, StableNamedMethodDependency,
-    StableNamedMethodDependencyTarget,
+    StableDefinitionFingerprint, StableDefinitionFingerprintPrecision,
+    StableDefinitionInputFingerprint, StableFreeFunctionDependency, StableModuleImportDependency,
+    StableNamedConstDependency, StableNamedConstDependencyTarget, StableNamedDestructorDependency,
+    StableNamedMethodDependency, StableNamedMethodDependencyTarget,
 };
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,

@@ -83,7 +83,7 @@ translate future definition-level edges; it makes no body or CFG reuse claim.
    discarded.
 3. Define durable canonical type/comptime specialization arguments and record
    generic-origin edges.
-4. Split declaration/signature and body fingerprints at parsed syntax boundaries.
+4. ~~Split declaration/signature and body fingerprints at parsed syntax boundaries.~~
 5. Gate deterministic closure on recursion, mutual recursion, methods,
    destructors, constants, imports, generics, relocation/FileId/input order, and
    target/feature/root changes.
@@ -109,6 +109,29 @@ manifests still report an incomplete semantic graph, so production plans return
 Synthetic complete-manifest tests exercise exact deltas and transitive closure;
 the incremental branch cannot authorize production reuse until every capture
 surface below is complete.
+
+## Definition fingerprint partition
+
+Stable definition inputs now use schema v2 with independently domain-separated
+declaration, signature, and body-or-initializer digests. Declaration hashes only
+the stable key and visibility. Function, named method, associated-function, and
+named-destructor signatures end at the parser-authored body start; const
+signatures end at the parser-authored initializer start. Their exact payload
+span is hashed separately. Struct signatures are framed source fragments that
+exclude every parser-authored named-method body, so editing a method body does
+not spuriously change its owner type; enum and body-free struct declarations are
+exact signature-only inputs.
+
+No token or brace search reconstructs these boundaries. Bound definition
+records join semantic winners back to the canonical AST and reject missing,
+foreign, reversed, overlapping, or out-of-range spans. Syntax and semantic
+rejection still publish no manifest. The public precision enum includes a
+conservative full-declaration fallback for future syntax whose authoritative
+partition is unavailable, but every currently issued named definition kind has
+an exact partition. Hashes exclude FileId, offsets, physical paths, and input
+order; tests cover relocation, visibility, parameters/returns, fields, enum
+variants, function/method/destructor bodies, and const initializers without an
+extra parser, binder, or RIR traversal.
 
 Implicit drop obligations are now observed where AIR is elaborated into CFG,
 including scope/parameter/overwrite drops, recursive struct/enum/array glue,
