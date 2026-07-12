@@ -138,6 +138,18 @@ impl SemanticSymbolUniverse {
     pub(crate) fn interner(&self) -> &ThreadedRodeo {
         &self.interner
     }
+
+    pub(crate) fn admits_exact_modules(
+        &self,
+        modules: &[Arc<crate::parsed_modules::ParsedModule>],
+    ) -> bool {
+        self.admitted_modules.len() == modules.len()
+            && self
+                .admitted_modules
+                .iter()
+                .zip(modules)
+                .all(|(left, right)| Arc::ptr_eq(left, right))
+    }
 }
 
 impl SemanticSymbol {

@@ -25,6 +25,7 @@
 //! This crate is instrumented with `tracing` spans for performance analysis.
 //! Use `--log-level info` or `--time-passes` to see timing information.
 
+mod bound_definitions;
 mod canonical_lower;
 mod canonical_merge;
 mod definition_snapshot;
@@ -40,13 +41,18 @@ mod source_snapshot;
 mod syntax;
 mod unit;
 
+pub use bound_definitions::{
+    BoundDefinitionId, BoundDefinitionRecord, BoundDefinitionSet, BoundDefinitionWork,
+    StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace, StableNamedTypeKey,
+    bind_canonical_definitions,
+};
 pub use canonical_lower::{CanonicalRirOutput, CanonicalRirWork, lower_canonical_rir};
 pub use canonical_merge::{
     CanonicalMergeWork, CanonicalMergedAst, CanonicalMergedProgram, merge_parsed_modules,
 };
 pub use definition_snapshot::{
-    DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionRecord,
-    DefinitionSnapshot, ModuleDefinition, ModuleKey,
+    DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
+    DefinitionRecord, DefinitionSnapshot, ModuleDefinition, ModuleKey,
 };
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,
