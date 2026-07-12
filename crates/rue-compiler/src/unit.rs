@@ -86,6 +86,8 @@ pub struct CompilationUnitWork {
     pub parse: PhaseReuseWork,
     pub lower: PhaseReuseWork,
     pub analyze: PhaseReuseWork,
+    /// Compatibility definition snapshots built from canonical parsed modules.
+    pub definition_snapshot_builds: usize,
     pub compatibility_projections: usize,
 }
 
@@ -295,9 +297,9 @@ impl<'src> CompilationUnit<'src> {
             // snapshot builder reports its more precise modules traversal.
             let _span = info_span!("definition_snapshot").entered();
         }
+        self.work.definition_snapshot_builds += 1;
         let definition_snapshot = DefinitionSnapshot::from_parsed_modules(&parsed.program)
             .map_err(CompileErrors::from)?;
-        self.definition_snapshot = Some(definition_snapshot);
         let diagnostic_order = self
             .source_snapshot
             .files()
@@ -324,12 +326,20 @@ impl<'src> CompilationUnit<'src> {
                 .sum(),
             ..CanonicalMergeWork::default()
         };
-        let merged = {
+        let outcome = {
             let _span = info_span!("merge_symbols").entered();
-            crate::canonical_merge::merge_parsed_modules_for_batch(
+            crate::canonical_merge::merge_parsed_modules_for_unit(
                 &parsed.program,
                 &diagnostic_order,
-            )?
+                definition_snapshot,
+            )
+        };
+        let merged = match outcome.result {
+            Ok(merged) => merged,
+            Err(errors) => {
+                self.definition_snapshot = outcome.rejected_definitions;
+                return Err(errors);
+            }
         };
         debug_assert_eq!(self.work.merged, merged.work());
         self.compatibility_ast_files = parsed.ast_files;
@@ -647,7 +657,11 @@ impl<'src> CompilationUnit<'src> {
     /// This remains available when duplicate-symbol merging rejects the parsed
     /// program. It returns `None` before parsing and after a syntax error.
     pub fn definition_snapshot(&self) -> Option<&DefinitionSnapshot> {
-        self.definition_snapshot.as_ref()
+        self.definition_snapshot.as_ref().or_else(|| {
+            self.merged
+                .as_ref()
+                .map(CanonicalMergedProgram::definitions)
+        })
     }
 
     /// Direct syntax work performed by the most recent [`Self::parse`] attempt.
@@ -914,6 +928,7 @@ mod tests {
         assert_eq!(initial.semantic.binding.bind_invocations, 1);
         assert_eq!(initial.semantic.manifest.build_invocations, 0);
         assert!(!initial.semantic.stable_ids_requested);
+        assert_eq!(initial.definition_snapshot_builds, 1);
         assert_eq!(initial.compatibility_projections, 0);
 
         unit.parse().unwrap();
@@ -924,6 +939,7 @@ mod tests {
         assert_eq!(reused.lower.reuses, 1);
         assert_eq!(reused.analyze.reuses, 1);
         assert_eq!(reused.semantic.binding.bind_invocations, 1);
+        assert_eq!(reused.definition_snapshot_builds, 1);
         assert_eq!(reused.compatibility_projections, 0);
 
         assert_eq!(unit.ast().item_count(), 1);
@@ -1101,6 +1117,7 @@ mod tests {
         let first_errors = unit
             .parse()
             .expect_err("the compilation unit should reject the duplicate");
+        assert_eq!(unit.work().definition_snapshot_builds, 1);
         assert_eq!(fingerprint(&direct_errors), fingerprint(&first_errors));
         assert_eq!(unit.syntax_work(), expected_work);
         assert_eq!(unit.source_stats(), expected_stats);
@@ -1124,6 +1141,7 @@ mod tests {
         let second_errors = unit
             .parse()
             .expect_err("a repeated parse should still reject the duplicate");
+        assert_eq!(unit.work().definition_snapshot_builds, 2);
         assert_eq!(fingerprint(&first_errors), fingerprint(&second_errors));
         assert_eq!(unit.syntax_work(), expected_work);
         assert_eq!(unit.source_stats(), expected_stats);
