@@ -4,8 +4,9 @@ use std::{collections::HashMap, env, process, sync::Arc, time::Instant};
 
 use rue_compiler::{
     CanonicalFrontendSession, CanonicalFrontendSessionWork, CompileOptions, ParsedModulesWork,
-    SemanticDependencyInputManifest, SemanticFullInvalidationReason, SemanticInvalidationPlan,
-    SemanticInvalidationScope, SourceMetadata, SourceSnapshot,
+    SemanticDependencyIncompleteReason, SemanticDependencyInputManifest, SemanticDependencySurface,
+    SemanticFullInvalidationReason, SemanticInvalidationPlan, SemanticInvalidationScope,
+    SourceMetadata, SourceSnapshot,
 };
 use rue_span::FileId;
 use serde_json::{Value, json};
@@ -241,6 +242,7 @@ where
 }
 
 fn invalidation_plan_json(plan: &SemanticInvalidationPlan) -> Value {
+    let mut dependency_blockers = Vec::new();
     let (scope, reasons) = match plan.scope() {
         SemanticInvalidationScope::Full { reasons } => (
             "full",
@@ -258,7 +260,14 @@ fn invalidation_plan_json(plan: &SemanticInvalidationPlan) -> Value {
                     SemanticFullInvalidationReason::IncompleteDefinitionUniverse => {
                         "incomplete_definition_universe"
                     }
-                    SemanticFullInvalidationReason::IncompleteDependencyGraph => {
+                    SemanticFullInvalidationReason::IncompleteDependencyGraph(blockers) => {
+                        dependency_blockers.extend(blockers.iter().map(|blocker| {
+                            json!({
+                                "owner": blocker.owner().map(|owner| owner.name()),
+                                "surface": dependency_surface_name(blocker.surface()),
+                                "reason": dependency_reason_name(blocker.reason()),
+                            })
+                        }));
                         "incomplete_dependency_graph"
                     }
                 })
@@ -270,6 +279,7 @@ fn invalidation_plan_json(plan: &SemanticInvalidationPlan) -> Value {
     json!({
         "scope": scope,
         "full_reasons": reasons,
+        "dependency_blockers": dependency_blockers,
         "added": plan.added().len(),
         "removed": plan.removed().len(),
         "changed": plan.changed().len(),
@@ -282,6 +292,49 @@ fn invalidation_plan_json(plan: &SemanticInvalidationPlan) -> Value {
             "extra_rir_instructions_visited": work.extra_rir_instructions_visited,
         },
     })
+}
+
+fn dependency_surface_name(surface: SemanticDependencySurface) -> &'static str {
+    match surface {
+        SemanticDependencySurface::FreeFunctionCall => "free_function_call",
+        SemanticDependencySurface::NonGenericNamedMethodCall => "non_generic_named_method_call",
+        SemanticDependencySurface::GenericNamedMethodCall => "generic_named_method_call",
+        SemanticDependencySurface::NamedDestructorCall => "named_destructor_call",
+        SemanticDependencySurface::ImplicitNamedDestructor => "implicit_named_destructor",
+        SemanticDependencySurface::DeclarationType => "declaration_type",
+        SemanticDependencySurface::DeclarationTypeCallHead => "declaration_type_call_head",
+        SemanticDependencySurface::SupportedTypeCallHead => "supported_type_call_head",
+        SemanticDependencySurface::NamedValueConst => "named_value_const",
+    }
+}
+
+fn dependency_reason_name(reason: SemanticDependencyIncompleteReason) -> &'static str {
+    match reason {
+        SemanticDependencyIncompleteReason::CallerEndpointUnavailable => {
+            "caller_endpoint_unavailable"
+        }
+        SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable => {
+            "generic_substitution_identity_unavailable"
+        }
+        SemanticDependencyIncompleteReason::DestructorEndpointUnavailable => {
+            "destructor_endpoint_unavailable"
+        }
+        SemanticDependencyIncompleteReason::AnonymousDropOwnerUnavailable => {
+            "anonymous_drop_owner_unavailable"
+        }
+        SemanticDependencyIncompleteReason::ResolvedTypeIdentityUnavailable => {
+            "resolved_type_identity_unavailable"
+        }
+        SemanticDependencyIncompleteReason::TypeCallHeadIdentityUnavailable => {
+            "type_call_head_identity_unavailable"
+        }
+        SemanticDependencyIncompleteReason::UnsupportedDynamicTypeCallHead => {
+            "unsupported_dynamic_type_call_head"
+        }
+        SemanticDependencyIncompleteReason::ConstEndpointUnavailable => {
+            "const_endpoint_unavailable"
+        }
+    }
 }
 
 fn measure_manifest_plan(
@@ -589,6 +642,11 @@ fn assert_production_full_plan(scenario: &Value, executions: u64, changed: u64, 
             .unwrap()
             .iter()
             .any(|reason| reason == "incomplete_dependency_graph")
+    );
+    assert!(
+        scenario["plan"]["dependency_blockers"]
+            .as_array()
+            .is_some_and(|blockers| blockers.len() >= 3)
     );
     assert_eq!(count(scenario, &["plan", "reusable"]), 0);
     assert_eq!(count(scenario, &["plan", "invalidated"]), 0);
