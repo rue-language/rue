@@ -155,3 +155,21 @@ named owner declaration FileId/name and compiler translation joins the
 Destructor namespace/kind and owner in the exact `BoundDefinitionSet`.
 `named_destructor_dependencies_complete` covers named destructors; anonymous
 destructors remain a separate incomplete surface.
+
+Resolved declaration tables now publish a conservative nominal-type edge slice
+for struct fields, enum payloads, ordinary function signatures, named
+method/associated-function signatures and owners, constant value types, and
+named destructor owners. Arrays and pointers are traversed to their nominal
+leaf; builtins and anonymous/structural types do not invent definition keys.
+Compiler translation joins both endpoints against the exact bound-definition
+revision and retains the field/payload/signature/declared-type/owner edge kind,
+with zero additional RIR traversal.
+
+This slice deliberately reports `declaration_type_dependencies_complete=false`.
+Generic signatures replace any type mentioning a comptime parameter with
+`COMPTIME_TYPE`, so outer type-constructor syntax such as `Option(Result(T))`
+is not present in the resolved table. In Rue those heads are comptime type
+functions rather than named type definitions. A future pre-substitution
+observer must classify stable type-function dependencies and aliases before
+this surface can become complete; the conservative resolved edges must not
+drive reuse meanwhile.

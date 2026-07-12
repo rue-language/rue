@@ -62,6 +62,11 @@ incremental-compilation goal is complete.
    owner identities and tagged free/method targets. Anonymous methods and
    destructors plus declaration/type/const/drop surfaces keep the overall graph
    explicitly incomplete and prevent body/CFG reuse.
+   A conservative resolved declaration-type slice now translates nominal
+   signature/field/payload/constant/owner edges without rescanning RIR. Generic
+   composites are still erased to `COMPTIME_TYPE` before this observer, and Rue
+   type-call heads are functions rather than named types, so this surface stays
+   explicitly incomplete pending a pre-substitution constructor/alias model.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now

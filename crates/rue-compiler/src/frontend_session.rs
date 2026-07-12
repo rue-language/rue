@@ -61,6 +61,7 @@ pub struct SemanticDependencyManifestWork {
     pub specialization_origins_validated: usize,
     pub named_method_events_translated: usize,
     pub named_destructor_events_translated: usize,
+    pub declaration_type_events_translated: usize,
     pub extra_rir_instructions_visited: usize,
 }
 
@@ -86,6 +87,13 @@ pub struct StableNamedMethodDependency {
 pub struct StableNamedDestructorDependency {
     pub caller: StableDefinitionKey,
     pub target: StableNamedMethodDependencyTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableDeclarationTypeDependency {
+    pub source: StableDefinitionKey,
+    pub target: StableDefinitionKey,
+    pub kind: rue_air::DeclarationTypeDependencyKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -120,6 +128,8 @@ pub struct SemanticDependencyInputManifest {
     generic_named_method_dependencies_complete: bool,
     named_destructor_dependencies: Arc<[StableNamedDestructorDependency]>,
     named_destructor_dependencies_complete: bool,
+    declaration_type_dependencies: Arc<[StableDeclarationTypeDependency]>,
+    declaration_type_dependencies_complete: bool,
     semantic_dependency_graph_complete: bool,
     definition_universe_complete: bool,
     work: SemanticDependencyManifestWork,
@@ -158,6 +168,12 @@ impl SemanticDependencyInputManifest {
     }
     pub fn named_destructor_dependencies_complete(&self) -> bool {
         self.named_destructor_dependencies_complete
+    }
+    pub fn declaration_type_dependencies(&self) -> &[StableDeclarationTypeDependency] {
+        &self.declaration_type_dependencies
+    }
+    pub fn declaration_type_dependencies_complete(&self) -> bool {
+        self.declaration_type_dependencies_complete
     }
     pub fn semantic_dependency_graph_complete(&self) -> bool {
         self.semantic_dependency_graph_complete
@@ -751,13 +767,16 @@ impl CanonicalFrontendSession {
             mut free_function_dependencies,
             mut named_method_dependencies,
             mut named_destructor_dependencies,
+            mut declaration_type_dependencies,
             free_function_events_translated,
             specialization_origins_validated,
             named_method_events_translated,
             named_destructor_events_translated,
+            declaration_type_events_translated,
             free_function_caller_dependencies_complete,
             named_method_dependencies_complete,
             named_destructor_dependencies_complete,
+            declaration_type_dependencies_complete,
         ) = match (&semantic, &definitions) {
             (Ok(semantic), Ok(definitions)) => {
                 if definitions.source_revision() != &input.sources {
@@ -858,29 +877,43 @@ impl CanonicalFrontendSession {
                     };
                     destructor_edges.push(StableNamedDestructorDependency { caller, target });
                 }
+                let mut type_edges = Vec::new();
+                for event in semantic.declaration_type_dependencies() {
+                    type_edges.push(StableDeclarationTypeDependency {
+                        source: stable_declaration_source_endpoint(definitions, event)?,
+                        target: stable_named_type_endpoint(definitions, event)?,
+                        kind: event.dependency_kind,
+                    });
+                }
                 (
                     edges,
                     method_edges,
                     destructor_edges,
+                    type_edges,
                     semantic.ordinary_free_function_dependencies().len()
                         + semantic.specialized_free_function_dependencies().len(),
                     semantic.specialized_free_function_origins().len(),
                     semantic.named_method_dependencies().len(),
                     semantic.named_destructor_dependencies().len(),
+                    semantic.declaration_type_dependencies().len(),
                     semantic.ordinary_free_function_dependencies_complete()
                         && semantic.specialized_free_function_dependencies_complete(),
                     semantic.non_generic_named_method_dependencies_complete(),
                     semantic.named_destructor_dependencies_complete(),
+                    semantic.declaration_type_dependencies_complete(),
                 )
             }
             _ => (
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 0,
                 0,
                 0,
                 0,
+                0,
+                false,
                 false,
                 false,
                 false,
@@ -892,6 +925,8 @@ impl CanonicalFrontendSession {
         named_method_dependencies.dedup();
         named_destructor_dependencies.sort();
         named_destructor_dependencies.dedup();
+        declaration_type_dependencies.sort();
+        declaration_type_dependencies.dedup();
         let work = SemanticDependencyManifestWork {
             definition_records_visited: definition_records.len(),
             import_records_visited: imports.graph().records().len(),
@@ -899,6 +934,7 @@ impl CanonicalFrontendSession {
             specialization_origins_validated,
             named_method_events_translated,
             named_destructor_events_translated,
+            declaration_type_events_translated,
             extra_rir_instructions_visited: 0,
         };
         self.work.dependency_manifest_records_visited += work.definition_records_visited;
@@ -942,6 +978,8 @@ impl CanonicalFrontendSession {
             generic_named_method_dependencies_complete: false,
             named_destructor_dependencies: named_destructor_dependencies.into(),
             named_destructor_dependencies_complete,
+            declaration_type_dependencies: declaration_type_dependencies.into(),
+            declaration_type_dependencies_complete,
             semantic_dependency_graph_complete: false,
             definition_universe_complete,
             work,
@@ -1024,6 +1062,96 @@ fn stable_named_destructor_endpoint(
         return Err(invalid_dependency_manifest(&format!(
             "named-destructor dependency endpoint ({file}, '{owner_name}') did not join exactly one bound destructor",
         )));
+    };
+    Ok(record.stable_key().clone())
+}
+
+fn stable_declaration_source_endpoint(
+    definitions: &BoundDefinitionSet,
+    event: &rue_air::DeclarationTypeDependencyEvent,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    use rue_air::DeclarationTypeDependencySourceKind as K;
+    match event.source_kind {
+        K::Function => {
+            stable_free_function_endpoint(definitions, event.source_file, &event.source_name)
+        }
+        K::Method | K::AssociatedFunction => stable_named_method_endpoint(
+            definitions,
+            event.source_file,
+            event.source_owner_name.as_deref().unwrap_or(""),
+            &event.source_name,
+        ),
+        K::Destructor => stable_named_destructor_endpoint(
+            definitions,
+            event.source_file,
+            event
+                .source_owner_name
+                .as_deref()
+                .unwrap_or(&event.source_name),
+        ),
+        K::Struct => stable_top_level_endpoint(
+            definitions,
+            event.source_file,
+            &event.source_name,
+            StableDefinitionNamespace::Type,
+            StableDefinitionKind::Struct,
+        ),
+        K::Enum => stable_top_level_endpoint(
+            definitions,
+            event.source_file,
+            &event.source_name,
+            StableDefinitionNamespace::Type,
+            StableDefinitionKind::Enum,
+        ),
+        K::ValueConst => stable_top_level_endpoint(
+            definitions,
+            event.source_file,
+            &event.source_name,
+            StableDefinitionNamespace::Value,
+            StableDefinitionKind::ValueConst,
+        ),
+    }
+}
+
+fn stable_named_type_endpoint(
+    definitions: &BoundDefinitionSet,
+    event: &rue_air::DeclarationTypeDependencyEvent,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    let kind = match event.target_kind {
+        rue_air::DeclarationTypeDependencyTargetKind::Struct => StableDefinitionKind::Struct,
+        rue_air::DeclarationTypeDependencyTargetKind::Enum => StableDefinitionKind::Enum,
+    };
+    stable_top_level_endpoint(
+        definitions,
+        event.target_file,
+        &event.target_name,
+        StableDefinitionNamespace::Type,
+        kind,
+    )
+}
+
+fn stable_top_level_endpoint(
+    definitions: &BoundDefinitionSet,
+    file: u32,
+    name: &str,
+    namespace: StableDefinitionNamespace,
+    kind: StableDefinitionKind,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    let matches = definitions
+        .definitions()
+        .iter()
+        .filter(|record| {
+            record.declaration_span().file_id.index() == file
+                && record.stable_key().name() == name
+                && record.stable_key().namespace() == namespace
+                && record.stable_key().kind() == kind
+                && record.stable_key().owner().is_none()
+        })
+        .collect::<Vec<_>>();
+    let [record] = matches.as_slice() else {
+        return Err(invalid_dependency_manifest(
+            "declaration-type dependency endpoint did not join exactly one stable definition",
+        ));
     };
     Ok(record.stable_key().clone())
 }
@@ -2257,6 +2385,69 @@ mod tests {
         assert!(first.named_destructor_dependencies_complete());
         assert_eq!(first.work().named_destructor_events_translated, 1);
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn resolved_declaration_type_edges_translate_without_rir_rescan() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                r#"
+                struct Leaf { n: i32 }
+                struct Holder { leaf: Leaf, fn get(borrow self, value: Leaf) -> Leaf { value } }
+                enum Choice { One(Leaf) }
+                fn convert(value: Leaf) -> Holder { Holder { leaf: value } }
+                drop fn Holder(self) {}
+                fn main() -> i32 { 0 }
+            "#,
+            )],
+            1,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let manifest = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        let names = manifest
+            .declaration_type_dependencies()
+            .iter()
+            .map(|edge| {
+                (
+                    edge.source.name().to_owned(),
+                    edge.target.name().to_owned(),
+                    edge.kind,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(names.contains(&(
+            "Holder".into(),
+            "Leaf".into(),
+            rue_air::DeclarationTypeDependencyKind::Field
+        )));
+        assert!(names.contains(&(
+            "Choice".into(),
+            "Leaf".into(),
+            rue_air::DeclarationTypeDependencyKind::Payload
+        )));
+        assert!(names.contains(&(
+            "convert".into(),
+            "Leaf".into(),
+            rue_air::DeclarationTypeDependencyKind::Signature
+        )));
+        assert!(names.contains(&(
+            "get".into(),
+            "Leaf".into(),
+            rue_air::DeclarationTypeDependencyKind::Signature
+        )));
+        assert!(names.contains(&(
+            "Holder".into(),
+            "Holder".into(),
+            rue_air::DeclarationTypeDependencyKind::Owner
+        )));
+        assert!(!manifest.declaration_type_dependencies_complete());
+        assert_eq!(manifest.work().extra_rir_instructions_visited, 0);
     }
 
     #[test]

@@ -669,7 +669,221 @@ impl<'a> Sema<'a> {
         // any value-constant name that collides with a function/struct/enum
         // (order-independent E0436, spec 10.3:1/10.5:1, RUE-239).
         self.check_const_cross_kind_collisions()?;
+        self.capture_resolved_declaration_type_dependencies();
         Ok(())
+    }
+
+    fn capture_resolved_declaration_type_dependencies(&mut self) {
+        use super::{
+            DeclarationTypeDependencyKind as Edge, DeclarationTypeDependencySourceKind as Source,
+        };
+        let structs = self
+            .structs_by_file_name
+            .iter()
+            .map(|((_, name), id)| (*name, *id))
+            .collect::<Vec<_>>();
+        for (name, id) in structs {
+            let def = self.type_pool.struct_def(id);
+            for field in def.fields {
+                self.capture_declaration_type(
+                    def.file_id,
+                    self.interner.resolve(&name).to_string(),
+                    None,
+                    Source::Struct,
+                    Edge::Field,
+                    field.ty,
+                );
+            }
+        }
+        let enums = self
+            .enums_by_file_name
+            .iter()
+            .map(|((_, name), id)| (*name, *id))
+            .collect::<Vec<_>>();
+        for (name, id) in enums {
+            let def = self.type_pool.enum_def(id);
+            for ty in def.variant_payloads.into_iter().flatten() {
+                self.capture_declaration_type(
+                    def.file_id,
+                    self.interner.resolve(&name).to_string(),
+                    None,
+                    Source::Enum,
+                    Edge::Payload,
+                    ty,
+                );
+            }
+        }
+        let functions = self
+            .functions
+            .iter()
+            .map(|(name, info)| (*name, *info))
+            .collect::<Vec<_>>();
+        for (name, info) in functions {
+            let source_name = self
+                .interner
+                .resolve(&self.source_function_name(name))
+                .to_string();
+            let mut types = self.param_arena.types(info.params).to_vec();
+            types.push(info.return_type);
+            for ty in types {
+                self.capture_declaration_type(
+                    info.file_id,
+                    source_name.clone(),
+                    None,
+                    Source::Function,
+                    Edge::Signature,
+                    ty,
+                );
+            }
+        }
+        let methods = self
+            .methods
+            .iter()
+            .map(|(key, info)| (*key, *info))
+            .collect::<Vec<_>>();
+        for ((struct_id, method_name), info) in methods {
+            let owner = self.type_pool.struct_def(struct_id);
+            if owner.name.starts_with("__anon_struct_") {
+                continue;
+            }
+            let source_kind = if info.has_self {
+                Source::Method
+            } else {
+                Source::AssociatedFunction
+            };
+            self.capture_declaration_type(
+                info.span.file_id,
+                self.interner.resolve(&method_name).to_string(),
+                Some(owner.name.clone()),
+                source_kind,
+                Edge::Owner,
+                Type::new_struct(struct_id),
+            );
+            let mut types = self.param_arena.types(info.params).to_vec();
+            types.push(info.return_type);
+            for ty in types {
+                self.capture_declaration_type(
+                    info.span.file_id,
+                    self.interner.resolve(&method_name).to_string(),
+                    Some(owner.name.clone()),
+                    source_kind,
+                    Edge::Signature,
+                    ty,
+                );
+            }
+        }
+        let constants = self
+            .constants_by_file_name
+            .iter()
+            .map(|((file, name), info)| (*file, *name, info.ty))
+            .collect::<Vec<_>>();
+        for (file, name, ty) in constants {
+            self.capture_declaration_type(
+                file,
+                self.interner.resolve(&name).to_string(),
+                None,
+                Source::ValueConst,
+                Edge::DeclaredType,
+                ty,
+            );
+        }
+        let destructors = self.declaration_index.destructors().to_vec();
+        for destructor in destructors {
+            if let Some(id) = self
+                .structs_by_file_name
+                .get(&(destructor.span.file_id, destructor.type_name))
+                .copied()
+            {
+                self.capture_declaration_type(
+                    destructor.span.file_id,
+                    self.interner.resolve(&destructor.type_name).to_string(),
+                    Some(self.interner.resolve(&destructor.type_name).to_string()),
+                    Source::Destructor,
+                    Edge::Owner,
+                    Type::new_struct(id),
+                );
+            }
+        }
+    }
+
+    fn capture_declaration_type(
+        &mut self,
+        source_file: FileId,
+        source_name: String,
+        source_owner_name: Option<String>,
+        source_kind: super::DeclarationTypeDependencySourceKind,
+        dependency_kind: super::DeclarationTypeDependencyKind,
+        ty: Type,
+    ) {
+        let target = match ty.kind() {
+            TypeKind::Struct(id) => {
+                let def = self.type_pool.struct_def(id);
+                if def.is_builtin || def.name.starts_with("__anon_struct_") {
+                    return;
+                }
+                Some((
+                    def.file_id,
+                    def.name,
+                    super::DeclarationTypeDependencyTargetKind::Struct,
+                ))
+            }
+            TypeKind::Enum(id) => {
+                let def = self.type_pool.enum_def(id);
+                Some((
+                    def.file_id,
+                    def.name,
+                    super::DeclarationTypeDependencyTargetKind::Enum,
+                ))
+            }
+            TypeKind::Array(id) => {
+                self.capture_declaration_type(
+                    source_file,
+                    source_name,
+                    source_owner_name,
+                    source_kind,
+                    dependency_kind,
+                    self.type_pool.array_def(id).0,
+                );
+                return;
+            }
+            TypeKind::PtrConst(id) => {
+                self.capture_declaration_type(
+                    source_file,
+                    source_name,
+                    source_owner_name,
+                    source_kind,
+                    dependency_kind,
+                    self.type_pool.ptr_const_def(id),
+                );
+                return;
+            }
+            TypeKind::PtrMut(id) => {
+                self.capture_declaration_type(
+                    source_file,
+                    source_name,
+                    source_owner_name,
+                    source_kind,
+                    dependency_kind,
+                    self.type_pool.ptr_mut_def(id),
+                );
+                return;
+            }
+            _ => None,
+        };
+        if let Some((target_file, target_name, target_kind)) = target {
+            self.declaration_type_dependencies
+                .push(super::DeclarationTypeDependencyEvent {
+                    source_file: source_file.index(),
+                    source_name,
+                    source_owner_name,
+                    source_kind,
+                    dependency_kind,
+                    target_file: target_file.index(),
+                    target_name,
+                    target_kind,
+                });
+            self.body_analysis_work.declaration_type_dependency_events += 1;
+        }
     }
 
     /// Phase 2: Resolve tuple-variant payload types (RUE-221, ADR-0038).
