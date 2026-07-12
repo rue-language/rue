@@ -129,6 +129,12 @@ translate future definition-level edges; it makes no body or CFG reuse claim.
 
 ## Required next slices
 
+The [body-analysis and CFG incrementality audit](../notes/body-analysis-cfg-incrementality-audit.md)
+records the post-RUE-719 live phase ownership, request-local identity inventory,
+and missing work counters. Its first implementation gate is observational:
+complete the body, specialization, remapping, fallback, and CFG structural
+ledger before retaining semantic artifacts.
+
 1. During declaration binding, translate winning bindings to stable keys and
    capture signature/type/const/module/destructor direct edges.
 2. Thread an owner stable key through body analysis and translate each returned
