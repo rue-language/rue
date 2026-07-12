@@ -14,6 +14,14 @@ pub struct OrdinaryFreeFunctionDependencyEvent {
     pub callee_file: u32,
     pub callee_name: String,
 }
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SpecializedFreeFunctionOrigin {
+    pub specialized_name: String,
+    pub base_file: u32,
+    pub base_name: String,
+    pub type_arguments: Vec<u32>,
+    pub value_arguments: Vec<u32>,
+}
 
 /// Per-ABI-slot parameter access metadata preserved into CFG.
 ///
@@ -94,6 +102,7 @@ pub struct SemaOutput {
     pub body_analysis_work: BodyAnalysisWork,
     pub ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
     pub ordinary_free_function_dependencies_complete: bool,
+    pub specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
 }
 
 /// Value-only workload counters for demand-driven body dispatch.
@@ -102,6 +111,7 @@ pub struct SemaOutput {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BodyAnalysisWork {
     pub ordinary_free_function_dependency_events: usize,
+    pub specialized_origin_records: usize,
     /// Indexed declaration-record lookups for reachable, non-generic free functions.
     pub free_function_record_lookups: usize,
     /// Private declaration-record lookups for reachable named-struct methods.

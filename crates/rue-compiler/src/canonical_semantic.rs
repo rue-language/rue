@@ -2,7 +2,7 @@
 
 use rue_air::{
     BodyAnalysisWork, DeclarationBindingWork, OrdinaryFreeFunctionDependencyEvent,
-    RirDeclarationIndexWork, SemanticBindingManifestWork,
+    RirDeclarationIndexWork, SemanticBindingManifestWork, SpecializedFreeFunctionOrigin,
 };
 use tracing::info_span;
 
@@ -43,6 +43,7 @@ pub struct CanonicalSemanticOutput {
     work: CanonicalSemanticWork,
     ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
     ordinary_free_function_dependencies_complete: bool,
+    specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
 }
 
 impl CanonicalSemanticOutput {
@@ -71,6 +72,9 @@ impl CanonicalSemanticOutput {
     }
     pub fn ordinary_free_function_dependencies_complete(&self) -> bool {
         self.ordinary_free_function_dependencies_complete
+    }
+    pub fn specialized_free_function_origins(&self) -> &[SpecializedFreeFunctionOrigin] {
+        &self.specialized_free_function_origins
     }
     /// Stable definition identities when requested for this run.
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
@@ -152,6 +156,7 @@ pub fn analyze_canonical_program(
         sema_output.ordinary_free_function_dependencies.clone();
     let ordinary_free_function_dependencies_complete =
         sema_output.ordinary_free_function_dependencies_complete;
+    let specialized_free_function_origins = sema_output.specialized_free_function_origins.clone();
     drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
@@ -176,6 +181,7 @@ pub fn analyze_canonical_program(
         work,
         ordinary_free_function_dependencies,
         ordinary_free_function_dependencies_complete,
+        specialized_free_function_origins,
     })
 }
 
@@ -239,6 +245,129 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn specialization_origins_preserve_exact_generic_base_and_arguments() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                r#"fn id(comptime n: i32, value: i32) -> i32 { value + n }
+                   fn wrap(comptime n: i32, value: i32) -> i32 { id(n, value) }
+                   fn main() -> i32 {
+                       wrap(1, 1) + wrap(1, 2) + id(2, 3)
+                   }"#,
+            )],
+            1,
+        );
+        let (output, _) = canonical(&source, &CompileOptions::default(), false);
+        let origins = output.specialized_free_function_origins();
+        let wraps = origins
+            .iter()
+            .filter(|origin| origin.base_name == "wrap")
+            .collect::<Vec<_>>();
+        let ids = origins
+            .iter()
+            .filter(|origin| origin.base_name == "id")
+            .collect::<Vec<_>>();
+        assert_eq!(wraps.len(), 1, "identical specialization deduplicates");
+        assert_eq!(ids.len(), 2, "direct and later-fixpoint specializations");
+        assert!(ids.iter().all(|origin| origin.base_file == 1));
+        assert_ne!(ids[0].value_arguments, ids[1].value_arguments);
+        assert!(
+            origins
+                .iter()
+                .all(|origin| origin.specialized_name != origin.base_name)
+        );
+        assert!(
+            output
+                .functions()
+                .iter()
+                .all(|function| function.analyzed.name != "id" && function.analyzed.name != "wrap")
+        );
+        assert_eq!(
+            output.work().body_analysis.specialized_origin_records,
+            origins.len()
+        );
+    }
+
+    #[test]
+    fn recursive_specialization_origins_are_deduplicated() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                r#"fn fib(comptime n: i32) -> i32 {
+                       if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+                   }
+                   fn main() -> i32 { fib(5) + fib(5) }"#,
+            )],
+            1,
+        );
+        let (output, _) = canonical(&source, &CompileOptions::default(), false);
+        let origins = output
+            .specialized_free_function_origins()
+            .iter()
+            .filter(|origin| origin.base_name == "fib")
+            .collect::<Vec<_>>();
+        assert_eq!(origins.len(), 6, "fib(0) through fib(5), each exactly once");
+        assert!(origins.iter().all(|origin| origin.base_file == 1));
+        assert_eq!(
+            output.work().body_analysis.specialized_origin_records,
+            origins.len()
+        );
+    }
+
+    #[test]
+    fn sibling_same_name_specializations_retain_distinct_base_files() {
+        let source = snapshot(
+            &[
+                (
+                    9,
+                    "/p/main.rue",
+                    "main.rue",
+                    r#"const left = @import("left.rue");
+                       const right = @import("right.rue");
+                       fn main() -> i32 { left.id(1, 20) + right.id(2, 20) }"#,
+                ),
+                (
+                    3,
+                    "/p/left.rue",
+                    "left.rue",
+                    "pub fn id(comptime n: i32, value: i32) -> i32 { value + n }",
+                ),
+                (
+                    7,
+                    "/p/right.rue",
+                    "right.rue",
+                    "pub fn id(comptime n: i32, value: i32) -> i32 { value + n }",
+                ),
+            ],
+            9,
+        );
+        let (output, _) = canonical(&source, &CompileOptions::default(), false);
+        let origins = output
+            .specialized_free_function_origins()
+            .iter()
+            .filter(|origin| origin.base_name == "id")
+            .collect::<Vec<_>>();
+        assert_eq!(origins.len(), 2);
+        assert_eq!(
+            origins
+                .iter()
+                .map(|origin| origin.base_file)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([3, 7])
+        );
+    }
+
+    #[test]
+    fn specialized_free_function_origin_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<rue_air::SpecializedFreeFunctionOrigin>();
     }
 
     #[test]
