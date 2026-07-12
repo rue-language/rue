@@ -28,6 +28,7 @@
 mod definition_snapshot;
 mod diagnostic;
 mod drop_glue;
+mod import_graph;
 mod semantic_order;
 mod source_identity;
 mod source_metadata;
@@ -39,6 +40,7 @@ pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionRecord,
     DefinitionSnapshot, ModuleDefinition, ModuleKey,
 };
+pub use import_graph::{ImportDirective, ImportDirectives, extract_import_directives};
 pub use source_identity::{
     CodegenInputDescriptor, LinkInputDescriptor, ModuleId, ModuleResolutionInput,
     ModuleResolutionInputs, ModuleRevision, SemanticInputDescriptor, SourceId, SourceIdVersion,
