@@ -8,7 +8,7 @@ use rue_air::{
     SemanticBindingManifestWork, SemanticBindingNamespace,
 };
 use rue_error::{CompileError, CompileErrors, ErrorKind, MultiErrorResult};
-use rue_parser::ast::Visibility;
+use rue_parser::ast::{Item, Visibility};
 use rue_span::Span;
 use rue_target::Target;
 
@@ -111,6 +111,16 @@ pub struct BoundDefinitionRecord {
     occurrence: Option<DefinitionOccurrenceId>,
     declaration_span: Span,
     visibility: Option<Visibility>,
+    input_partition: BoundDefinitionInputPartition,
+}
+
+/// Parser-authored boundaries for hashing a declaration without treating its
+/// executable payload as part of its signature.
+#[derive(Debug, Clone)]
+pub(crate) enum BoundDefinitionInputPartition {
+    Body { signature: Span, body: Span },
+    Initializer { signature: Span, initializer: Span },
+    ExactSignature(Arc<[Span]>),
 }
 
 impl BoundDefinitionRecord {
@@ -128,6 +138,9 @@ impl BoundDefinitionRecord {
     }
     pub fn visibility(&self) -> Option<Visibility> {
         self.visibility
+    }
+    pub(crate) fn input_partition(&self) -> BoundDefinitionInputPartition {
+        self.input_partition.clone()
     }
 }
 
@@ -363,6 +376,7 @@ pub(crate) fn issue_bound_definitions(
             }
             (Some(winner.id()), winner.visibility())
         };
+        let input_partition = definition_input_partition(module, binding)?;
         records.push(BoundDefinitionRecord {
             id: BoundDefinitionId {
                 key,
@@ -371,6 +385,7 @@ pub(crate) fn issue_bound_definitions(
             occurrence,
             declaration_span: binding.declaration_span,
             visibility,
+            input_partition,
         });
     }
     records.sort_by(|left, right| left.stable_key().cmp(right.stable_key()));
@@ -409,6 +424,109 @@ pub(crate) fn issue_bound_definitions(
         manifest_work,
         work,
     })
+}
+
+fn definition_input_partition(
+    module: &crate::parsed_modules::ParsedModule,
+    binding: &SemanticBinding,
+) -> Result<BoundDefinitionInputPartition, CompileError> {
+    let ast = module.ast();
+    let signature_and_body = |declaration: Span, body: Span| {
+        partition_prefix(declaration, body)
+            .map(|signature| BoundDefinitionInputPartition::Body { signature, body })
+    };
+    let signature_and_initializer = |declaration: Span, initializer: Span| {
+        partition_prefix(declaration, initializer).map(|signature| {
+            BoundDefinitionInputPartition::Initializer {
+                signature,
+                initializer,
+            }
+        })
+    };
+
+    if binding.namespace == SemanticBindingNamespace::Method {
+        binding
+            .owner
+            .as_deref()
+            .ok_or_else(|| invalid("named method binding has no owner"))?;
+        let method = ast.items.iter().find_map(|item| match item {
+            Item::Struct(structure) => structure
+                .methods
+                .iter()
+                .find(|method| method.span == binding.declaration_span),
+            _ => None,
+        });
+        return method
+            .ok_or_else(|| invalid("named method binding does not join canonical syntax"))
+            .and_then(|method| signature_and_body(method.span, method.body.span()));
+    }
+
+    let item = ast.items.iter().find(|item| match item {
+        Item::Function(value) => value.span == binding.declaration_span,
+        Item::Struct(value) => value.span == binding.declaration_span,
+        Item::Enum(value) => value.span == binding.declaration_span,
+        Item::DropFn(value) => value.span == binding.declaration_span,
+        Item::Const(value) => value.span == binding.declaration_span,
+        Item::Error(_) => false,
+    });
+    match item {
+        Some(Item::Function(value)) => signature_and_body(value.span, value.body.span()),
+        Some(Item::DropFn(value)) => signature_and_body(value.span, value.body.span()),
+        Some(Item::Const(value)) => signature_and_initializer(value.span, value.init.span()),
+        Some(Item::Struct(value)) => Ok(BoundDefinitionInputPartition::ExactSignature(
+            signature_fragments_excluding_method_bodies(value)?.into(),
+        )),
+        Some(Item::Enum(value)) => Ok(BoundDefinitionInputPartition::ExactSignature(
+            vec![value.span].into(),
+        )),
+        Some(Item::Error(_)) | None => Err(invalid(
+            "semantic binding does not join an authoritative canonical syntax item",
+        )),
+    }
+}
+
+fn signature_fragments_excluding_method_bodies(
+    structure: &rue_parser::ast::StructDecl,
+) -> Result<Vec<Span>, CompileError> {
+    let mut fragments = Vec::with_capacity(structure.methods.len() + 1);
+    let mut cursor = structure.span.start;
+    for method in &structure.methods {
+        let body = method.body.span();
+        if body.file_id != structure.span.file_id
+            || body.start < cursor
+            || body.end > structure.span.end
+            || body.start >= body.end
+        {
+            return Err(invalid(
+                "struct method body span is not ordered within its declaration",
+            ));
+        }
+        fragments.push(Span::with_file(structure.span.file_id, cursor, body.start));
+        cursor = body.end;
+    }
+    fragments.push(Span::with_file(
+        structure.span.file_id,
+        cursor,
+        structure.span.end,
+    ));
+    Ok(fragments)
+}
+
+fn partition_prefix(declaration: Span, payload: Span) -> Result<Span, CompileError> {
+    if declaration.file_id != payload.file_id
+        || payload.start < declaration.start
+        || payload.end > declaration.end
+        || payload.start >= payload.end
+    {
+        return Err(invalid(
+            "semantic input payload span is not contained by its declaration",
+        ));
+    }
+    Ok(Span::with_file(
+        declaration.file_id,
+        declaration.start,
+        payload.start,
+    ))
 }
 
 fn validate_binding_shape(binding: &SemanticBinding) -> Result<(), CompileError> {
@@ -663,5 +781,15 @@ mod tests {
     fn bound_definition_set_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BoundDefinitionSet>();
+    }
+
+    #[test]
+    fn authoritative_payload_partition_rejects_foreign_reversed_and_empty_spans() {
+        let declaration = Span::with_file(FileId::new(1), 10, 30);
+        assert!(partition_prefix(declaration, Span::with_file(FileId::new(2), 20, 25)).is_err());
+        assert!(partition_prefix(declaration, Span::with_file(FileId::new(1), 25, 20)).is_err());
+        assert!(partition_prefix(declaration, Span::with_file(FileId::new(1), 20, 20)).is_err());
+        assert!(partition_prefix(declaration, Span::with_file(FileId::new(1), 9, 20)).is_err());
+        assert!(partition_prefix(declaration, Span::with_file(FileId::new(1), 20, 31)).is_err());
     }
 }

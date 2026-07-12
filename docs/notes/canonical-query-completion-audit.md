@@ -83,6 +83,15 @@ incremental-compilation goal is complete.
    adds zero RIR visits. Module bindings remain import-topology inputs rather
    than value-constant sources. The value-constant slice is narrowly complete;
    the overall graph remains false for dynamic/anonymous surfaces.
+   Stable definition input fingerprints are now schema-versioned and split at
+   authoritative AST boundaries into identity/visibility, signature, and
+   body-or-const-initializer components. Named struct signatures frame around
+   method bodies, so a method body edit changes only that method payload rather
+   than its owner type. Struct fields and enum variants remain exact
+   signature-only inputs. Malformed joins fail closed, and hashes remain stable
+   across relocation, FileId assignment, and input order. This improves delta
+   classification; it does not itself authorize semantic reuse while the graph
+   completeness bit is false.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now
