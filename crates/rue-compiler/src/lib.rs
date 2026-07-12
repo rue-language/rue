@@ -891,6 +891,7 @@ fn build_functions_and_cfgs(
         mut warnings,
         type_pool,
         body_analysis_work: _,
+        ..
     } = sema_output;
 
     // Synthesize drop glue functions.

@@ -164,6 +164,14 @@ fn finalize_function_body_analysis(
         // after its fixed point has completed.
         type_pool: sema.type_pool.clone(),
         body_analysis_work: sema.body_analysis_work,
+        ordinary_free_function_dependencies: {
+            sema.ordinary_free_function_dependencies.sort();
+            sema.ordinary_free_function_dependencies.dedup();
+            sema.ordinary_free_function_dependencies.clone()
+        },
+        // Method/destructor and specialization callers are not yet threaded
+        // through the stable owner capture seam.
+        ordinary_free_function_dependencies_complete: false,
     };
 
     errors.into_result_with(output)
@@ -513,6 +521,23 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 fn_info.allow_unreachable_code,
             ) {
                 Ok((analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                    for callee in &referenced_fns {
+                        if let Some(callee_info) = sema.functions.get(callee) {
+                            sema.ordinary_free_function_dependencies.push(
+                                super::OrdinaryFreeFunctionDependencyEvent {
+                                    caller_file: fn_info.file_id.index(),
+                                    caller_name: sema.interner.resolve(&source_name).to_string(),
+                                    callee_file: callee_info.file_id.index(),
+                                    callee_name: sema
+                                        .interner
+                                        .resolve(&sema.source_function_name(*callee))
+                                        .to_string(),
+                                },
+                            );
+                            sema.body_analysis_work
+                                .ordinary_free_function_dependency_events += 1;
+                        }
+                    }
                     functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
 
@@ -1376,6 +1401,8 @@ mod error_invariant_tests {
             warnings: Vec::new(),
             type_pool: TypeInternPool::new(),
             body_analysis_work: crate::BodyAnalysisWork::default(),
+            ordinary_free_function_dependencies: Vec::new(),
+            ordinary_free_function_dependencies_complete: false,
         }
     }
 
