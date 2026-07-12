@@ -339,11 +339,27 @@ order and completed in a second phase, allowing recursive pointer graphs.
 Primitive, nominal, array, pointer and module types plus scalar/type/function
 constant values round-trip through the epoch's stable join.
 
-This is intentionally not declaration-cache installation. AIR has no local
-representation for the durable reserved tuple/function type forms or for an
-unsubstituted declaration generic parameter, so those fail closed. Installing
-callables and constants into `Sema` additionally requires exact-revision RIR
-bodies/initializers, source spans, parameter names and declaration indices.
+AIR now also has a comparison-only declaration-install boundary. Given a
+durable payload already projected onto the exact current-revision identities,
+fresh predeclared shells can be completed for structs, enums, free functions,
+named methods and associated functions, and named destructors. The installer
+retains current RIR bodies, spans, parameter names and source order; it imports
+only resolved signature/aggregate payloads. It validates the complete identity
+set and visibility before mutation, then validates nominal field/variant shape
+and callable arity, modes, comptime flags, receiver and unchecked state. A
+typed failure consumes the candidate binder, ensuring that fallback creates a
+fresh binder and runs ordinary resolution rather than observing partial state.
+Installation and installed-payload counters distinguish this path from ordinary
+declaration resolution, and installation performs no additional RIR scan.
+
+This is not yet production declaration caching. Module types and constants
+(including function aliases) fail closed: module/value classification is not
+authoritative until dependency-ordered initializer evaluation. AIR's reserved
+tuple/function forms also remain unsupported. A fresh-epoch comparison test
+proves exact exported-semantic equality and body-analysis readiness for the
+supported subset, but production resolution is not skipped and no saving is
+claimed yet.
+
 The split-binding seam now predeclares free-callable, named-method/associated,
 named-const, and named-destructor identities in logical-path order. It retains
 exact-revision bodies/initializers, spans, parameter names/modes/comptime flags,
@@ -354,5 +370,4 @@ constant-evaluation order. Anonymous structural methods remain deferred because
 they lack a durable structural-owner identity. Module bindings and value
 constants also cannot be distinguished before dependency-ordered initializer
 evaluation, though their value-namespace identity is already fixed. No cached
-payload is installed and no AIR body, CFG, or RIR fragment is reused by this
-boundary.
+AIR bodies, CFGs, and RIR fragments are never imported by this boundary.
