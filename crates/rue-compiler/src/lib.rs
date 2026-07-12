@@ -50,7 +50,7 @@ pub use import_graph::{
 pub use source_identity::{
     CodegenInputDescriptor, LinkInputDescriptor, ModuleId, ModuleResolutionInput,
     ModuleResolutionInputs, ModuleRevision, SemanticInputDescriptor, SourceId, SourceIdVersion,
-    SourceRevision, StableLinkerInput, StableOptLevel, StablePreviewFeatures,
+    SourceRevision, SourceStore, StableLinkerInput, StableOptLevel, StablePreviewFeatures,
 };
 pub use source_metadata::SourceMetadata;
 pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};

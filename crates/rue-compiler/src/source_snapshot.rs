@@ -11,7 +11,9 @@ use std::sync::Arc;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
-use crate::{ModuleId, ModuleRevision, SourceFile, SourceId, SourceMetadata, SourceRevision};
+use crate::{
+    ModuleId, ModuleRevision, SourceFile, SourceId, SourceMetadata, SourceRevision, SourceStore,
+};
 
 /// Maximum source byte length representable by Rue's `u32` span offsets.
 pub const MAX_SOURCE_BYTES: usize = u32::MAX as usize;
@@ -34,6 +36,7 @@ struct SourceSnapshotData {
     contents: Vec<SourceRecord>,
     index: HashMap<FileId, usize>,
     revision: SourceRevision,
+    source_store: SourceStore,
 }
 
 #[derive(Debug)]
@@ -104,7 +107,7 @@ impl SourceSnapshot {
             &metadata,
         )?;
 
-        let contents: Vec<_> = contents
+        let candidates: Vec<_> = contents
             .into_iter()
             .map(|(file_id, text)| {
                 let module_id = ModuleId::from_validated_canonical(
@@ -112,7 +115,30 @@ impl SourceSnapshot {
                         .logical_path(file_id)
                         .expect("validated membership"),
                 );
-                let source_id = SourceId::from_shared_text(text.clone());
+                let source_id = SourceId::from_shared_text(text);
+                (file_id, module_id, source_id)
+            })
+            .collect();
+        let mut store_candidates: Vec<_> = candidates
+            .iter()
+            .map(|(_, module_id, source_id)| (module_id, source_id))
+            .collect();
+        store_candidates.sort_by(|(left, _), (right, _)| left.cmp(right));
+        let source_store = SourceStore::from_ids(
+            store_candidates
+                .into_iter()
+                .map(|(_, source)| source.clone()),
+        );
+        let contents: Vec<_> = candidates
+            .into_iter()
+            .map(|(file_id, module_id, requested_id)| {
+                let source_id = source_store
+                    .get(&requested_id)
+                    .expect("store was built from every snapshot source")
+                    .clone();
+                let text = source_store
+                    .shared_text(&source_id)
+                    .expect("canonical store identity retains exact source text");
                 SourceRecord {
                     file_id,
                     module_id,
@@ -148,6 +174,7 @@ impl SourceSnapshot {
                 contents,
                 index,
                 revision,
+                source_store,
             }),
         })
     }
@@ -219,6 +246,11 @@ impl SourceSnapshot {
     /// Load-order-independent root and module/content mapping.
     pub fn source_revision(&self) -> &SourceRevision {
         &self.data.revision
+    }
+
+    /// Snapshot-owned exact source storage shared by all equal source texts.
+    pub fn source_store(&self) -> &SourceStore {
+        &self.data.source_store
     }
 
     /// Borrow one source as a compatibility [`SourceFile`] view.
@@ -468,6 +500,28 @@ mod tests {
     fn source_snapshots_are_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SourceSnapshot>();
+    }
+
+    #[test]
+    fn equal_module_sources_share_one_snapshot_store_payload() {
+        let left = Arc::new(String::from("fn shared() {}"));
+        let right = Arc::new(String::from("fn shared() {}"));
+        assert!(!Arc::ptr_eq(&left, &right));
+        let snapshot = SourceSnapshot::new(
+            metadata(&[(20, "left.rue"), (1, "right.rue")]),
+            vec![(FileId::new(1), right), (FileId::new(20), left.clone())],
+        )
+        .unwrap();
+
+        let left_stored = snapshot.shared_source_text(FileId::new(20)).unwrap();
+        let right_stored = snapshot.shared_source_text(FileId::new(1)).unwrap();
+        assert_eq!(snapshot.source_store().len(), 1);
+        assert!(Arc::ptr_eq(&left_stored, &right_stored));
+        assert!(Arc::ptr_eq(&left_stored, &left));
+        assert_eq!(
+            snapshot.source_id(FileId::new(20)),
+            snapshot.source_id(FileId::new(1))
+        );
     }
 
     #[test]

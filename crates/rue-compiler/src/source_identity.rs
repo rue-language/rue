@@ -1,6 +1,7 @@
 //! Stable, immutable identities for source and externally supplied compiler inputs.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -86,6 +87,104 @@ impl SourceId {
     #[cfg(test)]
     pub(crate) fn shared_text(&self) -> Arc<String> {
         self.0.text.clone()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SourceBucketKey {
+    version: SourceIdVersion,
+    digest: [u8; 32],
+}
+
+impl From<&SourceId> for SourceBucketKey {
+    fn from(source: &SourceId) -> Self {
+        Self {
+            version: source.version(),
+            digest: source.digest(),
+        }
+    }
+}
+
+/// Immutable exact source storage owned by one compiler snapshot.
+///
+/// The versioned digest selects only a collision bucket. Every public lookup
+/// takes a complete [`SourceId`] and compares exact source bytes inside that
+/// bucket, so a digest can never select source text by itself. Equal byte
+/// strings share one retained [`Arc<String>`], while true digest collisions
+/// remain distinct entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStore {
+    buckets: Arc<BTreeMap<SourceBucketKey, Arc<[SourceId]>>>,
+    len: usize,
+}
+
+impl SourceStore {
+    /// Build deterministic snapshot-local storage from shared source buffers.
+    pub fn new(texts: impl IntoIterator<Item = Arc<String>>) -> Self {
+        Self::new_with(texts, &Sha256Digester)
+    }
+
+    fn new_with(
+        texts: impl IntoIterator<Item = Arc<String>>,
+        digester: &dyn SourceDigester,
+    ) -> Self {
+        Self::from_ids(
+            texts
+                .into_iter()
+                .map(|text| SourceId::from_shared_text_with(text, digester)),
+        )
+    }
+
+    pub(crate) fn from_ids(sources: impl IntoIterator<Item = SourceId>) -> Self {
+        let mut sources: Vec<_> = sources.into_iter().collect();
+        sources.sort();
+        sources.dedup();
+        let len = sources.len();
+        let mut buckets = BTreeMap::<_, Vec<_>>::new();
+        for source in sources {
+            buckets
+                .entry(SourceBucketKey::from(&source))
+                .or_default()
+                .push(source);
+        }
+        Self {
+            buckets: Arc::new(
+                buckets
+                    .into_iter()
+                    .map(|(key, bucket)| (key, bucket.into()))
+                    .collect(),
+            ),
+            len,
+        }
+    }
+
+    /// Number of distinct exact source byte strings.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether this store contains no source text.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Return this store's canonical exact identity for `source`.
+    pub fn get(&self, source: &SourceId) -> Option<&SourceId> {
+        let bucket = self.buckets.get(&SourceBucketKey::from(source))?;
+        bucket
+            .binary_search(source)
+            .ok()
+            .map(|index| &bucket[index])
+    }
+
+    /// Share the exact retained source allocation identified by `source`.
+    pub fn shared_text(&self, source: &SourceId) -> Option<Arc<String>> {
+        self.get(source).map(|source| source.0.text.clone())
+    }
+
+    /// Iterate exact identities in version, digest, then byte order.
+    pub fn iter(&self) -> impl Iterator<Item = &SourceId> + '_ {
+        self.buckets.values().flat_map(|bucket| bucket.iter())
     }
 }
 
@@ -402,10 +501,18 @@ mod tests {
     use super::*;
     use rue_error::PreviewFeature;
     use std::collections::hash_map::DefaultHasher;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     struct Constant;
     impl SourceDigester for Constant {
         fn digest(&self, _: &[u8]) -> [u8; 32] {
             [7; 32]
+        }
+    }
+    struct Counting(AtomicUsize);
+    impl SourceDigester for Counting {
+        fn digest(&self, text: &[u8]) -> [u8; 32] {
+            self.0.fetch_add(1, AtomicOrdering::Relaxed);
+            Sha256Digester.digest(text)
         }
     }
     fn hash(value: &SourceId) -> u64 {
@@ -443,6 +550,71 @@ mod tests {
         assert_eq!(left, right);
         assert_eq!(left.cmp(&right), Ordering::Equal);
         assert_eq!(hash(&left), hash(&right));
+    }
+
+    #[test]
+    fn source_store_deduplicates_exact_bytes_and_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SourceStore>();
+
+        let retained = Arc::new(String::from("same"));
+        let duplicate = Arc::new(String::from("same"));
+        let store = SourceStore::new([retained.clone(), duplicate.clone()]);
+        let lookup = SourceId::from_shared_text(duplicate);
+        let stored = store.shared_text(&lookup).unwrap();
+
+        assert_eq!(store.len(), 1);
+        assert!(Arc::ptr_eq(&stored, &retained));
+        assert!(Arc::ptr_eq(
+            &store.get(&lookup).unwrap().shared_text(),
+            &retained
+        ));
+    }
+
+    #[test]
+    fn source_store_constructs_one_identity_per_input() {
+        let digester = Counting(AtomicUsize::new(0));
+        let store = SourceStore::new_with(
+            ["one", "two", "one"].map(|text| Arc::new(text.to_owned())),
+            &digester,
+        );
+        assert_eq!(digester.0.load(AtomicOrdering::Relaxed), 3);
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn source_store_retains_and_exactly_retrieves_forced_collisions() {
+        let store = SourceStore::new_with(
+            [Arc::new(String::from("b")), Arc::new(String::from("a"))],
+            &Constant,
+        );
+        let a = SourceId::from_shared_text_with(Arc::new(String::from("a")), &Constant);
+        let b = SourceId::from_shared_text_with(Arc::new(String::from("b")), &Constant);
+
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.shared_text(&a).unwrap().as_str(), "a");
+        assert_eq!(store.shared_text(&b).unwrap().as_str(), "b");
+        assert_eq!(
+            store
+                .iter()
+                .map(|source| source.shared_text().as_str().to_owned())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+    }
+
+    #[test]
+    fn source_store_value_and_iteration_ignore_input_order() {
+        let make = |texts: &[&str]| {
+            SourceStore::new(texts.iter().map(|text| Arc::new((*text).to_owned())))
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            make(&["three", "one", "two"]),
+            make(&["two", "three", "one"])
+        );
     }
 
     #[test]
