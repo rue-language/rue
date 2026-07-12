@@ -188,7 +188,13 @@ fn finalize_function_body_analysis(
         },
         non_generic_named_method_dependencies_complete: sema
             .non_generic_named_method_dependencies_complete,
-        generic_named_method_dependencies_complete: false,
+        // Named methods currently have one analyzed runtime body even when
+        // they accept comptime parameters. Unlike free functions, there is no
+        // method-specialization table whose substitution identity could split
+        // this caller. The dependency events below therefore describe the
+        // authoritative method body for both generic and non-generic callers.
+        generic_named_method_dependencies_complete: sema
+            .non_generic_named_method_dependencies_complete,
         named_destructor_dependencies: {
             sema.named_destructor_dependencies.sort();
             sema.named_destructor_dependencies.dedup();
@@ -938,29 +944,20 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                             owner_name: type_name_str.clone(),
                             method_name: method_name_str.clone(),
                         });
-                    let caller_is_generic = sema
-                        .param_arena
-                        .comptime(method_info.params)
-                        .iter()
-                        .any(|is_comptime| *is_comptime);
-                    if caller_is_generic {
-                    } else {
-                        match named_method_dependency_events(
-                            sema,
-                            struct_id,
-                            method_name,
-                            &referenced_fns,
-                            &referenced_meths,
-                        ) {
-                            Ok(events) => {
-                                sema.body_analysis_work.named_method_dependency_events +=
-                                    events.len();
-                                sema.named_method_dependencies.extend(events);
-                            }
-                            Err(error) => {
-                                errors.push(error);
-                                continue;
-                            }
+                    match named_method_dependency_events(
+                        sema,
+                        struct_id,
+                        method_name,
+                        &referenced_fns,
+                        &referenced_meths,
+                    ) {
+                        Ok(events) => {
+                            sema.body_analysis_work.named_method_dependency_events += events.len();
+                            sema.named_method_dependencies.extend(events);
+                        }
+                        Err(error) => {
+                            errors.push(error);
+                            continue;
                         }
                     }
                     functions_with_strings.push((analyzed, local_strings));

@@ -637,7 +637,7 @@ mod tests {
                 1,
                 "/main.rue",
                 "main.rue",
-                "struct Value { fn choose(borrow self, comptime n: i32) -> i32 { n } } fn main() -> i32 { let value = Value {}; value.choose(1) + value.choose(2) }",
+                "fn helper() -> i32 { 1 } struct Value { fn choose(borrow self, comptime n: i32) -> i32 { helper() + n } } fn main() -> i32 { let value = Value {}; value.choose(1) + value.choose(2) }",
             )],
             1,
         );
@@ -651,7 +651,8 @@ mod tests {
             1
         );
         assert!(output.specialized_free_function_origins().is_empty());
-        assert!(!output.generic_named_method_dependencies_complete());
+        assert_eq!(output.named_method_dependencies().len(), 1);
+        assert!(output.generic_named_method_dependencies_complete());
     }
 
     #[test]

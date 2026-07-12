@@ -3060,11 +3060,6 @@ mod tests {
             vec![
                 (
                     None,
-                    SemanticDependencySurface::GenericNamedMethodCall,
-                    SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable,
-                ),
-                (
-                    None,
                     SemanticDependencySurface::DeclarationType,
                     SemanticDependencyIncompleteReason::ResolvedTypeIdentityUnavailable,
                 ),
@@ -3629,18 +3624,64 @@ mod tests {
             ("main.rue", "A", "next", "free", "main.rue", "generic"),
             ("main.rue", "B", "ping", "free", "main.rue", "helper"),
         ] {
-            assert!(edges.contains(&(
-                expected.0.into(),
-                expected.1.into(),
-                expected.2.into(),
-                expected.3.into(),
-                expected.4.into(),
-                expected.5.into(),
-            )));
+            assert!(
+                edges.contains(&(
+                    expected.0.into(),
+                    expected.1.into(),
+                    expected.2.into(),
+                    expected.3.into(),
+                    expected.4.into(),
+                    expected.5.into(),
+                )),
+                "missing {expected:?} from {edges:?}"
+            );
         }
         assert!(first.non_generic_named_method_dependencies_complete());
-        assert!(!first.generic_named_method_dependencies_complete());
+        assert!(first.generic_named_method_dependencies_complete());
+        assert!(!first.dependency_blockers().iter().any(|blocker| {
+            blocker.surface() == SemanticDependencySurface::GenericNamedMethodCall
+                && blocker.reason()
+                    == SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable
+        }));
         assert_eq!(first.work().named_method_events_translated, edges.len());
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn generic_named_method_uses_single_body_caller_and_needs_no_substitution_blocker() {
+        let program = "fn helper() -> i32 { 1 } struct Value { fn choose(borrow self, comptime n: i32) -> i32 { helper() + n } } fn main() -> i32 { let value = Value {}; value.choose(1) + value.choose(2) }";
+        let first_source = snapshot(&[(7, "/one/main.rue", "main.rue", program)], 7);
+        let moved_source = snapshot(&[(71, "/else/main.rue", "main.rue", program)], 71);
+        let build = |source: &SourceSnapshot| {
+            let mut session = CanonicalFrontendSession::new();
+            session.update(source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(&first_source);
+        let moved = build(&moved_source);
+        assert_eq!(
+            named_method_edge_names(&first),
+            named_method_edge_names(&moved)
+        );
+        assert_eq!(
+            named_method_edge_names(&first),
+            vec![(
+                "main.rue".into(),
+                "Value".into(),
+                "choose".into(),
+                "free".into(),
+                "main.rue".into(),
+                "helper".into(),
+            )]
+        );
+        assert!(first.generic_named_method_dependencies_complete());
+        assert!(!first.dependency_blockers().iter().any(|blocker| {
+            blocker.reason()
+                == SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable
+        }));
+        assert_eq!(first.work().named_method_events_translated, 1);
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
     }
 
