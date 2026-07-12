@@ -79,7 +79,7 @@ pub use source_identity::{
 pub use source_metadata::SourceMetadata;
 pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};
 pub use syntax::SyntaxWork;
-pub use unit::{CompilationUnit, SourceStats};
+pub use unit::{CompilationUnit, CompilationUnitWork, PhaseReuseWork, SourceStats};
 
 use rayon::prelude::*;
 use tracing::{info, info_span};

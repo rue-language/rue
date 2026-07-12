@@ -71,6 +71,24 @@ impl CanonicalSemanticOutput {
     pub fn work(&self) -> CanonicalSemanticWork {
         self.work
     }
+
+    pub(crate) fn into_codegen_parts(
+        self,
+    ) -> (
+        Vec<FunctionWithCfg>,
+        TypeInternPool,
+        Vec<String>,
+        Vec<CompileWarning>,
+        CanonicalSemanticWork,
+    ) {
+        (
+            self.functions,
+            self.type_pool,
+            self.strings,
+            self.warnings,
+            self.work,
+        )
+    }
 }
 
 /// Bind declarations once, optionally issue stable IDs, then consume the same
