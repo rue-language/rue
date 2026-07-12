@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rue_air::{
-    Sema, SemanticBinding, SemanticBindingKind, SemanticBindingManifestWork,
-    SemanticBindingNamespace,
+    DeclarationBindingWork, Sema, SemanticBinding, SemanticBindingKind,
+    SemanticBindingManifestWork, SemanticBindingNamespace,
 };
 use rue_error::{CompileError, CompileErrors, ErrorKind, MultiErrorResult};
 use rue_parser::ast::Visibility;
@@ -194,16 +194,28 @@ pub fn bind_canonical_definitions(
     preview_features: PreviewFeatures,
     target: Target,
 ) -> MultiErrorResult<BoundDefinitionSet> {
+    bind_canonical_definitions_with_work(merged, rir, preview_features, target)
+        .map(|(definitions, _)| definitions)
+}
+
+pub(crate) fn bind_canonical_definitions_with_work(
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    preview_features: PreviewFeatures,
+    target: Target,
+) -> MultiErrorResult<(BoundDefinitionSet, DeclarationBindingWork)> {
     let sema = configure_canonical_sema(merged, rir, preview_features, target)?;
     let bound = sema.bind_declarations()?;
+    let binding_work = bound.binding_work();
     let manifest = bound.binding_manifest();
-    issue_bound_definitions(
+    let definitions = issue_bound_definitions(
         merged,
         rir.source_revision(),
         manifest.bindings(),
         manifest.work(),
     )
-    .map_err(CompileErrors::from)
+    .map_err(CompileErrors::from)?;
+    Ok((definitions, binding_work))
 }
 
 pub(crate) fn configure_canonical_sema<'a>(
