@@ -63,6 +63,7 @@ pub struct SemanticDependencyManifestWork {
     pub named_destructor_events_translated: usize,
     pub declaration_type_events_translated: usize,
     pub declaration_type_call_head_events_translated: usize,
+    pub builtin_type_call_head_inputs_translated: usize,
     pub extra_rir_instructions_visited: usize,
 }
 
@@ -105,6 +106,13 @@ pub struct StableDeclarationTypeCallHeadDependency {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableBuiltinTypeCallHeadInput {
+    pub source: StableDefinitionKey,
+    pub builtin: rue_air::BuiltinTypeCallHead,
+    pub kind: rue_air::DeclarationTypeDependencyKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StableModuleImportDependency {
     Resolved {
         importer: crate::ModuleId,
@@ -140,6 +148,8 @@ pub struct SemanticDependencyInputManifest {
     declaration_type_dependencies_complete: bool,
     declaration_type_call_head_dependencies: Arc<[StableDeclarationTypeCallHeadDependency]>,
     declaration_type_call_head_dependencies_complete: bool,
+    builtin_type_call_head_inputs: Arc<[StableBuiltinTypeCallHeadInput]>,
+    supported_type_call_heads_complete: bool,
     semantic_dependency_graph_complete: bool,
     definition_universe_complete: bool,
     work: SemanticDependencyManifestWork,
@@ -192,6 +202,12 @@ impl SemanticDependencyInputManifest {
     }
     pub fn declaration_type_call_head_dependencies_complete(&self) -> bool {
         self.declaration_type_call_head_dependencies_complete
+    }
+    pub fn builtin_type_call_head_inputs(&self) -> &[StableBuiltinTypeCallHeadInput] {
+        &self.builtin_type_call_head_inputs
+    }
+    pub fn supported_type_call_heads_complete(&self) -> bool {
+        self.supported_type_call_heads_complete
     }
     pub fn semantic_dependency_graph_complete(&self) -> bool {
         self.semantic_dependency_graph_complete
@@ -787,17 +803,20 @@ impl CanonicalFrontendSession {
             mut named_destructor_dependencies,
             mut declaration_type_dependencies,
             mut declaration_type_call_head_dependencies,
+            mut builtin_type_call_head_inputs,
             free_function_events_translated,
             specialization_origins_validated,
             named_method_events_translated,
             named_destructor_events_translated,
             declaration_type_events_translated,
             declaration_type_call_head_events_translated,
+            builtin_type_call_head_inputs_translated,
             free_function_caller_dependencies_complete,
             named_method_dependencies_complete,
             named_destructor_dependencies_complete,
             declaration_type_dependencies_complete,
             declaration_type_call_head_dependencies_complete,
+            supported_type_call_heads_complete,
         ) = match (&semantic, &definitions) {
             (Ok(semantic), Ok(definitions)) => {
                 if definitions.source_revision() != &input.sources {
@@ -924,12 +943,27 @@ impl CanonicalFrontendSession {
                         kind: event.dependency_kind,
                     });
                 }
+                let mut builtin_head_inputs = Vec::new();
+                for event in semantic.declaration_builtin_type_call_head_dependencies() {
+                    builtin_head_inputs.push(StableBuiltinTypeCallHeadInput {
+                        source: stable_declaration_type_source_endpoint(
+                            definitions,
+                            event.source_file,
+                            &event.source_name,
+                            event.source_owner_name.as_deref(),
+                            event.source_kind,
+                        )?,
+                        builtin: event.builtin,
+                        kind: event.dependency_kind,
+                    });
+                }
                 (
                     edges,
                     method_edges,
                     destructor_edges,
                     type_edges,
                     type_call_head_edges,
+                    builtin_head_inputs,
                     semantic.ordinary_free_function_dependencies().len()
                         + semantic.specialized_free_function_dependencies().len(),
                     semantic.specialized_free_function_origins().len(),
@@ -937,12 +971,16 @@ impl CanonicalFrontendSession {
                     semantic.named_destructor_dependencies().len(),
                     semantic.declaration_type_dependencies().len(),
                     semantic.declaration_type_call_head_dependencies().len(),
+                    semantic
+                        .declaration_builtin_type_call_head_dependencies()
+                        .len(),
                     semantic.ordinary_free_function_dependencies_complete()
                         && semantic.specialized_free_function_dependencies_complete(),
                     semantic.non_generic_named_method_dependencies_complete(),
                     semantic.named_destructor_dependencies_complete(),
                     semantic.declaration_type_dependencies_complete(),
                     semantic.declaration_type_call_head_dependencies_complete(),
+                    semantic.supported_type_call_heads_complete(),
                 )
             }
             _ => (
@@ -951,12 +989,15 @@ impl CanonicalFrontendSession {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 0,
                 0,
                 0,
                 0,
                 0,
                 0,
+                0,
+                false,
                 false,
                 false,
                 false,
@@ -974,6 +1015,8 @@ impl CanonicalFrontendSession {
         declaration_type_dependencies.dedup();
         declaration_type_call_head_dependencies.sort();
         declaration_type_call_head_dependencies.dedup();
+        builtin_type_call_head_inputs.sort();
+        builtin_type_call_head_inputs.dedup();
         let work = SemanticDependencyManifestWork {
             definition_records_visited: definition_records.len(),
             import_records_visited: imports.graph().records().len(),
@@ -983,6 +1026,7 @@ impl CanonicalFrontendSession {
             named_destructor_events_translated,
             declaration_type_events_translated,
             declaration_type_call_head_events_translated,
+            builtin_type_call_head_inputs_translated,
             extra_rir_instructions_visited: 0,
         };
         self.work.dependency_manifest_records_visited += work.definition_records_visited;
@@ -1030,6 +1074,8 @@ impl CanonicalFrontendSession {
             declaration_type_dependencies_complete,
             declaration_type_call_head_dependencies: declaration_type_call_head_dependencies.into(),
             declaration_type_call_head_dependencies_complete,
+            builtin_type_call_head_inputs: builtin_type_call_head_inputs.into(),
+            supported_type_call_heads_complete,
             semantic_dependency_graph_complete: false,
             definition_universe_complete,
             work,
@@ -2592,6 +2638,66 @@ mod tests {
         assert_eq!(edge.callable.module().as_str(), "lib.rue");
         assert_eq!(edge.callable.name(), "Box");
         assert_eq!(edge.callable.kind(), StableDefinitionKind::Function);
+    }
+
+    #[test]
+    fn fixed_string_type_head_is_a_builtin_input_not_a_definition() {
+        let source = snapshot(
+            &[(
+                4,
+                "/p/main.rue",
+                "main.rue",
+                "fn consume(value: Str(8)) -> i32 { 0 } fn main() -> i32 { 0 }",
+            )],
+            4,
+        );
+        let mut options = CompileOptions::default();
+        options
+            .preview_features
+            .insert("string_trio".parse().unwrap());
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let manifest = session.semantic_dependency_inputs(&options, None).unwrap();
+        let [input] = manifest.builtin_type_call_head_inputs() else {
+            panic!("expected one fixed-string builtin input");
+        };
+        assert_eq!(input.source.name(), "consume");
+        assert_eq!(
+            input.builtin,
+            rue_air::BuiltinTypeCallHead::FixedCapacityString
+        );
+        assert!(
+            manifest
+                .declaration_type_call_head_dependencies()
+                .is_empty()
+        );
+        assert!(manifest.supported_type_call_heads_complete());
+        assert!(!manifest.declaration_type_call_head_dependencies_complete());
+        assert_eq!(manifest.work().builtin_type_call_head_inputs_translated, 1);
+        assert_eq!(manifest.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn named_owner_associated_type_head_is_not_supported_type_syntax() {
+        let source = snapshot(
+            &[(
+                6,
+                "/p/main.rue",
+                "main.rue",
+                r#"struct Factory {
+                       fn Make() -> type { struct { value: i32 } }
+                   }
+                   fn consume(value: Factory.Make()) -> i32 { 0 }
+                   fn main() -> i32 { 0 }"#,
+            )],
+            6,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        assert!(
+            session.semantic(&CompileOptions::default()).is_err(),
+            "dotted type-call heads are module-qualified free functions, not associated functions"
+        );
     }
 
     #[test]

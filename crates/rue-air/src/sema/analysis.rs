@@ -207,6 +207,12 @@ fn finalize_function_body_analysis(
             sema.declaration_type_call_head_dependencies.clone()
         },
         declaration_type_call_head_dependencies_complete: false,
+        declaration_builtin_type_call_head_dependencies: {
+            sema.declaration_builtin_type_call_head_dependencies.sort();
+            sema.declaration_builtin_type_call_head_dependencies.dedup();
+            sema.declaration_builtin_type_call_head_dependencies.clone()
+        },
+        supported_type_call_heads_complete: true,
     };
 
     errors.into_result_with(output)
@@ -1626,6 +1632,8 @@ mod error_invariant_tests {
             declaration_type_dependencies_complete: false,
             declaration_type_call_head_dependencies: Vec::new(),
             declaration_type_call_head_dependencies_complete: false,
+            declaration_builtin_type_call_head_dependencies: Vec::new(),
+            supported_type_call_heads_complete: false,
         }
     }
 

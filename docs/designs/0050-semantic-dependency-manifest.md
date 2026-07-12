@@ -173,3 +173,16 @@ functions rather than named type definitions. A future pre-substitution
 observer must classify stable type-function dependencies and aliases before
 this surface can become complete; the conservative resolved edges must not
 drive reuse meanwhile.
+
+The pre-substitution observer now classifies every type-call head accepted by
+the current resolver. User-defined free and module-qualified free comptime
+functions retain exact declaration endpoints. The preview-gated `Str(N)` head
+is a `FixedCapacityString` language-builtin input, not a fabricated source
+definition; its target and preview-feature identity are already part of the
+semantic input descriptor. No intrinsic currently returns a type. Dotted heads
+are exclusively module paths: `Owner.Make()` where `Owner` is a named type is
+rejected, so associated type constructors, dynamic heads, and unnameable heads
+are not successful language forms and emit no partial dependency edge.
+`supported_type_call_heads_complete=true` is intentionally narrow: it covers
+successfully resolved call heads only. Broader declaration-type and semantic
+graph completeness remain false.

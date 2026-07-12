@@ -1,8 +1,9 @@
 //! One-pass canonical declaration binding, body analysis, and CFG lowering.
 
 use rue_air::{
-    BodyAnalysisWork, DeclarationBindingWork, DeclarationTypeCallHeadDependencyEvent,
-    DeclarationTypeDependencyEvent, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
+    BodyAnalysisWork, DeclarationBindingWork, DeclarationBuiltinTypeCallHeadDependencyEvent,
+    DeclarationTypeCallHeadDependencyEvent, DeclarationTypeDependencyEvent,
+    NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
     OrdinaryFreeFunctionDependencyEvent, RirDeclarationIndexWork, SemanticBindingManifestWork,
     SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
@@ -57,6 +58,9 @@ pub struct CanonicalSemanticOutput {
     declaration_type_dependencies_complete: bool,
     declaration_type_call_head_dependencies: Vec<DeclarationTypeCallHeadDependencyEvent>,
     declaration_type_call_head_dependencies_complete: bool,
+    declaration_builtin_type_call_head_dependencies:
+        Vec<DeclarationBuiltinTypeCallHeadDependencyEvent>,
+    supported_type_call_heads_complete: bool,
 }
 
 impl CanonicalSemanticOutput {
@@ -125,6 +129,14 @@ impl CanonicalSemanticOutput {
     }
     pub fn declaration_type_call_head_dependencies_complete(&self) -> bool {
         self.declaration_type_call_head_dependencies_complete
+    }
+    pub fn declaration_builtin_type_call_head_dependencies(
+        &self,
+    ) -> &[DeclarationBuiltinTypeCallHeadDependencyEvent] {
+        &self.declaration_builtin_type_call_head_dependencies
+    }
+    pub fn supported_type_call_heads_complete(&self) -> bool {
+        self.supported_type_call_heads_complete
     }
     /// Stable definition identities when requested for this run.
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
@@ -224,6 +236,10 @@ pub fn analyze_canonical_program(
         sema_output.declaration_type_call_head_dependencies.clone();
     let declaration_type_call_head_dependencies_complete =
         sema_output.declaration_type_call_head_dependencies_complete;
+    let declaration_builtin_type_call_head_dependencies = sema_output
+        .declaration_builtin_type_call_head_dependencies
+        .clone();
+    let supported_type_call_heads_complete = sema_output.supported_type_call_heads_complete;
     drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
@@ -260,6 +276,8 @@ pub fn analyze_canonical_program(
         declaration_type_dependencies_complete,
         declaration_type_call_head_dependencies,
         declaration_type_call_head_dependencies_complete,
+        declaration_builtin_type_call_head_dependencies,
+        supported_type_call_heads_complete,
     })
 }
 
