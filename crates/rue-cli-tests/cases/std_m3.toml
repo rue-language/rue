@@ -1,0 +1,172 @@
+# Standard library — M3 tier (std.ascii / std.strings / std.sort / std.rand),
+# exercised through the real std bundle via RUE_STD_PATH.
+#
+# NOTE: cross-module calls to generic (`comptime T`) std helpers require typed
+# local bindings, not bare integer literals (RUE-693). The sort cases below bind
+# typed values before passing them to the generic sort/search functions.
+#
+# std.rand.Lcg is a plain named `struct` (not a `fn Lcg() -> type`): a
+# cross-module call to a zero-comptime-argument type function is currently
+# mis-evaluated at runtime (E1200), so a named struct is used instead — it also
+# reads more naturally for a non-generic type (`std.rand.Lcg.new(seed)`).
+
+[section]
+id = "cli.std_m3"
+name = "Standard library — M3 (ascii / strings / sort / rand)"
+description = "std.ascii, std.strings, std.sort, std.rand exercised end-to-end through @import(\"std\")."
+
+[[case]]
+name = "std_ascii_m3"
+description = "ascii byte classification and case mapping (11 checks -> exit 61)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 61
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+
+    if std.ascii.is_digit(52) { score = score + 1; }        // '4'
+    if !std.ascii.is_digit(65) { score = score + 1; }       // 'A'
+    if std.ascii.is_alpha(65) { score = score + 1; }        // 'A'
+    if std.ascii.is_alnum(57) { score = score + 1; }        // '9'
+    if std.ascii.is_whitespace(32) { score = score + 1; }   // space
+    if std.ascii.is_upper(90) { score = score + 1; }        // 'Z'
+    if std.ascii.is_lower(97) { score = score + 1; }        // 'a'
+    if std.ascii.to_upper(97) == 65 { score = score + 1; }  // 'a' -> 'A'
+    if std.ascii.to_lower(90) == 122 { score = score + 1; } // 'Z' -> 'z'
+    if std.ascii.is_ascii(127) { score = score + 1; }
+
+    let Ob = std.option.Option(u8);
+    match std.ascii.digit_value(55) {                       // '7' -> 7
+        Ob.Some(v) => { if v == 7 { score = score + 1; } },
+        Ob.None => {},
+    }
+
+    if score == 11 { 61 } else { @intCast(score) }
+}
+""" }]
+
+[[case]]
+name = "std_strings_m3"
+description = "strings parse/find/trim/repeat helpers (14 checks -> exit 62)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 62
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+    let Oi = std.option.Option(i64);
+    let Ou = std.option.Option(u64);
+
+    match std.strings.parse_int("-42") { Oi.Some(v) => { if v == -42 { score = score + 1; } }, Oi.None => {} }
+    match std.strings.parse_int("1000") { Oi.Some(v) => { if v == 1000 { score = score + 1; } }, Oi.None => {} }
+    match std.strings.parse_int("") { Oi.Some(v) => {}, Oi.None => { score = score + 1; } }
+    match std.strings.parse_int("12x") { Oi.Some(v) => {}, Oi.None => { score = score + 1; } }
+    match std.strings.parse_int("99999999999999999999999") { Oi.Some(v) => {}, Oi.None => { score = score + 1; } }
+
+    match std.strings.find("hello", 108) { Ou.Some(i) => { if i == 2 { score = score + 1; } }, Ou.None => {} }
+    match std.strings.rfind("hello", 108) { Ou.Some(i) => { if i == 3 { score = score + 1; } }, Ou.None => {} }
+    if std.strings.count("hello", 108) == 2 { score = score + 1; }
+    if std.strings.starts_with_byte("hello", 104) { score = score + 1; }
+    if !std.strings.starts_with_byte("", 104) { score = score + 1; }
+
+    if std.strings.trim("  hi  ").len() == 2 { score = score + 1; }
+    if std.strings.trim_start("  hi").len() == 2 { score = score + 1; }
+    if std.strings.trim_end("hi  ").len() == 2 { score = score + 1; }
+    if std.strings.repeat("ab", 3).len() == 6 { score = score + 1; }
+
+    if score == 14 { 62 } else { @intCast(score) }
+}
+""" }]
+
+[[case]]
+name = "std_sort_m3"
+description = "sort insertion/quick/is_sorted/binary_search over ArrayBuf(i64) (6 checks -> exit 63)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 63
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+    let B = std.arraybuf.ArrayBuf(i64);
+    let Ou = std.option.Option(u64);
+
+    let v5: i64 = 5;
+    let v2: i64 = 2;
+    let v9: i64 = 9;
+    let v1: i64 = 1;
+    let v7: i64 = 7;
+
+    // quicksort
+    let mut a = B.new();
+    a.push(v5); a.push(v2); a.push(v9); a.push(v1); a.push(v7);
+    std.sort.quicksort(i64, inout a);
+    if std.sort.is_sorted(i64, borrow a) { score = score + 1; }
+    if a.get_or(0, -1) == 1 { score = score + 1; }
+    if a.get_or(4, -1) == 9 { score = score + 1; }
+
+    // binary_search: present and absent
+    match std.sort.binary_search(i64, borrow a, v7) {
+        Ou.Some(i) => { if a.get_or(i, -1) == 7 { score = score + 1; } },
+        Ou.None => {},
+    }
+    let miss: i64 = 3;
+    match std.sort.binary_search(i64, borrow a, miss) {
+        Ou.Some(i) => {},
+        Ou.None => { score = score + 1; },
+    }
+
+    // insertion_sort
+    let mut b = B.new();
+    b.push(v9); b.push(v1); b.push(v5); b.push(v2);
+    std.sort.insertion_sort(i64, inout b);
+    if std.sort.is_sorted(i64, borrow b) { score = score + 1; }
+
+    if score == 6 { 63 } else { @intCast(score) }
+}
+""" }]
+
+[[case]]
+name = "std_rand_m3"
+description = "rand Lcg determinism, bounds, and next_bool (5 checks -> exit 64)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 64
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+
+    // Same seed -> identical stream (determinism).
+    let mut r1 = std.rand.Lcg.new(12345);
+    let mut r2 = std.rand.Lcg.new(12345);
+    if r1.next_u64() == r2.next_u64() { score = score + 1; }
+    if r1.next_u64() == r2.next_u64() { score = score + 1; }
+
+    // next_below stays in range.
+    let mut inrange = true;
+    let mut i: u64 = 0;
+    while i < 100 {
+        if r1.next_below(6) >= 6 { inrange = false; }
+        i = i + 1;
+    }
+    if inrange { score = score + 1; }
+
+    // next_below(0) == 0.
+    if r1.next_below(0) == 0 { score = score + 1; }
+
+    // next_u64 stays within the 32-bit state range.
+    if r1.next_u64() < 4294967296 { score = score + 1; }
+
+    let _ = r1.next_bool();
+
+    if score == 5 { 64 } else { @intCast(score) }
+}
+""" }]

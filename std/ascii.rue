@@ -1,0 +1,74 @@
+// std.ascii — byte classification and case mapping over `u8` (RUE-676).
+//
+// These are pure functions over a single ASCII byte: the classic C
+// `<ctype.h>` predicates (`isdigit`, `isalpha`, …) plus lowercase/uppercase
+// mapping, written directly against the ASCII code points. They inspect one
+// byte at a time and never look at UTF-8 boundaries, so they compose cleanly
+// with `String`'s byte indexing (`s[i] -> u8`) — see std.strings.
+//
+//     const std = @import("std");
+//     std.ascii.is_digit(52);      // true  ('4')
+//     std.ascii.to_upper(97);      // 65    ('a' -> 'A')
+//     std.ascii.digit_value(55);   // Some(7)
+//
+// ASCII reference: '0'..'9' = 48..57, 'A'..'Z' = 65..90, 'a'..'z' = 97..122,
+// space = 32, tab = 9, newline = 10, carriage return = 13, DEL = 127.
+
+const option = @import("option.rue");
+
+// Whether `b` is an ASCII decimal digit '0'..'9'.
+pub fn is_digit(b: u8) -> bool {
+    b >= 48 && b <= 57
+}
+
+// Whether `b` is an ASCII uppercase letter 'A'..'Z'.
+pub fn is_upper(b: u8) -> bool {
+    b >= 65 && b <= 90
+}
+
+// Whether `b` is an ASCII lowercase letter 'a'..'z'.
+pub fn is_lower(b: u8) -> bool {
+    b >= 97 && b <= 122
+}
+
+// Whether `b` is an ASCII letter (either case).
+pub fn is_alpha(b: u8) -> bool {
+    is_upper(b) || is_lower(b)
+}
+
+// Whether `b` is an ASCII letter or decimal digit.
+pub fn is_alnum(b: u8) -> bool {
+    is_alpha(b) || is_digit(b)
+}
+
+// Whether `b` is ASCII whitespace: space, tab, newline, or carriage return.
+pub fn is_whitespace(b: u8) -> bool {
+    b == 32 || b == 9 || b == 10 || b == 13
+}
+
+// Whether `b` is a 7-bit ASCII byte (0..=127).
+pub fn is_ascii(b: u8) -> bool {
+    b <= 127
+}
+
+// Uppercase mapping: lowercase letters map to their uppercase form; every
+// other byte is returned unchanged.
+pub fn to_upper(b: u8) -> u8 {
+    if is_lower(b) { b - 32 } else { b }
+}
+
+// Lowercase mapping: uppercase letters map to their lowercase form; every
+// other byte is returned unchanged.
+pub fn to_lower(b: u8) -> u8 {
+    if is_upper(b) { b + 32 } else { b }
+}
+
+// Numeric value 0..=9 of an ASCII digit, or `None` when `b` is not a digit.
+pub fn digit_value(b: u8) -> option.Option(u8) {
+    let O = option.Option(u8);
+    if is_digit(b) {
+        O.Some(b - 48)
+    } else {
+        O.None
+    }
+}

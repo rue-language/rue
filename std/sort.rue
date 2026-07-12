@@ -1,0 +1,134 @@
+// std.sort — in-place sorting and searching over `ArrayBuf(T)` (RUE-675).
+//
+// These are free functions that take the buffer as an `inout` (mutating) or
+// `borrow` (read-only) parameter and order its elements by the natural `<`
+// relation on the element type `T` (verified: `<` works on a comptime type
+// parameter). They mirror how a method takes `inout self` / `borrow self`, but
+// live as standalone generic functions so any `ArrayBuf(T)` can be sorted
+// without wrapping.
+//
+//     const std = @import("std");
+//     let B = std.arraybuf.ArrayBuf(i64);
+//     let mut v = B.new();
+//     // ... push elements ...
+//     std.sort.quicksort(i64, inout v);
+//     let hit = std.sort.binary_search(i64, v, target);   // Option(u64)
+//
+// COPY-ELEMENT-ONLY. Every element access here is a by-copy read
+// (`ArrayBuf.get_or`), which the container gates to trivially-droppable element
+// types (E0711, RUE-651): reading a drop-glue element out by copy while its
+// slot stays live would alias its owned buffer (double-free). So these routines
+// are for `Copy` element types — integers and other trivially-droppable
+// scalars/aggregates. Sorting owned (drop-glue) elements needs a
+// borrow-returning element accessor (the RUE-651 follow-up); it is out of scope
+// here. The unused out-of-bounds defaults passed to `get_or` are integer `0`
+// literals, so the element type must additionally admit `0` as a value; for
+// `binary_search` the default is `target`, so it is generic over any `Copy` `T`.
+
+const arraybuf = @import("arraybuf.rue");
+const mem = @import("mem.rue");
+const option = @import("option.rue");
+
+// Exchange elements `i` and `j` (both assumed in bounds). Routes the exchange
+// through `std.mem.swap` on two typed locals, then writes them back.
+fn swap_at(comptime T: type, inout xs: arraybuf.ArrayBuf(T), i: u64, j: u64) {
+    let mut a = xs.get_or(i, 0);
+    let mut b = xs.get_or(j, 0);
+    mem.swap(T, inout a, inout b);
+    xs.set(i, a);
+    xs.set(j, b);
+}
+
+// Insertion sort: stable, O(n^2), good on small or nearly-sorted inputs.
+// Shifts each element left past larger predecessors.
+pub fn insertion_sort(comptime T: type, inout xs: arraybuf.ArrayBuf(T)) {
+    let n = xs.len();
+    let mut i: u64 = 1;
+    while i < n {
+        let mut j = i;
+        while j > 0 {
+            let prev = xs.get_or(j - 1, 0);
+            let cur = xs.get_or(j, 0);
+            if cur < prev {
+                swap_at(T, inout xs, j - 1, j);
+                j = j - 1;
+            } else {
+                j = 0;
+            }
+        }
+        i = i + 1;
+    }
+}
+
+// Recursive Lomuto quicksort over the inclusive range `[lo, hi]`. The pivot is
+// the last element; ranges of length <= 1 are already sorted.
+fn qsort_range(comptime T: type, inout xs: arraybuf.ArrayBuf(T), lo: u64, hi: u64) {
+    if lo >= hi {
+        return;
+    }
+    let pivot = xs.get_or(hi, 0);
+    let mut store = lo;
+    let mut j = lo;
+    while j < hi {
+        let vj = xs.get_or(j, 0);
+        if vj < pivot {
+            swap_at(T, inout xs, store, j);
+            store = store + 1;
+        }
+        j = j + 1;
+    }
+    swap_at(T, inout xs, store, hi);
+    if store > lo {
+        qsort_range(T, inout xs, lo, store - 1);
+    }
+    qsort_range(T, inout xs, store + 1, hi);
+}
+
+// Quicksort: average O(n log n), in place. Not stable.
+pub fn quicksort(comptime T: type, inout xs: arraybuf.ArrayBuf(T)) {
+    let n = xs.len();
+    if n > 1 {
+        qsort_range(T, inout xs, 0, n - 1);
+    }
+}
+
+// Whether `xs` is in non-decreasing order under `<`.
+pub fn is_sorted(comptime T: type, borrow xs: arraybuf.ArrayBuf(T)) -> bool {
+    let n = xs.len();
+    if n < 2 {
+        return true;
+    }
+    let mut i: u64 = 1;
+    while i < n {
+        let prev = xs.get_or(i - 1, 0);
+        let cur = xs.get_or(i, 0);
+        if cur < prev {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+// Binary search for `target` in a buffer that is already sorted ascending.
+// Returns `Some(i)` for some index `i` with `xs[i] == target` (equality is
+// tested as `!(a < b) && !(b < a)`), or `None` if absent. Generic over any
+// `Copy` `T`: the unused out-of-bounds default is `target` itself.
+pub fn binary_search(comptime T: type, borrow xs: arraybuf.ArrayBuf(T), target: T) -> option.Option(u64) {
+    let O = option.Option(u64);
+    let n = xs.len();
+    let mut lo: u64 = 0;
+    let mut hi = n;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let v = xs.get_or(mid, target);
+        if v < target {
+            lo = mid + 1;
+        } else if target < v {
+            hi = mid;
+        } else {
+            return O.Some(mid);
+        }
+    }
+    O.None
+}

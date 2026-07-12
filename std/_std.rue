@@ -30,6 +30,12 @@ pub const grid = @import("grid.rue");
 pub const binary_heap = @import("binary_heap.rue");
 pub const intmap = @import("intmap.rue");
 
+// Algorithms & text (Standard library v1, M3).
+pub const ascii = @import("ascii.rue");
+pub const strings = @import("strings.rue");
+pub const sort = @import("sort.rue");
+pub const rand = @import("rand.rue");
+
 fn _exit_syscall_number() -> u64 {
     match @target_arch() {
         Arch.X86_64 => {

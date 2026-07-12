@@ -1,0 +1,233 @@
+// std.strings — byte-oriented text helpers over `String` (RUE-677).
+//
+// Built on the working `String` surface: byte indexing (`s[i] -> u8`), `.len()`,
+// and the mutating builders `String.new()` + `.push(byte)`. Everything here is
+// byte-level (ASCII-oriented) and never inspects UTF-8 boundaries, matching
+// std.ascii. Fallible parses/searches return `option.Option(T)`.
+//
+//     const std = @import("std");
+//     std.strings.parse_int("-42");        // Some(-42)
+//     std.strings.find("hello", 108);      // Some(2)  (first 'l')
+//     std.strings.trim("  hi  ");          // "hi"
+//     std.strings.repeat("ab", 3);         // "ababab"
+//
+// COMPILER-BUG WORKAROUND (see below): a `String` byte index `s[i]` used
+// DIRECTLY inside an `if`/`while` condition expression is currently rejected
+// with E0900 "cannot index into non-array type 'StrBuf'" — even though the very
+// same `s[i]` works when bound to a `let` first or used in tail position.
+// Minimal repro:
+//
+//     fn f(s: String) -> u8 { if s[0] == 45 { 1 } else { 9 } }   // E0900
+//     fn f(s: String) -> u8 { let c = s[0]; if c == 45 { 1 } else { 9 } }  // OK
+//
+// So every index below reads the byte into a local in statement position first,
+// then tests the local. This is filed for the compiler team; when it is fixed
+// the local bindings can be inlined back into the conditions.
+
+const ascii = @import("ascii.rue");
+const option = @import("option.rue");
+const math = @import("math.rue");
+
+// Parse a decimal integer with an optional leading '-'. Returns `None` on an
+// empty string, a lone '-', any non-digit byte, or arithmetic overflow of
+// `i64` (overflow is caught with `std.math.checked_mul`/`checked_add`, so no
+// trap). NOTE: because magnitude is accumulated as a positive `i64` before an
+// optional negation, `i64::MIN` (-9223372036854775808) is reported as overflow
+// (`None`) — its magnitude does not fit a positive `i64`.
+pub fn parse_int(s: String) -> option.Option(i64) {
+    let O = option.Option(i64);
+    let n = s.len();
+    if n == 0 {
+        return O.None;
+    }
+    let mut i: u64 = 0;
+    let mut neg = false;
+    let first = s[0];
+    if first == 45 {
+        neg = true;
+        i = 1;
+        if n == 1 {
+            return O.None;
+        }
+    }
+    let mut acc: i64 = 0;
+    let ten: i64 = 10;
+    while i < n {
+        let byte = s[i];
+        if !ascii.is_digit(byte) {
+            return O.None;
+        }
+        let dg: i64 = @intCast(byte - 48);
+        match math.checked_mul(acc, ten) {
+            O.Some(m) => {
+                match math.checked_add(m, dg) {
+                    O.Some(sum) => {
+                        acc = sum;
+                    },
+                    O.None => {
+                        return O.None;
+                    },
+                }
+            },
+            O.None => {
+                return O.None;
+            },
+        }
+        i = i + 1;
+    }
+    if neg {
+        O.Some(-acc)
+    } else {
+        O.Some(acc)
+    }
+}
+
+// Index of the first byte equal to `byte`, or `None`.
+pub fn find(s: String, byte: u8) -> option.Option(u64) {
+    let O = option.Option(u64);
+    let n = s.len();
+    let mut i: u64 = 0;
+    while i < n {
+        let c = s[i];
+        if c == byte {
+            return O.Some(i);
+        }
+        i = i + 1;
+    }
+    O.None
+}
+
+// Index of the last byte equal to `byte`, or `None`.
+pub fn rfind(s: String, byte: u8) -> option.Option(u64) {
+    let O = option.Option(u64);
+    let mut i = s.len();
+    while i > 0 {
+        i = i - 1;
+        let c = s[i];
+        if c == byte {
+            return O.Some(i);
+        }
+    }
+    O.None
+}
+
+// Number of bytes equal to `byte`.
+pub fn count(s: String, byte: u8) -> u64 {
+    let mut c: u64 = 0;
+    let n = s.len();
+    let mut i: u64 = 0;
+    while i < n {
+        let cur = s[i];
+        if cur == byte {
+            c = c + 1;
+        }
+        i = i + 1;
+    }
+    c
+}
+
+// Whether the first byte of `s` equals `byte` (false for the empty string).
+pub fn starts_with_byte(s: String, byte: u8) -> bool {
+    if s.len() == 0 {
+        false
+    } else {
+        let c = s[0];
+        c == byte
+    }
+}
+
+// Copy of `s` with leading ASCII whitespace removed.
+pub fn trim_start(s: String) -> String {
+    let n = s.len();
+    let mut start: u64 = 0;
+    let mut scanning = true;
+    while scanning && start < n {
+        let c = s[start];
+        if ascii.is_whitespace(c) {
+            start = start + 1;
+        } else {
+            scanning = false;
+        }
+    }
+    let mut out = String.new();
+    let mut i = start;
+    while i < n {
+        let c = s[i];
+        out.push(c);
+        i = i + 1;
+    }
+    out
+}
+
+// Copy of `s` with trailing ASCII whitespace removed.
+pub fn trim_end(s: String) -> String {
+    let n = s.len();
+    let mut end = n;
+    let mut scanning = true;
+    while scanning && end > 0 {
+        let c = s[end - 1];
+        if ascii.is_whitespace(c) {
+            end = end - 1;
+        } else {
+            scanning = false;
+        }
+    }
+    let mut out = String.new();
+    let mut i: u64 = 0;
+    while i < end {
+        let c = s[i];
+        out.push(c);
+        i = i + 1;
+    }
+    out
+}
+
+// Copy of `s` with both leading and trailing ASCII whitespace removed.
+pub fn trim(s: String) -> String {
+    let n = s.len();
+    let mut start: u64 = 0;
+    let mut sc = true;
+    while sc && start < n {
+        let c = s[start];
+        if ascii.is_whitespace(c) {
+            start = start + 1;
+        } else {
+            sc = false;
+        }
+    }
+    let mut end = n;
+    let mut ec = true;
+    while ec && end > start {
+        let c = s[end - 1];
+        if ascii.is_whitespace(c) {
+            end = end - 1;
+        } else {
+            ec = false;
+        }
+    }
+    let mut out = String.new();
+    let mut i = start;
+    while i < end {
+        let c = s[i];
+        out.push(c);
+        i = i + 1;
+    }
+    out
+}
+
+// `s` concatenated `n` times (empty string when `n == 0`).
+pub fn repeat(s: String, n: u64) -> String {
+    let mut out = String.new();
+    let len = s.len();
+    let mut k: u64 = 0;
+    while k < n {
+        let mut i: u64 = 0;
+        while i < len {
+            let c = s[i];
+            out.push(c);
+            i = i + 1;
+        }
+        k = k + 1;
+    }
+    out
+}
