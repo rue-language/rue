@@ -751,50 +751,46 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
         // by their bodies back through the same deterministic work queues.
         if !named_destructors_analyzed {
             named_destructors_analyzed = true;
-            for (_, inst) in sema.rir.iter() {
-                if let InstData::DropFnDecl { type_name, body } = &inst.data {
-                    sema.body_analysis_work
-                        .named_destructor_declarations_visited += 1;
-                    // File-aware first (RUE-558), matching the sites above.
-                    let struct_id = match sema
-                        .structs_by_file_name
-                        .get(&(inst.span.file_id, *type_name))
-                        .or_else(|| sema.structs.get(type_name))
-                    {
-                        Some(id) => *id,
-                        None => continue,
-                    };
-                    let struct_type = Type::new_struct(struct_id);
-                    let full_name = sema.destructor_symbol(struct_id);
+            // Copy the request-local records before mutating `sema` below.
+            // The loop finishes selecting every destructor before the queued
+            // references are processed on the next fixed-point iteration.
+            let destructor_records = sema.declaration_index.destructors().to_vec();
+            for destructor in destructor_records {
+                sema.body_analysis_work
+                    .named_destructor_declarations_visited += 1;
+                // File-aware first (RUE-558), matching the historical scan.
+                let struct_id = match sema
+                    .structs_by_file_name
+                    .get(&(destructor.span.file_id, destructor.type_name))
+                    .or_else(|| sema.structs.get(&destructor.type_name))
+                {
+                    Some(id) => *id,
+                    None => continue,
+                };
+                let struct_type = Type::new_struct(struct_id);
+                let full_name = sema.destructor_symbol(struct_id);
 
-                    match sema.analyze_destructor_function(
-                        &infer_ctx,
-                        &full_name,
-                        *body,
-                        inst.span,
-                        struct_type,
-                    ) {
-                        Ok((
-                            analyzed,
-                            warnings,
-                            local_strings,
+                match sema.analyze_destructor_function(
+                    &infer_ctx,
+                    &full_name,
+                    destructor.body,
+                    destructor.span,
+                    struct_type,
+                ) {
+                    Ok((analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                        functions_with_strings.push((analyzed, local_strings));
+                        all_warnings.extend(warnings);
+                        enqueue_references_sorted(
+                            sema.interner,
                             referenced_fns,
                             referenced_meths,
-                        )) => {
-                            functions_with_strings.push((analyzed, local_strings));
-                            all_warnings.extend(warnings);
-                            enqueue_references_sorted(
-                                sema.interner,
-                                referenced_fns,
-                                referenced_meths,
-                                &analyzed_functions,
-                                &analyzed_methods,
-                                &mut pending_functions,
-                                &mut pending_methods,
-                            );
-                        }
-                        Err(e) => errors.push(e),
+                            &analyzed_functions,
+                            &analyzed_methods,
+                            &mut pending_functions,
+                            &mut pending_methods,
+                        );
                     }
+                    Err(e) => errors.push(e),
                 }
             }
             continue;

@@ -338,6 +338,9 @@ impl<'src> CompilationUnit<'src> {
                 named_destructor_declarations_visited = output
                     .body_analysis_work
                     .named_destructor_declarations_visited,
+                named_destructor_selection_rir_visits = output
+                    .body_analysis_work
+                    .named_destructor_selection_rir_visits,
                 reachable_declaration_rir_visits =
                     output.body_analysis_work.reachable_declaration_rir_visits,
                 "semantic analysis complete"

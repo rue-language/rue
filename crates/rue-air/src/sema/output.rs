@@ -98,8 +98,11 @@ pub struct BodyAnalysisWork {
     pub named_method_record_lookups: usize,
     /// MethodInfo-driven lookups for reachable anonymous-struct methods.
     pub anonymous_method_record_lookups: usize,
-    /// Named destructor declarations selected during the one-time implicit-root scan.
+    /// Indexed named-destructor records selected as implicit roots.
     pub named_destructor_declarations_visited: usize,
+    /// Raw RIR entries visited specifically to select named-destructor roots.
+    /// Indexed dispatch keeps this value at zero.
+    pub named_destructor_selection_rir_visits: usize,
     /// Raw RIR entries visited specifically to select ordinary reachable free
     /// functions or named methods.
     ///

@@ -1238,6 +1238,9 @@ pub fn compile_frontend_from_merged_ast_with_source_metadata_and_target(
             named_destructor_declarations_visited = output
                 .body_analysis_work
                 .named_destructor_declarations_visited,
+            named_destructor_selection_rir_visits = output
+                .body_analysis_work
+                .named_destructor_selection_rir_visits,
             reachable_declaration_rir_visits =
                 output.body_analysis_work.reachable_declaration_rir_visits,
             "semantic analysis complete"
