@@ -29,6 +29,7 @@ mod definition_snapshot;
 mod diagnostic;
 mod drop_glue;
 mod semantic_order;
+mod source_identity;
 mod source_metadata;
 mod source_snapshot;
 mod syntax;
@@ -37,6 +38,11 @@ mod unit;
 pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionRecord,
     DefinitionSnapshot, ModuleDefinition, ModuleKey,
+};
+pub use source_identity::{
+    CodegenInputDescriptor, LinkInputDescriptor, ModuleId, ModuleResolutionInput,
+    ModuleResolutionInputs, ModuleRevision, SemanticInputDescriptor, SourceId, SourceIdVersion,
+    SourceRevision, StableLinkerInput, StableOptLevel, StablePreviewFeatures,
 };
 pub use source_metadata::SourceMetadata;
 pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};

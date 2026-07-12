@@ -11,7 +11,7 @@ use std::sync::Arc;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
-use crate::{SourceFile, SourceMetadata};
+use crate::{ModuleId, ModuleRevision, SourceFile, SourceId, SourceMetadata, SourceRevision};
 
 /// Maximum source byte length representable by Rue's `u32` span offsets.
 pub const MAX_SOURCE_BYTES: usize = u32::MAX as usize;
@@ -31,8 +31,17 @@ pub struct SourceSnapshot {
 #[derive(Debug)]
 struct SourceSnapshotData {
     metadata: SourceMetadata,
-    contents: Vec<(FileId, Arc<String>)>,
+    contents: Vec<SourceRecord>,
     index: HashMap<FileId, usize>,
+    revision: SourceRevision,
+}
+
+#[derive(Debug)]
+struct SourceRecord {
+    file_id: FileId,
+    module_id: ModuleId,
+    source_id: SourceId,
+    text: Arc<String>,
 }
 
 impl SourceSnapshot {
@@ -95,17 +104,50 @@ impl SourceSnapshot {
             &metadata,
         )?;
 
+        let contents: Vec<_> = contents
+            .into_iter()
+            .map(|(file_id, text)| {
+                let module_id = ModuleId::from_validated_canonical(
+                    metadata
+                        .logical_path(file_id)
+                        .expect("validated membership"),
+                );
+                let source_id = SourceId::from_shared_text(text.clone());
+                SourceRecord {
+                    file_id,
+                    module_id,
+                    source_id,
+                    text,
+                }
+            })
+            .collect();
         let index = contents
             .iter()
             .enumerate()
-            .map(|(index, (file_id, _))| (*file_id, index))
+            .map(|(index, record)| (record.file_id, index))
             .collect();
+        let root_module = ModuleId::from_validated_canonical(
+            metadata
+                .logical_path(metadata.root_file_id())
+                .expect("validated root"),
+        );
+        let revision = SourceRevision::new(
+            root_module,
+            contents
+                .iter()
+                .map(|record| ModuleRevision {
+                    module: record.module_id.clone(),
+                    source: record.source_id.clone(),
+                })
+                .collect(),
+        )?;
 
         Ok(Self {
             data: Arc::new(SourceSnapshotData {
                 metadata,
                 contents,
                 index,
+                revision,
             }),
         })
     }
@@ -161,7 +203,22 @@ impl SourceSnapshot {
 
     /// Share ownership of the source text for `file_id`.
     pub fn shared_source_text(&self, file_id: FileId) -> Option<Arc<String>> {
-        self.content(file_id).cloned()
+        self.record(file_id).map(|record| record.text.clone())
+    }
+
+    /// Stable exact content identity for a request-local file.
+    pub fn source_id(&self, file_id: FileId) -> Option<&SourceId> {
+        self.record(file_id).map(|record| &record.source_id)
+    }
+
+    /// Canonical logical module identity for a request-local file.
+    pub fn module_id(&self, file_id: FileId) -> Option<&ModuleId> {
+        self.record(file_id).map(|record| &record.module_id)
+    }
+
+    /// Load-order-independent root and module/content mapping.
+    pub fn source_revision(&self) -> &SourceRevision {
+        &self.data.revision
     }
 
     /// Borrow one source as a compatibility [`SourceFile`] view.
@@ -178,20 +235,24 @@ impl SourceSnapshot {
     }
 
     fn content(&self, file_id: FileId) -> Option<&Arc<String>> {
-        let index = *self.data.index.get(&file_id)?;
-        let (stored_file_id, source) = &self.data.contents[index];
-        debug_assert_eq!(*stored_file_id, file_id);
-        Some(source)
+        self.record(file_id).map(|record| &record.text)
+    }
+
+    fn record(&self, file_id: FileId) -> Option<&SourceRecord> {
+        let record = &self.data.contents[*self.data.index.get(&file_id)?];
+        debug_assert_eq!(record.file_id, file_id);
+        Some(record)
     }
 
     fn file_at(&self, index: usize) -> SourceFile<'_> {
-        let (file_id, source) = &self.data.contents[index];
+        let record = &self.data.contents[index];
+        let file_id = record.file_id;
         let path = self
             .data
             .metadata
-            .physical_path(*file_id)
+            .physical_path(file_id)
             .expect("snapshot contents validated against metadata");
-        SourceFile::new(path, source.as_str(), *file_id)
+        SourceFile::new(path, record.text.as_str(), file_id)
     }
 }
 
@@ -407,6 +468,75 @@ mod tests {
     fn source_snapshots_are_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SourceSnapshot>();
+    }
+
+    #[test]
+    fn revisions_ignore_file_ids_physical_roots_and_input_order() {
+        let make = |root_id, helper_id, physical_root: &str, reversed: bool| {
+            let physical = HashMap::from([
+                (FileId::new(root_id), physical_root.to_owned()),
+                (
+                    FileId::new(helper_id),
+                    format!("{physical_root}/../helper.rue"),
+                ),
+            ]);
+            let logical = HashMap::from([
+                (FileId::new(root_id), "app/main.rue".to_owned()),
+                (FileId::new(helper_id), "app/helper.rue".to_owned()),
+            ]);
+            let metadata = SourceMetadata::new(FileId::new(root_id), physical, logical).unwrap();
+            let mut contents = vec![
+                (FileId::new(root_id), Arc::new("fn main() {}".to_owned())),
+                (
+                    FileId::new(helper_id),
+                    Arc::new("fn helper() {}".to_owned()),
+                ),
+            ];
+            if reversed {
+                contents.reverse();
+            }
+            SourceSnapshot::new(metadata, contents).unwrap()
+        };
+        let first = make(9, 2, "/one/main.rue", false);
+        let second = make(100, 7, "/relocated/main.rue", true);
+        assert_eq!(first.source_revision(), second.source_revision());
+        assert_eq!(
+            first
+                .source_revision()
+                .modules()
+                .iter()
+                .map(|m| m.module.as_str())
+                .collect::<Vec<_>>(),
+            ["app/helper.rue", "app/main.rue"]
+        );
+    }
+
+    #[test]
+    fn edits_and_module_renames_change_only_their_respective_identities() {
+        let original = SourceSnapshot::new(
+            metadata(&[(1, "main.rue")]),
+            contents(&[(1, "fn main() {}")]),
+        )
+        .unwrap();
+        let edited = SourceSnapshot::new(
+            metadata(&[(1, "main.rue")]),
+            contents(&[(1, "fn main() { let x = 1; }")]),
+        )
+        .unwrap();
+        let renamed = SourceSnapshot::new(
+            metadata(&[(1, "renamed.rue")]),
+            contents(&[(1, "fn main() {}")]),
+        )
+        .unwrap();
+        let id = FileId::new(1);
+        assert_eq!(original.module_id(id), edited.module_id(id));
+        assert_ne!(original.source_id(id), edited.source_id(id));
+        assert_ne!(original.module_id(id), renamed.module_id(id));
+        assert_eq!(original.source_id(id), renamed.source_id(id));
+        assert!(Arc::ptr_eq(
+            &original.shared_source_text(id).unwrap(),
+            &original.source_id(id).unwrap().shared_text(),
+        ));
     }
 
     #[test]
