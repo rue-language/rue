@@ -327,3 +327,23 @@ surface. Cyclic or otherwise rejected initializers publish no partial manifest.
 `named_value_const_dependencies_complete=true` covers successful named value
 constants; anonymous/dynamic values and the overall semantic graph remain
 explicitly incomplete. Capture is sorted/deduplicated and adds no RIR scan.
+
+## Fresh-epoch semantic import boundary
+
+Durable declaration values can now be remapped into a fresh AIR-owned epoch
+without retaining an exporting request's `Type`, `StructId`, `EnumId`,
+`ModuleId`, or `Spur`. AIR exposes a neutral, generic stable-key import DTO and
+`SemanticImportEpoch`; the compiler alone translates `StableDefinitionKey` and
+logical `ModuleId` values into it. Nominal shells are predeclared in stable-key
+order and completed in a second phase, allowing recursive pointer graphs.
+Primitive, nominal, array, pointer and module types plus scalar/type/function
+constant values round-trip through the epoch's stable join.
+
+This is intentionally not declaration-cache installation. AIR has no local
+representation for the durable reserved tuple/function type forms or for an
+unsubstituted declaration generic parameter, so those fail closed. Installing
+callables and constants into `Sema` additionally requires exact-revision RIR
+bodies/initializers, source spans, parameter names and declaration indices.
+The split-binding seam must provide those constructor inputs and decide generic
+substitution context; the importer must not synthesize them or mutate private
+`Sema` tables. No AIR body, CFG, or RIR fragment is reused by this boundary.

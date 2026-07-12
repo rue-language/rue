@@ -18,6 +18,7 @@ mod param_arena;
 mod path_norm;
 mod scope;
 mod sema;
+mod semantic_import;
 pub mod specialize;
 mod types;
 
@@ -51,6 +52,11 @@ pub use sema::{
     SemanticDeclarationPayload, SemanticExportConstValue, SemanticExportFailure,
     SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
     SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin, import_candidate_groups,
+};
+pub use semantic_import::{
+    SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,
+    SemanticImportNominalKind, SemanticImportType, SemanticImportedConstValue,
+    SemanticImportedType,
 };
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,

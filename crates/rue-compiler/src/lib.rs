@@ -64,7 +64,8 @@ pub use definition_snapshot::{
 pub use durable_semantics::{
     DURABLE_SEMANTIC_SCHEMA_VERSION, DurableConstValue, DurableDeclarationPayload,
     DurableDeclarationSemantic, DurableParameterMode, DurableSemanticExportFailure,
-    DurableSemanticParameter, DurableType,
+    DurableSemanticImportEpoch, DurableSemanticParameter, DurableType,
+    import_durable_declaration_semantics,
 };
 pub use frontend_session::{
     CanonicalFrontendSession, CanonicalFrontendSessionWork, CanonicalFrontendUpdate,
