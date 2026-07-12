@@ -480,6 +480,52 @@ pub(crate) struct UnitParsedModules {
     pub symbol_strings: Vec<String>,
 }
 
+/// Shared-resolver, caller-ordered syntax presentation for legacy AST output.
+#[derive(Debug)]
+pub struct ParsedAstPresentation {
+    files: Vec<(String, Arc<Ast>)>,
+    work: ParsedAstPresentationWork,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParsedAstPresentationWork {
+    pub parsed: ParsedModulesWork,
+    pub merge_invocations: usize,
+    pub astgen_invocations: usize,
+    pub bind_invocations: usize,
+    pub manifest_invocations: usize,
+}
+
+impl ParsedAstPresentation {
+    pub fn files(&self) -> &[(String, Arc<Ast>)] {
+        &self.files
+    }
+
+    pub fn work(&self) -> ParsedAstPresentationWork {
+        self.work
+    }
+}
+
+/// Parse once for exact shared-Spur AST presentation without merge or lowering.
+pub fn parse_source_snapshot_for_ast_presentation(
+    snapshot: &SourceSnapshot,
+) -> MultiErrorResult<ParsedAstPresentation> {
+    let (parsed, work) = parse_source_snapshot_modules_for_unit(snapshot);
+    let parsed = parsed?;
+    let files = snapshot
+        .files()
+        .zip(parsed.ast_files)
+        .map(|(source, ast)| (source.path.to_string(), ast))
+        .collect();
+    Ok(ParsedAstPresentation {
+        files,
+        work: ParsedAstPresentationWork {
+            parsed: work,
+            ..ParsedAstPresentationWork::default()
+        },
+    })
+}
+
 /// Parse once with a shared symbol universe for `CompilationUnit` compatibility.
 pub(crate) fn parse_source_snapshot_modules_for_unit(
     snapshot: &SourceSnapshot,
