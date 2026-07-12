@@ -14,7 +14,7 @@ incremental-compilation goal is complete.
 | Stable source/module/definition identity | Satisfied at the source boundary. `SourceId` hashes bytes; `ModuleId` canonicalizes logical paths; `SourceRevision` combines explicit root and sorted module/content pairs; `StableDefinitionKey` is module/name/namespace/kind/owner based. Relocation, file-ID, ordering, rename, and module-move tests cover the intended distinctions. |
 | Immutable per-file/query inputs | Satisfied. `SourceSnapshot` owns `Arc<String>` text plus validated metadata. `SemanticInputDescriptor` owns source revision, module-resolution inputs, target, and stable preview features; `CodegenInputDescriptor` adds optimization level. |
 | Batch compatibility | Satisfied with deliberate diagnostic-order adapters. `compile_source_snapshot_with_options_impl` uses `parse_source_snapshot_modules_for_batch` and `merge_parsed_modules_for_batch`; batch/borrowed compatibility tests compare artifacts and diagnostics. |
-| Reusable in-process invalidation | Satisfied at whole-query granularity, not fine-grained semantic granularity. `CanonicalFrontendSession::update` reuses parsed module Arcs, preserves the last good revision after syntax failure, and invalidates merge/RIR/semantic/definition caches when the published program changes. The benchmark makes this behavior measurable. |
+| Reusable in-process invalidation | Partially satisfied below whole-query granularity. `CanonicalFrontendSession::update` reuses parsed module Arcs and preserves the last good revision after syntax failure. Canonical merge now retains immutable definition-surface shards keyed by module identity, FileId epoch, and ordered definition surface; body-only edits reuse all shards and a module rename rebuilds only its shard. Merge/RIR/semantic queries still execute revision-wide. The benchmark makes both reuse and remaining work measurable. |
 | Tooling seams | Partially satisfied. Backend-free `published`, `import_graph`, `merge`, `rir`, `semantic`, and `stable_definitions` queries exist; semantic output exposes warnings. Import resolution is lazy, memoized, keyed by owned source/resolution/std-dir inputs, and consumes canonical parsed import sites without RIR. Binary-search `ParsedProgram::module(ModuleId)` and `BoundDefinitionSet::definition_by_key(StableDefinitionKey)` support keyed artifact access. Diagnostics remain returned errors rather than a retained query result. |
 | No disk cache or full-LSP shortcut | Satisfied by scope. Session caches are process-owned values only; the benchmark performs no measured filesystem discovery and no backend/link. No persistent cache format, watcher, protocol server, or LSP is introduced. |
 | Small mergeable, tracked delivery | Satisfied operationally: the stack is split into described RUE-719 jj changes and independently gated slices. This audit cannot prove external Linear state; commit descriptions are the locally falsifiable tracking evidence. |
@@ -32,12 +32,15 @@ incremental-compilation goal is complete.
    current invalidation and make the first dependency-keyed semantic slice reuse
    only values whose provenance excludes physical resolution.
 
-2. **Must finish: semantic invalidation is still revision-wide.** One leaf edit
-   reparses one module but clears and reruns merge, RIR, binding, and reachable
+2. **Must finish: RIR and semantic invalidation is still revision-wide.** One
+   leaf edit reparses one module and now reuses every unchanged definition-surface
+   shard, but still reruns merge duplicate scanning, RIR, binding, and reachable
    body analysis. This is explicitly visible in the benchmark's
-   `leaf_body_edit` counters. Acceptance: introduce dependency-keyed reuse at one
-   post-parse boundary with a counter proving unaffected work is retained; do
-   not hide whole-pass inefficiency behind only an outer cache.
+   `leaf_body_edit` counters. Per-module RIR fragments are not yet sound because
+   `InstRef` ordering, semantic `Spur` handles, and cross-module references belong
+   to one request-global universe. Acceptance: introduce fragment-local handles
+   plus deterministic global remapping, or choose a dependency-keyed declaration
+   or body boundary whose outputs contain no request-global handles.
 
 3. **Must finish: frontend diagnostics are not durable query artifacts.** Syntax,
    merge, and semantic failures return `CompileErrors`; only successful semantic

@@ -20,6 +20,9 @@ pub struct CanonicalMergeWork {
     /// Deep source-buffer clones (Arc handle retention is not a payload clone).
     pub source_text_clones: usize,
     pub source_bytes_rehashed: usize,
+    pub definition_shards_indexed: usize,
+    pub definition_shards_reused: usize,
+    pub definition_shards_rebuilt: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +96,23 @@ pub fn merge_parsed_modules(
     merge_parsed_modules_in_order(program, None)
 }
 
+pub(crate) fn merge_parsed_modules_reusing_definitions(
+    program: &ParsedProgram,
+    previous: Option<&DefinitionSnapshot>,
+) -> Result<CanonicalMergedProgram, CompileErrors> {
+    let (mut work, ordered_modules) = merge_inputs(program, None);
+    let errors = canonical_duplicate_errors(&ordered_modules);
+    if !errors.is_empty() {
+        return Err(CompileErrors::from(errors));
+    }
+    let (definitions, shards) = DefinitionSnapshot::from_parsed_modules_reusing(program, previous)
+        .map_err(CompileErrors::from)?;
+    work.definition_shards_indexed = shards.shards_indexed;
+    work.definition_shards_reused = shards.shards_reused;
+    work.definition_shards_rebuilt = shards.shards_rebuilt;
+    Ok(assemble_merged_program(program, definitions, work))
+}
+
 pub(crate) fn merge_parsed_modules_for_batch(
     program: &ParsedProgram,
     diagnostic_order: &[ModuleId],
@@ -136,8 +156,12 @@ fn merge_parsed_modules_in_order(
     if !errors.is_empty() {
         return Err(CompileErrors::from(errors));
     }
-    let definitions =
-        DefinitionSnapshot::from_parsed_modules(program).map_err(CompileErrors::from)?;
+    let (definitions, shards) = DefinitionSnapshot::from_parsed_modules_reusing(program, None)
+        .map_err(CompileErrors::from)?;
+    let mut work = work;
+    work.definition_shards_indexed = shards.shards_indexed;
+    work.definition_shards_reused = shards.shards_reused;
+    work.definition_shards_rebuilt = shards.shards_rebuilt;
     Ok(assemble_merged_program(program, definitions, work))
 }
 
