@@ -281,6 +281,18 @@ impl Specializer {
                     &base_info,
                     interner,
                 )?;
+                sema.specialized_free_function_origins.push(
+                    crate::sema::SpecializedFreeFunctionOrigin {
+                        specialized_name: specialized.function.name.clone(),
+                        base_file: base_info.file_id.index(),
+                        base_name: interner
+                            .resolve(&sema.source_function_name(key.base_name))
+                            .to_string(),
+                        type_arguments: key.type_args.iter().map(|ty| ty.as_u32()).collect(),
+                        value_arguments: encode_const_values(&key.value_args),
+                    },
+                );
+                sema.body_analysis_work.specialized_origin_records += 1;
 
                 discovered
                     .functions

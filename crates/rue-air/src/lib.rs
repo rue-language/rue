@@ -41,7 +41,7 @@ pub use sema::{
     DirResolution, FunctionInfo, GatherOutput, MethodInfo, ModulePath,
     OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, RirDeclarationIndexWork, Sema, SemaOutput,
     SemanticBinding, SemanticBindingKind, SemanticBindingManifest, SemanticBindingManifestWork,
-    SemanticBindingNamespace, import_candidate_groups,
+    SemanticBindingNamespace, SpecializedFreeFunctionOrigin, import_candidate_groups,
 };
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,

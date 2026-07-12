@@ -103,3 +103,9 @@ output explicitly reports incomplete because generic-specialized, method and
 destructor callers have separate driver branches not yet carrying a stable
 owner. These events are not translated to `StableDefinitionKey` and must not
 drive reuse until every branch is captured and unique translation fails closed.
+
+Specialized free-function bodies now retain a neutral origin record containing
+their mangled analyzed name, exact generic base FileId/source name, and
+request-local type/value specialization argument words. This survives fixpoint
+discovery without claiming that the argument encoding is a durable
+cross-request key. Compiler-layer stable-key translation remains prerequisite.
