@@ -704,6 +704,62 @@ mod tests {
     }
 
     #[test]
+    fn expected_string_type_reaches_only_structural_result_positions() {
+        let source = r#"
+            fn choose(flag: bool) -> Str(8) {
+                if "left" == "right" {
+                    if flag { "yes" } else { "no" }
+                } else {
+                    { let marker = 0; "fallback" }
+                }
+            }
+            fn loop_probe() -> Str(8) {
+                while false { "loop body"; }
+                "tail"
+            }
+            fn main() -> i32 {
+                @intCast(choose(true).len() + loop_probe().len())
+            }
+        "#;
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        let output = compile_to_air_with_preview_features(source, preview).unwrap();
+
+        let literal_types: Vec<String> = output
+            .functions
+            .iter()
+            .flat_map(|function| function.air.iter())
+            .filter(|(_, inst)| matches!(inst.data, AirInstData::StringConst(_)))
+            .map(|(_, inst)| inst.ty.safe_name_with_pool(Some(&output.type_pool)))
+            .collect();
+
+        // Comparison operands and a discarded loop-body value synthesize
+        // their own StrBuf representation. If/match-style branches and block
+        // tails remain transparent and materialize as the declared Str(8).
+        assert_eq!(literal_types.iter().filter(|ty| *ty == "StrBuf").count(), 3);
+        assert_eq!(literal_types.iter().filter(|ty| *ty == "Str(8)").count(), 4);
+    }
+
+    #[test]
+    fn declared_enum_payload_and_ptr_write_pointee_contextualize_fixed_strings() {
+        let source = r#"
+            enum Message { Text(Str(8)) }
+            fn make() -> Message { Message.Text("hello") }
+            fn main() -> i32 {
+                let mut value: Str(8) = "old";
+                checked {
+                    let p: ptr mut Str(8) = @raw_mut(value);
+                    @ptr_write(p, "new");
+                };
+                @intCast(value.len())
+            }
+        "#;
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        compile_to_air_with_preview_features(source, preview).unwrap();
+    }
+
+    #[test]
     fn fallible_intrinsic_keeps_structural_result_context() {
         let source = r#"
             fn Option(comptime T: type) -> type { enum { Some(T), None } }

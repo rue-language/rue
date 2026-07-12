@@ -155,7 +155,9 @@ impl<'a> Sema<'a> {
                 });
                 AnalysisResult::new(air_ref, pointee_type)
             }
-            _ => self.analyze_inst(air, args[1].value, ctx)?,
+            _ => ctx.with_expected_type(Some(pointee_type), |ctx| {
+                self.analyze_inst(air, args[1].value, ctx)
+            })?,
         };
         let value_type = value_result.ty;
 

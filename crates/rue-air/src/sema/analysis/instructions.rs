@@ -36,6 +36,54 @@ impl<'a> Sema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // These expressions synthesize their result from their own operands or
+        // declaration. A surrounding result expectation belongs to the whole
+        // expression and must not contextually type those operands. Keep this
+        // boundary at dispatch so every implementation path (including
+        // String `+` and place/projection fast paths) gets identical cleanup.
+        let clears_result_expectation = matches!(
+            &self.rir.get(inst_ref).data,
+            InstData::Add { .. }
+                | InstData::Sub { .. }
+                | InstData::Mul { .. }
+                | InstData::Div { .. }
+                | InstData::Mod { .. }
+                | InstData::BitAnd { .. }
+                | InstData::BitOr { .. }
+                | InstData::BitXor { .. }
+                | InstData::Shl { .. }
+                | InstData::Shr { .. }
+                | InstData::Eq { .. }
+                | InstData::Ne { .. }
+                | InstData::Lt { .. }
+                | InstData::Gt { .. }
+                | InstData::Le { .. }
+                | InstData::Ge { .. }
+                | InstData::And { .. }
+                | InstData::Or { .. }
+                | InstData::Neg { .. }
+                | InstData::Not { .. }
+                | InstData::BitNot { .. }
+                | InstData::Loop { .. }
+                | InstData::InfiniteLoop { .. }
+                | InstData::FieldGet { .. }
+                | InstData::FieldSet { .. }
+                | InstData::IndexGet { .. }
+                | InstData::IndexSet { .. }
+        );
+        if clears_result_expectation {
+            return ctx
+                .with_expected_type(None, |ctx| self.analyze_inst_dispatch(air, inst_ref, ctx));
+        }
+        self.analyze_inst_dispatch(air, inst_ref, ctx)
+    }
+
+    fn analyze_inst_dispatch(
+        &mut self,
+        air: &mut Air,
+        inst_ref: InstRef,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
         let inst = self.rir.get(inst_ref);
 
         match &inst.data {

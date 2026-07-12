@@ -815,7 +815,7 @@ impl<'a> Sema<'a> {
         }
 
         // Condition must be bool
-        let cond_result = self.analyze_inst(air, cond, ctx)?;
+        let cond_result = ctx.with_expected_type(None, |ctx| self.analyze_inst(air, cond, ctx))?;
 
         if let Some(else_b) = else_block {
             // Save move state before entering branches.
@@ -1417,13 +1417,11 @@ impl<'a> Sema<'a> {
                 None
             }
         });
-        let prev_expected = ctx.expected_type.take();
-        ctx.expected_type = expected_scrutinee;
-
-        // Analyze the scrutinee to determine its type
-        let scrutinee_outcome = self.analyze_inst(air, scrutinee, ctx);
-        ctx.expected_type = prev_expected;
-        let scrutinee_result = scrutinee_outcome?;
+        // Analyze the scrutinee under only the pattern-derived contract. The
+        // match expression's own result expectation belongs to its arms.
+        let scrutinee_result = ctx.with_expected_type(expected_scrutinee, |ctx| {
+            self.analyze_inst(air, scrutinee, ctx)
+        })?;
         let scrutinee_type = scrutinee_result.ty;
 
         // Validate that we can match on this type (integers, booleans, and enums)
@@ -2458,7 +2456,11 @@ impl<'a> Sema<'a> {
         for (i, &raw_ref) in inst_refs.iter().enumerate() {
             let inst_ref = InstRef::from_raw(raw_ref);
             let is_last = i == num_insts - 1;
-            let result = self.analyze_inst(air, inst_ref, ctx)?;
+            let result = if is_last {
+                self.analyze_inst(air, inst_ref, ctx)?
+            } else {
+                ctx.with_expected_type(None, |ctx| self.analyze_inst(air, inst_ref, ctx))?
+            };
 
             if is_last {
                 last_result = Some(result);
@@ -6642,8 +6644,9 @@ impl<'a> Sema<'a> {
         // legality check).
         let mut payload_refs: Vec<u32> = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
-            let arg_result = self.analyze_inst(air, arg.value, ctx)?;
             let expected = payload_types[i];
+            let arg_result = ctx
+                .with_expected_type(Some(expected), |ctx| self.analyze_inst(air, arg.value, ctx))?;
             let actual = arg_result.ty;
             if actual != expected && !actual.can_coerce_to(&expected) && actual != Type::ERROR {
                 return Err(self.type_mismatch_error(
