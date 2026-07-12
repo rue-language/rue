@@ -57,7 +57,8 @@ pub use canonical_semantic::{
 };
 pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
-    DefinitionRecord, DefinitionSnapshot, ModuleDefinition, ModuleKey,
+    DefinitionRecord, DefinitionShard, DefinitionShardWork, DefinitionSnapshot, ModuleDefinition,
+    ModuleKey,
 };
 pub use frontend_session::{
     CanonicalFrontendSession, CanonicalFrontendSessionWork, CanonicalFrontendUpdate,

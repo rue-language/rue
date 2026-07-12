@@ -199,6 +199,58 @@ pub struct ModuleDefinition {
     definitions: Vec<DefinitionRecord>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DefinitionShardWork {
+    pub shards_indexed: usize,
+    pub shards_reused: usize,
+    pub shards_rebuilt: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct DefinitionShard {
+    key: ModuleKey,
+    file_id: FileId,
+    records: Arc<[DefinitionShardRecord]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefinitionShardRecord {
+    namespace: DefinitionNamespace,
+    kind: DefinitionKind,
+    visibility: Option<Visibility>,
+    name: Arc<str>,
+    name_span: Span,
+    declaration_span: Span,
+}
+
+impl DefinitionShard {
+    pub fn key(&self) -> &ModuleKey {
+        &self.key
+    }
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+    fn matches(&self, module: &crate::parsed_modules::ParsedModule) -> bool {
+        self.file_id == module.file_id()
+            && self.records.len() == module.definitions().candidates().len()
+            && self
+                .records
+                .iter()
+                .zip(module.definitions().candidates())
+                .all(|(record, candidate)| {
+                    record.namespace == candidate.namespace()
+                        && record.kind == candidate.kind()
+                        && record.visibility == candidate.visibility()
+                        && record.name.as_ref() == candidate.name()
+                        && record.name_span == candidate.name_span()
+                        && record.declaration_span == candidate.declaration_span()
+                })
+    }
+}
+
 impl ModuleDefinition {
     /// The durable logical identity of this module.
     #[inline]
@@ -250,6 +302,7 @@ pub struct DefinitionSnapshot {
     modules: Vec<ModuleDefinition>,
     definition_count: usize,
     definitions_by_name: HashMap<DefinitionNameKey, Vec<DefinitionId>>,
+    shards: Arc<[Arc<DefinitionShard>]>,
 }
 
 impl DefinitionSnapshot {
@@ -260,6 +313,13 @@ impl DefinitionSnapshot {
     pub fn from_parsed_modules(
         program: &crate::parsed_modules::ParsedProgram,
     ) -> CompileResult<Self> {
+        Self::from_parsed_modules_reusing(program, None).map(|(snapshot, _)| snapshot)
+    }
+
+    pub(crate) fn from_parsed_modules_reusing(
+        program: &crate::parsed_modules::ParsedProgram,
+        previous: Option<&Self>,
+    ) -> CompileResult<(Self, DefinitionShardWork)> {
         let _span = info_span!(
             "definition_snapshot_modules",
             module_count = program.modules().len()
@@ -267,6 +327,11 @@ impl DefinitionSnapshot {
         .entered();
         let source_snapshot = SourceSnapshot::from_parsed_modules(program)?;
         let mut modules = Vec::with_capacity(program.modules().len());
+        let mut work = DefinitionShardWork {
+            shards_indexed: previous.map_or(0, |snapshot| snapshot.shards.len()),
+            ..DefinitionShardWork::default()
+        };
+        let mut shards = Vec::with_capacity(program.modules().len());
         let definition_count = program
             .modules()
             .iter()
@@ -276,19 +341,51 @@ impl DefinitionSnapshot {
             HashMap::<DefinitionNameKey, Vec<DefinitionId>>::with_capacity(definition_count);
 
         for (module_index, module) in program.modules().iter().enumerate() {
-            let mut definitions = Vec::with_capacity(module.definitions().candidates().len());
-            for (definition_index, candidate) in
-                module.definitions().candidates().iter().enumerate()
-            {
-                debug_assert_eq!(candidate.occurrence().index(), definition_index);
+            let candidate_records = || {
+                module
+                    .definitions()
+                    .candidates()
+                    .iter()
+                    .map(|candidate| DefinitionShardRecord {
+                        namespace: candidate.namespace(),
+                        kind: candidate.kind(),
+                        visibility: candidate.visibility(),
+                        name: Arc::from(candidate.name()),
+                        name_span: candidate.name_span(),
+                        declaration_span: candidate.declaration_span(),
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let shard = previous
+                .and_then(|snapshot| {
+                    snapshot
+                        .shards
+                        .binary_search_by(|shard| shard.key.cmp(module.module_id()))
+                        .ok()
+                        .map(|index| snapshot.shards[index].clone())
+                })
+                .filter(|shard| shard.matches(module));
+            let shard = if let Some(shard) = shard {
+                work.shards_reused += 1;
+                shard
+            } else {
+                work.shards_rebuilt += 1;
+                Arc::new(DefinitionShard {
+                    key: module.module_id().clone(),
+                    file_id: module.file_id(),
+                    records: candidate_records().into(),
+                })
+            };
+            let mut definitions = Vec::with_capacity(shard.records.len());
+            for (definition_index, candidate) in shard.records.iter().enumerate() {
                 let id = DefinitionId {
                     module_index,
                     definition_index,
                 };
                 let name_key = DefinitionNameKey::new(
                     module.module_id().clone(),
-                    candidate.namespace(),
-                    candidate.name(),
+                    candidate.namespace,
+                    &candidate.name,
                 );
                 definitions_by_name
                     .entry(name_key.clone())
@@ -297,11 +394,11 @@ impl DefinitionSnapshot {
                 definitions.push(DefinitionRecord {
                     id,
                     name_key,
-                    kind: candidate.kind(),
-                    visibility: candidate.visibility(),
+                    kind: candidate.kind,
+                    visibility: candidate.visibility,
                     file_id: module.file_id(),
-                    name_span: candidate.name_span(),
-                    declaration_span: candidate.declaration_span(),
+                    name_span: candidate.name_span,
+                    declaration_span: candidate.declaration_span,
                 });
             }
             modules.push(ModuleDefinition {
@@ -309,15 +406,20 @@ impl DefinitionSnapshot {
                 file_id: module.file_id(),
                 definitions,
             });
+            shards.push(shard);
         }
 
-        Ok(Self {
-            source_snapshot,
-            root_module: program.root().clone(),
-            modules,
-            definition_count,
-            definitions_by_name,
-        })
+        Ok((
+            Self {
+                source_snapshot,
+                root_module: program.root().clone(),
+                modules,
+                definition_count,
+                definitions_by_name,
+                shards: shards.into(),
+            },
+            work,
+        ))
     }
 
     /// Resolve a parsed program into durable name candidates and source records.
@@ -491,6 +593,7 @@ impl DefinitionSnapshot {
             modules,
             definition_count,
             definitions_by_name,
+            shards: Arc::from([]),
         })
     }
 
@@ -516,6 +619,10 @@ impl DefinitionSnapshot {
     #[inline]
     pub fn modules(&self) -> &[ModuleDefinition] {
         &self.modules
+    }
+
+    pub fn shards(&self) -> &[Arc<DefinitionShard>] {
+        &self.shards
     }
 
     /// Find a module by durable key.

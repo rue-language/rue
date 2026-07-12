@@ -11,9 +11,9 @@ use crate::{
     CompileError, CompileErrors, CompileOptions, ErrorKind, ModuleResolutionInputs,
     ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor, SourceRevision,
     SourceSnapshot, analyze_canonical_program,
-    bound_definitions::bind_canonical_definitions_with_work, lower_canonical_rir,
-    merge_parsed_modules, parsed_modules::ParsedProgram, resolve_canonical_import_graph,
-    validate_canonical_import_graph,
+    bound_definitions::bind_canonical_definitions_with_work,
+    canonical_merge::merge_parsed_modules_reusing_definitions, lower_canonical_rir,
+    parsed_modules::ParsedProgram, resolve_canonical_import_graph, validate_canonical_import_graph,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -119,6 +119,7 @@ pub struct CanonicalFrontendSession {
     parse: CanonicalParseSession,
     published: Option<Arc<ParsedProgram>>,
     merge_cache: Option<Result<Arc<CanonicalMergedProgram>, CompileErrors>>,
+    definition_shard_baseline: Option<crate::DefinitionSnapshot>,
     rir_cache: Option<Arc<CanonicalRirOutput>>,
     import_cache: Vec<ImportCacheEntry>,
     semantic_cache: Vec<SemanticCacheEntry>,
@@ -268,10 +269,15 @@ impl CanonicalFrontendSession {
         }
         let parsed = self.published.as_deref().ok_or_else(no_published_program)?;
         self.work.merge.executions += 1;
-        let merged = merge_parsed_modules(parsed).map(Arc::new);
+        let merged = merge_parsed_modules_reusing_definitions(
+            parsed,
+            self.definition_shard_baseline.as_ref(),
+        )
+        .map(Arc::new);
         if let Ok(merged) = &merged {
             debug_assert_eq!(merged.ast().source_revision(), parsed.source_revision());
             self.work.last_merge = merged.work();
+            self.definition_shard_baseline = Some(merged.definitions().clone());
         }
         self.merge_cache = Some(merged.clone());
         merged
@@ -550,15 +556,93 @@ mod tests {
         let mut session = CanonicalFrontendSession::new();
         session.update(&make(false)).into_result().unwrap();
         session.rir().unwrap();
+        let first_shards = session
+            .definition_shard_baseline
+            .as_ref()
+            .unwrap()
+            .shards()
+            .to_vec();
         let update = session.update(&make(true));
         assert!(update.downstream_invalidated());
         assert_eq!(update.work().modules_reused, 127);
         assert_eq!(update.work().modules_reparsed, 1);
         session.rir().unwrap();
+        let second_shards = session.definition_shard_baseline.as_ref().unwrap().shards();
+        assert!(
+            first_shards
+                .iter()
+                .zip(second_shards)
+                .all(|(first, second)| Arc::ptr_eq(first, second))
+        );
+        assert_eq!(session.work().last_merge.definition_shards_indexed, 128);
+        assert_eq!(session.work().last_merge.definition_shards_reused, 128);
+        assert_eq!(session.work().last_merge.definition_shards_rebuilt, 0);
         session.rir().unwrap();
         assert_eq!(session.work().merge.executions, 2);
         assert_eq!(session.work().rir.executions, 2);
         assert_eq!(session.work().downstream_invalidations, 1);
+    }
+
+    #[test]
+    fn definition_shards_fail_closed_on_surface_identity_changes() {
+        let initial = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (2, "/p/a.rue", "a.rue", "fn a() -> i32 { 1 }"),
+            ],
+            1,
+        );
+        let body = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (2, "/p/a.rue", "a.rue", "fn a() -> i32 { 2 }"),
+            ],
+            1,
+        );
+        let renamed_definition = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (2, "/p/a.rue", "a.rue", "fn b() -> i32 { 2 }"),
+            ],
+            1,
+        );
+        let relocated = snapshot(
+            &[
+                (1, "/m/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (2, "/m/a.rue", "a.rue", "fn b() -> i32 { 2 }"),
+            ],
+            1,
+        );
+        let reassigned = snapshot(
+            &[
+                (11, "/m/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (12, "/m/a.rue", "a.rue", "fn b() -> i32 { 2 }"),
+            ],
+            11,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&initial).into_result().unwrap();
+        session.merge().unwrap();
+
+        session.update(&body).into_result().unwrap();
+        session.merge().unwrap();
+        assert_eq!(session.work().last_merge.definition_shards_reused, 2);
+        assert_eq!(session.work().last_merge.definition_shards_rebuilt, 0);
+
+        session.update(&renamed_definition).into_result().unwrap();
+        session.merge().unwrap();
+        assert_eq!(session.work().last_merge.definition_shards_reused, 1);
+        assert_eq!(session.work().last_merge.definition_shards_rebuilt, 1);
+
+        session.update(&relocated).into_result().unwrap();
+        session.merge().unwrap();
+        assert_eq!(session.work().last_merge.definition_shards_reused, 2);
+        assert_eq!(session.work().last_merge.definition_shards_rebuilt, 0);
+
+        session.update(&reassigned).into_result().unwrap();
+        session.merge().unwrap();
+        assert_eq!(session.work().last_merge.definition_shards_reused, 0);
+        assert_eq!(session.work().last_merge.definition_shards_rebuilt, 2);
     }
 
     #[test]

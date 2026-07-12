@@ -201,6 +201,11 @@ where
         "wall_time_ns": elapsed.as_nanos(),
         "parse": parse_json(parse),
         "queries": QueryCounts::from(work).delta(before).json(),
+        "merge_work": {
+            "definition_shards_indexed": work.last_merge.definition_shards_indexed,
+            "definition_shards_reused": work.last_merge.definition_shards_reused,
+            "definition_shards_rebuilt": work.last_merge.definition_shards_rebuilt,
+        },
         "semantic_work": semantic_work_json(work, semantic_records),
         "definition_work": definition_work_json(work, definition_records),
     })
@@ -347,12 +352,25 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     assert_eq!(count(leaf, &["parse", "lexer_invocations"]), 1);
     assert_eq!(count(leaf, &["parse", "parser_invocations"]), 1);
     assert_query_executions(leaf, 1, 1, 1, 0);
+    assert_eq!(
+        count(leaf, &["merge_work", "definition_shards_reused"]),
+        modules as u64
+    );
+    assert_eq!(count(leaf, &["merge_work", "definition_shards_rebuilt"]), 0);
     assert_eq!(count(leaf, &["queries", "downstream_invalidations"]), 1);
 
     let identity = get("module_identity_change");
     assert_eq!(count(identity, &["parse", "modules_rebound"]), 1);
     assert_reuse_parse_is_all_zero(identity);
     assert_query_executions(identity, 1, 1, 1, 0);
+    assert_eq!(
+        count(identity, &["merge_work", "definition_shards_reused"]),
+        (modules - 1) as u64
+    );
+    assert_eq!(
+        count(identity, &["merge_work", "definition_shards_rebuilt"]),
+        1
+    );
     assert_eq!(count(identity, &["queries", "downstream_invalidations"]), 1);
 
     let failed = get("failed_syntax_edit");
