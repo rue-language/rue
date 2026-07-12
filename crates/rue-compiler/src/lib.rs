@@ -67,7 +67,8 @@ pub use import_graph::{
     validate_canonical_import_graph,
 };
 pub use parsed_modules::{
-    ParsedModulesWork, ParsedProgram as CanonicalParsedProgram,
+    ParsedAstPresentation, ParsedAstPresentationWork, ParsedModulesWork,
+    ParsedProgram as CanonicalParsedProgram, parse_source_snapshot_for_ast_presentation,
     parse_source_snapshot_modules_reusing,
 };
 pub use semantic_symbols::{SemanticSymbol, SemanticSymbolUniverse, SemanticTranslationWork};

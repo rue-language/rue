@@ -22,6 +22,7 @@ use rue_compiler::{
     configure_thread_pool, generate_emitted_asm, generate_liveness_info, generate_lowering_info,
     generate_mir, generate_regalloc_info, generate_stack_frame_info, import_candidate_groups,
     merge_symbols, parse_all_files_with_source_snapshot,
+    parse_source_snapshot_for_ast_presentation,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -2127,10 +2128,7 @@ fn handle_emit_multi_file(
     // other frontend emit consumes the canonical unit artifacts.
     let frontend_route = emit_frontend_route(&options.emit_stages);
     let needs_legacy_rir = frontend_route == EmitFrontendRoute::LegacyRir;
-    let needs_legacy_parse = matches!(
-        frontend_route,
-        EmitFrontendRoute::LegacyRir | EmitFrontendRoute::AstOnlyLegacy
-    );
+    let needs_legacy_parse = frontend_route == EmitFrontendRoute::LegacyRir;
     let mut parsed: Option<ParsedProgram> = if needs_legacy_parse {
         match parse_all_files_with_source_snapshot(source_snapshot) {
             Ok(program) => Some(program),
@@ -2145,17 +2143,32 @@ fn handle_emit_multi_file(
 
     // AST-only preserves its syntax-only behavior (duplicates are printable).
     // Combined AST+later canonical modes reuse the unit's once-only projection.
-    let mut per_file_asts: Option<Vec<(String, std::sync::Arc<rue_compiler::Ast>)>> = if needs_ast {
-        parsed.as_ref().map(|program| {
-            program
-                .files
-                .iter()
-                .map(|f| (f.path.clone(), f.ast.clone()))
-                .collect()
-        })
-    } else {
-        None
-    };
+    let mut per_file_asts: Option<Vec<(String, std::sync::Arc<rue_compiler::Ast>)>> =
+        if frontend_route == EmitFrontendRoute::AstOnlyLegacy {
+            match parse_source_snapshot_for_ast_presentation(source_snapshot) {
+                Ok(presentation) => {
+                    debug_assert_eq!(
+                        presentation.work().parsed.syntax.parser_invocations,
+                        source_snapshot.len()
+                    );
+                    Some(presentation.files().to_vec())
+                }
+                Err(errors) => {
+                    diagnostics.print_errors(&errors);
+                    return Err(());
+                }
+            }
+        } else if needs_ast {
+            parsed.as_ref().map(|program| {
+                program
+                    .files
+                    .iter()
+                    .map(|f| (f.path.clone(), f.ast.clone()))
+                    .collect()
+            })
+        } else {
+            None
+        };
 
     // Merge symbols and compile frontend (needed for later stages)
     let frontend_state = if needs_legacy_rir {
@@ -2836,6 +2849,44 @@ mod tests {
         assert_eq!(work.semantic.binding.bind_invocations, 1);
         assert_eq!(work.semantic.manifest.build_invocations, 0);
         assert_eq!(work.compatibility_projections, 0);
+
+        let presentation = parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();
+        let legacy = parse_all_files_with_source_snapshot(&snapshot).unwrap();
+        assert_eq!(
+            presentation
+                .files()
+                .iter()
+                .map(|(path, ast)| (path.clone(), ast.to_string()))
+                .collect::<Vec<_>>(),
+            legacy
+                .files
+                .iter()
+                .map(|file| (file.path.clone(), file.ast.to_string()))
+                .collect::<Vec<_>>()
+        );
+        let ast_work = presentation.work();
+        assert_eq!(ast_work.parsed.syntax.parser_invocations, sources.len());
+        assert_eq!(ast_work.merge_invocations, 0);
+        assert_eq!(ast_work.astgen_invocations, 0);
+        assert_eq!(ast_work.bind_invocations, 0);
+        assert_eq!(ast_work.manifest_invocations, 0);
+    }
+
+    #[test]
+    fn ast_presentation_prints_duplicates_without_merging() {
+        let id = FileId::new(4);
+        let sources = [rue_compiler::SourceFile::new(
+            "main.rue",
+            "fn duplicate() {} fn duplicate() {}",
+            id,
+        )];
+        let metadata =
+            SourceMetadata::from_sources(&sources, id, std::collections::HashMap::new()).unwrap();
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+        let presentation = parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();
+
+        assert_eq!(presentation.files()[0].1.items.len(), 2);
+        assert_eq!(presentation.work().merge_invocations, 0);
     }
 
     #[test]

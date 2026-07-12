@@ -11,7 +11,10 @@ separate API/driver concerns and should be removed in this order:
    caller-positional path because its printed `%N` instruction references are
    observable. Replace that route with a read-only presentation mapping that
    reorders records and remaps every printed `InstRef`; it must not run a
-   second `AstGen` or alter canonical artifact identity/work.
+   second `AstGen` or alter canonical artifact identity/work. The mapping also
+   needs lowering-time provenance for synthesized names: AstGen's global
+   `for_counter` assigns `__for_*_N` names according to lowering order, so a
+   record permutation alone cannot reproduce historical caller-order bytes.
 2. **Retire duplicate RIR import extraction from production concepts.**
    `extract_import_directives` remains a public compatibility query and has
    direct tests, but production snapshot/unit compilation now retains import
