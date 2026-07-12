@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use rue_air::{DeclarationBindingWork, SemanticBindingManifestWork};
+use sha2::{Digest, Sha256};
 
 use crate::{
     BoundDefinitionSet, BoundDefinitionWork, CanonicalImportGraph, CanonicalImportGraphValidation,
@@ -134,6 +135,32 @@ pub struct StableNamedConstDependency {
     pub target: StableNamedConstDependencyTarget,
 }
 
+/// Versioned digest of one immutable semantic input fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableDefinitionFingerprint([u8; 32]);
+
+impl StableDefinitionFingerprint {
+    pub fn bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
+/// The authoritative source payload represented by a definition fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StableDefinitionPayloadKind {
+    /// The exact UTF-8 bytes covered by `BoundDefinitionRecord::declaration_span`.
+    FullDeclaration,
+}
+
+/// Immutable, relocation-independent inputs for one stable definition.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableDefinitionInputFingerprint {
+    pub key: StableDefinitionKey,
+    pub surface: StableDefinitionFingerprint,
+    pub payload: StableDefinitionFingerprint,
+    pub payload_kind: StableDefinitionPayloadKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StableModuleImportDependency {
     Resolved {
@@ -158,6 +185,7 @@ pub struct SemanticDependencyInputManifest {
     input: SemanticInputDescriptor,
     imports: CanonicalImportGraph,
     definitions: Arc<[StableDefinitionKey]>,
+    definition_fingerprints: Arc<[StableDefinitionInputFingerprint]>,
     module_imports: Arc<[StableModuleImportDependency]>,
     free_function_dependencies: Arc<[StableFreeFunctionDependency]>,
     free_function_caller_dependencies_complete: bool,
@@ -190,6 +218,9 @@ impl SemanticDependencyInputManifest {
     }
     pub fn definitions(&self) -> &[StableDefinitionKey] {
         &self.definitions
+    }
+    pub fn definition_fingerprints(&self) -> &[StableDefinitionInputFingerprint] {
+        &self.definition_fingerprints
     }
     pub fn module_imports(&self) -> &[StableModuleImportDependency] {
         &self.module_imports
@@ -812,9 +843,10 @@ impl CanonicalFrontendSession {
         let snapshot = self
             .published_snapshot
             .as_ref()
-            .expect("stable definitions retain a published source snapshot");
+            .expect("stable definitions retain a published source snapshot")
+            .clone();
         let input =
-            SemanticInputDescriptor::new(snapshot, options.target, &options.preview_features);
+            SemanticInputDescriptor::new(&snapshot, options.target, &options.preview_features);
         if let Some(cached) = self
             .dependency_manifest_cache
             .iter()
@@ -837,6 +869,10 @@ impl CanonicalFrontendSession {
             .collect::<Vec<_>>();
         keys.sort();
         keys.dedup();
+        let definition_fingerprints = definition_records
+            .iter()
+            .map(|record| stable_definition_input_fingerprint(&snapshot, record))
+            .collect::<Result<Vec<_>, _>>()?;
         let (
             mut free_function_dependencies,
             mut named_method_dependencies,
@@ -1196,6 +1232,7 @@ impl CanonicalFrontendSession {
             input,
             imports: imports.graph().clone(),
             definitions: keys.into(),
+            definition_fingerprints: definition_fingerprints.into(),
             module_imports: module_imports.into(),
             free_function_dependencies: free_function_dependencies.into(),
             free_function_caller_dependencies_complete,
@@ -1220,6 +1257,104 @@ impl CanonicalFrontendSession {
         });
         self.dependency_manifest_cache.push(manifest.clone());
         Ok(manifest)
+    }
+}
+
+const DEFINITION_SURFACE_DOMAIN_V1: &[u8] = b"rue.definition.surface\0v1\0sha256\0";
+const DEFINITION_PAYLOAD_DOMAIN_V1: &[u8] = b"rue.definition.payload\0v1\0sha256\0";
+
+fn stable_definition_input_fingerprint(
+    snapshot: &SourceSnapshot,
+    record: &crate::BoundDefinitionRecord,
+) -> Result<StableDefinitionInputFingerprint, CompileErrors> {
+    let span = record.declaration_span();
+    let source = snapshot.source_text(span.file_id).ok_or_else(|| {
+        invalid_dependency_manifest("definition fingerprint span references an absent source")
+    })?;
+    let start = usize::try_from(span.start).map_err(|_| {
+        invalid_dependency_manifest("definition fingerprint span start cannot address this host")
+    })?;
+    let end = usize::try_from(span.end).map_err(|_| {
+        invalid_dependency_manifest("definition fingerprint span end cannot address this host")
+    })?;
+    let payload = source.get(start..end).ok_or_else(|| {
+        invalid_dependency_manifest(
+            "definition fingerprint span is reversed, out of bounds, or not on UTF-8 boundaries",
+        )
+    })?;
+
+    let mut surface = FramedDefinitionHasher::new(DEFINITION_SURFACE_DOMAIN_V1);
+    hash_stable_definition_key(&mut surface, record.stable_key());
+    surface.frame(&[match record.visibility() {
+        None => 0,
+        Some(rue_parser::ast::Visibility::Private) => 1,
+        Some(rue_parser::ast::Visibility::Public) => 2,
+    }]);
+
+    let mut declaration = FramedDefinitionHasher::new(DEFINITION_PAYLOAD_DOMAIN_V1);
+    declaration.frame(payload.as_bytes());
+    Ok(StableDefinitionInputFingerprint {
+        key: record.stable_key().clone(),
+        surface: surface.finish(),
+        payload: declaration.finish(),
+        payload_kind: StableDefinitionPayloadKind::FullDeclaration,
+    })
+}
+
+struct FramedDefinitionHasher(Sha256);
+
+impl FramedDefinitionHasher {
+    fn new(domain: &[u8]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(domain);
+        Self(hasher)
+    }
+
+    fn frame(&mut self, bytes: &[u8]) {
+        self.0.update((bytes.len() as u64).to_le_bytes());
+        self.0.update(bytes);
+    }
+
+    fn finish(self) -> StableDefinitionFingerprint {
+        StableDefinitionFingerprint(self.0.finalize().into())
+    }
+}
+
+fn hash_stable_definition_key(hasher: &mut FramedDefinitionHasher, key: &StableDefinitionKey) {
+    hasher.frame(key.module().as_str().as_bytes());
+    hasher.frame(&[stable_namespace_tag(key.namespace())]);
+    hasher.frame(&[stable_kind_tag(key.kind())]);
+    hasher.frame(key.name().as_bytes());
+    match key.owner() {
+        None => hasher.frame(&[]),
+        Some(owner) => {
+            hasher.frame(&[1]);
+            hasher.frame(owner.module().as_str().as_bytes());
+            hasher.frame(&[stable_kind_tag(owner.kind())]);
+            hasher.frame(owner.name().as_bytes());
+        }
+    }
+}
+
+fn stable_namespace_tag(namespace: StableDefinitionNamespace) -> u8 {
+    match namespace {
+        StableDefinitionNamespace::Value => 0,
+        StableDefinitionNamespace::Type => 1,
+        StableDefinitionNamespace::Destructor => 2,
+        StableDefinitionNamespace::Method => 3,
+    }
+}
+
+fn stable_kind_tag(kind: StableDefinitionKind) -> u8 {
+    match kind {
+        StableDefinitionKind::Function => 0,
+        StableDefinitionKind::Struct => 1,
+        StableDefinitionKind::Enum => 2,
+        StableDefinitionKind::ValueConst => 3,
+        StableDefinitionKind::ModuleBinding => 4,
+        StableDefinitionKind::Destructor => 5,
+        StableDefinitionKind::Method => 6,
+        StableDefinitionKind::AssociatedFunction => 7,
     }
 }
 
@@ -2211,6 +2346,67 @@ mod tests {
         assert_eq!(session.work().dependency_manifests.reuses, 1);
         assert_eq!(session.work().rir.executions, 1);
         assert_eq!(session.work().semantic.executions, 1);
+    }
+
+    #[test]
+    fn definition_fingerprints_ignore_relocation_file_ids_and_input_order() {
+        let first = snapshot(
+            &[
+                (7, "/one/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (2, "/one/a.rue", "a.rue", "pub fn a() -> i32 { 1 }"),
+            ],
+            7,
+        );
+        let relocated = snapshot(
+            &[
+                (41, "/else/a.rue", "a.rue", "pub fn a() -> i32 { 1 }"),
+                (99, "/else/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+            ],
+            99,
+        );
+        let mut left = CanonicalFrontendSession::new();
+        left.update(&first).into_result().unwrap();
+        let left = left
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        let mut right = CanonicalFrontendSession::new();
+        right.update(&relocated).into_result().unwrap();
+        let right = right
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+
+        assert_eq!(
+            left.definition_fingerprints(),
+            right.definition_fingerprints()
+        );
+        assert!(left.definition_fingerprints().iter().all(|fingerprint| {
+            fingerprint.payload_kind == StableDefinitionPayloadKind::FullDeclaration
+        }));
+    }
+
+    #[test]
+    fn definition_fingerprints_separate_surface_and_full_declaration_changes() {
+        fn fingerprints(source: &str) -> StableDefinitionInputFingerprint {
+            let source = snapshot(&[(7, "/p/main.rue", "main.rue", source)], 7);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+                .definition_fingerprints()[0]
+                .clone()
+        }
+
+        let original = fingerprints("fn main() -> i32 { 0 }");
+        let payload_changed = fingerprints("fn main() -> i32 { 1 }");
+        assert_eq!(original.key, payload_changed.key);
+        assert_eq!(original.surface, payload_changed.surface);
+        assert_ne!(original.payload, payload_changed.payload);
+
+        let surface_changed = fingerprints("pub fn main() -> i32 { 0 }");
+        assert_eq!(original.key, surface_changed.key);
+        assert_ne!(original.surface, surface_changed.surface);
+        assert_ne!(original.payload, surface_changed.payload);
     }
 
     #[test]

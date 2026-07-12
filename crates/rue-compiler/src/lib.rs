@@ -66,7 +66,8 @@ pub use frontend_session::{
     FrontendDiagnosticStage, FrontendQueryWork, ImportGraphInputDescriptor,
     SemanticDependencyInputManifest, SemanticDependencyManifestWork, SemanticQueryRecord,
     StableBuiltinTypeCallHeadInput, StableDeclarationTypeCallHeadDependency,
-    StableDeclarationTypeDependency, StableFreeFunctionDependency, StableModuleImportDependency,
+    StableDeclarationTypeDependency, StableDefinitionFingerprint, StableDefinitionInputFingerprint,
+    StableDefinitionPayloadKind, StableFreeFunctionDependency, StableModuleImportDependency,
     StableNamedConstDependency, StableNamedConstDependencyTarget, StableNamedDestructorDependency,
     StableNamedMethodDependency, StableNamedMethodDependencyTarget,
 };
