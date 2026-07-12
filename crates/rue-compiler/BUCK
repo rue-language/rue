@@ -8,6 +8,7 @@ rue_crate(
     },
     deps = [
         "//crates/rue-air:rue-air",
+        "//crates/rue-builtins:rue-builtins",
         "//crates/rue-cfg:rue-cfg",
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-error:rue-error",

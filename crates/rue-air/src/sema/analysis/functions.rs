@@ -58,6 +58,7 @@ impl<'a> Sema<'a> {
 
         Ok((
             AnalyzedFunction {
+                ordinary_owner: None,
                 name: fn_name.to_string(),
                 implicit_drop_source: None,
                 air,
@@ -149,6 +150,7 @@ impl<'a> Sema<'a> {
 
         Ok((
             AnalyzedFunction {
+                ordinary_owner: None,
                 name: full_name.to_string(),
                 implicit_drop_source: None,
                 air,
@@ -217,6 +219,7 @@ impl<'a> Sema<'a> {
 
         Ok((
             AnalyzedFunction {
+                ordinary_owner: None,
                 name: full_name.to_string(),
                 implicit_drop_source: None,
                 air,

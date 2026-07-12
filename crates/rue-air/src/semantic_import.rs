@@ -13,9 +13,12 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_span::FileId;
 
 use crate::{
-    ConstValue, EnumDef, EnumId, ModuleId, ModuleRegistry, StructDef, StructField, StructId, Type,
-    TypeInternPool,
+    Air, AirInst, AirInstData, AirPattern, AirProjection, AirRef, ConstValue, EnumDef, EnumId,
+    ModuleId, ModuleRegistry, SemanticBody, SemanticBodyImportFailure, SemanticBodyInstData,
+    SemanticBodyPattern, SemanticBodyProjection, SemanticImportedBody, StructDef, StructField,
+    StructId, Type, TypeInternPool,
 };
+use rue_span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticImportNominalKind {
@@ -46,6 +49,10 @@ pub enum SemanticImportType<K, M> {
     Unit,
     Never,
     ComptimeType,
+    BuiltinNominal {
+        name: Arc<str>,
+        kind: SemanticImportNominalKind,
+    },
     Nominal(K),
     Array {
         element: Box<Self>,
@@ -82,6 +89,8 @@ pub enum SemanticImportFailure {
     MissingNominal,
     MissingModule,
     MissingFunction,
+    UnknownBuiltinNominal,
+    BuiltinNominalKindMismatch,
     GenericParameterNeedsDeclarationContext,
     UnsupportedTuple,
     UnsupportedFunctionType,
@@ -136,6 +145,7 @@ pub struct SemanticImportEpoch<K: Ord, M: Ord> {
     nominals: BTreeMap<K, LocalNominal>,
     functions: BTreeMap<K, Spur>,
     modules: BTreeMap<M, ModuleId>,
+    builtins: BTreeMap<(Arc<str>, SemanticImportNominalKind), LocalNominal>,
 }
 
 impl<K, M> SemanticImportEpoch<K, M>
@@ -143,6 +153,465 @@ where
     K: Clone + Ord,
     M: Clone + Ord + AsRef<str>,
 {
+    /// Atomically reconstruct a structured durable body in this epoch.
+    /// All validation and AIR construction happens in a scratch value; the
+    /// epoch's declaration universe is immutable and cannot be partially
+    /// updated on failure.
+    pub fn import_body(
+        &self,
+        body: &SemanticBody<K, M>,
+        body_span: Span,
+    ) -> Result<SemanticImportedBody, SemanticBodyImportFailure> {
+        use SemanticBodyImportFailure as F;
+        let body_len = body_span
+            .end
+            .checked_sub(body_span.start)
+            .ok_or(F::InvalidAnchor)?;
+        let current_anchor = |anchor: crate::SemanticBodyAnchor| -> Result<Span, F> {
+            if anchor.start > anchor.end || anchor.end > body_len {
+                return Err(F::InvalidAnchor);
+            }
+            let start = body_span
+                .start
+                .checked_add(anchor.start)
+                .ok_or(F::InvalidAnchor)?;
+            let end = body_span
+                .start
+                .checked_add(anchor.end)
+                .ok_or(F::InvalidAnchor)?;
+            Ok(Span::with_file(body_span.file_id, start, end))
+        };
+        if body.param_by_ref.len() != body.num_param_slots as usize
+            || body.param_writable.len() != body.num_param_slots as usize
+        {
+            return Err(F::InvalidParameterModes);
+        }
+        if body
+            .param_writable
+            .iter()
+            .zip(body.param_by_ref.iter())
+            .any(|(w, r)| *w && !*r)
+        {
+            return Err(F::InvalidParameterModes);
+        }
+        if body
+            .param_drops
+            .iter()
+            .any(|(slot, _)| *slot >= body.num_param_slots)
+        {
+            return Err(F::InvalidParameterDrop);
+        }
+        if body
+            .borrow_slots
+            .iter()
+            .any(|slot| *slot >= body.num_locals)
+        {
+            return Err(F::InvalidBorrowSlot);
+        }
+        let return_type = self.import_type_local(&body.return_type)?;
+        let mut air = Air::new(return_type);
+        let inst_len = body.instructions.len();
+        let place_len = body.places.len();
+        let check_ref = |r: u32, current: usize| -> Result<AirRef, F> {
+            let index = r as usize;
+            if index >= inst_len {
+                return Err(F::InvalidInstructionReference);
+            }
+            if index >= current {
+                return Err(F::ForwardInstructionReference);
+            }
+            Ok(AirRef::from_raw(r))
+        };
+        let struct_id = |key: &K| match self.nominals.get(key) {
+            Some(LocalNominal::Struct(id)) => Ok(*id),
+            Some(LocalNominal::Enum(_)) => Err(F::WrongNominalKind),
+            None => Err(F::Semantic(SemanticImportFailure::MissingNominal)),
+        };
+        let enum_id = |key: &K| match self.nominals.get(key) {
+            Some(LocalNominal::Enum(id)) => Ok(*id),
+            Some(LocalNominal::Struct(_)) => Err(F::WrongNominalKind),
+            None => Err(F::Semantic(SemanticImportFailure::MissingNominal)),
+        };
+        for place in body.places.iter() {
+            let base_type = self.import_type_local(&place.base_type)?;
+            let mut projections = Vec::with_capacity(place.projections.len());
+            for projection in place.projections.iter() {
+                projections.push(match projection {
+                    SemanticBodyProjection::Field {
+                        struct_key,
+                        field_index,
+                    } => AirProjection::Field {
+                        struct_id: struct_id(struct_key)?,
+                        field_index: *field_index,
+                    },
+                    SemanticBodyProjection::Index { array_type, index } => {
+                        if *index as usize >= inst_len {
+                            return Err(F::InvalidInstructionReference);
+                        }
+                        AirProjection::Index {
+                            array_type: self.import_type_local(array_type)?,
+                            index: AirRef::from_raw(*index),
+                        }
+                    }
+                });
+            }
+            air.make_place(place.base, base_type, projections);
+        }
+        let call_args = |air: &mut Air,
+                         args: &[crate::SemanticBodyCallArg],
+                         current: usize|
+         -> Result<(u32, u32), F> {
+            let len = u32::try_from(args.len()).map_err(|_| F::SizeOverflow)?;
+            let mut words = Vec::with_capacity(args.len() * 2);
+            for arg in args {
+                words.push(check_ref(arg.value, current)?.as_u32());
+                words.push(arg.mode.as_u32());
+            }
+            Ok((air.add_extra(&words), len))
+        };
+        let refs = |air: &mut Air, values: &[u32], current: usize| -> Result<(u32, u32), F> {
+            let len = u32::try_from(values.len()).map_err(|_| F::SizeOverflow)?;
+            let mut words = Vec::with_capacity(values.len());
+            for value in values {
+                words.push(check_ref(*value, current)?.as_u32());
+            }
+            Ok((air.add_extra(&words), len))
+        };
+        for (current, inst) in body.instructions.iter().enumerate() {
+            let span = current_anchor(inst.anchor)?;
+            let r = |value| check_ref(value, current);
+            let binary =
+                |a, b, ctor: fn(AirRef, AirRef) -> AirInstData| Ok::<_, F>(ctor(r(a)?, r(b)?));
+            let data = match &inst.data {
+                SemanticBodyInstData::Const(v) => AirInstData::Const(*v),
+                SemanticBodyInstData::BoolConst(v) => AirInstData::BoolConst(*v),
+                SemanticBodyInstData::StringConst(v) => {
+                    if *v as usize >= body.strings.len() {
+                        return Err(F::InvalidStringReference);
+                    }
+                    AirInstData::StringConst(*v)
+                }
+                SemanticBodyInstData::UnitConst => AirInstData::UnitConst,
+                SemanticBodyInstData::TypeConst(v) => {
+                    AirInstData::TypeConst(self.import_type_local(v)?)
+                }
+                SemanticBodyInstData::Add(a, b) => binary(*a, *b, AirInstData::Add)?,
+                SemanticBodyInstData::Sub(a, b) => binary(*a, *b, AirInstData::Sub)?,
+                SemanticBodyInstData::Mul(a, b) => binary(*a, *b, AirInstData::Mul)?,
+                SemanticBodyInstData::Div(a, b) => binary(*a, *b, AirInstData::Div)?,
+                SemanticBodyInstData::Mod(a, b) => binary(*a, *b, AirInstData::Mod)?,
+                SemanticBodyInstData::Eq(a, b) => binary(*a, *b, AirInstData::Eq)?,
+                SemanticBodyInstData::Ne(a, b) => binary(*a, *b, AirInstData::Ne)?,
+                SemanticBodyInstData::Lt(a, b) => binary(*a, *b, AirInstData::Lt)?,
+                SemanticBodyInstData::Gt(a, b) => binary(*a, *b, AirInstData::Gt)?,
+                SemanticBodyInstData::Le(a, b) => binary(*a, *b, AirInstData::Le)?,
+                SemanticBodyInstData::Ge(a, b) => binary(*a, *b, AirInstData::Ge)?,
+                SemanticBodyInstData::And(a, b) => binary(*a, *b, AirInstData::And)?,
+                SemanticBodyInstData::Or(a, b) => binary(*a, *b, AirInstData::Or)?,
+                SemanticBodyInstData::BitAnd(a, b) => binary(*a, *b, AirInstData::BitAnd)?,
+                SemanticBodyInstData::BitOr(a, b) => binary(*a, *b, AirInstData::BitOr)?,
+                SemanticBodyInstData::BitXor(a, b) => binary(*a, *b, AirInstData::BitXor)?,
+                SemanticBodyInstData::Shl(a, b) => binary(*a, *b, AirInstData::Shl)?,
+                SemanticBodyInstData::Shr(a, b) => binary(*a, *b, AirInstData::Shr)?,
+                SemanticBodyInstData::Neg(v) => AirInstData::Neg(r(*v)?),
+                SemanticBodyInstData::Not(v) => AirInstData::Not(r(*v)?),
+                SemanticBodyInstData::BitNot(v) => AirInstData::BitNot(r(*v)?),
+                SemanticBodyInstData::Branch {
+                    cond,
+                    then_value,
+                    else_value,
+                } => AirInstData::Branch {
+                    cond: r(*cond)?,
+                    then_value: r(*then_value)?,
+                    else_value: else_value.map(r).transpose()?,
+                },
+                SemanticBodyInstData::Loop { cond, body } => AirInstData::Loop {
+                    cond: r(*cond)?,
+                    body: r(*body)?,
+                },
+                SemanticBodyInstData::InfiniteLoop { body } => {
+                    AirInstData::InfiniteLoop { body: r(*body)? }
+                }
+                SemanticBodyInstData::Match { scrutinee, arms } => {
+                    let mut words = Vec::new();
+                    for arm in arms.iter() {
+                        let pat = match &arm.pattern {
+                            SemanticBodyPattern::Wildcard => AirPattern::Wildcard,
+                            SemanticBodyPattern::Int(v) => AirPattern::Int(*v),
+                            SemanticBodyPattern::Bool(v) => AirPattern::Bool(*v),
+                            SemanticBodyPattern::EnumVariant {
+                                enum_key,
+                                variant_index,
+                            } => AirPattern::EnumVariant {
+                                enum_id: enum_id(enum_key)?,
+                                variant_index: *variant_index,
+                            },
+                        };
+                        pat.encode(r(arm.body)?, &mut words)
+                    }
+                    let start = air.add_extra(&words);
+                    AirInstData::Match {
+                        scrutinee: r(*scrutinee)?,
+                        arms_start: start,
+                        arms_len: u32::try_from(arms.len()).map_err(|_| F::SizeOverflow)?,
+                    }
+                }
+                SemanticBodyInstData::Break => AirInstData::Break,
+                SemanticBodyInstData::Continue => AirInstData::Continue,
+                SemanticBodyInstData::Alloc { slot, init } => AirInstData::Alloc {
+                    slot: *slot,
+                    init: r(*init)?,
+                },
+                SemanticBodyInstData::Load { slot } => AirInstData::Load { slot: *slot },
+                SemanticBodyInstData::Store { slot, value } => AirInstData::Store {
+                    slot: *slot,
+                    value: r(*value)?,
+                },
+                SemanticBodyInstData::ParamStore { param_slot, value } => AirInstData::ParamStore {
+                    param_slot: *param_slot,
+                    value: r(*value)?,
+                },
+                SemanticBodyInstData::Ret(v) => AirInstData::Ret(v.map(r).transpose()?),
+                SemanticBodyInstData::Call { function, args } => {
+                    let name = *self
+                        .functions
+                        .get(function)
+                        .ok_or(F::Semantic(SemanticImportFailure::MissingFunction))?;
+                    let (s, l) = call_args(&mut air, args, current)?;
+                    AirInstData::Call {
+                        name,
+                        args_start: s,
+                        args_len: l,
+                    }
+                }
+                SemanticBodyInstData::CallGeneric => return Err(F::UnsupportedGenericCall),
+                SemanticBodyInstData::Intrinsic { name, args } => {
+                    let name = self.interner.get_or_intern(name.as_ref());
+                    if args.iter().any(|arg| arg.mode != crate::AirArgMode::Normal) {
+                        return Err(F::InvalidParameterModes);
+                    }
+                    let values = args.iter().map(|arg| arg.value).collect::<Vec<_>>();
+                    let (s, l) = refs(&mut air, &values, current)?;
+                    AirInstData::Intrinsic {
+                        name,
+                        args_start: s,
+                        args_len: l,
+                    }
+                }
+                SemanticBodyInstData::Param { index } => AirInstData::Param { index: *index },
+                SemanticBodyInstData::Block { statements, value } => {
+                    let (s, l) = refs(&mut air, statements, current)?;
+                    AirInstData::Block {
+                        stmts_start: s,
+                        stmts_len: l,
+                        value: r(*value)?,
+                    }
+                }
+                SemanticBodyInstData::StructInit {
+                    struct_key,
+                    fields,
+                    source_order,
+                } => {
+                    let mut order_seen = vec![false; fields.len()];
+                    if fields.len() != source_order.len()
+                        || source_order.iter().any(|i| {
+                            let index = *i as usize;
+                            index >= fields.len() || std::mem::replace(&mut order_seen[index], true)
+                        })
+                    {
+                        return Err(F::InvalidSourceOrder);
+                    }
+                    let (fs, fl) = refs(&mut air, fields, current)?;
+                    let os = air.add_extra(source_order);
+                    AirInstData::StructInit {
+                        struct_id: struct_id(struct_key)?,
+                        fields_start: fs,
+                        fields_len: fl,
+                        source_order_start: os,
+                    }
+                }
+                SemanticBodyInstData::FieldGet {
+                    base,
+                    struct_key,
+                    field_index,
+                } => AirInstData::FieldGet {
+                    base: r(*base)?,
+                    struct_id: struct_id(struct_key)?,
+                    field_index: *field_index,
+                },
+                SemanticBodyInstData::FieldSet {
+                    slot,
+                    struct_key,
+                    field_index,
+                    value,
+                } => AirInstData::FieldSet {
+                    slot: *slot,
+                    struct_id: struct_id(struct_key)?,
+                    field_index: *field_index,
+                    value: r(*value)?,
+                },
+                SemanticBodyInstData::ParamFieldSet {
+                    param_slot,
+                    inner_offset,
+                    struct_key,
+                    field_index,
+                    value,
+                } => AirInstData::ParamFieldSet {
+                    param_slot: *param_slot,
+                    inner_offset: *inner_offset,
+                    struct_id: struct_id(struct_key)?,
+                    field_index: *field_index,
+                    value: r(*value)?,
+                },
+                SemanticBodyInstData::ArrayInit { elements } => {
+                    let (s, l) = refs(&mut air, elements, current)?;
+                    AirInstData::ArrayInit {
+                        elems_start: s,
+                        elems_len: l,
+                    }
+                }
+                SemanticBodyInstData::IndexGet {
+                    base,
+                    array_type,
+                    index,
+                } => AirInstData::IndexGet {
+                    base: r(*base)?,
+                    array_type: self.import_type_local(array_type)?,
+                    index: r(*index)?,
+                },
+                SemanticBodyInstData::IndexSet {
+                    slot,
+                    array_type,
+                    index,
+                    value,
+                } => AirInstData::IndexSet {
+                    slot: *slot,
+                    array_type: self.import_type_local(array_type)?,
+                    index: r(*index)?,
+                    value: r(*value)?,
+                },
+                SemanticBodyInstData::ParamIndexSet {
+                    param_slot,
+                    array_type,
+                    index,
+                    value,
+                } => AirInstData::ParamIndexSet {
+                    param_slot: *param_slot,
+                    array_type: self.import_type_local(array_type)?,
+                    index: r(*index)?,
+                    value: r(*value)?,
+                },
+                SemanticBodyInstData::PlaceRead { place } => {
+                    if *place as usize >= place_len {
+                        return Err(F::InvalidPlaceReference);
+                    }
+                    AirInstData::PlaceRead {
+                        place: crate::AirPlaceRef::from_raw(*place),
+                    }
+                }
+                SemanticBodyInstData::PlaceWrite { place, value } => {
+                    if *place as usize >= place_len {
+                        return Err(F::InvalidPlaceReference);
+                    }
+                    AirInstData::PlaceWrite {
+                        place: crate::AirPlaceRef::from_raw(*place),
+                        value: r(*value)?,
+                    }
+                }
+                SemanticBodyInstData::EnumVariant {
+                    enum_key,
+                    variant_index,
+                    payload,
+                } => {
+                    let (s, l) = refs(&mut air, payload, current)?;
+                    AirInstData::EnumVariant {
+                        enum_id: enum_id(enum_key)?,
+                        variant_index: *variant_index,
+                        payload_start: s,
+                        payload_len: l,
+                    }
+                }
+                SemanticBodyInstData::EnumPayloadGet {
+                    base,
+                    enum_key,
+                    variant_index,
+                    field_index,
+                } => AirInstData::EnumPayloadGet {
+                    base: r(*base)?,
+                    enum_id: enum_id(enum_key)?,
+                    variant_index: *variant_index,
+                    field_index: *field_index,
+                },
+                SemanticBodyInstData::IntCast { value, from_ty } => AirInstData::IntCast {
+                    value: r(*value)?,
+                    from_ty: self.import_type_local(from_ty)?,
+                },
+                SemanticBodyInstData::Drop { value } => AirInstData::Drop { value: r(*value)? },
+                SemanticBodyInstData::StorageLive { slot } => {
+                    AirInstData::StorageLive { slot: *slot }
+                }
+                SemanticBodyInstData::StorageDead { slot } => {
+                    AirInstData::StorageDead { slot: *slot }
+                }
+                SemanticBodyInstData::MarkMoved {
+                    value,
+                    slot,
+                    is_param,
+                    place,
+                } => {
+                    if place.is_some_and(|p| p as usize >= place_len) {
+                        return Err(F::InvalidPlaceReference);
+                    }
+                    AirInstData::MarkMoved {
+                        value: r(*value)?,
+                        slot: *slot,
+                        is_param: *is_param,
+                        place: place.map(crate::AirPlaceRef::from_raw),
+                    }
+                }
+            };
+            air.add_inst(AirInst {
+                data,
+                ty: self.import_type_local(&inst.ty)?,
+                span,
+            });
+        }
+        let mut drops = Vec::with_capacity(body.param_drops.len());
+        for (slot, ty) in body.param_drops.iter() {
+            drops.push((*slot, self.import_type_local(ty)?));
+        }
+        air.set_param_drops(drops);
+        for slot in body.borrow_slots.iter() {
+            air.add_borrow_slot(*slot)
+        }
+        let warnings = body
+            .warnings
+            .iter()
+            .map(|warning| {
+                let span = current_anchor(warning.anchor)?;
+                Ok(crate::SemanticBodyWarning {
+                    code: warning.code.clone(),
+                    message: warning.message.clone(),
+                    anchor: crate::SemanticBodyAnchor {
+                        start: span.start,
+                        end: span.end,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, F>>()?;
+        Ok(SemanticImportedBody {
+            air,
+            strings: body.strings.iter().map(|s| s.to_string()).collect(),
+            num_locals: body.num_locals,
+            num_param_slots: body.num_param_slots,
+            param_modes: crate::ParamSlotModes::new(
+                body.param_by_ref.to_vec(),
+                body.param_writable.to_vec(),
+            ),
+            allow_unreachable_code: body.allow_unreachable_code,
+            warnings: Arc::from(warnings),
+        })
+    }
     pub fn new(
         mut nominals: Vec<SemanticImportNominal<K>>,
         mut function_keys: Vec<(K, Arc<str>)>,
@@ -155,6 +624,56 @@ where
         let interner = ThreadedRodeo::new();
         let type_pool = TypeInternPool::new();
         let module_registry = ModuleRegistry::new();
+        let mut builtins = BTreeMap::new();
+        for builtin in rue_builtins::BUILTIN_TYPES {
+            let symbol = interner.get_or_intern(builtin.name);
+            let fields = builtin
+                .fields
+                .iter()
+                .map(|field| StructField {
+                    name: field.name.to_owned(),
+                    ty: match field.ty {
+                        rue_builtins::BuiltinFieldType::U64 => Type::U64,
+                        rue_builtins::BuiltinFieldType::U8 => Type::U8,
+                        rue_builtins::BuiltinFieldType::Bool => Type::BOOL,
+                    },
+                })
+                .collect();
+            let (id, _) = type_pool.register_struct(
+                symbol,
+                StructDef {
+                    name: builtin.name.to_owned(),
+                    fields,
+                    is_copy: builtin.is_copy,
+                    is_linear: false,
+                    destructor: builtin.drop_fn.map(str::to_owned),
+                    is_builtin: true,
+                    is_pub: true,
+                    file_id: FileId::DEFAULT,
+                },
+            );
+            builtins.insert(
+                (Arc::from(builtin.name), SemanticImportNominalKind::Struct),
+                LocalNominal::Struct(id),
+            );
+        }
+        for builtin in rue_builtins::BUILTIN_ENUMS {
+            let symbol = interner.get_or_intern(builtin.name);
+            let (id, _) = type_pool.register_enum(
+                symbol,
+                EnumDef {
+                    name: builtin.name.to_owned(),
+                    variants: builtin.variants.iter().map(|v| (*v).to_owned()).collect(),
+                    variant_payloads: Vec::new(),
+                    is_pub: true,
+                    file_id: FileId::DEFAULT,
+                },
+            );
+            builtins.insert(
+                (Arc::from(builtin.name), SemanticImportNominalKind::Enum),
+                LocalNominal::Enum(id),
+            );
+        }
         let mut modules = BTreeMap::new();
         for key in module_keys {
             let path = key.as_ref().to_owned();
@@ -238,6 +757,7 @@ where
             nominals: local,
             functions,
             modules,
+            builtins,
         })
     }
 
@@ -269,6 +789,23 @@ where
             SemanticImportType::Unit => Type::UNIT,
             SemanticImportType::Never => Type::NEVER,
             SemanticImportType::ComptimeType => Type::COMPTIME_TYPE,
+            SemanticImportType::BuiltinNominal { name, kind } => {
+                let local = self
+                    .builtins
+                    .get(&(name.clone(), *kind))
+                    .copied()
+                    .ok_or_else(|| {
+                        if self.builtins.keys().any(|(known, _)| known == name) {
+                            SemanticImportFailure::BuiltinNominalKindMismatch
+                        } else {
+                            SemanticImportFailure::UnknownBuiltinNominal
+                        }
+                    })?;
+                match local {
+                    LocalNominal::Struct(id) => Type::new_struct(id),
+                    LocalNominal::Enum(id) => Type::new_enum(id),
+                }
+            }
             SemanticImportType::Nominal(key) => match self.nominals.get(key) {
                 Some(LocalNominal::Struct(id)) => Type::new_struct(*id),
                 Some(LocalNominal::Enum(id)) => Type::new_enum(*id),
@@ -372,22 +909,48 @@ where
             crate::TypeKind::Unit => SemanticImportType::Unit,
             crate::TypeKind::Never => SemanticImportType::Never,
             crate::TypeKind::ComptimeType => SemanticImportType::ComptimeType,
-            crate::TypeKind::Struct(id) => SemanticImportType::Nominal(
-                self.nominals
+            crate::TypeKind::Struct(id) => {
+                if let Some(((name, kind), _)) = self
+                    .builtins
                     .iter()
-                    .find_map(|(key, local)| {
-                        (*local == LocalNominal::Struct(id)).then(|| key.clone())
-                    })
-                    .ok_or(SemanticImportFailure::ForeignLocalType)?,
-            ),
-            crate::TypeKind::Enum(id) => SemanticImportType::Nominal(
-                self.nominals
+                    .find(|(_, local)| **local == LocalNominal::Struct(id))
+                {
+                    SemanticImportType::BuiltinNominal {
+                        name: name.clone(),
+                        kind: *kind,
+                    }
+                } else {
+                    SemanticImportType::Nominal(
+                        self.nominals
+                            .iter()
+                            .find_map(|(key, local)| {
+                                (*local == LocalNominal::Struct(id)).then(|| key.clone())
+                            })
+                            .ok_or(SemanticImportFailure::ForeignLocalType)?,
+                    )
+                }
+            }
+            crate::TypeKind::Enum(id) => {
+                if let Some(((name, kind), _)) = self
+                    .builtins
                     .iter()
-                    .find_map(|(key, local)| {
-                        (*local == LocalNominal::Enum(id)).then(|| key.clone())
-                    })
-                    .ok_or(SemanticImportFailure::ForeignLocalType)?,
-            ),
+                    .find(|(_, local)| **local == LocalNominal::Enum(id))
+                {
+                    SemanticImportType::BuiltinNominal {
+                        name: name.clone(),
+                        kind: *kind,
+                    }
+                } else {
+                    SemanticImportType::Nominal(
+                        self.nominals
+                            .iter()
+                            .find_map(|(key, local)| {
+                                (*local == LocalNominal::Enum(id)).then(|| key.clone())
+                            })
+                            .ok_or(SemanticImportFailure::ForeignLocalType)?,
+                    )
+                }
+            }
             crate::TypeKind::Array(id) => {
                 let (element, len) = self.type_pool.array_def(id);
                 SemanticImportType::Array {
@@ -758,6 +1321,206 @@ mod tests {
                 vec![]
             ),
             Err(SemanticImportFailure::DuplicateNominalLocalIdentity)
+        ));
+    }
+
+    fn body(
+        data: Vec<crate::SemanticBodyInstData<&'static str, &'static str>>,
+    ) -> crate::SemanticBody<&'static str, &'static str> {
+        use crate::{SemanticBody, SemanticBodyAnchor, SemanticBodyInst, SemanticImportType};
+        SemanticBody {
+            return_type: SemanticImportType::I32,
+            instructions: data
+                .into_iter()
+                .map(|data| SemanticBodyInst {
+                    data,
+                    ty: SemanticImportType::I32,
+                    anchor: SemanticBodyAnchor { start: 1, end: 2 },
+                })
+                .collect::<Vec<_>>()
+                .into(),
+            places: Arc::new([]),
+            strings: Arc::new([]),
+            param_drops: Arc::new([]),
+            borrow_slots: Arc::new([]),
+            num_locals: 0,
+            num_param_slots: 0,
+            param_by_ref: Arc::new([]),
+            param_writable: Arc::new([]),
+            allow_unreachable_code: false,
+            warnings: Arc::new([]),
+        }
+    }
+
+    #[test]
+    fn structured_body_import_rebuilds_packed_air_in_fresh_epoch() {
+        use crate::SemanticBodyInstData as D;
+        let epoch =
+            Epoch::new(vec![], vec![("callee", Arc::from("callee#stable"))], vec![]).unwrap();
+        let input = body(vec![
+            D::Const(20),
+            D::Const(22),
+            D::Add(0, 1),
+            D::Call {
+                function: "callee",
+                args: vec![crate::SemanticBodyCallArg {
+                    value: 2,
+                    mode: crate::AirArgMode::Normal,
+                }]
+                .into(),
+            },
+            D::Ret(Some(3)),
+        ]);
+        let imported = epoch
+            .import_body(&input, Span::with_file(FileId::new(9), 100, 200))
+            .unwrap();
+        assert_eq!(imported.air.len(), 5);
+        assert_eq!(
+            imported.air.get(crate::AirRef::from_raw(4)).span.file_id,
+            FileId::new(9)
+        );
+        let crate::AirInstData::Call {
+            args_start,
+            args_len,
+            ..
+        } = imported.air.get(crate::AirRef::from_raw(3)).data
+        else {
+            panic!("call not reconstructed")
+        };
+        assert_eq!(
+            imported
+                .air
+                .get_call_args(args_start, args_len)
+                .next()
+                .unwrap()
+                .value
+                .as_u32(),
+            2
+        );
+    }
+
+    #[test]
+    fn body_import_fails_closed_for_forward_refs_generic_calls_and_bad_modes() {
+        use crate::{SemanticBodyImportFailure as F, SemanticBodyInstData as D};
+        let epoch = Epoch::new(vec![], vec![], vec![]).unwrap();
+        assert!(matches!(
+            epoch.import_body(
+                &body(vec![D::Add(0, 0)]),
+                Span::with_file(FileId::DEFAULT, 0, 100)
+            ),
+            Err(F::ForwardInstructionReference)
+        ));
+        assert!(matches!(
+            epoch.import_body(
+                &body(vec![D::CallGeneric]),
+                Span::with_file(FileId::DEFAULT, 0, 100)
+            ),
+            Err(F::UnsupportedGenericCall)
+        ));
+        let mut invalid = body(vec![D::Const(0)]);
+        invalid.num_param_slots = 1;
+        invalid.param_by_ref = vec![false].into();
+        invalid.param_writable = vec![true].into();
+        assert!(matches!(
+            epoch.import_body(&invalid, Span::with_file(FileId::DEFAULT, 0, 100)),
+            Err(F::InvalidParameterModes)
+        ));
+        let mut invalid_drop = body(vec![D::Const(0)]);
+        invalid_drop.param_drops = vec![(0, crate::SemanticImportType::I32)].into();
+        assert!(matches!(
+            epoch.import_body(&invalid_drop, Span::with_file(FileId::DEFAULT, 0, 100)),
+            Err(F::InvalidParameterDrop)
+        ));
+        let mut invalid_borrow = body(vec![D::Const(0)]);
+        invalid_borrow.borrow_slots = vec![0].into();
+        assert!(matches!(
+            epoch.import_body(&invalid_borrow, Span::with_file(FileId::DEFAULT, 0, 100)),
+            Err(F::InvalidBorrowSlot)
+        ));
+        // A failed import cannot mutate the epoch; a subsequent valid import is exact.
+        assert_eq!(
+            epoch
+                .import_body(
+                    &body(vec![D::Const(7)]),
+                    Span::with_file(FileId::DEFAULT, 0, 100),
+                )
+                .unwrap()
+                .air
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn body_import_relocates_relative_anchors_into_current_body_span() {
+        use crate::SemanticBodyInstData as D;
+        let epoch = Epoch::new(vec![], vec![], vec![]).unwrap();
+        let input = body(vec![D::Const(7)]);
+        let first = epoch
+            .import_body(&input, Span::with_file(FileId::new(3), 100, 110))
+            .unwrap();
+        let shifted = epoch
+            .import_body(&input, Span::with_file(FileId::new(4), 700, 710))
+            .unwrap();
+        assert_eq!(first.air.get(crate::AirRef::from_raw(0)).span.start, 101);
+        assert_eq!(first.air.get(crate::AirRef::from_raw(0)).span.end, 102);
+        assert_eq!(shifted.air.get(crate::AirRef::from_raw(0)).span.start, 701);
+        assert_eq!(shifted.air.get(crate::AirRef::from_raw(0)).span.end, 702);
+        assert_eq!(
+            shifted.air.get(crate::AirRef::from_raw(0)).span.file_id,
+            FileId::new(4)
+        );
+    }
+
+    #[test]
+    fn body_import_rejects_out_of_range_and_overflowing_anchor_domains() {
+        use crate::{SemanticBodyImportFailure as F, SemanticBodyInstData as D};
+        let epoch = Epoch::new(vec![], vec![], vec![]).unwrap();
+        let mut outside = body(vec![D::Const(7)]);
+        Arc::make_mut(&mut outside.instructions)[0].anchor =
+            crate::SemanticBodyAnchor { start: 1, end: 3 };
+        assert!(matches!(
+            epoch.import_body(&outside, Span::with_file(FileId::DEFAULT, 50, 52)),
+            Err(F::InvalidAnchor)
+        ));
+
+        let valid = body(vec![D::Const(7)]);
+        assert!(matches!(
+            epoch.import_body(&valid, Span::with_file(FileId::DEFAULT, u32::MAX, 0),),
+            Err(F::InvalidAnchor)
+        ));
+    }
+
+    #[test]
+    fn builtin_nominals_are_closed_validated_and_round_trip_in_fresh_epochs() {
+        let epoch = Epoch::new(vec![], vec![], vec![]).unwrap();
+        let strbuf = SemanticImportType::BuiltinNominal {
+            name: Arc::from("StrBuf"),
+            kind: SemanticImportNominalKind::Struct,
+        };
+        let local = epoch.import_type(&strbuf).unwrap();
+        assert_eq!(epoch.export_type(local).unwrap(), strbuf);
+
+        assert!(matches!(
+            epoch.import_type(&SemanticImportType::BuiltinNominal {
+                name: Arc::from("NotABuiltin"),
+                kind: SemanticImportNominalKind::Struct,
+            }),
+            Err(SemanticImportFailure::UnknownBuiltinNominal)
+        ));
+        assert!(matches!(
+            epoch.import_type(&SemanticImportType::BuiltinNominal {
+                name: Arc::from("StrBuf"),
+                kind: SemanticImportNominalKind::Enum,
+            }),
+            Err(SemanticImportFailure::BuiltinNominalKindMismatch)
+        ));
+        assert!(matches!(
+            epoch.import_type(&SemanticImportType::BuiltinNominal {
+                name: Arc::from("Arch"),
+                kind: SemanticImportNominalKind::Struct,
+            }),
+            Err(SemanticImportFailure::BuiltinNominalKindMismatch)
         ));
     }
 }

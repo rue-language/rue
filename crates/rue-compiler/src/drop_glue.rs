@@ -337,6 +337,7 @@ fn create_struct_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     AnalyzedFunction {
+        ordinary_owner: None,
         name: fn_name,
         implicit_drop_source: if struct_def.name.starts_with("__anon_struct_") {
             None
@@ -478,6 +479,7 @@ fn create_array_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     AnalyzedFunction {
+        ordinary_owner: None,
         name: fn_name,
         implicit_drop_source: None,
         air,
@@ -609,6 +611,7 @@ fn create_enum_drop_glue_function(enum_id: EnumId, type_pool: &TypeInternPool) -
     let param_modes = vec![false; num_param_slots as usize];
 
     AnalyzedFunction {
+        ordinary_owner: None,
         name: fn_name,
         implicit_drop_source: Some(rue_air::ImplicitDropDependencySourceEvent::NamedEnum {
             file: enum_def.file_id.index(),

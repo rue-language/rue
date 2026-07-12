@@ -165,6 +165,7 @@ fn finalize_function_body_analysis(
         // after its fixed point has completed.
         type_pool: sema.type_pool.clone(),
         body_analysis_work: sema.body_analysis_work,
+        ordinary_body_exports: std::mem::take(&mut sema.ordinary_body_exports),
         analyzed_body_owners: {
             sema.analyzed_body_owners.sort();
             sema.analyzed_body_owners.dedup();
@@ -783,23 +784,49 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
             );
             sema.declaration_type_observer = previous_type_observer;
             sema.body_dependency_observer = previous_body_observer;
+            let ordinary_body_span = sema.rir.get(body).span;
             match analysis {
                 Ok((mut analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
                     sema.body_analysis_work.bodies_succeeded += 1;
                     sema.body_analysis_work.air_instructions_produced +=
                         analyzed.air.instructions().len();
                     sema.body_analysis_work.local_strings_produced += local_strings.len();
+                    let ordinary_owner = sema.body_owner_token(
+                        fn_info.file_id,
+                        sema.interner.resolve(&source_name),
+                        None,
+                        super::BodyOwnerKind::FreeFunction,
+                    );
                     sema.analyzed_body_owners
                         .push(super::AnalyzedBodyOwnerEvent::FreeFunction {
-                            token: sema.body_owner_token(
-                                fn_info.file_id,
-                                sema.interner.resolve(&source_name),
-                                None,
-                                super::BodyOwnerKind::FreeFunction,
-                            ),
+                            token: ordinary_owner,
                             file: fn_info.file_id.index(),
                             name: sema.interner.resolve(&source_name).to_string(),
                         });
+                    analyzed.ordinary_owner = Some(ordinary_owner);
+                    sema.body_analysis_work.ordinary_body_exports_attempted += 1;
+                    match sema.export_ordinary_body(
+                        ordinary_owner,
+                        ordinary_body_span,
+                        &analyzed,
+                        &local_strings,
+                        &warnings,
+                    ) {
+                        Ok(export) => {
+                            sema.body_analysis_work.ordinary_body_exports_succeeded += 1;
+                            sema.body_analysis_work
+                                .ordinary_body_export_instructions_emitted +=
+                                export.body.instructions.len();
+                            sema.body_analysis_work.ordinary_body_export_places_emitted +=
+                                export.body.places.len();
+                            sema.body_analysis_work.ordinary_body_export_strings_emitted +=
+                                export.body.strings.len();
+                            sema.ordinary_body_exports.push(export);
+                        }
+                        Err(_) => {
+                            sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                        }
+                    }
                     analyzed.implicit_drop_source =
                         Some(super::ImplicitDropDependencySourceEvent::FreeFunction {
                             token: sema.body_owner_token(
@@ -973,6 +1000,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                         sema.analyzed_body_owners
                             .push(super::AnalyzedBodyOwnerEvent::Anonymous);
                         let analyzed = AnalyzedFunction {
+                            ordinary_owner: None,
                             name: full_name,
                             implicit_drop_source: Some(
                                 super::ImplicitDropDependencySourceEvent::Anonymous,
@@ -1113,6 +1141,16 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                                 .copied()
                                 .any(|flag| flag),
                         });
+                    analyzed.ordinary_owner = Some(sema.body_owner_token(
+                        method_info.span.file_id,
+                        &method_name_str,
+                        Some(&type_name_str),
+                        if *has_self {
+                            super::BodyOwnerKind::Method
+                        } else {
+                            super::BodyOwnerKind::AssociatedFunction
+                        },
+                    ));
                     analyzed.implicit_drop_source =
                         Some(super::ImplicitDropDependencySourceEvent::NamedMethod {
                             token: sema.body_owner_token(
@@ -1260,6 +1298,12 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                                 owner_name: sema.type_pool.struct_def(struct_id).name.clone(),
                             },
                         );
+                        analyzed.ordinary_owner = Some(sema.body_owner_token(
+                            destructor.span.file_id,
+                            &sema.type_pool.struct_def(struct_id).name,
+                            Some(&sema.type_pool.struct_def(struct_id).name),
+                            super::BodyOwnerKind::Destructor,
+                        ));
                         analyzed.implicit_drop_source =
                             Some(super::ImplicitDropDependencySourceEvent::NamedDestructor {
                                 token: sema.body_owner_token(
@@ -1889,6 +1933,7 @@ mod error_invariant_tests {
             warnings: Vec::new(),
             type_pool: TypeInternPool::new(),
             body_analysis_work: crate::BodyAnalysisWork::default(),
+            ordinary_body_exports: Vec::new(),
             analyzed_body_owners: Vec::new(),
             body_named_dependencies: Vec::new(),
             ordinary_free_function_dependencies: Vec::new(),
@@ -1915,6 +1960,7 @@ mod error_invariant_tests {
     fn func_named(name: &str, air: Air) -> AnalyzedFunction {
         AnalyzedFunction {
             name: name.to_string(),
+            ordinary_owner: None,
             implicit_drop_source: None,
             air,
             num_locals: 0,

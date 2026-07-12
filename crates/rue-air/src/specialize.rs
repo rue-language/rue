@@ -675,6 +675,7 @@ fn create_specialized_function(
 
     Ok(SpecializedBody {
         function: AnalyzedFunction {
+            ordinary_owner: None,
             name: specialized_name_str,
             implicit_drop_source: Some(
                 crate::sema::ImplicitDropDependencySourceEvent::FreeFunction {

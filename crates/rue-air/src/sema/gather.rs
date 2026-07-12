@@ -141,6 +141,7 @@ impl<'a> GatherOutput<'a> {
             named_method_declarations,
             body_analysis_work: super::BodyAnalysisWork::default(),
             analyzed_body_owners: Vec::new(),
+            ordinary_body_exports: Vec::new(),
             body_dependency_observer: None,
             body_owner_tokens: HashMap::new(),
             body_named_dependencies: Vec::new(),

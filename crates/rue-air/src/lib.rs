@@ -18,6 +18,7 @@ mod param_arena;
 mod path_norm;
 mod scope;
 mod sema;
+mod semantic_body;
 mod semantic_import;
 pub mod specialize;
 mod types;
@@ -55,6 +56,13 @@ pub use sema::{
     SemanticExportFailure, SemanticExportParameter, SemanticExportType, SemanticNominalIdentity,
     SemanticParameterMode, SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
     import_candidate_groups,
+};
+pub use semantic_body::{
+    SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg, SemanticBodyDefinitionIdentity,
+    SemanticBodyDefinitionKind, SemanticBodyExport, SemanticBodyExportFailure,
+    SemanticBodyImportFailure, SemanticBodyInst, SemanticBodyInstData, SemanticBodyMatchArm,
+    SemanticBodyPattern, SemanticBodyPlace, SemanticBodyPlaceRef, SemanticBodyProjection,
+    SemanticBodyRef, SemanticBodyWarning, SemanticImportedBody,
 };
 pub use semantic_import::{
     SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,

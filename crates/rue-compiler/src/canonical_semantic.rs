@@ -1,5 +1,7 @@
 //! One-pass canonical declaration binding, body analysis, and CFG lowering.
 
+use std::sync::Arc;
+
 use rue_air::{
     AnalyzedBodyOwnerEvent, BodyAnalysisWork, BodyNamedDependencyEvent, DeclarationBindingWork,
     DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
@@ -99,6 +101,8 @@ pub struct CanonicalSemanticWork {
     pub body_owner_tokens: BodyOwnerTokenWork,
     /// Demand-driven function-body analysis work.
     pub body_analysis: BodyAnalysisWork,
+    /// Observational durable ordinary-body boundary work. Reuse remains zero.
+    pub durable_bodies: crate::DurableBodyWork,
     /// Drop-glue, CFG construction, and optimization work.
     pub cfg: CfgConstructionWork,
     /// Whether this request asked for stable source definition IDs.
@@ -141,6 +145,7 @@ pub struct CanonicalSemanticOutput {
     warnings: Vec<CompileWarning>,
     bound_definitions: Option<BoundDefinitionSet>,
     body_owner_issuer: BoundDefinitionSet,
+    durable_ordinary_body_payloads: Arc<[crate::DurableOrdinaryBodyPayload]>,
     work: CanonicalSemanticWork,
     analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
     body_named_dependencies: Vec<BodyNamedDependencyEvent>,
@@ -268,6 +273,9 @@ impl CanonicalSemanticOutput {
     }
     pub(crate) fn body_owner_issuer(&self) -> &BoundDefinitionSet {
         &self.body_owner_issuer
+    }
+    pub(crate) fn durable_ordinary_body_payloads(&self) -> &[crate::DurableOrdinaryBodyPayload] {
+        &self.durable_ordinary_body_payloads
     }
     /// Structural work performed by this request.
     pub fn work(&self) -> CanonicalSemanticWork {
@@ -591,6 +599,22 @@ fn finish_canonical_analysis(
 
     let sema_output = bound.analyze_all_bodies()?;
     let body_analysis = sema_output.body_analysis_work;
+    let mut durable_body_work = crate::DurableBodyWork {
+        export_attempts: body_analysis.ordinary_body_exports_attempted,
+        export_successes: body_analysis.ordinary_body_exports_succeeded,
+        export_rejections: body_analysis.ordinary_body_exports_rejected,
+        instructions_exported: body_analysis.ordinary_body_export_instructions_emitted,
+        places_exported: body_analysis.ordinary_body_export_places_emitted,
+        strings_exported: body_analysis.ordinary_body_export_strings_emitted,
+        ..crate::DurableBodyWork::default()
+    };
+    let durable_ordinary_body_payloads = crate::convert_semantic_body_exports(
+        &sema_output.ordinary_body_exports,
+        merged,
+        &authoritative_definitions,
+        &mut durable_body_work,
+    )
+    .unwrap_or_else(|_| Arc::from([]));
     let analyzed_body_owners = sema_output.analyzed_body_owners.clone();
     let body_named_dependencies = sema_output.body_named_dependencies.clone();
     let ordinary_free_function_dependencies =
@@ -659,6 +683,7 @@ fn finish_canonical_analysis(
         bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
         body_owner_tokens,
         body_analysis,
+        durable_bodies: durable_body_work,
         cfg: cfg.work,
         stable_ids_requested: request_stable_ids,
         declaration_reuse,
@@ -671,6 +696,7 @@ fn finish_canonical_analysis(
         warnings,
         bound_definitions,
         body_owner_issuer: authoritative_definitions,
+        durable_ordinary_body_payloads,
         work,
         analyzed_body_owners,
         body_named_dependencies,
