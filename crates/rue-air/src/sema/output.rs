@@ -32,6 +32,25 @@ pub struct SpecializedFreeFunctionDependencyEvent {
     pub type_arguments: Vec<u32>,
     pub value_arguments: Vec<u32>,
 }
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NamedMethodDependencyTargetEvent {
+    FreeFunction {
+        file: u32,
+        name: String,
+    },
+    NamedMethod {
+        file: u32,
+        owner_name: String,
+        method_name: String,
+    },
+}
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NamedMethodDependencyEvent {
+    pub caller_file: u32,
+    pub caller_owner_name: String,
+    pub caller_method_name: String,
+    pub target: NamedMethodDependencyTargetEvent,
+}
 
 /// Per-ABI-slot parameter access metadata preserved into CFG.
 ///
@@ -115,6 +134,9 @@ pub struct SemaOutput {
     pub specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
     pub specialized_free_function_dependencies: Vec<SpecializedFreeFunctionDependencyEvent>,
     pub specialized_free_function_dependencies_complete: bool,
+    pub named_method_dependencies: Vec<NamedMethodDependencyEvent>,
+    pub non_generic_named_method_dependencies_complete: bool,
+    pub generic_named_method_dependencies_complete: bool,
 }
 
 /// Value-only workload counters for demand-driven body dispatch.
@@ -125,6 +147,7 @@ pub struct BodyAnalysisWork {
     pub ordinary_free_function_dependency_events: usize,
     pub specialized_origin_records: usize,
     pub specialized_free_function_dependency_events: usize,
+    pub named_method_dependency_events: usize,
     /// Indexed declaration-record lookups for reachable, non-generic free functions.
     pub free_function_record_lookups: usize,
     /// Private declaration-record lookups for reachable named-struct methods.

@@ -59,6 +59,7 @@ pub struct SemanticDependencyManifestWork {
     pub import_records_visited: usize,
     pub free_function_events_translated: usize,
     pub specialization_origins_validated: usize,
+    pub named_method_events_translated: usize,
     pub extra_rir_instructions_visited: usize,
 }
 
@@ -66,6 +67,18 @@ pub struct SemanticDependencyManifestWork {
 pub struct StableFreeFunctionDependency {
     pub caller: StableDefinitionKey,
     pub callee: StableDefinitionKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StableNamedMethodDependencyTarget {
+    FreeFunction(StableDefinitionKey),
+    NamedMethod(StableDefinitionKey),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableNamedMethodDependency {
+    pub caller: StableDefinitionKey,
+    pub target: StableNamedMethodDependencyTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -95,6 +108,9 @@ pub struct SemanticDependencyInputManifest {
     module_imports: Arc<[StableModuleImportDependency]>,
     free_function_dependencies: Arc<[StableFreeFunctionDependency]>,
     free_function_caller_dependencies_complete: bool,
+    named_method_dependencies: Arc<[StableNamedMethodDependency]>,
+    non_generic_named_method_dependencies_complete: bool,
+    generic_named_method_dependencies_complete: bool,
     semantic_dependency_graph_complete: bool,
     definition_universe_complete: bool,
     work: SemanticDependencyManifestWork,
@@ -118,6 +134,15 @@ impl SemanticDependencyInputManifest {
     }
     pub fn free_function_caller_dependencies_complete(&self) -> bool {
         self.free_function_caller_dependencies_complete
+    }
+    pub fn named_method_dependencies(&self) -> &[StableNamedMethodDependency] {
+        &self.named_method_dependencies
+    }
+    pub fn non_generic_named_method_dependencies_complete(&self) -> bool {
+        self.non_generic_named_method_dependencies_complete
+    }
+    pub fn generic_named_method_dependencies_complete(&self) -> bool {
+        self.generic_named_method_dependencies_complete
     }
     pub fn semantic_dependency_graph_complete(&self) -> bool {
         self.semantic_dependency_graph_complete
@@ -709,9 +734,12 @@ impl CanonicalFrontendSession {
         keys.dedup();
         let (
             mut free_function_dependencies,
+            mut named_method_dependencies,
             free_function_events_translated,
             specialization_origins_validated,
+            named_method_events_translated,
             free_function_caller_dependencies_complete,
+            named_method_dependencies_complete,
         ) = match (&semantic, &definitions) {
             (Ok(semantic), Ok(definitions)) => {
                 if definitions.source_revision() != &input.sources {
@@ -755,24 +783,59 @@ impl CanonicalFrontendSession {
                         )?,
                     });
                 }
+                let mut method_edges = Vec::new();
+                for event in semantic.named_method_dependencies() {
+                    let caller = stable_named_method_endpoint(
+                        definitions,
+                        event.caller_file,
+                        &event.caller_owner_name,
+                        &event.caller_method_name,
+                    )?;
+                    let target = match &event.target {
+                        rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
+                            StableNamedMethodDependencyTarget::FreeFunction(
+                                stable_free_function_endpoint(definitions, *file, name)?,
+                            )
+                        }
+                        rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
+                            file,
+                            owner_name,
+                            method_name,
+                        } => StableNamedMethodDependencyTarget::NamedMethod(
+                            stable_named_method_endpoint(
+                                definitions,
+                                *file,
+                                owner_name,
+                                method_name,
+                            )?,
+                        ),
+                    };
+                    method_edges.push(StableNamedMethodDependency { caller, target });
+                }
                 (
                     edges,
+                    method_edges,
                     semantic.ordinary_free_function_dependencies().len()
                         + semantic.specialized_free_function_dependencies().len(),
                     semantic.specialized_free_function_origins().len(),
+                    semantic.named_method_dependencies().len(),
                     semantic.ordinary_free_function_dependencies_complete()
                         && semantic.specialized_free_function_dependencies_complete(),
+                    semantic.non_generic_named_method_dependencies_complete(),
                 )
             }
-            _ => (Vec::new(), 0, 0, false),
+            _ => (Vec::new(), Vec::new(), 0, 0, 0, false, false),
         };
         free_function_dependencies.sort();
         free_function_dependencies.dedup();
+        named_method_dependencies.sort();
+        named_method_dependencies.dedup();
         let work = SemanticDependencyManifestWork {
             definition_records_visited: definition_records.len(),
             import_records_visited: imports.graph().records().len(),
             free_function_events_translated,
             specialization_origins_validated,
+            named_method_events_translated,
             extra_rir_instructions_visited: 0,
         };
         self.work.dependency_manifest_records_visited += work.definition_records_visited;
@@ -811,6 +874,9 @@ impl CanonicalFrontendSession {
             module_imports: module_imports.into(),
             free_function_dependencies: free_function_dependencies.into(),
             free_function_caller_dependencies_complete,
+            named_method_dependencies: named_method_dependencies.into(),
+            non_generic_named_method_dependencies_complete: named_method_dependencies_complete,
+            generic_named_method_dependencies_complete: false,
             semantic_dependency_graph_complete: false,
             definition_universe_complete,
             work,
@@ -838,6 +904,35 @@ fn stable_free_function_endpoint(
     let [record] = matches.as_slice() else {
         return Err(invalid_dependency_manifest(&format!(
             "free-function dependency endpoint ({file}, '{name}') did not join exactly one bound function",
+        )));
+    };
+    Ok(record.stable_key().clone())
+}
+
+fn stable_named_method_endpoint(
+    definitions: &BoundDefinitionSet,
+    file: u32,
+    owner_name: &str,
+    method_name: &str,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    let matches = definitions
+        .definitions()
+        .iter()
+        .filter(|record| {
+            let key = record.stable_key();
+            record.declaration_span().file_id.index() == file
+                && key.name() == method_name
+                && key.namespace() == StableDefinitionNamespace::Method
+                && matches!(
+                    key.kind(),
+                    StableDefinitionKind::Method | StableDefinitionKind::AssociatedFunction
+                )
+                && key.owner().is_some_and(|owner| owner.name() == owner_name)
+        })
+        .collect::<Vec<_>>();
+    let [record] = matches.as_slice() else {
+        return Err(invalid_dependency_manifest(&format!(
+            "named-method dependency endpoint ({file}, '{owner_name}', '{method_name}') did not join exactly one bound method",
         )));
     };
     Ok(record.stable_key().clone())
@@ -1862,6 +1957,7 @@ mod tests {
             .unwrap();
         assert!(stable_free_function_endpoint(&definitions, 1, "missing").is_err());
         assert!(stable_free_function_endpoint(&definitions, 1, "answer").is_err());
+        assert!(stable_named_method_endpoint(&definitions, 1, "answer", "answer").is_err());
 
         let rejected = snapshot(
             &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { true }")],
@@ -1874,6 +1970,13 @@ mod tests {
         assert!(!manifest.definition_universe_complete());
         assert!(!manifest.free_function_caller_dependencies_complete());
         assert!(manifest.free_function_dependencies().is_empty());
+    }
+
+    #[test]
+    fn stable_named_method_dependency_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<StableNamedMethodDependency>();
+        assert_send_sync::<StableNamedMethodDependencyTarget>();
     }
 
     #[test]
@@ -1950,6 +2053,88 @@ mod tests {
                 .iter()
                 .all(|edge| { edge.callee.name() != "get" && edge.callee.name() != "Box" })
         );
+    }
+
+    fn named_method_edge_names(
+        manifest: &SemanticDependencyInputManifest,
+    ) -> Vec<(String, String, String, String, String, String)> {
+        manifest
+            .named_method_dependencies()
+            .iter()
+            .map(|edge| {
+                let caller_owner = edge.caller.owner().unwrap().name().to_owned();
+                match &edge.target {
+                    StableNamedMethodDependencyTarget::FreeFunction(target) => (
+                        edge.caller.module().as_str().to_owned(),
+                        caller_owner,
+                        edge.caller.name().to_owned(),
+                        "free".to_owned(),
+                        target.module().as_str().to_owned(),
+                        target.name().to_owned(),
+                    ),
+                    StableNamedMethodDependencyTarget::NamedMethod(target) => (
+                        edge.caller.module().as_str().to_owned(),
+                        caller_owner,
+                        edge.caller.name().to_owned(),
+                        target.owner().unwrap().name().to_owned(),
+                        target.module().as_str().to_owned(),
+                        target.name().to_owned(),
+                    ),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn named_method_edges_are_stable_exact_and_normalize_generic_free_callees() {
+        let program = r#"fn helper() -> i32 { 1 }
+            fn generic(comptime n: i32) -> i32 { helper() + n }
+            struct B { value: i32, fn ping(borrow self) -> i32 { helper() + self.value } }
+            struct A {
+                value: i32,
+                fn run(borrow self) -> i32 {
+                    let b = B { value: self.value };
+                    b.ping() + self.next()
+                }
+                fn next(borrow self) -> i32 { generic(2) + self.run() }
+            }
+            fn main() -> i32 { let a = A { value: 1 }; a.run() }"#;
+        let first_source = snapshot(&[(9, "/one/main.rue", "main.rue", program)], 9);
+        let moved_source = snapshot(&[(41, "/else/main.rue", "main.rue", program)], 41);
+        let build = |source: &SourceSnapshot| {
+            let mut session = CanonicalFrontendSession::new();
+            session.update(source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(&first_source);
+        let moved = build(&moved_source);
+        assert_eq!(
+            named_method_edge_names(&first),
+            named_method_edge_names(&moved)
+        );
+        let edges = named_method_edge_names(&first);
+        for expected in [
+            ("main.rue", "A", "run", "B", "main.rue", "ping"),
+            ("main.rue", "A", "run", "A", "main.rue", "next"),
+            ("main.rue", "A", "next", "A", "main.rue", "run"),
+            ("main.rue", "A", "next", "free", "main.rue", "generic"),
+            ("main.rue", "B", "ping", "free", "main.rue", "helper"),
+        ] {
+            assert!(edges.contains(&(
+                expected.0.into(),
+                expected.1.into(),
+                expected.2.into(),
+                expected.3.into(),
+                expected.4.into(),
+                expected.5.into(),
+            )));
+        }
+        assert!(first.non_generic_named_method_dependencies_complete());
+        assert!(!first.generic_named_method_dependencies_complete());
+        assert_eq!(first.work().named_method_events_translated, edges.len());
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
     }
 
     #[test]

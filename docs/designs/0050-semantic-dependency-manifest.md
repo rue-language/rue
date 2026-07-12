@@ -123,3 +123,19 @@ and specialized free-function callers to free-function callees. The overall
 semantic graph remains incomplete until method/destructor callers, declaration
 and type/constant/drop dependencies are captured, so these edges still do not
 authorize AIR or CFG reuse.
+
+Named methods on stable named structs now have a second neutral capture seam.
+The caller is `(FileId, owned owner name, owned method name)` and each target is
+tagged as a free function or another named method. Compiler translation joins
+methods by exact revision, FileId, owner, method namespace and
+method/associated-function kind; anonymous owners and invalid endpoints never
+silently enter the stable graph. Stable named-method edges are sorted and
+deduplicated without another RIR traversal.
+
+`non_generic_named_method_dependencies_complete` covers reachable named methods
+without comptime parameters calling free functions (including generic free
+function bases) or other named methods. Generic named-method bodies have no
+specialization/base-owner provenance equivalent to free functions, so
+`generic_named_method_dependencies_complete` remains false. Anonymous methods,
+destructors, constructors and intrinsics remain outside this surface and keep
+the overall semantic graph incomplete.

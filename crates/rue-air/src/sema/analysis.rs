@@ -181,6 +181,14 @@ fn finalize_function_body_analysis(
             sema.specialized_free_function_dependencies.clone()
         },
         specialized_free_function_dependencies_complete: true,
+        named_method_dependencies: {
+            sema.named_method_dependencies.sort();
+            sema.named_method_dependencies.dedup();
+            sema.named_method_dependencies.clone()
+        },
+        non_generic_named_method_dependencies_complete: sema
+            .non_generic_named_method_dependencies_complete,
+        generic_named_method_dependencies_complete: false,
     };
 
     errors.into_result_with(output)
@@ -376,6 +384,81 @@ fn enqueue_references_sorted(
         .collect();
     meths.sort_by_key(|&(sid, name)| (sid.0, interner.resolve(&name)));
     pending_methods.extend(meths);
+}
+
+fn named_method_dependency_events(
+    sema: &Sema<'_>,
+    caller_struct: StructId,
+    caller_method: Spur,
+    referenced_functions: &HashSet<Spur>,
+    referenced_methods: &HashSet<(StructId, Spur)>,
+) -> CompileResult<Vec<super::NamedMethodDependencyEvent>> {
+    let caller_info = sema
+        .methods
+        .get(&(caller_struct, caller_method))
+        .ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InvalidCompilerInput(
+                    "named-method dependency caller is absent from semantic declarations".into(),
+                ),
+                rue_span::Span::default(),
+            )
+        })?;
+    let caller_owner_name = sema.type_pool.struct_def(caller_struct).name.clone();
+    let caller_method_name = sema.interner.resolve(&caller_method).to_string();
+    let mut events = Vec::new();
+    for callee in referenced_functions {
+        let info = sema.functions.get(callee).ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InvalidCompilerInput(
+                    "named method references a free function absent from semantic declarations"
+                        .into(),
+                ),
+                caller_info.span,
+            )
+        })?;
+        events.push(super::NamedMethodDependencyEvent {
+            caller_file: caller_info.span.file_id.index(),
+            caller_owner_name: caller_owner_name.clone(),
+            caller_method_name: caller_method_name.clone(),
+            target: super::NamedMethodDependencyTargetEvent::FreeFunction {
+                file: info.file_id.index(),
+                name: sema
+                    .interner
+                    .resolve(&sema.source_function_name(*callee))
+                    .to_string(),
+            },
+        });
+    }
+    for (callee_struct, callee_method) in referenced_methods {
+        let owner_name = sema.type_pool.struct_def(*callee_struct).name.clone();
+        if owner_name.starts_with("__anon_struct_") {
+            continue;
+        }
+        let info = sema
+            .methods
+            .get(&(*callee_struct, *callee_method))
+            .ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InvalidCompilerInput(
+                        "named method references a named method absent from semantic declarations"
+                            .into(),
+                    ),
+                    caller_info.span,
+                )
+            })?;
+        events.push(super::NamedMethodDependencyEvent {
+            caller_file: caller_info.span.file_id.index(),
+            caller_owner_name: caller_owner_name.clone(),
+            caller_method_name: caller_method_name.clone(),
+            target: super::NamedMethodDependencyTargetEvent::NamedMethod {
+                file: info.span.file_id.index(),
+                owner_name,
+                method_name: sema.interner.resolve(callee_method).to_string(),
+            },
+        });
+    }
+    Ok(events)
 }
 
 /// Enqueue anonymous destructors registered by comptime evaluation.
@@ -746,6 +829,31 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 *self_mode,
             ) {
                 Ok((analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                    let caller_is_generic = sema
+                        .param_arena
+                        .comptime(method_info.params)
+                        .iter()
+                        .any(|is_comptime| *is_comptime);
+                    if caller_is_generic {
+                    } else {
+                        match named_method_dependency_events(
+                            sema,
+                            struct_id,
+                            method_name,
+                            &referenced_fns,
+                            &referenced_meths,
+                        ) {
+                            Ok(events) => {
+                                sema.body_analysis_work.named_method_dependency_events +=
+                                    events.len();
+                                sema.named_method_dependencies.extend(events);
+                            }
+                            Err(error) => {
+                                errors.push(error);
+                                continue;
+                            }
+                        }
+                    }
                     functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
                     enqueue_references_sorted(
@@ -1415,6 +1523,9 @@ mod error_invariant_tests {
             specialized_free_function_origins: Vec::new(),
             specialized_free_function_dependencies: Vec::new(),
             specialized_free_function_dependencies_complete: false,
+            named_method_dependencies: Vec::new(),
+            non_generic_named_method_dependencies_complete: false,
+            generic_named_method_dependencies_complete: false,
         }
     }
 
