@@ -99,13 +99,27 @@ The first request-local capture seam now records free-function references from
 ordinary reachable free-function bodies at the existing worklist boundary. Its
 neutral endpoints are the defining FileId epoch plus owned source name; methods,
 constructors and intrinsics remain excluded by their separate channels. The
-output explicitly reports incomplete because generic-specialized, method and
-destructor callers have separate driver branches not yet carrying a stable
-owner. These events are not translated to `StableDefinitionKey` and must not
-drive reuse until every branch is captured and unique translation fails closed.
+ordinary-caller output reports this surface complete; method and destructor
+callers remain separate, explicitly incomplete surfaces.
 
 Specialized free-function bodies now retain a neutral origin record containing
 their mangled analyzed name, exact generic base FileId/source name, and
 request-local type/value specialization argument words. This survives fixpoint
 discovery without claiming that the argument encoding is a durable
-cross-request key. Compiler-layer stable-key translation remains prerequisite.
+cross-request key.
+
+Specialized-body free-function references are now captured alongside that
+origin at the existing specialization-analysis seam, including later fixpoint
+rounds and recursion. `semantic_dependency_inputs` joins every ordinary and
+specialized endpoint against the exact-revision `BoundDefinitionSet` by FileId,
+owned source name, value namespace, and function kind. Missing, ambiguous, or
+non-function endpoints fail closed. The resulting sorted stable edges use only
+the generic base caller and callee `StableDefinitionKey`; specialization
+argument words remain request-local evidence and distinct instances deduplicate
+to one stable edge. Work counters pin zero additional RIR visits.
+
+The narrow `free_function_caller_dependencies_complete` flag covers ordinary
+and specialized free-function callers to free-function callees. The overall
+semantic graph remains incomplete until method/destructor callers, declaration
+and type/constant/drop dependencies are captured, so these edges still do not
+authorize AIR or CFG reuse.

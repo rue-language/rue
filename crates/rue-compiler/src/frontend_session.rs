@@ -10,7 +10,8 @@ use crate::{
     CanonicalRirOutput, CanonicalRirWork, CanonicalSemanticOutput, CanonicalSemanticWork,
     CodegenInputDescriptor, CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind,
     ModuleResolutionInputs, ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor,
-    SourceRevision, SourceSnapshot, StableDefinitionKey, analyze_canonical_program,
+    SourceRevision, SourceSnapshot, StableDefinitionKey, StableDefinitionKind,
+    StableDefinitionNamespace, analyze_canonical_program,
     bound_definitions::bind_canonical_definitions_with_work,
     canonical_merge::merge_parsed_modules_reusing_definitions, lower_canonical_rir,
     parsed_modules::ParsedProgram, resolve_canonical_import_graph, validate_canonical_import_graph,
@@ -56,7 +57,15 @@ pub struct CanonicalFrontendSessionWork {
 pub struct SemanticDependencyManifestWork {
     pub definition_records_visited: usize,
     pub import_records_visited: usize,
+    pub free_function_events_translated: usize,
+    pub specialization_origins_validated: usize,
     pub extra_rir_instructions_visited: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableFreeFunctionDependency {
+    pub caller: StableDefinitionKey,
+    pub callee: StableDefinitionKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -84,6 +93,9 @@ pub struct SemanticDependencyInputManifest {
     imports: CanonicalImportGraph,
     definitions: Arc<[StableDefinitionKey]>,
     module_imports: Arc<[StableModuleImportDependency]>,
+    free_function_dependencies: Arc<[StableFreeFunctionDependency]>,
+    free_function_caller_dependencies_complete: bool,
+    semantic_dependency_graph_complete: bool,
     definition_universe_complete: bool,
     work: SemanticDependencyManifestWork,
 }
@@ -100,6 +112,15 @@ impl SemanticDependencyInputManifest {
     }
     pub fn module_imports(&self) -> &[StableModuleImportDependency] {
         &self.module_imports
+    }
+    pub fn free_function_dependencies(&self) -> &[StableFreeFunctionDependency] {
+        &self.free_function_dependencies
+    }
+    pub fn free_function_caller_dependencies_complete(&self) -> bool {
+        self.free_function_caller_dependencies_complete
+    }
+    pub fn semantic_dependency_graph_complete(&self) -> bool {
+        self.semantic_dependency_graph_complete
     }
     pub fn definition_universe_complete(&self) -> bool {
         self.definition_universe_complete
@@ -673,6 +694,7 @@ impl CanonicalFrontendSession {
             return Ok(cached.clone());
         }
         self.work.dependency_manifests.executions += 1;
+        let semantic = self.semantic(options);
         let definitions = self.stable_definitions(options);
         let definition_universe_complete = definitions.is_ok();
         let definition_records = definitions
@@ -685,9 +707,72 @@ impl CanonicalFrontendSession {
             .collect::<Vec<_>>();
         keys.sort();
         keys.dedup();
+        let (
+            mut free_function_dependencies,
+            free_function_events_translated,
+            specialization_origins_validated,
+            free_function_caller_dependencies_complete,
+        ) = match (&semantic, &definitions) {
+            (Ok(semantic), Ok(definitions)) => {
+                if definitions.source_revision() != &input.sources {
+                    return Err(invalid_dependency_manifest(
+                        "semantic dependency translation used a foreign definition revision",
+                    ));
+                }
+                let mut edges = Vec::new();
+                for origin in semantic.specialized_free_function_origins() {
+                    stable_free_function_endpoint(
+                        definitions,
+                        origin.base_file,
+                        &origin.base_name,
+                    )?;
+                }
+                for event in semantic.ordinary_free_function_dependencies() {
+                    edges.push(StableFreeFunctionDependency {
+                        caller: stable_free_function_endpoint(
+                            definitions,
+                            event.caller_file,
+                            &event.caller_name,
+                        )?,
+                        callee: stable_free_function_endpoint(
+                            definitions,
+                            event.callee_file,
+                            &event.callee_name,
+                        )?,
+                    });
+                }
+                for event in semantic.specialized_free_function_dependencies() {
+                    edges.push(StableFreeFunctionDependency {
+                        caller: stable_free_function_endpoint(
+                            definitions,
+                            event.base_file,
+                            &event.base_name,
+                        )?,
+                        callee: stable_free_function_endpoint(
+                            definitions,
+                            event.callee_file,
+                            &event.callee_name,
+                        )?,
+                    });
+                }
+                (
+                    edges,
+                    semantic.ordinary_free_function_dependencies().len()
+                        + semantic.specialized_free_function_dependencies().len(),
+                    semantic.specialized_free_function_origins().len(),
+                    semantic.ordinary_free_function_dependencies_complete()
+                        && semantic.specialized_free_function_dependencies_complete(),
+                )
+            }
+            _ => (Vec::new(), 0, 0, false),
+        };
+        free_function_dependencies.sort();
+        free_function_dependencies.dedup();
         let work = SemanticDependencyManifestWork {
             definition_records_visited: definition_records.len(),
             import_records_visited: imports.graph().records().len(),
+            free_function_events_translated,
+            specialization_origins_validated,
             extra_rir_instructions_visited: 0,
         };
         self.work.dependency_manifest_records_visited += work.definition_records_visited;
@@ -724,12 +809,44 @@ impl CanonicalFrontendSession {
             imports: imports.graph().clone(),
             definitions: keys.into(),
             module_imports: module_imports.into(),
+            free_function_dependencies: free_function_dependencies.into(),
+            free_function_caller_dependencies_complete,
+            semantic_dependency_graph_complete: false,
             definition_universe_complete,
             work,
         });
         self.dependency_manifest_cache.push(manifest.clone());
         Ok(manifest)
     }
+}
+
+fn stable_free_function_endpoint(
+    definitions: &BoundDefinitionSet,
+    file: u32,
+    name: &str,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    let matches = definitions
+        .definitions()
+        .iter()
+        .filter(|record| {
+            record.declaration_span().file_id.index() == file
+                && record.stable_key().name() == name
+                && record.stable_key().namespace() == StableDefinitionNamespace::Value
+                && record.stable_key().kind() == StableDefinitionKind::Function
+        })
+        .collect::<Vec<_>>();
+    let [record] = matches.as_slice() else {
+        return Err(invalid_dependency_manifest(&format!(
+            "free-function dependency endpoint ({file}, '{name}') did not join exactly one bound function",
+        )));
+    };
+    Ok(record.stable_key().clone())
+}
+
+fn invalid_dependency_manifest(reason: &str) -> CompileErrors {
+    CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+        reason.to_owned(),
+    )))
 }
 
 fn same_attempt(left: &SourceSnapshot, right: &SourceSnapshot) -> bool {
@@ -1551,6 +1668,288 @@ mod tests {
         assert_eq!(missing.work().import_records_visited, 1);
         assert_eq!(missing.work().extra_rir_instructions_visited, 0);
         assert_eq!(session.work().dependency_manifests.executions, 2);
+    }
+
+    fn stable_edge_names(
+        manifest: &SemanticDependencyInputManifest,
+    ) -> Vec<(String, String, String, String)> {
+        manifest
+            .free_function_dependencies()
+            .iter()
+            .map(|edge| {
+                (
+                    edge.caller.module().as_str().to_owned(),
+                    edge.caller.name().to_owned(),
+                    edge.callee.module().as_str().to_owned(),
+                    edge.callee.name().to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn specialized_free_function_edges_are_stable_and_deduplicate_instances() {
+        let first = snapshot(
+            &[
+                (
+                    9,
+                    "/one/main.rue",
+                    "main.rue",
+                    r#"const lib = @import("lib.rue");
+                       fn main() -> i32 { lib.wrap(1, 10) + lib.wrap(2, 20) }"#,
+                ),
+                (
+                    3,
+                    "/one/lib.rue",
+                    "lib.rue",
+                    r#"fn leaf(value: i32) -> i32 { value }
+                       fn inner(comptime n: i32, value: i32) -> i32 { leaf(value) + n }
+                       pub fn wrap(comptime n: i32, value: i32) -> i32 { inner(n, value) }"#,
+                ),
+            ],
+            9,
+        );
+        let moved = snapshot(
+            &[
+                (
+                    41,
+                    "/else/lib.rue",
+                    "lib.rue",
+                    r#"fn leaf(value: i32) -> i32 { value }
+                       fn inner(comptime n: i32, value: i32) -> i32 { leaf(value) + n }
+                       pub fn wrap(comptime n: i32, value: i32) -> i32 { inner(n, value) }"#,
+                ),
+                (
+                    7,
+                    "/else/main.rue",
+                    "main.rue",
+                    r#"const lib = @import("lib.rue");
+                       fn main() -> i32 { lib.wrap(1, 10) + lib.wrap(2, 20) }"#,
+                ),
+            ],
+            7,
+        );
+        let build = |source: &SourceSnapshot| {
+            let mut session = CanonicalFrontendSession::new();
+            session.update(source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let first = build(&first);
+        let moved = build(&moved);
+        assert_eq!(stable_edge_names(&first), stable_edge_names(&moved));
+        assert_eq!(
+            stable_edge_names(&first),
+            vec![
+                (
+                    "lib.rue".into(),
+                    "inner".into(),
+                    "lib.rue".into(),
+                    "leaf".into()
+                ),
+                (
+                    "lib.rue".into(),
+                    "wrap".into(),
+                    "lib.rue".into(),
+                    "inner".into()
+                ),
+                (
+                    "main.rue".into(),
+                    "main".into(),
+                    "lib.rue".into(),
+                    "wrap".into()
+                ),
+            ]
+        );
+        assert!(first.free_function_caller_dependencies_complete());
+        assert!(!first.semantic_dependency_graph_complete());
+        assert_eq!(first.work().specialization_origins_validated, 4);
+        assert_eq!(first.work().free_function_events_translated, 5);
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn recursive_specialization_edges_and_renames_are_exact() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                r#"fn leaf(value: i32) -> i32 { value }
+                   fn fib(comptime n: i32) -> i32 {
+                       if n < 2 { leaf(n) } else { fib(n - 1) + fib(n - 2) }
+                   }
+                   fn main() -> i32 { fib(5) + fib(5) }"#,
+            )],
+            1,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let manifest = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        assert_eq!(
+            stable_edge_names(&manifest),
+            vec![
+                (
+                    "main.rue".into(),
+                    "fib".into(),
+                    "main.rue".into(),
+                    "fib".into()
+                ),
+                (
+                    "main.rue".into(),
+                    "fib".into(),
+                    "main.rue".into(),
+                    "leaf".into()
+                ),
+                (
+                    "main.rue".into(),
+                    "main".into(),
+                    "main.rue".into(),
+                    "fib".into()
+                ),
+            ]
+        );
+        assert_eq!(manifest.work().specialization_origins_validated, 6);
+        assert!(manifest.work().free_function_events_translated > 3);
+
+        let renamed = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                r#"fn terminal(value: i32) -> i32 { value }
+                   fn fib(comptime n: i32) -> i32 {
+                       if n < 2 { terminal(n) } else { fib(n - 1) + fib(n - 2) }
+                   }
+                   fn main() -> i32 { fib(5) + fib(5) }"#,
+            )],
+            1,
+        );
+        session.update(&renamed).into_result().unwrap();
+        let renamed = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        assert!(
+            stable_edge_names(&renamed)
+                .iter()
+                .any(|edge| edge.3 == "terminal")
+        );
+        assert!(
+            !stable_edge_names(&renamed)
+                .iter()
+                .any(|edge| edge.3 == "leaf")
+        );
+    }
+
+    #[test]
+    fn dependency_endpoint_translation_fails_closed_for_missing_and_non_functions() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "const answer: i32 = 42; fn main() -> i32 { answer }",
+            )],
+            1,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let definitions = session
+            .stable_definitions(&CompileOptions::default())
+            .unwrap();
+        assert!(stable_free_function_endpoint(&definitions, 1, "missing").is_err());
+        assert!(stable_free_function_endpoint(&definitions, 1, "answer").is_err());
+
+        let rejected = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { true }")],
+            1,
+        );
+        session.update(&rejected).into_result().unwrap();
+        let manifest = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        assert!(!manifest.definition_universe_complete());
+        assert!(!manifest.free_function_caller_dependencies_complete());
+        assert!(manifest.free_function_dependencies().is_empty());
+    }
+
+    #[test]
+    fn sibling_generic_owners_stay_distinct_and_non_function_calls_are_excluded() {
+        let source = snapshot(
+            &[
+                (
+                    1,
+                    "/p/main.rue",
+                    "main.rue",
+                    r#"const left = @import("left.rue");
+                       const right = @import("right.rue");
+                       fn main() -> i32 { left.id(1) + right.id(2) }"#,
+                ),
+                (
+                    2,
+                    "/p/left.rue",
+                    "left.rue",
+                    r#"struct Box { value: i32, fn get(borrow self) -> i32 { self.value } }
+                       fn leaf(value: i32) -> i32 { value }
+                       pub fn id(comptime n: i32) -> i32 {
+                           let value = Box { value: n };
+                           @dbg(n);
+                           leaf(value.get())
+                       }"#,
+                ),
+                (
+                    3,
+                    "/p/right.rue",
+                    "right.rue",
+                    r#"fn leaf(value: i32) -> i32 { value }
+                       pub fn id(comptime n: i32) -> i32 { leaf(n) }"#,
+                ),
+            ],
+            1,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let manifest = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        assert_eq!(
+            stable_edge_names(&manifest),
+            vec![
+                (
+                    "left.rue".into(),
+                    "id".into(),
+                    "left.rue".into(),
+                    "leaf".into()
+                ),
+                (
+                    "main.rue".into(),
+                    "main".into(),
+                    "left.rue".into(),
+                    "id".into()
+                ),
+                (
+                    "main.rue".into(),
+                    "main".into(),
+                    "right.rue".into(),
+                    "id".into()
+                ),
+                (
+                    "right.rue".into(),
+                    "id".into(),
+                    "right.rue".into(),
+                    "leaf".into()
+                ),
+            ]
+        );
+        assert!(
+            manifest
+                .free_function_dependencies()
+                .iter()
+                .all(|edge| { edge.callee.name() != "get" && edge.callee.name() != "Box" })
+        );
     }
 
     #[test]

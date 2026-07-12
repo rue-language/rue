@@ -46,10 +46,16 @@ incremental-compilation goal is complete.
    a stable ordered destination universe, explicit semantic inputs, and complete
    resolved/missing/ambiguous module-import edges. Definition-level edges and
    body/CFG reuse remain intentionally absent.
-   Ordinary free-function bodies now retain request-local direct free-call
-   events at the worklist boundary, but the completeness bit remains false until
-   specialization and method/destructor caller branches plus stable-key
-   translation land.
+   Ordinary and specialized free-function callers now retain direct free-call
+   events at their existing analysis boundaries. The dependency-input query
+   validates specialized origins against the exact source revision and
+   translates endpoints to sorted, deduplicated `StableDefinitionKey` edges.
+   Relocation/FileId/input order, recursion, later specialization rounds, sibling
+   names, and rename sensitivity are gated with zero extra RIR visits; benchmark
+   output exposes ordinary events, specialization origins, and specialized
+   events. This narrow free-function caller surface is complete, while method
+   and destructor callers plus declaration/type/const/drop surfaces keep the
+   overall graph explicitly incomplete and prevent body/CFG reuse.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now

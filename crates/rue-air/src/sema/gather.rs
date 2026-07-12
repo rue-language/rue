@@ -142,6 +142,7 @@ impl<'a> GatherOutput<'a> {
             body_analysis_work: super::BodyAnalysisWork::default(),
             ordinary_free_function_dependencies: Vec::new(),
             specialized_free_function_origins: Vec::new(),
+            specialized_free_function_dependencies: Vec::new(),
             constants: self.constants,
             constants_by_file_name: self.constants_by_file_name,
             module_bindings: self.module_bindings,

@@ -59,7 +59,7 @@ pub use known_symbols::KnownSymbols;
 pub use module_path::{DirResolution, ModulePath, import_candidate_groups};
 pub use output::{
     AnalyzedFunction, BodyAnalysisWork, OrdinaryFreeFunctionDependencyEvent, ParamSlotModes,
-    SemaOutput, SpecializedFreeFunctionOrigin,
+    SemaOutput, SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -105,6 +105,7 @@ pub struct Sema<'a> {
     pub(crate) body_analysis_work: BodyAnalysisWork,
     pub(crate) ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
     pub(crate) specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
+    pub(crate) specialized_free_function_dependencies: Vec<SpecializedFreeFunctionDependencyEvent>,
     /// Compatibility value-constant table for globally unique bare names.
     /// Holds value constants only (e.g. `const MAX: i32 = 10`); module bindings
     /// live in [`Self::module_bindings`]. If a value-constant name appears in
@@ -233,6 +234,7 @@ impl<'a> Sema<'a> {
             body_analysis_work: BodyAnalysisWork::default(),
             ordinary_free_function_dependencies: Vec::new(),
             specialized_free_function_origins: Vec::new(),
+            specialized_free_function_dependencies: Vec::new(),
             constants: HashMap::new(),
             constants_by_file_name: HashMap::new(),
             module_bindings: HashMap::new(),

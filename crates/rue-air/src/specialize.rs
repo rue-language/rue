@@ -281,18 +281,52 @@ impl Specializer {
                     &base_info,
                     interner,
                 )?;
+                let specialized_name = specialized.function.name.clone();
+                let base_name = interner
+                    .resolve(&sema.source_function_name(key.base_name))
+                    .to_string();
+                let type_arguments = key
+                    .type_args
+                    .iter()
+                    .map(|ty| ty.as_u32())
+                    .collect::<Vec<_>>();
+                let value_arguments = encode_const_values(&key.value_args);
                 sema.specialized_free_function_origins.push(
                     crate::sema::SpecializedFreeFunctionOrigin {
-                        specialized_name: specialized.function.name.clone(),
+                        specialized_name: specialized_name.clone(),
                         base_file: base_info.file_id.index(),
-                        base_name: interner
-                            .resolve(&sema.source_function_name(key.base_name))
-                            .to_string(),
-                        type_arguments: key.type_args.iter().map(|ty| ty.as_u32()).collect(),
-                        value_arguments: encode_const_values(&key.value_args),
+                        base_name: base_name.clone(),
+                        type_arguments: type_arguments.clone(),
+                        value_arguments: value_arguments.clone(),
                     },
                 );
                 sema.body_analysis_work.specialized_origin_records += 1;
+                for callee in &specialized.referenced_functions {
+                    let callee_info = sema.functions.get(callee).ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::InvalidCompilerInput(format!(
+                                "specialized body '{}' references a free function absent from semantic declarations",
+                                specialized_name
+                            )),
+                            base_info.span,
+                        )
+                    })?;
+                    sema.specialized_free_function_dependencies.push(
+                        crate::sema::SpecializedFreeFunctionDependencyEvent {
+                            specialized_name: specialized_name.clone(),
+                            base_file: base_info.file_id.index(),
+                            base_name: base_name.clone(),
+                            callee_file: callee_info.file_id.index(),
+                            callee_name: interner
+                                .resolve(&sema.source_function_name(*callee))
+                                .to_string(),
+                            type_arguments: type_arguments.clone(),
+                            value_arguments: value_arguments.clone(),
+                        },
+                    );
+                    sema.body_analysis_work
+                        .specialized_free_function_dependency_events += 1;
+                }
 
                 discovered
                     .functions
