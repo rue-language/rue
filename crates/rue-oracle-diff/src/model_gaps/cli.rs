@@ -159,6 +159,12 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.differential_opt",
+        "fixed_string_inout_forwarding_and_projected_lvalues_across_opt_levels",
+        semantic(SemanticGapKind::InoutParameterForwarding),
+        &[],
+    ),
+    Entry::new(
+        "cli.differential_opt",
         "raw_pointer_place_operands_across_opt_levels",
         intrinsic(UnsupportedIntrinsicKind::RawAddress),
         &[],
