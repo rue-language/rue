@@ -361,8 +361,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        LinkerMode, OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
-        Target,
+        LinkerMode, ModuleId, OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata,
+        SourceSnapshot, Target,
     };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -805,6 +805,32 @@ mod tests {
                 .bind_invocations,
             1
         );
+    }
+
+    #[test]
+    fn published_queries_support_stable_tooling_lookups() {
+        let source = base();
+        let options = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        let published = session.update(&source).into_result().unwrap();
+
+        let module_id = ModuleId::from_logical_path("a.rue").unwrap();
+        let module = published.module(&module_id).expect("module by stable ID");
+        assert_eq!(module.module_id(), &module_id);
+        assert!(
+            published
+                .module(&ModuleId::from_logical_path("missing.rue").unwrap())
+                .is_none()
+        );
+
+        let definitions = session.stable_definitions(&options).unwrap();
+        let record = &definitions.definitions()[0];
+        assert!(std::ptr::eq(
+            definitions
+                .definition_by_key(record.stable_key())
+                .expect("definition by stable key"),
+            record
+        ));
     }
 
     #[test]

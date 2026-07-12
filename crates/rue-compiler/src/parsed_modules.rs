@@ -403,6 +403,14 @@ impl ParsedProgram {
         &self.modules
     }
 
+    /// Look up a module by its stable logical identity.
+    pub fn module(&self, id: &ModuleId) -> Option<&Arc<ParsedModule>> {
+        self.modules
+            .binary_search_by(|module| module.module_id().cmp(id))
+            .ok()
+            .map(|index| &self.modules[index])
+    }
+
     /// Traverse module-qualified ASTs in canonical logical-module order.
     pub fn ast_views(&self) -> impl ExactSizeIterator<Item = ParsedAstView> + '_ {
         self.modules
