@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use crate::{
     CanonicalMergeWork, CanonicalMergedProgram, CanonicalParseSession, CanonicalRirOutput,
-    CanonicalRirWork, CompileError, CompileErrors, ErrorKind, ParseInvalidationSummary,
-    ParsedModulesWork, SourceSnapshot, lower_canonical_rir, merge_parsed_modules,
-    parsed_modules::ParsedProgram,
+    CanonicalRirWork, CanonicalSemanticOutput, CanonicalSemanticWork, CodegenInputDescriptor,
+    CompileError, CompileErrors, CompileOptions, ErrorKind, ParseInvalidationSummary,
+    ParsedModulesWork, SemanticInputDescriptor, SourceSnapshot, analyze_canonical_program,
+    lower_canonical_rir, merge_parsed_modules, parsed_modules::ParsedProgram,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -26,6 +27,17 @@ pub struct CanonicalFrontendSessionWork {
     pub downstream_invalidations: usize,
     pub last_merge: CanonicalMergeWork,
     pub last_rir: CanonicalRirWork,
+    pub semantic: FrontendQueryWork,
+    pub semantic_entries: usize,
+    pub semantic_entries_invalidated: usize,
+    pub semantic_records: Vec<SemanticQueryRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticQueryRecord {
+    pub input: CodegenInputDescriptor,
+    pub work: CanonicalSemanticWork,
+    pub failed: bool,
 }
 
 #[derive(Debug)]
@@ -60,7 +72,14 @@ pub struct CanonicalFrontendSession {
     published: Option<Arc<ParsedProgram>>,
     merge_cache: Option<Result<Arc<CanonicalMergedProgram>, CompileErrors>>,
     rir_cache: Option<Arc<CanonicalRirOutput>>,
+    semantic_cache: Vec<SemanticCacheEntry>,
     work: CanonicalFrontendSessionWork,
+}
+
+#[derive(Debug)]
+struct SemanticCacheEntry {
+    input: CodegenInputDescriptor,
+    result: Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
 }
 
 impl CanonicalFrontendSession {
@@ -100,8 +119,12 @@ impl CanonicalFrontendSession {
                     }
                     self.merge_cache = None;
                     self.rir_cache = None;
+                    self.work.semantic_entries_invalidated += self.semantic_cache.len();
+                    self.semantic_cache.clear();
                     self.work.last_merge = CanonicalMergeWork::default();
                     self.work.last_rir = CanonicalRirWork::default();
+                    self.work.semantic_entries = 0;
+                    self.work.semantic_records.clear();
                     self.published = Some(candidate.clone());
                     CanonicalFrontendUpdate {
                         result: Ok(candidate),
@@ -151,6 +174,60 @@ impl CanonicalFrontendSession {
         self.rir_cache = Some(rir.clone());
         Ok(rir)
     }
+
+    /// Analyze the current published revision without issuing stable definition IDs.
+    pub fn semantic(
+        &mut self,
+        options: &CompileOptions,
+    ) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
+        self.work.semantic.calls += 1;
+        let rir = self.rir()?;
+        let merged = match self.merge_cache.as_ref() {
+            Some(Ok(merged)) => merged.clone(),
+            Some(Err(errors)) => return Err(errors.clone()),
+            None => unreachable!("successful RIR query retains its merge input"),
+        };
+        let input = CodegenInputDescriptor {
+            semantic: SemanticInputDescriptor::new(
+                merged.definitions().source_snapshot(),
+                options.target,
+                &options.preview_features,
+            ),
+            opt_level: options.opt_level.into(),
+        };
+        if let Some(entry) = self
+            .semantic_cache
+            .iter()
+            .find(|entry| entry.input == input)
+        {
+            self.work.semantic.reuses += 1;
+            return entry.result.clone();
+        }
+
+        self.work.semantic.executions += 1;
+        let result = analyze_canonical_program(&merged, &rir, options, false).map(Arc::new);
+        let semantic_work = result
+            .as_ref()
+            .map(|output| output.work())
+            .unwrap_or_default();
+        if let Ok(output) = &result {
+            debug_assert_eq!(output.input(), &input);
+            debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
+            debug_assert_eq!(semantic_work.manifest.build_invocations, 0);
+            debug_assert!(!semantic_work.stable_ids_requested);
+        }
+        self.semantic_cache.push(SemanticCacheEntry {
+            input: input.clone(),
+            result: result.clone(),
+        });
+        self.work.semantic_entries = self.semantic_cache.len();
+        self.work.semantic_records.push(SemanticQueryRecord {
+            input,
+            work: semantic_work,
+            failed: result.is_err(),
+        });
+        result
+    }
 }
 
 fn programs_are_pointer_equivalent(left: &ParsedProgram, right: &ParsedProgram) -> bool {
@@ -176,7 +253,10 @@ mod tests {
     use rue_span::FileId;
 
     use super::*;
-    use crate::{SourceMetadata, SourceSnapshot};
+    use crate::{
+        LinkerMode, OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
+        Target,
+    };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
         let physical = entries
@@ -328,8 +408,10 @@ mod tests {
         let second = session.merge().unwrap_err();
         assert_eq!(format!("{first:?}"), format!("{second:?}"));
         assert!(session.rir().is_err());
+        assert!(session.semantic(&CompileOptions::default()).is_err());
         assert_eq!(session.work().merge.executions, 1);
         assert_eq!(session.work().rir.executions, 0);
+        assert_eq!(session.work().semantic.executions, 0);
 
         let update = session.update(&fixed);
         assert!(update.downstream_invalidated());
@@ -400,5 +482,153 @@ mod tests {
         assert_eq!(rename.invalidation().added.len(), 1);
         assert_eq!(rename.invalidation().removed.len(), 1);
         assert_eq!(rename.work().modules_rebound, 1);
+    }
+
+    #[test]
+    fn semantic_queries_reuse_by_codegen_identity_and_ignore_linker() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<CanonicalSemanticOutput>();
+
+        let source = base();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let options = CompileOptions::default();
+        let first = session.semantic(&options).unwrap();
+        let second = session.semantic(&options).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let linker_only = CompileOptions {
+            linker: LinkerMode::System("unused-linker".to_string()),
+            ..options.clone()
+        };
+        assert!(Arc::ptr_eq(
+            &first,
+            &session.semantic(&linker_only).unwrap()
+        ));
+        assert_eq!(session.work().semantic.executions, 1);
+        assert_eq!(session.work().semantic.reuses, 2);
+        assert_eq!(session.work().semantic_entries, 1);
+        assert_eq!(session.work().merge.executions, 1);
+        assert_eq!(session.work().rir.executions, 1);
+        assert_eq!(first.work().binding.bind_invocations, 1);
+        assert_eq!(first.work().manifest.build_invocations, 0);
+
+        let published = first.clone();
+        std::thread::spawn(move || assert!(!published.functions().is_empty()))
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn semantic_option_variants_create_deterministic_distinct_entries() {
+        let source = base();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let default = CompileOptions::default();
+        session.semantic(&default).unwrap();
+        session
+            .semantic(&CompileOptions {
+                opt_level: OptLevel::O1,
+                ..default.clone()
+            })
+            .unwrap();
+        let other_target = *Target::all()
+            .iter()
+            .find(|&&target| target != default.target)
+            .expect("multiple compiler targets");
+        session
+            .semantic(&CompileOptions {
+                target: other_target,
+                ..default.clone()
+            })
+            .unwrap();
+        session
+            .semantic(&CompileOptions {
+                preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
+                ..default
+            })
+            .unwrap();
+
+        let work = session.work();
+        assert_eq!(work.semantic.executions, 4);
+        assert_eq!(work.semantic_entries, 4);
+        assert_eq!(work.semantic_records.len(), 4);
+        assert!(work.semantic_records.iter().all(|record| {
+            !record.failed
+                && record.work.binding.bind_invocations == 1
+                && record.work.manifest.build_invocations == 0
+        }));
+        for (index, left) in work.semantic_records.iter().enumerate() {
+            assert!(
+                work.semantic_records[index + 1..]
+                    .iter()
+                    .all(|right| left.input != right.input)
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_cache_invalidates_on_edit_but_survives_failed_parse() {
+        let source = base();
+        let edited = snapshot(
+            &[
+                (7, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }"),
+                (2, "/p/a.rue", "a.rue", "fn a() {}"),
+            ],
+            7,
+        );
+        let broken = snapshot(
+            &[
+                (7, "/p/main.rue", "main.rue", "fn main( {"),
+                (2, "/p/a.rue", "a.rue", "fn a() {}"),
+            ],
+            7,
+        );
+        let options = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let first = session.semantic(&options).unwrap();
+        assert!(session.update(&broken).result().is_err());
+        assert!(Arc::ptr_eq(&first, &session.semantic(&options).unwrap()));
+        let update = session.update(&edited);
+        assert!(update.downstream_invalidated());
+        update.into_result().unwrap();
+        let second = session.semantic(&options).unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(session.work().semantic.executions, 2);
+        assert_eq!(session.work().semantic_entries_invalidated, 1);
+    }
+
+    #[test]
+    fn semantic_errors_are_memoized_and_recovery_reexecutes() {
+        let invalid = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn main() -> i32 { missing_name }",
+            )],
+            1,
+        );
+        let valid = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&invalid).into_result().unwrap();
+        let first = session.semantic(&options).unwrap_err();
+        let second = session.semantic(&options).unwrap_err();
+        assert_eq!(format!("{first:?}"), format!("{second:?}"));
+        assert_eq!(session.work().semantic.executions, 1);
+        assert_eq!(session.work().semantic.reuses, 1);
+        assert_eq!(session.work().semantic_records.len(), 1);
+        assert!(session.work().semantic_records[0].failed);
+
+        session.update(&valid).into_result().unwrap();
+        assert!(session.semantic(&options).is_ok());
+        assert_eq!(session.work().semantic.executions, 2);
+        assert_eq!(session.work().semantic_entries, 1);
+        assert_eq!(session.work().semantic_entries_invalidated, 1);
     }
 }
