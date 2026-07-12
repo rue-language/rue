@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 
 use lasso::Spur;
 use rue_error::{CompileErrors, MultiErrorResult};
-use rue_rir::InstData;
+use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::{FileId, Span};
 
 use super::RirDeclarationIndexWork;
@@ -126,6 +126,13 @@ pub struct DeclarationBindingWork {
     pub namespace_setup_invocations: usize,
     /// Deterministic named struct/enum shell predeclaration.
     pub nominal_type_predeclaration_invocations: usize,
+    /// Deterministic callable/value identity predeclaration, before payload
+    /// resolution or constant evaluation.
+    pub callable_value_predeclaration_invocations: usize,
+    pub callable_value_shells_predeclared: usize,
+    /// Declaration-index records visited while predeclaring callable, value,
+    /// and nominal shells. This must equal the number of produced shells.
+    pub indexed_declaration_records_visited: usize,
     /// Resolution of declaration payloads, constants, and cycles.
     pub declaration_resolution_invocations: usize,
     /// Construction of the body-analysis-ready state.
@@ -138,6 +145,53 @@ pub struct DeclarationBindingWork {
     pub indexed_anonymous_methods: usize,
     pub indexed_destructors: usize,
     pub indexed_const_candidates: usize,
+}
+
+/// Stable-joinable identity of a declaration whose semantic payload is not yet
+/// installed. `module_path` is the caller-provided logical symbol path; neither
+/// the request-local `FileId` nor an RIR arena offset participates in identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticDeclarationShellIdentity {
+    pub module_path: Arc<str>,
+    pub namespace: SemanticBindingNamespace,
+    pub kind: SemanticBindingKind,
+    pub name: Arc<str>,
+    pub owner: Option<Arc<str>>,
+}
+
+/// Current-revision syntax metadata retained separately from resolved payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticDeclarationShell {
+    pub identity: SemanticDeclarationShellIdentity,
+    pub declaration_span: Span,
+    pub parameter_names: Arc<[Arc<str>]>,
+    pub parameter_modes: Arc<[RirParamMode]>,
+    pub parameter_comptime: Arc<[bool]>,
+    pub source_order: u32,
+    pub has_self: bool,
+    pub is_generic: bool,
+    pub is_public: bool,
+    pub is_unchecked: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum DeclarationPayloadSource {
+    Callable { body: InstRef },
+    Const { initializer: InstRef },
+    Destructor { body: InstRef },
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingDeclarationPayload {
+    pub shell: SemanticDeclarationShell,
+    pub declaration: InstRef,
+    pub source: DeclarationPayloadSource,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingNominalPayload {
+    pub shell: SemanticDeclarationShell,
+    pub declaration: InstRef,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -225,6 +279,8 @@ pub struct BoundSema<'a> {
 pub struct DeclarationShells<'a> {
     pub(super) sema: Sema<'a>,
     pub(super) binding_work: DeclarationBindingWork,
+    pub(super) pending_payloads: Vec<PendingDeclarationPayload>,
+    pub(super) pending_nominals: Vec<PendingNominalPayload>,
 }
 
 impl<'a> DeclarationShells<'a> {
@@ -233,8 +289,49 @@ impl<'a> DeclarationShells<'a> {
         self.binding_work
     }
 
+    /// Deterministic identities and source metadata available before semantic
+    /// payload resolution. Arena references remain private to this request.
+    pub fn callable_value_shells(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &SemanticDeclarationShell> {
+        self.pending_payloads.iter().map(|pending| &pending.shell)
+    }
+
+    /// All stable-joinable declaration shells in deterministic category order:
+    /// nominal types by stable identity, followed by callable/value shells by
+    /// stable identity.
+    pub fn declaration_shells(&self) -> impl Iterator<Item = &SemanticDeclarationShell> {
+        self.pending_nominals
+            .iter()
+            .map(|pending| &pending.shell)
+            .chain(self.pending_payloads.iter().map(|pending| &pending.shell))
+    }
+
     /// Resolve declaration payloads and finalize a body-analysis-ready binder.
     pub fn resolve_declarations(mut self) -> MultiErrorResult<BoundSema<'a>> {
+        // This is the explicit payload-install boundary. The ordinary adapter
+        // deliberately resolves from the authoritative current-revision RIR in
+        // historical order. A future importer may validate durable payloads
+        // against these shells before choosing an installation path.
+        debug_assert!(
+            self.pending_payloads
+                .iter()
+                .all(
+                    |pending| pending.declaration.as_u32() < self.sema.rir.len() as u32
+                        && match pending.source {
+                            DeclarationPayloadSource::Callable { body }
+                            | DeclarationPayloadSource::Destructor { body } =>
+                                body.as_u32() < self.sema.rir.len() as u32,
+                            DeclarationPayloadSource::Const { initializer } =>
+                                initializer.as_u32() < self.sema.rir.len() as u32,
+                        }
+                )
+        );
+        debug_assert!(
+            self.pending_nominals
+                .iter()
+                .all(|pending| pending.declaration.as_u32() < self.sema.rir.len() as u32)
+        );
         self.sema
             .resolve_declarations()
             .map_err(CompileErrors::from)?;
@@ -278,6 +375,175 @@ impl<'a> BoundSema<'a> {
 }
 
 impl<'a> Sema<'a> {
+    pub(super) fn predeclare_callable_value_shells(
+        &self,
+    ) -> (Vec<PendingDeclarationPayload>, Vec<PendingNominalPayload>) {
+        let module_path = |file_id: FileId| -> Arc<str> {
+            Arc::from(
+                self.get_symbol_path(file_id)
+                    .map(crate::path_norm::normalize_module_path)
+                    .unwrap_or_else(|| format!("file{}", file_id.index())),
+            )
+        };
+        let mut pending = Vec::new();
+        let mut nominals = Vec::new();
+        for candidate in self.declaration_index.shell_declarations() {
+            let inst_ref = candidate.declaration;
+            let source_order = candidate.source_order;
+            let inst = self.rir.get(inst_ref);
+            if let InstData::StructDecl { name, is_pub, .. }
+            | InstData::EnumDecl { name, is_pub, .. } = &inst.data
+            {
+                let kind = if matches!(inst.data, InstData::StructDecl { .. }) {
+                    SemanticBindingKind::Struct
+                } else {
+                    SemanticBindingKind::Enum
+                };
+                nominals.push(PendingNominalPayload {
+                    shell: SemanticDeclarationShell {
+                        identity: SemanticDeclarationShellIdentity {
+                            module_path: module_path(inst.span.file_id),
+                            namespace: SemanticBindingNamespace::Type,
+                            kind,
+                            name: Arc::from(self.interner.resolve(name)),
+                            owner: None,
+                        },
+                        declaration_span: inst.span,
+                        parameter_names: Arc::from([]),
+                        parameter_modes: Arc::from([]),
+                        parameter_comptime: Arc::from([]),
+                        source_order,
+                        has_self: false,
+                        is_generic: false,
+                        is_public: *is_pub,
+                        is_unchecked: false,
+                    },
+                    declaration: inst_ref,
+                });
+            }
+            let (
+                identity,
+                parameter_names,
+                parameter_modes,
+                parameter_comptime,
+                has_self,
+                is_generic,
+                is_public,
+                is_unchecked,
+                source,
+            ) = match &inst.data {
+                InstData::FnDecl {
+                    is_pub,
+                    is_unchecked,
+                    name,
+                    params_start,
+                    params_len,
+                    body,
+                    has_self,
+                    ..
+                } if !self.declaration_index.is_anonymous_method(inst_ref) => {
+                    let owner = candidate.named_method_owner;
+                    let kind = match (owner, *has_self) {
+                        (Some(_), true) => SemanticBindingKind::Method,
+                        (Some(_), false) => SemanticBindingKind::AssociatedFunction,
+                        (None, _) => SemanticBindingKind::Function,
+                    };
+                    let params = self.rir.get_params(*params_start, *params_len);
+                    let names = params
+                        .iter()
+                        .map(|param| Arc::from(self.interner.resolve(&param.name)))
+                        .collect::<Vec<_>>();
+                    let modes = params.iter().map(|param| param.mode).collect::<Vec<_>>();
+                    let comptime = params
+                        .iter()
+                        .map(|param| param.is_comptime)
+                        .collect::<Vec<_>>();
+                    let identity = SemanticDeclarationShellIdentity {
+                        module_path: module_path(inst.span.file_id),
+                        namespace: if owner.is_some() {
+                            SemanticBindingNamespace::Method
+                        } else {
+                            SemanticBindingNamespace::Value
+                        },
+                        kind,
+                        name: Arc::from(self.interner.resolve(name)),
+                        owner: owner.map(|owner| Arc::from(self.interner.resolve(&owner))),
+                    };
+                    (
+                        identity,
+                        names,
+                        modes,
+                        comptime.clone(),
+                        *has_self,
+                        comptime.into_iter().any(|value| value),
+                        *is_pub,
+                        *is_unchecked,
+                        DeclarationPayloadSource::Callable { body: *body },
+                    )
+                }
+                InstData::ConstDecl {
+                    is_pub, name, init, ..
+                } => (
+                    SemanticDeclarationShellIdentity {
+                        module_path: module_path(inst.span.file_id),
+                        namespace: SemanticBindingNamespace::Value,
+                        // Function aliases are classified only after evaluating
+                        // the initializer; their stable value identity is already
+                        // complete here.
+                        kind: SemanticBindingKind::ValueConst,
+                        name: Arc::from(self.interner.resolve(name)),
+                        owner: None,
+                    },
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                    false,
+                    *is_pub,
+                    false,
+                    DeclarationPayloadSource::Const { initializer: *init },
+                ),
+                InstData::DropFnDecl { type_name, body } => (
+                    SemanticDeclarationShellIdentity {
+                        module_path: module_path(inst.span.file_id),
+                        namespace: SemanticBindingNamespace::Destructor,
+                        kind: SemanticBindingKind::Destructor,
+                        name: Arc::from(self.interner.resolve(type_name)),
+                        owner: Some(Arc::from(self.interner.resolve(type_name))),
+                    },
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    true,
+                    false,
+                    false,
+                    false,
+                    DeclarationPayloadSource::Destructor { body: *body },
+                ),
+                _ => continue,
+            };
+            pending.push(PendingDeclarationPayload {
+                shell: SemanticDeclarationShell {
+                    identity,
+                    declaration_span: inst.span,
+                    parameter_names: parameter_names.into(),
+                    parameter_modes: parameter_modes.into(),
+                    parameter_comptime: parameter_comptime.into(),
+                    source_order,
+                    has_self,
+                    is_generic,
+                    is_public,
+                    is_unchecked,
+                },
+                declaration: inst_ref,
+                source,
+            });
+        }
+        pending.sort_by(|left, right| left.shell.identity.cmp(&right.shell.identity));
+        nominals.sort_by(|left, right| left.shell.identity.cmp(&right.shell.identity));
+        (pending, nominals)
+    }
+
     fn export_type(
         &self,
         ty: Type,
@@ -769,6 +1035,9 @@ impl DeclarationBindingWork {
             bind_invocations: 1,
             namespace_setup_invocations: 0,
             nominal_type_predeclaration_invocations: 0,
+            callable_value_predeclaration_invocations: 0,
+            callable_value_shells_predeclared: 0,
+            indexed_declaration_records_visited: 0,
             declaration_resolution_invocations: 0,
             body_readiness_finalization_invocations: 0,
             input_rir_instructions,
@@ -786,10 +1055,12 @@ impl DeclarationBindingWork {
 mod tests {
     use std::collections::HashMap;
 
+    use lasso::ThreadedRodeo;
     use rue_error::{CompileErrors, PreviewFeatures};
     use rue_lexer::Lexer;
     use rue_parser::Parser;
-    use rue_rir::AstGen;
+    use rue_rir::{AstGen, Rir};
+    use rue_span::FileId;
 
     use super::*;
 
@@ -801,6 +1072,21 @@ mod tests {
         let rir = AstGen::new(&ast, &interner).generate();
         let bound = Sema::new(&rir, &interner, PreviewFeatures::new()).bind_declarations()?;
         Ok(bound.binding_manifest().clone())
+    }
+
+    fn lower_files(files: &[(&str, FileId)]) -> (Rir, ThreadedRodeo) {
+        let mut interner = ThreadedRodeo::default();
+        let mut items = Vec::new();
+        for &(source, file_id) in files {
+            let (tokens, next) = Lexer::with_interner_and_file_id(source, interner, file_id)
+                .tokenize()
+                .unwrap();
+            let (ast, next) = Parser::new(tokens, next).parse().unwrap();
+            items.extend(ast.items);
+            interner = next;
+        }
+        let rir = AstGen::new(&rue_parser::Ast { items }, &interner).generate();
+        (rir, interner)
     }
 
     fn export(
@@ -1068,16 +1354,140 @@ mod tests {
         assert_eq!(prepared.bind_invocations, 1);
         assert_eq!(prepared.namespace_setup_invocations, 1);
         assert_eq!(prepared.nominal_type_predeclaration_invocations, 1);
+        assert_eq!(prepared.callable_value_predeclaration_invocations, 1);
+        assert_eq!(prepared.callable_value_shells_predeclared, 1);
+        assert_eq!(prepared.indexed_declaration_records_visited, 2);
+        assert_eq!(
+            prepared.indexed_declaration_records_visited,
+            shells.declaration_shells().count()
+        );
         assert_eq!(prepared.declaration_resolution_invocations, 0);
         assert_eq!(prepared.body_readiness_finalization_invocations, 0);
         assert_eq!(prepared.input_rir_instructions, rir.len());
         assert_eq!(prepared.declaration_index_build_invocations, 1);
+        assert_eq!(
+            shells
+                .sema
+                .rir_declaration_index_work()
+                .rir_instructions_visited,
+            rir.len()
+        );
 
         let bound = shells.resolve_declarations().unwrap();
         let resolved = bound.binding_work();
         assert_eq!(resolved.declaration_resolution_invocations, 1);
         assert_eq!(resolved.body_readiness_finalization_invocations, 1);
         assert!(!bound.manifest_is_materialized());
+    }
+
+    #[test]
+    fn declaration_shell_identities_ignore_file_ids_relocation_and_input_order() {
+        fn identities(
+            files: &[(&str, FileId)],
+            paths: HashMap<FileId, String>,
+        ) -> Vec<SemanticDeclarationShellIdentity> {
+            let (rir, interner) = lower_files(files);
+            let mut sema = Sema::new(&rir, &interner, PreviewFeatures::new());
+            sema.set_symbol_paths(paths);
+            sema.predeclare_declaration_shells()
+                .unwrap()
+                .declaration_shells()
+                .map(|shell| shell.identity.clone())
+                .collect()
+        }
+
+        let left = identities(
+            &[
+                (
+                    "struct Zebra {} enum Amber { One } fn alpha(x: i32) -> i32 { x }",
+                    FileId::new(4),
+                ),
+                (
+                    "struct Birch {} enum Violet { One } const alias = alpha;",
+                    FileId::new(9),
+                ),
+            ],
+            HashMap::from([
+                (FileId::new(4), "/checkout-a/pkg/a.rue".into()),
+                (FileId::new(9), "/checkout-a/pkg/b.rue".into()),
+            ]),
+        );
+        let right = identities(
+            &[
+                (
+                    "struct Birch {} enum Violet { One } const alias = alpha;",
+                    FileId::new(31),
+                ),
+                (
+                    "struct Zebra {} enum Amber { One } fn alpha(x: i32) -> i32 { x }",
+                    FileId::new(2),
+                ),
+            ],
+            HashMap::from([
+                (FileId::new(2), "/checkout-a/pkg/a.rue".into()),
+                (FileId::new(31), "/checkout-a/pkg/b.rue".into()),
+            ]),
+        );
+        assert_eq!(left, right);
+        assert_eq!(left.len(), 6);
+        assert!(
+            left[..4]
+                .iter()
+                .all(|identity| identity.namespace == SemanticBindingNamespace::Type)
+        );
+        assert!(
+            left[4..]
+                .iter()
+                .all(|identity| identity.namespace != SemanticBindingNamespace::Type)
+        );
+    }
+
+    #[test]
+    fn callable_shell_keeps_syntax_metadata_outside_unresolved_payload() {
+        let source = "struct Box { fn map(self, comptime T: type, value: T) -> T { value } fn make(value: i32) -> i32 { value } } const alias = Box.make; drop fn Box(self) {}";
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let rir = AstGen::new(&ast, &interner).generate();
+        let shells = Sema::new(&rir, &interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()
+            .unwrap();
+        let records = shells.callable_value_shells().collect::<Vec<_>>();
+        assert_eq!(records.len(), 4);
+        let map = records
+            .iter()
+            .find(|shell| shell.identity.name.as_ref() == "map")
+            .unwrap();
+        assert_eq!(map.identity.owner.as_deref(), Some("Box"));
+        assert_eq!(
+            map.parameter_names
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<_>>(),
+            vec!["T", "value"]
+        );
+        assert_eq!(map.parameter_comptime.as_ref(), &[true, false]);
+        assert!(map.has_self);
+        assert!(map.is_generic);
+        assert_eq!(shells.binding_work().declaration_resolution_invocations, 0);
+    }
+
+    #[test]
+    fn payload_boundary_preserves_resolution_failure_provenance() {
+        let source = "fn broken(value: Missing) -> i32 { 0 } fn main() {}";
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let rir = AstGen::new(&ast, &interner).generate();
+        let direct = Sema::new(&rir, &interner, PreviewFeatures::new())
+            .bind_declarations()
+            .err()
+            .expect("ordinary binding must fail");
+        let split = Sema::new(&rir, &interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()
+            .unwrap()
+            .resolve_declarations()
+            .err()
+            .expect("split binding must fail");
+        assert_eq!(format!("{direct:?}"), format!("{split:?}"));
     }
 
     #[test]

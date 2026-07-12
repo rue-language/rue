@@ -344,6 +344,15 @@ representation for the durable reserved tuple/function type forms or for an
 unsubstituted declaration generic parameter, so those fail closed. Installing
 callables and constants into `Sema` additionally requires exact-revision RIR
 bodies/initializers, source spans, parameter names and declaration indices.
-The split-binding seam must provide those constructor inputs and decide generic
-substitution context; the importer must not synthesize them or mutate private
-`Sema` tables. No AIR body, CFG, or RIR fragment is reused by this boundary.
+The split-binding seam now predeclares free-callable, named-method/associated,
+named-const, and named-destructor identities in logical-path order. It retains
+exact-revision bodies/initializers, spans, parameter names/modes/comptime flags,
+source order, and generic context in private pending records, apart from any
+resolved payload. The ordinary adapter crosses the explicit install/finalize
+boundary using current resolution and preserves historical diagnostic and
+constant-evaluation order. Anonymous structural methods remain deferred because
+they lack a durable structural-owner identity. Module bindings and value
+constants also cannot be distinguished before dependency-ordered initializer
+evaluation, though their value-namespace identity is already fixed. No cached
+payload is installed and no AIR body, CFG, or RIR fragment is reused by this
+boundary.

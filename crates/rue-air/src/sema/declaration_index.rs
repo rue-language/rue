@@ -47,9 +47,17 @@ pub(super) struct RirDestructorDeclaration {
 #[derive(Debug, Clone, Copy)]
 struct FunctionCandidate {
     declaration: InstRef,
+    source_order: u32,
     file_id: FileId,
     name: Spur,
     has_self: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RirShellDeclaration {
+    pub(super) declaration: InstRef,
+    pub(super) source_order: u32,
+    pub(super) named_method_owner: Option<Spur>,
 }
 
 /// Immutable declaration candidates tied to one exact RIR arena.
@@ -72,6 +80,7 @@ pub(super) struct RirDeclarationIndex {
     destructors: Vec<RirDestructorDeclaration>,
     const_candidates: Vec<InstRef>,
     const_candidates_by_file_name: HashMap<(FileId, Spur), Vec<InstRef>>,
+    shell_declarations: Vec<RirShellDeclaration>,
     work: RirDeclarationIndexWork,
 }
 
@@ -79,7 +88,9 @@ impl RirDeclarationIndex {
     pub(super) fn new(rir: &Rir) -> Self {
         let mut function_candidates = Vec::new();
         let mut named_method_refs = HashSet::new();
+        let mut named_method_owners = HashMap::new();
         let mut anonymous_method_refs = HashSet::new();
+        let mut declaration_source_orders = HashMap::new();
         let mut non_receiver_name_multiplicity = HashMap::<Spur, usize>::new();
         let mut destructors = Vec::new();
         let mut const_candidates = Vec::new();
@@ -92,12 +103,14 @@ impl RirDeclarationIndex {
         // AstGen emits method FnDecls before their enclosing type. Retain all
         // function candidates during this single arena walk, collect owner
         // edges wherever their containers occur, then classify below.
-        for (inst_ref, inst) in rir.iter() {
+        let mut nominal_candidates = Vec::new();
+        for (source_order, (inst_ref, inst)) in rir.iter().enumerate() {
             work.rir_instructions_visited += 1;
             match &inst.data {
                 InstData::FnDecl { name, has_self, .. } => {
                     function_candidates.push(FunctionCandidate {
                         declaration: inst_ref,
+                        source_order: source_order as u32,
                         file_id: inst.span.file_id,
                         name: *name,
                         has_self: *has_self,
@@ -107,6 +120,7 @@ impl RirDeclarationIndex {
                     }
                 }
                 InstData::StructDecl {
+                    name,
                     methods_start,
                     methods_len,
                     ..
@@ -114,7 +128,12 @@ impl RirDeclarationIndex {
                     for method_ref in rir.get_inst_refs(*methods_start, *methods_len) {
                         work.method_references_visited += 1;
                         named_method_refs.insert(method_ref);
+                        // A method may only have one named owner in valid RIR;
+                        // retain the first edge so malformed input preserves
+                        // the historical discovery semantics.
+                        named_method_owners.entry(method_ref).or_insert(*name);
                     }
+                    nominal_candidates.push((source_order as u32, inst_ref));
                 }
                 InstData::AnonStructType {
                     methods_start,
@@ -127,6 +146,7 @@ impl RirDeclarationIndex {
                     }
                 }
                 InstData::DropFnDecl { type_name, body } => {
+                    declaration_source_orders.insert(inst_ref, source_order as u32);
                     destructors.push(RirDestructorDeclaration {
                         declaration: inst_ref,
                         type_name: *type_name,
@@ -135,11 +155,15 @@ impl RirDeclarationIndex {
                     });
                 }
                 InstData::ConstDecl { name, .. } => {
+                    declaration_source_orders.insert(inst_ref, source_order as u32);
                     const_candidates.push(inst_ref);
                     const_candidates_by_file_name
                         .entry((inst.span.file_id, *name))
                         .or_default()
                         .push(inst_ref);
+                }
+                InstData::EnumDecl { .. } => {
+                    nominal_candidates.push((source_order as u32, inst_ref));
                 }
                 _ => {}
             }
@@ -150,6 +174,14 @@ impl RirDeclarationIndex {
         let mut free_functions_by_name = HashMap::<Spur, Vec<InstRef>>::new();
         let mut named_methods = Vec::new();
         let mut anonymous_methods = Vec::new();
+        let mut shell_declarations = nominal_candidates
+            .into_iter()
+            .map(|(source_order, declaration)| RirShellDeclaration {
+                declaration,
+                source_order,
+                named_method_owner: None,
+            })
+            .collect::<Vec<_>>();
 
         for candidate in function_candidates {
             if named_method_refs.contains(&candidate.declaration) {
@@ -167,7 +199,28 @@ impl RirDeclarationIndex {
                     .or_default()
                     .push(candidate.declaration);
             }
+            if !anonymous_method_refs.contains(&candidate.declaration) {
+                shell_declarations.push(RirShellDeclaration {
+                    declaration: candidate.declaration,
+                    source_order: candidate.source_order,
+                    named_method_owner: named_method_owners.get(&candidate.declaration).copied(),
+                });
+            }
         }
+
+        shell_declarations.extend(destructors.iter().map(|candidate| RirShellDeclaration {
+            declaration: candidate.declaration,
+            source_order: declaration_source_orders[&candidate.declaration],
+            named_method_owner: None,
+        }));
+        shell_declarations.extend(const_candidates.iter().map(|&declaration| {
+            RirShellDeclaration {
+                declaration,
+                source_order: declaration_source_orders[&declaration],
+                named_method_owner: None,
+            }
+        }));
+        shell_declarations.sort_by_key(|candidate| candidate.source_order);
 
         work.free_functions_indexed = free_functions.len();
         work.named_methods_indexed = named_methods.len();
@@ -187,6 +240,7 @@ impl RirDeclarationIndex {
             destructors,
             const_candidates,
             const_candidates_by_file_name,
+            shell_declarations,
             work,
         }
     }
@@ -237,6 +291,10 @@ impl RirDeclarationIndex {
     #[inline]
     pub(super) fn is_named_method(&self, inst_ref: InstRef) -> bool {
         self.named_method_refs.contains(&inst_ref)
+    }
+
+    pub(super) fn shell_declarations(&self) -> &[RirShellDeclaration] {
+        &self.shell_declarations
     }
 
     #[inline]
