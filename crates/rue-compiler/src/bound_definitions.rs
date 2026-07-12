@@ -84,6 +84,28 @@ impl StableDefinitionKey {
     pub fn owner(&self) -> Option<&StableNamedTypeKey> {
         self.owner.as_ref()
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        module: ModuleId,
+        namespace: StableDefinitionNamespace,
+        kind: StableDefinitionKind,
+        name: impl Into<Arc<str>>,
+        owner: Option<(StableDefinitionKind, Arc<str>)>,
+    ) -> Self {
+        let owner = owner.map(|(kind, name)| StableNamedTypeKey {
+            module: module.clone(),
+            kind,
+            name,
+        });
+        Self {
+            module,
+            namespace,
+            kind,
+            name: name.into(),
+            owner,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

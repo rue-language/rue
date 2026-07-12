@@ -8,8 +8,252 @@ use std::sync::Arc;
 
 use rue_air::{
     SemanticBindingKind, SemanticDeclarationExport, SemanticDeclarationPayload,
-    SemanticExportConstValue, SemanticExportFailure, SemanticExportType, SemanticParameterMode,
+    SemanticExportConstValue, SemanticExportFailure, SemanticExportType, SemanticImportConstValue,
+    SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal, SemanticImportNominalKind,
+    SemanticImportType, SemanticParameterMode,
 };
+
+/// A fresh AIR epoch populated only from request-independent semantic values.
+pub type DurableSemanticImportEpoch = SemanticImportEpoch<StableDefinitionKey, Arc<str>>;
+
+impl DurableType {
+    fn import_dto(&self) -> SemanticImportType<StableDefinitionKey, Arc<str>> {
+        match self {
+            Self::I8 => SemanticImportType::I8,
+            Self::I16 => SemanticImportType::I16,
+            Self::I32 => SemanticImportType::I32,
+            Self::I64 => SemanticImportType::I64,
+            Self::U8 => SemanticImportType::U8,
+            Self::U16 => SemanticImportType::U16,
+            Self::U32 => SemanticImportType::U32,
+            Self::U64 => SemanticImportType::U64,
+            Self::Bool => SemanticImportType::Bool,
+            Self::Unit => SemanticImportType::Unit,
+            Self::Never => SemanticImportType::Never,
+            Self::ComptimeType => SemanticImportType::ComptimeType,
+            Self::Nominal(key) => SemanticImportType::Nominal(key.clone()),
+            Self::Array { element, len } => SemanticImportType::Array {
+                element: Box::new(element.import_dto()),
+                len: *len,
+            },
+            Self::PtrConst(value) => SemanticImportType::PtrConst(Box::new(value.import_dto())),
+            Self::PtrMut(value) => SemanticImportType::PtrMut(Box::new(value.import_dto())),
+            Self::Tuple(values) => SemanticImportType::Tuple(
+                values
+                    .iter()
+                    .map(Self::import_dto)
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            Self::Function { parameters, result } => SemanticImportType::Function {
+                parameters: parameters
+                    .iter()
+                    .map(Self::import_dto)
+                    .collect::<Vec<_>>()
+                    .into(),
+                result: Box::new(result.import_dto()),
+            },
+            Self::Module(module) => SemanticImportType::Module(Arc::from(module.as_str())),
+            Self::GenericParameter(index) => SemanticImportType::GenericParameter(*index),
+        }
+    }
+}
+
+impl DurableConstValue {
+    fn import_dto(&self) -> SemanticImportConstValue<StableDefinitionKey, Arc<str>> {
+        match self {
+            Self::Integer(value) => SemanticImportConstValue::Integer(*value),
+            Self::Bool(value) => SemanticImportConstValue::Bool(*value),
+            Self::Type(value) => SemanticImportConstValue::Type(value.import_dto()),
+            Self::Function(key) => SemanticImportConstValue::Function(key.clone()),
+            Self::Unit => SemanticImportConstValue::Unit,
+        }
+    }
+}
+
+/// Reconstruct the representable declaration universe in a new AIR epoch.
+///
+/// Nominal shells are issued in stable-key order before any field or variant
+/// type is imported, so mutually recursive pointer graphs are supported. The
+/// returned epoch contains no handles from the exporting semantic request.
+pub fn import_durable_declaration_semantics(
+    declarations: &[DurableDeclarationSemantic],
+) -> Result<DurableSemanticImportEpoch, SemanticImportFailure> {
+    fn payload_matches_key(declaration: &DurableDeclarationSemantic) -> bool {
+        matches!(
+            (declaration.key.kind(), &declaration.payload),
+            (
+                StableDefinitionKind::Function
+                    | StableDefinitionKind::Method
+                    | StableDefinitionKind::AssociatedFunction,
+                DurableDeclarationPayload::Callable { .. }
+            ) | (
+                StableDefinitionKind::Struct,
+                DurableDeclarationPayload::Struct { .. }
+            ) | (
+                StableDefinitionKind::Enum,
+                DurableDeclarationPayload::Enum { .. }
+            ) | (
+                StableDefinitionKind::ValueConst,
+                DurableDeclarationPayload::Const { .. }
+            ) | (
+                StableDefinitionKind::Destructor,
+                DurableDeclarationPayload::Destructor
+            )
+        )
+    }
+
+    if declarations
+        .iter()
+        .any(|declaration| !payload_matches_key(declaration))
+    {
+        return Err(SemanticImportFailure::DeclarationKindMismatch);
+    }
+    fn collect_modules(ty: &DurableType, modules: &mut std::collections::BTreeSet<Arc<str>>) {
+        match ty {
+            DurableType::Module(module) => {
+                modules.insert(Arc::from(module.as_str()));
+            }
+            DurableType::Array { element, .. }
+            | DurableType::PtrConst(element)
+            | DurableType::PtrMut(element) => collect_modules(element, modules),
+            DurableType::Tuple(elements) => {
+                for element in elements.iter() {
+                    collect_modules(element, modules);
+                }
+            }
+            DurableType::Function { parameters, result } => {
+                for parameter in parameters.iter() {
+                    collect_modules(parameter, modules);
+                }
+                collect_modules(result, modules);
+            }
+            _ => {}
+        }
+    }
+    let mut modules = std::collections::BTreeSet::<Arc<str>>::new();
+    let mut nominals = Vec::new();
+    let mut functions = Vec::new();
+    for declaration in declarations {
+        modules.insert(Arc::from(declaration.key.module().as_str()));
+        match &declaration.payload {
+            DurableDeclarationPayload::Callable {
+                parameters, result, ..
+            } => {
+                for parameter in parameters.iter() {
+                    collect_modules(&parameter.ty, &mut modules);
+                }
+                collect_modules(result, &mut modules);
+            }
+            DurableDeclarationPayload::Struct { fields, .. } => {
+                for (_, ty) in fields.iter() {
+                    collect_modules(ty, &mut modules);
+                }
+            }
+            DurableDeclarationPayload::Enum { variants } => {
+                for (_, payload) in variants.iter() {
+                    for ty in payload.iter() {
+                        collect_modules(ty, &mut modules);
+                    }
+                }
+            }
+            DurableDeclarationPayload::Const { ty, value } => {
+                collect_modules(ty, &mut modules);
+                if let DurableConstValue::Type(ty) = value {
+                    collect_modules(ty, &mut modules);
+                }
+            }
+            DurableDeclarationPayload::Destructor => {}
+        }
+        match &declaration.payload {
+            DurableDeclarationPayload::Struct { .. } => nominals.push(SemanticImportNominal {
+                key: declaration.key.clone(),
+                module_path: Arc::from(declaration.key.module().as_str()),
+                name: Arc::from(declaration.key.name()),
+                kind: SemanticImportNominalKind::Struct,
+                is_public: declaration.is_public,
+            }),
+            DurableDeclarationPayload::Enum { .. } => nominals.push(SemanticImportNominal {
+                key: declaration.key.clone(),
+                module_path: Arc::from(declaration.key.module().as_str()),
+                name: Arc::from(declaration.key.name()),
+                kind: SemanticImportNominalKind::Enum,
+                is_public: declaration.is_public,
+            }),
+            DurableDeclarationPayload::Callable { .. } => {
+                // Length-prefix every component. Unlike a source-like name this
+                // is injective for the full stable key, including its owner.
+                let owner = declaration.key.owner();
+                let owner_module = owner.map(|owner| owner.module().as_str()).unwrap_or("");
+                let owner_name = owner.map(|owner| owner.name()).unwrap_or("");
+                let kind = format!("{:?}", declaration.key.kind());
+                let identity = format!(
+                    "{}:{}|{:?}|{}:{}|{}:{}|{}:{}|{:?}|{}:{}",
+                    declaration.key.module().as_str().len(),
+                    declaration.key.module().as_str(),
+                    declaration.key.namespace(),
+                    kind.len(),
+                    kind,
+                    declaration.key.name().len(),
+                    declaration.key.name(),
+                    owner_module.len(),
+                    owner_module,
+                    owner.map(|owner| owner.kind()),
+                    owner_name.len(),
+                    owner_name,
+                );
+                functions.push((declaration.key.clone(), Arc::from(identity)));
+            }
+            _ => {}
+        }
+    }
+    let epoch = SemanticImportEpoch::new(nominals, functions, modules.into_iter().collect())?;
+    for declaration in declarations {
+        match &declaration.payload {
+            DurableDeclarationPayload::Struct {
+                fields,
+                is_copy,
+                is_linear,
+            } => {
+                let fields = fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), ty.import_dto()))
+                    .collect::<Vec<_>>();
+                epoch.complete_struct(&declaration.key, &fields, *is_copy, *is_linear)?;
+            }
+            DurableDeclarationPayload::Enum { variants } => {
+                let variants = variants
+                    .iter()
+                    .map(|(name, payload)| {
+                        (
+                            name.clone(),
+                            payload
+                                .iter()
+                                .map(DurableType::import_dto)
+                                .collect::<Vec<_>>()
+                                .into(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                epoch.complete_enum(&declaration.key, &variants)?;
+            }
+            DurableDeclarationPayload::Const { ty, value } => {
+                epoch.import_type(&ty.import_dto())?;
+                epoch.import_const_value(&value.import_dto())?;
+            }
+            DurableDeclarationPayload::Callable {
+                parameters, result, ..
+            } => {
+                for parameter in parameters.iter() {
+                    epoch.import_type(&parameter.ty.import_dto())?;
+                }
+                epoch.import_type(&result.import_dto())?;
+            }
+            DurableDeclarationPayload::Destructor => {}
+        }
+    }
+    Ok(epoch)
+}
 
 use crate::{
     BoundDefinitionSet, CanonicalMergedProgram, ModuleId, StableDefinitionKey, StableDefinitionKind,
@@ -361,6 +605,7 @@ impl From<SemanticExportFailure> for DurableSemanticExportFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StableDefinitionNamespace;
 
     fn assert_query_value<T: Send + Sync + Clone + Eq + Ord + std::hash::Hash>() {}
 
@@ -385,5 +630,140 @@ mod tests {
             len: 4,
         });
         assert_eq!(first.clone(), first);
+    }
+
+    fn test_key(
+        kind: StableDefinitionKind,
+        name: &str,
+        owner: Option<&str>,
+    ) -> StableDefinitionKey {
+        StableDefinitionKey::for_test(
+            ModuleId::from_logical_path("pkg/main.rue").unwrap(),
+            match kind {
+                StableDefinitionKind::Method | StableDefinitionKind::AssociatedFunction => {
+                    StableDefinitionNamespace::Method
+                }
+                _ => StableDefinitionNamespace::Value,
+            },
+            kind,
+            Arc::from(name),
+            owner.map(|name| (StableDefinitionKind::Struct, Arc::from(name))),
+        )
+    }
+
+    fn callable(key: StableDefinitionKey) -> DurableDeclarationSemantic {
+        DurableDeclarationSemantic {
+            key,
+            is_public: true,
+            payload: DurableDeclarationPayload::Callable {
+                parameters: Arc::from([]),
+                result: DurableType::Unit,
+                has_self: false,
+                is_unchecked: false,
+            },
+        }
+    }
+
+    #[test]
+    fn sibling_owned_callables_have_distinct_symbols_and_exact_round_trip() {
+        let left = test_key(
+            StableDefinitionKind::AssociatedFunction,
+            "make",
+            Some("Left"),
+        );
+        let right = test_key(
+            StableDefinitionKind::AssociatedFunction,
+            "make",
+            Some("Right"),
+        );
+        let epoch = import_durable_declaration_semantics(&[
+            callable(left.clone()),
+            callable(right.clone()),
+        ])
+        .unwrap();
+
+        let left_value = epoch
+            .import_const_value(&SemanticImportConstValue::Function(left.clone()))
+            .unwrap();
+        let right_value = epoch
+            .import_const_value(&SemanticImportConstValue::Function(right.clone()))
+            .unwrap();
+        assert_ne!(left_value, right_value);
+        assert_eq!(
+            epoch.export_const_value(left_value).unwrap(),
+            SemanticImportConstValue::Function(left)
+        );
+        assert_eq!(
+            epoch.export_const_value(right_value).unwrap(),
+            SemanticImportConstValue::Function(right)
+        );
+    }
+
+    #[test]
+    fn callable_kind_is_part_of_the_local_identity() {
+        let method = StableDefinitionKey::for_test(
+            ModuleId::from_logical_path("pkg/main.rue").unwrap(),
+            StableDefinitionNamespace::Method,
+            StableDefinitionKind::Method,
+            "same",
+            Some((StableDefinitionKind::Struct, Arc::from("Owner"))),
+        );
+        let associated = StableDefinitionKey::for_test(
+            ModuleId::from_logical_path("pkg/main.rue").unwrap(),
+            StableDefinitionNamespace::Method,
+            StableDefinitionKind::AssociatedFunction,
+            "same",
+            Some((StableDefinitionKind::Struct, Arc::from("Owner"))),
+        );
+        let epoch = import_durable_declaration_semantics(&[
+            callable(method.clone()),
+            callable(associated.clone()),
+        ])
+        .unwrap();
+        let method_value = epoch
+            .import_const_value(&SemanticImportConstValue::Function(method.clone()))
+            .unwrap();
+        let associated_value = epoch
+            .import_const_value(&SemanticImportConstValue::Function(associated.clone()))
+            .unwrap();
+        assert_ne!(method_value, associated_value);
+        assert_eq!(
+            epoch.export_const_value(method_value).unwrap(),
+            SemanticImportConstValue::Function(method)
+        );
+        assert_eq!(
+            epoch.export_const_value(associated_value).unwrap(),
+            SemanticImportConstValue::Function(associated)
+        );
+    }
+
+    #[test]
+    fn import_rejects_payload_kind_mismatch_before_building_an_epoch() {
+        let declaration = DurableDeclarationSemantic {
+            key: test_key(StableDefinitionKind::Function, "wrong", None),
+            is_public: true,
+            payload: DurableDeclarationPayload::Struct {
+                fields: Arc::from([]),
+                is_copy: false,
+                is_linear: false,
+            },
+        };
+        assert!(matches!(
+            import_durable_declaration_semantics(&[declaration]),
+            Err(SemanticImportFailure::DeclarationKindMismatch)
+        ));
+
+        let module_binding = DurableDeclarationSemantic {
+            key: test_key(StableDefinitionKind::ModuleBinding, "module", None),
+            is_public: true,
+            payload: DurableDeclarationPayload::Const {
+                ty: DurableType::Module(ModuleId::from_logical_path("pkg/dep.rue").unwrap()),
+                value: DurableConstValue::Unit,
+            },
+        };
+        assert!(matches!(
+            import_durable_declaration_semantics(&[module_binding]),
+            Err(SemanticImportFailure::DeclarationKindMismatch)
+        ));
     }
 }
