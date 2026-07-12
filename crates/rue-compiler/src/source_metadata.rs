@@ -12,7 +12,7 @@ use rue_air::normalize_module_path;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
-use crate::{Ast, SourceFile, semantic_order::item_span};
+use crate::{Ast, ModuleId, SourceFile, semantic_order::item_span};
 
 /// Immutable, validated identities for every source in a compilation.
 ///
@@ -205,6 +205,18 @@ impl SourceMetadata {
     /// keys.
     pub fn logical_path(&self, file_id: FileId) -> Option<&str> {
         self.logical_paths.get(&file_id).map(String::as_str)
+    }
+
+    /// Canonical logical module identity for a request-local file ID.
+    pub fn module_id(&self, file_id: FileId) -> Option<ModuleId> {
+        self.logical_path(file_id)
+            .map(ModuleId::from_validated_canonical)
+    }
+
+    /// Canonical logical identity of the explicitly designated root module.
+    pub fn root_module_id(&self) -> ModuleId {
+        self.module_id(self.root_file_id)
+            .expect("validated root file has a logical path")
     }
 
     /// Physical paths in ascending `FileId` order.

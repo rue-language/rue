@@ -8,16 +8,14 @@
 //! request's diagnostic locations.
 
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::Arc;
 
-use rue_air::normalize_module_path;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_parser::{Ident, Item, ast::Visibility};
 use rue_span::{FileId, Span};
 use tracing::info_span;
 
-use crate::{ParsedProgram, SourceMetadata, SourceSnapshot};
+use crate::{ModuleId, ParsedProgram, SourceMetadata, SourceSnapshot};
 
 /// A durable module identity derived from a canonical logical source path.
 ///
@@ -25,57 +23,8 @@ use crate::{ParsedProgram, SourceMetadata, SourceSnapshot};
 /// within the same source graph. It is insensitive to checkout relocation when
 /// callers provide relocation-stable logical paths; metadata that deliberately
 /// falls back to physical paths retains those paths' location dependence.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ModuleKey {
-    logical_path: Arc<str>,
-}
-
-impl ModuleKey {
-    /// Construct a module key by lexically canonicalizing a logical path.
-    ///
-    /// This performs no filesystem access. Empty identities are rejected in
-    /// the same way as [`SourceMetadata`].
-    pub fn from_logical_path(logical_path: impl AsRef<str>) -> CompileResult<Self> {
-        let logical_path = normalize_module_path(logical_path.as_ref());
-        if logical_path.is_empty() {
-            return Err(invalid_input("module key has an empty logical path"));
-        }
-        Ok(Self {
-            logical_path: Arc::from(logical_path),
-        })
-    }
-
-    fn from_validated_canonical(logical_path: &str) -> Self {
-        debug_assert!(!logical_path.is_empty());
-        Self {
-            logical_path: Arc::from(logical_path),
-        }
-    }
-
-    /// The canonical logical source path underlying this key.
-    #[inline]
-    pub fn logical_path(&self) -> &str {
-        self.logical_path.as_ref()
-    }
-
-    /// The canonical logical source path underlying this key.
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        self.logical_path()
-    }
-}
-
-impl AsRef<str> for ModuleKey {
-    fn as_ref(&self) -> &str {
-        self.logical_path()
-    }
-}
-
-impl fmt::Display for ModuleKey {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.logical_path())
-    }
-}
+/// Compatibility name for [`ModuleId`].
+pub type ModuleKey = ModuleId;
 
 /// The concrete syntax kind of a parsed top-level definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
