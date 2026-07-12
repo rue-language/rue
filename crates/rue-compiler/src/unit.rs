@@ -38,9 +38,10 @@ use tracing::{info, info_span};
 
 use crate::{
     AstGen, CompileErrors, CompileOptions, CompileOutput, CompileResult, CompileWarning,
-    DefinitionSnapshot, FunctionWithCfg, ImportDirectives, MergedAst, MultiErrorResult, Rir,
-    SourceFile, SourceMetadata, SourceSnapshot, SyntaxWork, TypeInternPool,
+    DefinitionSnapshot, FunctionWithCfg, ImportDirectives, ImportGraph, MergedAst,
+    MultiErrorResult, Rir, SourceFile, SourceMetadata, SourceSnapshot, SyntaxWork, TypeInternPool,
     build_functions_and_cfgs, build_sema_for_target, compile_backend, extract_import_directives,
+    resolve_import_graph,
 };
 use rue_span::FileId;
 
@@ -484,6 +485,22 @@ impl<'src> CompilationUnit<'src> {
     /// analysis responsibilities.
     pub fn import_directives(&self) -> Option<&ImportDirectives> {
         self.import_directives.as_ref()
+    }
+
+    /// Resolve the latest lowered import sites with explicit stdlib context.
+    ///
+    /// This is a pure snapshot query: it does not discover files, read the
+    /// environment, emit diagnostics, or mutate semantic-analysis state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called before [`lower()`](Self::lower).
+    pub fn resolve_import_graph(&self, std_dir: Option<&str>) -> CompileResult<ImportGraph> {
+        let directives = self
+            .import_directives
+            .as_ref()
+            .expect("resolve_import_graph() called before lower()");
+        resolve_import_graph(directives, self.source_snapshot.metadata(), std_dir)
     }
 
     /// Get the analyzed functions with CFGs (after analysis).
