@@ -8,7 +8,115 @@ use rue_rir::InstData;
 use rue_span::{FileId, Span};
 
 use super::RirDeclarationIndexWork;
-use super::{Sema, SemaOutput};
+use super::{ConstValue, Sema, SemaOutput};
+use crate::types::{Type, TypeKind};
+
+/// A nominal declaration identity valid for one successful binding request.
+/// Consumers must join this identity to their own stable definition universe
+/// while the callback passed to [`BoundSema::with_declaration_semantics`] runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticNominalIdentity {
+    pub file_id: FileId,
+    pub name: Arc<str>,
+    pub kind: SemanticBindingKind,
+}
+
+/// An owned resolved type with no `Type`, pool ID, interner symbol, or RIR handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticExportType {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    Bool,
+    Unit,
+    Never,
+    ComptimeType,
+    GenericParameter(u32),
+    Nominal(SemanticNominalIdentity),
+    Array {
+        element: Box<Self>,
+        len: u64,
+    },
+    PtrConst(Box<Self>),
+    PtrMut(Box<Self>),
+    /// Resolved module path. It is deliberately converted by the compiler
+    /// during the callback rather than retained as AIR's request-local ModuleId.
+    Module(Arc<str>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticParameterMode {
+    Value,
+    Borrow,
+    Inout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticExportParameter {
+    pub ty: SemanticExportType,
+    pub mode: SemanticParameterMode,
+    pub is_comptime: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticExportConstValue {
+    Integer(i128),
+    Bool(bool),
+    Type(SemanticExportType),
+    Function { file_id: FileId, name: Arc<str> },
+    Unit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticDeclarationPayload {
+    Callable {
+        parameters: Arc<[SemanticExportParameter]>,
+        result: SemanticExportType,
+        has_self: bool,
+        is_unchecked: bool,
+    },
+    Struct {
+        fields: Arc<[(Arc<str>, SemanticExportType)]>,
+        is_copy: bool,
+        is_linear: bool,
+    },
+    Enum {
+        variants: Arc<[(Arc<str>, Arc<[SemanticExportType]>)]>,
+    },
+    Const {
+        ty: SemanticExportType,
+        value: SemanticExportConstValue,
+    },
+    Destructor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticDeclarationExport {
+    pub identity: SemanticBinding,
+    pub payload: SemanticDeclarationPayload,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticExportFailure {
+    ErrorType,
+    AnonymousNominalType,
+    UnmappedNominalType,
+    UnmappedFunction,
+    UnsupportedParameterMode,
+    RecursiveStructuralType,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SemanticDeclarationExportWork {
+    pub build_invocations: usize,
+    pub declarations_exported: usize,
+    pub rir_instructions_visited: usize,
+}
 
 /// Structural descriptors for one completed declaration-binding pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -115,12 +223,323 @@ impl<'a> BoundSema<'a> {
         self.manifest.get().is_some()
     }
 
+    /// Lazily export resolved declaration semantics and invoke `convert` while
+    /// the binder, type pool, interner and module registry are all alive.
+    /// No RIR traversal or second bind is performed.
+    pub fn with_declaration_semantics<R>(
+        &self,
+        convert: impl FnOnce(&[SemanticDeclarationExport], SemanticDeclarationExportWork) -> R,
+    ) -> Result<R, SemanticExportFailure> {
+        let manifest = self.binding_manifest();
+        let (records, work) = self.sema.build_declaration_semantics(manifest)?;
+        Ok(convert(&records, work))
+    }
+
     pub fn analyze_all_bodies(self) -> MultiErrorResult<SemaOutput> {
         self.sema.analyze_all_bodies()
     }
 }
 
 impl<'a> Sema<'a> {
+    fn export_type(
+        &self,
+        ty: Type,
+        stack: &mut Vec<Type>,
+    ) -> Result<SemanticExportType, SemanticExportFailure> {
+        if stack.contains(&ty) {
+            return Err(SemanticExportFailure::RecursiveStructuralType);
+        }
+        let primitive = match ty.kind() {
+            TypeKind::I8 => Some(SemanticExportType::I8),
+            TypeKind::I16 => Some(SemanticExportType::I16),
+            TypeKind::I32 => Some(SemanticExportType::I32),
+            TypeKind::I64 => Some(SemanticExportType::I64),
+            TypeKind::U8 => Some(SemanticExportType::U8),
+            TypeKind::U16 => Some(SemanticExportType::U16),
+            TypeKind::U32 => Some(SemanticExportType::U32),
+            TypeKind::U64 => Some(SemanticExportType::U64),
+            TypeKind::Bool => Some(SemanticExportType::Bool),
+            TypeKind::Unit => Some(SemanticExportType::Unit),
+            TypeKind::Never => Some(SemanticExportType::Never),
+            TypeKind::ComptimeType => Some(SemanticExportType::ComptimeType),
+            TypeKind::Error => return Err(SemanticExportFailure::ErrorType),
+            _ => None,
+        };
+        if let Some(value) = primitive {
+            return Ok(value);
+        }
+        stack.push(ty);
+        let result = match ty.kind() {
+            TypeKind::Struct(id) => {
+                let def = self.type_pool.struct_def(id);
+                if def.is_builtin {
+                    return Err(SemanticExportFailure::UnmappedNominalType);
+                }
+                let symbol = self.interner.get_or_intern(&def.name);
+                if self.structs_by_file_name.get(&(def.file_id, symbol)) != Some(&id) {
+                    return Err(SemanticExportFailure::AnonymousNominalType);
+                }
+                Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
+                    file_id: def.file_id,
+                    name: Arc::from(def.name),
+                    kind: SemanticBindingKind::Struct,
+                }))
+            }
+            TypeKind::Enum(id) => {
+                let def = self.type_pool.enum_def(id);
+                Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
+                    file_id: def.file_id,
+                    name: Arc::from(def.name),
+                    kind: SemanticBindingKind::Enum,
+                }))
+            }
+            TypeKind::Array(id) => {
+                let (element, len) = self.type_pool.array_def(id);
+                Ok(SemanticExportType::Array {
+                    element: Box::new(self.export_type(element, stack)?),
+                    len,
+                })
+            }
+            TypeKind::PtrConst(id) => Ok(SemanticExportType::PtrConst(Box::new(
+                self.export_type(self.type_pool.ptr_const_def(id), stack)?,
+            ))),
+            TypeKind::PtrMut(id) => Ok(SemanticExportType::PtrMut(Box::new(
+                self.export_type(self.type_pool.ptr_mut_def(id), stack)?,
+            ))),
+            TypeKind::Module(id) => Ok(SemanticExportType::Module(Arc::from(
+                self.module_registry.get_def(id).file_path,
+            ))),
+            _ => unreachable!(),
+        };
+        stack.pop();
+        result
+    }
+
+    fn export_function_signature(
+        &self,
+        info: &super::FunctionInfo,
+    ) -> Result<(Arc<[SemanticExportParameter]>, SemanticExportType), SemanticExportFailure> {
+        self.export_callable_signature(
+            info.params,
+            info.return_type,
+            info.rir_params_start,
+            info.rir_params_len,
+            info.return_type_sym,
+        )
+    }
+
+    fn export_callable_signature(
+        &self,
+        range: crate::ParamRange,
+        return_type: Type,
+        params_start: u32,
+        params_len: u32,
+        return_type_sym: Spur,
+    ) -> Result<(Arc<[SemanticExportParameter]>, SemanticExportType), SemanticExportFailure> {
+        let rir_params = self.rir.get_params(params_start, params_len);
+        let type_name = self.interner.get("type");
+        let generic_names = rir_params
+            .iter()
+            .filter(|param| param.is_comptime && Some(param.ty) == type_name)
+            .map(|param| param.name)
+            .collect::<Vec<_>>();
+        let convert = |ty: Type, symbol: Spur| {
+            if ty == Type::COMPTIME_TYPE {
+                if let Some(index) = generic_names.iter().position(|name| *name == symbol) {
+                    return Ok(SemanticExportType::GenericParameter(index as u32));
+                }
+            }
+            self.export_type(ty, &mut Vec::new())
+        };
+        let parameters = self
+            .param_arena
+            .types(range)
+            .iter()
+            .zip(self.param_arena.modes(range))
+            .zip(self.param_arena.comptime(range))
+            .zip(&rir_params)
+            .map(|(((&ty, &mode), &is_comptime), rir)| {
+                use rue_rir::RirParamMode;
+                let mode = match mode {
+                    RirParamMode::Normal | RirParamMode::Comptime => SemanticParameterMode::Value,
+                    RirParamMode::Borrow => SemanticParameterMode::Borrow,
+                    RirParamMode::Inout => SemanticParameterMode::Inout,
+                };
+                Ok(SemanticExportParameter {
+                    ty: convert(ty, rir.ty)?,
+                    mode,
+                    is_comptime,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((parameters.into(), convert(return_type, return_type_sym)?))
+    }
+
+    fn build_declaration_semantics(
+        &self,
+        manifest: &SemanticBindingManifest,
+    ) -> Result<
+        (
+            Vec<SemanticDeclarationExport>,
+            SemanticDeclarationExportWork,
+        ),
+        SemanticExportFailure,
+    > {
+        let mut records = Vec::with_capacity(manifest.bindings.len());
+        for identity in manifest
+            .bindings
+            .iter()
+            .filter(|b| b.kind != SemanticBindingKind::ModuleBinding)
+        {
+            let name = self.interner.get_or_intern(identity.name.as_ref());
+            let payload = match identity.kind {
+                SemanticBindingKind::Function => {
+                    let internal = *self
+                        .functions_by_file_name
+                        .get(&(identity.file_id, name))
+                        .ok_or(SemanticExportFailure::UnmappedFunction)?;
+                    let info = self
+                        .functions
+                        .get(&internal)
+                        .ok_or(SemanticExportFailure::UnmappedFunction)?;
+                    let (parameters, result) = self.export_function_signature(info)?;
+                    SemanticDeclarationPayload::Callable {
+                        parameters,
+                        result,
+                        has_self: false,
+                        is_unchecked: info.is_unchecked,
+                    }
+                }
+                SemanticBindingKind::Method | SemanticBindingKind::AssociatedFunction => {
+                    let owner = self.interner.get_or_intern(
+                        identity
+                            .owner
+                            .as_deref()
+                            .ok_or(SemanticExportFailure::UnmappedNominalType)?,
+                    );
+                    let sid = *self
+                        .structs_by_file_name
+                        .get(&(identity.file_id, owner))
+                        .ok_or(SemanticExportFailure::UnmappedNominalType)?;
+                    let info = self
+                        .methods
+                        .get(&(sid, name))
+                        .ok_or(SemanticExportFailure::UnmappedFunction)?;
+                    let declaration = *self
+                        .named_method_declarations
+                        .get(&(sid, name))
+                        .ok_or(SemanticExportFailure::UnmappedFunction)?;
+                    let InstData::FnDecl {
+                        params_start,
+                        params_len,
+                        return_type,
+                        ..
+                    } = &self.rir.get(declaration).data
+                    else {
+                        return Err(SemanticExportFailure::UnmappedFunction);
+                    };
+                    let (parameters, result) = self.export_callable_signature(
+                        info.params,
+                        info.return_type,
+                        *params_start,
+                        *params_len,
+                        *return_type,
+                    )?;
+                    SemanticDeclarationPayload::Callable {
+                        parameters,
+                        result,
+                        has_self: info.has_self,
+                        is_unchecked: false,
+                    }
+                }
+                SemanticBindingKind::Struct => {
+                    let sid = *self
+                        .structs_by_file_name
+                        .get(&(identity.file_id, name))
+                        .ok_or(SemanticExportFailure::UnmappedNominalType)?;
+                    let def = self.type_pool.struct_def(sid);
+                    let fields = def
+                        .fields
+                        .into_iter()
+                        .map(|f| Ok((Arc::from(f.name), self.export_type(f.ty, &mut Vec::new())?)))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    SemanticDeclarationPayload::Struct {
+                        fields: fields.into(),
+                        is_copy: def.is_copy,
+                        is_linear: def.is_linear,
+                    }
+                }
+                SemanticBindingKind::Enum => {
+                    let eid = *self
+                        .enums_by_file_name
+                        .get(&(identity.file_id, name))
+                        .ok_or(SemanticExportFailure::UnmappedNominalType)?;
+                    let def = self.type_pool.enum_def(eid);
+                    let variants = def
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .map(|(i, n)| {
+                            let payload = def
+                                .variant_payload(i)
+                                .iter()
+                                .map(|&t| self.export_type(t, &mut Vec::new()))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            Ok((Arc::from(n.as_str()), Arc::from(payload)))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    SemanticDeclarationPayload::Enum {
+                        variants: variants.into(),
+                    }
+                }
+                SemanticBindingKind::ValueConst => {
+                    let info = self
+                        .constants_by_file_name
+                        .get(&(identity.file_id, name))
+                        .ok_or(SemanticExportFailure::UnmappedFunction)?;
+                    let value = match info.value {
+                        ConstValue::Integer(v) => SemanticExportConstValue::Integer(v),
+                        ConstValue::Bool(v) => SemanticExportConstValue::Bool(v),
+                        ConstValue::Type(t) => {
+                            SemanticExportConstValue::Type(self.export_type(t, &mut Vec::new())?)
+                        }
+                        ConstValue::Unit => SemanticExportConstValue::Unit,
+                        ConstValue::Function(symbol) => {
+                            let fi = self
+                                .functions
+                                .get(&symbol)
+                                .ok_or(SemanticExportFailure::UnmappedFunction)?;
+                            let source =
+                                *self.function_source_names.get(&symbol).unwrap_or(&symbol);
+                            SemanticExportConstValue::Function {
+                                file_id: fi.file_id,
+                                name: Arc::from(self.interner.resolve(&source)),
+                            }
+                        }
+                    };
+                    SemanticDeclarationPayload::Const {
+                        ty: self.export_type(info.ty, &mut Vec::new())?,
+                        value,
+                    }
+                }
+                SemanticBindingKind::Destructor => SemanticDeclarationPayload::Destructor,
+                SemanticBindingKind::ModuleBinding => unreachable!(),
+            };
+            records.push(SemanticDeclarationExport {
+                identity: identity.clone(),
+                payload,
+            });
+        }
+        let len = records.len();
+        Ok((
+            records,
+            SemanticDeclarationExportWork {
+                build_invocations: 1,
+                declarations_exported: len,
+                rir_instructions_visited: 0,
+            },
+        ))
+    }
     pub(super) fn into_bound(self) -> BoundSema<'a> {
         let index = self.declaration_index.work();
         BoundSema {
@@ -336,6 +755,64 @@ mod tests {
         let rir = AstGen::new(&ast, &interner).generate();
         let bound = Sema::new(&rir, &interner, PreviewFeatures::new()).bind_declarations()?;
         Ok(bound.binding_manifest().clone())
+    }
+
+    fn export(
+        source: &str,
+    ) -> Result<
+        (
+            Vec<SemanticDeclarationExport>,
+            SemanticDeclarationExportWork,
+        ),
+        SemanticExportFailure,
+    > {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let rir = AstGen::new(&ast, &interner).generate();
+        let bound = Sema::new(&rir, &interner, PreviewFeatures::new())
+            .bind_declarations()
+            .unwrap();
+        bound.with_declaration_semantics(|records, work| (records.to_vec(), work))
+    }
+
+    #[test]
+    fn declaration_export_is_resolved_owned_lazy_and_rir_free() {
+        let (records, work) = export(
+            r#"
+            struct Leaf { value: i32 }
+            struct Boxed { nested: [[Leaf; 2]; 4] }
+            enum Maybe { None, Some(Leaf) }
+            const LIMIT: i32 = 7;
+            fn id(comptime T: type, value: T) -> T { value }
+            fn helper(value: ptr const Leaf) -> bool { true }
+            const alias = helper;
+            drop fn Boxed(self) {}
+            fn main() {}
+            "#,
+        )
+        .unwrap();
+        assert_eq!(work.build_invocations, 1);
+        assert_eq!(work.rir_instructions_visited, 0);
+        assert_eq!(work.declarations_exported, records.len());
+        assert!(records.iter().any(|record| matches!(
+            &record.payload,
+            SemanticDeclarationPayload::Callable { parameters, result, .. }
+                if record.identity.name.as_ref() == "id"
+                    && parameters.iter().map(|p| p.is_comptime).collect::<Vec<_>>() == [true, false]
+                    && parameters[1].ty == SemanticExportType::GenericParameter(0)
+                    && *result == SemanticExportType::GenericParameter(0)
+        )));
+        assert!(records.iter().any(|record| matches!(
+            &record.payload,
+            SemanticDeclarationPayload::Const { value: SemanticExportConstValue::Function { name, .. }, .. }
+                if record.identity.name.as_ref() == "alias" && name.as_ref() == "helper"
+        )));
+        assert!(records.iter().any(|record| {
+            record.identity.name.as_ref() == "Boxed"
+                && matches!(record.payload, SemanticDeclarationPayload::Destructor)
+        }));
+        // The callback DTO contains no request-local Type/Spur/InstRef/nominal IDs.
+        assert!(std::mem::size_of::<SemanticExportType>() > 0);
     }
 
     fn bind_with_module_paths(source: &str) -> Result<SemanticBindingManifest, CompileErrors> {

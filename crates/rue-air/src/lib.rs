@@ -47,8 +47,10 @@ pub use sema::{
     NamedDestructorDependencyEvent, NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
     OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, RirDeclarationIndexWork, Sema, SemaOutput,
     SemanticBinding, SemanticBindingKind, SemanticBindingManifest, SemanticBindingManifestWork,
-    SemanticBindingNamespace, SpecializedFreeFunctionDependencyEvent,
-    SpecializedFreeFunctionOrigin, import_candidate_groups,
+    SemanticBindingNamespace, SemanticDeclarationExport, SemanticDeclarationExportWork,
+    SemanticDeclarationPayload, SemanticExportConstValue, SemanticExportFailure,
+    SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
+    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin, import_candidate_groups,
 };
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,

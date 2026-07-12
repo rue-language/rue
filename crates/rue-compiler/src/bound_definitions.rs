@@ -216,6 +216,53 @@ pub fn bind_canonical_definitions(
         .map(|(definitions, _)| definitions)
 }
 
+/// Bind once and export stable, request-independent declaration semantics
+/// before the successful binder is consumed. This performs no body analysis,
+/// second bind, syntax reconstruction, or additional RIR traversal.
+pub fn bind_canonical_declaration_semantics(
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    preview_features: PreviewFeatures,
+    target: Target,
+) -> MultiErrorResult<(
+    BoundDefinitionSet,
+    Arc<[crate::DurableDeclarationSemantic]>,
+    rue_air::SemanticDeclarationExportWork,
+)> {
+    let sema = configure_canonical_sema(merged, rir, preview_features, target)?;
+    let bound = sema.bind_declarations()?;
+    let manifest = bound.binding_manifest();
+    let definitions = issue_bound_definitions(
+        merged,
+        rir.source_revision(),
+        manifest.bindings(),
+        manifest.work(),
+    )
+    .map_err(CompileErrors::from)?;
+    let converted = bound
+        .with_declaration_semantics(|records, work| {
+            (
+                crate::durable_semantics::convert_declaration_semantics(
+                    merged,
+                    &definitions,
+                    records,
+                ),
+                work,
+            )
+        })
+        .map_err(|failure| {
+            CompileErrors::from(invalid(&format!(
+                "durable semantic AIR export failed: {failure:?}"
+            )))
+        })?;
+    let semantics = converted.0.map_err(|failure| {
+        CompileErrors::from(invalid(&format!(
+            "durable semantic conversion failed: {failure:?}"
+        )))
+    })?;
+    Ok((definitions, semantics, converted.1))
+}
+
 pub(crate) fn bind_canonical_definitions_with_work(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
@@ -634,6 +681,25 @@ mod tests {
             .unwrap()
     }
 
+    fn export(
+        snapshot: &SourceSnapshot,
+    ) -> (
+        BoundDefinitionSet,
+        Arc<[crate::DurableDeclarationSemantic]>,
+        rue_air::SemanticDeclarationExportWork,
+    ) {
+        let parsed = parse_source_snapshot_modules(snapshot).unwrap();
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let rir = lower_canonical_rir(&merged).unwrap();
+        bind_canonical_declaration_semantics(
+            &merged,
+            &rir,
+            PreviewFeatures::new(),
+            Target::default(),
+        )
+        .unwrap()
+    }
+
     fn keys(set: &BoundDefinitionSet) -> Vec<StableDefinitionKey> {
         set.definitions()
             .iter()
@@ -652,6 +718,107 @@ mod tests {
         drop fn Resource(self) {}
         fn main() -> i32 { Resource.make().get() + LIMIT }
     "#;
+
+    #[test]
+    fn durable_declaration_export_is_relocation_and_order_stable_without_extra_rir() {
+        let first = snapshot(
+            &[
+                (
+                    9,
+                    "/old/z.rue",
+                    "z.rue",
+                    "fn helper(x: ptr const i32) -> bool { true } const alias = helper;",
+                ),
+                (2, "/old/main.rue", "main.rue", PROGRAM),
+            ],
+            2,
+        );
+        let moved = snapshot(
+            &[
+                (71, "/new/main.rue", "main.rue", PROGRAM),
+                (
+                    4,
+                    "/new/z.rue",
+                    "z.rue",
+                    "fn helper(x: ptr const i32) -> bool { true } const alias = helper;",
+                ),
+            ],
+            71,
+        );
+        let (_, first, first_work) = export(&first);
+        let (_, moved, moved_work) = export(&moved);
+        assert_eq!(first, moved);
+        assert_eq!(first_work, moved_work);
+        assert_eq!(first_work.build_invocations, 1);
+        assert_eq!(first_work.rir_instructions_visited, 0);
+        assert!(first.iter().any(|record| matches!(
+            record.payload,
+            crate::DurableDeclarationPayload::Const {
+                value: crate::DurableConstValue::Function(_),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn durable_member_export_joins_same_named_members_through_their_stable_owner() {
+        const MEMBERS: &str = r#"
+            struct Alpha {
+                fn shared(self) -> i32 { 1 }
+                fn make() -> i32 { 2 }
+            }
+            struct Beta {
+                fn shared(self) -> bool { true }
+                fn make() -> bool { false }
+            }
+            fn main() {}
+        "#;
+        let first = snapshot(
+            &[
+                (9, "/old/z.rue", "z.rue", "fn helper() {}"),
+                (2, "/old/main.rue", "main.rue", MEMBERS),
+            ],
+            2,
+        );
+        let moved = snapshot(
+            &[
+                (71, "/new/main.rue", "main.rue", MEMBERS),
+                (4, "/new/z.rue", "z.rue", "fn helper() {}"),
+            ],
+            71,
+        );
+        let (_, first, _) = export(&first);
+        let (_, moved, _) = export(&moved);
+        assert_eq!(first, moved);
+
+        let members = first
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record.key.kind(),
+                    StableDefinitionKind::Method | StableDefinitionKind::AssociatedFunction
+                )
+            })
+            .map(|record| {
+                (
+                    record.key.kind(),
+                    record.key.name().to_owned(),
+                    record.key.owner().unwrap().name().to_owned(),
+                    record.payload.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(members.len(), 4);
+        for name in ["make", "shared"] {
+            let same_name = members
+                .iter()
+                .filter(|member| member.1 == name)
+                .collect::<Vec<_>>();
+            assert_eq!(same_name.len(), 2);
+            assert_ne!(same_name[0].2, same_name[1].2);
+            assert_ne!(same_name[0].3, same_name[1].3);
+        }
+    }
 
     #[test]
     fn stable_keys_ignore_relocation_file_ids_and_batch_order() {
