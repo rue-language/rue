@@ -57,6 +57,40 @@ pub struct NamedDestructorDependencyEvent {
     pub caller_owner_name: String,
     pub target: NamedMethodDependencyTargetEvent,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeclarationTypeDependencySourceKind {
+    Function,
+    Struct,
+    Enum,
+    ValueConst,
+    Method,
+    AssociatedFunction,
+    Destructor,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeclarationTypeDependencyTargetKind {
+    Struct,
+    Enum,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeclarationTypeDependencyKind {
+    Signature,
+    Field,
+    Payload,
+    DeclaredType,
+    Owner,
+}
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeclarationTypeDependencyEvent {
+    pub source_file: u32,
+    pub source_name: String,
+    pub source_owner_name: Option<String>,
+    pub source_kind: DeclarationTypeDependencySourceKind,
+    pub dependency_kind: DeclarationTypeDependencyKind,
+    pub target_file: u32,
+    pub target_name: String,
+    pub target_kind: DeclarationTypeDependencyTargetKind,
+}
 
 /// Per-ABI-slot parameter access metadata preserved into CFG.
 ///
@@ -145,6 +179,8 @@ pub struct SemaOutput {
     pub generic_named_method_dependencies_complete: bool,
     pub named_destructor_dependencies: Vec<NamedDestructorDependencyEvent>,
     pub named_destructor_dependencies_complete: bool,
+    pub declaration_type_dependencies: Vec<DeclarationTypeDependencyEvent>,
+    pub declaration_type_dependencies_complete: bool,
 }
 
 /// Value-only workload counters for demand-driven body dispatch.
@@ -157,6 +193,7 @@ pub struct BodyAnalysisWork {
     pub specialized_free_function_dependency_events: usize,
     pub named_method_dependency_events: usize,
     pub named_destructor_dependency_events: usize,
+    pub declaration_type_dependency_events: usize,
     /// Indexed declaration-record lookups for reachable, non-generic free functions.
     pub free_function_record_lookups: usize,
     /// Private declaration-record lookups for reachable named-struct methods.
