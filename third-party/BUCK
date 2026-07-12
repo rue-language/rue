@@ -536,6 +536,19 @@ cargo.rust_library(
 )
 
 cargo.rust_library(
+    name = "block-buffer-0.10.4",
+    srcs = [
+        "vendor/block-buffer-0.10.4/src/lib.rs",
+        "vendor/block-buffer-0.10.4/src/sealed.rs",
+    ],
+    crate = "block_buffer",
+    crate_root = "vendor/block-buffer-0.10.4/src/lib.rs",
+    edition = "2018",
+    visibility = [],
+    deps = [":generic-array-0.14.7"],
+)
+
+cargo.rust_library(
     name = "cfg-if-1.0.4",
     srcs = ["vendor/cfg-if-1.0.4/src/lib.rs"],
     crate = "cfg_if",
@@ -686,6 +699,29 @@ cargo.rust_library(
 )
 
 cargo.rust_library(
+    name = "cpufeatures-0.2.17",
+    srcs = [
+        "vendor/cpufeatures-0.2.17/src/aarch64.rs",
+        "vendor/cpufeatures-0.2.17/src/lib.rs",
+        "vendor/cpufeatures-0.2.17/src/loongarch64.rs",
+        "vendor/cpufeatures-0.2.17/src/miri.rs",
+        "vendor/cpufeatures-0.2.17/src/x86.rs",
+    ],
+    crate = "cpufeatures",
+    crate_root = "vendor/cpufeatures-0.2.17/src/lib.rs",
+    edition = "2018",
+    platform = {
+        "linux-arm64": dict(
+            deps = [":libc-0.2.178"],
+        ),
+        "macos-arm64": dict(
+            deps = [":libc-0.2.178"],
+        ),
+    },
+    visibility = [],
+)
+
+cargo.rust_library(
     name = "crossbeam-deque-0.8.6",
     srcs = [
         "vendor/crossbeam-deque-0.8.6/src/deque.rs",
@@ -761,6 +797,19 @@ cargo.rust_library(
 )
 
 cargo.rust_library(
+    name = "crypto-common-0.1.7",
+    srcs = ["vendor/crypto-common-0.1.7/src/lib.rs"],
+    crate = "crypto_common",
+    crate_root = "vendor/crypto-common-0.1.7/src/lib.rs",
+    edition = "2018",
+    visibility = [],
+    deps = [
+        ":generic-array-0.14.7",
+        ":typenum-1.20.1",
+    ],
+)
+
+cargo.rust_library(
     name = "dashmap-6.1.0",
     srcs = [
         "vendor/dashmap-6.1.0/src/arbitrary.rs",
@@ -797,6 +846,39 @@ cargo.rust_library(
         ":lock_api-0.4.14",
         ":once_cell-1.21.3",
         ":parking_lot_core-0.9.12",
+    ],
+)
+
+cargo.rust_library(
+    name = "digest-0.10.7",
+    srcs = [
+        "vendor/digest-0.10.7/src/core_api.rs",
+        "vendor/digest-0.10.7/src/core_api/ct_variable.rs",
+        "vendor/digest-0.10.7/src/core_api/rt_variable.rs",
+        "vendor/digest-0.10.7/src/core_api/wrapper.rs",
+        "vendor/digest-0.10.7/src/core_api/xof_reader.rs",
+        "vendor/digest-0.10.7/src/dev.rs",
+        "vendor/digest-0.10.7/src/dev/fixed.rs",
+        "vendor/digest-0.10.7/src/dev/mac.rs",
+        "vendor/digest-0.10.7/src/dev/rng.rs",
+        "vendor/digest-0.10.7/src/dev/variable.rs",
+        "vendor/digest-0.10.7/src/dev/xof.rs",
+        "vendor/digest-0.10.7/src/digest.rs",
+        "vendor/digest-0.10.7/src/lib.rs",
+        "vendor/digest-0.10.7/src/mac.rs",
+    ],
+    crate = "digest",
+    crate_root = "vendor/digest-0.10.7/src/lib.rs",
+    edition = "2018",
+    features = [
+        "block-buffer",
+        "core-api",
+        "default",
+    ],
+    visibility = [],
+    deps = [
+        ":block-buffer-0.10.4",
+        ":crypto-common-0.1.7",
     ],
 )
 
@@ -839,9 +921,6 @@ cargo.rust_library(
     edition = "2018",
     features = ["std"],
     platform = {
-        "linux-x86_64": dict(
-            deps = [":libc-0.2.178"],
-        ),
         "macos-arm64": dict(
             deps = [":libc-0.2.178"],
         ),
@@ -924,6 +1003,27 @@ cargo.rust_library(
     crate_root = "vendor/foldhash-0.1.5/src/lib.rs",
     edition = "2021",
     visibility = [],
+)
+
+cargo.rust_library(
+    name = "generic-array-0.14.7",
+    srcs = [
+        "vendor/generic-array-0.14.7/src/arr.rs",
+        "vendor/generic-array-0.14.7/src/functional.rs",
+        "vendor/generic-array-0.14.7/src/hex.rs",
+        "vendor/generic-array-0.14.7/src/impl_serde.rs",
+        "vendor/generic-array-0.14.7/src/impl_zeroize.rs",
+        "vendor/generic-array-0.14.7/src/impls.rs",
+        "vendor/generic-array-0.14.7/src/iter.rs",
+        "vendor/generic-array-0.14.7/src/lib.rs",
+        "vendor/generic-array-0.14.7/src/sequence.rs",
+    ],
+    crate = "generic_array",
+    crate_root = "vendor/generic-array-0.14.7/src/lib.rs",
+    edition = "2015",
+    features = ["more_lengths"],
+    visibility = [],
+    deps = [":typenum-1.20.1"],
 )
 
 cargo.rust_library(
@@ -4119,6 +4219,42 @@ cargo.rust_library(
     deps = [":serde-1.0.228"],
 )
 
+alias(
+    name = "sha2",
+    actual = ":sha2-0.10.9",
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_library(
+    name = "sha2-0.10.9",
+    srcs = [
+        "vendor/sha2-0.10.9/src/consts.rs",
+        "vendor/sha2-0.10.9/src/core_api.rs",
+        "vendor/sha2-0.10.9/src/lib.rs",
+        "vendor/sha2-0.10.9/src/sha256.rs",
+        "vendor/sha2-0.10.9/src/sha256/aarch64.rs",
+        "vendor/sha2-0.10.9/src/sha256/loongarch64_asm.rs",
+        "vendor/sha2-0.10.9/src/sha256/soft.rs",
+        "vendor/sha2-0.10.9/src/sha256/soft_compact.rs",
+        "vendor/sha2-0.10.9/src/sha256/x86.rs",
+        "vendor/sha2-0.10.9/src/sha512.rs",
+        "vendor/sha2-0.10.9/src/sha512/aarch64.rs",
+        "vendor/sha2-0.10.9/src/sha512/loongarch64_asm.rs",
+        "vendor/sha2-0.10.9/src/sha512/soft.rs",
+        "vendor/sha2-0.10.9/src/sha512/soft_compact.rs",
+        "vendor/sha2-0.10.9/src/sha512/x86.rs",
+    ],
+    crate = "sha2",
+    crate_root = "vendor/sha2-0.10.9/src/lib.rs",
+    edition = "2018",
+    visibility = [],
+    deps = [
+        ":cfg-if-1.0.4",
+        ":cpufeatures-0.2.17",
+        ":digest-0.10.7",
+    ],
+)
+
 cargo.rust_library(
     name = "sharded-slab-0.1.7",
     srcs = [
@@ -4895,6 +5031,30 @@ cargo.rust_library(
         ":tracing-log-0.2.0",
         ":tracing-serde-0.2.0",
     ],
+)
+
+cargo.rust_library(
+    name = "typenum-1.20.1",
+    srcs = [
+        "vendor/typenum-1.20.1/src/array.rs",
+        "vendor/typenum-1.20.1/src/bit.rs",
+        "vendor/typenum-1.20.1/src/gen.rs",
+        "vendor/typenum-1.20.1/src/gen/consts.rs",
+        "vendor/typenum-1.20.1/src/gen/generic_const_mappings.rs",
+        "vendor/typenum-1.20.1/src/gen/op.rs",
+        "vendor/typenum-1.20.1/src/int.rs",
+        "vendor/typenum-1.20.1/src/lib.rs",
+        "vendor/typenum-1.20.1/src/marker_traits.rs",
+        "vendor/typenum-1.20.1/src/operator_aliases.rs",
+        "vendor/typenum-1.20.1/src/private.rs",
+        "vendor/typenum-1.20.1/src/tuple.rs",
+        "vendor/typenum-1.20.1/src/type_operators.rs",
+        "vendor/typenum-1.20.1/src/uint.rs",
+    ],
+    crate = "typenum",
+    crate_root = "vendor/typenum-1.20.1/src/lib.rs",
+    edition = "2018",
+    visibility = [],
 )
 
 cargo.rust_library(
