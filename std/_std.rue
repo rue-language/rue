@@ -29,6 +29,7 @@ pub const queue = @import("queue.rue");
 pub const grid = @import("grid.rue");
 pub const binary_heap = @import("binary_heap.rue");
 pub const intmap = @import("intmap.rue");
+pub const bitset = @import("bitset.rue");
 
 // Algorithms & text (Standard library v1, M3).
 pub const ascii = @import("ascii.rue");

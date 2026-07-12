@@ -1,0 +1,65 @@
+# std.collections.BitSet (RUE-671) + the compiler fix that unblocked it
+# (RUE-696: a cross-module zero-argument `-> type` constructor call is now
+# comptime-folded instead of failing E1200). BitSet is a NON-generic std type
+# expressed as `pub fn BitSet() -> type`, which is exactly the zero-arg pattern.
+
+[section]
+id = "cli.std_bitset"
+name = "Standard library v1 — BitSet (RUE-671 / RUE-696)"
+description = "A dense bit set over ArrayBuf(u64), via a cross-module zero-arg `-> type` constructor."
+
+[[case]]
+name = "bitset_set_test_count_clear_toggle"
+description = "BitSet set/test/count/clear/toggle across word boundaries (bits 5, 70, 200) -> exit 42."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let B = std.bitset.BitSet();
+    let mut bs = B.new();
+    let mut score: i64 = 0;
+    bs.set(5); bs.set(70); bs.set(200); bs.set(5);
+    if bs.test(5) { score = score + 1; }
+    if bs.test(70) { score = score + 1; }
+    if bs.test(200) { score = score + 1; }
+    if !bs.test(6) { score = score + 1; }
+    if bs.count() == 3 { score = score + 1; }
+    bs.clear(70);
+    if !bs.test(70) { score = score + 1; }
+    if bs.count() == 2 { score = score + 1; }
+    bs.toggle(5);
+    if !bs.test(5) { score = score + 1; }
+    if score == 8 { 42 } else { @intCast(score) }
+}
+""" }]
+
+# RUE-696 direct regression: a cross-module zero-arg `-> type` constructor bound
+# with `let` used to fail E1200 ("cannot store type value ... at runtime"); a
+# same-file call, or a call with a type argument, always worked.
+[[case]]
+name = "cross_module_zero_arg_type_constructor"
+description = "let W = lib.Widget() where Widget() is a zero-arg `-> type` fn in another module compiles and runs (RUE-696)."
+args = ["main.rue", "-o", "prog"]
+exit_code = 7
+files = [
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let W = lib.Widget();
+    let w = W.new();
+    @intCast(w.get())
+}
+""" },
+  { path = "lib.rue", source = """
+pub fn Widget() -> type {
+    struct {
+        n: i64,
+        fn new() -> Self { Self { n: 7 } }
+        fn get(borrow self) -> i64 { self.n }
+    }
+}
+""" },
+]

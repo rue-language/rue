@@ -2687,7 +2687,30 @@ impl<'a> Sema<'a> {
                 });
                 return Ok(AnalysisResult::new(nop_ref, Type::UNIT));
             }
-            // If it's not a TypeConst, fall through to error (can't store types at runtime)
+            // The analysis path didn't fold this init to a `TypeConst`. One case
+            // is a cross-module zero-arg `-> type` call — `let L = m.Foo()` —
+            // which method-call analysis leaves as a runtime call even though HM
+            // typed it `COMPTIME_TYPE` (RUE-696; a call WITH a type argument, or
+            // a same-file call, already folds via analyze_call). Re-evaluate the
+            // init expression at comptime; if it reduces to a type value, bind it
+            // like the `TypeConst` case above. The reduction is idempotent
+            // (structural dedup), and `for_analysis` supplies the defining file
+            // so a module-qualified `-> type` member resolves.
+            let folded = {
+                let mut env = super::comptime_eval::ComptimeEnv::for_analysis(ctx);
+                self.eval_const_expr(init, &mut env)
+            };
+            if let Ok(Some(ConstValue::Type(ty))) = folded {
+                ctx.bind_comptime_type_var(name, ty);
+                let nop_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::UNIT,
+                    span,
+                });
+                return Ok(AnalysisResult::new(nop_ref, Type::UNIT));
+            }
+
+            // Otherwise it genuinely can't be stored at runtime.
             let name_str = self.interner.resolve(&name);
             return Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {

@@ -1,0 +1,88 @@
+// std.collections — BitSet: a dense growable set of bit indices over
+// ArrayBuf(u64). A non-generic collection: `BitSet()` is a zero-argument
+// `-> type` constructor (usable cross-module since RUE-696).
+//
+//     const std = @import("std");
+//     let B = std.bitset.BitSet();
+//     let mut bs = B.new();
+//     bs.set(5);
+//     bs.test(5);      // true
+//     bs.count();      // 1
+
+const arraybuf = @import("arraybuf.rue");
+
+fn all_ones() -> u64 {
+    18446744073709551615
+}
+
+pub fn BitSet() -> type {
+    struct {
+        words: arraybuf.ArrayBuf(u64),
+
+        fn new() -> Self {
+            let w = arraybuf.ArrayBuf(u64);
+            Self { words: w.new() }
+        }
+
+        // Grow the backing store so word `word_idx` exists.
+        fn _ensure(inout self, word_idx: u64) {
+            while self.words.len() <= word_idx {
+                self.words.push(0);
+            }
+        }
+
+        // Add index `i` to the set.
+        fn set(inout self, i: u64) {
+            let wi = i >> 6;
+            self._ensure(wi);
+            let bit: u64 = 1 << (i & 63);
+            let cur = self.words.get_or(wi, 0);
+            self.words.set(wi, cur | bit);
+        }
+
+        // Remove index `i` from the set.
+        fn clear(inout self, i: u64) {
+            let wi = i >> 6;
+            if wi < self.words.len() {
+                let bit: u64 = 1 << (i & 63);
+                let cur = self.words.get_or(wi, 0);
+                self.words.set(wi, cur & (all_ones() ^ bit));
+            }
+        }
+
+        // Flip index `i`.
+        fn toggle(inout self, i: u64) {
+            let wi = i >> 6;
+            self._ensure(wi);
+            let bit: u64 = 1 << (i & 63);
+            let cur = self.words.get_or(wi, 0);
+            self.words.set(wi, cur ^ bit);
+        }
+
+        // Whether index `i` is in the set.
+        fn test(borrow self, i: u64) -> bool {
+            let wi = i >> 6;
+            if wi >= self.words.len() {
+                false
+            } else {
+                let bit: u64 = 1 << (i & 63);
+                (self.words.get_or(wi, 0) & bit) != 0
+            }
+        }
+
+        // Number of indices in the set (popcount over the words).
+        fn count(borrow self) -> u64 {
+            let mut total: u64 = 0;
+            let mut w: u64 = 0;
+            while w < self.words.len() {
+                let mut v = self.words.get_or(w, 0);
+                while v != 0 {
+                    total = total + (v & 1);
+                    v = v >> 1;
+                }
+                w = w + 1;
+            }
+            total
+        }
+    }
+}
