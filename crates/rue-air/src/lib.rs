@@ -39,7 +39,7 @@ pub use param_arena::{ParamArena, ParamRange};
 pub use path_norm::normalize_module_path;
 pub use sema::{
     AnalyzedFunction, BodyAnalysisWork, BoundSema, BuiltinTypeCallHead, ConstValue,
-    DeclarationBindingWork, DeclarationBuiltinTypeCallHeadDependencyEvent,
+    DeclarationBindingWork, DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationShells,
     DeclarationTypeCallHeadDependencyEvent, DeclarationTypeDependencyEvent,
     DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
     DeclarationTypeDependencyTargetKind, DirResolution, FunctionInfo, GatherOutput,
