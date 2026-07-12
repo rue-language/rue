@@ -2,12 +2,16 @@
 
 use std::sync::Arc;
 
+use rue_air::{DeclarationBindingWork, SemanticBindingManifestWork};
+
 use crate::{
-    CanonicalMergeWork, CanonicalMergedProgram, CanonicalParseSession, CanonicalRirOutput,
-    CanonicalRirWork, CanonicalSemanticOutput, CanonicalSemanticWork, CodegenInputDescriptor,
-    CompileError, CompileErrors, CompileOptions, ErrorKind, ParseInvalidationSummary,
-    ParsedModulesWork, SemanticInputDescriptor, SourceSnapshot, analyze_canonical_program,
-    lower_canonical_rir, merge_parsed_modules, parsed_modules::ParsedProgram,
+    BoundDefinitionSet, BoundDefinitionWork, CanonicalMergeWork, CanonicalMergedProgram,
+    CanonicalParseSession, CanonicalRirOutput, CanonicalRirWork, CanonicalSemanticOutput,
+    CanonicalSemanticWork, CodegenInputDescriptor, CompileError, CompileErrors, CompileOptions,
+    ErrorKind, ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor,
+    SourceSnapshot, analyze_canonical_program,
+    bound_definitions::bind_canonical_definitions_with_work, lower_canonical_rir,
+    merge_parsed_modules, parsed_modules::ParsedProgram,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -31,12 +35,25 @@ pub struct CanonicalFrontendSessionWork {
     pub semantic_entries: usize,
     pub semantic_entries_invalidated: usize,
     pub semantic_records: Vec<SemanticQueryRecord>,
+    pub definitions: FrontendQueryWork,
+    pub definition_entries: usize,
+    pub definition_entries_invalidated: usize,
+    pub definition_records: Vec<DefinitionQueryRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticQueryRecord {
     pub input: CodegenInputDescriptor,
     pub work: CanonicalSemanticWork,
+    pub failed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefinitionQueryRecord {
+    pub input: SemanticInputDescriptor,
+    pub binding: DeclarationBindingWork,
+    pub manifest: SemanticBindingManifestWork,
+    pub issuance: BoundDefinitionWork,
     pub failed: bool,
 }
 
@@ -73,6 +90,7 @@ pub struct CanonicalFrontendSession {
     merge_cache: Option<Result<Arc<CanonicalMergedProgram>, CompileErrors>>,
     rir_cache: Option<Arc<CanonicalRirOutput>>,
     semantic_cache: Vec<SemanticCacheEntry>,
+    definition_cache: Vec<DefinitionCacheEntry>,
     work: CanonicalFrontendSessionWork,
 }
 
@@ -80,6 +98,12 @@ pub struct CanonicalFrontendSession {
 struct SemanticCacheEntry {
     input: CodegenInputDescriptor,
     result: Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
+}
+
+#[derive(Debug)]
+struct DefinitionCacheEntry {
+    input: SemanticInputDescriptor,
+    result: Result<Arc<BoundDefinitionSet>, CompileErrors>,
 }
 
 impl CanonicalFrontendSession {
@@ -121,10 +145,14 @@ impl CanonicalFrontendSession {
                     self.rir_cache = None;
                     self.work.semantic_entries_invalidated += self.semantic_cache.len();
                     self.semantic_cache.clear();
+                    self.work.definition_entries_invalidated += self.definition_cache.len();
+                    self.definition_cache.clear();
                     self.work.last_merge = CanonicalMergeWork::default();
                     self.work.last_rir = CanonicalRirWork::default();
                     self.work.semantic_entries = 0;
                     self.work.semantic_records.clear();
+                    self.work.definition_entries = 0;
+                    self.work.definition_records.clear();
                     self.published = Some(candidate.clone());
                     CanonicalFrontendUpdate {
                         result: Ok(candidate),
@@ -224,6 +252,85 @@ impl CanonicalFrontendSession {
         self.work.semantic_records.push(SemanticQueryRecord {
             input,
             work: semantic_work,
+            failed: result.is_err(),
+        });
+        result
+    }
+
+    /// Issue stable definition IDs on demand for the current semantic input.
+    ///
+    /// Ordinary analysis consumes `BoundSema` without building its optional
+    /// manifest. Retaining that mutable, RIR-borrowing value would duplicate
+    /// substantial semantic state, so this query performs one explicit second
+    /// declaration bind after reusing a successful ordinary body analysis.
+    pub fn stable_definitions(
+        &mut self,
+        options: &CompileOptions,
+    ) -> Result<Arc<BoundDefinitionSet>, CompileErrors> {
+        self.work.definitions.calls += 1;
+        let rir = self.rir()?;
+        let merged = match self.merge_cache.as_ref() {
+            Some(Ok(merged)) => merged.clone(),
+            Some(Err(errors)) => return Err(errors.clone()),
+            None => unreachable!("successful RIR query retains merge input"),
+        };
+        let input = SemanticInputDescriptor::new(
+            merged.definitions().source_snapshot(),
+            options.target,
+            &options.preview_features,
+        );
+
+        // Body validity is independent of opt/linker. Reuse any ordinary
+        // semantic result with the same binding inputs before doing ID work.
+        if let Some(validation) = self
+            .semantic_cache
+            .iter()
+            .find(|entry| entry.input.semantic == input && entry.result.is_ok())
+            .map(|entry| entry.result.clone())
+        {
+            validation?;
+        } else {
+            self.semantic(options)?;
+        }
+
+        if let Some(entry) = self
+            .definition_cache
+            .iter()
+            .find(|entry| entry.input == input)
+        {
+            self.work.definitions.reuses += 1;
+            return entry.result.clone();
+        }
+        self.work.definitions.executions += 1;
+        let query = bind_canonical_definitions_with_work(
+            &merged,
+            &rir,
+            options.preview_features.clone(),
+            options.target,
+        );
+        let (result, binding, manifest, issuance) = match query {
+            Ok((definitions, binding)) => {
+                let manifest = definitions.manifest_work();
+                let issuance = definitions.work();
+                (Ok(Arc::new(definitions)), binding, manifest, issuance)
+            }
+            Err(errors) => (
+                Err(errors),
+                DeclarationBindingWork::default(),
+                SemanticBindingManifestWork::default(),
+                BoundDefinitionWork::default(),
+            ),
+        };
+        self.definition_cache.push(DefinitionCacheEntry {
+            input: input.clone(),
+            result: result.clone(),
+        });
+        self.work.definition_entries = self.definition_cache.len();
+        self.work.definition_records.push(DefinitionQueryRecord {
+            input,
+            binding,
+            manifest,
+            issuance,
             failed: result.is_err(),
         });
         result
@@ -630,5 +737,241 @@ mod tests {
         assert_eq!(session.work().semantic.executions, 2);
         assert_eq!(session.work().semantic_entries, 1);
         assert_eq!(session.work().semantic_entries_invalidated, 1);
+    }
+
+    #[test]
+    fn stable_definitions_are_lazy_reused_and_make_two_bind_boundary_explicit() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<BoundDefinitionSet>();
+
+        let source = base();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let ordinary_options = CompileOptions::default();
+        let ordinary = session.semantic(&ordinary_options).unwrap();
+        assert_eq!(session.work().definitions.executions, 0);
+        assert_eq!(session.work().definition_entries, 0);
+
+        let id_options = CompileOptions {
+            linker: LinkerMode::System("ignored".to_string()),
+            opt_level: OptLevel::O1,
+            ..ordinary_options.clone()
+        };
+        let first = session.stable_definitions(&id_options).unwrap();
+        let second = session
+            .stable_definitions(&CompileOptions {
+                linker: LinkerMode::Internal,
+                opt_level: OptLevel::O3,
+                ..ordinary_options
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(session.work().semantic.executions, 1);
+        assert_eq!(session.work().definitions.executions, 1);
+        assert_eq!(session.work().definitions.reuses, 1);
+        assert_eq!(session.work().definition_entries, 1);
+        let record = &session.work().definition_records[0];
+        assert_eq!(ordinary.work().binding.bind_invocations, 1);
+        assert_eq!(record.binding.bind_invocations, 1);
+        assert_eq!(record.manifest.build_invocations, 1);
+        assert_eq!(first.manifest_work().build_invocations, 1);
+        assert!(record.issuance.ids_issued > 0);
+        assert!(!record.failed);
+
+        let published = first.clone();
+        std::thread::spawn(move || assert!(!published.definitions().is_empty()))
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn stable_then_ordinary_reuses_the_validation_semantic_entry() {
+        let source = base();
+        let options = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        session.stable_definitions(&options).unwrap();
+        let semantic_executions = session.work().semantic.executions;
+        let ordinary = session.semantic(&options).unwrap();
+
+        assert!(!ordinary.functions().is_empty());
+        assert_eq!(semantic_executions, 1);
+        assert_eq!(session.work().semantic.executions, 1);
+        assert_eq!(session.work().semantic.reuses, 1);
+        assert_eq!(session.work().definitions.executions, 1);
+        assert_eq!(
+            session.work().definition_records[0]
+                .binding
+                .bind_invocations,
+            1
+        );
+    }
+
+    #[test]
+    fn stable_definitions_prefers_a_successful_semantic_variant() {
+        let source = base();
+        let options = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        session.semantic(&options).unwrap();
+
+        let mut failed_input = session.semantic_cache[0].input.clone();
+        failed_input.opt_level = crate::StableOptLevel::O1;
+        session.semantic_cache.insert(
+            0,
+            SemanticCacheEntry {
+                input: failed_input,
+                result: Err(CompileErrors::from(CompileError::without_span(
+                    ErrorKind::InvalidCompilerInput(
+                        "synthetic prior failed opt variant".to_string(),
+                    ),
+                ))),
+            },
+        );
+
+        let definitions = session
+            .stable_definitions(&CompileOptions {
+                opt_level: OptLevel::O2,
+                ..options
+            })
+            .unwrap();
+
+        assert!(!definitions.definitions().is_empty());
+        assert_eq!(session.work().semantic.executions, 1);
+        assert_eq!(session.work().definitions.executions, 1);
+        let record = &session.work().definition_records[0];
+        assert_eq!(record.binding.bind_invocations, 1);
+        assert_eq!(record.manifest.build_invocations, 1);
+    }
+
+    #[test]
+    fn stable_definition_target_and_feature_inputs_are_separate() {
+        let source = base();
+        let default = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        session.stable_definitions(&default).unwrap();
+        let other_target = *Target::all()
+            .iter()
+            .find(|&&target| target != default.target)
+            .expect("multiple compiler targets");
+        session
+            .stable_definitions(&CompileOptions {
+                target: other_target,
+                ..default.clone()
+            })
+            .unwrap();
+        session
+            .stable_definitions(&CompileOptions {
+                preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
+                ..default
+            })
+            .unwrap();
+
+        assert_eq!(session.work().definitions.executions, 3);
+        assert_eq!(session.work().definition_entries, 3);
+        assert_eq!(session.work().definition_records.len(), 3);
+        assert!(session.work().definition_records.iter().all(|record| {
+            record.binding.bind_invocations == 1
+                && record.manifest.build_invocations == 1
+                && !record.failed
+        }));
+    }
+
+    #[test]
+    fn definition_keys_ignore_opt_linker_relocation_file_ids_and_order() {
+        let original = snapshot(
+            &[
+                (7, "/old/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (2, "/old/a.rue", "a.rue", "fn a() {}"),
+            ],
+            7,
+        );
+        let moved = snapshot(
+            &[
+                (90, "/new/a.rue", "a.rue", "fn a() {}"),
+                (40, "/new/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+            ],
+            40,
+        );
+        let renamed = snapshot(
+            &[
+                (90, "/new/lib/a.rue", "lib/a.rue", "fn a() {}"),
+                (40, "/new/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+            ],
+            40,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&original).into_result().unwrap();
+        let first = session
+            .stable_definitions(&CompileOptions {
+                linker: LinkerMode::System("x".to_string()),
+                opt_level: OptLevel::O2,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        let keys = |set: &BoundDefinitionSet| {
+            set.definitions()
+                .iter()
+                .map(|record| record.stable_key().clone())
+                .collect::<Vec<_>>()
+        };
+        let first_keys = keys(&first);
+
+        session.update(&moved).into_result().unwrap();
+        let second = session
+            .stable_definitions(&CompileOptions::default())
+            .unwrap();
+        assert_eq!(keys(&second), first_keys);
+        assert_eq!(session.work().definition_entries_invalidated, 1);
+
+        session.update(&renamed).into_result().unwrap();
+        let third = session
+            .stable_definitions(&CompileOptions::default())
+            .unwrap();
+        assert_ne!(keys(&third), first_keys);
+    }
+
+    #[test]
+    fn failed_parse_preserves_ids_while_semantic_rejection_issues_none() {
+        let valid = base();
+        let syntax_bad = snapshot(
+            &[
+                (7, "/p/main.rue", "main.rue", "fn main( {"),
+                (2, "/p/a.rue", "a.rue", "fn a() {}"),
+            ],
+            7,
+        );
+        let semantic_bad = snapshot(
+            &[(
+                7,
+                "/p/main.rue",
+                "main.rue",
+                "fn main() -> i32 { missing_name }",
+            )],
+            7,
+        );
+        let options = CompileOptions::default();
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&valid).into_result().unwrap();
+        let ids = session.stable_definitions(&options).unwrap();
+        assert!(session.update(&syntax_bad).result().is_err());
+        assert!(Arc::ptr_eq(
+            &ids,
+            &session.stable_definitions(&options).unwrap()
+        ));
+
+        session.update(&semantic_bad).into_result().unwrap();
+        let first = session.stable_definitions(&options).unwrap_err();
+        let second = session.stable_definitions(&options).unwrap_err();
+        assert_eq!(format!("{first:?}"), format!("{second:?}"));
+        assert_eq!(session.work().definitions.executions, 1);
+        assert_eq!(session.work().definition_entries, 0);
+        assert_eq!(session.work().semantic_records.len(), 1);
+        assert!(session.work().semantic_records[0].failed);
+
+        session.update(&valid).into_result().unwrap();
+        assert!(session.stable_definitions(&options).is_ok());
+        assert_eq!(session.work().definitions.executions, 2);
     }
 }
