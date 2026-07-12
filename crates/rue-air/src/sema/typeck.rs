@@ -703,6 +703,15 @@ impl<'a> Sema<'a> {
                 result
             } else if type_name.contains('.') {
                 self.resolve_qualified_type_name(type_name, span)
+            } else if let Some(alias_ty) = self.resolve_const_type_alias(type_sym, span)? {
+                // A module-level `const Alias = SomeType;` used as a plain type
+                // name — e.g. the field type of a top-level named struct in its
+                // defining file (RUE-706). The struct/enum tables above don't
+                // include const aliases; RUE-603's on-demand const-alias resolver
+                // (which also collects the const if the field pass runs first)
+                // does. The context-aware `resolve_type_with_ctx` already consults
+                // it; this brings the context-free path to parity.
+                Ok(alias_ty)
             } else {
                 Err(CompileError::new(
                     ErrorKind::UnknownType(type_name.to_string()),

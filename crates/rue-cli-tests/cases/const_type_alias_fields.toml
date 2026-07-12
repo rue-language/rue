@@ -1,0 +1,51 @@
+# A module-level `const Alias = SomeType;` used as a struct FIELD type resolves
+# on the context-free type path (declaration/collection pass), matching the
+# context-aware path — same-file and cross-module (RUE-706, partial: covers a
+# const alias to a simple/builtin type; a const alias to a cross-module GENERIC
+# instantiation as a field type is a deeper RUE-630-family follow-up).
+
+[section]
+id = "cli.const_type_alias_fields"
+name = "Const type alias as a struct field type"
+description = "A `const T = Type;` alias resolves when used as a struct field type, same-file and cross-module."
+
+[[case]]
+name = "same_file_const_alias_field"
+description = "const W = i64; struct with a `W`-typed field compiles and runs."
+args = ["main.rue", "-o", "prog"]
+exit_code = 7
+files = [{ path = "main.rue", source = """
+const W = i64;
+struct Holder {
+    v: W,
+    fn new() -> Self { Self { v: 7 } }
+    fn get(borrow self) -> i64 { self.v }
+}
+fn main() -> i32 {
+    let h = Holder.new();
+    @intCast(h.get())
+}
+""" }]
+
+[[case]]
+name = "cross_module_const_alias_field"
+description = "A pub struct in another module whose field type is that module's `const W = i64;` alias resolves."
+args = ["main.rue", "-o", "prog"]
+exit_code = 5
+files = [
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let h = lib.Holder.new();
+    @intCast(h.get())
+}
+""" },
+  { path = "lib.rue", source = """
+const W = i64;
+pub struct Holder {
+    v: W,
+    fn new() -> Self { Self { v: 5 } }
+    fn get(borrow self) -> i64 { self.v }
+}
+""" },
+]
