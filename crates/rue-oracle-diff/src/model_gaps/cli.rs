@@ -483,6 +483,18 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.str_fixed_type",
+        "str_fixed_exact_borrow_is_by_reference",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "cli.str_fixed_type",
+        "str_fixed_exact_inout_is_by_reference",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "cli.str_fixed_type",
         "str_fixed_len_and_first_byte",
         semantic(SemanticGapKind::TextProjectionRead),
         &[],

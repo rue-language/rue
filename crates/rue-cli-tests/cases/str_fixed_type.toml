@@ -149,6 +149,40 @@ fn main() -> i32 {
 args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 42
 
+# Exact fixed-string borrows retain Str(N)'s nominal capacity and pass one
+# pointer to the caller-owned two-word value, rather than materializing a
+# second bare-str view value.
+[[case]]
+name = "str_fixed_exact_borrow_is_by_reference"
+files = [{ path = "main.rue", source = """
+fn exact_len_of(borrow s: Str(8)) -> u64 {
+    s.len()
+}
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    if exact_len_of(borrow s) == 5 { 42 } else { 0 }
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 42
+
+# An exact inout fixed string is likewise one-pointer by-reference and may
+# replace the caller's value with another value of precisely the same capacity.
+[[case]]
+name = "str_fixed_exact_inout_is_by_reference"
+files = [{ path = "main.rue", source = """
+fn exact_replace(inout s: Str(8)) {
+    s = "bye";
+}
+fn main() -> i32 {
+    let mut s: Str(8) = "hello";
+    exact_replace(inout s);
+    if s.len() == 3 { 42 } else { 0 }
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 42
+
 # `Str(N)` requires the preview flag; without it, a clean gate error.
 [[case]]
 name = "str_fixed_requires_preview"

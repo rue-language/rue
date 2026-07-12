@@ -958,7 +958,10 @@ impl<'a> Sema<'a> {
             let is_str_param = self.is_str_like(param_ty);
             let is_inout_str_param =
                 param_mode == RirParamMode::Inout && self.is_str_struct(param_ty);
-            if is_str_param && !is_inout_str_param {
+            let is_exact_str_fixed_ref =
+                matches!(param_mode, RirParamMode::Borrow | RirParamMode::Inout)
+                    && self.is_str_fixed_struct(param_ty);
+            if is_str_param && !is_inout_str_param && !is_exact_str_fixed_ref {
                 let str_ty = param_ty;
                 // A `borrow` argument to a `borrow s: str` parameter views an
                 // existing string place — a `StrBuf`, `Str(N)`, `str`, or a
@@ -986,7 +989,8 @@ impl<'a> Sema<'a> {
                 // string view. Contextual literals materialize directly as
                 // the expected capacity above; every other value must retain
                 // exact capacity identity (RUE-636). This check is semantic
-                // only: its Borrow/Inout ABI correction remains in RUE-636.
+                // across by-value calls as well as the exact by-reference path
+                // below.
                 if self.is_str_fixed_struct(str_ty) && !arg_result.ty.can_coerce_to(&str_ty) {
                     return Err(self.type_mismatch_error(
                         str_ty,
@@ -1027,7 +1031,7 @@ impl<'a> Sema<'a> {
             let is_slice_param = param_types
                 .get(i)
                 .is_some_and(|pt| self.slice_element_type(*pt).is_some());
-            if is_slice_param && !is_inout_str_param {
+            if is_slice_param && !is_inout_str_param && !is_exact_str_fixed_ref {
                 let slice_ty = param_types[i];
                 let value = self.coerce_borrow_array_to_slice(air, arg, slice_ty, ctx)?;
                 air_args.push(AirCallArg {

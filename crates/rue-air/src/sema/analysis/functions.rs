@@ -351,7 +351,13 @@ impl<'a> Sema<'a> {
             // (RUE-385).
             let is_slice = self.slice_element_type(*ptype).is_some();
             let is_inout_str = *mode == RirParamMode::Inout && self.is_str_struct(*ptype);
-            let is_slice_by_value = is_slice && !is_inout_str;
+            // Exact `borrow Str(N)` / `inout Str(N)` parameters retain their
+            // nominal fixed-capacity type and use the ordinary one-pointer
+            // by-reference ABI. Only actual slice views (including bare
+            // `borrow str`) use the materialized two-slot by-value ABI.
+            let is_exact_str_fixed_ref = matches!(mode, RirParamMode::Borrow | RirParamMode::Inout)
+                && self.is_str_fixed_struct(*ptype);
+            let is_slice_by_value = is_slice && !is_inout_str && !is_exact_str_fixed_ref;
             let is_by_ref = (*mode == RirParamMode::Inout || *mode == RirParamMode::Borrow)
                 && !is_slice_by_value;
             let slot_count = if is_by_ref {
