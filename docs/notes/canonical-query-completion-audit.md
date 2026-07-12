@@ -56,7 +56,9 @@ These fallbacks are supported correctness behavior, not incremental reuse.
    and CFG construction still run for a successful edited revision. Further
    reuse requires stable body/specialization outputs without request-local
    `InstRef`, `Spur`, type-pool, or CFG identities; it must not be inferred from
-   the declaration speedup.
+   the declaration speedup. The [RUE-720 body/CFG incrementality audit](body-analysis-cfg-incrementality-audit.md)
+   maps the live ownership and identity boundaries and identifies the complete
+   structural work ledger as the first gated implementation slice.
 
 2. **Resolution-only changes conservatively invalidate downstream artifacts.**
    The import graph is independently memoized, but merged/RIR provenance owns

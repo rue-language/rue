@@ -65,3 +65,11 @@ The ordinary test suite runs only a four-module, single-iteration structural
 smoke test through
 `//crates/rue-compiler-session-bench:rue-compiler-session-bench-test`; the
 128-module timing workload remains opt-in.
+
+RUE-720 must extend this ledger before body or CFG reuse is introduced. The
+[body-analysis and CFG incrementality audit](../notes/body-analysis-cfg-incrementality-audit.md)
+enumerates the missing body attempts/completions, specialization scans and
+rounds, string remaps, glue synthesis, CFG build/optimization attempts, failed
+work, import attempts, and fallbacks. Counters must describe actual operations,
+including discarded work, and parallel CFG counters must reduce deterministic
+per-function values rather than timing-dependent shared state.
