@@ -16,7 +16,9 @@ The defaults are the values shown above. Setup constructs every `SourceSnapshot`
 before warmup starts. Each measured iteration creates fresh sessions and runs:
 cold parse through semantic analysis, an exact no-op, a leaf body edit, a module
 identity change, a failed syntax edit and recovery, then cold and reused stable
-definition queries.
+definition queries. A second persistent session measures cold, exact-no-op,
+leaf-body-edit, and module-identity-change dependency-manifest and semantic
+invalidation-plan workloads.
 
 The JSON contains nanosecond wall-time observations and structural work for each
 scenario. Treat structural counters as correctness gates: the driver aborts if
@@ -26,6 +28,14 @@ regression threshold without collecting a stable baseline first. The existing
 `bench.sh` history schema describes whole compiler invocations and binary output,
 so these stateful session samples intentionally use a separate schema rather
 than silently changing dashboard meaning.
+
+Schema version 2 adds dependency-manifest and invalidation-plan query counters,
+separate manifest/plan timings, fingerprint comparisons, dependency/closure
+visits, and result cardinalities. Production dependency graphs remain explicitly
+incomplete, so every measured plan must conservatively report full invalidation
+with zero reusable definitions. The gates also require planning itself to run no
+RIR query or RIR instruction scan. These scenarios characterize planning work;
+they do not claim an incremental compilation speedup.
 
 The ordinary test suite runs only a four-module, single-iteration structural
 smoke test through
