@@ -167,6 +167,14 @@ impl BoundDefinitionSet {
         self.work
     }
 
+    /// Look up a definition by its stable, issuer-independent source key.
+    pub fn definition_by_key(&self, key: &StableDefinitionKey) -> Option<&BoundDefinitionRecord> {
+        self.definitions
+            .binary_search_by(|record| record.stable_key().cmp(key))
+            .ok()
+            .map(|index| &self.definitions[index])
+    }
+
     pub fn definition<'a>(
         &'a self,
         id: &BoundDefinitionId,
@@ -180,10 +188,7 @@ impl BoundDefinitionSet {
         if !Arc::ptr_eq(&self.issuer, &id.issuer) {
             return Err(invalid("bound definition ID belongs to a foreign issuer"));
         }
-        self.definitions
-            .binary_search_by(|record| record.stable_key().cmp(&id.key))
-            .ok()
-            .map(|index| &self.definitions[index])
+        self.definition_by_key(&id.key)
             .ok_or_else(|| invalid("bound definition ID is absent from its issuing set"))
     }
 }
