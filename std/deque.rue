@@ -1,0 +1,133 @@
+// std.collections — Deque(T): a growable double-ended queue over a ring buffer.
+//
+// Elements are read by copy (get_or), so `T` must be trivially-droppable
+// (`Copy`) — RUE-651. `new(filler)` takes a throwaway `T` used to initialise the
+// unused ring slots (Rue has no generic zero-init, same convention as IntMap);
+// it is never read as a live value (the `count` guards that).
+//
+//     const std = @import("std");
+//     let D = std.deque.Deque(i64);
+//     let mut d = D.new(0);
+//     d.push_back(2);
+//     d.push_front(1);
+//     d.pop_front();     // Some(1)
+//     d.pop_back();      // Some(2)
+
+const arraybuf = @import("arraybuf.rue");
+const option = @import("option.rue");
+
+pub fn Deque(comptime T: type) -> type {
+    struct {
+        buf: arraybuf.ArrayBuf(T),
+        head: u64,
+        count: u64,
+        cap: u64,
+        filler: T,
+
+        fn new(filler: T) -> Self {
+            let b = arraybuf.ArrayBuf(T);
+            let mut d = Self {
+                buf: b.new(),
+                head: 0,
+                count: 0,
+                cap: 0,
+                filler: filler,
+            };
+            d._grow_to(8);
+            d
+        }
+
+        fn len(borrow self) -> u64 {
+            self.count
+        }
+        fn is_empty(borrow self) -> bool {
+            self.count == 0
+        }
+
+        // Re-lay the live elements contiguously into a fresh `new_cap`-slot ring
+        // (front at index 0), padding the rest with `filler`.
+        fn _grow_to(inout self, new_cap: u64) {
+            let b = arraybuf.ArrayBuf(T);
+            let mut nb = b.new();
+            let mut i: u64 = 0;
+            while i < self.count {
+                // `cap > 0` here whenever `count > 0`, so no divide-by-zero.
+                let idx = (self.head + i) % self.cap;
+                nb.push(self.buf.get_or(idx, self.filler));
+                i = i + 1;
+            }
+            while nb.len() < new_cap {
+                nb.push(self.filler);
+            }
+            self.buf = nb;
+            self.head = 0;
+            self.cap = new_cap;
+        }
+
+        fn _ensure_room(inout self) {
+            if self.count == self.cap {
+                self._grow_to(self.cap * 2);
+            }
+        }
+
+        // Append `x` at the back.
+        fn push_back(inout self, x: T) {
+            self._ensure_room();
+            let idx = (self.head + self.count) % self.cap;
+            self.buf.set(idx, x);
+            self.count = self.count + 1;
+        }
+
+        // Prepend `x` at the front.
+        fn push_front(inout self, x: T) {
+            self._ensure_room();
+            self.head = (self.head + self.cap - 1) % self.cap;
+            self.buf.set(self.head, x);
+            self.count = self.count + 1;
+        }
+
+        // Remove and return the front element, or `None` when empty.
+        fn pop_front(inout self) -> option.Option(T) {
+            let O = option.Option(T);
+            if self.count == 0 {
+                O.None
+            } else {
+                let v = self.buf.get_or(self.head, self.filler);
+                self.head = (self.head + 1) % self.cap;
+                self.count = self.count - 1;
+                O.Some(v)
+            }
+        }
+
+        // Remove and return the back element, or `None` when empty.
+        fn pop_back(inout self) -> option.Option(T) {
+            let O = option.Option(T);
+            if self.count == 0 {
+                O.None
+            } else {
+                self.count = self.count - 1;
+                let idx = (self.head + self.count) % self.cap;
+                O.Some(self.buf.get_or(idx, self.filler))
+            }
+        }
+
+        // The front / back element by copy, or `None` when empty. COPY-`T`.
+        fn front(borrow self) -> option.Option(T) {
+            let O = option.Option(T);
+            if self.count == 0 {
+                O.None
+            } else {
+                O.Some(self.buf.get_or(self.head, self.filler))
+            }
+        }
+        fn back(borrow self) -> option.Option(T) {
+            let O = option.Option(T);
+            if self.count == 0 {
+                O.None
+            } else {
+                let idx = (self.head + self.count - 1) % self.cap;
+                O.Some(self.buf.get_or(idx, self.filler))
+            }
+        }
+    }
+}
