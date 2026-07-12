@@ -103,12 +103,26 @@ target, and preview-feature changes are unconditional full invalidations;
 physical relocation, FileId assignment, and input order are absent from its
 definition comparison.
 
-This is intentionally a safety seam, not incremental semantic reuse. Production
-manifests still report an incomplete semantic graph, so production plans return
-`Full` with structured incompleteness reasons and no reusable candidates.
+This is intentionally a safety seam, not incremental semantic reuse. A
+production manifest carries an immutable sorted set of
+`SemanticDependencyBlocker` records instead of a hard-coded global completeness
+bit. Each record identifies the dependency surface, the precise missing
+semantic identity, and a stable owner when one exists. Compatibility
+`*_complete` accessors and whole-graph completeness are derived from that set.
+The planner unions both revisions' blockers into its
+`IncompleteDependencyGraph` reason, so endpoint loss fails closed and cannot be
+hidden by a boolean toggle. Production plans currently return `Full` with no
+reusable candidates because no production fixture has an empty blocker set.
 Synthetic complete-manifest tests exercise exact deltas and transitive closure;
 the incremental branch cannot authorize production reuse until every capture
 surface below is complete.
+
+The remaining unconditional production blockers are generic named-method
+substitution identity, fully resolved declaration-type identity, and complete
+declaration type-call-head identity. Individual programs can add evidence-based
+blockers, including anonymous drop owners and unsupported dynamic heads. The
+records are sorted/deduplicated, independent of FileId and physical location,
+and require no second RIR scan.
 
 ## Definition fingerprint partition
 

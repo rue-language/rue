@@ -199,6 +199,53 @@ pub enum StableModuleImportDependency {
     },
 }
 
+/// A semantic dependency surface whose captured edges may be incomplete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SemanticDependencySurface {
+    FreeFunctionCall,
+    NonGenericNamedMethodCall,
+    GenericNamedMethodCall,
+    NamedDestructorCall,
+    ImplicitNamedDestructor,
+    DeclarationType,
+    DeclarationTypeCallHead,
+    SupportedTypeCallHead,
+    NamedValueConst,
+}
+
+/// The production evidence which prevents a dependency surface from being trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SemanticDependencyIncompleteReason {
+    CallerEndpointUnavailable,
+    GenericSubstitutionIdentityUnavailable,
+    DestructorEndpointUnavailable,
+    AnonymousDropOwnerUnavailable,
+    ResolvedTypeIdentityUnavailable,
+    TypeCallHeadIdentityUnavailable,
+    UnsupportedDynamicTypeCallHead,
+    ConstEndpointUnavailable,
+}
+
+/// A deterministic, stable-keyed reason that semantic reuse must fail closed.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticDependencyBlocker {
+    owner: Option<StableDefinitionKey>,
+    surface: SemanticDependencySurface,
+    reason: SemanticDependencyIncompleteReason,
+}
+
+impl SemanticDependencyBlocker {
+    pub fn owner(&self) -> Option<&StableDefinitionKey> {
+        self.owner.as_ref()
+    }
+    pub fn surface(&self) -> SemanticDependencySurface {
+        self.surface
+    }
+    pub fn reason(&self) -> SemanticDependencyIncompleteReason {
+        self.reason
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SemanticDependencyInputManifest {
     input: SemanticInputDescriptor,
@@ -207,23 +254,14 @@ pub struct SemanticDependencyInputManifest {
     definition_fingerprints: Arc<[StableDefinitionInputFingerprint]>,
     module_imports: Arc<[StableModuleImportDependency]>,
     free_function_dependencies: Arc<[StableFreeFunctionDependency]>,
-    free_function_caller_dependencies_complete: bool,
     named_method_dependencies: Arc<[StableNamedMethodDependency]>,
-    non_generic_named_method_dependencies_complete: bool,
-    generic_named_method_dependencies_complete: bool,
     named_destructor_dependencies: Arc<[StableNamedDestructorDependency]>,
-    named_destructor_dependencies_complete: bool,
     implicit_named_destructor_dependencies: Arc<[StableImplicitNamedDestructorDependency]>,
-    implicit_named_destructor_dependencies_complete: bool,
     declaration_type_dependencies: Arc<[StableDeclarationTypeDependency]>,
-    declaration_type_dependencies_complete: bool,
     declaration_type_call_head_dependencies: Arc<[StableDeclarationTypeCallHeadDependency]>,
-    declaration_type_call_head_dependencies_complete: bool,
     builtin_type_call_head_inputs: Arc<[StableBuiltinTypeCallHeadInput]>,
-    supported_type_call_heads_complete: bool,
     named_const_dependencies: Arc<[StableNamedConstDependency]>,
-    named_value_const_dependencies_complete: bool,
-    semantic_dependency_graph_complete: bool,
+    dependency_blockers: Arc<[SemanticDependencyBlocker]>,
     definition_universe_complete: bool,
     work: SemanticDependencyManifestWork,
 }
@@ -248,22 +286,22 @@ impl SemanticDependencyInputManifest {
         &self.free_function_dependencies
     }
     pub fn free_function_caller_dependencies_complete(&self) -> bool {
-        self.free_function_caller_dependencies_complete
+        self.surface_complete(SemanticDependencySurface::FreeFunctionCall)
     }
     pub fn named_method_dependencies(&self) -> &[StableNamedMethodDependency] {
         &self.named_method_dependencies
     }
     pub fn non_generic_named_method_dependencies_complete(&self) -> bool {
-        self.non_generic_named_method_dependencies_complete
+        self.surface_complete(SemanticDependencySurface::NonGenericNamedMethodCall)
     }
     pub fn generic_named_method_dependencies_complete(&self) -> bool {
-        self.generic_named_method_dependencies_complete
+        self.surface_complete(SemanticDependencySurface::GenericNamedMethodCall)
     }
     pub fn named_destructor_dependencies(&self) -> &[StableNamedDestructorDependency] {
         &self.named_destructor_dependencies
     }
     pub fn named_destructor_dependencies_complete(&self) -> bool {
-        self.named_destructor_dependencies_complete
+        self.surface_complete(SemanticDependencySurface::NamedDestructorCall)
     }
     pub fn implicit_named_destructor_dependencies(
         &self,
@@ -271,13 +309,13 @@ impl SemanticDependencyInputManifest {
         &self.implicit_named_destructor_dependencies
     }
     pub fn implicit_named_destructor_dependencies_complete(&self) -> bool {
-        self.implicit_named_destructor_dependencies_complete
+        self.surface_complete(SemanticDependencySurface::ImplicitNamedDestructor)
     }
     pub fn declaration_type_dependencies(&self) -> &[StableDeclarationTypeDependency] {
         &self.declaration_type_dependencies
     }
     pub fn declaration_type_dependencies_complete(&self) -> bool {
-        self.declaration_type_dependencies_complete
+        self.surface_complete(SemanticDependencySurface::DeclarationType)
     }
     pub fn declaration_type_call_head_dependencies(
         &self,
@@ -285,22 +323,25 @@ impl SemanticDependencyInputManifest {
         &self.declaration_type_call_head_dependencies
     }
     pub fn declaration_type_call_head_dependencies_complete(&self) -> bool {
-        self.declaration_type_call_head_dependencies_complete
+        self.surface_complete(SemanticDependencySurface::DeclarationTypeCallHead)
     }
     pub fn builtin_type_call_head_inputs(&self) -> &[StableBuiltinTypeCallHeadInput] {
         &self.builtin_type_call_head_inputs
     }
     pub fn supported_type_call_heads_complete(&self) -> bool {
-        self.supported_type_call_heads_complete
+        self.surface_complete(SemanticDependencySurface::SupportedTypeCallHead)
     }
     pub fn named_const_dependencies(&self) -> &[StableNamedConstDependency] {
         &self.named_const_dependencies
     }
     pub fn named_value_const_dependencies_complete(&self) -> bool {
-        self.named_value_const_dependencies_complete
+        self.surface_complete(SemanticDependencySurface::NamedValueConst)
     }
     pub fn semantic_dependency_graph_complete(&self) -> bool {
-        self.semantic_dependency_graph_complete
+        self.dependency_blockers.is_empty()
+    }
+    pub fn dependency_blockers(&self) -> &[SemanticDependencyBlocker] {
+        &self.dependency_blockers
     }
     pub fn definition_universe_complete(&self) -> bool {
         self.definition_universe_complete
@@ -308,17 +349,24 @@ impl SemanticDependencyInputManifest {
     pub fn work(&self) -> SemanticDependencyManifestWork {
         self.work
     }
+
+    fn surface_complete(&self, surface: SemanticDependencySurface) -> bool {
+        !self
+            .dependency_blockers
+            .iter()
+            .any(|blocker| blocker.surface == surface)
+    }
 }
 
 /// A reason why semantic results cannot soundly be reused across two manifests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticFullInvalidationReason {
     RootChanged,
     ModuleImportsChanged,
     TargetChanged,
     PreviewFeaturesChanged,
     IncompleteDefinitionUniverse,
-    IncompleteDependencyGraph,
+    IncompleteDependencyGraph(Arc<[SemanticDependencyBlocker]>),
 }
 
 /// Explicit work performed while planning semantic invalidation.
@@ -984,6 +1032,7 @@ impl CanonicalFrontendSession {
             implicit_named_destructor_events_translated,
             free_function_caller_dependencies_complete,
             named_method_dependencies_complete,
+            generic_named_method_dependencies_complete,
             named_destructor_dependencies_complete,
             declaration_type_dependencies_complete,
             declaration_type_call_head_dependencies_complete,
@@ -1224,6 +1273,7 @@ impl CanonicalFrontendSession {
                     semantic.ordinary_free_function_dependencies_complete()
                         && semantic.specialized_free_function_dependencies_complete(),
                     semantic.non_generic_named_method_dependencies_complete(),
+                    semantic.generic_named_method_dependencies_complete(),
                     semantic.named_destructor_dependencies_complete(),
                     semantic.declaration_type_dependencies_complete(),
                     semantic.declaration_type_call_head_dependencies_complete(),
@@ -1250,6 +1300,7 @@ impl CanonicalFrontendSession {
                 0,
                 0,
                 0,
+                false,
                 false,
                 false,
                 false,
@@ -1319,6 +1370,63 @@ impl CanonicalFrontendSession {
                 },
             })
             .collect::<Vec<_>>();
+        let mut dependency_blockers = BTreeSet::new();
+        let mut block = |complete: bool,
+                         surface: SemanticDependencySurface,
+                         reason: SemanticDependencyIncompleteReason| {
+            if !complete {
+                dependency_blockers.insert(SemanticDependencyBlocker {
+                    owner: None,
+                    surface,
+                    reason,
+                });
+            }
+        };
+        block(
+            free_function_caller_dependencies_complete,
+            SemanticDependencySurface::FreeFunctionCall,
+            SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
+        );
+        block(
+            named_method_dependencies_complete,
+            SemanticDependencySurface::NonGenericNamedMethodCall,
+            SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
+        );
+        block(
+            generic_named_method_dependencies_complete,
+            SemanticDependencySurface::GenericNamedMethodCall,
+            SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable,
+        );
+        block(
+            named_destructor_dependencies_complete,
+            SemanticDependencySurface::NamedDestructorCall,
+            SemanticDependencyIncompleteReason::DestructorEndpointUnavailable,
+        );
+        block(
+            implicit_named_destructor_dependencies_complete,
+            SemanticDependencySurface::ImplicitNamedDestructor,
+            SemanticDependencyIncompleteReason::AnonymousDropOwnerUnavailable,
+        );
+        block(
+            declaration_type_dependencies_complete,
+            SemanticDependencySurface::DeclarationType,
+            SemanticDependencyIncompleteReason::ResolvedTypeIdentityUnavailable,
+        );
+        block(
+            declaration_type_call_head_dependencies_complete,
+            SemanticDependencySurface::DeclarationTypeCallHead,
+            SemanticDependencyIncompleteReason::TypeCallHeadIdentityUnavailable,
+        );
+        block(
+            supported_type_call_heads_complete,
+            SemanticDependencySurface::SupportedTypeCallHead,
+            SemanticDependencyIncompleteReason::UnsupportedDynamicTypeCallHead,
+        );
+        block(
+            named_value_const_dependencies_complete,
+            SemanticDependencySurface::NamedValueConst,
+            SemanticDependencyIncompleteReason::ConstEndpointUnavailable,
+        );
         let manifest = Arc::new(SemanticDependencyInputManifest {
             input,
             imports: imports.graph().clone(),
@@ -1326,23 +1434,14 @@ impl CanonicalFrontendSession {
             definition_fingerprints: definition_fingerprints.into(),
             module_imports: module_imports.into(),
             free_function_dependencies: free_function_dependencies.into(),
-            free_function_caller_dependencies_complete,
             named_method_dependencies: named_method_dependencies.into(),
-            non_generic_named_method_dependencies_complete: named_method_dependencies_complete,
-            generic_named_method_dependencies_complete: false,
             named_destructor_dependencies: named_destructor_dependencies.into(),
-            named_destructor_dependencies_complete,
             implicit_named_destructor_dependencies: implicit_named_destructor_dependencies.into(),
-            implicit_named_destructor_dependencies_complete,
             declaration_type_dependencies: declaration_type_dependencies.into(),
-            declaration_type_dependencies_complete,
             declaration_type_call_head_dependencies: declaration_type_call_head_dependencies.into(),
-            declaration_type_call_head_dependencies_complete,
             builtin_type_call_head_inputs: builtin_type_call_head_inputs.into(),
-            supported_type_call_heads_complete,
             named_const_dependencies: named_const_dependencies.into(),
-            named_value_const_dependencies_complete,
-            semantic_dependency_graph_complete: false,
+            dependency_blockers: dependency_blockers.into_iter().collect::<Vec<_>>().into(),
             definition_universe_complete,
             work,
         });
@@ -1433,8 +1532,16 @@ fn plan_semantic_invalidation(
     if !previous.definition_universe_complete || !current.definition_universe_complete {
         reasons.insert(SemanticFullInvalidationReason::IncompleteDefinitionUniverse);
     }
-    if !previous.semantic_dependency_graph_complete || !current.semantic_dependency_graph_complete {
-        reasons.insert(SemanticFullInvalidationReason::IncompleteDependencyGraph);
+    let dependency_blockers = previous
+        .dependency_blockers
+        .iter()
+        .chain(current.dependency_blockers.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !dependency_blockers.is_empty() {
+        reasons.insert(SemanticFullInvalidationReason::IncompleteDependencyGraph(
+            dependency_blockers.into_iter().collect::<Vec<_>>().into(),
+        ));
     }
 
     let mut invalidated = BTreeSet::new();
@@ -2892,16 +2999,7 @@ mod tests {
         manifest: &SemanticDependencyInputManifest,
     ) -> Arc<SemanticDependencyInputManifest> {
         let mut manifest = manifest.clone();
-        manifest.free_function_caller_dependencies_complete = true;
-        manifest.non_generic_named_method_dependencies_complete = true;
-        manifest.generic_named_method_dependencies_complete = true;
-        manifest.named_destructor_dependencies_complete = true;
-        manifest.implicit_named_destructor_dependencies_complete = true;
-        manifest.declaration_type_dependencies_complete = true;
-        manifest.declaration_type_call_head_dependencies_complete = true;
-        manifest.supported_type_call_heads_complete = true;
-        manifest.named_value_const_dependencies_complete = true;
-        manifest.semantic_dependency_graph_complete = true;
+        manifest.dependency_blockers = Arc::from([]);
         manifest.definition_universe_complete = true;
         Arc::new(manifest)
     }
@@ -2948,8 +3046,35 @@ mod tests {
         assert!(matches!(
             first.scope(),
             SemanticInvalidationScope::Full { reasons }
-                if reasons.contains(&SemanticFullInvalidationReason::IncompleteDependencyGraph)
+                if reasons.iter().any(|reason| matches!(reason,
+                    SemanticFullInvalidationReason::IncompleteDependencyGraph(blockers)
+                    if blockers.as_ref() == previous.dependency_blockers()
+                ))
         ));
+        assert_eq!(
+            previous
+                .dependency_blockers()
+                .iter()
+                .map(|blocker| (blocker.owner(), blocker.surface(), blocker.reason()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    None,
+                    SemanticDependencySurface::GenericNamedMethodCall,
+                    SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable,
+                ),
+                (
+                    None,
+                    SemanticDependencySurface::DeclarationType,
+                    SemanticDependencyIncompleteReason::ResolvedTypeIdentityUnavailable,
+                ),
+                (
+                    None,
+                    SemanticDependencySurface::DeclarationTypeCallHead,
+                    SemanticDependencyIncompleteReason::TypeCallHeadIdentityUnavailable,
+                ),
+            ]
+        );
         assert!(first.reusable().is_empty());
         assert!(first.invalidated().is_empty());
         assert_eq!(definition_names(first.changed()), vec!["leaf"]);
@@ -3599,6 +3724,41 @@ mod tests {
             first.implicit_named_destructor_dependencies().len()
         );
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn anonymous_drop_owner_is_an_exact_production_completeness_blocker() {
+        let source = snapshot(
+            &[(
+                4,
+                "/p/main.rue",
+                "main.rue",
+                r#"
+                    fn Box(comptime T: type) -> type {
+                        struct { v: T, drop fn(self) {} }
+                    }
+                    fn main() { let B = Box(i32); let value = B { v: 1 }; }
+                "#,
+            )],
+            4,
+        );
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&source).into_result().unwrap();
+        let manifest = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        let blocker = manifest
+            .dependency_blockers()
+            .iter()
+            .find(|blocker| blocker.surface() == SemanticDependencySurface::ImplicitNamedDestructor)
+            .expect("anonymous drop source must fail closed");
+        assert_eq!(blocker.owner(), None);
+        assert_eq!(
+            blocker.reason(),
+            SemanticDependencyIncompleteReason::AnonymousDropOwnerUnavailable
+        );
+        assert!(!manifest.implicit_named_destructor_dependencies_complete());
+        assert_eq!(manifest.work().extra_rir_instructions_visited, 0);
     }
 
     #[test]

@@ -61,7 +61,13 @@ incremental-compilation goal is complete.
    is explicitly unsupported. Named destructor callers now translate exact
    owner identities and tagged free/method targets. Anonymous methods and
    destructors plus declaration/type/const/drop surfaces keep the overall graph
-   explicitly incomplete and prevent body/CFG reuse.
+   explicitly incomplete and prevent body/CFG reuse. Completeness is now a
+   production-derived, sorted blocker set rather than an opaque global boolean;
+   the planner carries the exact union from both revisions. No production
+   fixture reaches `Incremental` yet: generic method substitution identity,
+   resolved declaration-type identity, and declaration type-call-head identity
+   remain unconditional blockers, while anonymous drop owners and unsupported
+   heads add surface-specific blockers when observed.
    A conservative resolved declaration-type slice now translates nominal
    signature/field/payload/constant/owner edges without rescanning RIR. A
    separate resolver-time observer records resolved user-defined type-call
