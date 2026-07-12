@@ -111,7 +111,7 @@ assert_macos_signature() {
         return 1
     fi
     metadata="$(codesign --display --verbose=4 "$program" 2>&1)"
-    if ! grep -Fqx 'Identifier=org.rue-lang.program' <<< "$metadata"; then
+    if ! grep -Fqx 'Identifier=dev.rue-lang.program' <<< "$metadata"; then
         printf 'FAIL: Mach-O signing identifier is not stable\n%s\n' "$metadata" >&2
         return 1
     fi

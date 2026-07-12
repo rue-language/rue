@@ -1925,7 +1925,7 @@ fn main() {
                             "-s",
                             "-",
                             "--identifier",
-                            "org.rue-lang.program",
+                            "dev.rue-lang.program",
                             "--timestamp=none",
                             &options.output_path,
                         ])
