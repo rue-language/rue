@@ -28,6 +28,7 @@
 mod bound_definitions;
 mod canonical_lower;
 mod canonical_merge;
+mod canonical_semantic;
 mod definition_snapshot;
 mod diagnostic;
 mod drop_glue;
@@ -49,6 +50,9 @@ pub use bound_definitions::{
 pub use canonical_lower::{CanonicalRirOutput, CanonicalRirWork, lower_canonical_rir};
 pub use canonical_merge::{
     CanonicalMergeWork, CanonicalMergedAst, CanonicalMergedProgram, merge_parsed_modules,
+};
+pub use canonical_semantic::{
+    CanonicalSemanticOutput, CanonicalSemanticWork, analyze_canonical_program,
 };
 pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
@@ -266,8 +270,9 @@ fn parse_runtime_archive(runtime_bytes: &[u8]) -> Result<Archive, String> {
 // Re-export commonly used types
 pub use lasso::{Spur, ThreadedRodeo};
 pub use rue_air::{
-    Air, AnalyzedFunction, BodyAnalysisWork, DirResolution, ModulePath, RirDeclarationIndexWork,
-    Sema, SemaOutput, StructDef, Type, TypeInternPool, import_candidate_groups,
+    Air, AnalyzedFunction, BodyAnalysisWork, DeclarationBindingWork, DirResolution, ModulePath,
+    RirDeclarationIndexWork, Sema, SemaOutput, StructDef, Type, TypeInternPool,
+    import_candidate_groups,
 };
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{

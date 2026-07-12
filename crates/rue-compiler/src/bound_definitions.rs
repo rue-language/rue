@@ -194,6 +194,24 @@ pub fn bind_canonical_definitions(
     preview_features: PreviewFeatures,
     target: Target,
 ) -> MultiErrorResult<BoundDefinitionSet> {
+    let sema = configure_canonical_sema(merged, rir, preview_features, target)?;
+    let bound = sema.bind_declarations()?;
+    let manifest = bound.binding_manifest();
+    issue_bound_definitions(
+        merged,
+        rir.source_revision(),
+        manifest.bindings(),
+        manifest.work(),
+    )
+    .map_err(CompileErrors::from)
+}
+
+pub(crate) fn configure_canonical_sema<'a>(
+    merged: &CanonicalMergedProgram,
+    rir: &'a CanonicalRirOutput,
+    preview_features: PreviewFeatures,
+    target: Target,
+) -> MultiErrorResult<Sema<'a>> {
     if merged.ast().source_revision() != rir.source_revision() {
         return Err(CompileErrors::from(invalid(
             "canonical syntax and RIR have different source revisions",
@@ -237,18 +255,10 @@ pub fn bind_canonical_definitions(
             .map(|module| (module.file_id(), module.module_id().as_str().to_owned()))
             .collect(),
     );
-    let bound = sema.bind_declarations()?;
-    let manifest = bound.binding_manifest();
-    issue_bound_definitions(
-        merged,
-        rir.source_revision(),
-        manifest.bindings(),
-        manifest.work(),
-    )
-    .map_err(CompileErrors::from)
+    Ok(sema)
 }
 
-fn issue_bound_definitions(
+pub(crate) fn issue_bound_definitions(
     merged: &CanonicalMergedProgram,
     revision: &SourceRevision,
     bindings: &[SemanticBinding],

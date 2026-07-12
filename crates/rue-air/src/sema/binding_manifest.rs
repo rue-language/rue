@@ -7,7 +7,22 @@ use rue_error::MultiErrorResult;
 use rue_rir::InstData;
 use rue_span::{FileId, Span};
 
+use super::RirDeclarationIndexWork;
 use super::{Sema, SemaOutput};
+
+/// Structural descriptors for one completed declaration-binding pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeclarationBindingWork {
+    pub bind_invocations: usize,
+    /// Size of the input RIR, not a claim that binding visited every entry.
+    pub input_rir_instructions: usize,
+    pub declaration_index_build_invocations: usize,
+    pub indexed_free_functions: usize,
+    pub indexed_named_methods: usize,
+    pub indexed_anonymous_methods: usize,
+    pub indexed_destructors: usize,
+    pub indexed_const_candidates: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticBindingNamespace {
@@ -81,9 +96,13 @@ impl SemanticBindingManifest {
 pub struct BoundSema<'a> {
     sema: Sema<'a>,
     manifest: OnceLock<SemanticBindingManifest>,
+    binding_work: DeclarationBindingWork,
 }
 
 impl<'a> BoundSema<'a> {
+    pub fn binding_work(&self) -> DeclarationBindingWork {
+        self.binding_work
+    }
     /// Materialize the owned manifest on demand. Ordinary body analysis does
     /// not pay for this additional RIR traversal.
     pub fn binding_manifest(&self) -> &SemanticBindingManifest {
@@ -103,7 +122,9 @@ impl<'a> BoundSema<'a> {
 
 impl<'a> Sema<'a> {
     pub(super) fn into_bound(self) -> BoundSema<'a> {
+        let index = self.declaration_index.work();
         BoundSema {
+            binding_work: DeclarationBindingWork::from_inputs(self.rir.len(), index),
             sema: self,
             manifest: OnceLock::new(),
         }
@@ -277,6 +298,21 @@ impl<'a> Sema<'a> {
         SemanticBindingManifest {
             bindings: bindings.into(),
             work,
+        }
+    }
+}
+
+impl DeclarationBindingWork {
+    fn from_inputs(input_rir_instructions: usize, index: RirDeclarationIndexWork) -> Self {
+        Self {
+            bind_invocations: 1,
+            input_rir_instructions,
+            declaration_index_build_invocations: index.build_invocations,
+            indexed_free_functions: index.free_functions_indexed,
+            indexed_named_methods: index.named_methods_indexed,
+            indexed_anonymous_methods: index.anonymous_methods_indexed,
+            indexed_destructors: index.destructors_indexed,
+            indexed_const_candidates: index.const_candidates_indexed,
         }
     }
 }
@@ -477,6 +513,9 @@ mod tests {
             .bind_declarations()
             .unwrap();
         assert!(!bound.manifest_is_materialized());
+        assert_eq!(bound.binding_work().bind_invocations, 1);
+        assert_eq!(bound.binding_work().input_rir_instructions, rir.len());
+        assert_eq!(bound.binding_work().declaration_index_build_invocations, 1);
         assert_eq!(bound.binding_manifest().work().build_invocations, 1);
         assert!(bound.manifest_is_materialized());
     }
