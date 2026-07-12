@@ -49,9 +49,10 @@ pub use sema::{
     OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, RirDeclarationIndexWork, Sema, SemaOutput,
     SemanticBinding, SemanticBindingKind, SemanticBindingManifest, SemanticBindingManifestWork,
     SemanticBindingNamespace, SemanticDeclarationExport, SemanticDeclarationExportWork,
-    SemanticDeclarationPayload, SemanticExportConstValue, SemanticExportFailure,
-    SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
-    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin, import_candidate_groups,
+    SemanticDeclarationPayload, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
+    SemanticExportConstValue, SemanticExportFailure, SemanticExportParameter, SemanticExportType,
+    SemanticNominalIdentity, SemanticParameterMode, SpecializedFreeFunctionDependencyEvent,
+    SpecializedFreeFunctionOrigin, import_candidate_groups,
 };
 pub use semantic_import::{
     SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,

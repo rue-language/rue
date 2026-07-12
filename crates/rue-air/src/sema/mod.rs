@@ -50,8 +50,9 @@ pub use binding_manifest::{
     BoundSema, DeclarationBindingWork, DeclarationShells, SemanticBinding, SemanticBindingKind,
     SemanticBindingManifest, SemanticBindingManifestWork, SemanticBindingNamespace,
     SemanticDeclarationExport, SemanticDeclarationExportWork, SemanticDeclarationPayload,
-    SemanticExportConstValue, SemanticExportFailure, SemanticExportParameter, SemanticExportType,
-    SemanticNominalIdentity, SemanticParameterMode,
+    SemanticDeclarationShell, SemanticDeclarationShellIdentity, SemanticExportConstValue,
+    SemanticExportFailure, SemanticExportParameter, SemanticExportType, SemanticNominalIdentity,
+    SemanticParameterMode,
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
@@ -341,15 +342,23 @@ impl<'a> Sema<'a> {
         self.inject_builtin_types();
         binding_work.namespace_setup_invocations += 1;
 
-        // Phase 1: Register nominal type shells. Functions, constants,
-        // methods, and destructors are resolved on the far side of this
-        // boundary; splitting those into independently importable records is
-        // intentionally left to the durable-declaration integration.
+        // Phase 1: Register nominal type shells.
         self.register_type_names().map_err(CompileErrors::from)?;
         binding_work.nominal_type_predeclaration_invocations += 1;
+
+        // Phase 2: Freeze stable-joinable identities and authoritative
+        // current-revision syntax metadata before resolving semantic payloads.
+        // This does not evaluate constants or resolve any signature.
+        let (pending_payloads, pending_nominals) = self.predeclare_callable_value_shells();
+        binding_work.callable_value_predeclaration_invocations += 1;
+        binding_work.callable_value_shells_predeclared = pending_payloads.len();
+        binding_work.indexed_declaration_records_visited =
+            pending_payloads.len() + pending_nominals.len();
         Ok(DeclarationShells {
             sema: self,
             binding_work,
+            pending_payloads,
+            pending_nominals,
         })
     }
 
