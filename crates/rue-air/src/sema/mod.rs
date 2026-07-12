@@ -62,7 +62,8 @@ pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub use module_path::{DirResolution, ModulePath, import_candidate_groups};
 pub use output::{
-    AnalyzedFunction, BodyAnalysisWork, BuiltinTypeCallHead,
+    AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, BodyNamedDependencyEvent,
+    BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken, BuiltinTypeCallHead,
     DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
     DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
     DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind,
@@ -114,6 +115,11 @@ pub struct Sema<'a> {
     /// Exact named-method FnDecl handles for this RIR snapshot only.
     pub(crate) named_method_declarations: HashMap<(StructId, Spur), rue_rir::InstRef>,
     pub(crate) body_analysis_work: BodyAnalysisWork,
+    pub(crate) analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
+    pub(crate) body_dependency_observer: Option<AnalyzedBodyOwnerEvent>,
+    pub(crate) body_owner_tokens:
+        HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>,
+    pub(crate) body_named_dependencies: Vec<BodyNamedDependencyEvent>,
     pub(crate) ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
     pub(crate) specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
     pub(crate) specialized_free_function_dependencies: Vec<SpecializedFreeFunctionDependencyEvent>,
@@ -222,6 +228,33 @@ pub struct Sema<'a> {
     pub(crate) ctor_type_displays: HashMap<Type, String>,
 }
 
+impl Sema<'_> {
+    pub(crate) fn body_owner_token(
+        &self,
+        file: FileId,
+        name: &str,
+        owner: Option<&str>,
+        kind: BodyOwnerKind,
+    ) -> BodyOwnerToken {
+        let key = (
+            file.index(),
+            name.to_owned(),
+            owner.map(str::to_owned),
+            kind,
+        );
+        if self.body_owner_tokens.is_empty() {
+            // Legacy/non-canonical AIR callers do not request durable body
+            // identity.  Issuer zero is deliberately outside the compiler's
+            // issued universe and therefore fails closed if it ever reaches a
+            // stable dependency translation boundary.
+            return BodyOwnerToken::new(0, file.index());
+        }
+        *self.body_owner_tokens.get(&key).unwrap_or_else(|| {
+            panic!("supported ordinary body must have a validated owner token: {key:?}; installed={:?}", self.body_owner_tokens.keys().collect::<Vec<_>>())
+        })
+    }
+}
+
 impl<'a> Sema<'a> {
     /// Create a new semantic analyzer.
     pub fn new(
@@ -259,6 +292,10 @@ impl<'a> Sema<'a> {
             methods: HashMap::new(),
             named_method_declarations: HashMap::new(),
             body_analysis_work: BodyAnalysisWork::default(),
+            analyzed_body_owners: Vec::new(),
+            body_dependency_observer: None,
+            body_owner_tokens: HashMap::new(),
+            body_named_dependencies: Vec::new(),
             ordinary_free_function_dependencies: Vec::new(),
             specialized_free_function_origins: Vec::new(),
             specialized_free_function_dependencies: Vec::new(),

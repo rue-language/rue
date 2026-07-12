@@ -2236,7 +2236,7 @@ fn handle_emit_multi_file(
             debug_assert_eq!(work.parsed.syntax.parser_invocations, source_snapshot.len());
             debug_assert_eq!(work.lowered.parser_invocations, 0);
             debug_assert_eq!(work.semantic.binding.bind_invocations, 1);
-            debug_assert_eq!(work.semantic.manifest.build_invocations, 0);
+            debug_assert_eq!(work.semantic.manifest.build_invocations, 1);
         }
     }
 
@@ -2847,7 +2847,7 @@ mod tests {
         assert_eq!(work.lowered.parser_invocations, 0);
         assert_eq!(work.lowered.ast_payload_clones, 0);
         assert_eq!(work.semantic.binding.bind_invocations, 1);
-        assert_eq!(work.semantic.manifest.build_invocations, 0);
+        assert_eq!(work.semantic.manifest.build_invocations, 1);
         assert_eq!(work.compatibility_projections, 0);
 
         let presentation = parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();

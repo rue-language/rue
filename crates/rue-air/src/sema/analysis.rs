@@ -165,6 +165,16 @@ fn finalize_function_body_analysis(
         // after its fixed point has completed.
         type_pool: sema.type_pool.clone(),
         body_analysis_work: sema.body_analysis_work,
+        analyzed_body_owners: {
+            sema.analyzed_body_owners.sort();
+            sema.analyzed_body_owners.dedup();
+            sema.analyzed_body_owners.clone()
+        },
+        body_named_dependencies: {
+            sema.body_named_dependencies.sort();
+            sema.body_named_dependencies.dedup();
+            sema.body_named_dependencies.clone()
+        },
         ordinary_free_function_dependencies: {
             sema.ordinary_free_function_dependencies.sort();
             sema.ordinary_free_function_dependencies.dedup();
@@ -466,6 +476,16 @@ fn named_method_dependency_events(
             )
         })?;
         events.push(super::NamedMethodDependencyEvent {
+            caller_token: sema.body_owner_token(
+                caller_info.span.file_id,
+                &caller_method_name,
+                Some(&caller_owner_name),
+                if caller_info.has_self {
+                    super::BodyOwnerKind::Method
+                } else {
+                    super::BodyOwnerKind::AssociatedFunction
+                },
+            ),
             caller_file: caller_info.span.file_id.index(),
             caller_owner_name: caller_owner_name.clone(),
             caller_method_name: caller_method_name.clone(),
@@ -496,6 +516,16 @@ fn named_method_dependency_events(
                 )
             })?;
         events.push(super::NamedMethodDependencyEvent {
+            caller_token: sema.body_owner_token(
+                caller_info.span.file_id,
+                &caller_method_name,
+                Some(&caller_owner_name),
+                if caller_info.has_self {
+                    super::BodyOwnerKind::Method
+                } else {
+                    super::BodyOwnerKind::AssociatedFunction
+                },
+            ),
             caller_file: caller_info.span.file_id.index(),
             caller_owner_name: caller_owner_name.clone(),
             caller_method_name: caller_method_name.clone(),
@@ -528,6 +558,12 @@ fn named_destructor_dependency_events(
             )
         })?;
         events.push(super::NamedDestructorDependencyEvent {
+            caller_token: sema.body_owner_token(
+                caller_span.file_id,
+                &caller_owner_name,
+                Some(&caller_owner_name),
+                super::BodyOwnerKind::Destructor,
+            ),
             caller_file: caller_span.file_id.index(),
             caller_owner_name: caller_owner_name.clone(),
             target: super::NamedMethodDependencyTargetEvent::FreeFunction {
@@ -556,6 +592,12 @@ fn named_destructor_dependency_events(
                 )
             })?;
         events.push(super::NamedDestructorDependencyEvent {
+            caller_token: sema.body_owner_token(
+                caller_span.file_id,
+                &caller_owner_name,
+                Some(&caller_owner_name),
+                super::BodyOwnerKind::Destructor,
+            ),
             caller_file: caller_span.file_id.index(),
             caller_owner_name: caller_owner_name.clone(),
             target: super::NamedMethodDependencyTargetEvent::NamedMethod {
@@ -710,7 +752,26 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
             let params = sema.rir.get_params(params_start, params_len);
 
             sema.body_analysis_work.bodies_attempted += 1;
-            match sema.analyze_single_function(
+            let previous_type_observer = sema.declaration_type_observer.replace((
+                fn_info.file_id,
+                sema.interner.resolve(&source_name).to_string(),
+                None,
+                super::DeclarationTypeDependencySourceKind::Function,
+                super::DeclarationTypeDependencyKind::Body,
+            ));
+            let previous_body_observer = sema.body_dependency_observer.replace(
+                super::AnalyzedBodyOwnerEvent::FreeFunction {
+                    token: sema.body_owner_token(
+                        fn_info.file_id,
+                        sema.interner.resolve(&source_name),
+                        None,
+                        super::BodyOwnerKind::FreeFunction,
+                    ),
+                    file: fn_info.file_id.index(),
+                    name: sema.interner.resolve(&source_name).to_string(),
+                },
+            );
+            let analysis = sema.analyze_single_function(
                 &infer_ctx,
                 &fn_name_str,
                 return_type,
@@ -719,14 +780,34 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 span,
                 fn_info.allow_unused_variable,
                 fn_info.allow_unreachable_code,
-            ) {
+            );
+            sema.declaration_type_observer = previous_type_observer;
+            sema.body_dependency_observer = previous_body_observer;
+            match analysis {
                 Ok((mut analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
                     sema.body_analysis_work.bodies_succeeded += 1;
                     sema.body_analysis_work.air_instructions_produced +=
                         analyzed.air.instructions().len();
                     sema.body_analysis_work.local_strings_produced += local_strings.len();
+                    sema.analyzed_body_owners
+                        .push(super::AnalyzedBodyOwnerEvent::FreeFunction {
+                            token: sema.body_owner_token(
+                                fn_info.file_id,
+                                sema.interner.resolve(&source_name),
+                                None,
+                                super::BodyOwnerKind::FreeFunction,
+                            ),
+                            file: fn_info.file_id.index(),
+                            name: sema.interner.resolve(&source_name).to_string(),
+                        });
                     analyzed.implicit_drop_source =
                         Some(super::ImplicitDropDependencySourceEvent::FreeFunction {
+                            token: sema.body_owner_token(
+                                fn_info.file_id,
+                                sema.interner.resolve(&source_name),
+                                None,
+                                super::BodyOwnerKind::FreeFunction,
+                            ),
                             file: fn_info.file_id.index(),
                             name: sema.interner.resolve(&source_name).to_string(),
                         });
@@ -734,6 +815,12 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                         if let Some(callee_info) = sema.functions.get(callee) {
                             sema.ordinary_free_function_dependencies.push(
                                 super::OrdinaryFreeFunctionDependencyEvent {
+                                    caller_token: sema.body_owner_token(
+                                        fn_info.file_id,
+                                        sema.interner.resolve(&source_name),
+                                        None,
+                                        super::BodyOwnerKind::FreeFunction,
+                                    ),
                                     caller_file: fn_info.file_id.index(),
                                     caller_name: sema.interner.resolve(&source_name).to_string(),
                                     callee_file: callee_info.file_id.index(),
@@ -883,6 +970,8 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                         sema.body_analysis_work.air_instructions_produced +=
                             air.instructions().len();
                         sema.body_analysis_work.local_strings_produced += local_strings.len();
+                        sema.analyzed_body_owners
+                            .push(super::AnalyzedBodyOwnerEvent::Anonymous);
                         let analyzed = AnalyzedFunction {
                             name: full_name,
                             implicit_drop_source: Some(
@@ -949,7 +1038,41 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
             let params = sema.rir.get_params(*params_start, *params_len);
             let full_name = sema.method_symbol(struct_id, &method_name_str, *has_self);
             sema.body_analysis_work.bodies_attempted += 1;
-            match sema.analyze_method_function(
+            let previous_type_observer = sema.declaration_type_observer.replace((
+                method_info.span.file_id,
+                method_name_str.clone(),
+                Some(type_name_str.clone()),
+                if *has_self {
+                    super::DeclarationTypeDependencySourceKind::Method
+                } else {
+                    super::DeclarationTypeDependencySourceKind::AssociatedFunction
+                },
+                super::DeclarationTypeDependencyKind::Body,
+            ));
+            let previous_body_observer =
+                sema.body_dependency_observer
+                    .replace(super::AnalyzedBodyOwnerEvent::NamedMethod {
+                        token: sema.body_owner_token(
+                            method_info.span.file_id,
+                            &method_name_str,
+                            Some(&type_name_str),
+                            if *has_self {
+                                super::BodyOwnerKind::Method
+                            } else {
+                                super::BodyOwnerKind::AssociatedFunction
+                            },
+                        ),
+                        file: method_info.span.file_id.index(),
+                        owner_name: type_name_str.clone(),
+                        method_name: method_name_str.clone(),
+                        generic: sema
+                            .param_arena
+                            .comptime(method_info.params)
+                            .iter()
+                            .copied()
+                            .any(|flag| flag),
+                    });
+            let analysis = sema.analyze_method_function(
                 &infer_ctx,
                 &full_name,
                 *return_type,
@@ -959,14 +1082,49 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 method_info.struct_type,
                 *has_self,
                 *self_mode,
-            ) {
+            );
+            sema.declaration_type_observer = previous_type_observer;
+            sema.body_dependency_observer = previous_body_observer;
+            match analysis {
                 Ok((mut analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
                     sema.body_analysis_work.bodies_succeeded += 1;
                     sema.body_analysis_work.air_instructions_produced +=
                         analyzed.air.instructions().len();
                     sema.body_analysis_work.local_strings_produced += local_strings.len();
+                    sema.analyzed_body_owners
+                        .push(super::AnalyzedBodyOwnerEvent::NamedMethod {
+                            token: sema.body_owner_token(
+                                method_info.span.file_id,
+                                &method_name_str,
+                                Some(&type_name_str),
+                                if *has_self {
+                                    super::BodyOwnerKind::Method
+                                } else {
+                                    super::BodyOwnerKind::AssociatedFunction
+                                },
+                            ),
+                            file: method_info.span.file_id.index(),
+                            owner_name: type_name_str.clone(),
+                            method_name: method_name_str.clone(),
+                            generic: sema
+                                .param_arena
+                                .comptime(method_info.params)
+                                .iter()
+                                .copied()
+                                .any(|flag| flag),
+                        });
                     analyzed.implicit_drop_source =
                         Some(super::ImplicitDropDependencySourceEvent::NamedMethod {
+                            token: sema.body_owner_token(
+                                method_info.span.file_id,
+                                &method_name_str,
+                                Some(&type_name_str),
+                                if *has_self {
+                                    super::BodyOwnerKind::Method
+                                } else {
+                                    super::BodyOwnerKind::AssociatedFunction
+                                },
+                            ),
                             file: method_info.span.file_id.index(),
                             owner_name: type_name_str.clone(),
                             method_name: method_name_str.clone(),
@@ -1049,13 +1207,36 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 let full_name = sema.destructor_symbol(struct_id);
 
                 sema.body_analysis_work.bodies_attempted += 1;
-                match sema.analyze_destructor_function(
+                let owner_name = sema.type_pool.struct_def(struct_id).name.clone();
+                let previous_type_observer = sema.declaration_type_observer.replace((
+                    destructor.span.file_id,
+                    owner_name.clone(),
+                    Some(owner_name.clone()),
+                    super::DeclarationTypeDependencySourceKind::Destructor,
+                    super::DeclarationTypeDependencyKind::Body,
+                ));
+                let previous_body_observer = sema.body_dependency_observer.replace(
+                    super::AnalyzedBodyOwnerEvent::NamedDestructor {
+                        token: sema.body_owner_token(
+                            destructor.span.file_id,
+                            &owner_name,
+                            Some(&owner_name),
+                            super::BodyOwnerKind::Destructor,
+                        ),
+                        file: destructor.span.file_id.index(),
+                        owner_name: sema.type_pool.struct_def(struct_id).name.clone(),
+                    },
+                );
+                let analysis = sema.analyze_destructor_function(
                     &infer_ctx,
                     &full_name,
                     destructor.body,
                     destructor.span,
                     struct_type,
-                ) {
+                );
+                sema.declaration_type_observer = previous_type_observer;
+                sema.body_dependency_observer = previous_body_observer;
+                match analysis {
                     Ok((
                         mut analyzed,
                         warnings,
@@ -1067,8 +1248,26 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                         sema.body_analysis_work.air_instructions_produced +=
                             analyzed.air.instructions().len();
                         sema.body_analysis_work.local_strings_produced += local_strings.len();
+                        sema.analyzed_body_owners.push(
+                            super::AnalyzedBodyOwnerEvent::NamedDestructor {
+                                token: sema.body_owner_token(
+                                    destructor.span.file_id,
+                                    &sema.type_pool.struct_def(struct_id).name,
+                                    Some(&sema.type_pool.struct_def(struct_id).name),
+                                    super::BodyOwnerKind::Destructor,
+                                ),
+                                file: destructor.span.file_id.index(),
+                                owner_name: sema.type_pool.struct_def(struct_id).name.clone(),
+                            },
+                        );
                         analyzed.implicit_drop_source =
                             Some(super::ImplicitDropDependencySourceEvent::NamedDestructor {
+                                token: sema.body_owner_token(
+                                    destructor.span.file_id,
+                                    &sema.type_pool.struct_def(struct_id).name,
+                                    Some(&sema.type_pool.struct_def(struct_id).name),
+                                    super::BodyOwnerKind::Destructor,
+                                ),
                                 file: destructor.span.file_id.index(),
                                 owner_name: sema.type_pool.struct_def(struct_id).name.clone(),
                             });
@@ -1690,6 +1889,8 @@ mod error_invariant_tests {
             warnings: Vec::new(),
             type_pool: TypeInternPool::new(),
             body_analysis_work: crate::BodyAnalysisWork::default(),
+            analyzed_body_owners: Vec::new(),
+            body_named_dependencies: Vec::new(),
             ordinary_free_function_dependencies: Vec::new(),
             ordinary_free_function_dependencies_complete: false,
             specialized_free_function_origins: Vec::new(),

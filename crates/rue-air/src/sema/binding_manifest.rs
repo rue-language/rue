@@ -1,6 +1,9 @@
 //! Owned semantic bindings emitted only after declaration binding succeeds.
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, OnceLock},
+};
 
 use lasso::Spur;
 use rue_error::{CompileErrors, MultiErrorResult};
@@ -700,6 +703,73 @@ impl Sema<'_> {
 }
 
 impl<'a> BoundSema<'a> {
+    /// Install the compiler-issued identity universe used by ordinary body
+    /// analysis. Installation is atomic and rejects duplicate, mixed-issuer,
+    /// or non-existent endpoints.
+    pub fn install_body_owner_tokens(
+        mut self,
+        endpoints: &[super::BodyOwnerEndpoint],
+    ) -> Result<Self, DeclarationInstallFailure> {
+        let issuer = endpoints.first().map(|e| e.token.issuer());
+        let mut installed = HashMap::with_capacity(endpoints.len());
+        let mut tokens = HashSet::with_capacity(endpoints.len());
+        for endpoint in endpoints {
+            if Some(endpoint.token.issuer()) != issuer {
+                return Err(DeclarationInstallFailure::KindMismatch);
+            }
+            let key = (
+                endpoint.file,
+                endpoint.name.clone(),
+                endpoint.owner_name.clone(),
+                endpoint.kind,
+            );
+            if installed.insert(key, endpoint.token).is_some() {
+                return Err(DeclarationInstallFailure::DuplicatePayload);
+            }
+            if !tokens.insert(endpoint.token) {
+                return Err(DeclarationInstallFailure::DuplicatePayload);
+            }
+        }
+        let mut expected = self
+            .binding_manifest()
+            .bindings()
+            .iter()
+            .filter_map(|binding| {
+                let kind = match binding.kind {
+                    SemanticBindingKind::Function => super::BodyOwnerKind::FreeFunction,
+                    SemanticBindingKind::Method => super::BodyOwnerKind::Method,
+                    SemanticBindingKind::AssociatedFunction => {
+                        super::BodyOwnerKind::AssociatedFunction
+                    }
+                    SemanticBindingKind::Destructor => super::BodyOwnerKind::Destructor,
+                    _ => return None,
+                };
+                let name = if binding.kind == SemanticBindingKind::Destructor {
+                    binding
+                        .owner
+                        .as_deref()
+                        .unwrap_or(&binding.name)
+                        .to_string()
+                } else {
+                    binding.name.to_string()
+                };
+                let owner = if binding.kind == SemanticBindingKind::Destructor {
+                    Some(name.clone())
+                } else {
+                    binding.owner.as_ref().map(ToString::to_string)
+                };
+                Some((binding.file_id.index(), name, owner, kind))
+            })
+            .collect::<Vec<_>>();
+        expected.sort();
+        let mut actual = installed.keys().cloned().collect::<Vec<_>>();
+        actual.sort();
+        if actual != expected {
+            return Err(DeclarationInstallFailure::IdentityMismatch);
+        }
+        self.sema.body_owner_tokens = installed;
+        Ok(self)
+    }
     pub fn binding_work(&self) -> DeclarationBindingWork {
         self.binding_work
     }

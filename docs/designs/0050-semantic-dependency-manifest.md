@@ -137,9 +137,33 @@ ledger before retaining semantic artifacts.
 
 1. During declaration binding, translate winning bindings to stable keys and
    capture signature/type/const/module/destructor direct edges.
-2. Thread an owner stable key through body analysis and translate each returned
-   free-function/method/destructor reference before the worklist sets are
-   discarded.
+2. ~~Thread stable-capable owner provenance through body analysis and translate
+   each supported ordinary free-function/method/destructor body into an ordered
+   per-owner input record.~~ Generic named methods carry a local fail-closed
+   blocker; anonymous bodies publish no reusable record. Durable AIR remains
+   unimplemented. Each record explicitly retains target and preview-feature
+   inputs, and inherits any whole-graph dependency-completeness blocker until
+   that evidence can be localized safely to individual owners. Owner-scoped
+   observers at the existing analysis seams retain body-only nominal types,
+   type-call heads, value constants, module bindings, callable aliases, calls,
+   and implicit destructor obligations; an AIR-type observation pass covers
+   already-resolved inferred/comptime paths without revisiting RIR.
+
+`StableDefinitionKey` is compiler-owned: `rue-compiler` depends on `rue-air`,
+and reversing that dependency or duplicating the stable-key implementation in
+AIR would violate the phase boundary. The compiler now issues an opaque
+`(issuer, slot)` body-owner token after declaration resolution, exact-compares
+the supported callable/destructor slots against the authoritative binding
+manifest, and installs the finalized token endpoints before body dispatch.
+AIR attaches the token to every body-owner and body-local dependency source;
+`FileId`, name, kind, and optional named owner remain checked provenance only.
+The canonical output retains the exact issuer map, and dependency translation
+accepts a source only by resolving its token through that map after validating
+the same `SourceRevision`. Missing, duplicate, foreign, stale, or wrong-kind
+tokens fail the entire manifest before publication.
+Tests cover duplicate member names in sibling modules, reordered inputs,
+physical relocation, reassigned FileIds, foreign issuers, and fresh durable
+fallback epochs. AIR and CFG are still not retained or reused.
 3. Define durable canonical type/comptime specialization arguments and record
    generic-origin edges.
 4. ~~Split declaration/signature and body fingerprints at parsed syntax boundaries.~~
@@ -151,6 +175,10 @@ ledger before retaining semantic artifacts.
 
 Acceptance requires one existing semantic execution to emit the complete
 manifest with no second whole-RIR traversal and unchanged diagnostic bytes/order.
+The tooling query still materializes the stable-definition view through its
+existing separately measured binding boundary. That is not a second body pass
+or RIR traversal, and consolidating it with semantic binding is deferred until
+the production body query consumes these records.
 
 ## Invalidation planning seam
 
@@ -222,8 +250,10 @@ the destructor or its transitive glue.
 
 The first request-local capture seam now records free-function references from
 ordinary reachable free-function bodies at the existing worklist boundary. Its
-neutral endpoints are the defining FileId epoch plus owned source name; methods,
-constructors and intrinsics remain excluded by their separate channels. The
+caller identity is the authoritative opaque body-owner token; the defining
+FileId epoch and owned source name are checked provenance, while callees retain
+their checked declaration endpoints. Methods, constructors and intrinsics
+remain excluded by their separate channels. The
 ordinary-caller output reports this surface complete; method and destructor
 callers remain separate, explicitly incomplete surfaces.
 

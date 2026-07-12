@@ -229,6 +229,7 @@ fn semantic_work_json(work: &CanonicalFrontendSessionWork, from: usize) -> Value
         "bodies_succeeded": records.iter().map(|record| record.work.body_analysis.bodies_succeeded).sum::<usize>(),
         "bodies_failed": records.iter().map(|record| record.work.body_analysis.bodies_failed).sum::<usize>(),
         "air_instructions_produced": records.iter().map(|record| record.work.body_analysis.air_instructions_produced).sum::<usize>(),
+        "body_dependency_air_instructions_observed": records.iter().map(|record| record.work.body_analysis.body_dependency_air_instructions_observed).sum::<usize>(),
         "local_strings_produced": records.iter().map(|record| record.work.body_analysis.local_strings_produced).sum::<usize>(),
         "string_ids_remapped": records.iter().map(|record| record.work.body_analysis.string_ids_remapped).sum::<usize>(),
         "specialization_air_instructions_scanned": records.iter().map(|record| record.work.body_analysis.specialization_air_instructions_scanned).sum::<usize>(),
@@ -263,6 +264,13 @@ fn semantic_work_json(work: &CanonicalFrontendSessionWork, from: usize) -> Value
         "declaration_type_call_head_dependency_events": records.iter().map(|record| record.work.body_analysis.declaration_type_call_head_dependency_events).sum::<usize>(),
         "named_const_dependency_events": records.iter().map(|record| record.work.body_analysis.named_const_dependency_events).sum::<usize>(),
         "manifest_build_invocations": records.iter().map(|record| record.work.manifest.build_invocations).sum::<usize>(),
+        "body_owner_tokens": {
+            "provisional_slots": records.iter().map(|record| record.work.body_owner_tokens.provisional_slots).sum::<usize>(),
+            "authoritative_slots": records.iter().map(|record| record.work.body_owner_tokens.authoritative_slots).sum::<usize>(),
+            "slots_validated": records.iter().map(|record| record.work.body_owner_tokens.slots_validated).sum::<usize>(),
+            "tokens_installed": records.iter().map(|record| record.work.body_owner_tokens.tokens_installed).sum::<usize>(),
+            "validation_failures": records.iter().map(|record| record.work.body_owner_tokens.validation_failures).sum::<usize>(),
+        },
         "declaration_reuse": {
             "plan_executions": records.iter().map(|record| record.work.declaration_reuse.plan_executions).sum::<usize>(),
             "durable_records_compared": records.iter().map(|record| record.work.declaration_reuse.durable_records_compared).sum::<usize>(),
@@ -390,6 +398,7 @@ fn invalidation_plan_json(plan: &SemanticInvalidationPlan) -> Value {
 
 fn dependency_surface_name(surface: SemanticDependencySurface) -> &'static str {
     match surface {
+        SemanticDependencySurface::BodyOwner => "body_owner",
         SemanticDependencySurface::FreeFunctionCall => "free_function_call",
         SemanticDependencySurface::NonGenericNamedMethodCall => "non_generic_named_method_call",
         SemanticDependencySurface::GenericNamedMethodCall => "generic_named_method_call",
@@ -404,6 +413,9 @@ fn dependency_surface_name(surface: SemanticDependencySurface) -> &'static str {
 
 fn dependency_reason_name(reason: SemanticDependencyIncompleteReason) -> &'static str {
     match reason {
+        SemanticDependencyIncompleteReason::AnonymousBodyOwnerUnavailable => {
+            "anonymous_body_owner_unavailable"
+        }
         SemanticDependencyIncompleteReason::CallerEndpointUnavailable => {
             "caller_endpoint_unavailable"
         }
@@ -444,6 +456,7 @@ fn measure_manifest_plan(
     let manifest_started = Instant::now();
     let current = session.semantic_dependency_inputs(options, None).unwrap();
     let manifest_elapsed = manifest_started.elapsed();
+    let manifest_work = current.work();
     let after_manifest = QueryCounts::from(session.work());
     let plan_started = Instant::now();
     let plan = session.semantic_invalidation_plan(previous.unwrap_or(&current), &current);
@@ -455,6 +468,12 @@ fn measure_manifest_plan(
             "plan_wall_time_ns": plan_elapsed.as_nanos(),
             "parse": parse_json(parse),
             "manifest_queries": after_manifest.delta(before).json(),
+            "manifest_work": {
+                "body_owner_events_translated": manifest_work.body_owner_events_translated,
+                "body_named_events_translated": manifest_work.body_named_events_translated,
+                "body_dependency_records_built": manifest_work.body_dependency_records_built,
+                "extra_rir_instructions_visited": manifest_work.extra_rir_instructions_visited,
+            },
             "planner_queries": after_plan.delta(after_manifest).json(),
             "plan": invalidation_plan_json(&plan),
         }),
@@ -610,7 +629,7 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
         modules as u64
     );
     assert_query_executions(cold, 1, 1, 1, 0);
-    assert_semantic_work(cold, 1, 1, 0);
+    assert_semantic_work(cold, 1, 1, 1);
     assert_declaration_epoch_work(cold, 1, 1, 1, 1, 0);
     assert_eq!(
         cold["semantic_work"]["declaration_reuse"]["plan_executions"],
@@ -672,7 +691,7 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
         count(root_edit, &["queries", "declaration_reuse_fallbacks"]),
         0
     );
-    assert_semantic_work(root_edit, 1, 1, 0);
+    assert_semantic_work(root_edit, 1, 1, 1);
     assert_declaration_epoch_work(root_edit, 1, 1, 1, 0, 0);
     let root_reuse = &root_edit["semantic_work"]["declaration_reuse"];
     assert_eq!(root_reuse["plan_executions"], 1);
@@ -738,7 +757,7 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
 
     let stable_cold = get("stable_definitions_cold");
     assert_query_executions(stable_cold, 1, 1, 1, 1);
-    assert_semantic_work(stable_cold, 1, 1, 0);
+    assert_semantic_work(stable_cold, 1, 1, 1);
     assert_eq!(
         count(stable_cold, &["definition_work", "bind_invocations"]),
         1
@@ -774,6 +793,34 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
         ),
         1
     );
+    assert_eq!(
+        count(
+            plan_cold,
+            &["manifest_work", "body_owner_events_translated"]
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            plan_cold,
+            &["manifest_work", "body_dependency_records_built"]
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            plan_cold,
+            &["manifest_work", "body_named_events_translated"]
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            plan_cold,
+            &["manifest_work", "extra_rir_instructions_visited"]
+        ),
+        0
+    );
     assert_production_incremental_plan(plan_cold, 1, 0, 0, modules, modules, 0);
     let plan_noop = get("invalidation_plan_exact_noop");
     assert_reuse_parse_is_all_zero(plan_noop);
@@ -803,6 +850,7 @@ fn assert_body_cfg_work_equal(left: &Value, right: &Value) {
         "bodies_succeeded",
         "bodies_failed",
         "air_instructions_produced",
+        "body_dependency_air_instructions_observed",
         "local_strings_produced",
         "string_ids_remapped",
         "specialization_air_instructions_scanned",
@@ -977,7 +1025,7 @@ fn main() {
     println!(
         "{}",
         json!({
-            "schema_version": 4,
+            "schema_version": 6,
             "workload": "canonical_frontend_session_invalidation",
             "configuration": {
                 "modules": config.modules,

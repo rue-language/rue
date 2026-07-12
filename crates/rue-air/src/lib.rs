@@ -38,7 +38,8 @@ pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};
 pub use path_norm::normalize_module_path;
 pub use sema::{
-    AnalyzedFunction, BodyAnalysisWork, BoundSema, BuiltinTypeCallHead, ConstValue,
+    AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, BodyNamedDependencyEvent,
+    BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken, BoundSema, BuiltinTypeCallHead, ConstValue,
     DeclarationBindingWork, DeclarationBuiltinTypeCallHeadDependencyEvent,
     DeclarationInstallFailure, DeclarationShells, DeclarationTypeCallHeadDependencyEvent,
     DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
