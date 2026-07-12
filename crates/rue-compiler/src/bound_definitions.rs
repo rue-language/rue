@@ -285,6 +285,117 @@ pub fn bind_canonical_declaration_semantics(
     Ok((definitions, semantics, converted.1))
 }
 
+/// Comparison-only proof seam for the durable projection/installation path.
+///
+/// This deliberately does not cache or skip production work. It resolves an
+/// authoritative ordinary epoch, projects its durable result into fresh
+/// current-revision shells, installs atomically, and proves that re-exporting
+/// the installed epoch produces the same stable semantics before exercising
+/// body analysis.
+pub fn compare_canonical_durable_declaration_install(
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    preview_features: PreviewFeatures,
+    target: Target,
+) -> MultiErrorResult<(crate::DurableSemanticProjectionWork, DeclarationBindingWork)> {
+    let ordinary = configure_canonical_sema(merged, rir, preview_features.clone(), target)?
+        .bind_declarations()?;
+    let manifest = ordinary.binding_manifest();
+    let definitions = issue_bound_definitions(
+        merged,
+        rir.source_revision(),
+        manifest.bindings(),
+        manifest.work(),
+    )
+    .map_err(CompileErrors::from)?;
+    let durable = ordinary
+        .with_declaration_semantics(|records, _| {
+            crate::durable_semantics::convert_declaration_semantics(merged, &definitions, records)
+        })
+        .map_err(|failure| {
+            CompileErrors::from(invalid(format!(
+                "ordinary semantic AIR export failed: {failure:?}"
+            )))
+        })?
+        .map_err(|failure| {
+            CompileErrors::from(invalid(format!(
+                "ordinary durable semantic conversion failed: {failure:?}"
+            )))
+        })?;
+    let shells = configure_canonical_sema(merged, rir, preview_features, target)?
+        .predeclare_declaration_shells()?;
+    let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+    let (projected, projection_work) = crate::project_durable_declaration_semantics(
+        merged,
+        &definitions,
+        &shell_records,
+        &durable,
+    )
+    .map_err(|failure| {
+        CompileErrors::from(invalid(format!(
+            "durable semantic projection failed: {failure:?}"
+        )))
+    })?;
+    let installed = shells
+        .install_declaration_semantics(&projected)
+        .map_err(|failure| {
+            CompileErrors::from(invalid(format!(
+                "durable semantic installation failed: {failure:?}"
+            )))
+        })?;
+    let binding_work = installed.binding_work();
+    let installed_durable = installed
+        .with_declaration_semantics(|records, _| {
+            crate::durable_semantics::convert_declaration_semantics(merged, &definitions, records)
+        })
+        .map_err(|failure| {
+            CompileErrors::from(invalid(format!(
+                "installed semantic AIR export failed: {failure:?}"
+            )))
+        })?
+        .map_err(|failure| {
+            CompileErrors::from(invalid(format!(
+                "installed durable semantic conversion failed: {failure:?}"
+            )))
+        })?;
+    if installed_durable != durable {
+        return Err(CompileErrors::from(invalid(
+            "projected durable install changed declaration semantics",
+        )));
+    }
+    let ordinary_bodies = ordinary.analyze_all_bodies();
+    let installed_bodies = installed.analyze_all_bodies();
+    match (ordinary_bodies, installed_bodies) {
+        (Ok(ordinary), Ok(installed)) => {
+            let ordinary = crate::build_functions_and_cfgs(
+                ordinary,
+                crate::OptLevel::default(),
+                rir.semantic_symbols().interner(),
+            )?;
+            let installed = crate::build_functions_and_cfgs(
+                installed,
+                crate::OptLevel::default(),
+                rir.semantic_symbols().interner(),
+            )?;
+            if format!("{:?}", ordinary.functions) != format!("{:?}", installed.functions)
+                || format!("{:?}", ordinary.warnings) != format!("{:?}", installed.warnings)
+                || ordinary.strings != installed.strings
+            {
+                return Err(CompileErrors::from(invalid(
+                    "projected durable install changed body, CFG, or diagnostic artifacts",
+                )));
+            }
+        }
+        (Err(ordinary), Err(installed)) if format!("{ordinary:?}") == format!("{installed:?}") => {}
+        _ => {
+            return Err(CompileErrors::from(invalid(
+                "projected durable install changed body-analysis diagnostics",
+            )));
+        }
+    }
+    Ok((projection_work, binding_work))
+}
+
 pub(crate) fn bind_canonical_definitions_with_work(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
@@ -727,6 +838,217 @@ mod tests {
             .iter()
             .map(|record| record.stable_key().clone())
             .collect()
+    }
+
+    fn compare(
+        snapshot: &SourceSnapshot,
+    ) -> (crate::DurableSemanticProjectionWork, DeclarationBindingWork) {
+        let parsed = parse_source_snapshot_modules(snapshot).unwrap();
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let rir = lower_canonical_rir(&merged).unwrap();
+        compare_canonical_durable_declaration_install(
+            &merged,
+            &rir,
+            PreviewFeatures::new(),
+            Target::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn projected_install_matches_ordinary_across_relocation_order_modules_methods_and_drop() {
+        let root = r#"
+            struct Resource {
+                value: i32,
+                fn get(self) -> i32 { self.value }
+                fn make(value: i32) -> Resource { Resource { value } }
+            }
+            enum Choice { None, Some(Resource) }
+            drop fn Resource(self) {}
+            fn main() -> i32 { Resource.make(1).get() }
+        "#;
+        let sibling = "struct Sibling { value: bool } fn helper(value: i32) -> i32 { value }";
+        let first = snapshot(
+            &[
+                (9, "/old/sibling.rue", "sibling.rue", sibling),
+                (2, "/old/main.rue", "main.rue", root),
+            ],
+            2,
+        );
+        let relocated = snapshot(
+            &[
+                (71, "/new/main.rue", "main.rue", root),
+                (4, "/new/sibling.rue", "sibling.rue", sibling),
+            ],
+            71,
+        );
+        for input in [&first, &relocated] {
+            let (projection, install) = compare(input);
+            assert_eq!(projection.projection_invocations, 1);
+            assert_eq!(projection.rir_instructions_visited, 0);
+            assert_eq!(
+                projection.definition_records_indexed,
+                projection.shells_visited
+            );
+            assert_eq!(
+                projection.definition_lookup_probes,
+                projection.shells_visited
+            );
+            assert_eq!(
+                projection.shells_visited,
+                projection.durable_records_visited
+            );
+            assert_eq!(install.declaration_resolution_invocations, 0);
+            assert_eq!(install.durable_install_invocations, 1);
+            assert_eq!(
+                install.durable_payloads_installed,
+                projection.shells_visited
+            );
+        }
+
+        let (_, old_durable, _) = export(&first);
+        let parsed = parse_source_snapshot_modules(&relocated).unwrap();
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let rir = lower_canonical_rir(&merged).unwrap();
+        let current_definitions = bind(&relocated);
+        let shells =
+            configure_canonical_sema(&merged, &rir, PreviewFeatures::new(), Target::default())
+                .unwrap()
+                .predeclare_declaration_shells()
+                .unwrap();
+        let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+        let (projected, work) = crate::project_durable_declaration_semantics(
+            &merged,
+            &current_definitions,
+            &shell_records,
+            &old_durable,
+        )
+        .unwrap();
+        assert_eq!(projected.len(), old_durable.len());
+        assert_eq!(work.definition_records_indexed, old_durable.len());
+        assert_eq!(work.definition_lookup_probes, old_durable.len());
+    }
+
+    #[test]
+    fn projection_definition_join_work_is_linear_for_128_modules() {
+        let owned = (0..128_u32)
+            .map(|index| {
+                let id = index + 1;
+                let physical = format!("/src/module_{index}.rue");
+                let logical = format!("module_{index}.rue");
+                let source = if index == 0 {
+                    "fn main() -> i32 { 0 }".to_owned()
+                } else {
+                    format!("fn f{index}() -> i32 {{ {index} }}")
+                };
+                (id, physical, logical, source)
+            })
+            .collect::<Vec<_>>();
+        let borrowed = owned
+            .iter()
+            .map(|(id, physical, logical, source)| {
+                (*id, physical.as_str(), logical.as_str(), source.as_str())
+            })
+            .collect::<Vec<_>>();
+        let input = snapshot(&borrowed, 1);
+        let (definitions, durable, _) = export(&input);
+        let parsed = parse_source_snapshot_modules(&input).unwrap();
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let rir = lower_canonical_rir(&merged).unwrap();
+        let shells =
+            configure_canonical_sema(&merged, &rir, PreviewFeatures::new(), Target::default())
+                .unwrap()
+                .predeclare_declaration_shells()
+                .unwrap();
+        let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+        let (projected, projection) = crate::project_durable_declaration_semantics(
+            &merged,
+            &definitions,
+            &shell_records,
+            &durable,
+        )
+        .unwrap();
+
+        assert_eq!(projection.shells_visited, 128);
+        assert_eq!(projection.durable_records_visited, 128);
+        assert_eq!(projection.definition_records_indexed, 128);
+        assert_eq!(projection.definition_lookup_probes, 128);
+        assert_eq!(projection.rir_instructions_visited, 0);
+        assert_eq!(projected.len(), 128);
+    }
+
+    #[test]
+    fn duplicate_projection_input_fails_before_shells_are_consumed() {
+        let input = snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 0 }")], 1);
+        let (definitions, durable, _) = export(&input);
+        let parsed = parse_source_snapshot_modules(&input).unwrap();
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let rir = lower_canonical_rir(&merged).unwrap();
+        let shells =
+            configure_canonical_sema(&merged, &rir, PreviewFeatures::new(), Target::default())
+                .unwrap()
+                .predeclare_declaration_shells()
+                .unwrap();
+        let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+        let duplicated = durable
+            .iter()
+            .cloned()
+            .chain(durable.iter().cloned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            crate::project_durable_declaration_semantics(
+                &merged,
+                &definitions,
+                &shell_records,
+                &duplicated,
+            )
+            .unwrap_err(),
+            crate::DurableSemanticProjectionFailure::DuplicateDefinition
+        );
+        let (projected, _) = crate::project_durable_declaration_semantics(
+            &merged,
+            &definitions,
+            &shell_records,
+            &durable,
+        )
+        .unwrap();
+        let installed = shells.install_declaration_semantics(&projected).unwrap();
+        assert_eq!(installed.binding_work().durable_payloads_installed, 1);
+    }
+
+    #[test]
+    fn unsupported_const_projection_fails_without_partial_install() {
+        let input = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const X: i32 = 1; fn main() -> i32 { X }",
+            )],
+            1,
+        );
+        let parsed = parse_source_snapshot_modules(&input).unwrap();
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let rir = lower_canonical_rir(&merged).unwrap();
+        let error = compare_canonical_durable_declaration_install(
+            &merged,
+            &rir,
+            PreviewFeatures::new(),
+            Target::default(),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:?}").contains("UnsupportedDeclaration"),
+            "{error:?}"
+        );
+        // The failed candidate was consumed; a fresh ordinary epoch remains valid.
+        configure_canonical_sema(&merged, &rir, PreviewFeatures::new(), Target::default())
+            .unwrap()
+            .bind_declarations()
+            .unwrap()
+            .analyze_all_bodies()
+            .unwrap();
     }
 
     const PROGRAM: &str = r#"
