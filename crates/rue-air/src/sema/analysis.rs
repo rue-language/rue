@@ -169,14 +169,18 @@ fn finalize_function_body_analysis(
             sema.ordinary_free_function_dependencies.dedup();
             sema.ordinary_free_function_dependencies.clone()
         },
-        // Method/destructor and specialization callers are not yet threaded
-        // through the stable owner capture seam.
-        ordinary_free_function_dependencies_complete: false,
+        ordinary_free_function_dependencies_complete: true,
         specialized_free_function_origins: {
             sema.specialized_free_function_origins.sort();
             sema.specialized_free_function_origins.dedup();
             sema.specialized_free_function_origins.clone()
         },
+        specialized_free_function_dependencies: {
+            sema.specialized_free_function_dependencies.sort();
+            sema.specialized_free_function_dependencies.dedup();
+            sema.specialized_free_function_dependencies.clone()
+        },
+        specialized_free_function_dependencies_complete: true,
     };
 
     errors.into_result_with(output)
@@ -1409,6 +1413,8 @@ mod error_invariant_tests {
             ordinary_free_function_dependencies: Vec::new(),
             ordinary_free_function_dependencies_complete: false,
             specialized_free_function_origins: Vec::new(),
+            specialized_free_function_dependencies: Vec::new(),
+            specialized_free_function_dependencies_complete: false,
         }
     }
 

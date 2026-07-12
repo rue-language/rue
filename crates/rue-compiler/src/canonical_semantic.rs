@@ -2,7 +2,8 @@
 
 use rue_air::{
     BodyAnalysisWork, DeclarationBindingWork, OrdinaryFreeFunctionDependencyEvent,
-    RirDeclarationIndexWork, SemanticBindingManifestWork, SpecializedFreeFunctionOrigin,
+    RirDeclarationIndexWork, SemanticBindingManifestWork, SpecializedFreeFunctionDependencyEvent,
+    SpecializedFreeFunctionOrigin,
 };
 use tracing::info_span;
 
@@ -44,6 +45,8 @@ pub struct CanonicalSemanticOutput {
     ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
     ordinary_free_function_dependencies_complete: bool,
     specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
+    specialized_free_function_dependencies: Vec<SpecializedFreeFunctionDependencyEvent>,
+    specialized_free_function_dependencies_complete: bool,
 }
 
 impl CanonicalSemanticOutput {
@@ -75,6 +78,14 @@ impl CanonicalSemanticOutput {
     }
     pub fn specialized_free_function_origins(&self) -> &[SpecializedFreeFunctionOrigin] {
         &self.specialized_free_function_origins
+    }
+    pub fn specialized_free_function_dependencies(
+        &self,
+    ) -> &[SpecializedFreeFunctionDependencyEvent] {
+        &self.specialized_free_function_dependencies
+    }
+    pub fn specialized_free_function_dependencies_complete(&self) -> bool {
+        self.specialized_free_function_dependencies_complete
     }
     /// Stable definition identities when requested for this run.
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
@@ -157,6 +168,10 @@ pub fn analyze_canonical_program(
     let ordinary_free_function_dependencies_complete =
         sema_output.ordinary_free_function_dependencies_complete;
     let specialized_free_function_origins = sema_output.specialized_free_function_origins.clone();
+    let specialized_free_function_dependencies =
+        sema_output.specialized_free_function_dependencies.clone();
+    let specialized_free_function_dependencies_complete =
+        sema_output.specialized_free_function_dependencies_complete;
     drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
@@ -182,6 +197,8 @@ pub fn analyze_canonical_program(
         ordinary_free_function_dependencies,
         ordinary_free_function_dependencies_complete,
         specialized_free_function_origins,
+        specialized_free_function_dependencies,
+        specialized_free_function_dependencies_complete,
     })
 }
 
