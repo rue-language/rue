@@ -69,28 +69,23 @@ anonymous/local nominal types, unjoinable function aliases, and unknown future
 type/value forms produce `DurableSemanticExportFailure`; they are never
 stringified. Adding or changing a variant increments the schema version.
 
-### Required producer seam
+### Producer, projection, and installation seams
 
-The owned algebra is implemented, but one-way export is intentionally not yet
-wired: after successful declaration binding, `BoundSema` currently exposes only
-`SemanticBindingManifest` identity metadata. The resolved `FunctionInfo`,
-`MethodInfo`, `StructDef`, `EnumDef`, `ConstInfo`, parameter arena, and
-`TypeInternPool` remain private and are consumed with `BoundSema` by body
-analysis. Re-parsing type syntax or joining pool IDs by display name would be
-unsound.
+The one-way AIR export and stable compiler algebra are implemented. A compiler
+projection adapter now performs the inverse stable-key/current-revision join:
+it validates the exact `BoundDefinitionSet`, current declaration shells, and
+durable record universe before producing AIR `SemanticDeclarationExport` DTOs.
+It supplies current `FileId`s, spans, owners, names, kinds, and visibility while
+leaving authoritative body handles and parameter metadata in the shells.
+Records are projected in stable-key order; missing, duplicate, extra,
+ambiguous, namespace/kind/owner/module/visibility, and unsupported cases are
+typed failures. Work counters pin zero RIR traversal.
 
-The required AIR API is an optional, lazily materialized
-`BoundSema::durable_declaration_export_inputs()` produced before consuming the
-binder. It must return owned request-local records containing binding identity
-(`FileId`, namespace/kind, source name and optional named owner), resolved type
-trees whose nominal leaves carry the defining `(FileId, kind, source name)`,
-resolved module file identity, and const function leaves carrying their defining
-`(FileId, source name)`. It must also expose ordered parameter modes/comptime
-flags and struct/enum members. The compiler then joins every leaf through the
-exact-revision `BoundDefinitionSet` and canonical module table, yielding only
-the durable public algebra. AIR must report typed anonymous/local/missing cases
-instead of substituting pool handles. Materialization work counters must prove
-zero RIR scan and ordinary batch compilation must not request the export.
+The result feeds AIR's atomic installer only through a comparison seam today.
+That seam proves durable re-export equality and exercises body analysis in a
+fresh epoch. Constants, module values, function aliases, and anonymous owners
+remain explicit clean fallbacks; production does not cache or skip declaration
+resolution yet.
 
 ## Current capture audit
 

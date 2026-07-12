@@ -48,6 +48,7 @@ pub use bound_definitions::{
     BoundDefinitionId, BoundDefinitionRecord, BoundDefinitionSet, BoundDefinitionWork,
     StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace, StableNamedTypeKey,
     bind_canonical_declaration_semantics, bind_canonical_definitions,
+    compare_canonical_durable_declaration_install,
 };
 pub use canonical_lower::{CanonicalRirOutput, CanonicalRirWork, lower_canonical_rir};
 pub use canonical_merge::{
@@ -64,8 +65,9 @@ pub use definition_snapshot::{
 pub use durable_semantics::{
     DURABLE_SEMANTIC_SCHEMA_VERSION, DurableConstValue, DurableDeclarationPayload,
     DurableDeclarationSemantic, DurableParameterMode, DurableSemanticExportFailure,
-    DurableSemanticImportEpoch, DurableSemanticParameter, DurableType,
-    import_durable_declaration_semantics,
+    DurableSemanticImportEpoch, DurableSemanticParameter, DurableSemanticProjectionFailure,
+    DurableSemanticProjectionWork, DurableType, import_durable_declaration_semantics,
+    project_durable_declaration_semantics,
 };
 pub use frontend_session::{
     CanonicalFrontendSession, CanonicalFrontendSessionWork, CanonicalFrontendUpdate,

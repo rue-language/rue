@@ -122,6 +122,18 @@ incremental-compilation goal is complete.
    Callers without logical symbol paths receive a request-local fallback that is
    deliberately not cross-relocation joinable. No cached payload is installed,
    and no declaration-resolution work may yet be skipped or reported as reused.
+   The compiler now has a stable-key projection adapter between durable payloads
+   and exact-current-revision declaration shells. Its join is total and
+   bijective for supported named functions, methods, associated functions,
+   structs, enums, and destructors; it fails atomically on universe, identity,
+   shape, or provenance mismatch and reports zero RIR visits. A comparison-only
+   seam runs ordinary and installed epochs through body analysis and CFG
+   construction and compares durable exports, functions/CFGs, strings, warnings,
+   and error diagnostics across relocation, input order, and multiple modules.
+   Constants/module values/function aliases and anonymous owners remain typed
+   fallbacks. Generic named-method installation also remains a prerequisite:
+   its declaration-scoped type-parameter environment is not yet reconstructed
+   by the installer, so production reuse must continue to fail closed there.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now

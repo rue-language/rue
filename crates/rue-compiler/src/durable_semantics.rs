@@ -7,11 +7,13 @@
 use std::sync::Arc;
 
 use rue_air::{
-    SemanticBindingKind, SemanticDeclarationExport, SemanticDeclarationPayload,
-    SemanticExportConstValue, SemanticExportFailure, SemanticExportType, SemanticImportConstValue,
-    SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal, SemanticImportNominalKind,
-    SemanticImportType, SemanticParameterMode,
+    SemanticBinding, SemanticBindingKind, SemanticBindingNamespace, SemanticDeclarationExport,
+    SemanticDeclarationPayload, SemanticDeclarationShell, SemanticExportConstValue,
+    SemanticExportFailure, SemanticExportType, SemanticImportConstValue, SemanticImportEpoch,
+    SemanticImportFailure, SemanticImportNominal, SemanticImportNominalKind, SemanticImportType,
+    SemanticParameterMode,
 };
+use rue_span::FileId;
 
 /// A fresh AIR epoch populated only from request-independent semantic values.
 pub type DurableSemanticImportEpoch = SemanticImportEpoch<StableDefinitionKey, Arc<str>>;
@@ -351,6 +353,365 @@ pub struct DurableDeclarationSemantic {
     pub key: StableDefinitionKey,
     pub is_public: bool,
     pub payload: DurableDeclarationPayload,
+}
+
+/// Work performed by the stable-key/current-revision projection adapter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DurableSemanticProjectionWork {
+    pub projection_invocations: usize,
+    pub shells_visited: usize,
+    pub durable_records_visited: usize,
+    /// Stable definition records inserted into the exact projection join index.
+    pub definition_records_indexed: usize,
+    /// Exact-key definition index probes performed while joining shells.
+    pub definition_lookup_probes: usize,
+    /// Projection is a metadata join and must never inspect RIR.
+    pub rir_instructions_visited: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ProjectionJoinKey {
+    module: ModuleId,
+    namespace: crate::StableDefinitionNamespace,
+    kind: StableDefinitionKind,
+    name: Arc<str>,
+    owner: Option<Arc<str>>,
+}
+
+impl ProjectionJoinKey {
+    fn from_definition(key: &StableDefinitionKey) -> Self {
+        Self {
+            module: key.module().clone(),
+            namespace: key.namespace(),
+            kind: key.kind(),
+            name: Arc::from(key.name()),
+            owner: key.owner().map(|owner| Arc::from(owner.name())),
+        }
+    }
+
+    fn from_shell(shell: &SemanticDeclarationShell) -> Option<Self> {
+        Some(Self {
+            module: ModuleId::from_validated_canonical(&shell.identity.module_path),
+            namespace: stable_namespace(shell.identity.namespace),
+            kind: stable_kind(shell.identity.kind)?,
+            name: shell.identity.name.clone(),
+            owner: shell.identity.owner.clone(),
+        })
+    }
+}
+
+/// Typed reasons that make durable installation ineligible.  Projection is
+/// atomic: no AIR state is mutated before this validation succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DurableSemanticProjectionFailure {
+    DefinitionUniverseRevisionMismatch,
+    MissingDefinition,
+    DuplicateDefinition,
+    ExtraDefinition,
+    MissingShell,
+    DuplicateShell,
+    AmbiguousDefinition,
+    NamespaceMismatch,
+    KindMismatch,
+    OwnerMismatch,
+    ModuleMismatch,
+    VisibilityMismatch,
+    UnsupportedDeclaration,
+    UnsupportedType,
+}
+
+/// Project stable-keyed semantics into exact-current-revision AIR DTOs.
+///
+/// The definition set supplies provenance and `FileId`/span ownership, while
+/// shells supply authoritative body and parameter metadata. Records are
+/// returned in stable-key order. The join is deliberately total and
+/// bijective for the supported subset.
+pub fn project_durable_declaration_semantics(
+    merged: &CanonicalMergedProgram,
+    definitions: &BoundDefinitionSet,
+    shells: &[SemanticDeclarationShell],
+    durable: &[DurableDeclarationSemantic],
+) -> Result<
+    (
+        Arc<[SemanticDeclarationExport]>,
+        DurableSemanticProjectionWork,
+    ),
+    DurableSemanticProjectionFailure,
+> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    if definitions.source_revision() != merged.ast().source_revision() {
+        return Err(DurableSemanticProjectionFailure::DefinitionUniverseRevisionMismatch);
+    }
+    let modules = merged.ast().modules();
+    let module_files = modules
+        .iter()
+        .map(|module| (module.module_id().clone(), module.file_id()))
+        .collect::<BTreeMap<_, _>>();
+    if module_files.len() != modules.len() {
+        return Err(DurableSemanticProjectionFailure::AmbiguousDefinition);
+    }
+
+    let mut definition_by_join_key = BTreeMap::new();
+    for record in definitions.definitions() {
+        let join_key = ProjectionJoinKey::from_definition(record.stable_key());
+        if definition_by_join_key
+            .insert(join_key, record.stable_key().clone())
+            .is_some()
+        {
+            return Err(DurableSemanticProjectionFailure::DuplicateDefinition);
+        }
+    }
+
+    let mut shell_by_key = BTreeMap::new();
+    for shell in shells {
+        // The AIR installer does not yet reconstruct the declaration-scoped
+        // type-parameter environment needed by generic callable bodies.
+        if shell.is_generic {
+            return Err(DurableSemanticProjectionFailure::UnsupportedDeclaration);
+        }
+        let join_key = ProjectionJoinKey::from_shell(shell)
+            .ok_or(DurableSemanticProjectionFailure::UnsupportedDeclaration)?;
+        let key = definition_by_join_key
+            .get(&join_key)
+            .cloned()
+            .ok_or(DurableSemanticProjectionFailure::MissingDefinition)?;
+        if shell_by_key.insert(key, shell).is_some() {
+            return Err(DurableSemanticProjectionFailure::DuplicateShell);
+        }
+    }
+    let mut durable_by_key = BTreeMap::new();
+    for record in durable {
+        if durable_by_key.insert(record.key.clone(), record).is_some() {
+            return Err(DurableSemanticProjectionFailure::DuplicateDefinition);
+        }
+    }
+    let expected = shell_by_key.keys().cloned().collect::<BTreeSet<_>>();
+    let supplied = durable_by_key.keys().cloned().collect::<BTreeSet<_>>();
+    if let Some(key) = expected.difference(&supplied).next() {
+        let _ = key;
+        return Err(DurableSemanticProjectionFailure::MissingDefinition);
+    }
+    if supplied.difference(&expected).next().is_some() {
+        return Err(DurableSemanticProjectionFailure::ExtraDefinition);
+    }
+
+    let mut exports = Vec::with_capacity(expected.len());
+    for key in expected {
+        let shell = shell_by_key[&key];
+        let record = durable_by_key[&key];
+        let file_id = *module_files
+            .get(key.module())
+            .ok_or(DurableSemanticProjectionFailure::ModuleMismatch)?;
+        if shell.declaration_span.file_id != file_id
+            || shell.identity.module_path.as_ref() != key.module().as_str()
+        {
+            return Err(DurableSemanticProjectionFailure::ModuleMismatch);
+        }
+        if record.is_public != shell.is_public {
+            return Err(DurableSemanticProjectionFailure::VisibilityMismatch);
+        }
+        let payload = project_payload(&record.payload, definitions, &module_files)?;
+        validate_payload_shape(shell, &payload)?;
+        exports.push(SemanticDeclarationExport {
+            identity: SemanticBinding {
+                file_id,
+                declaration_span: shell.declaration_span,
+                namespace: shell.identity.namespace,
+                kind: shell.identity.kind,
+                name: shell.identity.name.clone(),
+                owner: shell.identity.owner.clone(),
+                is_public: shell.is_public,
+            },
+            payload,
+        });
+    }
+    let work = DurableSemanticProjectionWork {
+        projection_invocations: 1,
+        shells_visited: shells.len(),
+        durable_records_visited: durable.len(),
+        definition_records_indexed: definitions.definitions().len(),
+        definition_lookup_probes: shells.len(),
+        rir_instructions_visited: 0,
+    };
+    Ok((exports.into(), work))
+}
+
+fn stable_namespace(value: SemanticBindingNamespace) -> crate::StableDefinitionNamespace {
+    match value {
+        SemanticBindingNamespace::Value => crate::StableDefinitionNamespace::Value,
+        SemanticBindingNamespace::Type => crate::StableDefinitionNamespace::Type,
+        SemanticBindingNamespace::Destructor => crate::StableDefinitionNamespace::Destructor,
+        SemanticBindingNamespace::Method => crate::StableDefinitionNamespace::Method,
+    }
+}
+
+fn stable_kind(value: SemanticBindingKind) -> Option<StableDefinitionKind> {
+    Some(match value {
+        SemanticBindingKind::Function => StableDefinitionKind::Function,
+        SemanticBindingKind::Struct => StableDefinitionKind::Struct,
+        SemanticBindingKind::Enum => StableDefinitionKind::Enum,
+        SemanticBindingKind::ValueConst => StableDefinitionKind::ValueConst,
+        SemanticBindingKind::ModuleBinding => StableDefinitionKind::ModuleBinding,
+        SemanticBindingKind::Destructor => StableDefinitionKind::Destructor,
+        SemanticBindingKind::Method => StableDefinitionKind::Method,
+        SemanticBindingKind::AssociatedFunction => StableDefinitionKind::AssociatedFunction,
+    })
+}
+
+fn current_nominal(
+    key: &StableDefinitionKey,
+    definitions: &BoundDefinitionSet,
+    module_files: &std::collections::BTreeMap<ModuleId, FileId>,
+) -> Result<rue_air::SemanticNominalIdentity, DurableSemanticProjectionFailure> {
+    definitions
+        .definition_by_key(key)
+        .ok_or(DurableSemanticProjectionFailure::MissingDefinition)?;
+    let kind = match key.kind() {
+        StableDefinitionKind::Struct => SemanticBindingKind::Struct,
+        StableDefinitionKind::Enum => SemanticBindingKind::Enum,
+        _ => return Err(DurableSemanticProjectionFailure::KindMismatch),
+    };
+    Ok(rue_air::SemanticNominalIdentity {
+        file_id: *module_files
+            .get(key.module())
+            .ok_or(DurableSemanticProjectionFailure::ModuleMismatch)?,
+        name: Arc::from(key.name()),
+        kind,
+    })
+}
+
+fn project_type(
+    value: &DurableType,
+    definitions: &BoundDefinitionSet,
+    module_files: &std::collections::BTreeMap<ModuleId, FileId>,
+) -> Result<SemanticExportType, DurableSemanticProjectionFailure> {
+    Ok(match value {
+        DurableType::I8 => SemanticExportType::I8,
+        DurableType::I16 => SemanticExportType::I16,
+        DurableType::I32 => SemanticExportType::I32,
+        DurableType::I64 => SemanticExportType::I64,
+        DurableType::U8 => SemanticExportType::U8,
+        DurableType::U16 => SemanticExportType::U16,
+        DurableType::U32 => SemanticExportType::U32,
+        DurableType::U64 => SemanticExportType::U64,
+        DurableType::Bool => SemanticExportType::Bool,
+        DurableType::Unit => SemanticExportType::Unit,
+        DurableType::Never => SemanticExportType::Never,
+        DurableType::ComptimeType => SemanticExportType::ComptimeType,
+        DurableType::GenericParameter(index) => SemanticExportType::GenericParameter(*index),
+        DurableType::Nominal(key) => {
+            SemanticExportType::Nominal(current_nominal(key, definitions, module_files)?)
+        }
+        DurableType::Array { element, len } => SemanticExportType::Array {
+            element: Box::new(project_type(element, definitions, module_files)?),
+            len: *len,
+        },
+        DurableType::PtrConst(value) => {
+            SemanticExportType::PtrConst(Box::new(project_type(value, definitions, module_files)?))
+        }
+        DurableType::PtrMut(value) => {
+            SemanticExportType::PtrMut(Box::new(project_type(value, definitions, module_files)?))
+        }
+        DurableType::Module(_) | DurableType::Tuple(_) | DurableType::Function { .. } => {
+            return Err(DurableSemanticProjectionFailure::UnsupportedType);
+        }
+    })
+}
+
+fn project_payload(
+    value: &DurableDeclarationPayload,
+    definitions: &BoundDefinitionSet,
+    module_files: &std::collections::BTreeMap<ModuleId, FileId>,
+) -> Result<SemanticDeclarationPayload, DurableSemanticProjectionFailure> {
+    Ok(match value {
+        DurableDeclarationPayload::Callable {
+            parameters,
+            result,
+            has_self,
+            is_unchecked,
+        } => SemanticDeclarationPayload::Callable {
+            parameters: parameters
+                .iter()
+                .map(|parameter| {
+                    Ok(rue_air::SemanticExportParameter {
+                        ty: project_type(&parameter.ty, definitions, module_files)?,
+                        mode: match parameter.mode {
+                            DurableParameterMode::Value => SemanticParameterMode::Value,
+                            DurableParameterMode::Borrow => SemanticParameterMode::Borrow,
+                            DurableParameterMode::Inout => SemanticParameterMode::Inout,
+                        },
+                        is_comptime: parameter.is_comptime,
+                    })
+                })
+                .collect::<Result<Vec<_>, DurableSemanticProjectionFailure>>()?
+                .into(),
+            result: project_type(result, definitions, module_files)?,
+            has_self: *has_self,
+            is_unchecked: *is_unchecked,
+        },
+        DurableDeclarationPayload::Struct {
+            fields,
+            is_copy,
+            is_linear,
+        } => SemanticDeclarationPayload::Struct {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| Ok((name.clone(), project_type(ty, definitions, module_files)?)))
+                .collect::<Result<Vec<_>, DurableSemanticProjectionFailure>>()?
+                .into(),
+            is_copy: *is_copy,
+            is_linear: *is_linear,
+        },
+        DurableDeclarationPayload::Enum { variants } => SemanticDeclarationPayload::Enum {
+            variants: variants
+                .iter()
+                .map(|(name, payload)| {
+                    Ok((
+                        name.clone(),
+                        payload
+                            .iter()
+                            .map(|ty| project_type(ty, definitions, module_files))
+                            .collect::<Result<Vec<_>, _>>()?
+                            .into(),
+                    ))
+                })
+                .collect::<Result<Vec<_>, DurableSemanticProjectionFailure>>()?
+                .into(),
+        },
+        DurableDeclarationPayload::Destructor => SemanticDeclarationPayload::Destructor,
+        DurableDeclarationPayload::Const { .. } => {
+            return Err(DurableSemanticProjectionFailure::UnsupportedDeclaration);
+        }
+    })
+}
+
+fn validate_payload_shape(
+    shell: &SemanticDeclarationShell,
+    payload: &SemanticDeclarationPayload,
+) -> Result<(), DurableSemanticProjectionFailure> {
+    match (shell.identity.kind, payload) {
+        (
+            SemanticBindingKind::Function
+            | SemanticBindingKind::Method
+            | SemanticBindingKind::AssociatedFunction,
+            SemanticDeclarationPayload::Callable {
+                parameters,
+                has_self,
+                is_unchecked,
+                ..
+            },
+        ) if parameters.len() == shell.parameter_names.len()
+            && *has_self == shell.has_self
+            && *is_unchecked == shell.is_unchecked =>
+        {
+            Ok(())
+        }
+        (SemanticBindingKind::Struct, SemanticDeclarationPayload::Struct { .. })
+        | (SemanticBindingKind::Enum, SemanticDeclarationPayload::Enum { .. })
+        | (SemanticBindingKind::Destructor, SemanticDeclarationPayload::Destructor) => Ok(()),
+        _ => Err(DurableSemanticProjectionFailure::KindMismatch),
+    }
 }
 
 /// Typed fail-closed reasons from the future successful-binding exporter.
