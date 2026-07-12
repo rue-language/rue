@@ -1,5 +1,6 @@
 //! In-process canonical parse, merge, and RIR query orchestration.
 
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use rue_air::{DeclarationBindingWork, SemanticBindingManifestWork};
@@ -52,6 +53,7 @@ pub struct CanonicalFrontendSessionWork {
     pub dependency_manifests: FrontendQueryWork,
     pub dependency_manifest_records_visited: usize,
     pub dependency_manifest_import_records_visited: usize,
+    pub invalidation_plans: FrontendQueryWork,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -291,6 +293,70 @@ impl SemanticDependencyInputManifest {
     }
 }
 
+/// A reason why semantic results cannot soundly be reused across two manifests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SemanticFullInvalidationReason {
+    RootChanged,
+    ModuleImportsChanged,
+    TargetChanged,
+    PreviewFeaturesChanged,
+    IncompleteDefinitionUniverse,
+    IncompleteDependencyGraph,
+}
+
+/// Explicit work performed while planning semantic invalidation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SemanticInvalidationWork {
+    pub definition_fingerprints_compared: usize,
+    pub dependency_edges_visited: usize,
+    pub reverse_closure_nodes_visited: usize,
+    pub extra_rir_instructions_visited: usize,
+}
+
+/// Immutable, stable-keyed invalidation decision for two semantic input manifests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticInvalidationScope {
+    Full {
+        reasons: Arc<[SemanticFullInvalidationReason]>,
+    },
+    Incremental,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemanticInvalidationPlan {
+    scope: SemanticInvalidationScope,
+    added: Arc<[StableDefinitionKey]>,
+    removed: Arc<[StableDefinitionKey]>,
+    changed: Arc<[StableDefinitionKey]>,
+    invalidated: Arc<[StableDefinitionKey]>,
+    reusable: Arc<[StableDefinitionKey]>,
+    work: SemanticInvalidationWork,
+}
+
+impl SemanticInvalidationPlan {
+    pub fn scope(&self) -> &SemanticInvalidationScope {
+        &self.scope
+    }
+    pub fn added(&self) -> &[StableDefinitionKey] {
+        &self.added
+    }
+    pub fn removed(&self) -> &[StableDefinitionKey] {
+        &self.removed
+    }
+    pub fn changed(&self) -> &[StableDefinitionKey] {
+        &self.changed
+    }
+    pub fn invalidated(&self) -> &[StableDefinitionKey] {
+        &self.invalidated
+    }
+    pub fn reusable(&self) -> &[StableDefinitionKey] {
+        &self.reusable
+    }
+    pub fn work(&self) -> SemanticInvalidationWork {
+        self.work
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FrontendDiagnosticStage {
     Syntax,
@@ -414,6 +480,14 @@ pub struct CanonicalFrontendSession {
     diagnostic_cache: Vec<Arc<FrontendDiagnosticSnapshot>>,
     latest_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
     dependency_manifest_cache: Vec<Arc<SemanticDependencyInputManifest>>,
+    invalidation_plan_cache: Vec<InvalidationPlanCacheEntry>,
+}
+
+#[derive(Debug)]
+struct InvalidationPlanCacheEntry {
+    previous: Arc<SemanticDependencyInputManifest>,
+    current: Arc<SemanticDependencyInputManifest>,
+    plan: Arc<SemanticInvalidationPlan>,
 }
 
 #[derive(Debug)]
@@ -1257,6 +1331,184 @@ impl CanonicalFrontendSession {
         });
         self.dependency_manifest_cache.push(manifest.clone());
         Ok(manifest)
+    }
+
+    /// Compare two immutable semantic manifests without lowering or scanning RIR.
+    ///
+    /// Current production manifests deliberately report an incomplete dependency
+    /// graph, so this query returns a conservative full invalidation until capture
+    /// is complete. Keeping the planner real and cached makes that safety boundary
+    /// executable rather than an implicit promise made by a future cache.
+    pub fn semantic_invalidation_plan(
+        &mut self,
+        previous: &Arc<SemanticDependencyInputManifest>,
+        current: &Arc<SemanticDependencyInputManifest>,
+    ) -> Arc<SemanticInvalidationPlan> {
+        self.work.invalidation_plans.calls += 1;
+        if let Some(entry) = self.invalidation_plan_cache.iter().find(|entry| {
+            Arc::ptr_eq(&entry.previous, previous) && Arc::ptr_eq(&entry.current, current)
+        }) {
+            self.work.invalidation_plans.reuses += 1;
+            return entry.plan.clone();
+        }
+        self.work.invalidation_plans.executions += 1;
+        let plan = Arc::new(plan_semantic_invalidation(previous, current));
+        self.invalidation_plan_cache
+            .push(InvalidationPlanCacheEntry {
+                previous: previous.clone(),
+                current: current.clone(),
+                plan: plan.clone(),
+            });
+        plan
+    }
+}
+
+fn plan_semantic_invalidation(
+    previous: &SemanticDependencyInputManifest,
+    current: &SemanticDependencyInputManifest,
+) -> SemanticInvalidationPlan {
+    let previous_fingerprints = previous
+        .definition_fingerprints
+        .iter()
+        .map(|entry| (entry.key.clone(), entry))
+        .collect::<BTreeMap<_, _>>();
+    let current_fingerprints = current
+        .definition_fingerprints
+        .iter()
+        .map(|entry| (entry.key.clone(), entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut work = SemanticInvalidationWork::default();
+    let mut added = BTreeSet::new();
+    let mut removed = BTreeSet::new();
+    let mut changed = BTreeSet::new();
+    for (key, fingerprint) in &current_fingerprints {
+        match previous_fingerprints.get(key) {
+            None => {
+                added.insert(key.clone());
+            }
+            Some(previous) => {
+                work.definition_fingerprints_compared += 1;
+                if *previous != *fingerprint {
+                    changed.insert(key.clone());
+                }
+            }
+        }
+    }
+    for key in previous_fingerprints.keys() {
+        if !current_fingerprints.contains_key(key) {
+            removed.insert(key.clone());
+        }
+    }
+
+    let mut reasons = BTreeSet::new();
+    if previous.input.sources.root() != current.input.sources.root() {
+        reasons.insert(SemanticFullInvalidationReason::RootChanged);
+    }
+    if previous.module_imports != current.module_imports {
+        reasons.insert(SemanticFullInvalidationReason::ModuleImportsChanged);
+    }
+    if previous.input.target != current.input.target {
+        reasons.insert(SemanticFullInvalidationReason::TargetChanged);
+    }
+    if previous.input.preview_features != current.input.preview_features {
+        reasons.insert(SemanticFullInvalidationReason::PreviewFeaturesChanged);
+    }
+    if !previous.definition_universe_complete || !current.definition_universe_complete {
+        reasons.insert(SemanticFullInvalidationReason::IncompleteDefinitionUniverse);
+    }
+    if !previous.semantic_dependency_graph_complete || !current.semantic_dependency_graph_complete {
+        reasons.insert(SemanticFullInvalidationReason::IncompleteDependencyGraph);
+    }
+
+    let mut invalidated = BTreeSet::new();
+    let mut reusable = BTreeSet::new();
+    let scope = if reasons.is_empty() {
+        invalidated.extend(added.iter().cloned());
+        invalidated.extend(removed.iter().cloned());
+        invalidated.extend(changed.iter().cloned());
+        let mut reverse = BTreeMap::<StableDefinitionKey, BTreeSet<StableDefinitionKey>>::new();
+        collect_reverse_dependencies(previous, &mut reverse, &mut work);
+        collect_reverse_dependencies(current, &mut reverse, &mut work);
+        let mut queue = invalidated.iter().cloned().collect::<VecDeque<_>>();
+        while let Some(key) = queue.pop_front() {
+            work.reverse_closure_nodes_visited += 1;
+            if let Some(dependents) = reverse.get(&key) {
+                for dependent in dependents {
+                    if invalidated.insert(dependent.clone()) {
+                        queue.push_back(dependent.clone());
+                    }
+                }
+            }
+        }
+        reusable.extend(
+            current_fingerprints
+                .keys()
+                .filter(|key| !invalidated.contains(*key))
+                .cloned(),
+        );
+        SemanticInvalidationScope::Incremental
+    } else {
+        SemanticInvalidationScope::Full {
+            reasons: reasons.into_iter().collect::<Vec<_>>().into(),
+        }
+    };
+    SemanticInvalidationPlan {
+        scope,
+        added: added.into_iter().collect::<Vec<_>>().into(),
+        removed: removed.into_iter().collect::<Vec<_>>().into(),
+        changed: changed.into_iter().collect::<Vec<_>>().into(),
+        invalidated: invalidated.into_iter().collect::<Vec<_>>().into(),
+        reusable: reusable.into_iter().collect::<Vec<_>>().into(),
+        work,
+    }
+}
+
+fn collect_reverse_dependencies(
+    manifest: &SemanticDependencyInputManifest,
+    reverse: &mut BTreeMap<StableDefinitionKey, BTreeSet<StableDefinitionKey>>,
+    work: &mut SemanticInvalidationWork,
+) {
+    let mut add = |source: &StableDefinitionKey, target: &StableDefinitionKey| {
+        work.dependency_edges_visited += 1;
+        reverse
+            .entry(target.clone())
+            .or_default()
+            .insert(source.clone());
+    };
+    for edge in manifest.free_function_dependencies.iter() {
+        add(&edge.caller, &edge.callee);
+    }
+    for edge in manifest.named_method_dependencies.iter() {
+        let target = match &edge.target {
+            StableNamedMethodDependencyTarget::FreeFunction(key)
+            | StableNamedMethodDependencyTarget::NamedMethod(key) => key,
+        };
+        add(&edge.caller, target);
+    }
+    for edge in manifest.named_destructor_dependencies.iter() {
+        let target = match &edge.target {
+            StableNamedMethodDependencyTarget::FreeFunction(key)
+            | StableNamedMethodDependencyTarget::NamedMethod(key) => key,
+        };
+        add(&edge.caller, target);
+    }
+    for edge in manifest.implicit_named_destructor_dependencies.iter() {
+        add(&edge.source, &edge.target);
+    }
+    for edge in manifest.declaration_type_dependencies.iter() {
+        add(&edge.source, &edge.target);
+    }
+    for edge in manifest.declaration_type_call_head_dependencies.iter() {
+        add(&edge.source, &edge.callable);
+    }
+    for edge in manifest.named_const_dependencies.iter() {
+        let target = match &edge.target {
+            StableNamedConstDependencyTarget::ValueConst(key)
+            | StableNamedConstDependencyTarget::FreeFunction(key)
+            | StableNamedConstDependencyTarget::NamedType(key)
+            | StableNamedConstDependencyTarget::ModuleBinding(key) => key,
+        };
+        add(&edge.source, target);
     }
 }
 
@@ -2407,6 +2659,208 @@ mod tests {
         assert_eq!(original.key, surface_changed.key);
         assert_ne!(original.surface, surface_changed.surface);
         assert_ne!(original.payload, surface_changed.payload);
+    }
+
+    fn synthetic_complete_manifest(
+        manifest: &SemanticDependencyInputManifest,
+    ) -> Arc<SemanticDependencyInputManifest> {
+        let mut manifest = manifest.clone();
+        manifest.free_function_caller_dependencies_complete = true;
+        manifest.non_generic_named_method_dependencies_complete = true;
+        manifest.generic_named_method_dependencies_complete = true;
+        manifest.named_destructor_dependencies_complete = true;
+        manifest.implicit_named_destructor_dependencies_complete = true;
+        manifest.declaration_type_dependencies_complete = true;
+        manifest.declaration_type_call_head_dependencies_complete = true;
+        manifest.supported_type_call_heads_complete = true;
+        manifest.named_value_const_dependencies_complete = true;
+        manifest.semantic_dependency_graph_complete = true;
+        manifest.definition_universe_complete = true;
+        Arc::new(manifest)
+    }
+
+    fn definition_names(keys: &[StableDefinitionKey]) -> Vec<&str> {
+        keys.iter().map(|key| key.name()).collect()
+    }
+
+    #[test]
+    fn production_invalidation_is_cached_and_fails_closed_without_rir_work() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SemanticInvalidationPlan>();
+        let source = snapshot(
+            &[(
+                7,
+                "/p/main.rue",
+                "main.rue",
+                "fn leaf() -> i32 { 1 } fn main() -> i32 { leaf() }",
+            )],
+            7,
+        );
+        let changed = snapshot(
+            &[(
+                7,
+                "/p/main.rue",
+                "main.rue",
+                "fn leaf() -> i32 { 2 } fn main() -> i32 { leaf() }",
+            )],
+            7,
+        );
+        let build = |source: &SourceSnapshot| {
+            let mut session = CanonicalFrontendSession::new();
+            session.update(source).into_result().unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let previous = build(&source);
+        let current = build(&changed);
+        let mut planner = CanonicalFrontendSession::new();
+        let first = planner.semantic_invalidation_plan(&previous, &current);
+        let second = planner.semantic_invalidation_plan(&previous, &current);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(matches!(
+            first.scope(),
+            SemanticInvalidationScope::Full { reasons }
+                if reasons.contains(&SemanticFullInvalidationReason::IncompleteDependencyGraph)
+        ));
+        assert!(first.reusable().is_empty());
+        assert!(first.invalidated().is_empty());
+        assert_eq!(definition_names(first.changed()), vec!["leaf"]);
+        assert_eq!(first.work().dependency_edges_visited, 0);
+        assert_eq!(first.work().reverse_closure_nodes_visited, 0);
+        assert_eq!(first.work().extra_rir_instructions_visited, 0);
+        assert_eq!(planner.work().invalidation_plans.executions, 1);
+        assert_eq!(planner.work().invalidation_plans.reuses, 1);
+        assert_eq!(planner.work().rir.executions, 0);
+    }
+
+    #[test]
+    fn synthetic_complete_invalidation_computes_exact_delta_and_reverse_closure() {
+        let build = |text: &str| {
+            let source = snapshot(&[(7, "/p/main.rue", "main.rue", text)], 7);
+            let mut session = CanonicalFrontendSession::new();
+            session.update(&source).into_result().unwrap();
+            let manifest = session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap();
+            synthetic_complete_manifest(&manifest)
+        };
+        let previous = build(
+            "fn leaf() -> i32 { 1 } fn middle() -> i32 { leaf() } fn main() -> i32 { middle() }",
+        );
+        let current = build(
+            "fn leaf() -> i32 { 2 } fn middle() -> i32 { leaf() } fn main() -> i32 { middle() }",
+        );
+        let mut session = CanonicalFrontendSession::new();
+        let plan = session.semantic_invalidation_plan(&previous, &current);
+        assert_eq!(plan.scope(), &SemanticInvalidationScope::Incremental);
+        assert_eq!(definition_names(plan.changed()), vec!["leaf"]);
+        assert_eq!(
+            definition_names(plan.invalidated()),
+            vec!["leaf", "main", "middle"]
+        );
+        assert!(plan.reusable().is_empty());
+        assert_eq!(plan.work().definition_fingerprints_compared, 3);
+        assert_eq!(plan.work().dependency_edges_visited, 4);
+        assert_eq!(plan.work().reverse_closure_nodes_visited, 3);
+        assert_eq!(plan.work().extra_rir_instructions_visited, 0);
+
+        let removed_added = build(
+            "fn new_leaf() -> i32 { 1 } fn middle() -> i32 { new_leaf() } fn main() -> i32 { middle() }",
+        );
+        let plan = session.semantic_invalidation_plan(&current, &removed_added);
+        assert_eq!(definition_names(plan.added()), vec!["new_leaf"]);
+        assert_eq!(definition_names(plan.removed()), vec!["leaf"]);
+    }
+
+    #[test]
+    fn planner_ignores_relocation_but_rejects_global_semantic_input_changes() {
+        let original = snapshot(
+            &[
+                (7, "/one/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (2, "/one/a.rue", "a.rue", "fn a() -> i32 { 1 }"),
+            ],
+            7,
+        );
+        let relocated = snapshot(
+            &[
+                (41, "/else/a.rue", "a.rue", "fn a() -> i32 { 1 }"),
+                (99, "/else/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+            ],
+            99,
+        );
+        let build = |source: &SourceSnapshot, options: &CompileOptions| {
+            let mut session = CanonicalFrontendSession::new();
+            session.update(source).into_result().unwrap();
+            session.semantic_dependency_inputs(options, None).unwrap()
+        };
+        let previous = synthetic_complete_manifest(&build(&original, &CompileOptions::default()));
+        let moved = synthetic_complete_manifest(&build(&relocated, &CompileOptions::default()));
+        let mut planner = CanonicalFrontendSession::new();
+        let plan = planner.semantic_invalidation_plan(&previous, &moved);
+        assert_eq!(plan.scope(), &SemanticInvalidationScope::Incremental);
+        assert!(plan.invalidated().is_empty());
+        assert_eq!(plan.reusable().len(), 2);
+
+        let alternative_target = *Target::all()
+            .iter()
+            .find(|&&target| target != moved.input().target)
+            .expect("at least one supported target differs from the current target");
+        assert_ne!(alternative_target, moved.input().target);
+        let target = synthetic_complete_manifest(&build(
+            &relocated,
+            &CompileOptions {
+                target: alternative_target,
+                ..CompileOptions::default()
+            },
+        ));
+        assert!(matches!(
+            planner.semantic_invalidation_plan(&moved, &target).scope(),
+            SemanticInvalidationScope::Full { reasons }
+                if reasons.contains(&SemanticFullInvalidationReason::TargetChanged)
+        ));
+        let features = synthetic_complete_manifest(&build(
+            &relocated,
+            &CompileOptions {
+                preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
+                ..CompileOptions::default()
+            },
+        ));
+        assert!(matches!(
+            planner.semantic_invalidation_plan(&moved, &features).scope(),
+            SemanticInvalidationScope::Full { reasons }
+                if reasons.contains(&SemanticFullInvalidationReason::PreviewFeaturesChanged)
+        ));
+
+        let mut root_changed = (*moved).clone();
+        root_changed.input.sources = SourceRevision::new(
+            ModuleId::from_logical_path("a.rue").unwrap(),
+            root_changed.input.sources.modules().to_vec(),
+        )
+        .unwrap();
+        let root_changed = Arc::new(root_changed);
+        assert!(matches!(
+            planner
+                .semantic_invalidation_plan(&moved, &root_changed)
+                .scope(),
+            SemanticInvalidationScope::Full { reasons }
+                if reasons.contains(&SemanticFullInvalidationReason::RootChanged)
+        ));
+
+        let mut imports_changed = (*moved).clone();
+        imports_changed.module_imports = vec![StableModuleImportDependency::Missing {
+            importer: ModuleId::from_logical_path("main.rue").unwrap(),
+            normalized_specifier: Arc::from("a.rue"),
+        }]
+        .into();
+        let imports_changed = Arc::new(imports_changed);
+        let plan = planner.semantic_invalidation_plan(&moved, &imports_changed);
+        assert!(matches!(
+            plan.scope(),
+            SemanticInvalidationScope::Full { reasons }
+                if reasons.contains(&SemanticFullInvalidationReason::ModuleImportsChanged)
+        ));
+        assert!(plan.reusable().is_empty());
     }
 
     #[test]

@@ -93,6 +93,23 @@ translate future definition-level edges; it makes no body or CFG reuse claim.
 Acceptance requires one existing semantic execution to emit the complete
 manifest with no second whole-RIR traversal and unchanged diagnostic bytes/order.
 
+## Invalidation planning seam
+
+`CanonicalFrontendSession::semantic_invalidation_plan` now memoizes an immutable
+comparison of two manifests. It computes exact stable-key additions, removals,
+and fingerprint changes, and contains a deterministic reverse-dependency closure
+whose work counters explicitly pin zero RIR traversal. Root, canonical import,
+target, and preview-feature changes are unconditional full invalidations;
+physical relocation, FileId assignment, and input order are absent from its
+definition comparison.
+
+This is intentionally a safety seam, not incremental semantic reuse. Production
+manifests still report an incomplete semantic graph, so production plans return
+`Full` with structured incompleteness reasons and no reusable candidates.
+Synthetic complete-manifest tests exercise exact deltas and transitive closure;
+the incremental branch cannot authorize production reuse until every capture
+surface below is complete.
+
 Implicit drop obligations are now observed where AIR is elaborated into CFG,
 including scope/parameter/overwrite drops, recursive struct/enum/array glue,
 and partial-drop destructor calls. Each analyzed body carries a neutral,
