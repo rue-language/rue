@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use rue_air::{
     DeclarationBindingWork, Sema, SemanticBinding, SemanticBindingKind,
-    SemanticBindingManifestWork, SemanticBindingNamespace,
+    SemanticBindingManifestWork, SemanticBindingNamespace, SemanticDeclarationShell,
 };
 use rue_error::{CompileError, CompileErrors, ErrorKind, MultiErrorResult};
 use rue_parser::ast::{Item, Visibility};
@@ -604,6 +604,35 @@ pub(crate) fn issue_bound_definitions(
         manifest_work,
         work,
     })
+}
+
+/// Issue the current revision's stable definition universe from declaration
+/// shells, before payload resolution. Shells contain the same authoritative
+/// identity, span, ownership, and visibility fields consumed by the ordinary
+/// post-binding manifest; no semantic type/value is inferred here.
+pub(crate) fn issue_shell_definitions(
+    merged: &CanonicalMergedProgram,
+    revision: &SourceRevision,
+    shells: &[SemanticDeclarationShell],
+) -> Result<BoundDefinitionSet, CompileError> {
+    let bindings = shells
+        .iter()
+        .map(|shell| SemanticBinding {
+            file_id: shell.declaration_span.file_id,
+            declaration_span: shell.declaration_span,
+            namespace: shell.identity.namespace,
+            kind: shell.identity.kind,
+            name: shell.identity.name.clone(),
+            owner: shell.identity.owner.clone(),
+            is_public: shell.is_public,
+        })
+        .collect::<Vec<_>>();
+    issue_bound_definitions(
+        merged,
+        revision,
+        &bindings,
+        SemanticBindingManifestWork::default(),
+    )
 }
 
 fn definition_input_partition(

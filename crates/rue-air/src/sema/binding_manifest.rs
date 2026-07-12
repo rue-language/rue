@@ -727,6 +727,34 @@ impl<'a> BoundSema<'a> {
         Ok(convert(&records, work))
     }
 
+    /// Export resolved declarations using the stable shells captured before
+    /// resolution. Unlike [`Self::with_declaration_semantics`], this does not
+    /// materialize the binding manifest or traverse RIR.
+    pub fn with_declaration_semantics_from_shells<R>(
+        &self,
+        shells: &[SemanticDeclarationShell],
+        convert: impl FnOnce(&[SemanticDeclarationExport], SemanticDeclarationExportWork) -> R,
+    ) -> Result<R, SemanticExportFailure> {
+        let bindings = shells
+            .iter()
+            .map(|shell| SemanticBinding {
+                file_id: shell.declaration_span.file_id,
+                declaration_span: shell.declaration_span,
+                namespace: shell.identity.namespace,
+                kind: shell.identity.kind,
+                name: shell.identity.name.clone(),
+                owner: shell.identity.owner.clone(),
+                is_public: shell.is_public,
+            })
+            .collect();
+        let manifest = SemanticBindingManifest {
+            bindings,
+            work: SemanticBindingManifestWork::default(),
+        };
+        let (records, work) = self.sema.build_declaration_semantics(&manifest)?;
+        Ok(convert(&records, work))
+    }
+
     pub fn analyze_all_bodies(self) -> MultiErrorResult<SemaOutput> {
         self.sema.analyze_all_bodies()
     }

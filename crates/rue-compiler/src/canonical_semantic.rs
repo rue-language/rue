@@ -11,11 +11,71 @@ use tracing::info_span;
 
 use crate::{
     BoundDefinitionSet, BoundDefinitionWork, CanonicalMergedProgram, CanonicalRirOutput,
-    CodegenInputDescriptor, CompileOptions, CompileWarning, FunctionWithCfg, MultiErrorResult,
-    SemanticInputDescriptor, TypeInternPool,
-    bound_definitions::{configure_canonical_sema, issue_bound_definitions},
+    CodegenInputDescriptor, CompileOptions, CompileWarning, DurableDeclarationSemantic,
+    FunctionWithCfg, MultiErrorResult, SemanticInputDescriptor, TypeInternPool,
+    bound_definitions::{
+        configure_canonical_sema, issue_bound_definitions, issue_shell_definitions,
+    },
     build_functions_and_cfgs,
 };
+
+pub(crate) struct CanonicalOrdinaryAnalysis {
+    pub output: CanonicalSemanticOutput,
+    pub definitions: BoundDefinitionSet,
+    pub durable_declarations: Option<std::sync::Arc<[DurableDeclarationSemantic]>>,
+}
+
+/// One current-revision declaration epoch prepared for either ordinary
+/// resolution or durable installation. Stable identities are issued from the
+/// same shells that the selected analysis path subsequently consumes.
+pub(crate) struct CanonicalPreparedDeclarations<'a> {
+    shells: rue_air::DeclarationShells<'a>,
+    shell_records: Vec<rue_air::SemanticDeclarationShell>,
+    definitions: BoundDefinitionSet,
+    declaration_index: RirDeclarationIndexWork,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CanonicalDeclarationReuseWork {
+    pub plan_executions: usize,
+    pub durable_records_compared: usize,
+    pub durable_records_reused: usize,
+    pub ordinary_declaration_resolutions_skipped: usize,
+    pub install_invocations: usize,
+    pub fallbacks: usize,
+    /// Actual request-local semantic epochs constructed, including a fresh
+    /// epoch required after a consuming installation failure.
+    pub semantic_epochs_started: usize,
+    pub declaration_indexes_built: usize,
+    pub shell_predeclaration_epochs: usize,
+    pub durable_cache_population_exports: usize,
+    pub fallback_epochs_started: usize,
+}
+
+pub(crate) fn prepare_canonical_declarations<'a>(
+    merged: &CanonicalMergedProgram,
+    rir: &'a CanonicalRirOutput,
+    options: &CompileOptions,
+) -> MultiErrorResult<CanonicalPreparedDeclarations<'a>> {
+    let sema = configure_timed_canonical_sema(merged, rir, options)?;
+    let declaration_index = sema.rir_declaration_index_work();
+    let shells = sema.predeclare_declaration_shells()?;
+    let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+    let definitions = issue_shell_definitions(merged, rir.source_revision(), &shell_records)
+        .map_err(crate::CompileErrors::from)?;
+    Ok(CanonicalPreparedDeclarations {
+        shells,
+        shell_records,
+        definitions,
+        declaration_index,
+    })
+}
+
+impl CanonicalPreparedDeclarations<'_> {
+    pub(crate) fn definitions(&self) -> &BoundDefinitionSet {
+        &self.definitions
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 /// Structural work from one canonical semantic request.
@@ -32,6 +92,7 @@ pub struct CanonicalSemanticWork {
     pub body_analysis: BodyAnalysisWork,
     /// Whether this request asked for stable source definition IDs.
     pub stable_ids_requested: bool,
+    pub declaration_reuse: CanonicalDeclarationReuseWork,
 }
 
 /// Owned semantic and optimized CFG artifacts from the canonical frontend.
@@ -200,21 +261,193 @@ pub fn analyze_canonical_program(
         ),
         opt_level: options.opt_level.into(),
     };
-    let sema = {
-        let _span =
-            info_span!("rir_declaration_index", instruction_count = rir.rir().len()).entered();
-        configure_canonical_sema(
-            merged,
-            rir,
-            options.preview_features.clone(),
-            options.target,
-        )?
-    };
-    let sema_span = info_span!("sema").entered();
+    let sema = configure_timed_canonical_sema(merged, rir, options)?;
     let declaration_index = sema.rir_declaration_index_work();
     let bound = sema.bind_declarations()?;
-    let binding = bound.binding_work();
+    finish_canonical_analysis(
+        input,
+        merged,
+        rir,
+        options,
+        request_stable_ids,
+        declaration_index,
+        bound,
+        CanonicalDeclarationReuseWork::default(),
+        info_span!("sema").entered(),
+    )
+}
 
+/// Run the ordinary canonical path once and opportunistically export its
+/// resolved declaration payloads before body analysis consumes the binder.
+/// Export is fail-closed: unsupported payloads disable reuse without changing
+/// the successful batch semantic result.
+pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    options: &CompileOptions,
+    prepared: CanonicalPreparedDeclarations<'_>,
+) -> MultiErrorResult<CanonicalOrdinaryAnalysis> {
+    let input = CodegenInputDescriptor {
+        semantic: SemanticInputDescriptor::new(
+            merged.definitions().source_snapshot(),
+            options.target,
+            &options.preview_features,
+        ),
+        opt_level: options.opt_level.into(),
+    };
+    let sema_span = info_span!("sema").entered();
+    let CanonicalPreparedDeclarations {
+        shells,
+        shell_records,
+        definitions,
+        declaration_index,
+    } = prepared;
+    let bound = shells.resolve_declarations()?;
+
+    let durable_declarations = bound
+        .with_declaration_semantics_from_shells(&shell_records, |records, _work| {
+            crate::durable_semantics::convert_declaration_semantics(merged, &definitions, records)
+        })
+        .ok()
+        .and_then(Result::ok);
+
+    let output = finish_canonical_analysis(
+        input,
+        merged,
+        rir,
+        options,
+        false,
+        declaration_index,
+        bound,
+        CanonicalDeclarationReuseWork {
+            semantic_epochs_started: 1,
+            declaration_indexes_built: declaration_index.build_invocations,
+            shell_predeclaration_epochs: 1,
+            durable_cache_population_exports: usize::from(durable_declarations.is_some()),
+            ..CanonicalDeclarationReuseWork::default()
+        },
+        sema_span,
+    )?;
+    Ok(CanonicalOrdinaryAnalysis {
+        output,
+        definitions,
+        durable_declarations,
+    })
+}
+
+/// Analyze bodies in a fresh semantic epoch whose declaration payloads are
+/// installed from stable, request-independent records. Any projection or
+/// installation failure is typed internally and falls back to a wholly fresh
+/// ordinary binder; partially installed state is never observed.
+pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    options: &CompileOptions,
+    prepared: CanonicalPreparedDeclarations<'_>,
+    definitions: &BoundDefinitionSet,
+    durable: &[DurableDeclarationSemantic],
+) -> MultiErrorResult<CanonicalSemanticOutput> {
+    let input = CodegenInputDescriptor {
+        semantic: SemanticInputDescriptor::new(
+            merged.definitions().source_snapshot(),
+            options.target,
+            &options.preview_features,
+        ),
+        opt_level: options.opt_level.into(),
+    };
+    let mut reuse = CanonicalDeclarationReuseWork {
+        plan_executions: 1,
+        durable_records_compared: durable.len(),
+        semantic_epochs_started: 1,
+        shell_predeclaration_epochs: 1,
+        ..CanonicalDeclarationReuseWork::default()
+    };
+    let CanonicalPreparedDeclarations {
+        shells,
+        shell_records,
+        definitions: _,
+        declaration_index,
+    } = prepared;
+    reuse.declaration_indexes_built = declaration_index.build_invocations;
+    let bound = match crate::project_durable_declaration_semantics(
+        merged,
+        definitions,
+        &shell_records,
+        durable,
+    ) {
+        Err(_) => {
+            reuse.fallbacks = 1;
+            // Projection is read-only, so ordinary resolution consumes the
+            // exact same unmutated shells and does not create a hidden epoch.
+            shells.resolve_declarations()?
+        }
+        Ok((projected, _)) => {
+            reuse.install_invocations += 1;
+            match shells.install_declaration_semantics(&projected) {
+                Ok(bound) => {
+                    reuse.durable_records_reused = durable.len();
+                    reuse.ordinary_declaration_resolutions_skipped = 1;
+                    bound
+                }
+                Err(_) => {
+                    // Installation consumes potentially mutated shells. Only
+                    // this failure requires a wholly fresh ordinary epoch.
+                    reuse.fallbacks = 1;
+                    reuse.fallback_epochs_started = 1;
+                    reuse.semantic_epochs_started += 1;
+                    let fallback = configure_timed_canonical_sema(merged, rir, options)?;
+                    reuse.declaration_indexes_built +=
+                        fallback.rir_declaration_index_work().build_invocations;
+                    fallback.bind_declarations()?
+                }
+            }
+        }
+    };
+    let sema_span = info_span!("sema").entered();
+    finish_canonical_analysis(
+        input,
+        merged,
+        rir,
+        options,
+        false,
+        declaration_index,
+        bound,
+        reuse,
+        sema_span,
+    )
+}
+
+/// Construct one request-local declaration index under the authoritative leaf
+/// timing boundary. Keeping this wrapper at every canonical entry point gives
+/// ordinary and durable-reuse requests the same non-nested span shape. A typed
+/// durable-install fallback records a second leaf only because it genuinely
+/// constructs a second semantic epoch.
+fn configure_timed_canonical_sema<'a>(
+    merged: &CanonicalMergedProgram,
+    rir: &'a CanonicalRirOutput,
+    options: &CompileOptions,
+) -> MultiErrorResult<rue_air::Sema<'a>> {
+    let _span = info_span!("rir_declaration_index", instruction_count = rir.rir().len()).entered();
+    configure_canonical_sema(
+        merged,
+        rir,
+        options.preview_features.clone(),
+        options.target,
+    )
+}
+
+fn finish_canonical_analysis(
+    input: CodegenInputDescriptor,
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    options: &CompileOptions,
+    request_stable_ids: bool,
+    declaration_index: RirDeclarationIndexWork,
+    bound: rue_air::BoundSema<'_>,
+    declaration_reuse: CanonicalDeclarationReuseWork,
+    sema_span: tracing::span::EnteredSpan,
+) -> MultiErrorResult<CanonicalSemanticOutput> {
+    let binding = bound.binding_work();
     let (bound_definitions, manifest_work) = if request_stable_ids {
         let manifest = bound.binding_manifest();
         let definitions = issue_bound_definitions(
@@ -267,6 +500,30 @@ pub fn analyze_canonical_program(
         options.opt_level,
         rir.semantic_symbols().interner(),
     )?;
+    let mut warnings = cfg.warnings;
+    warnings.sort_by(|left, right| {
+        let key = |warning: &CompileWarning| {
+            let span = warning.span();
+            let module = span
+                .and_then(|span| {
+                    merged
+                        .ast()
+                        .modules()
+                        .iter()
+                        .find(|module| module.file_id() == span.file_id)
+                })
+                .map(|module| module.module_id().as_str())
+                .unwrap_or("");
+            (
+                module,
+                span.map(|span| span.start).unwrap_or(0),
+                span.map(|span| span.end).unwrap_or(0),
+                warning.to_string(),
+                format!("{:?}", warning.diagnostic()),
+            )
+        };
+        key(left).cmp(&key(right))
+    });
     let work = CanonicalSemanticWork {
         declaration_index,
         binding,
@@ -274,13 +531,14 @@ pub fn analyze_canonical_program(
         bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
         body_analysis,
         stable_ids_requested: request_stable_ids,
+        declaration_reuse,
     };
     Ok(CanonicalSemanticOutput {
         input,
         functions: cfg.functions,
         type_pool: cfg.type_pool,
         strings: cfg.strings,
-        warnings: cfg.warnings,
+        warnings,
         bound_definitions,
         work,
         ordinary_free_function_dependencies,

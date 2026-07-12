@@ -39,6 +39,13 @@ struct QueryCounts {
     dependency_manifest_reuses: usize,
     invalidation_plan_executions: usize,
     invalidation_plan_reuses: usize,
+    declaration_reuse_plans: usize,
+    durable_records_compared: usize,
+    durable_records_reused: usize,
+    ordinary_declaration_resolutions_skipped: usize,
+    durable_installs: usize,
+    declaration_reuse_fallbacks: usize,
+    durable_cache_population_bindings: usize,
 }
 
 impl QueryCounts {
@@ -59,6 +66,13 @@ impl QueryCounts {
             dependency_manifest_reuses: work.dependency_manifests.reuses,
             invalidation_plan_executions: work.invalidation_plans.executions,
             invalidation_plan_reuses: work.invalidation_plans.reuses,
+            declaration_reuse_plans: work.declaration_reuse_plans,
+            durable_records_compared: work.durable_records_compared,
+            durable_records_reused: work.durable_records_reused,
+            ordinary_declaration_resolutions_skipped: work.ordinary_declaration_resolutions_skipped,
+            durable_installs: work.durable_installs,
+            declaration_reuse_fallbacks: work.declaration_reuse_fallbacks,
+            durable_cache_population_bindings: work.durable_cache_population_bindings,
         }
     }
 
@@ -86,6 +100,17 @@ impl QueryCounts {
                 - before.invalidation_plan_executions,
             invalidation_plan_reuses: self.invalidation_plan_reuses
                 - before.invalidation_plan_reuses,
+            declaration_reuse_plans: self.declaration_reuse_plans - before.declaration_reuse_plans,
+            durable_records_compared: self.durable_records_compared
+                - before.durable_records_compared,
+            durable_records_reused: self.durable_records_reused - before.durable_records_reused,
+            ordinary_declaration_resolutions_skipped: self.ordinary_declaration_resolutions_skipped
+                - before.ordinary_declaration_resolutions_skipped,
+            durable_installs: self.durable_installs - before.durable_installs,
+            declaration_reuse_fallbacks: self.declaration_reuse_fallbacks
+                - before.declaration_reuse_fallbacks,
+            durable_cache_population_bindings: self.durable_cache_population_bindings
+                - before.durable_cache_population_bindings,
         }
     }
 
@@ -106,6 +131,13 @@ impl QueryCounts {
             "dependency_manifest_reuses": self.dependency_manifest_reuses,
             "invalidation_plan_executions": self.invalidation_plan_executions,
             "invalidation_plan_reuses": self.invalidation_plan_reuses,
+            "declaration_reuse_plans": self.declaration_reuse_plans,
+            "durable_records_compared": self.durable_records_compared,
+            "durable_records_reused": self.durable_records_reused,
+            "ordinary_declaration_resolutions_skipped": self.ordinary_declaration_resolutions_skipped,
+            "durable_installs": self.durable_installs,
+            "declaration_reuse_fallbacks": self.declaration_reuse_fallbacks,
+            "durable_cache_population_bindings": self.durable_cache_population_bindings,
         })
     }
 }
@@ -113,7 +145,7 @@ impl QueryCounts {
 struct Fixture {
     modules: usize,
     base: SourceSnapshot,
-    leaf_edit: SourceSnapshot,
+    reachable_root_body_edit: SourceSnapshot,
     identity_edit: SourceSnapshot,
     syntax_error: SourceSnapshot,
 }
@@ -124,7 +156,7 @@ impl Fixture {
         Self {
             modules,
             base: snapshot(modules, Variant::Base),
-            leaf_edit: snapshot(modules, Variant::LeafEdit),
+            reachable_root_body_edit: snapshot(modules, Variant::ReachableRootBodyEdit),
             identity_edit: snapshot(modules, Variant::IdentityEdit),
             syntax_error: snapshot(modules, Variant::SyntaxError),
         }
@@ -134,7 +166,7 @@ impl Fixture {
 #[derive(Clone, Copy)]
 enum Variant {
     Base,
-    LeafEdit,
+    ReachableRootBodyEdit,
     IdentityEdit,
     SyntaxError,
 }
@@ -158,15 +190,14 @@ fn snapshot(modules: usize, variant: Variant) -> SourceSnapshot {
     let sources = (0..modules)
         .map(|index| {
             let source = if index == 0 {
-                "fn main() -> i32 { 0 }".to_string()
+                format!(
+                    "fn main() -> i32 {{ {} }}",
+                    usize::from(!matches!(variant, Variant::Base))
+                )
             } else if index == changed && matches!(variant, Variant::SyntaxError) {
                 format!("fn leaf{index}( {{")
             } else {
-                let value = usize::from(
-                    index == changed
-                        && matches!(variant, Variant::LeafEdit | Variant::IdentityEdit),
-                );
-                format!("fn leaf{index}() -> i32 {{ {value} }}")
+                format!("fn leaf{index}() -> i32 {{ 0 }}")
             };
             (FileId::new(index as u32), Arc::new(source))
         })
@@ -203,6 +234,24 @@ fn semantic_work_json(work: &CanonicalFrontendSessionWork, from: usize) -> Value
         "declaration_type_call_head_dependency_events": records.iter().map(|record| record.work.body_analysis.declaration_type_call_head_dependency_events).sum::<usize>(),
         "named_const_dependency_events": records.iter().map(|record| record.work.body_analysis.named_const_dependency_events).sum::<usize>(),
         "manifest_build_invocations": records.iter().map(|record| record.work.manifest.build_invocations).sum::<usize>(),
+        "declaration_reuse": {
+            "plan_executions": records.iter().map(|record| record.work.declaration_reuse.plan_executions).sum::<usize>(),
+            "durable_records_compared": records.iter().map(|record| record.work.declaration_reuse.durable_records_compared).sum::<usize>(),
+            "durable_records_reused": records.iter().map(|record| record.work.declaration_reuse.durable_records_reused).sum::<usize>(),
+            "ordinary_declaration_resolutions_skipped": records.iter().map(|record| record.work.declaration_reuse.ordinary_declaration_resolutions_skipped).sum::<usize>(),
+            "install_invocations": records.iter().map(|record| record.work.declaration_reuse.install_invocations).sum::<usize>(),
+            "fallbacks": records.iter().map(|record| record.work.declaration_reuse.fallbacks).sum::<usize>(),
+            "semantic_epochs_started": records.iter().map(|record| record.work.declaration_reuse.semantic_epochs_started).sum::<usize>(),
+            "declaration_indexes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_indexes_built).sum::<usize>(),
+            "shell_predeclaration_epochs": records.iter().map(|record| record.work.declaration_reuse.shell_predeclaration_epochs).sum::<usize>(),
+            "durable_cache_population_exports": records.iter().map(|record| record.work.declaration_reuse.durable_cache_population_exports).sum::<usize>(),
+            "fallback_epochs_started": records.iter().map(|record| record.work.declaration_reuse.fallback_epochs_started).sum::<usize>(),
+        },
+        "semantic_epochs_started": records.iter().map(|record| record.work.declaration_reuse.semantic_epochs_started).sum::<usize>(),
+        "declaration_indexes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_indexes_built).sum::<usize>(),
+        "shell_predeclaration_epochs": records.iter().map(|record| record.work.declaration_reuse.shell_predeclaration_epochs).sum::<usize>(),
+        "durable_cache_population_exports": records.iter().map(|record| record.work.declaration_reuse.durable_cache_population_exports).sum::<usize>(),
+        "fallback_epochs_started": records.iter().map(|record| record.work.declaration_reuse.fallback_epochs_started).sum::<usize>(),
     })
 }
 
@@ -227,10 +276,26 @@ where
     let parse = operation(session);
     let elapsed = started.elapsed();
     let work = session.work();
+    let query_delta = QueryCounts::from(work).delta(before);
+    // Successful updates replace the current-revision record vectors. Treat
+    // that reset as a new zero-based measurement window.
+    let semantic_records =
+        if query_delta.semantic_executions > 0 && work.semantic_records.len() <= semantic_records {
+            0
+        } else {
+            semantic_records
+        };
+    let definition_records = if query_delta.definition_executions > 0
+        && work.definition_records.len() <= definition_records
+    {
+        0
+    } else {
+        definition_records
+    };
     json!({
         "wall_time_ns": elapsed.as_nanos(),
         "parse": parse_json(parse),
-        "queries": QueryCounts::from(work).delta(before).json(),
+        "queries": query_delta.json(),
         "merge_work": {
             "definition_shards_indexed": work.last_merge.definition_shards_indexed,
             "definition_shards_reused": work.last_merge.definition_shards_reused,
@@ -394,9 +459,9 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         }),
     ));
     scenarios.push(named(
-        "leaf_body_edit",
+        "reachable_root_body_edit",
         measure(&mut session, |session| {
-            let update = session.update(&fixture.leaf_edit);
+            let update = session.update(&fixture.reachable_root_body_edit);
             assert!(update.downstream_invalidated());
             let parse = update.work();
             update.into_result().unwrap();
@@ -465,17 +530,20 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
     let (noop_plan, noop_manifest) =
         measure_manifest_plan(&mut planner, &fixture.base, Some(&base_manifest), &options);
     scenarios.push(named("invalidation_plan_exact_noop", noop_plan));
-    let (leaf_plan, leaf_manifest) = measure_manifest_plan(
+    let (root_plan, root_manifest) = measure_manifest_plan(
         &mut planner,
-        &fixture.leaf_edit,
+        &fixture.reachable_root_body_edit,
         Some(&noop_manifest),
         &options,
     );
-    scenarios.push(named("invalidation_plan_leaf_body_edit", leaf_plan));
+    scenarios.push(named(
+        "invalidation_plan_reachable_root_body_edit",
+        root_plan,
+    ));
     let (identity_plan, _) = measure_manifest_plan(
         &mut planner,
         &fixture.identity_edit,
-        Some(&leaf_manifest),
+        Some(&root_manifest),
         &options,
     );
     scenarios.push(named(
@@ -514,6 +582,15 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     );
     assert_query_executions(cold, 1, 1, 1, 0);
     assert_semantic_work(cold, 1, 1, 0);
+    assert_declaration_epoch_work(cold, 1, 1, 1, 1, 0);
+    assert_eq!(
+        cold["semantic_work"]["declaration_reuse"]["plan_executions"],
+        0
+    );
+    assert_eq!(
+        count(cold, &["queries", "durable_cache_population_bindings"]),
+        0
+    );
 
     let noop = get("exact_noop");
     assert_eq!(count(noop, &["parse", "modules_reused"]), modules as u64);
@@ -524,21 +601,77 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     assert_eq!(count(noop, &["queries", "rir_reuses"]), 2);
     assert_eq!(count(noop, &["queries", "semantic_reuses"]), 1);
 
-    let leaf = get("leaf_body_edit");
+    let root_edit = get("reachable_root_body_edit");
     assert_eq!(
-        count(leaf, &["parse", "modules_reused"]),
+        count(root_edit, &["parse", "modules_reused"]),
         (modules - 1) as u64
     );
-    assert_eq!(count(leaf, &["parse", "modules_reparsed"]), 1);
-    assert_eq!(count(leaf, &["parse", "lexer_invocations"]), 1);
-    assert_eq!(count(leaf, &["parse", "parser_invocations"]), 1);
-    assert_query_executions(leaf, 1, 1, 1, 0);
+    assert_eq!(count(root_edit, &["parse", "modules_reparsed"]), 1);
+    assert_eq!(count(root_edit, &["parse", "lexer_invocations"]), 1);
+    assert_eq!(count(root_edit, &["parse", "parser_invocations"]), 1);
+    assert_query_executions(root_edit, 1, 1, 1, 0);
     assert_eq!(
-        count(leaf, &["merge_work", "definition_shards_reused"]),
+        count(root_edit, &["merge_work", "definition_shards_reused"]),
         modules as u64
     );
-    assert_eq!(count(leaf, &["merge_work", "definition_shards_rebuilt"]), 0);
-    assert_eq!(count(leaf, &["queries", "downstream_invalidations"]), 1);
+    assert_eq!(
+        count(root_edit, &["merge_work", "definition_shards_rebuilt"]),
+        0
+    );
+    assert_eq!(
+        count(root_edit, &["queries", "downstream_invalidations"]),
+        1
+    );
+    assert_eq!(count(root_edit, &["queries", "declaration_reuse_plans"]), 1);
+    assert_eq!(
+        count(root_edit, &["queries", "durable_records_compared"]),
+        modules as u64
+    );
+    assert_eq!(
+        count(root_edit, &["queries", "durable_records_reused"]),
+        modules as u64
+    );
+    assert_eq!(
+        count(
+            root_edit,
+            &["queries", "ordinary_declaration_resolutions_skipped"]
+        ),
+        1
+    );
+    assert_eq!(count(root_edit, &["queries", "durable_installs"]), 1);
+    assert_eq!(
+        count(root_edit, &["queries", "declaration_reuse_fallbacks"]),
+        0
+    );
+    assert_semantic_work(root_edit, 1, 1, 0);
+    assert_declaration_epoch_work(root_edit, 1, 1, 1, 0, 0);
+    let root_reuse = &root_edit["semantic_work"]["declaration_reuse"];
+    assert_eq!(root_reuse["plan_executions"], 1);
+    assert_eq!(root_reuse["durable_records_compared"], modules as u64);
+    assert_eq!(root_reuse["durable_records_reused"], modules as u64);
+    assert_eq!(root_reuse["ordinary_declaration_resolutions_skipped"], 1);
+    assert_eq!(root_reuse["install_invocations"], 1);
+    assert_eq!(root_reuse["fallbacks"], 0);
+    assert_eq!(
+        count(root_edit, &["semantic_work", "semantic_epochs_started"]),
+        1
+    );
+    assert_eq!(
+        count(root_edit, &["semantic_work", "declaration_indexes_built"]),
+        1
+    );
+    assert_eq!(
+        count(root_edit, &["semantic_work", "shell_predeclaration_epochs"]),
+        1
+    );
+    assert_eq!(
+        count(root_edit, &["semantic_work", "fallback_epochs_started"]),
+        0
+    );
+    assert_eq!(
+        count(root_edit, &["queries", "durable_cache_population_bindings"]),
+        0
+    );
 
     let identity = get("module_identity_change");
     assert_eq!(count(identity, &["parse", "modules_rebound"]), 1);
@@ -626,9 +759,9 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
         1
     );
     assert_production_incremental_plan(plan_noop, 0, 0, 0, modules, modules, 0);
-    let plan_leaf = get("invalidation_plan_leaf_body_edit");
-    assert_eq!(count(plan_leaf, &["parse", "modules_reparsed"]), 1);
-    assert_production_incremental_plan(plan_leaf, 1, 1, 1, modules - 1, modules, 1);
+    let plan_root_edit = get("invalidation_plan_reachable_root_body_edit");
+    assert_eq!(count(plan_root_edit, &["parse", "modules_reparsed"]), 1);
+    assert_production_incremental_plan(plan_root_edit, 1, 1, 1, modules - 1, modules, 1);
     let plan_identity = get("invalidation_plan_module_identity_change");
     assert_eq!(count(plan_identity, &["parse", "modules_rebound"]), 1);
     assert_production_incremental_plan(plan_identity, 1, 0, 2, modules - 1, modules - 1, 2);
@@ -713,7 +846,9 @@ fn assert_query_executions(
 fn assert_semantic_work(scenario: &Value, binds: u64, bodies: u64, manifests: u64) {
     assert_eq!(
         count(scenario, &["semantic_work", "bind_invocations"]),
-        binds
+        binds,
+        "{}",
+        scenario["name"]
     );
     assert_eq!(
         count(scenario, &["semantic_work", "body_free_function_lookups"]),
@@ -723,6 +858,22 @@ fn assert_semantic_work(scenario: &Value, binds: u64, bodies: u64, manifests: u6
         count(scenario, &["semantic_work", "manifest_build_invocations"]),
         manifests
     );
+}
+
+fn assert_declaration_epoch_work(
+    scenario: &Value,
+    epochs: u64,
+    indexes: u64,
+    shell_predeclarations: u64,
+    population_exports: u64,
+    fallback_epochs: u64,
+) {
+    let work = &scenario["semantic_work"]["declaration_reuse"];
+    assert_eq!(work["semantic_epochs_started"], epochs);
+    assert_eq!(work["declaration_indexes_built"], indexes);
+    assert_eq!(work["shell_predeclaration_epochs"], shell_predeclarations);
+    assert_eq!(work["durable_cache_population_exports"], population_exports);
+    assert_eq!(work["fallback_epochs_started"], fallback_epochs);
 }
 
 fn parse_config() -> Config {
@@ -767,7 +918,7 @@ fn main() {
     println!(
         "{}",
         json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "workload": "canonical_frontend_session_invalidation",
             "configuration": {
                 "modules": config.modules,
