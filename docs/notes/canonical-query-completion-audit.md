@@ -105,6 +105,18 @@ incremental-compilation goal is complete.
    across relocation, FileId assignment, and input order. This improves delta
    classification and now drives production `Incremental` plans. Retaining and
    reusing semantic artifacts remains a separate later slice.
+   Declaration binding now exposes an owned boundary after global namespace
+   validation, builtin injection, and named struct/enum shell registration.
+   The ordinary adapter crosses it immediately, with phase counters proving one
+   setup, predeclaration, resolution, and body-readiness finalization. This is
+   deliberately not described as per-definition independence: free-function,
+   constant, method, and destructor signatures are still collected together in
+   `resolve_remaining_declarations`, and constant evaluation remains
+   dependency-ordered. The next split must predeclare those callable/value
+   identities deterministically, then install either current-revision resolved
+   payloads or remapped durable payloads behind the owned boundary before body
+   analysis. Until that split exists, no declaration-resolution work may be
+   skipped or reported as reused.
 
 3. **Later tooling integration: import validation and compiler diagnostics remain
    distinct artifact families.** Syntax, merge, and semantic diagnostics are now

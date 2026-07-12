@@ -47,7 +47,7 @@ mod visibility;
 
 // Public re-exports
 pub use binding_manifest::{
-    BoundSema, DeclarationBindingWork, SemanticBinding, SemanticBindingKind,
+    BoundSema, DeclarationBindingWork, DeclarationShells, SemanticBinding, SemanticBindingKind,
     SemanticBindingManifest, SemanticBindingManifestWork, SemanticBindingNamespace,
     SemanticDeclarationExport, SemanticDeclarationExportWork, SemanticDeclarationPayload,
     SemanticExportConstValue, SemanticExportFailure, SemanticExportParameter, SemanticExportType,
@@ -316,7 +316,19 @@ impl<'a> Sema<'a> {
     }
 
     /// Complete all declaration and namespace binding without analyzing bodies.
-    pub fn bind_declarations(mut self) -> MultiErrorResult<BoundSema<'a>> {
+    pub fn bind_declarations(self) -> MultiErrorResult<BoundSema<'a>> {
+        self.predeclare_declaration_shells()?.resolve_declarations()
+    }
+
+    /// Validate the global namespace and predeclare all nominal type shells.
+    ///
+    /// This is the explicit boundary before resolved declaration semantics are
+    /// installed. The batch adapter [`Self::bind_declarations`] immediately
+    /// executes both sides of the boundary and therefore preserves historical
+    /// ordering and failure behavior.
+    pub fn predeclare_declaration_shells(mut self) -> MultiErrorResult<DeclarationShells<'a>> {
+        let mut binding_work =
+            DeclarationBindingWork::from_inputs(self.rir.len(), self.declaration_index.work());
         // Phase 0a: Reject a top-level name claimed by two of function /
         // struct / enum, order-independently (spec 10.3:1, 10.5:1, RUE-239).
         // Runs before builtin injection so it scans only user RIR. Value
@@ -327,16 +339,18 @@ impl<'a> Sema<'a> {
 
         // Phase 0b: Inject built-in types (String, etc.) before user code
         self.inject_builtin_types();
+        binding_work.namespace_setup_invocations += 1;
 
-        // Phase 1: Register type names
-        // Phase 2: Resolve all declarations (const initializers — including
-        // `const x = @import(...)` module bindings — are evaluated as they
-        // are collected, see `collect_const_by_key`)
+        // Phase 1: Register nominal type shells. Functions, constants,
+        // methods, and destructors are resolved on the far side of this
+        // boundary; splitting those into independently importable records is
+        // intentionally left to the durable-declaration integration.
         self.register_type_names().map_err(CompileErrors::from)?;
-        self.resolve_declarations().map_err(CompileErrors::from)?;
-
-        // Delegate to the analysis module for function body analysis
-        Ok(self.into_bound())
+        binding_work.nominal_type_predeclaration_invocations += 1;
+        Ok(DeclarationShells {
+            sema: self,
+            binding_work,
+        })
     }
 
     /// Analyze all function bodies, assuming declarations are already collected.

@@ -3,7 +3,7 @@
 use std::sync::{Arc, OnceLock};
 
 use lasso::Spur;
-use rue_error::MultiErrorResult;
+use rue_error::{CompileErrors, MultiErrorResult};
 use rue_rir::InstData;
 use rue_span::{FileId, Span};
 
@@ -122,6 +122,14 @@ pub struct SemanticDeclarationExportWork {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeclarationBindingWork {
     pub bind_invocations: usize,
+    /// Global collision validation and builtin/module namespace setup.
+    pub namespace_setup_invocations: usize,
+    /// Deterministic named struct/enum shell predeclaration.
+    pub nominal_type_predeclaration_invocations: usize,
+    /// Resolution of declaration payloads, constants, and cycles.
+    pub declaration_resolution_invocations: usize,
+    /// Construction of the body-analysis-ready state.
+    pub body_readiness_finalization_invocations: usize,
     /// Size of the input RIR, not a claim that binding visited every entry.
     pub input_rir_instructions: usize,
     pub declaration_index_build_invocations: usize,
@@ -205,6 +213,35 @@ pub struct BoundSema<'a> {
     sema: Sema<'a>,
     manifest: OnceLock<SemanticBindingManifest>,
     binding_work: DeclarationBindingWork,
+}
+
+/// A semantic request whose global namespace and nominal declaration shells
+/// are complete, but whose declaration payloads have not yet been resolved.
+///
+/// This boundary deliberately owns the request-local `Sema` state.  A future
+/// durable-declaration importer can populate that state here without making
+/// raw AIR handles part of the reusable representation.  Today the only
+/// transition performs the ordinary current-revision resolution pass.
+pub struct DeclarationShells<'a> {
+    pub(super) sema: Sema<'a>,
+    pub(super) binding_work: DeclarationBindingWork,
+}
+
+impl<'a> DeclarationShells<'a> {
+    /// Work completed before declaration payload resolution.
+    pub fn binding_work(&self) -> DeclarationBindingWork {
+        self.binding_work
+    }
+
+    /// Resolve declaration payloads and finalize a body-analysis-ready binder.
+    pub fn resolve_declarations(mut self) -> MultiErrorResult<BoundSema<'a>> {
+        self.sema
+            .resolve_declarations()
+            .map_err(CompileErrors::from)?;
+        self.binding_work.declaration_resolution_invocations += 1;
+        self.binding_work.body_readiness_finalization_invocations += 1;
+        Ok(self.sema.into_bound_with_work(self.binding_work))
+    }
 }
 
 impl<'a> BoundSema<'a> {
@@ -540,10 +577,12 @@ impl<'a> Sema<'a> {
             },
         ))
     }
-    pub(super) fn into_bound(self) -> BoundSema<'a> {
-        let index = self.declaration_index.work();
+    pub(super) fn into_bound_with_work(
+        self,
+        binding_work: DeclarationBindingWork,
+    ) -> BoundSema<'a> {
         BoundSema {
-            binding_work: DeclarationBindingWork::from_inputs(self.rir.len(), index),
+            binding_work,
             sema: self,
             manifest: OnceLock::new(),
         }
@@ -722,9 +761,16 @@ impl<'a> Sema<'a> {
 }
 
 impl DeclarationBindingWork {
-    fn from_inputs(input_rir_instructions: usize, index: RirDeclarationIndexWork) -> Self {
+    pub(super) fn from_inputs(
+        input_rir_instructions: usize,
+        index: RirDeclarationIndexWork,
+    ) -> Self {
         Self {
             bind_invocations: 1,
+            namespace_setup_invocations: 0,
+            nominal_type_predeclaration_invocations: 0,
+            declaration_resolution_invocations: 0,
+            body_readiness_finalization_invocations: 0,
             input_rir_instructions,
             declaration_index_build_invocations: index.build_invocations,
             indexed_free_functions: index.free_functions_indexed,
@@ -991,10 +1037,66 @@ mod tests {
             .unwrap();
         assert!(!bound.manifest_is_materialized());
         assert_eq!(bound.binding_work().bind_invocations, 1);
+        assert_eq!(bound.binding_work().namespace_setup_invocations, 1);
+        assert_eq!(
+            bound.binding_work().nominal_type_predeclaration_invocations,
+            1
+        );
+        assert_eq!(bound.binding_work().declaration_resolution_invocations, 1);
+        assert_eq!(
+            bound.binding_work().body_readiness_finalization_invocations,
+            1
+        );
         assert_eq!(bound.binding_work().input_rir_instructions, rir.len());
         assert_eq!(bound.binding_work().declaration_index_build_invocations, 1);
         assert_eq!(bound.binding_manifest().work().build_invocations, 1);
         assert!(bound.manifest_is_materialized());
+    }
+
+    #[test]
+    fn declaration_shell_boundary_accounts_each_phase_once() {
+        let (tokens, interner) = Lexer::new("struct Item { value: i32 } fn main() {}")
+            .tokenize()
+            .unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let rir = AstGen::new(&ast, &interner).generate();
+
+        let shells = Sema::new(&rir, &interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()
+            .unwrap();
+        let prepared = shells.binding_work();
+        assert_eq!(prepared.bind_invocations, 1);
+        assert_eq!(prepared.namespace_setup_invocations, 1);
+        assert_eq!(prepared.nominal_type_predeclaration_invocations, 1);
+        assert_eq!(prepared.declaration_resolution_invocations, 0);
+        assert_eq!(prepared.body_readiness_finalization_invocations, 0);
+        assert_eq!(prepared.input_rir_instructions, rir.len());
+        assert_eq!(prepared.declaration_index_build_invocations, 1);
+
+        let bound = shells.resolve_declarations().unwrap();
+        let resolved = bound.binding_work();
+        assert_eq!(resolved.declaration_resolution_invocations, 1);
+        assert_eq!(resolved.body_readiness_finalization_invocations, 1);
+        assert!(!bound.manifest_is_materialized());
+    }
+
+    #[test]
+    fn declaration_shell_adapter_preserves_early_failure_provenance() {
+        let (tokens, interner) = Lexer::new("struct Clash {} fn Clash() {} fn main() {}")
+            .tokenize()
+            .unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let rir = AstGen::new(&ast, &interner).generate();
+
+        let direct = Sema::new(&rir, &interner, PreviewFeatures::new())
+            .bind_declarations()
+            .err()
+            .expect("cross-kind collision must fail");
+        let split = Sema::new(&rir, &interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()
+            .err()
+            .expect("collision must short-circuit before nominal predeclaration");
+        assert_eq!(format!("{direct:?}"), format!("{split:?}"));
     }
 
     #[test]
