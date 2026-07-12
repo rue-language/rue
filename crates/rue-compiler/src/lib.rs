@@ -44,8 +44,9 @@ pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,
     CanonicalImportGraphValidation, CanonicalImportRecord, CanonicalImportResolution,
     ImportDirective, ImportDirectives, ImportEdge, ImportGraph, ImportResolution,
-    ResolvedProgramRevision, extract_import_directives, resolve_canonical_import_graph,
-    resolve_import_graph, validate_canonical_import_graph,
+    ResolvedCodegenRevision, ResolvedLinkRevision, ResolvedProgramRevision,
+    extract_import_directives, resolve_canonical_import_graph, resolve_import_graph,
+    validate_canonical_import_graph,
 };
 pub use source_identity::{
     CodegenInputDescriptor, LinkInputDescriptor, ModuleId, ModuleResolutionInput,
