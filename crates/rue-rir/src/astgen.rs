@@ -44,6 +44,7 @@ pub struct AstGen<'a> {
     /// temporaries of a `for`-loop desugaring (RUE-220), so nested for-loops
     /// don't shadow one another's position/length/collection bindings.
     for_counter: u32,
+    normalize_symbol: Box<dyn Fn(Spur) -> Spur + 'a>,
 }
 
 impl<'a> AstGen<'a> {
@@ -54,6 +55,7 @@ impl<'a> AstGen<'a> {
             interner,
             rir: Rir::new(),
             for_counter: 0,
+            normalize_symbol: Box::new(|symbol| symbol),
         }
     }
 
@@ -80,11 +82,45 @@ impl<'a> AstGen<'a> {
             interner,
             rir: Rir::new(),
             for_counter: 0,
+            normalize_symbol: Box::new(|symbol| symbol),
         };
         for item in items {
             generator.gen_item(item);
         }
         generator.rir
+    }
+
+    /// Create a generator whose AST-origin symbols are normalized before use.
+    #[doc(hidden)]
+    pub fn with_symbol_normalizer(
+        interner: &'a ThreadedRodeo,
+        normalize_symbol: impl Fn(Spur) -> Spur + 'a,
+    ) -> Self {
+        Self {
+            ast: None,
+            interner,
+            rir: Rir::new(),
+            for_counter: 0,
+            normalize_symbol: Box::new(normalize_symbol),
+        }
+    }
+
+    /// Append borrowed items while preserving generator-global state.
+    #[doc(hidden)]
+    pub fn append_items<'item>(&mut self, items: impl IntoIterator<Item = &'item Item>) {
+        for item in items {
+            self.gen_item(item);
+        }
+    }
+
+    /// Finish a normalized multi-module lowering session.
+    #[doc(hidden)]
+    pub fn finish(self) -> Rir {
+        self.rir
+    }
+
+    fn symbol(&self, symbol: Spur) -> Spur {
+        (self.normalize_symbol)(symbol)
     }
 
     fn gen_item(&mut self, item: &Item) {
@@ -113,7 +149,7 @@ impl<'a> AstGen<'a> {
     /// For named types, returns the existing symbol. For compound types, interns a new string.
     fn intern_type(&mut self, ty: &TypeExpr) -> Spur {
         match ty {
-            TypeExpr::Named(ident) => ident.name, // Already a Spur
+            TypeExpr::Named(ident) => self.symbol(ident.name),
             TypeExpr::Qualified { segments, .. } => {
                 let name = self.render_type_path(segments);
                 self.interner.get_or_intern(&name)
@@ -153,7 +189,8 @@ impl<'a> AstGen<'a> {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    let name = self.interner.resolve(&field.name.name);
+                    let field_name = self.symbol(field.name.name);
+                    let name = self.interner.resolve(&field_name);
                     let ty_sym = self.intern_type(&field.ty);
                     let ty_name = self.interner.resolve(&ty_sym);
                     s.push_str(name);
@@ -172,7 +209,8 @@ impl<'a> AstGen<'a> {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    let name = self.interner.resolve(&variant.name.name);
+                    let variant_name = self.symbol(variant.name.name);
+                    let name = self.interner.resolve(&variant_name);
                     s.push_str(name);
                     if !variant.payload.is_empty() {
                         s.push('(');
@@ -210,7 +248,8 @@ impl<'a> AstGen<'a> {
                 // to the monomorphized concrete type. Arguments are interned
                 // recursively so nested calls compose
                 // (`Result(Option(i32), i32)`).
-                let mut s = self.interner.resolve(&name.name).to_string();
+                let name = self.symbol(name.name);
+                let mut s = self.interner.resolve(&name).to_string();
                 s.push('(');
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -246,20 +285,22 @@ impl<'a> AstGen<'a> {
                 // (ADR-0043 Phase 5, RUE-326). Canonicalize to `Name(N)` — the
                 // same string the const-capacity `TypeCall` spelling produces —
                 // so sema's `resolve_type` reduces both to one `Str(N)` type.
-                let callee = self.interner.resolve(&name.name);
+                let name = self.symbol(name.name);
+                let callee = self.interner.resolve(&name);
                 let s = format!("{}({})", callee, length);
                 self.interner.get_or_intern(&s)
             }
         }
     }
 
-    fn render_type_path(&self, segments: &[rue_parser::ast::Ident]) -> String {
+    fn render_type_path(&mut self, segments: &[rue_parser::ast::Ident]) -> String {
         let mut s = String::new();
         for (i, segment) in segments.iter().enumerate() {
             if i > 0 {
                 s.push('.');
             }
-            s.push_str(self.interner.resolve(&segment.name));
+            let segment = self.symbol(segment.name);
+            s.push_str(self.interner.resolve(&segment));
         }
         s
     }
@@ -271,12 +312,16 @@ impl<'a> AstGen<'a> {
     /// and a call as `callee(arg, ...)` with each argument rendered by the same
     /// rule so nested calls compose (RUE-309). Sema parses these forms back out
     /// of the type string and folds them to a concrete length (RUE-16).
-    fn render_array_length(&self, length: &ArrayLength) -> String {
+    fn render_array_length(&mut self, length: &ArrayLength) -> String {
         match length {
             ArrayLength::Literal(n) => n.to_string(),
-            ArrayLength::Named(ident) => self.interner.resolve(&ident.name).to_string(),
+            ArrayLength::Named(ident) => {
+                let name = self.symbol(ident.name);
+                self.interner.resolve(&name).to_string()
+            }
             ArrayLength::Call { name, args } => {
-                let callee = self.interner.resolve(&name.name);
+                let name = self.symbol(name.name);
+                let callee = self.interner.resolve(&name).to_owned();
                 let rendered: Vec<String> =
                     args.iter().map(|a| self.render_array_length(a)).collect();
                 format!("{}({})", callee, rendered.join(", "))
@@ -287,12 +332,12 @@ impl<'a> AstGen<'a> {
     fn gen_struct(&mut self, struct_decl: &StructDecl) -> InstRef {
         let directives = self.convert_directives(&struct_decl.directives);
         let (directives_start, directives_len) = self.rir.add_directives(&directives);
-        let name = struct_decl.name.name; // Already a Spur
+        let name = self.symbol(struct_decl.name.name);
         let fields: Vec<_> = struct_decl
             .fields
             .iter()
             .map(|f| {
-                let field_name = f.name.name; // Already a Spur
+                let field_name = self.symbol(f.name.name);
                 let field_type = self.intern_type(&f.ty);
                 (field_name, field_type)
             })
@@ -324,11 +369,11 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_enum(&mut self, enum_decl: &EnumDecl) -> InstRef {
-        let name = enum_decl.name.name; // Already a Spur
+        let name = self.symbol(enum_decl.name.name);
         let variants: Vec<_> = enum_decl
             .variants
             .iter()
-            .map(|v| v.name.name) // Already a Spur
+            .map(|v| self.symbol(v.name.name))
             .collect();
         let (variants_start, variants_len) = self.rir.add_symbols(&variants);
 
@@ -368,7 +413,7 @@ impl<'a> AstGen<'a> {
     fn gen_const(&mut self, const_decl: &ConstDecl) -> InstRef {
         let directives = self.convert_directives(&const_decl.directives);
         let (directives_start, directives_len) = self.rir.add_directives(&directives);
-        let name = const_decl.name.name; // Already a Spur
+        let name = self.symbol(const_decl.name.name);
         let ty = const_decl.ty.as_ref().map(|t| self.intern_type(t));
         let init = self.gen_expr(&const_decl.init);
 
@@ -386,7 +431,7 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_drop_fn(&mut self, drop_fn: &DropFn) -> InstRef {
-        let type_name = drop_fn.type_name.name; // Already a Spur
+        let type_name = self.symbol(drop_fn.type_name.name);
 
         // Generate the body expression
         let body = self.gen_expr(&drop_fn.body);
@@ -403,7 +448,7 @@ impl<'a> AstGen<'a> {
         let (directives_start, directives_len) = self.rir.add_directives(&directives);
 
         // Get the method name (already a Symbol) and return type
-        let name = method.name.name; // Already a Spur
+        let name = self.symbol(method.name.name);
         let return_type = match &method.return_type {
             Some(ty) => self.intern_type(ty),
             None => self.interner.get_or_intern("()"), // Default to unit type
@@ -414,7 +459,7 @@ impl<'a> AstGen<'a> {
             .params
             .iter()
             .map(|p| RirParam {
-                name: p.name.name, // Already a Spur
+                name: self.symbol(p.name.name),
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
                 is_comptime: p.mode == ParamMode::Comptime,
@@ -465,12 +510,12 @@ impl<'a> AstGen<'a> {
         directives
             .iter()
             .map(|d| RirDirective {
-                name: d.name.name, // Already a Spur
+                name: self.symbol(d.name.name),
                 args: d
                     .args
                     .iter()
                     .map(|arg| match arg {
-                        DirectiveArg::Ident(ident) => ident.name, // Already a Spur
+                        DirectiveArg::Ident(ident) => self.symbol(ident.name),
                     })
                     .collect(),
                 span: d.span,
@@ -517,7 +562,7 @@ impl<'a> AstGen<'a> {
         let (directives_start, directives_len) = self.rir.add_directives(&directives);
 
         // Get the function name (already a Symbol) and return type
-        let name = func.name.name; // Already a Spur
+        let name = self.symbol(func.name.name);
         let return_type = match &func.return_type {
             Some(ty) => self.intern_type(ty),
             None => self.interner.get_or_intern("()"), // Default to unit type
@@ -528,7 +573,7 @@ impl<'a> AstGen<'a> {
             .params
             .iter()
             .map(|p| RirParam {
-                name: p.name.name, // Already a Spur
+                name: self.symbol(p.name.name),
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
                 is_comptime: p.mode == ParamMode::Comptime,
@@ -572,22 +617,20 @@ impl<'a> AstGen<'a> {
                 data: InstData::BoolConst(lit.value),
                 span: lit.span,
             }),
-            Expr::String(lit) => {
-                self.rir.add_inst(Inst {
-                    data: InstData::StringConst(lit.value), // Already a Spur
-                    span: lit.span,
-                })
-            }
+            Expr::String(lit) => self.rir.add_inst(Inst {
+                data: InstData::StringConst(self.symbol(lit.value)),
+                span: lit.span,
+            }),
             Expr::Unit(lit) => self.rir.add_inst(Inst {
                 data: InstData::UnitConst,
                 span: lit.span,
             }),
-            Expr::Ident(ident) => {
-                self.rir.add_inst(Inst {
-                    data: InstData::VarRef { name: ident.name }, // Already a Spur
-                    span: ident.span,
-                })
-            }
+            Expr::Ident(ident) => self.rir.add_inst(Inst {
+                data: InstData::VarRef {
+                    name: self.symbol(ident.name),
+                },
+                span: ident.span,
+            }),
             Expr::Binary(bin) => {
                 let lhs = self.gen_expr(&bin.left);
                 let rhs = self.gen_expr(&bin.right);
@@ -701,7 +744,7 @@ impl<'a> AstGen<'a> {
 
                 self.rir.add_inst(Inst {
                     data: InstData::Call {
-                        name: call.name.name, // Already a Spur
+                        name: self.symbol(call.name.name),
                         args_start,
                         args_len,
                     },
@@ -741,7 +784,7 @@ impl<'a> AstGen<'a> {
                     let (args_start, args_len) = self.rir.add_call_args(&arg_refs);
                     self.rir.add_inst(Inst {
                         data: InstData::Call {
-                            name: struct_lit.name.name,
+                            name: self.symbol(struct_lit.name.name),
                             args_start,
                             args_len,
                         },
@@ -754,7 +797,7 @@ impl<'a> AstGen<'a> {
                     .iter()
                     .map(|f| {
                         let field_value = self.gen_expr(&f.value);
-                        (f.name.name, field_value) // name is already a Symbol
+                        (self.symbol(f.name.name), field_value)
                     })
                     .collect();
                 let (fields_start, fields_len) = self.rir.add_field_inits(&fields);
@@ -772,7 +815,7 @@ impl<'a> AstGen<'a> {
                     data: InstData::StructInit {
                         module,
                         ctor_head,
-                        type_name: struct_lit.name.name, // Already a Spur
+                        type_name: self.symbol(struct_lit.name.name),
                         fields_start,
                         fields_len,
                         shorthand_span,
@@ -786,13 +829,13 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::FieldGet {
                         base,
-                        field: field_expr.field.name, // Already a Spur
+                        field: self.symbol(field_expr.field.name),
                     },
                     span: field_expr.span,
                 })
             }
             Expr::IntrinsicCall(intrinsic) => {
-                let name = intrinsic.name.name; // Already a Spur
+                let name = self.symbol(intrinsic.name.name);
                 let intrinsic_name_str = self.interner.resolve(&name);
 
                 // `@offset_of(T, field)` (RUE-301) is compiler-mediated field
@@ -806,7 +849,7 @@ impl<'a> AstGen<'a> {
                 if intrinsic_name_str == "offset_of" && intrinsic.args.len() == 2 {
                     let type_arg = match &intrinsic.args[0] {
                         IntrinsicArg::Type(ty) => Some(self.intern_type(ty)),
-                        IntrinsicArg::Expr(Expr::Ident(ident)) => Some(ident.name),
+                        IntrinsicArg::Expr(Expr::Ident(ident)) => Some(self.symbol(ident.name)),
                         _ => None,
                     };
                     if let (Some(type_arg), IntrinsicArg::Expr(Expr::Ident(field))) =
@@ -815,7 +858,7 @@ impl<'a> AstGen<'a> {
                         return self.rir.add_inst(Inst {
                             data: InstData::OffsetOf {
                                 type_arg,
-                                field: field.name,
+                                field: self.symbol(field.name),
                             },
                             span: intrinsic.span,
                         });
@@ -843,7 +886,7 @@ impl<'a> AstGen<'a> {
                         return self.rir.add_inst(Inst {
                             data: InstData::TypeIntrinsic {
                                 name,
-                                type_arg: ident.name, // Already a Spur
+                                type_arg: self.symbol(ident.name),
                             },
                             span: intrinsic.span,
                         });
@@ -890,7 +933,7 @@ impl<'a> AstGen<'a> {
                     let value = self.gen_expr(&array_lit.elements[0]);
                     let count = match count {
                         ArrayLength::Literal(n) => RepeatCount::Literal(*n),
-                        ArrayLength::Named(ident) => RepeatCount::Named(ident.name),
+                        ArrayLength::Named(ident) => RepeatCount::Named(self.symbol(ident.name)),
                         // The array-literal repeat grammar (`[value; count]`)
                         // only parses a literal or a bare name, never a call,
                         // so this arm is unreachable. The call form is accepted
@@ -939,8 +982,8 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::EnumVariant {
                         module,
-                        type_name: path_expr.type_name.name, // Already a Spur
-                        variant: path_expr.variant.name,     // Already a Spur
+                        type_name: self.symbol(path_expr.type_name.name),
+                        variant: self.symbol(path_expr.variant.name),
                     },
                     span: path_expr.span,
                 })
@@ -957,7 +1000,7 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::MethodCall {
                         receiver,
-                        method: method_call.method.name, // Already a Spur
+                        method: self.symbol(method_call.method.name),
                         args_start,
                         args_len,
                     },
@@ -974,8 +1017,8 @@ impl<'a> AstGen<'a> {
 
                 self.rir.add_inst(Inst {
                     data: InstData::AssocFnCall {
-                        type_name: assoc_fn_call.type_name.name, // Already a Spur
-                        function: assoc_fn_call.function.name,   // Already a Spur
+                        type_name: self.symbol(assoc_fn_call.type_name.name),
+                        function: self.symbol(assoc_fn_call.function.name),
                         args_start,
                         args_len,
                     },
@@ -1018,7 +1061,7 @@ impl<'a> AstGen<'a> {
                         let field_decls: Vec<(Spur, Spur)> = fields
                             .iter()
                             .map(|f| {
-                                let name = f.name.name;
+                                let name = self.symbol(f.name.name);
                                 let ty = self.intern_type(&f.ty);
                                 (name, ty)
                             })
@@ -1047,7 +1090,7 @@ impl<'a> AstGen<'a> {
                         // as `gen_enum` does for a top-level `enum` declaration
                         // (RUE-221, ADR-0038).
                         let variant_syms: Vec<Spur> =
-                            variants.iter().map(|v| v.name.name).collect();
+                            variants.iter().map(|v| self.symbol(v.name.name)).collect();
                         let (variants_start, variants_len) = self.rir.add_symbols(&variant_syms);
 
                         let has_any_payload = variants.iter().any(|v| !v.payload.is_empty());
@@ -1079,7 +1122,7 @@ impl<'a> AstGen<'a> {
                     _ => {
                         // For named types, unit, never, arrays, and pointers, generate TypeConst
                         let type_name = match &type_lit.type_expr {
-                            TypeExpr::Named(ident) => ident.name,
+                            TypeExpr::Named(ident) => self.symbol(ident.name),
                             TypeExpr::Qualified { .. } => self.intern_type(&type_lit.type_expr),
                             TypeExpr::Unit(_) => self.interner.get_or_intern_static("()"),
                             TypeExpr::Never(_) => self.interner.get_or_intern_static("!"),
@@ -1167,7 +1210,7 @@ impl<'a> AstGen<'a> {
                     let (args_start, args_len) = self.rir.add_call_args(&arg_refs);
                     self.rir.add_inst(Inst {
                         data: InstData::Call {
-                            name: path.type_name.name,
+                            name: self.symbol(path.type_name.name),
                             args_start,
                             args_len,
                         },
@@ -1175,12 +1218,13 @@ impl<'a> AstGen<'a> {
                     })
                 });
                 // Payload binding names for a tuple-variant pattern (RUE-221).
-                let bindings: Vec<Spur> = path.bindings.iter().map(|b| b.name).collect();
+                let bindings: Vec<Spur> =
+                    path.bindings.iter().map(|b| self.symbol(b.name)).collect();
                 RirPattern::Path {
                     module,
                     ctor_head,
-                    type_name: path.type_name.name, // Already a Spur
-                    variant: path.variant.name,     // Already a Spur
+                    type_name: self.symbol(path.type_name.name),
+                    variant: self.symbol(path.variant.name),
                     bindings,
                     span: path.span,
                 }
@@ -1259,7 +1303,8 @@ impl<'a> AstGen<'a> {
         // the call is the actual collection.
         let (coll_expr, is_chars, is_lossy): (&Expr, bool, bool) = match &*for_expr.iterable {
             Expr::MethodCall(mc) if mc.args.is_empty() => {
-                match self.interner.resolve(&mc.method.name) {
+                let method = self.symbol(mc.method.name);
+                match self.interner.resolve(&method) {
                     "chars" => (&mc.receiver, true, false),
                     "chars_lossy" => (&mc.receiver, true, true),
                     _ => (&*for_expr.iterable, false, false),
@@ -1275,7 +1320,7 @@ impl<'a> AstGen<'a> {
         // borrow); any other expression is a temporary bound once.
         let coll_is_var = matches!(coll_expr, Expr::Ident(_));
         let coll_name: Spur = if let Expr::Ident(id) = coll_expr {
-            id.name
+            self.symbol(id.name)
         } else {
             let init = self.gen_expr(coll_expr);
             let name = self.interner.get_or_intern(format!("__rue_for_coll_{n}"));
@@ -1394,7 +1439,7 @@ impl<'a> AstGen<'a> {
         // drop the borrowed element as a temporary and double-free it (the
         // collection still owns and drops it, RUE-259).
         let binder_name: Option<Spur> = match &for_expr.binder {
-            LetPattern::Ident(id) => Some(id.name),
+            LetPattern::Ident(id) => Some(self.symbol(id.name)),
             LetPattern::Wildcard(_) => {
                 Some(self.interner.get_or_intern(format!("_rue_for_elem_{n}")))
             }
@@ -1553,7 +1598,7 @@ impl<'a> AstGen<'a> {
                 let directives = self.convert_directives(&let_stmt.directives);
                 let (directives_start, directives_len) = self.rir.add_directives(&directives);
                 let name = match &let_stmt.pattern {
-                    LetPattern::Ident(ident) => Some(ident.name), // Already a Spur
+                    LetPattern::Ident(ident) => Some(self.symbol(ident.name)),
                     LetPattern::Wildcard(_) => None,
                 };
                 let ty = let_stmt.ty.as_ref().map(|t| self.intern_type(t));
@@ -1574,21 +1619,19 @@ impl<'a> AstGen<'a> {
             Statement::Assign(assign) => {
                 let value = self.gen_expr(&assign.value);
                 match &assign.target {
-                    AssignTarget::Var(ident) => {
-                        self.rir.add_inst(Inst {
-                            data: InstData::Assign {
-                                name: ident.name, // Already a Spur
-                                value,
-                            },
-                            span: assign.span,
-                        })
-                    }
+                    AssignTarget::Var(ident) => self.rir.add_inst(Inst {
+                        data: InstData::Assign {
+                            name: self.symbol(ident.name),
+                            value,
+                        },
+                        span: assign.span,
+                    }),
                     AssignTarget::Field(field_expr) => {
                         let base = self.gen_expr(&field_expr.base);
                         self.rir.add_inst(Inst {
                             data: InstData::FieldSet {
                                 base,
-                                field: field_expr.field.name, // Already a Spur
+                                field: self.symbol(field_expr.field.name),
                                 value,
                             },
                             span: assign.span,

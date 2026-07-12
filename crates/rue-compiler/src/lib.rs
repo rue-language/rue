@@ -25,6 +25,7 @@
 //! This crate is instrumented with `tracing` spans for performance analysis.
 //! Use `--log-level info` or `--time-passes` to see timing information.
 
+mod canonical_lower;
 mod canonical_merge;
 mod definition_snapshot;
 mod diagnostic;
@@ -39,6 +40,7 @@ mod source_snapshot;
 mod syntax;
 mod unit;
 
+pub use canonical_lower::{CanonicalRirOutput, CanonicalRirWork, lower_canonical_rir};
 pub use canonical_merge::{
     CanonicalMergeWork, CanonicalMergedAst, CanonicalMergedProgram, merge_parsed_modules,
 };
