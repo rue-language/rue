@@ -155,6 +155,15 @@ pub struct Sema<'a> {
     /// files binding the same name — even to different modules — must not
     /// collide (RUE-113).
     pub(crate) module_bindings: HashMap<(FileId, Spur), ConstInfo>,
+    /// Active dependency stack while declaration binding resolves constants.
+    /// Empty outside the declaration-resolution phase; retained on `Sema` so
+    /// recursive type resolution shares one cycle detector without rebuilding
+    /// a declaration worklist.
+    pub(crate) const_resolution_in_progress: Vec<(FileId, Spur)>,
+    /// True only while the current-revision declaration payloads are being
+    /// resolved. Once `BoundSema` exists, missing constants are authoritative
+    /// lookup misses and may never restart declaration discovery.
+    pub(crate) declaration_binding_active: bool,
     /// Enabled preview features
     pub(crate) preview_features: PreviewFeatures,
     /// Requested compilation target.
@@ -314,6 +323,8 @@ impl<'a> Sema<'a> {
             constants: HashMap::new(),
             constants_by_file_name: HashMap::new(),
             module_bindings: HashMap::new(),
+            const_resolution_in_progress: Vec::new(),
+            declaration_binding_active: false,
             preview_features,
             target,
             builtin_string_id: None,

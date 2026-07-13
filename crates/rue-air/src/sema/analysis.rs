@@ -44,6 +44,9 @@ use crate::types::{
 /// Called from Sema::analyze_all after declarations are collected.
 /// Uses the demand-driven driver for every program shape.
 pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
+    debug_assert!(!sema.declaration_binding_active);
+    debug_assert!(sema.const_resolution_in_progress.is_empty());
+
     // Declarations are complete: re-point destructor symbols of struct
     // names that span multiple files at their file-qualified form (RUE-571).
     // Must precede any body analysis — destructor definitions build their

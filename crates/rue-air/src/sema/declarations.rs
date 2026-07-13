@@ -507,22 +507,30 @@ impl<'a> Sema<'a> {
     /// are created on-demand via the thread-safe `TypeInternPool` during function
     /// body analysis.
     pub(crate) fn resolve_declarations(&mut self) -> CompileResult<()> {
-        self.resolve_struct_fields()?;
-        self.resolve_enum_payloads()?;
-        // Reject infinite-size types now that every struct field and enum
-        // payload is resolved, before any later pass (layout, drop-glue)
-        // recurses through the field graph and overflows the host stack
-        // (RUE-264).
-        self.check_recursive_value_types()?;
-        self.propagate_field_linearity();
-        self.resolve_remaining_declarations()?;
-        // Now that value constants are separated from module bindings, reject
-        // any value-constant name that collides with a function/struct/enum
-        // (order-independent E0436, spec 10.3:1/10.5:1, RUE-239).
-        self.check_const_cross_kind_collisions()?;
-        self.capture_resolved_declaration_type_dependencies();
-        self.declaration_type_observer = None;
-        Ok(())
+        debug_assert!(!self.declaration_binding_active);
+        self.declaration_binding_active = true;
+        let result = (|| {
+            self.validate_indexed_const_declarations()?;
+            self.resolve_struct_fields()?;
+            self.resolve_enum_payloads()?;
+            // Reject infinite-size types now that every struct field and enum
+            // payload is resolved, before any later pass (layout, drop-glue)
+            // recurses through the field graph and overflows the host stack
+            // (RUE-264).
+            self.check_recursive_value_types()?;
+            self.propagate_field_linearity();
+            self.resolve_remaining_declarations()?;
+            // Now that value constants are separated from module bindings, reject
+            // any value-constant name that collides with a function/struct/enum
+            // (order-independent E0436, spec 10.3:1/10.5:1, RUE-239).
+            self.check_const_cross_kind_collisions()?;
+            self.capture_resolved_declaration_type_dependencies();
+            self.declaration_type_observer = None;
+            Ok(())
+        })();
+        self.declaration_binding_active = false;
+        debug_assert!(self.const_resolution_in_progress.is_empty());
+        result
     }
 
     pub(super) fn capture_resolved_declaration_type_dependencies(&mut self) {
@@ -1070,11 +1078,6 @@ impl<'a> Sema<'a> {
 
     /// Resolve @copy validation, destructors, functions, and methods.
     pub(crate) fn resolve_remaining_declarations(&mut self) -> CompileResult<()> {
-        // Pre-scan const declarations: collection is dependency-ordered
-        // (an initializer may reference a constant declared later, even in
-        // another file), so all pending declarations must be known up front.
-        let mut const_collector = self.prescan_const_declarations()?;
-
         // First pass: collect all declarations and validate @copy structs
         for (inst_ref, inst) in self.rir.iter() {
             match &inst.data {
@@ -1159,7 +1162,7 @@ impl<'a> Sema<'a> {
                     // May already be collected: another constant's
                     // initializer can pull declarations in early (the
                     // collector is dependency-ordered, RUE-171).
-                    self.collect_const_by_key((inst.span.file_id, *name), &mut const_collector)?;
+                    self.collect_const_by_key((inst.span.file_id, *name))?;
                 }
 
                 _ => {}
@@ -1624,41 +1627,39 @@ impl<'a> Sema<'a> {
     ///   distinct modules may each define the same source name and expose it
     ///   through module-qualified access.
     ///
-    /// Collection is on-demand: an initializer that references another
-    /// not-yet-collected constant collects that constant first (see
-    /// [`ConstCollector`]), so declaration order — within a file or across
-    /// files — does not matter. Cyclic initializers are E0461.
-    fn collect_const_by_key(
-        &mut self,
-        key: (FileId, Spur),
-        st: &mut ConstCollector,
-    ) -> CompileResult<()> {
-        if st.done.contains(&key) {
+    /// Collection is dependency-driven: an initializer that references another
+    /// not-yet-collected constant resolves that indexed declaration first, so
+    /// declaration order does not matter. Cyclic initializers are E0461.
+    fn collect_const_by_key(&mut self, key: (FileId, Spur)) -> CompileResult<()> {
+        debug_assert!(self.declaration_binding_active);
+        if self.constants_by_file_name.contains_key(&key) || self.module_bindings.contains_key(&key)
+        {
             return Ok(());
         }
-        if st.in_progress.contains(&key) {
+        if self.const_resolution_in_progress.contains(&key) {
             // Re-entering a key that is mid-evaluation: the initializers
             // form a cycle. Report it (never loop on it).
-            let pos = st
-                .in_progress
+            let pos = self
+                .const_resolution_in_progress
                 .iter()
                 .position(|k| k == &key)
                 .expect("key was just found in in_progress");
-            let cycle = st.in_progress[pos..]
+            let cycle = self.const_resolution_in_progress[pos..]
                 .iter()
                 .chain(std::iter::once(&key))
                 .map(|(_, n)| self.interner.resolve(n))
                 .collect::<Vec<_>>()
                 .join(" -> ");
-            let span = st.pending[&key].span;
+            let span = self
+                .indexed_const(key)
+                .expect("in-progress constant must have an indexed declaration")
+                .span;
             return Err(CompileError::new(
                 ErrorKind::ConstInitializerCycle { cycle },
                 span,
             ));
         }
-        // Not a pending const declaration (already-collected keys were
-        // handled above): nothing to do.
-        let Some(p) = st.pending.get(&key).copied() else {
+        let Some(p) = self.indexed_const(key) else {
             return Ok(());
         };
         let (file_id, name) = key;
@@ -1685,12 +1686,11 @@ impl<'a> Sema<'a> {
             .and_then(|sym| self.resolve_type(sym, p.span).ok())
             .filter(Type::is_integer);
 
-        st.in_progress.push(key);
-        let outcome = self.eval_const_initializer(p.init, file_id, st, declared_ty);
+        self.const_resolution_in_progress.push(key);
+        let outcome = self.eval_const_initializer(p.init, file_id, declared_ty);
         self.named_const_dependency_source = previous_dependency_source;
-        st.in_progress.pop();
+        self.const_resolution_in_progress.pop();
         let outcome = outcome?;
-        st.done.insert(key);
 
         match outcome {
             ConstInit::Module(module_ty) => {
@@ -1731,7 +1731,7 @@ impl<'a> Sema<'a> {
                 // Preserve the old bare-name lookup only when this source name
                 // is globally unique. Same-named value constants in distinct
                 // files are resolved through their defining file/module.
-                if st.by_name.get(&name).is_some_and(|keys| keys.len() == 1) {
+                if self.declaration_index.const_name_is_globally_unique(name) {
                     self.constants.insert(name, info);
                 } else {
                     self.constants.remove(&name);
@@ -1741,93 +1741,74 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
-    /// Pre-scan the RIR for every `const` declaration, building the
-    /// [`ConstCollector`] worklist. Two declarations of the same name in the
-    /// same file are always a duplicate (E0418), whatever their kinds.
-    /// Best-effort collect the single value constant `name` (referenced from
-    /// `file_id`) on demand, returning its value if it resolves.
-    ///
-    /// Struct field and enum payload array lengths are resolved during
-    /// declaration gathering, *before* the main const-collection pass in
-    /// `resolve_remaining_declarations`. So `struct S { xs: [i32; N] }` used to
-    /// reject `N` (E0481) even though the same `const` resolves fine in `let`
-    /// and signature positions, which run after collection (RUE-587). This
-    /// collects just the named const (and its dependencies) into
-    /// `constants_by_file_name` so the field length can resolve it.
-    ///
-    /// A fresh collector is fine: `collect_const_by_key` writes results into
-    /// `constants_by_file_name`, and the main pass skips consts already present
-    /// there. Any collection error (e.g. the const's initializer names a
-    /// comptime function not declared until the later pass) is swallowed — the
-    /// caller then falls back to E0481, and the same const is collected and its
-    /// error reported deterministically by the main pass.
-    pub(crate) fn try_collect_const_on_demand(
+    /// During declaration binding, resolve an indexed constant on demand.
+    /// After the `BoundSema` boundary, the namespace is closed and a missing
+    /// entry is an authoritative lookup miss.
+    pub(crate) fn try_resolve_indexed_const_during_binding(
         &mut self,
         name: Spur,
         file_id: FileId,
     ) -> Option<ConstValue> {
-        let mut collector = self.prescan_const_declarations().ok()?;
-        let _ = self.ensure_const_collected(name, file_id, &mut collector);
+        debug_assert!(self.declaration_binding_active);
+        let _ = self.ensure_const_collected(name, file_id);
         self.resolve_const_info_in_file(name, file_id)
             .map(|info| info.value)
     }
 
-    fn prescan_const_declarations(&mut self) -> CompileResult<ConstCollector> {
-        let mut st = ConstCollector {
-            pending: HashMap::new(),
-            by_name: HashMap::new(),
-            done: HashSet::new(),
-            in_progress: Vec::new(),
+    fn indexed_const(&self, key: (FileId, Spur)) -> Option<PendingConst> {
+        let declaration = *self
+            .declaration_index
+            .const_candidates(key.0, key.1)
+            .first()?;
+        let inst = self.rir.get(declaration);
+        let InstData::ConstDecl {
+            is_pub, ty, init, ..
+        } = inst.data
+        else {
+            unreachable!("constant declaration index contains only ConstDecl instructions")
         };
-        for (_, inst) in self.rir.iter() {
-            if let InstData::ConstDecl {
-                is_pub,
-                name,
-                ty,
-                init,
-                ..
-            } = &inst.data
-            {
-                let key = (inst.span.file_id, *name);
-                let pending = PendingConst {
-                    is_pub: *is_pub,
-                    ty_sym: *ty,
-                    init: *init,
-                    span: inst.span,
-                };
-                if st.pending.insert(key, pending).is_some() {
-                    return Err(CompileError::new(
-                        ErrorKind::DuplicateConstant {
-                            name: self.interner.resolve(name).to_string(),
-                            kind: "constant".to_string(),
-                        },
-                        inst.span,
-                    ));
-                }
-                st.by_name.entry(*name).or_default().push(key);
-            }
-        }
-        Ok(st)
+        Some(PendingConst {
+            is_pub,
+            ty_sym: ty,
+            init,
+            span: inst.span,
+        })
     }
 
-    /// Collect (on demand) every constant declaration that the name `name`,
-    /// referenced from `referencing_file`, could resolve to: the same-file
-    /// declaration plus any globally unique fallback declaration whose defining
-    /// file may not have been walked yet — command-line file order is
-    /// arbitrary.
+    fn validate_indexed_const_declarations(&self) -> CompileResult<()> {
+        let mut seen = HashSet::new();
+        for &declaration in self.declaration_index.all_const_candidates() {
+            let inst = self.rir.get(declaration);
+            let InstData::ConstDecl { name, .. } = inst.data else {
+                unreachable!("constant declaration index contains only ConstDecl instructions")
+            };
+            if !seen.insert((inst.span.file_id, name)) {
+                return Err(CompileError::new(
+                    ErrorKind::DuplicateConstant {
+                        name: self.interner.resolve(&name).to_string(),
+                        kind: "constant".to_string(),
+                    },
+                    inst.span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Collect the same-file constant declaration named at a declaration-time
+    /// reference site. Cross-module constants resolve through module members.
     fn ensure_const_collected(
         &mut self,
         name: Spur,
         referencing_file: FileId,
-        st: &mut ConstCollector,
     ) -> CompileResult<()> {
         let same_file_key = (referencing_file, name);
-        if st.pending.contains_key(&same_file_key) {
-            self.collect_const_by_key(same_file_key, st)?;
-        }
-        let keys = st.by_name.get(&name).cloned().unwrap_or_default();
-        for key in keys {
-            self.collect_const_by_key(key, st)?;
+        if !self
+            .declaration_index
+            .const_candidates(referencing_file, name)
+            .is_empty()
+        {
+            self.collect_const_by_key(same_file_key)?;
         }
         Ok(())
     }
@@ -1842,7 +1823,6 @@ impl<'a> Sema<'a> {
         &mut self,
         init: InstRef,
         file_id: FileId,
-        st: &mut ConstCollector,
         declared_ty: Option<Type>,
     ) -> CompileResult<ConstInit> {
         let init_inst = self.rir.get(init);
@@ -1907,7 +1887,7 @@ impl<'a> Sema<'a> {
             // A name: another module binding (alias) or a value constant.
             InstData::VarRef { name } => {
                 let name = *name;
-                self.ensure_const_collected(name, file_id, st)?;
+                self.ensure_const_collected(name, file_id)?;
                 if let Some(binding) = self.module_bindings.get(&(file_id, name)).cloned() {
                     self.record_named_const_dependency(
                         super::NamedConstDependencyTargetEvent::ModuleBinding {
@@ -1959,7 +1939,7 @@ impl<'a> Sema<'a> {
                 }
                 // Not a constant: let the comptime engine decide (it rejects
                 // unknown names and type names as non-evaluable).
-                self.eval_const_value_expr(init, file_id, st, span, declared_ty)
+                self.eval_const_value_expr(init, file_id, span, declared_ty)
             }
 
             // Member access: `base.member` where `base` is a module —
@@ -1967,12 +1947,12 @@ impl<'a> Sema<'a> {
             // `const X: i32 = m.ANSWER;` (a member value constant).
             InstData::FieldGet { base, field } => {
                 let (base, field) = (*base, *field);
-                match self.eval_const_initializer(base, file_id, st, None)? {
+                match self.eval_const_initializer(base, file_id, None)? {
                     ConstInit::Module(module_ty) => {
                         let module_id = module_ty
                             .as_module()
                             .expect("ConstInit::Module holds a module type");
-                        self.resolve_module_member_const(module_id, field, file_id, span, st)
+                        self.resolve_module_member_const(module_id, field, file_id, span)
                     }
                     ConstInit::Value(_) => Err(CompileError::new(
                         ErrorKind::ConstExprNotSupported {
@@ -1996,13 +1976,13 @@ impl<'a> Sema<'a> {
             } => {
                 let (receiver, method, args_start, args_len) =
                     (*receiver, *method, *args_start, *args_len);
-                match self.eval_const_initializer(receiver, file_id, st, None)? {
+                match self.eval_const_initializer(receiver, file_id, None)? {
                     ConstInit::Module(module_ty) => {
                         let module_id = module_ty
                             .as_module()
                             .expect("ConstInit::Module holds a module type");
                         self.eval_module_member_comptime_call(
-                            module_id, method, args_start, args_len, file_id, span, st,
+                            module_id, method, args_start, args_len, file_id, span,
                         )
                     }
                     ConstInit::Value(_) => Err(CompileError::new(
@@ -2025,7 +2005,7 @@ impl<'a> Sema<'a> {
 
             // Everything else: literals, arithmetic, comptime blocks, ... —
             // evaluated by the comptime engine.
-            _ => self.eval_const_value_expr(init, file_id, st, span, declared_ty),
+            _ => self.eval_const_value_expr(init, file_id, span, declared_ty),
         }
     }
 
@@ -2072,7 +2052,6 @@ impl<'a> Sema<'a> {
         &mut self,
         init: InstRef,
         file_id: FileId,
-        st: &mut ConstCollector,
         span: Span,
         declared_ty: Option<Type>,
     ) -> CompileResult<ConstInit> {
@@ -2080,7 +2059,7 @@ impl<'a> Sema<'a> {
         // lookup only consults the finished `constants` table, so anything
         // this initializer names must be collected first. (Also required
         // before type inference so referenced constants' types are known.)
-        self.ensure_const_init_deps_collected(init, file_id, st)?;
+        self.ensure_const_init_deps_collected(init, file_id)?;
 
         // Pre-resolve module-member accesses (`m.CONST`) appearing as
         // operands. The engine can't resolve them itself (no file/collector
@@ -2088,7 +2067,7 @@ impl<'a> Sema<'a> {
         // `FieldGet` instruction (RUE-267). Runs before type inference so the
         // members' constants are collected for `infer_const_init_types`.
         let mut const_module_members: HashMap<InstRef, ConstValue> = HashMap::new();
-        self.collect_const_module_members(init, file_id, st, &mut const_module_members)?;
+        self.collect_const_module_members(init, file_id, &mut const_module_members)?;
 
         // Infer operand types for the initializer expression so the engine
         // checks arithmetic at the operand type instead of the raw-i64
@@ -2322,18 +2301,17 @@ impl<'a> Sema<'a> {
         &mut self,
         expr: InstRef,
         file_id: FileId,
-        st: &mut ConstCollector,
     ) -> CompileResult<()> {
         match &self.rir.get(expr).data {
             InstData::VarRef { name } => {
                 let name = *name;
-                self.ensure_const_collected(name, file_id, st)
+                self.ensure_const_collected(name, file_id)
             }
             InstData::Neg { operand }
             | InstData::Not { operand }
             | InstData::BitNot { operand } => {
                 let operand = *operand;
-                self.ensure_const_init_deps_collected(operand, file_id, st)
+                self.ensure_const_init_deps_collected(operand, file_id)
             }
             InstData::Add { lhs, rhs }
             | InstData::Sub { lhs, rhs }
@@ -2354,12 +2332,12 @@ impl<'a> Sema<'a> {
             | InstData::Shl { lhs, rhs }
             | InstData::Shr { lhs, rhs } => {
                 let (lhs, rhs) = (*lhs, *rhs);
-                self.ensure_const_init_deps_collected(lhs, file_id, st)?;
-                self.ensure_const_init_deps_collected(rhs, file_id, st)
+                self.ensure_const_init_deps_collected(lhs, file_id)?;
+                self.ensure_const_init_deps_collected(rhs, file_id)
             }
             InstData::Comptime { expr: inner } => {
                 let inner = *inner;
-                self.ensure_const_init_deps_collected(inner, file_id, st)
+                self.ensure_const_init_deps_collected(inner, file_id)
             }
             InstData::Block { extra_start, len } => {
                 let stmt_refs: Vec<InstRef> = self
@@ -2369,13 +2347,13 @@ impl<'a> Sema<'a> {
                     .map(|&raw| InstRef::from_raw(raw))
                     .collect();
                 for stmt_ref in stmt_refs {
-                    self.ensure_const_init_deps_collected(stmt_ref, file_id, st)?;
+                    self.ensure_const_init_deps_collected(stmt_ref, file_id)?;
                 }
                 Ok(())
             }
             InstData::Alloc { init, .. } => {
                 let init = *init;
-                self.ensure_const_init_deps_collected(init, file_id, st)
+                self.ensure_const_init_deps_collected(init, file_id)
             }
             _ => Ok(()),
         }
@@ -2397,7 +2375,6 @@ impl<'a> Sema<'a> {
         &mut self,
         expr: InstRef,
         file_id: FileId,
-        st: &mut ConstCollector,
         out: &mut HashMap<InstRef, ConstValue>,
     ) -> CompileResult<()> {
         match &self.rir.get(expr).data {
@@ -2407,7 +2384,7 @@ impl<'a> Sema<'a> {
                 // A non-module base (or an unresolvable one) is left for the
                 // engine to reject, matching the pre-fix behavior.
                 if let Ok(ConstInit::Module(module_ty)) =
-                    self.eval_const_initializer(base, file_id, st, None)
+                    self.eval_const_initializer(base, file_id, None)
                 {
                     let module_id = module_ty
                         .as_module()
@@ -2416,7 +2393,7 @@ impl<'a> Sema<'a> {
                     // Privacy errors (E0706) propagate; a re-export member
                     // yields a module, not a value, so it stays unrecorded.
                     if let ConstInit::Value(value) =
-                        self.resolve_module_member_const(module_id, field, file_id, span, st)?
+                        self.resolve_module_member_const(module_id, field, file_id, span)?
                     {
                         out.insert(expr, value);
                     }
@@ -2427,7 +2404,7 @@ impl<'a> Sema<'a> {
             | InstData::Not { operand }
             | InstData::BitNot { operand } => {
                 let operand = *operand;
-                self.collect_const_module_members(operand, file_id, st, out)
+                self.collect_const_module_members(operand, file_id, out)
             }
             InstData::Add { lhs, rhs }
             | InstData::Sub { lhs, rhs }
@@ -2448,12 +2425,12 @@ impl<'a> Sema<'a> {
             | InstData::Shl { lhs, rhs }
             | InstData::Shr { lhs, rhs } => {
                 let (lhs, rhs) = (*lhs, *rhs);
-                self.collect_const_module_members(lhs, file_id, st, out)?;
-                self.collect_const_module_members(rhs, file_id, st, out)
+                self.collect_const_module_members(lhs, file_id, out)?;
+                self.collect_const_module_members(rhs, file_id, out)
             }
             InstData::Comptime { expr: inner } => {
                 let inner = *inner;
-                self.collect_const_module_members(inner, file_id, st, out)
+                self.collect_const_module_members(inner, file_id, out)
             }
             InstData::Block { extra_start, len } => {
                 let stmt_refs: Vec<InstRef> = self
@@ -2463,13 +2440,13 @@ impl<'a> Sema<'a> {
                     .map(|&raw| InstRef::from_raw(raw))
                     .collect();
                 for stmt_ref in stmt_refs {
-                    self.collect_const_module_members(stmt_ref, file_id, st, out)?;
+                    self.collect_const_module_members(stmt_ref, file_id, out)?;
                 }
                 Ok(())
             }
             InstData::Alloc { init, .. } => {
                 let init = *init;
-                self.collect_const_module_members(init, file_id, st, out)
+                self.collect_const_module_members(init, file_id, out)
             }
             _ => Ok(()),
         }
@@ -2486,7 +2463,6 @@ impl<'a> Sema<'a> {
         member: Spur,
         accessing_file: FileId,
         span: Span,
-        st: &mut ConstCollector,
     ) -> CompileResult<ConstInit> {
         let module_def = self.module_registry.get_def(module_id);
         let import_path = module_def.import_path.clone();
@@ -2505,7 +2481,7 @@ impl<'a> Sema<'a> {
         // Collect the member's declaration on demand (the module's file may
         // appear later in the declaration walk).
         if let Some(mfile) = module_file_id {
-            self.collect_const_by_key((mfile, member), st)?;
+            self.collect_const_by_key((mfile, member))?;
         }
 
         // A module-binding member (re-export or alias) yields its module.
@@ -2644,7 +2620,6 @@ impl<'a> Sema<'a> {
         args_len: u32,
         accessing_file: FileId,
         span: Span,
-        st: &mut ConstCollector,
     ) -> CompileResult<ConstInit> {
         let module_def = self.module_registry.get_def(module_id);
         let import_path = module_def.import_path.clone();
@@ -2741,12 +2716,11 @@ impl<'a> Sema<'a> {
         let mut callee_types: HashMap<Spur, Type> = HashMap::new();
         let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
         for (i, arg) in args.iter().enumerate() {
-            self.ensure_const_init_deps_collected(arg.value, accessing_file, st)?;
+            self.ensure_const_init_deps_collected(arg.value, accessing_file)?;
             let mut const_module_members: HashMap<InstRef, ConstValue> = HashMap::new();
             self.collect_const_module_members(
                 arg.value,
                 accessing_file,
-                st,
                 &mut const_module_members,
             )?;
             let resolved_types: HashMap<InstRef, Type> = HashMap::new();
@@ -3044,33 +3018,13 @@ impl<'a> Sema<'a> {
     }
 }
 
-/// A constant declaration captured by the pre-scan, waiting to be collected.
+/// A constant declaration projected from the canonical RIR declaration index.
 #[derive(Clone, Copy)]
 struct PendingConst {
     is_pub: bool,
     ty_sym: Option<Spur>,
     init: InstRef,
     span: Span,
-}
-
-/// State for dependency-ordered constant collection (RUE-171).
-///
-/// Constants may reference other constants regardless of declaration order
-/// (including across files, where command-line order is arbitrary), so
-/// collection is on-demand: evaluating an initializer that names another
-/// not-yet-collected constant first collects that constant recursively.
-/// `in_progress` is the active evaluation stack; re-entering a key already
-/// on the stack is a cycle, reported as E0461 (never looped on).
-pub(crate) struct ConstCollector {
-    /// Every const declaration in the program, keyed per-file (two files may
-    /// declare module bindings of the same name, RUE-113).
-    pending: HashMap<(FileId, Spur), PendingConst>,
-    /// name -> declaring keys, for resolving cross-file references.
-    by_name: HashMap<Spur, Vec<(FileId, Spur)>>,
-    /// Keys whose collection finished.
-    done: HashSet<(FileId, Spur)>,
-    /// Active evaluation stack (cycle detection).
-    in_progress: Vec<(FileId, Spur)>,
 }
 
 /// What a constant initializer evaluated to.
