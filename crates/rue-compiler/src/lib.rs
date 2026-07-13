@@ -1133,9 +1133,11 @@ pub fn compile_frontend_with_options(
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
 ) -> MultiErrorResult<CompileState> {
-    let mut options = CompileOptions::default();
-    options.opt_level = opt_level;
-    options.preview_features = preview_features.clone();
+    let options = CompileOptions {
+        opt_level,
+        preview_features: preview_features.clone(),
+        ..CompileOptions::default()
+    };
     query_canonical_frontend_source(source, &options)
         .map(CanonicalFrontendArtifacts::into_compile_state)
 }
@@ -2459,8 +2461,10 @@ pub fn compile_to_cfg_with_preview_features(
     source: &str,
     preview_features: &PreviewFeatures,
 ) -> MultiErrorResult<CompileState> {
-    let mut options = CompileOptions::default();
-    options.preview_features = preview_features.clone();
+    let options = CompileOptions {
+        preview_features: preview_features.clone(),
+        ..CompileOptions::default()
+    };
     query_canonical_frontend_source(source, &options)
         .map(CanonicalFrontendArtifacts::into_compile_state)
 }

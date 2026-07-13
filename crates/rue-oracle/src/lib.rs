@@ -83,8 +83,10 @@ fn compile_to_cfg_with_preview_features(
     source: &str,
     preview_features: &PreviewFeatures,
 ) -> Result<CompileState, CompileErrors> {
-    let mut options = CompileOptions::default();
-    options.preview_features = preview_features.clone();
+    let options = CompileOptions {
+        preview_features: preview_features.clone(),
+        ..CompileOptions::default()
+    };
     query_canonical_frontend_source(source, &options).map(|frontend| frontend.into_compile_state())
 }
 
