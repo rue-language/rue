@@ -113,6 +113,18 @@ impl<'a> AstGen<'a> {
         }
     }
 
+    /// Current instruction count for read-only multi-module presentation metadata.
+    #[doc(hidden)]
+    pub fn instruction_len(&self) -> usize {
+        self.rir.len()
+    }
+
+    /// Current payload word count for read-only multi-module presentation metadata.
+    #[doc(hidden)]
+    pub fn extra_len(&self) -> usize {
+        self.rir.extra_len()
+    }
+
     /// Finish a normalized multi-module lowering session.
     #[doc(hidden)]
     pub fn finish(self) -> Rir {
