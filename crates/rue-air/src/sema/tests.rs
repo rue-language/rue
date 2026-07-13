@@ -25,8 +25,9 @@ mod tests {
         let parser = Parser::new(tokens, interner);
         let (ast, mut interner) = parser.parse()?;
 
-        let astgen = AstGen::new(&ast, &mut interner);
-        let rir = astgen.generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
 
         let sema = Sema::new(&rir, &mut interner, preview_features);
         sema.analyze_all()
@@ -43,7 +44,9 @@ mod tests {
             items.extend(ast.items);
             interner = next;
         }
-        let rir = AstGen::new(&rue_parser::Ast { items }, &mut interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&items);
+        let rir = astgen.finish();
         (rir, interner)
     }
 
@@ -308,7 +311,9 @@ mod tests {
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
         let (ast, mut interner) = parser.parse().unwrap();
-        let rir = AstGen::new(&ast, &mut interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let main = interner.get("main").unwrap();
         let body_span = rir
             .iter()
@@ -483,7 +488,9 @@ mod tests {
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
         let (ast, mut interner) = parser.parse().unwrap();
-        let rir = AstGen::new(&ast, &mut interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
 
         let bound = Sema::new(&rir, &mut interner, PreviewFeatures::new())
             .bind_declarations()
@@ -516,7 +523,9 @@ mod tests {
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
         let (ast, mut interner) = parser.parse().unwrap();
-        let rir = AstGen::new(&ast, &mut interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
 
         let bound = Sema::new(&rir, &mut interner, PreviewFeatures::new())
             .bind_declarations()
@@ -549,7 +558,9 @@ mod tests {
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
         let (ast, mut interner) = parser.parse().unwrap();
-        let rir = AstGen::new(&ast, &mut interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
 
         let bound = Sema::new(&rir, &mut interner, PreviewFeatures::new())
             .bind_declarations()
@@ -2189,10 +2200,11 @@ mod tests {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().unwrap();
+        let (ast, interner) = parser.parse().unwrap();
 
-        let astgen = AstGen::new(&ast, &mut interner);
-        let rir = astgen.generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
 
         // Leak both to get 'static lifetime for testing
         let rir = Box::leak(Box::new(rir));

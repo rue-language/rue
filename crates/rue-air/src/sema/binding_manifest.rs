@@ -1557,7 +1557,9 @@ mod tests {
             .tokenize()
             .map_err(CompileErrors::from_error)?;
         let (ast, interner) = Parser::new(tokens, interner).parse()?;
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let bound = Sema::new(&rir, &interner, PreviewFeatures::new()).bind_declarations()?;
         Ok(bound.binding_manifest().clone())
     }
@@ -1573,7 +1575,9 @@ mod tests {
             items.extend(ast.items);
             interner = next;
         }
-        let rir = AstGen::new(&rue_parser::Ast { items }, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&items);
+        let rir = astgen.finish();
         (rir, interner)
     }
 
@@ -1588,7 +1592,9 @@ mod tests {
     > {
         let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let bound = Sema::new(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();
@@ -1652,7 +1658,9 @@ mod tests {
 
         let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let installed = Sema::new(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
             .unwrap()
@@ -1695,7 +1703,9 @@ mod tests {
             .tokenize()
             .map_err(CompileErrors::from_error)?;
         let (ast, interner) = Parser::new(tokens, interner).parse()?;
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let mut sema = Sema::new(&rir, &interner, PreviewFeatures::new());
         sema.set_root_file_id(FileId::DEFAULT);
         sema.set_file_paths(HashMap::from([
@@ -1767,7 +1777,9 @@ mod tests {
                 .tokenize()
                 .unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
-        let mut rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let mut rir = astgen.finish();
         let method = rir
             .iter()
             .find_map(|(reference, inst)| match inst.data {
@@ -1822,7 +1834,9 @@ mod tests {
         let source = "fn helper(x: i32) -> i32 { x + 1 } fn main() -> i32 { helper(41) }";
         let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let direct = Sema::new(&rir, &interner, PreviewFeatures::new())
             .analyze_all()
             .unwrap();
@@ -1860,7 +1874,9 @@ mod tests {
     fn manifest_scan_is_lazy_and_materialized_only_on_request() {
         let (tokens, interner) = Lexer::new("fn main() {}").tokenize().unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let bound = Sema::new(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();
@@ -1888,7 +1904,9 @@ mod tests {
             .tokenize()
             .unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
 
         let shells = Sema::new(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
@@ -1990,7 +2008,9 @@ mod tests {
         let source = "struct Box { fn map(self, comptime T: type, value: T) -> T { value } fn make(value: i32) -> i32 { value } } const alias = Box.make; drop fn Box(self) {}";
         let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let shells = Sema::new(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
             .unwrap();
@@ -2019,7 +2039,9 @@ mod tests {
         let source = "fn broken(value: Missing) -> i32 { 0 } fn main() {}";
         let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let direct = Sema::new(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .err()
@@ -2039,7 +2061,9 @@ mod tests {
             .tokenize()
             .unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
 
         let direct = Sema::new(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()

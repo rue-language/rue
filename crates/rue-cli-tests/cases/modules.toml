@@ -432,10 +432,9 @@ error_contains = ["E0704", "does_not_exist"]
 
 # Multi-file compile where a NON-FIRST file matches on a module-qualified
 # enum path (`m.Color.Green`). The Path match-arm pattern embeds a module
-# InstRef that Rir::merge must renumber along with everything else; it used
-# to be left pointing into the first file's instruction space (RUE-130
-# item 9 — latent today because Sema resolves the enum globally, but this
-# pins the user-visible behavior).
+# InstRef that must remain in the canonical multi-module instruction space
+# (RUE-130 item 9 — latent today because Sema resolves the enum globally, but
+# this pins the user-visible behavior).
 [[case]]
 name = "qualified_enum_pattern_in_second_file"
 files = [

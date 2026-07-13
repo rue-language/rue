@@ -350,7 +350,9 @@ mod tests {
         let (tokens, interner) = lexer.tokenize().expect("fixture should lex");
         let parser = Parser::new(tokens, interner);
         let (ast, mut interner) = parser.parse().expect("fixture should parse");
-        let rir = AstGen::new(&ast, &mut interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let output = Sema::new(&rir, &mut interner, PreviewFeatures::new())
             .analyze_all()
             .expect("fixture should analyze");
