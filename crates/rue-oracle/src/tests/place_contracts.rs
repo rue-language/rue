@@ -24,7 +24,7 @@ fn expect_flow_unsupported<T>(result: Step<T>) -> Unsupported {
 
 #[test]
 fn flattened_parameter_padding_is_a_semantic_gap_but_oob_is_a_contract_failure() {
-    let state = compile_to_cfg(
+    let state = query_cfg_state(
         "struct Pair { a: i32, b: i32 }
         fn take(p: Pair) -> i32 { p.a + p.b }
         fn main() -> i32 { take(Pair { a: 1, b: 2 }) }",
@@ -86,7 +86,7 @@ fn text_projection_and_inout_forwarding_are_valid_program_model_gaps() {
 
 #[test]
 fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
-    let state = compile_to_cfg(
+    let state = query_cfg_state(
         "struct Pair { a: i32, b: i32 }
         fn read(p: Pair) -> i32 { p.a }
         fn main() -> i32 { read(Pair { a: 1, b: 2 }) }",
@@ -138,7 +138,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         "a projected by-value parameter is not caller-writable storage"
     );
 
-    let ordinary_state = compile_to_cfg(
+    let ordinary_state = query_cfg_state(
         "fn identity(value: i32) -> i32 { value }
         fn main() -> i32 { identity(7) }",
     )
@@ -179,7 +179,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
 #[test]
 fn legacy_convenience_mutation_instructions_are_contract_failures() {
     for opcode in ["FieldSet", "IndexSet", "ParamFieldSet", "ParamIndexSet"] {
-        let mut state = compile_to_cfg(
+        let mut state = query_cfg_state(
             "struct Pair { a: i32, b: i32 }
             fn consume_pair(p: Pair) -> i32 { p.a }
             fn consume_array(a: [i32; 2]) -> i32 { a[0] }
@@ -277,7 +277,7 @@ fn legacy_convenience_mutation_instructions_are_contract_failures() {
 
 #[test]
 fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
-    let state = compile_to_cfg(
+    let state = query_cfg_state(
         "struct Pair { a: i32, b: i32 }
         fn borrowed(borrow p: Pair) -> i32 { p.a }
         fn writable(inout p: Pair) -> i32 { p.a }
@@ -337,7 +337,7 @@ fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
 fn text_projection_gaps_require_exact_representation_metadata() {
     let mut preview_features = PreviewFeatures::new();
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
-    let view_state = compile_to_cfg_with_preview_features(
+    let view_state = query_cfg_state_with_preview_features(
         r#"fn main() -> i32 {
             let view: str = "view";
             @intCast(view.len())
@@ -385,7 +385,7 @@ fn text_projection_gaps_require_exact_representation_metadata() {
         UnsupportedKind::ContractViolation(ContractViolationKind::NonAggregateProjectionRead)
     );
 
-    let mut owned_state = compile_to_cfg(
+    let mut owned_state = query_cfg_state(
         r#"fn main() -> i32 {
             let s = "owned";
             @intCast(s[0])
@@ -481,7 +481,7 @@ fn text_projection_gap_requires_the_complete_place_chain_to_be_well_typed() {
         }"#;
 
     for invalid_suffix in [false, true] {
-        let mut state = compile_to_cfg(source).expect("projection-metadata probe must compile");
+        let mut state = query_cfg_state(source).expect("projection-metadata probe must compile");
         let mut owned_ty = None;
         for function in &state.functions {
             for value in function
@@ -600,7 +600,7 @@ fn place_write_contracts_precede_rhs_model_gaps() {
         Corruption::SuffixType,
         Corruption::FinalType,
     ] {
-        let mut state = compile_to_cfg(SOURCE).expect("PlaceWrite contract probe must compile");
+        let mut state = query_cfg_state(SOURCE).expect("PlaceWrite contract probe must compile");
         let write_index = state
             .functions
             .iter()
@@ -698,7 +698,7 @@ fn place_read_base_contract_precedes_index_model_gap() {
     );
 
     for param_base in [false, true] {
-        let mut state = compile_to_cfg(SOURCE).expect("PlaceRead base probe must compile");
+        let mut state = query_cfg_state(SOURCE).expect("PlaceRead base probe must compile");
         let read_index = state
             .functions
             .iter()
@@ -765,7 +765,7 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
             let boxed = UnitBox { value: () };
             if boxed.value == () { 42 } else { 0 }
         }";
-    let mut state = compile_to_cfg(SOURCE).expect("zero-sized place probe must compile");
+    let mut state = query_cfg_state(SOURCE).expect("zero-sized place probe must compile");
     let main_index = state
         .functions
         .iter()
@@ -856,7 +856,7 @@ fn whole_place_write_requires_exact_type_and_writable_storage() {
     );
 
     for nonwritable_param in [false, true] {
-        let mut state = compile_to_cfg(SOURCE).expect("whole PlaceWrite probe must compile");
+        let mut state = query_cfg_state(SOURCE).expect("whole PlaceWrite probe must compile");
         let write_index = state
             .functions
             .iter()
@@ -940,7 +940,7 @@ fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
         }";
     let mut preview_features = PreviewFeatures::new();
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
-    let mut state = compile_to_cfg_with_preview_features(SOURCE, &preview_features)
+    let mut state = query_cfg_state_with_preview_features(SOURCE, &preview_features)
         .expect("whole PlaceRead probe must compile");
     let main_index = state
         .functions

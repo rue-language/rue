@@ -50,6 +50,18 @@ compile_stderr_contains = ["E0201", "bad.rue:", "undefined variable 'missing'"]
 compile_stdout_not_contains = ["=== RIR ==="]
 
 [[case]]
+name = "emit_rir_multifile_errors_follow_discovery_not_logical_order"
+description = "RUE-736: session-backed emit diagnostics retain caller discovery order when logical module order differs."
+files = [
+    { path = "z-root.rue", source = "fn main() { let # = 1; }\n" },
+    { path = "a-helper.rue", source = "fn helper() { let # = 2; }\n" },
+]
+args = ["--emit", "rir", "z-root.rue", "a-helper.rue"]
+compile_fail = true
+compile_stderr_contains = ["z-root.rue:", "let # = 1", "a-helper.rue:", "let # = 2"]
+compile_stdout_not_contains = ["=== RIR ==="]
+
+[[case]]
 name = "emit_air_warnings_not_dropped"
 description = "Warnings were silently dropped in all --emit modes (RUE-130 item 3)."
 files = [{ path = "main.rue", source = """
@@ -135,8 +147,8 @@ compile_stderr_not_contains = ["error[E1400]", "-->"]
 compile_stdout_not_contains = ["=== Tokens"]
 
 # RUE-352: `-j`/`--jobs` was silently ignored under --emit. The jobs setting was
-# only applied inside compile_multi_file_with_options, which the --emit path
-# never calls, so `--emit asm -j1` ran multi-threaded. The pool config is now
+# only applied inside the former batch compatibility path, which the --emit
+# mode bypassed, so `--emit asm -j1` ran multi-threaded. The pool config is now
 # hoisted into main() ahead of both paths. This case pins that --emit still
 # produces asm when a jobs count is requested (and that it doesn't panic on a
 # double thread-pool init).

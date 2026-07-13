@@ -706,8 +706,7 @@ where
 #[cfg(test)]
 mod tests {
     use rue_compiler::{
-        CompileOptions, FileId, SourceFile, SourceMetadata, SourceSnapshot,
-        parse_source_snapshot_for_ast_presentation, query_canonical_frontend,
+        CompileOptions, CompilerSession, SourceSnapshot, parse_source_snapshot_for_ast_presentation,
     };
     use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -719,24 +718,13 @@ mod tests {
         let source = include_str!("main.rs");
         assert!(
             !source.contains(&retired_type),
-            "emit paths must query CanonicalFrontendSession directly"
+            "emit paths must query CompilerSession directly"
         );
     }
 
     #[test]
     fn real_compiler_phase_spans_preserve_leaf_boundaries() {
-        let sources = vec![SourceFile::new(
-            "main.rue",
-            "fn main() -> i32 { 42 }",
-            FileId::new(1),
-        )];
-        let metadata = SourceMetadata::from_sources(
-            &sources,
-            FileId::new(1),
-            std::collections::HashMap::new(),
-        )
-        .unwrap();
-        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+        let snapshot = SourceSnapshot::single("main.rue", "fn main() -> i32 { 42 }").unwrap();
 
         let direct_data = TimingData::new();
         let direct_subscriber =
@@ -773,7 +761,13 @@ mod tests {
         let session_subscriber =
             tracing_subscriber::registry().with(TimingLayer::new(session_data.clone()));
         tracing::subscriber::with_default(session_subscriber, || {
-            query_canonical_frontend(&snapshot, &CompileOptions::default()).unwrap();
+            let mut session = CompilerSession::new();
+            session.update(&snapshot).into_result().unwrap();
+            {
+                let _span = tracing::info_span!("semantic_astgen").entered();
+                session.rir().unwrap();
+            }
+            session.semantic(&CompileOptions::default()).unwrap();
         });
 
         let session_edges = session_data.parent_edges();
@@ -784,7 +778,7 @@ mod tests {
         ] {
             assert!(
                 session_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
-                "missing {expected:?} in canonical-session edges: {session_edges:?}"
+                "missing {expected:?} in compiler-session edges: {session_edges:?}"
             );
         }
 
@@ -822,23 +816,19 @@ mod tests {
         let compile_subscriber =
             tracing_subscriber::registry().with(TimingLayer::new(compile_data.clone()));
         tracing::subscriber::with_default(compile_subscriber, || {
-            rue_compiler::compile_source_snapshot_with_options(
-                &snapshot,
-                &CompileOptions::default(),
-            )
-            .unwrap();
+            rue_compiler::compile_snapshot(&snapshot, &CompileOptions::default()).unwrap();
         });
 
         let compile_edges = compile_data.parent_edges();
         for child in ["rir_declaration_index", "sema"] {
             assert!(
                 compile_edges.contains(&("compile".to_owned(), child.to_owned())),
-                "missing compile -> {child} in production edges: {compile_edges:?}"
+                "missing compile -> {child} in batch edges: {compile_edges:?}"
             );
         }
         assert!(
             !compile_edges.contains(&("sema".to_owned(), "rir_declaration_index".to_owned())),
-            "the production index and sema spans must remain siblings: {compile_edges:?}"
+            "the batch index and sema spans must remain siblings: {compile_edges:?}"
         );
 
         let compile_timing =

@@ -86,9 +86,9 @@ the CLI and tests. The `rue` crate implements source discovery, module loading,
 file processing, target and optimization selection, emit modes,
 linking, timing, and diagnostic rendering.
 
-Embedding semantic compilation uses the same canonical boundary as the CLI:
+Embedding semantic compilation uses the same session boundary as the CLI:
 construct a `SourceSnapshot` whose `SourceMetadata` explicitly identifies the
-root, physical and logical module paths, update a `CanonicalFrontendSession`,
+root, physical and logical module paths, update a `CompilerSession`,
 and query it with `CompileOptions`. Parser `Ast` values remain available for
 syntax inspection and presentation, but are not semantic compiler inputs; this
 prevents source, module, target, preview-feature, and optimization identity from
@@ -104,7 +104,7 @@ the session evicts its entry. Invalidation planning strongly retains the eight
 most recently inserted plans and both manifests for each plan, evicting the
 oldest plan first. It deliberately uses no weak-key fallback: every retained
 plan continues to own the complete dependency evidence from which it was
-computed. `CanonicalFrontendSessionWork::retention` reports the current
+computed. `CompilerSessionWork::retention` reports the current
 session-owned diagnostic entries, distinct source attempts and bytes, unique
 dependency manifests, and invalidation plans.
 
@@ -113,6 +113,21 @@ Syntax output uses an explicit `ParsedAstPresentation` adapter. It walks the
 retain presentation order without constructing a second parsed or merged
 program. Duplicate, cross-kind, and program-wide `main` legality is implemented
 once by canonical merge candidate validation.
+
+The `rue-compiler` facade mirrors implementation ownership rather than a
+monolithic driver:
+
+- `session` owns publication, invalidation, diagnostics, and immutable query
+  artifacts;
+- `queries` owns supported options, source inputs, work records, and the thin
+  `compile_snapshot` adapter;
+- `backend` owns CFG-to-machine lowering and emit presentation;
+- `linking` owns runtime selection, object linking, and executable output.
+
+Public consumers do not call individual phase implementations. The facade
+exports source/session/query artifacts, diagnostics, presentation helpers, and
+the one-shot executable adapter; structural API inventory tests prevent retired
+drivers and duplicate `compile_*` families from returning.
 
 `rue-error` defines stable error categories, suggestions, warnings, preview
 features, and internal-compiler-error reporting. `rue-span` maps byte spans to

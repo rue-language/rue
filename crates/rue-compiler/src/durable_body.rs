@@ -492,7 +492,7 @@ pub fn convert_semantic_body_exports(
         let [owner_record] = owner_records.as_slice() else {
             return Err(DurableBodyConversionFailure::MissingStableDefinition);
         };
-        let expected_inputs = crate::frontend_session::stable_definition_input_fingerprint(
+        let expected_inputs = crate::session::stable_definition_input_fingerprint(
             merged.definitions().source_snapshot(),
             owner_record,
         )

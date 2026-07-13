@@ -54,7 +54,7 @@ pub struct FrontendRetentionMetrics {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CanonicalFrontendSessionWork {
+pub struct CompilerSessionWork {
     pub updates: usize,
     pub last_parse: ParsedModulesWork,
     pub last_invalidation: ParseInvalidationSummary,
@@ -263,7 +263,7 @@ mod durable_body_integration_tests {
     }
 
     fn durable_candidates(source: &SourceSnapshot) -> Arc<[crate::DurableOrdinaryBody]> {
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(source).into_result().unwrap();
         let semantic = session.semantic(&CompileOptions::default()).unwrap();
         assert!(
@@ -407,7 +407,7 @@ mod durable_body_integration_tests {
             )],
             5,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let semantic = session.semantic(&CompileOptions::default()).unwrap();
         assert!(
@@ -593,7 +593,7 @@ mod durable_body_integration_tests {
             "fn main() -> i32 { let unused = 1; 42 }",
         ] {
             let source = snapshot(&[(1, "/p/main.rue", "main.rue", source)], 1);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             let manifest = session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -994,7 +994,7 @@ pub struct DefinitionQueryRecord {
 }
 
 #[derive(Debug)]
-pub struct CanonicalFrontendUpdate {
+pub struct CompilerSessionUpdate {
     result: Result<Arc<ParsedProgram>, CompileErrors>,
     work: ParsedModulesWork,
     invalidation: ParseInvalidationSummary,
@@ -1002,7 +1002,7 @@ pub struct CanonicalFrontendUpdate {
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
 }
 
-impl CanonicalFrontendUpdate {
+impl CompilerSessionUpdate {
     pub fn result(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
         self.result.as_ref()
     }
@@ -1024,7 +1024,7 @@ impl CanonicalFrontendUpdate {
 }
 
 #[derive(Debug, Default)]
-pub struct CanonicalFrontendSession {
+pub struct CompilerSession {
     parse: CanonicalParseSession,
     published: Option<Arc<ParsedProgram>>,
     published_snapshot: Option<SourceSnapshot>,
@@ -1035,7 +1035,7 @@ pub struct CanonicalFrontendSession {
     import_cache: Vec<ImportCacheEntry>,
     semantic_cache: Vec<SemanticCacheEntry>,
     definition_cache: Vec<DefinitionCacheEntry>,
-    work: CanonicalFrontendSessionWork,
+    work: CompilerSessionWork,
     diagnostic_cache: VecDeque<Arc<FrontendDiagnosticSnapshot>>,
     latest_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
     latest_successful_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
@@ -1079,14 +1079,14 @@ struct DefinitionCacheEntry {
     result: Result<Arc<BoundDefinitionSet>, CompileErrors>,
 }
 
-impl CanonicalFrontendSession {
+impl CompilerSession {
     pub fn new() -> Self {
         Self::default()
     }
     pub fn published(&self) -> Option<&Arc<ParsedProgram>> {
         self.published.as_ref()
     }
-    pub fn work(&self) -> &CanonicalFrontendSessionWork {
+    pub fn work(&self) -> &CompilerSessionWork {
         &self.work
     }
     /// Diagnostic snapshot from the most recently attempted query, whether it
@@ -1231,18 +1231,18 @@ impl CanonicalFrontendSession {
         };
     }
 
-    pub fn update(&mut self, snapshot: &SourceSnapshot) -> CanonicalFrontendUpdate {
+    pub fn update(&mut self, snapshot: &SourceSnapshot) -> CompilerSessionUpdate {
         self.batch_diagnostic_order = None;
         let update = self.parse.update(snapshot);
         self.finish_update(snapshot, update)
     }
 
-    /// Update a fresh session for batch presentation, retaining caller-order
-    /// diagnostics without changing canonical artifact identity.
-    pub(crate) fn update_for_batch(
-        &mut self,
-        snapshot: &SourceSnapshot,
-    ) -> CanonicalFrontendUpdate {
+    /// Publish a snapshot while retaining its caller-selected presentation order.
+    ///
+    /// Query artifacts still use stable module identity. Only syntax and merge
+    /// diagnostic ordering follows [`SourceSnapshot::files`], which is useful
+    /// for command-line and other presentation-oriented consumers.
+    pub fn update_for_presentation(&mut self, snapshot: &SourceSnapshot) -> CompilerSessionUpdate {
         self.batch_diagnostic_order = Some(
             snapshot
                 .files()
@@ -1257,7 +1257,7 @@ impl CanonicalFrontendSession {
         &mut self,
         snapshot: &SourceSnapshot,
         update: crate::CanonicalParseUpdate,
-    ) -> CanonicalFrontendUpdate {
+    ) -> CompilerSessionUpdate {
         self.work.updates += 1;
         let parse_work = update.work();
         let invalidation = update.invalidation().clone();
@@ -1277,7 +1277,7 @@ impl CanonicalFrontendSession {
                 });
                 let downstream_invalidated = self.published.is_some() && !exact;
                 if exact {
-                    CanonicalFrontendUpdate {
+                    CompilerSessionUpdate {
                         result: Ok(self.published.as_ref().unwrap().clone()),
                         work: parse_work,
                         invalidation,
@@ -1307,7 +1307,7 @@ impl CanonicalFrontendSession {
                     self.refresh_retention_metrics();
                     self.published = Some(candidate.clone());
                     self.published_snapshot = Some(snapshot.clone());
-                    CanonicalFrontendUpdate {
+                    CompilerSessionUpdate {
                         result: Ok(candidate),
                         work: parse_work,
                         invalidation,
@@ -1316,7 +1316,7 @@ impl CanonicalFrontendSession {
                     }
                 }
             }
-            Err(errors) => CanonicalFrontendUpdate {
+            Err(errors) => CompilerSessionUpdate {
                 result: Err(errors),
                 work: parse_work,
                 invalidation,
@@ -3111,42 +3111,42 @@ fn stable_declaration_source_endpoint(
 
 fn stable_declaration_type_source_endpoint(
     definitions: &BoundDefinitionSet,
-    source_file: u32,
+    source: u32,
     source_name: &str,
     source_owner_name: Option<&str>,
     source_kind: rue_air::DeclarationTypeDependencySourceKind,
 ) -> Result<StableDefinitionKey, CompileErrors> {
     use rue_air::DeclarationTypeDependencySourceKind as K;
     match source_kind {
-        K::Function => stable_free_function_endpoint(definitions, source_file, source_name),
+        K::Function => stable_free_function_endpoint(definitions, source, source_name),
         K::Method | K::AssociatedFunction => stable_named_method_endpoint(
             definitions,
-            source_file,
+            source,
             source_owner_name.unwrap_or(""),
             source_name,
         ),
         K::Destructor => stable_named_destructor_endpoint(
             definitions,
-            source_file,
+            source,
             source_owner_name.unwrap_or(source_name),
         ),
         K::Struct => stable_top_level_endpoint(
             definitions,
-            source_file,
+            source,
             source_name,
             StableDefinitionNamespace::Type,
             StableDefinitionKind::Struct,
         ),
         K::Enum => stable_top_level_endpoint(
             definitions,
-            source_file,
+            source,
             source_name,
             StableDefinitionNamespace::Type,
             StableDefinitionKind::Enum,
         ),
         K::ValueConst => stable_top_level_endpoint(
             definitions,
-            source_file,
+            source,
             source_name,
             StableDefinitionNamespace::Value,
             StableDefinitionKind::ValueConst,
@@ -3318,7 +3318,7 @@ mod tests {
         // Edit the reachable entry body while retaining all 128 declarations;
         // this proves reuse does not accidentally pass by changing dead code.
         let second = function_modules(128, Some(0));
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
         let cold = session.semantic(&options).unwrap();
         assert_eq!(cold.work().binding.bind_invocations, 1);
@@ -3346,7 +3346,7 @@ mod tests {
                 .ordinary_declaration_resolutions_skipped,
             1
         );
-        let mut fresh = CanonicalFrontendSession::new();
+        let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
         let ordinary = fresh.semantic(&options).unwrap();
         assert_eq!(
@@ -3386,7 +3386,7 @@ mod tests {
             1,
         );
         let options = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
         let first_output = session.semantic(&options).unwrap();
         let first_issuer = first_output.analyzed_body_owners()[0]
@@ -3403,7 +3403,7 @@ mod tests {
     }
 
     fn assert_semantic_artifact_parity(
-        session: &CanonicalFrontendSession,
+        session: &CompilerSession,
         actual: &CanonicalSemanticOutput,
         fresh: &CanonicalSemanticOutput,
     ) {
@@ -3438,7 +3438,7 @@ mod tests {
         let supported = source("fn main() -> i32 { 1 }");
         let supported_edit = source("fn main() -> i32 { 2 }");
         let options = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
         let cold = session.semantic(&options).unwrap();
         assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
@@ -3452,7 +3452,7 @@ mod tests {
         );
         assert_eq!(ordinary.work().binding.durable_install_invocations, 0);
         assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 0);
-        let mut fresh = CanonicalFrontendSession::new();
+        let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
         let expected = fresh.semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &ordinary, &expected);
@@ -3493,7 +3493,7 @@ mod tests {
             1,
         );
         let options = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
         let cold = session.semantic(&options).unwrap();
         assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
@@ -3507,7 +3507,7 @@ mod tests {
         );
         assert_eq!(ordinary.work().binding.durable_install_invocations, 0);
         assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 0);
-        let mut fresh = CanonicalFrontendSession::new();
+        let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
         let expected = fresh.semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &ordinary, &expected);
@@ -3552,7 +3552,7 @@ mod tests {
             1,
         );
         let options = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&base).into_result().unwrap();
         session.semantic(&options).unwrap();
 
@@ -3588,12 +3588,12 @@ mod tests {
     #[test]
     fn repeated_queries_and_noop_update_retain_pointer_identity() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<CanonicalFrontendSession>();
+        assert_send_sync::<CompilerSession>();
         assert_send_sync::<CanonicalMergedProgram>();
         assert_send_sync::<CanonicalRirOutput>();
 
         let source = base();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         let first_program = session.update(&source).into_result().unwrap();
         let first_merge = session.merge().unwrap();
         let second_merge = session.merge().unwrap();
@@ -3648,7 +3648,7 @@ mod tests {
             )
             .unwrap()
         };
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&make(false)).into_result().unwrap();
         session.rir().unwrap();
         let first_shards = session
@@ -3715,7 +3715,7 @@ mod tests {
             ],
             11,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&initial).into_result().unwrap();
         session.merge().unwrap();
 
@@ -3750,7 +3750,7 @@ mod tests {
             ],
             7,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         let program = session.update(&source).into_result().unwrap();
         let merged = session.merge().unwrap();
         let rir = session.rir().unwrap();
@@ -3777,7 +3777,7 @@ mod tests {
             &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
             1,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&duplicate).into_result().unwrap();
         let first = session.merge().unwrap_err();
         let second = session.merge().unwrap_err();
@@ -3833,7 +3833,7 @@ mod tests {
             ],
             12,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&base).into_result().unwrap();
         session.rir().unwrap();
 
@@ -3865,7 +3865,7 @@ mod tests {
         assert_send_sync::<CanonicalSemanticOutput>();
 
         let source = base();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let options = CompileOptions::default();
         let first = session.semantic(&options).unwrap();
@@ -3897,7 +3897,7 @@ mod tests {
     #[test]
     fn semantic_option_variants_create_deterministic_distinct_entries() {
         let source = base();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let default = CompileOptions::default();
         session.semantic(&default).unwrap();
@@ -3960,7 +3960,7 @@ mod tests {
             7,
         );
         let options = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let first = session.semantic(&options).unwrap();
         assert!(session.update(&broken).result().is_err());
@@ -3990,7 +3990,7 @@ mod tests {
             1,
         );
         let options = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&invalid).into_result().unwrap();
         let first = session.semantic(&options).unwrap_err();
         let second = session.semantic(&options).unwrap_err();
@@ -4018,7 +4018,7 @@ mod tests {
             )],
             1,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let errors = session.semantic(&CompileOptions::default()).unwrap_err();
         assert!(
@@ -4040,7 +4040,7 @@ mod tests {
         assert_send_sync::<BoundDefinitionSet>();
 
         let source = base();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let ordinary_options = CompileOptions::default();
         let ordinary = session.semantic(&ordinary_options).unwrap();
@@ -4083,7 +4083,7 @@ mod tests {
     fn stable_then_ordinary_reuses_the_validation_semantic_entry() {
         let source = base();
         let options = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session.stable_definitions(&options).unwrap();
         let semantic_executions = session.work().semantic.executions;
@@ -4106,7 +4106,7 @@ mod tests {
     fn published_queries_support_stable_tooling_lookups() {
         let source = base();
         let options = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         let published = session.update(&source).into_result().unwrap();
 
         let module_id = ModuleId::from_logical_path("a.rue").unwrap();
@@ -4154,7 +4154,7 @@ mod tests {
             ],
             1,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
         let first = session.import_graph(None).unwrap();
         let reused = session.import_graph(None).unwrap();
@@ -4212,7 +4212,7 @@ mod tests {
             2,
         );
         let broken = snapshot(&[(1, "/p/main.rue", "main.rue", "fn main( {")], 1);
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let missing = session.import_graph(None).unwrap();
         let resolved = session.import_graph(Some("/sdk")).unwrap();
@@ -4244,7 +4244,7 @@ mod tests {
     fn empty_import_graph_is_send_sync_and_concurrently_readable() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CanonicalImportGraphOutput>();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&base()).into_result().unwrap();
         let graph = session.import_graph(None).unwrap();
         assert!(graph.graph().records().is_empty());
@@ -4257,7 +4257,7 @@ mod tests {
     fn stable_definitions_prefers_a_successful_semantic_variant() {
         let source = base();
         let options = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session.semantic(&options).unwrap();
 
@@ -4295,7 +4295,7 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SemanticDependencyInputManifest>();
         let source = base();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let first = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -4332,12 +4332,12 @@ mod tests {
             ],
             99,
         );
-        let mut left = CanonicalFrontendSession::new();
+        let mut left = CompilerSession::new();
         left.update(&first).into_result().unwrap();
         let left = left
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
-        let mut right = CanonicalFrontendSession::new();
+        let mut right = CompilerSession::new();
         right.update(&relocated).into_result().unwrap();
         let right = right
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -4358,7 +4358,7 @@ mod tests {
     fn definition_fingerprints_partition_function_signature_and_body_changes() {
         fn fingerprints(source: &str) -> StableDefinitionInputFingerprint {
             let source = snapshot(&[(7, "/p/main.rue", "main.rue", source)], 7);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -4407,7 +4407,7 @@ mod tests {
             kind: StableDefinitionKind,
         ) -> StableDefinitionInputFingerprint {
             let source = snapshot(&[(7, "/p/main.rue", "main.rue", source)], 7);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             let manifest = session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -4589,7 +4589,7 @@ mod tests {
             7,
         );
         let build = |source: &SourceSnapshot| {
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -4597,7 +4597,7 @@ mod tests {
         };
         let previous = build(&source);
         let current = build(&changed);
-        let mut planner = CanonicalFrontendSession::new();
+        let mut planner = CompilerSession::new();
         let first = planner.semantic_invalidation_plan(&previous, &current);
         let second = planner.semantic_invalidation_plan(&previous, &current);
         assert!(Arc::ptr_eq(&first, &second));
@@ -4648,7 +4648,7 @@ mod tests {
                 .map(|(id, path, module, text)| (*id, path.as_str(), *module, text.as_str()))
                 .collect::<Vec<_>>();
             let source = snapshot(&entries, main_id);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -4657,7 +4657,7 @@ mod tests {
         let previous = build(3, 8, "/one", false, 1);
         let relocated = build(91, 4, "/elsewhere", true, 1);
         let changed = build(91, 4, "/elsewhere", true, 2);
-        let mut planner = CanonicalFrontendSession::new();
+        let mut planner = CompilerSession::new();
 
         let moved = planner.semantic_invalidation_plan(&previous, &relocated);
         assert_eq!(moved.scope(), &SemanticInvalidationScope::Incremental);
@@ -4680,7 +4680,7 @@ mod tests {
     fn synthetic_complete_invalidation_computes_exact_delta_and_reverse_closure() {
         let build = |text: &str| {
             let source = snapshot(&[(7, "/p/main.rue", "main.rue", text)], 7);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             let manifest = session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -4693,7 +4693,7 @@ mod tests {
         let current = build(
             "fn leaf() -> i32 { 2 } fn middle() -> i32 { leaf() } fn main() -> i32 { middle() }",
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         let plan = session.semantic_invalidation_plan(&previous, &current);
         assert_eq!(plan.scope(), &SemanticInvalidationScope::Incremental);
         assert_eq!(definition_names(plan.changed()), vec!["leaf"]);
@@ -4732,13 +4732,13 @@ mod tests {
             99,
         );
         let build = |source: &SourceSnapshot, options: &CompileOptions| {
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(source).into_result().unwrap();
             session.semantic_dependency_inputs(options, None).unwrap()
         };
         let previous = build(&original, &CompileOptions::default());
         let moved = build(&relocated, &CompileOptions::default());
-        let mut planner = CanonicalFrontendSession::new();
+        let mut planner = CompilerSession::new();
         let plan = planner.semantic_invalidation_plan(&previous, &moved);
         assert_eq!(plan.scope(), &SemanticInvalidationScope::Incremental);
         assert!(plan.invalidated().is_empty());
@@ -4831,7 +4831,7 @@ mod tests {
             ],
             1,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
         let resolved = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -4920,7 +4920,7 @@ mod tests {
             7,
         );
         let build = |source: &SourceSnapshot| {
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -4974,7 +4974,7 @@ mod tests {
             )],
             1,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5045,7 +5045,7 @@ mod tests {
             )],
             1,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let definitions = session
             .stable_definitions(&CompileOptions::default())
@@ -5111,7 +5111,7 @@ mod tests {
             ],
             1,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5200,7 +5200,7 @@ mod tests {
         let first_source = snapshot(&[(9, "/one/main.rue", "main.rue", program)], 9);
         let moved_source = snapshot(&[(41, "/else/main.rue", "main.rue", program)], 41);
         let build = |source: &SourceSnapshot| {
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5249,7 +5249,7 @@ mod tests {
         let first_source = snapshot(&[(7, "/one/main.rue", "main.rue", program)], 7);
         let moved_source = snapshot(&[(71, "/else/main.rue", "main.rue", program)], 71);
         let build = |source: &SourceSnapshot| {
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5303,7 +5303,7 @@ mod tests {
             "fn leaf() -> i32 { 1 } fn middle() -> i32 { leaf() } fn main() -> i32 { middle() }";
         let build = |file, path: &str| {
             let source = snapshot(&[(file, path, "main.rue", program)], file);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5344,7 +5344,7 @@ mod tests {
         let program = "struct Point { x: i32 } const ANSWER: i32 = 42; fn main() -> i32 { let p = Point { x: ANSWER }; p.x }";
         let build = |file, path: &str| {
             let source = snapshot(&[(file, path, "main.rue", program)], file);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5395,7 +5395,7 @@ mod tests {
             99,
         );
         let build = |source: &SourceSnapshot| {
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5432,7 +5432,7 @@ mod tests {
         let first_source = snapshot(&[(3, "/one/main.rue", "main.rue", program)], 3);
         let moved_source = snapshot(&[(71, "/else/main.rue", "main.rue", program)], 71);
         let build = |source: &SourceSnapshot| {
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5471,7 +5471,7 @@ mod tests {
         "#;
         let build = |id, physical: &str| {
             let source = snapshot(&[(id, physical, "main.rue", program)], id);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5524,7 +5524,7 @@ mod tests {
             )],
             4,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5578,7 +5578,7 @@ mod tests {
             )],
             1,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5633,7 +5633,7 @@ mod tests {
         "#;
         let build = |file_id, path| {
             let source = snapshot(&[(file_id, path, "main.rue", program)], file_id);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5698,7 +5698,7 @@ mod tests {
                 .map(|(id, path, module, text)| (*id, path.as_str(), *module, *text))
                 .collect::<Vec<_>>();
             let source = snapshot(&entries, main_id);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5755,7 +5755,7 @@ mod tests {
             ],
             3,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5785,7 +5785,7 @@ mod tests {
         options
             .preview_features
             .insert("string_trio".parse().unwrap());
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let manifest = session.semantic_dependency_inputs(&options, None).unwrap();
         let [input] = manifest.builtin_type_call_head_inputs() else {
@@ -5822,7 +5822,7 @@ mod tests {
             )],
             6,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         assert!(
             session.semantic(&CompileOptions::default()).is_err(),
@@ -5844,7 +5844,7 @@ mod tests {
         "#;
         let build = |file, path| {
             let source = snapshot(&[(file, path, "main.rue", program)], file);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -5892,7 +5892,7 @@ mod tests {
             .replace("inc(A)", "inc(Z)")
             .replace("A + B", "Z + B");
         let renamed_source = snapshot(&[(2, "/one/main.rue", "main.rue", &renamed_program)], 2);
-        let mut renamed_session = CanonicalFrontendSession::new();
+        let mut renamed_session = CompilerSession::new();
         renamed_session
             .update(&renamed_source)
             .into_result()
@@ -5921,7 +5921,7 @@ mod tests {
             )],
             1,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         assert!(session.semantic(&CompileOptions::default()).is_err());
         let manifest = session
@@ -5957,7 +5957,7 @@ mod tests {
             ],
             3,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -6005,7 +6005,7 @@ mod tests {
             }
             program.push_str(" fn main() -> i32 { B }");
             let source = snapshot(&[(1, "/p/main.rue", "main.rue", &program)], 1);
-            let mut session = CanonicalFrontendSession::new();
+            let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -6026,7 +6026,7 @@ mod tests {
     fn stable_definition_target_and_feature_inputs_are_separate() {
         let source = base();
         let default = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session.stable_definitions(&default).unwrap();
         let other_target = *Target::all()
@@ -6079,7 +6079,7 @@ mod tests {
             ],
             40,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
         let first = session
             .stable_definitions(&CompileOptions {
@@ -6130,7 +6130,7 @@ mod tests {
             7,
         );
         let options = CompileOptions::default();
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
         let ids = session.stable_definitions(&options).unwrap();
         assert!(session.update(&syntax_bad).result().is_err());
@@ -6178,7 +6178,7 @@ mod tests {
             )],
             7,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
         let published = session.published().unwrap().clone();
 
@@ -6283,7 +6283,7 @@ mod tests {
             &[(1, "/p/main.rue", "main.rue", "fn main() {} fn main() {}")],
             1,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&duplicate).into_result().unwrap();
         session.merge().unwrap_err();
         let first = session.latest_diagnostics().unwrap().clone();
@@ -6300,7 +6300,7 @@ mod tests {
         let options = CompileOptions::default();
         let source = |text: &str| snapshot(&[(7, "/p/main.rue", "main.rue", text)], 7);
         let initial = source("fn main() -> i32 { 0 }");
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&initial).into_result().unwrap();
         session.semantic(&options).unwrap();
         assert_eq!(session.work().retention.diagnostic_entries, 3);
@@ -6383,7 +6383,7 @@ mod tests {
         assert!(!caller_pinned.errors().is_empty());
 
         let final_source = source("fn main() -> i32 { 32 }");
-        let mut fresh = CanonicalFrontendSession::new();
+        let mut fresh = CompilerSession::new();
         fresh.update(&final_source).into_result().unwrap();
         let fresh_output = fresh.semantic(&options).unwrap();
         let retained_output = session.semantic(&options).unwrap();
@@ -6400,7 +6400,7 @@ mod tests {
             &[(7, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
             7,
         );
-        let mut builder = CanonicalFrontendSession::new();
+        let mut builder = CompilerSession::new();
         builder.update(&source).into_result().unwrap();
         let base = builder
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -6408,7 +6408,7 @@ mod tests {
         let manifests = (0..=FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT + 3)
             .map(|_| Arc::new((*base).clone()))
             .collect::<Vec<_>>();
-        let mut planner = CanonicalFrontendSession::new();
+        let mut planner = CompilerSession::new();
         let first = planner.semantic_invalidation_plan(&manifests[0], &manifests[1]);
         let mut last = first.clone();
         for pair in manifests.windows(2).skip(1) {
@@ -6451,7 +6451,7 @@ mod tests {
             )],
             41,
         );
-        let mut session = CanonicalFrontendSession::new();
+        let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)

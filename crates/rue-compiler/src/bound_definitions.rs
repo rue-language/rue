@@ -309,7 +309,8 @@ impl BoundDefinitionSet {
     }
 }
 
-pub fn bind_canonical_definitions(
+#[cfg(test)]
+pub(crate) fn bind_canonical_definitions(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
     preview_features: PreviewFeatures,
@@ -322,7 +323,8 @@ pub fn bind_canonical_definitions(
 /// Bind once and export stable, request-independent declaration semantics
 /// before the successful binder is consumed. This performs no body analysis,
 /// second bind, syntax reconstruction, or additional RIR traversal.
-pub fn bind_canonical_declaration_semantics(
+#[cfg(test)]
+pub(crate) fn bind_canonical_declaration_semantics(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
     preview_features: PreviewFeatures,
@@ -373,7 +375,8 @@ pub fn bind_canonical_declaration_semantics(
 /// current-revision shells, installs atomically, and proves that re-exporting
 /// the installed epoch produces the same stable semantics before exercising
 /// body analysis.
-pub fn compare_canonical_durable_declaration_install(
+#[cfg(test)]
+pub(crate) fn compare_canonical_durable_declaration_install(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
     preview_features: PreviewFeatures,

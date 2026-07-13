@@ -98,7 +98,7 @@ fn runtime_call_classification_requires_exact_metadata() {
 
     let mut preview_features = PreviewFeatures::new();
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
-    let state = compile_to_cfg_with_preview_features(
+    let state = query_cfg_state_with_preview_features(
         r#"fn probe_concat() -> i32 { @intCast(("a" + "b").len()) }
         fn probe_contains() -> i32 { if "abc".contains("b") { 1 } else { 0 } }
         fn probe_starts() -> i32 { if "abc".starts_with("a") { 1 } else { 0 } }
@@ -287,7 +287,7 @@ fn runtime_call_classification_requires_exact_metadata() {
 
 #[test]
 fn capacity_and_intrinsic_signature_drift_are_contract_failures() {
-    let capacity_state = compile_to_cfg(
+    let capacity_state = query_cfg_state(
         r#"fn main() -> i32 {
             @intCast("probe".capacity())
         }"#,
@@ -382,7 +382,7 @@ fn capacity_and_intrinsic_signature_drift_are_contract_failures() {
         UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinResultType)
     );
 
-    let random_state = compile_to_cfg(
+    let random_state = query_cfg_state(
         "fn main() -> i32 {
             let n: u32 = @random_u32();
             if n == 0 { 0 } else { 1 }
@@ -449,7 +449,7 @@ fn capacity_and_intrinsic_signature_drift_are_contract_failures() {
 
 #[test]
 fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
-    let state = compile_to_cfg(
+    let state = query_cfg_state(
         r#"fn panic_no_message() { @panic() }
         fn panic_with_message() { @panic("boom") }
         fn main() -> i32 {
@@ -514,7 +514,7 @@ fn malformed_outer_calls_are_rejected_before_unmodeled_operands_run() {
             UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
         ),
     ] {
-        let mut state = compile_to_cfg_with_preview_features(source, &preview_features)
+        let mut state = query_cfg_state_with_preview_features(source, &preview_features)
             .expect("call-preflight probe must compile");
         let main_index = state
             .functions
@@ -622,7 +622,7 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
         ("writable", CfgArgMode::Borrow),
         ("pair", CfgArgMode::Normal),
     ] {
-        let mut state = compile_to_cfg(source).expect("call-layout probe must compile");
+        let mut state = query_cfg_state(source).expect("call-layout probe must compile");
         let main_index = state
             .functions
             .iter()
@@ -719,7 +719,7 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
     }"#;
 
     for probe in 0..5 {
-        let mut state = compile_to_cfg(source).expect("abort-preflight probe must compile");
+        let mut state = query_cfg_state(source).expect("abort-preflight probe must compile");
         let main_index = state
             .functions
             .iter()
@@ -817,7 +817,7 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
     }"#;
 
     for name in ["panic", "assert"] {
-        let state = compile_to_cfg(source).expect("abort value-shape probe must compile");
+        let state = query_cfg_state(source).expect("abort value-shape probe must compile");
         let (cfg, intrinsic, args, _) = find_intrinsic_in_function(&state, "main", name);
         let mut interp = Interp {
             state: &state,
@@ -846,7 +846,7 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
         );
     }
 
-    let state = compile_to_cfg(source).expect("assert condition-shape probe must compile");
+    let state = query_cfg_state(source).expect("assert condition-shape probe must compile");
     let (cfg, assertion, args, _) = find_intrinsic_in_function(&state, "main", "assert");
     let mut interp = Interp {
         state: &state,
@@ -891,7 +891,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             let empty: [i32; 0] = [];
             @intCast(slice_len(borrow empty) + user_pointer() + offset_probe())
         }"#;
-    let state = compile_to_cfg_with_preview_features(source, &preview_features)
+    let state = query_cfg_state_with_preview_features(source, &preview_features)
         .expect("pointer provenance probe must compile");
     let interp = Interp {
         state: &state,
@@ -986,7 +986,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     // own result type, rather than only passing an inconsistent classifier
     // argument, then verify that a user-authored zero still lacks the exact
     // downstream slice-StructInit provenance.
-    let mut drift_state = compile_to_cfg_with_preview_features(source, &preview_features)
+    let mut drift_state = query_cfg_state_with_preview_features(source, &preview_features)
         .expect("pointer provenance drift probe must compile");
     let (_, _, _, drift_slice_result) =
         find_intrinsic_in_function(&drift_state, "main", "int_to_ptr");
@@ -1024,7 +1024,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         "a user-authored zero is not the synthesized empty-slice pointer"
     );
 
-    let mut extra_use_state = compile_to_cfg_with_preview_features(source, &preview_features)
+    let mut extra_use_state = query_cfg_state_with_preview_features(source, &preview_features)
         .expect("empty-slice exclusive-use probe must compile");
     let (_, extra_slice_inst, _, _) =
         find_intrinsic_in_function(&extra_use_state, "main", "int_to_ptr");
@@ -1078,7 +1078,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         "an extra use cannot borrow synthesized empty-slice provenance"
     );
 
-    let mut extra_init_use_state = compile_to_cfg_with_preview_features(source, &preview_features)
+    let mut extra_init_use_state = query_cfg_state_with_preview_features(source, &preview_features)
         .expect("empty-slice StructInit exclusive-use probe must compile");
     let (_, extra_init_pointer, _, _) =
         find_intrinsic_in_function(&extra_init_use_state, "main", "int_to_ptr");
@@ -1145,7 +1145,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         "an extra slice-StructInit use cannot borrow synthesized empty-slice provenance"
     );
 
-    let mut wrong_consumer_state = compile_to_cfg_with_preview_features(source, &preview_features)
+    let mut wrong_consumer_state = query_cfg_state_with_preview_features(source, &preview_features)
         .expect("empty-slice consumer-mode probe must compile");
     let (_, wrong_consumer_pointer, _, _) =
         find_intrinsic_in_function(&wrong_consumer_state, "main", "int_to_ptr");
@@ -1236,7 +1236,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         "the synthesized slice StructInit must have one normal call consumer"
     );
 
-    let mut wrong_init_state = compile_to_cfg_with_preview_features(source, &preview_features)
+    let mut wrong_init_state = query_cfg_state_with_preview_features(source, &preview_features)
         .expect("empty-slice StructInit type probe must compile");
     let (_, wrong_init_pointer, _, _) =
         find_intrinsic_in_function(&wrong_init_state, "main", "int_to_ptr");
@@ -1298,7 +1298,7 @@ fn field_pointer_gaps_require_in_bounds_projection_metadata() {
             let mut p = Pair { a: 1, b: 2 };
             checked { @intCast(@ptr_to_int(@field_ptr(p.a))) }
         }";
-    let mut state = compile_to_cfg(source).expect("field-pointer metadata probe must compile");
+    let mut state = query_cfg_state(source).expect("field-pointer metadata probe must compile");
     {
         let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "main", "field_ptr");
         let interp = Interp {
@@ -1370,7 +1370,7 @@ fn field_pointer_gaps_require_in_bounds_projection_metadata() {
 
 #[test]
 fn option_returning_intrinsics_require_the_exact_payload_type() {
-    let state = compile_to_cfg(
+    let state = query_cfg_state(
         r#"fn Option(comptime T: type) -> type { enum { Some(T), None } }
         fn parse32() -> i32 {
             let O = Option(i32);

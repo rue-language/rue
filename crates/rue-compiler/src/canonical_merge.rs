@@ -97,7 +97,8 @@ struct CandidateDef {
     physical_path: Arc<str>,
 }
 
-pub fn merge_parsed_modules(
+#[cfg(test)]
+pub(crate) fn merge_parsed_modules(
     program: &ParsedProgram,
 ) -> Result<CanonicalMergedProgram, CompileErrors> {
     merge_parsed_modules_in_order(program, None)
@@ -317,7 +318,7 @@ mod tests {
 
     use super::*;
     use crate::parsed_modules::parse_source_snapshot_modules;
-    use crate::{SourceFile, SourceMetadata, SourceSnapshot};
+    use crate::{SourceMetadata, SourceSnapshot, SourceView};
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
         let physical = entries
@@ -587,8 +588,8 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_source_file_constructor_remains_available() {
-        let source = SourceFile::new("main.rue", "fn main() {}", FileId::new(1));
+    fn test_source_view_constructor_supports_internal_fixtures() {
+        let source = SourceView::new("main.rue", "fn main() {}", FileId::new(1));
         assert_eq!(source.path, "main.rue");
     }
 }

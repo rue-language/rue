@@ -6,7 +6,7 @@
 use tracing::{info, info_span};
 
 use crate::{
-    CompileErrors, Lexer, MultiErrorResult, Parser, SourceFile, SourceSnapshot, ThreadedRodeo,
+    CompileErrors, Lexer, MultiErrorResult, Parser, SourceSnapshot, SourceView, ThreadedRodeo,
 };
 
 /// Work performed while lexing and parsing source files.
@@ -39,7 +39,7 @@ pub(crate) struct SyntaxPresentationOutcome {
     pub(crate) work: SyntaxWork,
 }
 
-pub(crate) fn parse_file(source: SourceFile<'_>, interner: ThreadedRodeo) -> FileParseOutcome {
+pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> FileParseOutcome {
     let _file_span = info_span!("parse_file", path = %source.path).entered();
     let mut work = SyntaxWork {
         lexer_invocations: 1,
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn returned_interner_survives_lex_and_parse_failures() {
-        let lex_source = SourceFile::new("lex.rue", "fn lex_name() { $ }", FileId::new(1));
+        let lex_source = SourceView::new("lex.rue", "fn lex_name() { $ }", FileId::new(1));
         let FileParseOutcome {
             result, interner, ..
         } = parse_file(lex_source, ThreadedRodeo::new());
@@ -253,7 +253,7 @@ mod tests {
         let lex_name = interner.get("lex_name").unwrap();
         assert_eq!(interner.resolve(&lex_name), "lex_name");
 
-        let parse_source = SourceFile::new("parse.rue", "fn parse_name( { }", FileId::new(2));
+        let parse_source = SourceView::new("parse.rue", "fn parse_name( { }", FileId::new(2));
         let FileParseOutcome {
             result, interner, ..
         } = parse_file(parse_source, interner);
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(interner.resolve(&lex_name), "lex_name");
         assert_eq!(interner.resolve(&parse_name), "parse_name");
 
-        let good_source = SourceFile::new("good.rue", "fn good_name() {}", FileId::new(3));
+        let good_source = SourceView::new("good.rue", "fn good_name() {}", FileId::new(3));
         let FileParseOutcome {
             result, interner, ..
         } = parse_file(good_source, interner);
@@ -280,7 +280,7 @@ mod tests {
     fn work_uses_utf8_bytes_and_successful_lexer_token_vectors() {
         let valid = "fn main() { // café\n}";
         let FileParseOutcome { result, work, .. } = parse_file(
-            SourceFile::new("valid.rue", valid, FileId::new(1)),
+            SourceView::new("valid.rue", valid, FileId::new(1)),
             ThreadedRodeo::new(),
         );
         result.unwrap();
@@ -291,7 +291,7 @@ mod tests {
 
         let parse_error = "fn broken( {";
         let FileParseOutcome { result, work, .. } = parse_file(
-            SourceFile::new("parse.rue", parse_error, FileId::new(2)),
+            SourceView::new("parse.rue", parse_error, FileId::new(2)),
             ThreadedRodeo::new(),
         );
         assert!(result.is_err());
@@ -301,7 +301,7 @@ mod tests {
 
         let lex_error = "kept_name $";
         let FileParseOutcome { result, work, .. } = parse_file(
-            SourceFile::new("lex.rue", lex_error, FileId::new(3)),
+            SourceView::new("lex.rue", lex_error, FileId::new(3)),
             ThreadedRodeo::new(),
         );
         assert!(result.is_err());

@@ -96,7 +96,7 @@ relative profile (which passes dominate), not a hard threshold.**
 
 This historical table predates schema v2, the canonical parsed-module frontend,
 `definition_snapshot_modules`, and `rir_declaration_index`. It therefore shows
-the retired `merge_symbols` span and the then-combined `parse_file` leaf rather
+the retired symbol-merge span and the then-combined `parse_file` leaf rather
 than separate `lexer` and `parser` rows. Its totals were already taken from the
 old `compile` row, not the inflated old `total_ms`, and remain valid as
 compiler-pipeline measurements.
@@ -113,7 +113,7 @@ compiler-pipeline measurements.
 
 ### Small / medium programs (ms)
 
-| program | parse_file | merge_symbols | astgen | sema | cfg | codegen | linker | **total** |
+| program | parse_file | symbol merge | astgen | sema | cfg | codegen | linker | **total** |
 |---|---|---|---|---|---|---|---|---|
 | hello | 0.60 | 0.01 | 0.01 | 0.12 | 1.23 | 0.09 | 8.43 | **10.58** |
 | fibonacci | 1.52 | 0.02 | 0.03 | 0.27 | 1.42 | 0.38 | 7.94 | **11.94** |
@@ -123,7 +123,7 @@ compiler-pipeline measurements.
 
 ### Large (generated stress) programs (ms)
 
-| program | parse_file | merge_symbols | astgen | sema | cfg | codegen | linker | **total** |
+| program | parse_file | symbol merge | astgen | sema | cfg | codegen | linker | **total** |
 |---|---|---|---|---|---|---|---|---|
 | many_functions | 112.90 | 1.32 | 0.80 | 15.93 | 4.49 | 70.20 | 16.12 | **223.80** |
 | large_structs | 132.10 | 2.12 | 1.33 | 36.11 | 4.83 | 79.49 | 14.52 | **273.60** |
@@ -140,7 +140,7 @@ compiler-pipeline measurements.
 | **sema** | 173.05 | 10.8% |
 | linker | 111.60 | 7.0% |
 | cfg_construction | 29.00 | 1.8% |
-| merge_symbols | 10.44 | 0.7% |
+| symbol merge | 10.44 | 0.7% |
 | astgen | 7.31 | 0.5% |
 
 ## Findings
@@ -169,7 +169,7 @@ compiler-pipeline measurements.
    negligible on large programs. It matters for edit-compile-run latency on
    small inputs but is not a throughput bottleneck.
 
-5. **The historical `astgen`, retired `merge_symbols`, and `cfg_construction`
+5. **The historical `astgen`, retired symbol-merge, and `cfg_construction`
    rows were all <2%** — they were not bottlenecks at these program sizes.
 
 ### What would speed the hot passes up

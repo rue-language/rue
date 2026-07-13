@@ -156,7 +156,7 @@ The test suite has three layers optimized for different stages of development:
 ### Unit Tests
 Add to relevant crate's source file with `#[cfg(test)]` modules. Ensure crate has `rust_test` target in its `BUCK` file.
 
-The `rue-compiler` crate includes integration unit tests that test the full pipeline without execution. Use `compile_to_air()` and `compile_to_cfg()` helpers to test compilation without spawning processes.
+The `rue-compiler` crate includes integration unit tests that test the full pipeline without execution. Build a `SourceSnapshot`, publish it to `CompilerSession`, and query `rir()` or `semantic()` to test compilation without spawning processes. Use `compile_snapshot()` only when a test needs the final executable adapter.
 
 ### UI Tests
 

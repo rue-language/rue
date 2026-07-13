@@ -211,5 +211,5 @@ The table is generated from ADR frontmatter. Run
 | [0046](0046-delete-flat-mode.md) | Delete flat multi-file mode (all cross-file references go through @import) | Accepted | modules, semantics, cli, language-shape, ergonomics |
 | [0047](0047-root-module-build-inputs.md) | Root-module compilation units and build-system inputs | Accepted | modules, compiler, build-system, packages, cli, language-shape |
 | [0048](0048-shared-codegen-middle-layer.md) | Shared codegen middle layer (reduce x86-64/aarch64 backend duplication) | Proposal | codegen, architecture, backends, refactor, maintainability |
-| [0050](0050-semantic-dependency-manifest.md) | Stable semantic dependency manifests | Proposal | compiler, incremental, tooling |
+| [0050](0050-semantic-dependency-manifest.md) | Stable semantic dependency manifests | Accepted | compiler, incremental, tooling |
 <!-- ADR-INDEX:END -->

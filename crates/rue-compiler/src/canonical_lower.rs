@@ -48,7 +48,7 @@ pub struct CanonicalRirPresentationOrder {
 }
 
 impl CanonicalRirOutput {
-    pub(crate) fn into_parts(self) -> (Rir, SemanticSymbolUniverse) {
+    pub fn into_parts(self) -> (Rir, SemanticSymbolUniverse) {
         (self.rir, self.symbols)
     }
 

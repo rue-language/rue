@@ -35,6 +35,16 @@ fn assert_no_ice<T>(result: &rue_compiler::MultiErrorResult<T>) {
     }
 }
 
+fn query_semantics(
+    source: &str,
+) -> rue_compiler::MultiErrorResult<std::sync::Arc<rue_compiler::CanonicalSemanticOutput>> {
+    let snapshot = rue_compiler::SourceSnapshot::single("<fuzz>", source)
+        .map_err(rue_compiler::CompileErrors::from)?;
+    let mut session = rue_compiler::CompilerSession::new();
+    session.update(&snapshot).into_result()?;
+    session.semantic(&rue_compiler::CompileOptions::default())
+}
+
 /// Fuzz target for the lexer.
 ///
 /// Goal: The lexer should never panic, always produce tokens or an error.
@@ -89,7 +99,7 @@ impl FuzzTarget for ParserTarget {
 /// - Type IDs are valid
 /// - Symbol references exist in the interner
 ///
-/// Uses source-level fuzzing through the canonical frontend session.
+/// Uses source-level fuzzing through `CompilerSession`.
 /// Future enhancement: structured RIR generation with Arbitrary trait.
 pub struct SemaTarget;
 
@@ -101,16 +111,13 @@ impl FuzzTarget for SemaTarget {
     fn fuzz(&self, input: &[u8]) {
         // Only test valid UTF-8
         if let Ok(source) = std::str::from_utf8(input) {
-            // The canonical frontend runs through sema (semantic analysis)
+            // The session query runs through sema (semantic analysis)
             // without code generation. This tests:
             // - Type inference (Hindley-Milner with Algorithm W)
             // - Affine type checking (partial moves, linearity)
             // - Name resolution
             // - Multi-error collection
-            let result = rue_compiler::query_canonical_frontend_source(
-                source,
-                &rue_compiler::CompileOptions::default(),
-            );
+            let result = query_semantics(source);
             assert_no_ice(&result);
         }
     }
@@ -129,12 +136,9 @@ impl FuzzTarget for CompilerTarget {
     fn fuzz(&self, input: &[u8]) {
         // Only test valid UTF-8
         if let Ok(source) = std::str::from_utf8(input) {
-            // Query the canonical frontend without code generation (which is slower)
+            // Query session semantics without code generation (which is slower)
             // and focus on the analysis phases where bugs are more likely
-            let result = rue_compiler::query_canonical_frontend_source(
-                source,
-                &rue_compiler::CompileOptions::default(),
-            );
+            let result = query_semantics(source);
             assert_no_ice(&result);
         }
     }

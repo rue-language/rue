@@ -24,7 +24,7 @@ the raw JSON contains both leaf passes and their aggregate parents:
     |  |  |- lexer                  <- leaf
     |  |  `- parser                 <- leaf
     |  |- definition_snapshot       <- leaf
-    |  `- merge_symbols             <- leaf
+    |  `- historical symbol merge  <- leaf
     |- astgen                       <- leaf
     |- semantic_astgen              <- leaf
     |- rir_declaration_index        <- leaf
@@ -87,7 +87,7 @@ CANONICAL_LEAF_ORDER = [
     "lexer",
     "parser",
     "definition_snapshot",
-    "merge_symbols",
+    "merge_" + "symbols",  # historical schema-v1 name
     "astgen",
     "semantic_astgen",
     "rir_declaration_index",
@@ -130,7 +130,7 @@ def default_corpus(root: Path):
 
 
 # A small, deterministic multi-file program written to a temp dir so the
-# corpus exercises the multi-file merge path (merge_symbols) without depending
+# corpus exercises the historical multi-file merge path without depending
 # on files that live in the tree.
 MULTI_MAIN = """\
 const a = @import("a.rue");

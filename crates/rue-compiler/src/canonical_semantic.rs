@@ -135,7 +135,7 @@ pub struct CfgConstructionWork {
     pub implicit_destructor_targets_emitted: usize,
 }
 
-/// Owned semantic and optimized CFG artifacts from the canonical frontend.
+/// Owned semantic and optimized CFG artifacts returned by `CompilerSession`.
 #[derive(Debug)]
 pub struct CanonicalSemanticOutput {
     input: CodegenInputDescriptor,
@@ -173,7 +173,7 @@ pub struct CanonicalSemanticOutput {
 }
 
 impl CanonicalSemanticOutput {
-    pub(crate) fn into_frontend_parts(
+    pub fn into_parts(
         self,
     ) -> (
         Vec<FunctionWithCfg>,
@@ -296,7 +296,8 @@ impl CanonicalSemanticOutput {
 
 /// Bind declarations once, optionally issue stable IDs, then consume the same
 /// transient bound Sema for body analysis and CFG construction.
-pub fn analyze_canonical_program(
+#[cfg(test)]
+pub(crate) fn analyze_canonical_program(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
     options: &CompileOptions,

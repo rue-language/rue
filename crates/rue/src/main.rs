@@ -7,21 +7,22 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use tracing::Level;
+use tracing::{Level, info_span};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{EnvFilter, Layer as _, fmt};
 
 mod timing;
 
+#[cfg(test)]
+use rue_compiler::CompilerSessionWork;
 use rue_compiler::{
-    CanonicalFrontendArtifacts, CanonicalPipelineWork, CompileError, CompileErrors, CompileOptions,
-    CompileWarning, ErrorKind, FileId, Lexer, LinkerMode, MAX_SOURCE_BYTES, MultiFileFormatter,
-    MultiFileJsonFormatter, OptLevel, PreviewFeature, PreviewFeatures, SourceInfo, SourceMetadata,
-    SourceSnapshot, Span, TokenKind, compile_source_snapshot_with_options,
-    compile_source_snapshot_with_options_and_stats, configure_thread_pool, generate_emitted_asm,
+    Ast, CanonicalRirOutput, CanonicalSemanticOutput, CompileError, CompileErrors, CompileOptions,
+    CompileWarning, CompilerSession, ErrorKind, FileId, Lexer, LinkerMode, MAX_SOURCE_BYTES,
+    MultiFileFormatter, MultiFileJsonFormatter, OptLevel, PipelineWork, PreviewFeature,
+    PreviewFeatures, SourceInfo, SourceMetadata, SourceSnapshot, Span, Token, TokenKind,
+    TypeInternPool, compile_snapshot, configure_thread_pool, generate_emitted_asm,
     generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
     generate_stack_frame_info, import_candidate_groups, parse_source_snapshot_for_ast_presentation,
-    query_canonical_frontend,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -56,13 +57,20 @@ enum EmitStage {
     Deps,
 }
 
-struct EmitFrontend(Box<CanonicalFrontendArtifacts>);
+struct EmitFrontend {
+    parsed: Arc<rue_compiler::ParsedProgram>,
+    rir: Arc<CanonicalRirOutput>,
+    semantic: Arc<CanonicalSemanticOutput>,
+    work: PipelineWork,
+    #[cfg(test)]
+    session_work: CompilerSessionWork,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EmitFrontendRoute {
     None,
     AstOnlySyntax,
-    Canonical,
+    SessionQuery,
 }
 
 fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
@@ -80,7 +88,7 @@ fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
                 | EmitStage::StackFrame
         )
     }) {
-        EmitFrontendRoute::Canonical
+        EmitFrontendRoute::SessionQuery
     } else if stages.contains(&EmitStage::Ast) {
         EmitFrontendRoute::AstOnlySyntax
     } else {
@@ -88,40 +96,62 @@ fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
     }
 }
 
-fn build_canonical_emit_frontend(
+fn build_emit_frontend(
     source_snapshot: &SourceSnapshot,
     options: CompileOptions,
-) -> Result<CanonicalFrontendArtifacts, CompileErrors> {
-    query_canonical_frontend(source_snapshot, &options)
+) -> Result<EmitFrontend, CompileErrors> {
+    let mut session = CompilerSession::new();
+    let parsed = session
+        .update_for_presentation(source_snapshot)
+        .into_result()?;
+    let rir = {
+        let _span = info_span!("semantic_astgen").entered();
+        session.rir()?
+    };
+    let semantic = session.semantic(&options)?;
+    let session_work = session.work().clone();
+    Ok(EmitFrontend {
+        parsed,
+        rir,
+        semantic: semantic.clone(),
+        work: PipelineWork {
+            parsed: session_work.last_parse,
+            merged: session_work.last_merge,
+            lowered: session_work.last_rir,
+            semantic: semantic.work(),
+        },
+        #[cfg(test)]
+        session_work,
+    })
 }
 
 impl EmitFrontend {
     fn rir(&self) -> &rue_compiler::Rir {
-        self.0.rir().rir()
+        self.rir.rir()
     }
 
     fn interner(&self) -> &rue_compiler::ThreadedRodeo {
-        self.0.interner()
+        self.rir.semantic_symbols().interner()
     }
 
     fn functions(&self) -> &[rue_compiler::FunctionWithCfg] {
-        self.0.semantic().functions()
+        self.semantic.functions()
     }
 
-    fn type_pool(&self) -> &rue_compiler::TypeInternPool {
-        self.0.semantic().type_pool()
+    fn type_pool(&self) -> &TypeInternPool {
+        self.semantic.type_pool()
     }
 
     fn strings(&self) -> &[String] {
-        self.0.semantic().strings()
+        self.semantic.strings()
     }
 
     fn warnings(&self) -> &[CompileWarning] {
-        self.0.semantic().warnings()
+        self.semantic.warnings()
     }
 
-    fn canonical_work(&self) -> CanonicalPipelineWork {
-        self.0.work()
+    fn query_work(&self) -> PipelineWork {
+        self.work
     }
 }
 
@@ -1936,15 +1966,9 @@ fn main() {
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
     };
-    let compile_result = if options.benchmark_json {
-        compile_source_snapshot_with_options_and_stats(&source_snapshot, &compile_options)
-            .map(|(output, stats)| (output, Some(stats)))
-    } else {
-        compile_source_snapshot_with_options(&source_snapshot, &compile_options)
-            .map(|output| (output, None))
-    };
+    let compile_result = compile_snapshot(&source_snapshot, &compile_options);
     match compile_result {
-        Ok((output, source_stats)) => {
+        Ok(output) => {
             // Print warnings using the diagnostic formatter
             diagnostics.print_warnings(&output.warnings);
 
@@ -2039,7 +2063,7 @@ fn main() {
                 options.benchmark_json,
                 &options.target,
                 options.benchmark_json.then(|| {
-                    let source_stats = source_stats.expect("benchmark source stats requested");
+                    let source_stats = output.source_stats;
                     timing::SourceMetrics {
                         files: source_stats.files,
                         bytes: source_stats.bytes,
@@ -2071,7 +2095,7 @@ fn handle_emit_multi_file(
 
     // For tokens, we need to lex each file separately (before parsing merges interners)
     // We'll collect per-file tokens if needed
-    let per_file_tokens: Option<Vec<(String, Vec<rue_compiler::Token>)>> = if needs_tokens {
+    let per_file_tokens: Option<Vec<(String, Vec<Token>)>> = if needs_tokens {
         let mut file_tokens = Vec::with_capacity(source_snapshot.len());
         for source in source_snapshot.files() {
             // Lex with the file's real FileId so a lex error in the Nth file
@@ -2095,7 +2119,7 @@ fn handle_emit_multi_file(
     let frontend_route = emit_frontend_route(&options.emit_stages);
     // AST-only preserves its syntax-only behavior (duplicates are printable).
     // Combined AST+later canonical modes reuse the unit's once-only projection.
-    let mut per_file_asts: Option<Vec<(String, std::sync::Arc<rue_compiler::Ast>)>> =
+    let mut per_file_asts: Option<Vec<(String, std::sync::Arc<Ast>)>> =
         if frontend_route == EmitFrontendRoute::AstOnlySyntax {
             match parse_source_snapshot_for_ast_presentation(source_snapshot) {
                 Ok(presentation) => {
@@ -2114,14 +2138,14 @@ fn handle_emit_multi_file(
             None
         };
 
-    let frontend_state = if frontend_route == EmitFrontendRoute::Canonical {
+    let frontend_state = if frontend_route == EmitFrontendRoute::SessionQuery {
         let compile_options = CompileOptions {
             target: options.target,
             linker: options.linker.clone(),
             opt_level: options.opt_level,
             preview_features: options.preview_features.clone(),
         };
-        let frontend = match build_canonical_emit_frontend(source_snapshot, compile_options) {
+        let frontend = match build_emit_frontend(source_snapshot, compile_options) {
             Ok(frontend) => frontend,
             Err(errors) => {
                 diagnostics.print_errors(&errors);
@@ -2134,7 +2158,7 @@ fn handle_emit_multi_file(
                     .files()
                     .map(|source| {
                         let module = frontend
-                            .parsed()
+                            .parsed
                             .modules()
                             .iter()
                             .find(|module| module.file_id() == source.file_id)
@@ -2144,14 +2168,14 @@ fn handle_emit_multi_file(
                     .collect(),
             );
         }
-        Some(EmitFrontend(Box::new(frontend)))
+        Some(frontend)
     } else {
         None
     };
     if let Some(state) = &frontend_state {
         // Warnings used to be silently dropped in all --emit modes (RUE-130).
         diagnostics.print_warnings(state.warnings());
-        let work = state.canonical_work();
+        let work = state.query_work();
         debug_assert_eq!(work.parsed.syntax.parser_invocations, source_snapshot.len());
         debug_assert_eq!(work.lowered.parser_invocations, 0);
         debug_assert_eq!(work.semantic.binding.bind_invocations, 1);
@@ -2187,8 +2211,7 @@ fn handle_emit_multi_file(
                 println!("=== RIR ===");
                 if let Some(ref state) = frontend_state {
                     let order = state
-                        .0
-                        .rir()
+                        .rir
                         .presentation_order(source_snapshot.files().map(|source| source.file_id));
                     let printer = RirPrinter::with_presentation_order(
                         state.rir(),
@@ -2389,6 +2412,23 @@ fn handle_emit_multi_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_snapshot(root: FileId, sources: &[(FileId, &str, &str, &str)]) -> SourceSnapshot {
+        let physical_paths = sources
+            .iter()
+            .map(|(file_id, physical, _, _)| (*file_id, (*physical).to_owned()))
+            .collect();
+        let logical_paths = sources
+            .iter()
+            .map(|(file_id, _, logical, _)| (*file_id, (*logical).to_owned()))
+            .collect();
+        let contents = sources
+            .iter()
+            .map(|(file_id, _, _, source)| (*file_id, Arc::new((*source).to_owned())))
+            .collect();
+        let metadata = SourceMetadata::new(root, physical_paths, logical_paths).unwrap();
+        SourceSnapshot::new(metadata, contents).unwrap()
+    }
 
     struct TestDir {
         path: PathBuf,
@@ -2721,15 +2761,18 @@ mod tests {
             EmitStage::Asm,
             EmitStage::StackFrame,
         ] {
-            assert_eq!(emit_frontend_route(&[stage]), EmitFrontendRoute::Canonical);
+            assert_eq!(
+                emit_frontend_route(&[stage]),
+                EmitFrontendRoute::SessionQuery
+            );
         }
         assert_eq!(
             emit_frontend_route(&[EmitStage::Ast, EmitStage::Air]),
-            EmitFrontendRoute::Canonical
+            EmitFrontendRoute::SessionQuery
         );
         assert_eq!(
             emit_frontend_route(&[EmitStage::Rir, EmitStage::Air]),
-            EmitFrontendRoute::Canonical
+            EmitFrontendRoute::SessionQuery
         );
         assert_eq!(
             emit_frontend_route(&[EmitStage::Ast]),
@@ -2742,36 +2785,31 @@ mod tests {
     }
 
     #[test]
-    fn canonical_emit_frontend_performs_one_parse_lower_and_bind() {
+    fn session_emit_frontend_performs_one_parse_lower_and_bind() {
         let root = FileId::new(9);
         let helper = FileId::new(2);
-        let sources = [
-            rue_compiler::SourceFile::new(
-                "/checkout/main.rue",
-                "const helper = @import(\"helper.rue\"); fn main() -> i32 { helper.answer() }",
-                root,
-            ),
-            rue_compiler::SourceFile::new(
-                "/checkout/helper.rue",
-                "pub fn answer() -> i32 { 42 }",
-                helper,
-            ),
-        ];
-        let metadata = SourceMetadata::from_sources(
-            &sources,
+        let snapshot = test_snapshot(
             root,
-            std::collections::HashMap::from([
-                (root, "main.rue".to_string()),
-                (helper, "helper.rue".to_string()),
-            ]),
-        )
-        .unwrap();
-        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
-        let frontend = build_canonical_emit_frontend(&snapshot, CompileOptions::default()).unwrap();
-        let work = frontend.work();
+            &[
+                (
+                    root,
+                    "/checkout/main.rue",
+                    "main.rue",
+                    "const helper = @import(\"helper.rue\"); fn main() -> i32 { helper.answer() }",
+                ),
+                (
+                    helper,
+                    "/checkout/helper.rue",
+                    "helper.rue",
+                    "pub fn answer() -> i32 { 42 }",
+                ),
+            ],
+        );
+        let frontend = build_emit_frontend(&snapshot, CompileOptions::default()).unwrap();
+        let work = frontend.work;
 
-        assert_eq!(work.parsed.syntax.lexer_invocations, sources.len());
-        assert_eq!(work.parsed.syntax.parser_invocations, sources.len());
+        assert_eq!(work.parsed.syntax.lexer_invocations, 2);
+        assert_eq!(work.parsed.syntax.parser_invocations, 2);
         assert_eq!(work.lowered.parser_invocations, 0);
         assert_eq!(work.lowered.ast_payload_clones, 0);
         assert_eq!(work.semantic.binding.bind_invocations, 1);
@@ -2779,7 +2817,7 @@ mod tests {
         assert_eq!(work.semantic.cfg.cfg_builds_attempted, 2);
         assert_eq!(work.semantic.cfg.cfg_builds_succeeded, 2);
         assert_eq!(work.semantic.cfg.cfg_builds_failed, 0);
-        let session_work = frontend.session_work();
+        let session_work = &frontend.session_work;
         assert_eq!(session_work.updates, 1);
         assert_eq!(session_work.merge.executions, 1);
         assert_eq!(session_work.rir.executions, 1);
@@ -2795,7 +2833,7 @@ mod tests {
             [("/checkout/main.rue", 2), ("/checkout/helper.rue", 1)]
         );
         let ast_work = presentation.work();
-        assert_eq!(ast_work.parsed.syntax.parser_invocations, sources.len());
+        assert_eq!(ast_work.parsed.syntax.parser_invocations, 2);
         assert_eq!(ast_work.merge_invocations, 0);
         assert_eq!(ast_work.astgen_invocations, 0);
         assert_eq!(ast_work.bind_invocations, 0);
@@ -2803,16 +2841,43 @@ mod tests {
     }
 
     #[test]
+    fn session_emit_frontend_preserves_discovery_order_for_multifile_errors() {
+        let root = FileId::new(9);
+        let helper = FileId::new(2);
+        let snapshot = test_snapshot(
+            root,
+            &[
+                (
+                    root,
+                    "/checkout/z-root.rue",
+                    "z-root.rue",
+                    "fn main() { let # = 1; }",
+                ),
+                (
+                    helper,
+                    "/checkout/a-helper.rue",
+                    "a-helper.rue",
+                    "fn helper() { let # = 2; }",
+                ),
+            ],
+        );
+
+        let errors = match build_emit_frontend(&snapshot, CompileOptions::default()) {
+            Err(errors) => errors,
+            Ok(_) => panic!("invalid sources unexpectedly produced emit artifacts"),
+        };
+        let mut files = errors
+            .iter()
+            .filter_map(|error| error.span().map(|span| span.file_id))
+            .collect::<Vec<_>>();
+        files.dedup();
+        assert_eq!(files, [root, helper]);
+    }
+
+    #[test]
     fn ast_presentation_prints_duplicates_without_merging() {
-        let id = FileId::new(4);
-        let sources = [rue_compiler::SourceFile::new(
-            "main.rue",
-            "fn duplicate() {} fn duplicate() {}",
-            id,
-        )];
-        let metadata =
-            SourceMetadata::from_sources(&sources, id, std::collections::HashMap::new()).unwrap();
-        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+        let snapshot =
+            SourceSnapshot::single("main.rue", "fn duplicate() {} fn duplicate() {}").unwrap();
         let presentation = parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();
 
         assert_eq!(presentation.files()[0].1.items.len(), 2);

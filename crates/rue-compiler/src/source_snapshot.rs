@@ -12,7 +12,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
 use crate::{
-    ModuleId, ModuleRevision, SourceFile, SourceId, SourceMetadata, SourceRevision, SourceStore,
+    ModuleId, ModuleRevision, SourceId, SourceMetadata, SourceRevision, SourceStore, SourceView,
 };
 
 /// Maximum source byte length representable by Rue's `u32` span offsets.
@@ -48,6 +48,15 @@ struct SourceRecord {
 }
 
 impl SourceSnapshot {
+    /// Build a validated one-module snapshot for in-memory tools and tests.
+    pub fn single(path: impl Into<String>, source: impl Into<String>) -> CompileResult<Self> {
+        let path = path.into();
+        let root = FileId::DEFAULT;
+        let metadata =
+            SourceMetadata::new(root, [(root, path.clone())].into(), [(root, path)].into())?;
+        Self::new(metadata, vec![(root, Arc::new(source.into()))])
+    }
+
     /// Reassemble diagnostic source records from already-validated parsed
     /// artifacts without hashing source bytes again.
     pub(crate) fn from_parsed_modules(
@@ -259,13 +268,9 @@ impl SourceSnapshot {
         })
     }
 
-    /// Copy borrowed compatibility inputs into one immutable snapshot.
-    ///
-    /// Physical paths are validated against `metadata` before source text is
-    /// copied. Each source is then copied directly into its final owned
-    /// [`String`] buffer.
-    pub fn from_sources(
-        sources: &[SourceFile<'_>],
+    #[cfg(test)]
+    pub(crate) fn from_sources(
+        sources: &[SourceView<'_>],
         metadata: SourceMetadata,
     ) -> CompileResult<Self> {
         metadata.validate_sources(sources)?;
@@ -333,16 +338,16 @@ impl SourceSnapshot {
         &self.data.source_store
     }
 
-    /// Borrow one source as a compatibility [`SourceFile`] view.
-    pub fn source_file(&self, file_id: FileId) -> Option<SourceFile<'_>> {
+    /// Borrow one supported source record view without copying its text.
+    pub fn source(&self, file_id: FileId) -> Option<SourceView<'_>> {
         let index = *self.data.index.get(&file_id)?;
         Some(self.file_at(index))
     }
 
-    /// Borrow all sources in caller-supplied order.
+    /// Borrow supported source record views in caller-supplied order.
     pub fn files(
         &self,
-    ) -> impl DoubleEndedIterator<Item = SourceFile<'_>> + ExactSizeIterator + '_ {
+    ) -> impl DoubleEndedIterator<Item = SourceView<'_>> + ExactSizeIterator + '_ {
         (0..self.data.contents.len()).map(|index| self.file_at(index))
     }
 
@@ -356,7 +361,7 @@ impl SourceSnapshot {
         Some(record)
     }
 
-    fn file_at(&self, index: usize) -> SourceFile<'_> {
+    fn file_at(&self, index: usize) -> SourceView<'_> {
         let record = &self.data.contents[index];
         let file_id = record.file_id;
         let path = self
@@ -364,7 +369,7 @@ impl SourceSnapshot {
             .metadata
             .physical_path(file_id)
             .expect("snapshot contents validated against metadata");
-        SourceFile::new(path, record.text.as_str(), file_id)
+        SourceView::new(path, record.text.as_str(), file_id)
     }
 }
 
@@ -471,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_caller_order_for_borrowed_file_views() {
+    fn preserves_caller_order_for_source_views() {
         let snapshot = SourceSnapshot::new(
             metadata(&[(10, "ten.rue"), (20, "twenty.rue"), (30, "thirty.rue")]),
             contents(&[(30, "thirty"), (10, "ten"), (20, "twenty")]),
@@ -509,10 +514,10 @@ mod tests {
         let shared = snapshot.shared_source_text(FileId::new(7)).unwrap();
         assert!(Arc::ptr_eq(&source, &shared));
         assert!(snapshot.shared_source_text(FileId::new(8)).is_none());
-        let file = snapshot.source_file(FileId::new(7)).unwrap();
+        let file = snapshot.source(FileId::new(7)).unwrap();
         assert_eq!(file.path, "src/main.rue");
         assert_eq!(file.source, "fn main() {}");
-        assert!(snapshot.source_file(FileId::new(8)).is_none());
+        assert!(snapshot.source(FileId::new(8)).is_none());
     }
 
     #[test]
@@ -568,12 +573,12 @@ mod tests {
             &edited.shared_source_text(root).unwrap()
         ));
         assert_eq!(old.source_text(root), Some("fn main() -> i32 { helper() }"));
-        assert_eq!(old.source_file(root).unwrap().path, "/old/main.rue");
+        assert_eq!(old.source(root).unwrap().path, "/old/main.rue");
         assert_eq!(
             edited.source_text(root),
             Some("fn main() -> i32 { helper() + 1 }")
         );
-        assert_eq!(edited.source_file(root).unwrap().path, "/new/main.rue");
+        assert_eq!(edited.source(root).unwrap().path, "/new/main.rue");
     }
 
     #[test]
@@ -674,11 +679,11 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_adapter_copies_borrowed_text_and_validates_paths() {
+    fn test_only_borrowed_assembly_copies_text_and_validates_paths() {
         let mut borrowed = "borrowed".to_owned();
         let descriptor = metadata(&[(3, "main.rue")]);
         let snapshot = SourceSnapshot::from_sources(
-            &[SourceFile::new("main.rue", &borrowed, FileId::new(3))],
+            &[SourceView::new("main.rue", &borrowed, FileId::new(3))],
             descriptor.clone(),
         )
         .unwrap();
@@ -686,7 +691,7 @@ mod tests {
         borrowed.push_str(" changed");
         assert_eq!(snapshot.source_text(FileId::new(3)), Some("borrowed"));
 
-        let wrong_path = [SourceFile::new("other.rue", "source", FileId::new(3))];
+        let wrong_path = [SourceView::new("other.rue", "source", FileId::new(3))];
         assert_eq!(
             error_message(SourceSnapshot::from_sources(&wrong_path, descriptor)),
             "invalid compiler input: physical path for 3 is \"main.rue\", but source file uses \"other.rue\""
