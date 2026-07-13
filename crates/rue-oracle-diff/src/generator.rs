@@ -956,7 +956,11 @@ impl Program {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_compiler::compile_to_cfg;
+    use rue_compiler::{CompileOptions, query_canonical_frontend_source};
+
+    fn compile_to_cfg(source: &str) -> rue_compiler::MultiErrorResult<()> {
+        query_canonical_frontend_source(source, &CompileOptions::default()).map(|_| ())
+    }
 
     const COMPILE_CONTRACT_SEEDS: u64 = 500;
 

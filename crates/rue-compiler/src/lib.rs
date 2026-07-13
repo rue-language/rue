@@ -1117,7 +1117,8 @@ pub struct CompileOutput {
 /// Uses default optimization level (O0) and no preview features. For custom options,
 /// use [`compile_frontend_with_options`].
 pub fn compile_frontend(source: &str) -> MultiErrorResult<CompileState> {
-    compile_frontend_with_options(source, OptLevel::default(), &PreviewFeatures::new())
+    query_canonical_frontend_source(source, &CompileOptions::default())
+        .map(CanonicalFrontendArtifacts::into_compile_state)
 }
 
 /// Compile source code through all frontend phases with optimization.
@@ -1132,27 +1133,11 @@ pub fn compile_frontend_with_options(
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
 ) -> MultiErrorResult<CompileState> {
-    let _span = info_span!("frontend", source_bytes = source.len()).entered();
-
-    // Lexing - errors here are fatal (can't continue without tokens)
-    let (tokens, interner) = {
-        let _span = info_span!("lexer").entered();
-        let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from)?;
-        info!(token_count = tokens.len(), "lexing complete");
-        (tokens, interner)
-    };
-
-    // Parsing - errors here are fatal (can't continue without AST)
-    let (ast, interner) = {
-        let _span = info_span!("parser").entered();
-        let parser = Parser::new(tokens, interner);
-        let (ast, interner) = parser.parse()?;
-        info!(item_count = ast.items.len(), "parsing complete");
-        (ast, interner)
-    };
-
-    compile_frontend_from_ast_with_options(ast, interner, opt_level, preview_features)
+    let mut options = CompileOptions::default();
+    options.opt_level = opt_level;
+    options.preview_features = preview_features.clone();
+    query_canonical_frontend_source(source, &options)
+        .map(CanonicalFrontendArtifacts::into_compile_state)
 }
 
 /// Compile from an already-parsed AST through all remaining frontend phases.
@@ -1660,6 +1645,91 @@ impl CanonicalFrontendArtifacts {
     pub fn interner(&self) -> &ThreadedRodeo {
         self.rir.semantic_symbols().interner()
     }
+
+    /// Consume the canonical artifacts as the inspection-oriented frontend state.
+    ///
+    /// This is an ownership projection only: parsing, lowering, binding, and CFG
+    /// construction have already happened in the canonical session query.
+    ///
+    /// This transitional projection exists for CFG consumers being migrated in
+    /// RUE-733 and is expected to narrow again when RUE-734/RUE-736 retire the
+    /// compatibility inspection structs. It cannot invoke or optimize phases.
+    pub fn into_compile_state(self) -> CompileState {
+        let parsed = Arc::try_unwrap(self.parsed)
+            .expect("one-shot canonical artifacts uniquely own their parsed program");
+        let rir =
+            Arc::try_unwrap(self.rir).expect("one-shot canonical artifacts uniquely own their RIR");
+        let semantic = Arc::try_unwrap(self.semantic)
+            .expect("one-shot canonical artifacts uniquely own their semantic output");
+        let ast = MergedAst {
+            files: parsed
+                .modules()
+                .iter()
+                .map(|module| module.shared_ast())
+                .collect(),
+        };
+        let (rir, symbols) = rir.into_parts();
+        let (functions, type_pool, strings, warnings) = semantic.into_frontend_parts();
+        CompileState {
+            ast,
+            interner: symbols.into_interner(),
+            rir,
+            functions,
+            type_pool,
+            strings,
+            warnings,
+        }
+    }
+
+    fn into_air_output(self) -> AirOutput {
+        let parsed = Arc::try_unwrap(self.parsed)
+            .expect("one-shot canonical artifacts uniquely own their parsed program");
+        let rir =
+            Arc::try_unwrap(self.rir).expect("one-shot canonical artifacts uniquely own their RIR");
+        let semantic = Arc::try_unwrap(self.semantic)
+            .expect("one-shot canonical artifacts uniquely own their semantic output");
+        let ast = parsed
+            .modules()
+            .first()
+            .expect("single-source canonical query has one module")
+            .ast()
+            .clone();
+        let (rir, symbols) = rir.into_parts();
+        let (functions, type_pool, strings, warnings) = semantic.into_frontend_parts();
+        AirOutput {
+            ast,
+            interner: symbols.into_interner(),
+            rir,
+            functions: functions
+                .into_iter()
+                .map(|function| function.analyzed)
+                .collect(),
+            type_pool,
+            strings,
+            warnings,
+        }
+    }
+}
+
+/// Query the canonical frontend for one anonymous in-memory source.
+///
+/// This thin adapter exists for fuzzers, oracles, and tests that do not have a
+/// filesystem import graph. It preserves the legacy anonymous source identity
+/// while routing all phase work through [`CanonicalFrontendSession`].
+pub fn query_canonical_frontend_source(
+    source: &str,
+    options: &CompileOptions,
+) -> MultiErrorResult<CanonicalFrontendArtifacts> {
+    let source_file = SourceFile::new("<source>", source, FileId::DEFAULT);
+    let metadata = SourceMetadata::new(
+        FileId::DEFAULT,
+        [(FileId::DEFAULT, "<source>".to_owned())].into(),
+        [(FileId::DEFAULT, "<source>".to_owned())].into(),
+    )
+    .map_err(CompileErrors::from)?;
+    let snapshot =
+        SourceSnapshot::from_sources(&[source_file], metadata).map_err(CompileErrors::from)?;
+    query_canonical_frontend(&snapshot, options)
 }
 
 /// Update a fresh canonical session and query its complete frontend artifacts.
@@ -2355,31 +2425,8 @@ pub struct AirOutput {
 /// assert!(result.is_ok());
 /// ```
 pub fn compile_to_air(source: &str) -> MultiErrorResult<AirOutput> {
-    // Lexing
-    let lexer = Lexer::new(source);
-    let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from)?;
-
-    // Parsing
-    let parser = Parser::new(tokens, interner);
-    let (ast, interner) = parser.parse()?;
-
-    // AST to RIR (untyped IR)
-    let astgen = AstGen::new(&ast, &interner);
-    let rir = astgen.generate();
-
-    // Semantic analysis (RIR to AIR)
-    let sema = Sema::new(&rir, &interner, PreviewFeatures::new());
-    let sema_output = sema.analyze_all()?;
-
-    Ok(AirOutput {
-        ast,
-        interner,
-        rir,
-        functions: sema_output.functions,
-        type_pool: sema_output.type_pool,
-        strings: sema_output.strings,
-        warnings: sema_output.warnings,
-    })
+    query_canonical_frontend_source(source, &CompileOptions::default())
+        .map(CanonicalFrontendArtifacts::into_air_output)
 }
 
 /// Compile source code up to CFG (control flow graph).
@@ -2399,7 +2446,8 @@ pub fn compile_to_air(source: &str) -> MultiErrorResult<AirOutput> {
 /// assert_eq!(state.functions.len(), 1);
 /// ```
 pub fn compile_to_cfg(source: &str) -> MultiErrorResult<CompileState> {
-    compile_frontend(source)
+    query_canonical_frontend_source(source, &CompileOptions::default())
+        .map(CanonicalFrontendArtifacts::into_compile_state)
 }
 
 /// Compile source code up to CFG with explicit preview features enabled.
@@ -2411,12 +2459,33 @@ pub fn compile_to_cfg_with_preview_features(
     source: &str,
     preview_features: &PreviewFeatures,
 ) -> MultiErrorResult<CompileState> {
-    compile_frontend_with_options(source, OptLevel::default(), preview_features)
+    let mut options = CompileOptions::default();
+    options.preview_features = preview_features.clone();
+    query_canonical_frontend_source(source, &options)
+        .map(CanonicalFrontendArtifacts::into_compile_state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_single_source_adapter_executes_each_frontend_phase_once() {
+        let frontend =
+            query_canonical_frontend_source("fn main() -> i32 { 42 }", &CompileOptions::default())
+                .unwrap();
+        let work = frontend.work();
+        let session = frontend.session_work();
+        assert_eq!(work.parsed.syntax.parser_invocations, 1);
+        assert_eq!(session.rir.executions, 1);
+        assert_eq!(work.lowered.modules_visited, 1);
+        assert_eq!(work.semantic.binding.bind_invocations, 1);
+        assert_eq!(work.semantic.cfg.cfg_builds_attempted, 1);
+        assert_eq!(work.semantic.cfg.cfg_builds_succeeded, 1);
+
+        let state = frontend.into_compile_state();
+        assert_eq!(state.functions.len(), 1);
+    }
 
     fn assert_invalid_compiler_input(errors: CompileErrors, expected: &str) {
         assert_eq!(errors.len(), 1);

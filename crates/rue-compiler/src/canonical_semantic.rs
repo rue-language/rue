@@ -173,6 +173,17 @@ pub struct CanonicalSemanticOutput {
 }
 
 impl CanonicalSemanticOutput {
+    pub(crate) fn into_frontend_parts(
+        self,
+    ) -> (
+        Vec<FunctionWithCfg>,
+        TypeInternPool,
+        Vec<String>,
+        Vec<CompileWarning>,
+    ) {
+        (self.functions, self.type_pool, self.strings, self.warnings)
+    }
+
     /// Exact semantic and optimization identity of this output.
     pub fn input(&self) -> &CodegenInputDescriptor {
         &self.input
