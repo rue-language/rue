@@ -9,6 +9,47 @@ name = "--emit pipeline parity"
 description = "--emit modes resolve modules and report warnings like a normal build."
 
 [[case]]
+name = "emit_rir_uses_canonical_frontend_and_preserves_caller_order"
+description = "RUE-728: canonical RIR presentation retains positional text even when logical module order differs."
+files = [
+    { path = "z.rue", source = "fn main() -> i32 { let z = 40; z + 2 }\n" },
+    { path = "a.rue", source = "fn alpha() -> i32 { let a = 1; a }\n" },
+]
+args = ["--emit", "rir", "z.rue", "a.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "=== RIR ===",
+    "%0 = const 40",
+    "%6 = fn main()",
+    "%7 = const 1",
+    "%11 = fn alpha()",
+]
+
+[[case]]
+name = "combined_rir_air_resolves_imports_once"
+description = "RUE-728: combined RIR and semantic emits consume the same canonical import-aware frontend artifacts."
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\"); fn main() -> i32 { helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 42 }\n" },
+]
+args = ["--emit", "rir", "--emit", "air", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== RIR ===", "fn answer()", "fn main()", "=== AIR ==="]
+compile_stderr_not_contains = ["E0704", "internal compiler error"]
+
+[[case]]
+name = "emit_rir_preserves_canonical_diagnostic_attribution"
+description = "RUE-728: RIR requests no longer detour around canonical multi-file diagnostics."
+files = [
+    { path = "main.rue", source = "const bad = @import(\"bad.rue\"); fn main() -> i32 { bad.broken() }\n" },
+    { path = "bad.rue", source = "pub fn broken() -> i32 { missing }\n" },
+]
+args = ["--emit", "rir", "main.rue"]
+compile_fail = true
+compile_stderr_contains = ["E0201", "bad.rue:", "undefined variable 'missing'"]
+compile_stdout_not_contains = ["=== RIR ==="]
+
+[[case]]
 name = "emit_air_warnings_not_dropped"
 description = "Warnings were silently dropped in all --emit modes (RUE-130 item 3)."
 files = [{ path = "main.rue", source = """

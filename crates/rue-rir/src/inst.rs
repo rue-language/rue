@@ -289,6 +289,12 @@ impl Rir {
         self.instructions.len()
     }
 
+    /// The number of words in the variable-length payload store.
+    #[inline]
+    pub fn extra_len(&self) -> usize {
+        self.extra.len()
+    }
+
     /// Whether there are no instructions.
     #[inline]
     pub fn is_empty(&self) -> bool {
@@ -1895,31 +1901,124 @@ impl fmt::Display for InstRef {
     }
 }
 
+struct DisplayedInstRef(u32);
+
+impl fmt::Display for DisplayedInstRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "%{}", self.0)
+    }
+}
+
 /// Printer for RIR that resolves symbols to their string values.
 pub struct RirPrinter<'a, 'b> {
     rir: &'a Rir,
     interner: &'b lasso::ThreadedRodeo,
+    instruction_order: Option<Vec<InstRef>>,
+    displayed_refs: Option<Vec<u32>>,
+    displayed_extra: Option<Vec<u32>>,
 }
 
 impl<'a, 'b> RirPrinter<'a, 'b> {
     /// Create a new RIR printer.
     pub fn new(rir: &'a Rir, interner: &'b lasso::ThreadedRodeo) -> Self {
-        Self { rir, interner }
+        Self {
+            rir,
+            interner,
+            instruction_order: None,
+            displayed_refs: None,
+            displayed_extra: None,
+        }
+    }
+
+    /// Create a read-only presentation of `rir` in a different instruction order.
+    ///
+    /// The supplied order must be a permutation of every instruction in the RIR.
+    /// References are displayed in that order without cloning or rewriting the RIR.
+    pub fn with_instruction_order(
+        rir: &'a Rir,
+        interner: &'b lasso::ThreadedRodeo,
+        instruction_order: Vec<InstRef>,
+    ) -> Self {
+        assert_eq!(instruction_order.len(), rir.len());
+        let mut displayed_refs = vec![u32::MAX; rir.len()];
+        for (displayed, canonical) in instruction_order.iter().enumerate() {
+            let slot = &mut displayed_refs[canonical.as_u32() as usize];
+            assert_eq!(
+                *slot,
+                u32::MAX,
+                "RIR presentation order contains a duplicate"
+            );
+            *slot = displayed as u32;
+        }
+        assert!(
+            displayed_refs
+                .iter()
+                .all(|displayed| *displayed != u32::MAX)
+        );
+        Self {
+            rir,
+            interner,
+            instruction_order: Some(instruction_order),
+            displayed_refs: Some(displayed_refs),
+            displayed_extra: None,
+        }
+    }
+
+    /// Create a presentation that remaps both instruction and payload ordering.
+    pub fn with_presentation_order(
+        rir: &'a Rir,
+        interner: &'b lasso::ThreadedRodeo,
+        instruction_order: Vec<InstRef>,
+        extra_order: Vec<u32>,
+    ) -> Self {
+        let mut printer = Self::with_instruction_order(rir, interner, instruction_order);
+        assert_eq!(extra_order.len(), rir.extra_len());
+        let mut displayed_extra = vec![u32::MAX; rir.extra_len()];
+        for (displayed, canonical) in extra_order.into_iter().enumerate() {
+            let slot = &mut displayed_extra[canonical as usize];
+            assert_eq!(
+                *slot,
+                u32::MAX,
+                "RIR payload presentation contains a duplicate"
+            );
+            *slot = displayed as u32;
+        }
+        assert!(
+            displayed_extra
+                .iter()
+                .all(|displayed| *displayed != u32::MAX)
+        );
+        printer.displayed_extra = Some(displayed_extra);
+        printer
+    }
+
+    fn display_ref(&self, inst: InstRef) -> DisplayedInstRef {
+        DisplayedInstRef(
+            self.displayed_refs
+                .as_ref()
+                .map_or(inst.as_u32(), |refs| refs[inst.as_u32() as usize]),
+        )
+    }
+
+    fn display_extra(&self, index: u32) -> u32 {
+        self.displayed_extra
+            .as_ref()
+            .map_or(index, |extra| extra[index as usize])
     }
 
     /// Format a call argument with its mode prefix.
-    fn format_call_arg(arg: &RirCallArg) -> String {
+    fn format_call_arg(&self, arg: &RirCallArg) -> String {
         match arg.mode {
-            RirArgMode::Inout => format!("inout {}", arg.value),
-            RirArgMode::Borrow => format!("borrow {}", arg.value),
-            RirArgMode::Normal => format!("{}", arg.value),
+            RirArgMode::Inout => format!("inout {}", self.display_ref(arg.value)),
+            RirArgMode::Borrow => format!("borrow {}", self.display_ref(arg.value)),
+            RirArgMode::Normal => format!("{}", self.display_ref(arg.value)),
         }
     }
 
     /// Format a list of call arguments.
-    fn format_call_args(args: &[RirCallArg]) -> String {
+    fn format_call_args(&self, args: &[RirCallArg]) -> String {
         args.iter()
-            .map(Self::format_call_arg)
+            .map(|arg| self.format_call_arg(arg))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -1960,7 +2059,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 ..
             } => {
                 let prefix = if let Some(module_ref) = module {
-                    format!("%{}..", module_ref.as_u32())
+                    format!("{}..", self.display_ref(*module_ref))
                 } else {
                     String::new()
                 };
@@ -1986,8 +2085,14 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
         use std::fmt::Write;
 
         let mut out = String::new();
-        for (inst_ref, inst) in self.rir.iter() {
-            write!(out, "{} = ", inst_ref).unwrap();
+        let instruction_order: Box<dyn Iterator<Item = InstRef> + '_> =
+            match &self.instruction_order {
+                Some(order) => Box::new(order.iter().copied()),
+                None => Box::new(self.rir.iter().map(|(inst_ref, _)| inst_ref)),
+            };
+        for inst_ref in instruction_order {
+            let inst = self.rir.get(inst_ref);
+            write!(out, "{} = ", self.display_ref(inst_ref)).unwrap();
             match &inst.data {
                 // Constants
                 InstData::IntConst(v) => writeln!(out, "const {}", v).unwrap(),
@@ -1998,30 +2103,146 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::UnitConst => writeln!(out, "const ()").unwrap(),
 
                 // Binary operations
-                InstData::Add { lhs, rhs } => writeln!(out, "add {}, {}", lhs, rhs).unwrap(),
-                InstData::Sub { lhs, rhs } => writeln!(out, "sub {}, {}", lhs, rhs).unwrap(),
-                InstData::Mul { lhs, rhs } => writeln!(out, "mul {}, {}", lhs, rhs).unwrap(),
-                InstData::Div { lhs, rhs } => writeln!(out, "div {}, {}", lhs, rhs).unwrap(),
-                InstData::Mod { lhs, rhs } => writeln!(out, "mod {}, {}", lhs, rhs).unwrap(),
-                InstData::Eq { lhs, rhs } => writeln!(out, "eq {}, {}", lhs, rhs).unwrap(),
-                InstData::Ne { lhs, rhs } => writeln!(out, "ne {}, {}", lhs, rhs).unwrap(),
-                InstData::Lt { lhs, rhs } => writeln!(out, "lt {}, {}", lhs, rhs).unwrap(),
-                InstData::Gt { lhs, rhs } => writeln!(out, "gt {}, {}", lhs, rhs).unwrap(),
-                InstData::Le { lhs, rhs } => writeln!(out, "le {}, {}", lhs, rhs).unwrap(),
-                InstData::Ge { lhs, rhs } => writeln!(out, "ge {}, {}", lhs, rhs).unwrap(),
-                InstData::And { lhs, rhs } => writeln!(out, "and {}, {}", lhs, rhs).unwrap(),
-                InstData::Or { lhs, rhs } => writeln!(out, "or {}, {}", lhs, rhs).unwrap(),
-                InstData::BitAnd { lhs, rhs } => writeln!(out, "bit_and {}, {}", lhs, rhs).unwrap(),
-                InstData::BitOr { lhs, rhs } => writeln!(out, "bit_or {}, {}", lhs, rhs).unwrap(),
-                InstData::BitXor { lhs, rhs } => writeln!(out, "bit_xor {}, {}", lhs, rhs).unwrap(),
-                InstData::Shl { lhs, rhs } => writeln!(out, "shl {}, {}", lhs, rhs).unwrap(),
-                InstData::Shr { lhs, rhs } => writeln!(out, "shr {}, {}", lhs, rhs).unwrap(),
+                InstData::Add { lhs, rhs } => writeln!(
+                    out,
+                    "add {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Sub { lhs, rhs } => writeln!(
+                    out,
+                    "sub {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Mul { lhs, rhs } => writeln!(
+                    out,
+                    "mul {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Div { lhs, rhs } => writeln!(
+                    out,
+                    "div {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Mod { lhs, rhs } => writeln!(
+                    out,
+                    "mod {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Eq { lhs, rhs } => writeln!(
+                    out,
+                    "eq {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Ne { lhs, rhs } => writeln!(
+                    out,
+                    "ne {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Lt { lhs, rhs } => writeln!(
+                    out,
+                    "lt {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Gt { lhs, rhs } => writeln!(
+                    out,
+                    "gt {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Le { lhs, rhs } => writeln!(
+                    out,
+                    "le {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Ge { lhs, rhs } => writeln!(
+                    out,
+                    "ge {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::And { lhs, rhs } => writeln!(
+                    out,
+                    "and {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Or { lhs, rhs } => writeln!(
+                    out,
+                    "or {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::BitAnd { lhs, rhs } => writeln!(
+                    out,
+                    "bit_and {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::BitOr { lhs, rhs } => writeln!(
+                    out,
+                    "bit_or {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::BitXor { lhs, rhs } => writeln!(
+                    out,
+                    "bit_xor {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Shl { lhs, rhs } => writeln!(
+                    out,
+                    "shl {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
+                InstData::Shr { lhs, rhs } => writeln!(
+                    out,
+                    "shr {}, {}",
+                    self.display_ref(*lhs),
+                    self.display_ref(*rhs)
+                )
+                .unwrap(),
 
                 // Unary operations
-                InstData::Neg { operand } => writeln!(out, "neg {}", operand).unwrap(),
-                InstData::Not { operand } => writeln!(out, "not {}", operand).unwrap(),
-                InstData::BitNot { operand } => writeln!(out, "bit_not {}", operand).unwrap(),
-                InstData::Try { operand } => writeln!(out, "try {}", operand).unwrap(),
+                InstData::Neg { operand } => {
+                    writeln!(out, "neg {}", self.display_ref(*operand)).unwrap()
+                }
+                InstData::Not { operand } => {
+                    writeln!(out, "not {}", self.display_ref(*operand)).unwrap()
+                }
+                InstData::BitNot { operand } => {
+                    writeln!(out, "bit_not {}", self.display_ref(*operand)).unwrap()
+                }
+                InstData::Try { operand } => {
+                    writeln!(out, "try {}", self.display_ref(*operand)).unwrap()
+                }
 
                 // Control flow
                 InstData::Branch {
@@ -2030,17 +2251,42 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     else_block,
                 } => {
                     if let Some(else_b) = else_block {
-                        writeln!(out, "branch {}, {}, {}", cond, then_block, else_b).unwrap();
+                        writeln!(
+                            out,
+                            "branch {}, {}, {}",
+                            self.display_ref(*cond),
+                            self.display_ref(*then_block),
+                            self.display_ref(*else_b)
+                        )
+                        .unwrap();
                     } else {
-                        writeln!(out, "branch {}, {}", cond, then_block).unwrap();
+                        writeln!(
+                            out,
+                            "branch {}, {}",
+                            self.display_ref(*cond),
+                            self.display_ref(*then_block)
+                        )
+                        .unwrap();
                     }
                 }
-                InstData::Loop { cond, body } => writeln!(out, "loop {}, {}", cond, body).unwrap(),
+                InstData::Loop { cond, body } => writeln!(
+                    out,
+                    "loop {}, {}",
+                    self.display_ref(*cond),
+                    self.display_ref(*body)
+                )
+                .unwrap(),
                 InstData::InfiniteLoop { body, iter_borrow } => {
                     let borrow_str = iter_borrow
                         .map(|c| format!(" borrows {}", self.interner.resolve(&c)))
                         .unwrap_or_default();
-                    writeln!(out, "infinite_loop {}{}", body, borrow_str).unwrap()
+                    writeln!(
+                        out,
+                        "infinite_loop {}{}",
+                        self.display_ref(*body),
+                        borrow_str
+                    )
+                    .unwrap()
                 }
                 InstData::Match {
                     scrutinee,
@@ -2050,12 +2296,24 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let arms = self.rir.get_match_arms(*arms_start, *arms_len);
                     let arms_str: Vec<String> = arms
                         .iter()
-                        .map(|(pat, body)| format!("{} => {}", self.format_pattern(pat), body))
+                        .map(|(pat, body)| {
+                            format!(
+                                "{} => {}",
+                                self.format_pattern(pat),
+                                self.display_ref(*body)
+                            )
+                        })
                         .collect();
-                    writeln!(out, "match {} {{ {} }}", scrutinee, arms_str.join(", ")).unwrap();
+                    writeln!(
+                        out,
+                        "match {} {{ {} }}",
+                        self.display_ref(*scrutinee),
+                        arms_str.join(", ")
+                    )
+                    .unwrap();
                 }
                 InstData::Break { value } => match value {
-                    Some(v) => writeln!(out, "break {}", v).unwrap(),
+                    Some(v) => writeln!(out, "break {}", self.display_ref(*v)).unwrap(),
                     None => writeln!(out, "break").unwrap(),
                 },
                 InstData::Continue => writeln!(out, "continue").unwrap(),
@@ -2118,7 +2376,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         ret_str
                     )
                     .unwrap();
-                    writeln!(out, "    {}", body).unwrap();
+                    writeln!(out, "    {}", self.display_ref(*body)).unwrap();
                     writeln!(out, "}}").unwrap();
                 }
                 InstData::ConstDecl {
@@ -2138,13 +2396,17 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     writeln!(
                         out,
                         "{}{}const {}{} = {}",
-                        directives_str, pub_str, name_str, ty_str, init
+                        directives_str,
+                        pub_str,
+                        name_str,
+                        ty_str,
+                        self.display_ref(*init)
                     )
                     .unwrap();
                 }
                 InstData::Ret(inner) => {
                     if let Some(inner) = inner {
-                        writeln!(out, "ret {}", inner).unwrap();
+                        writeln!(out, "ret {}", self.display_ref(*inner)).unwrap();
                     } else {
                         writeln!(out, "ret").unwrap();
                     }
@@ -2156,7 +2418,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 } => {
                     let name_str = self.interner.resolve(&*name);
                     let args = self.rir.get_call_args(*args_start, *args_len);
-                    writeln!(out, "call {}({})", name_str, Self::format_call_args(&args)).unwrap();
+                    writeln!(out, "call {}({})", name_str, self.format_call_args(&args)).unwrap();
                 }
                 InstData::Intrinsic {
                     name,
@@ -2165,7 +2427,10 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 } => {
                     let name_str = self.interner.resolve(&*name);
                     let args = self.rir.get_inst_refs(*args_start, *args_len);
-                    let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+                    let args_str: Vec<String> = args
+                        .iter()
+                        .map(|a| self.display_ref(*a).to_string())
+                        .collect();
                     writeln!(out, "intrinsic @{}({})", name_str, args_str.join(", ")).unwrap();
                 }
                 InstData::TypeIntrinsic { name, type_arg } => {
@@ -2179,7 +2444,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     writeln!(out, "offset_of @offset_of({}, {})", type_str, field_str).unwrap();
                 }
                 InstData::Block { extra_start, len } => {
-                    writeln!(out, "block({}, {})", extra_start, len).unwrap();
+                    writeln!(out, "block({}, {})", self.display_extra(*extra_start), len).unwrap();
                 }
 
                 // Variables
@@ -2204,7 +2469,12 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     writeln!(
                         out,
                         "{}alloc {}{}{}= {}{}",
-                        directives_str, mut_str, name_str, ty_str, init, iter_str
+                        directives_str,
+                        mut_str,
+                        name_str,
+                        ty_str,
+                        self.display_ref(*init),
+                        iter_str
                     )
                     .unwrap();
                 }
@@ -2212,7 +2482,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     writeln!(out, "var_ref {}", self.interner.resolve(&*name)).unwrap();
                 }
                 InstData::Assign { name, value } => {
-                    writeln!(out, "assign {} = {}", self.interner.resolve(&*name), value).unwrap();
+                    writeln!(
+                        out,
+                        "assign {} = {}",
+                        self.interner.resolve(&*name),
+                        self.display_ref(*value)
+                    )
+                    .unwrap();
                 }
 
                 // Structs
@@ -2246,8 +2522,10 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let methods_str = if methods.is_empty() {
                         String::new()
                     } else {
-                        let method_refs: Vec<String> =
-                            methods.iter().map(|m| format!("{}", m)).collect();
+                        let method_refs: Vec<String> = methods
+                            .iter()
+                            .map(|m| self.display_ref(*m).to_string())
+                            .collect();
                         format!(" methods: [{}]", method_refs.join(", "))
                     };
                     writeln!(
@@ -2271,15 +2549,21 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     shorthand_span: _,
                 } => {
                     let module_str = match ctor_head {
-                        Some(head) => format!("<{}>.", head),
-                        None => module.map(|m| format!("{}.", m)).unwrap_or_default(),
+                        Some(head) => format!("<{}>.", self.display_ref(*head)),
+                        None => module
+                            .map(|m| format!("{}.", self.display_ref(m)))
+                            .unwrap_or_default(),
                     };
                     let type_str = self.interner.resolve(&*type_name);
                     let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                     let fields_str: Vec<String> = fields
                         .iter()
                         .map(|(fname, value)| {
-                            format!("{}: {}", self.interner.resolve(&*fname), value)
+                            format!(
+                                "{}: {}",
+                                self.interner.resolve(&*fname),
+                                self.display_ref(*value)
+                            )
                         })
                         .collect();
                     writeln!(
@@ -2292,15 +2576,21 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     .unwrap();
                 }
                 InstData::FieldGet { base, field } => {
-                    writeln!(out, "field_get {}.{}", base, self.interner.resolve(&*field)).unwrap();
+                    writeln!(
+                        out,
+                        "field_get {}.{}",
+                        self.display_ref(*base),
+                        self.interner.resolve(&*field)
+                    )
+                    .unwrap();
                 }
                 InstData::FieldSet { base, field, value } => {
                     writeln!(
                         out,
                         "field_set {}.{} = {}",
-                        base,
+                        self.display_ref(*base),
                         self.interner.resolve(&*field),
-                        value
+                        self.display_ref(*value)
                     )
                     .unwrap();
                 }
@@ -2351,7 +2641,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     type_name,
                     variant,
                 } => {
-                    let module_str = module.map(|m| format!("{}.", m)).unwrap_or_default();
+                    let module_str = module
+                        .map(|m| format!("{}.", self.display_ref(m)))
+                        .unwrap_or_default();
                     writeln!(
                         out,
                         "enum_variant {}{}::{}",
@@ -2368,8 +2660,10 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     elems_len,
                 } => {
                     let elements = self.rir.get_inst_refs(*elems_start, *elems_len);
-                    let elems_str: Vec<String> =
-                        elements.iter().map(|e| format!("{}", e)).collect();
+                    let elems_str: Vec<String> = elements
+                        .iter()
+                        .map(|e| self.display_ref(*e).to_string())
+                        .collect();
                     writeln!(out, "array_init [{}]", elems_str.join(", ")).unwrap();
                 }
                 InstData::ArrayRepeat { value, count } => {
@@ -2379,13 +2673,32 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             format!("sym:{}", sym.into_usize())
                         }
                     };
-                    writeln!(out, "array_repeat [{}; {}]", value, count_str).unwrap();
+                    writeln!(
+                        out,
+                        "array_repeat [{}; {}]",
+                        self.display_ref(*value),
+                        count_str
+                    )
+                    .unwrap();
                 }
                 InstData::IndexGet { base, index } => {
-                    writeln!(out, "index_get {}[{}]", base, index).unwrap();
+                    writeln!(
+                        out,
+                        "index_get {}[{}]",
+                        self.display_ref(*base),
+                        self.display_ref(*index)
+                    )
+                    .unwrap();
                 }
                 InstData::IndexSet { base, index, value } => {
-                    writeln!(out, "index_set {}[{}] = {}", base, index, value).unwrap();
+                    writeln!(
+                        out,
+                        "index_set {}[{}] = {}",
+                        self.display_ref(*base),
+                        self.display_ref(*index),
+                        self.display_ref(*value)
+                    )
+                    .unwrap();
                 }
 
                 // Methods
@@ -2399,9 +2712,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     writeln!(
                         out,
                         "method_call {}.{}({})",
-                        receiver,
+                        self.display_ref(*receiver),
                         self.interner.resolve(&*method),
-                        Self::format_call_args(&args)
+                        self.format_call_args(&args)
                     )
                     .unwrap();
                 }
@@ -2417,7 +2730,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         "assoc_fn_call {}::{}({})",
                         self.interner.resolve(&*type_name),
                         self.interner.resolve(&*function),
-                        Self::format_call_args(&args)
+                        self.format_call_args(&args)
                     )
                     .unwrap();
                 }
@@ -2430,18 +2743,18 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         self.interner.resolve(&*type_name)
                     )
                     .unwrap();
-                    writeln!(out, "    {}", body).unwrap();
+                    writeln!(out, "    {}", self.display_ref(*body)).unwrap();
                     writeln!(out, "}}").unwrap();
                 }
 
                 // Comptime block
                 InstData::Comptime { expr } => {
-                    writeln!(out, "comptime {{ {} }}", expr).unwrap();
+                    writeln!(out, "comptime {{ {} }}", self.display_ref(*expr)).unwrap();
                 }
 
                 // Checked block
                 InstData::Checked { expr } => {
-                    writeln!(out, "checked {{ {} }}", expr).unwrap();
+                    writeln!(out, "checked {{ {} }}", self.display_ref(*expr)).unwrap();
                 }
 
                 // Type constant
@@ -2470,8 +2783,10 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     // Print methods if any
                     if *methods_len > 0 {
                         let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
-                        let methods_str: Vec<String> =
-                            methods.iter().map(|m| format!("{}", m)).collect();
+                        let methods_str: Vec<String> = methods
+                            .iter()
+                            .map(|m| self.display_ref(*m).to_string())
+                            .collect();
                         if !fields.is_empty() {
                             write!(out, ", ").unwrap();
                         }
