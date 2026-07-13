@@ -1,6 +1,6 @@
 # Ascending aggregate layout end-to-end (RUE-311 / ADR-0040).
 #
-# Every aggregate (struct/array/String) is laid out ascending-in-address:
+# Every aggregate (struct/array/StrBuf) is laid out ascending-in-address:
 # field 0 / element 0 at the LOWEST address, slot k at base + k*8. `@raw`
 # returns the low end and `@ptr_read`/`@ptr_write`/`@ptr_offset` walk slots
 # UPWARD from it, so a raw pointer behaves identically whether it points into a

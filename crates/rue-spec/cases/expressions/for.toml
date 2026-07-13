@@ -4,7 +4,7 @@ spec_chapter = "4.8"
 name = "For Loop Expressions"
 description = """
 Built-in `for` loops (RUE-220, ADR-0037) iterate in read mode over an array, a
-String's bytes, or a String's `.chars()` scalar view.
+StrBuf's bytes, or a StrBuf's `.chars()` scalar view.
 """
 
 # =============================================================================
@@ -119,7 +119,7 @@ compile_fail = true
 error_contains = "cannot move out of borrowed value"
 
 # Iteration holds a shared borrow of the collection for the loop's duration, so
-# mutating it in the body — here via an `inout self` String method — is a
+# mutating it in the body — here via an `inout self` StrBuf method — is a
 # compile-time exclusivity error, not a runtime miscompile (RUE-257).
 [[case]]
 name = "for_mutate_collection_in_body_error"
@@ -137,7 +137,7 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "cannot mutate borrowed value"
 
-# The collection is borrowed for the loop, not consumed: a String iterated in a
+# The collection is borrowed for the loop, not consumed: a StrBuf iterated in a
 # `for` stays usable afterward (a second loop would be a use-after-move if the
 # first had moved it).
 [[case]]
@@ -159,7 +159,7 @@ fn main() -> i32 {
 exit_code = 8
 
 # =============================================================================
-# String byte view
+# StrBuf byte view
 # =============================================================================
 
 [[case]]
@@ -194,7 +194,7 @@ fn main() -> i32 {
 exit_code = 5
 
 # =============================================================================
-# String char (Unicode scalar) view
+# StrBuf char (Unicode scalar) view
 # =============================================================================
 
 [[case]]

@@ -1,11 +1,11 @@
-# String literals are interned per analyzed function and remapped into the
+# StrBuf literals are interned per analyzed function and remapped into the
 # program-global table before code generation. Generic bodies are analyzed only
 # during specialization, so their local table must be merged at that point too
 # (RUE-583).
 
 [section]
 id = "cli.specialization_strings"
-name = "String literals in specialized functions"
+name = "StrBuf literals in specialized functions"
 description = "Specialized bodies preserve and remap their local string literals."
 
 [[case]]

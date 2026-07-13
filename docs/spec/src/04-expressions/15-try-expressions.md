@@ -93,7 +93,7 @@ fn main() -> i32 {
 When the operand of `?` is a bare call to a fallible intrinsic — `@read_line`
 or one of the `@parse_*` intrinsics (§4.13) — the intrinsic's `Option` type is
 resolved from the intrinsic itself rather than from a surrounding annotation or
-`match`. Each such intrinsic has a fixed payload (`@read_line` → `String`,
+`match`. Each such intrinsic has a fixed payload (`@read_line` → `StrBuf`,
 `@parse_i64` → `i64`, and so on), so `operand?` unwraps to that payload and
 short-circuits the enclosing function with its `None` on failure. This is what
 lets `@read_line()?` and `@parse_i64(s)?` be written directly, without first

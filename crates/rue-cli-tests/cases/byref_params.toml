@@ -588,13 +588,13 @@ exit_code = 42
 
 [[case]]
 name = "inout_whole_string_reassign"
-description = "Whole-value reassignment of a String (3-slot fat pointer) through inout writes back ptr, len, and cap."
+description = "Whole-value reassignment of a StrBuf (3-slot fat pointer) through inout writes back ptr, len, and cap."
 files = [{ path = "main.rue", source = """
-fn replace(inout v: String) {
+fn replace(inout v: StrBuf) {
     v = "hello rue!";
 }
 fn main() -> i32 {
-    let mut s: String = "xx";
+    let mut s: StrBuf = "xx";
     replace(inout s);
     @dbg(s.len());
     @dbg(s);

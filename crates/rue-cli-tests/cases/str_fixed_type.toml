@@ -66,7 +66,7 @@ args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 0
 stdout = "5\n102\n195\n169\n"
 
-# An out-of-range byte index traps at runtime (exit 101), like array/String/str.
+# An out-of-range byte index traps at runtime (exit 101), like array/StrBuf/str.
 [[case]]
 name = "str_fixed_index_out_of_bounds_traps"
 files = [{ path = "main.rue", source = """

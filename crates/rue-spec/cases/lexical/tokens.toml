@@ -168,7 +168,7 @@ compile_fail = true
 error_contains = "base prefixes are lowercase"
 
 # =============================================================================
-# String Literals (syntax and legality)
+# StrBuf Literals (syntax and legality)
 # =============================================================================
 
 [[case]]

@@ -384,16 +384,16 @@ exit_code = 0
 
 [[case]]
 name = "partial_string_field_move_no_double_free"
-description = "RUE-62 with a heap type: moving one String field out of a struct must not double-free it at the struct's scope-exit drop."
+description = "RUE-62 with a heap type: moving one StrBuf field out of a struct must not double-free it at the struct's scope-exit drop."
 files = [{ path = "main.rue", source = """
-struct Holder { name: String, tag: String }
+struct Holder { name: StrBuf, tag: StrBuf }
 
-fn eat(s: String) -> i32 {
+fn eat(s: StrBuf) -> i32 {
     0
 }
 
 fn main() -> i32 {
-    let h = Holder { name: String.with_capacity(8), tag: String.with_capacity(8) };
+    let h = Holder { name: StrBuf.with_capacity(8), tag: StrBuf.with_capacity(8) };
     eat(h.name);
     @dbg(777);
     0
@@ -404,16 +404,16 @@ exit_code = 0
 
 [[case]]
 name = "branch_divergent_string_field_move_no_double_free"
-description = "RUE-156 with a heap type: a String field moved in only ONE branch must not be freed again by the struct's scope-exit drop on the moving path."
+description = "RUE-156 with a heap type: a StrBuf field moved in only ONE branch must not be freed again by the struct's scope-exit drop on the moving path."
 files = [{ path = "main.rue", source = """
-struct Holder { name: String, tag: String }
+struct Holder { name: StrBuf, tag: StrBuf }
 
-fn eat(s: String) -> i32 {
+fn eat(s: StrBuf) -> i32 {
     0
 }
 
 fn main() -> i32 {
-    let h = Holder { name: String.with_capacity(8), tag: String.with_capacity(8) };
+    let h = Holder { name: StrBuf.with_capacity(8), tag: StrBuf.with_capacity(8) };
     let c = true;
     if c {
         eat(h.name);

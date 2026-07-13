@@ -1,17 +1,17 @@
-# Design-light String methods (RUE-17 Phase 1, ADR-0035).
+# Design-light StrBuf methods (RUE-17 Phase 1, ADR-0035).
 #
-# Phase 1 adds three runtime-visible String operations on top of the Phase 2
-# byte-access primitives: `@to_string(n)` (any integer -> decimal String),
-# `String + String` concatenation, and the byte-level `contains` / `starts_with`
+# Phase 1 adds three runtime-visible StrBuf operations on top of the Phase 2
+# byte-access primitives: `@to_string(n)` (any integer -> decimal StrBuf),
+# `StrBuf + StrBuf` concatenation, and the byte-level `contains` / `starts_with`
 # predicates. Every operation lowers to an `extern "C"` runtime call whose ABI
-# (String flattened to ptr/len/cap, sret return buffer for the heap results) is
+# (StrBuf flattened to ptr/len/cap, sret return buffer for the heap results) is
 # exactly what a spec-harness stdout check cannot exercise end to end — hence
 # these exact-stdout runs through the real driver.
 
 [section]
 id = "cli.string_phase1"
-name = "String Phase 1 methods"
-description = "Integer-to-String, concatenation, and byte-level search on String."
+name = "StrBuf Phase 1 methods"
+description = "Integer-to-StrBuf, concatenation, and byte-level search on StrBuf."
 
 [[case]]
 name = "to_string_demo"
@@ -128,7 +128,7 @@ stdout = "true\nfalse\ntrue\ntrue\nfalse\n5\n"
 
 [[case]]
 name = "string_plus_integer_rejected"
-description = "String + int is a type error (E0206); there is no implicit String/int conversion."
+description = "StrBuf + int is a type error (E0206); there is no implicit StrBuf/int conversion."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let a = "foo";

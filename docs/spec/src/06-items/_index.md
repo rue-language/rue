@@ -46,7 +46,7 @@ User-defined type names (structs and enums) **MUST** be unique within a program.
 
 {{ rule(id="6.0:3", cat="legality-rule") }}
 
-User-defined types **MUST NOT** use names reserved for built-in types. Currently, the reserved growable-string type names are `StrBuf` and its deprecated alias `String`.
+User-defined types **MUST NOT** use names reserved for built-in types. Currently, the reserved growable-string type name is `StrBuf`.
 
 {{ rule(id="6.0:4", cat="example") }}
 
@@ -66,6 +66,6 @@ User-defined functions **MUST NOT** use names reserved for runtime and code-gene
 fn __rue_alloc() -> i32 { 0 }  // compile error: `__rue_` prefix is reserved
 
 // OK: `String__len` is an ordinary identifier, distinct from the built-in
-// `String.len` method (whose runtime symbol is `__rue_String_len`).
+// `StrBuf.len` method (whose runtime symbol is `__rue_String_len`).
 fn String__len() -> i32 { 0 }  // allowed
 ```

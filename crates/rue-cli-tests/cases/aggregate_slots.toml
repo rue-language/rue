@@ -1,6 +1,6 @@
 # Multi-slot aggregate consumer sites (RUE-118).
 #
-# A multi-slot aggregate (struct, struct-with-array, or the 3-slot String fat
+# A multi-slot aggregate (struct, struct-with-array, or the 3-slot StrBuf fat
 # pointer) read from a *place* — a struct field `h.s`/`w.p` or a rebound local —
 # must materialize ALL its slots at every consumer site, not just slot 0. These
 # pin the fixed behavior after routing every consumer (call arg, return, Alloc,
@@ -75,12 +75,12 @@ fn main() -> i32 {
 """ }]
 exit_code = 30
 
-# Store of a String sourced from a struct field — previously an ICE
+# Store of a StrBuf sourced from a struct field — previously an ICE
 # ("string should have fat pointer fields in Store").
 [[case]]
 name = "store_string_from_field"
 files = [{ path = "main.rue", source = """
-struct Holder { s: String, n: i32 }
+struct Holder { s: StrBuf, n: i32 }
 fn main() -> i32 {
     let h = Holder { s: "hello", n: 7 };
     let mut s2 = "init";
@@ -90,12 +90,12 @@ fn main() -> i32 {
 """ }]
 exit_code = 5
 
-# @dbg of a String sourced from a struct field — previously an ICE
+# @dbg of a StrBuf sourced from a struct field — previously an ICE
 # ("string value should have field vregs for fat pointer"). Prints the string.
 [[case]]
 name = "dbg_string_from_field"
 files = [{ path = "main.rue", source = """
-struct Holder { s: String, n: i32 }
+struct Holder { s: StrBuf, n: i32 }
 fn main() -> i32 {
     let h = Holder { s: "hi", n: 1 };
     @dbg(h.s);
@@ -422,15 +422,15 @@ fn main() -> i32 {
 exit_code = 0
 
 # ---------------------------------------------------------------------------
-# RUE-192: [String; N] elements. All fat-pointer (ptr/len/cap) slots of a
-# String element must be materialized. Was three distinct ICEs / garbage:
+# RUE-192: [StrBuf; N] elements. All fat-pointer (ptr/len/cap) slots of a
+# StrBuf element must be materialized. Was three distinct ICEs / garbage:
 # @dbg(arr[0]) (cfg_lower 'string value should have field vregs'), a rebind
 # `let s = arr[0]`, and `arr[i].len()` (garbage len).
 [[case]]
 name = "string_array_dbg_element"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr: [String; 1] = ["hi"];
+    let arr: [StrBuf; 1] = ["hi"];
     @dbg(arr[0]);
     0
 }
@@ -441,7 +441,7 @@ stdout = "hi\n"
 name = "string_array_rebind_element"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr: [String; 1] = ["hi"];
+    let arr: [StrBuf; 1] = ["hi"];
     let s = arr[0];
     @dbg(s);
     0
@@ -452,9 +452,9 @@ stdout = "hi\n"
 [[case]]
 name = "string_array_pass_by_value"
 files = [{ path = "main.rue", source = """
-fn takes(s: String) -> u64 { s.len() }
+fn takes(s: StrBuf) -> u64 { s.len() }
 fn main() -> i32 {
-    let arr: [String; 1] = ["hello"];
+    let arr: [StrBuf; 1] = ["hello"];
     @dbg(takes(arr[0]));
     0
 }
@@ -465,7 +465,7 @@ stdout = "5\n"
 name = "string_array_element_len"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr: [String; 2] = ["hello", "xy"];
+    let arr: [StrBuf; 2] = ["hello", "xy"];
     @dbg(arr[0].len()); @dbg(arr[1].len());
     0
 }
@@ -474,7 +474,7 @@ stdout = "5\n2\n"
 
 # ---------------------------------------------------------------------------
 # RUE-193: array drop glue over a multi-slot element type. Each element's
-# slots past slot 0 were garbage (second field corrupted), and [String; 3]
+# slots past slot 0 were garbage (second field corrupted), and [StrBuf; 3]
 # (9 slots) ICE'd 'array drop with 9 element slots exceeds 6 argument
 # registers' — fixed by the flattened-slot Call helper that spills past the
 # argument registers (RUE-106 #935 pattern).
@@ -490,13 +490,13 @@ fn main() -> i32 {
 """ }]
 stdout = "10\n11\n20\n21\n30\n31\n"
 
-# [String; 3] = 9 flattened slots > 6 x86-64 arg regs / > 8 aarch64 arg regs:
+# [StrBuf; 3] = 9 flattened slots > 6 x86-64 arg regs / > 8 aarch64 arg regs:
 # the drop-glue call must spill the overflow onto the stack, not panic.
 [[case]]
 name = "array_drop_string_nine_slots"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let _arr: [String; 3] = ["aa", "bb", "cc"];
+    let _arr: [StrBuf; 3] = ["aa", "bb", "cc"];
     0
 }
 """ }]

@@ -94,7 +94,7 @@ stdout = """
 name = "string_builder_push_str"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     s.push_str("Hello");
     s.push_str(", ");
     s.push_str("Rue!");
@@ -113,7 +113,7 @@ Hello, Rue!
 name = "dbg_string_then_use"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     s.push_str("Hello");
     @dbg(s);
     @dbg(s.len());
@@ -130,7 +130,7 @@ name = "string_equality_branches"
 files = [
   { path = "main.rue", source = """
 fn main() -> i32 {
-    let OptStr = @import("opt.rue").Option(String);
+    let OptStr = @import("opt.rue").Option(StrBuf);
     match @read_line() {
         OptStr.Some(answer) => {
             if answer == "yes" {

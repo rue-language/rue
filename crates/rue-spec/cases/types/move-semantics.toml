@@ -1604,9 +1604,9 @@ name = "borrow_method_preserves_sibling_field_move"
 spec = ["3.8:24"]
 description = "A builtin by-ref method call on a sibling field must not erase earlier move records (RUE-33)"
 source = """
-struct Wrap { s: String, t: String }
+struct Wrap { s: StrBuf, t: StrBuf }
 
-fn consume(s: String) -> i32 { 1 }
+fn consume(s: StrBuf) -> i32 { 1 }
 
 fn main() -> i32 {
     let w = Wrap { s: "hello", t: "world" };
@@ -1624,10 +1624,10 @@ name = "borrow_call_arg_preserves_sibling_field_move"
 spec = ["3.8:24"]
 description = "Passing a sibling field as a borrow argument must not erase earlier move records (RUE-33 site 2 regression pin)"
 source = """
-struct Wrap { s: String, t: String }
+struct Wrap { s: StrBuf, t: StrBuf }
 
-fn consume(s: String) -> i32 { 1 }
-fn peek(borrow s: String) -> i32 { 2 }
+fn consume(s: StrBuf) -> i32 { 1 }
+fn peek(borrow s: StrBuf) -> i32 { 2 }
 
 fn main() -> i32 {
     let w = Wrap { s: "hello", t: "world" };
@@ -1645,9 +1645,9 @@ name = "borrow_method_receiver_still_usable_after"
 spec = ["3.8:24"]
 description = "A by-ref builtin method call does not itself move its receiver: sibling and receiver stay usable"
 source = """
-struct Wrap { s: String, t: String }
+struct Wrap { s: StrBuf, t: StrBuf }
 
-fn consume(s: String) -> i32 { 21 }
+fn consume(s: StrBuf) -> i32 { 21 }
 
 fn main() -> i32 {
     let w = Wrap { s: "hello", t: "world" };

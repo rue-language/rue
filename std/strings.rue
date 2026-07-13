@@ -1,7 +1,7 @@
-// std.strings — byte-oriented text helpers over `String` (RUE-677).
+// std.strings — byte-oriented text helpers over `StrBuf` (RUE-677).
 //
-// Built on the working `String` surface: byte indexing (`s[i] -> u8`), `.len()`,
-// and the mutating builders `String.new()` + `.push(byte)`. Everything here is
+// Built on the working `StrBuf` surface: byte indexing (`s[i] -> u8`), `.len()`,
+// and the mutating builders `StrBuf.new()` + `.push(byte)`. Everything here is
 // byte-level (ASCII-oriented) and never inspects UTF-8 boundaries, matching
 // std.ascii. Fallible parses/searches return `option.Option(T)`.
 //
@@ -11,14 +11,14 @@
 //     std.strings.trim("  hi  ");          // "hi"
 //     std.strings.repeat("ab", 3);         // "ababab"
 //
-// COMPILER-BUG WORKAROUND (see below): a `String` byte index `s[i]` used
+// COMPILER-BUG WORKAROUND (see below): a `StrBuf` byte index `s[i]` used
 // DIRECTLY inside an `if`/`while` condition expression is currently rejected
 // with E0900 "cannot index into non-array type 'StrBuf'" — even though the very
 // same `s[i]` works when bound to a `let` first or used in tail position.
 // Minimal repro:
 //
-//     fn f(s: String) -> u8 { if s[0] == 45 { 1 } else { 9 } }   // E0900
-//     fn f(s: String) -> u8 { let c = s[0]; if c == 45 { 1 } else { 9 } }  // OK
+//     fn f(s: StrBuf) -> u8 { if s[0] == 45 { 1 } else { 9 } }   // E0900
+//     fn f(s: StrBuf) -> u8 { let c = s[0]; if c == 45 { 1 } else { 9 } }  // OK
 //
 // So every index below reads the byte into a local in statement position first,
 // then tests the local. This is filed for the compiler team; when it is fixed
@@ -34,7 +34,7 @@ const math = @import("math.rue");
 // trap). NOTE: because magnitude is accumulated as a positive `i64` before an
 // optional negation, `i64::MIN` (-9223372036854775808) is reported as overflow
 // (`None`) — its magnitude does not fit a positive `i64`.
-pub fn parse_int(s: String) -> option.Option(i64) {
+pub fn parse_int(s: StrBuf) -> option.Option(i64) {
     let O = option.Option(i64);
     let n = s.len();
     if n == 0 {
@@ -83,7 +83,7 @@ pub fn parse_int(s: String) -> option.Option(i64) {
 }
 
 // Index of the first byte equal to `byte`, or `None`.
-pub fn find(s: String, byte: u8) -> option.Option(u64) {
+pub fn find(s: StrBuf, byte: u8) -> option.Option(u64) {
     let O = option.Option(u64);
     let n = s.len();
     let mut i: u64 = 0;
@@ -98,7 +98,7 @@ pub fn find(s: String, byte: u8) -> option.Option(u64) {
 }
 
 // Index of the last byte equal to `byte`, or `None`.
-pub fn rfind(s: String, byte: u8) -> option.Option(u64) {
+pub fn rfind(s: StrBuf, byte: u8) -> option.Option(u64) {
     let O = option.Option(u64);
     let mut i = s.len();
     while i > 0 {
@@ -112,7 +112,7 @@ pub fn rfind(s: String, byte: u8) -> option.Option(u64) {
 }
 
 // Number of bytes equal to `byte`.
-pub fn count(s: String, byte: u8) -> u64 {
+pub fn count(s: StrBuf, byte: u8) -> u64 {
     let mut c: u64 = 0;
     let n = s.len();
     let mut i: u64 = 0;
@@ -127,7 +127,7 @@ pub fn count(s: String, byte: u8) -> u64 {
 }
 
 // Whether the first byte of `s` equals `byte` (false for the empty string).
-pub fn starts_with_byte(s: String, byte: u8) -> bool {
+pub fn starts_with_byte(s: StrBuf, byte: u8) -> bool {
     if s.len() == 0 {
         false
     } else {
@@ -137,7 +137,7 @@ pub fn starts_with_byte(s: String, byte: u8) -> bool {
 }
 
 // Copy of `s` with leading ASCII whitespace removed.
-pub fn trim_start(s: String) -> String {
+pub fn trim_start(s: StrBuf) -> StrBuf {
     let n = s.len();
     let mut start: u64 = 0;
     let mut scanning = true;
@@ -149,7 +149,7 @@ pub fn trim_start(s: String) -> String {
             scanning = false;
         }
     }
-    let mut out = String.new();
+    let mut out = StrBuf.new();
     let mut i = start;
     while i < n {
         let c = s[i];
@@ -160,7 +160,7 @@ pub fn trim_start(s: String) -> String {
 }
 
 // Copy of `s` with trailing ASCII whitespace removed.
-pub fn trim_end(s: String) -> String {
+pub fn trim_end(s: StrBuf) -> StrBuf {
     let n = s.len();
     let mut end = n;
     let mut scanning = true;
@@ -172,7 +172,7 @@ pub fn trim_end(s: String) -> String {
             scanning = false;
         }
     }
-    let mut out = String.new();
+    let mut out = StrBuf.new();
     let mut i: u64 = 0;
     while i < end {
         let c = s[i];
@@ -183,7 +183,7 @@ pub fn trim_end(s: String) -> String {
 }
 
 // Copy of `s` with both leading and trailing ASCII whitespace removed.
-pub fn trim(s: String) -> String {
+pub fn trim(s: StrBuf) -> StrBuf {
     let n = s.len();
     let mut start: u64 = 0;
     let mut sc = true;
@@ -205,7 +205,7 @@ pub fn trim(s: String) -> String {
             ec = false;
         }
     }
-    let mut out = String.new();
+    let mut out = StrBuf.new();
     let mut i = start;
     while i < end {
         let c = s[i];
@@ -216,8 +216,8 @@ pub fn trim(s: String) -> String {
 }
 
 // `s` concatenated `n` times (empty string when `n == 0`).
-pub fn repeat(s: String, n: u64) -> String {
-    let mut out = String.new();
+pub fn repeat(s: StrBuf, n: u64) -> StrBuf {
+    let mut out = StrBuf.new();
     let len = s.len();
     let mut k: u64 = 0;
     while k < n {

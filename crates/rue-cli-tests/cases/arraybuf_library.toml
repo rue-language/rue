@@ -729,10 +729,10 @@ fn main() {
 stdout = "900\n1\n2\n901\n3\n902\n4\n903\n"
 exit_code = 0
 
-# ArrayBuf(String): a list of owned, heap-backed strings. Push two, then read
+# ArrayBuf(StrBuf): a list of owned, heap-backed strings. Push two, then read
 # each back by POPPING it out (moving — the sound way for a non-Copy element;
-# `get` would return an aliasing bit-copy of the String header, a masked
-# double-free, RUE-651). String carries a destructor (it owns a heap buffer), so
+# `get` would return an aliasing bit-copy of the StrBuf header, a masked
+# double-free, RUE-651). StrBuf carries a destructor (it owns a heap buffer), so
 # this exercises the RUE-646 droppable-element path with a builtin owning type:
 # it compiles, round-trips by move-out, and drops each string exactly once. pop
 # returns last-pushed first: world!(6) then hello(5). Score = 1 (len==2) + 1000
@@ -745,12 +745,12 @@ const std = @import("std");
 const ArrayBuf = std.arraybuf.ArrayBuf;
 
 fn main() -> i32 {
-    let Buf = ArrayBuf(String);
-    let OStr = std.option.Option(String);
+    let Buf = ArrayBuf(StrBuf);
+    let OStr = std.option.Option(StrBuf);
     let mut b = Buf.new();
-    let mut s0 = String.new();
+    let mut s0 = StrBuf.new();
     s0.push_str("hello");
-    let mut s1 = String.new();
+    let mut s1 = StrBuf.new();
     s1.push_str("world!");
     b.push(s0);
     b.push(s1);
@@ -770,16 +770,16 @@ fn main() -> i32 {
 exit_code = 243
 
 # A by-copy read (`get`) of a drop-glue element is REJECTED (E0711, RUE-651).
-# Before this gate, `ArrayBuf(String)::get(0)` returned a bitwise copy of the
-# String that aliased its owned heap buffer; both the copy and the still-live
+# Before this gate, `ArrayBuf(StrBuf)::get(0)` returned a bitwise copy of the
+# StrBuf that aliased its owned heap buffer; both the copy and the still-live
 # slot ran drop glue at scope exit — a double-free that segfaulted in safe code
 # (verified: this program exited 139 before the fix). The reader now gates on its
 # element type and directs the caller to `pop` (which moves the element out,
-# leaving one owner). Storing/pushing/popping a String element stays legal — the
+# leaving one owner). Storing/pushing/popping a StrBuf element stays legal — the
 # `arraybuf_strbuf_elements` case above (which uses `pop`) still runs.
 [[case]]
 name = "arraybuf_get_on_drop_glue_element_rejected"
-description = "A by-copy `get` of a drop-glue element (String) is rejected with E0711 and pointed at `pop`, instead of a double-free segfault (RUE-651)."
+description = "A by-copy `get` of a drop-glue element (StrBuf) is rejected with E0711 and pointed at `pop`, instead of a double-free segfault (RUE-651)."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
@@ -788,10 +788,10 @@ files = [{ path = "main.rue", source = """
 const std = @import("std");
 
 fn main() -> i32 {
-    let Buf = std.arraybuf.ArrayBuf(String);
-    let OStr = std.option.Option(String);
+    let Buf = std.arraybuf.ArrayBuf(StrBuf);
+    let OStr = std.option.Option(StrBuf);
     let mut b = Buf.new();
-    let mut s0 = String.new();
+    let mut s0 = StrBuf.new();
     s0.push_str("hello");
     b.push(s0);
     let n = match b.get(0) { OStr.Some(s) => 1, OStr.None => 0 };

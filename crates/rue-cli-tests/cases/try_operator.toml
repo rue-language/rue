@@ -1,7 +1,7 @@
 [section]
 id = "cli.try_operator"
 name = "The `?` (try) operator on Option"
-description = "End-to-end runtime behavior of `?`: unwrap Some, short-circuit None, propagate a String payload, and the two static errors (E0503/E0504). RUE-6, ADR-0038."
+description = "End-to-end runtime behavior of `?`: unwrap Some, short-circuit None, propagate a StrBuf payload, and the two static errors (E0503/E0504). RUE-6, ADR-0038."
 
 # The `?` operator unwraps Some and short-circuits None, driven from real stdin
 # through the compiled binary. `pick` returns Some for a positive count and None
@@ -45,7 +45,7 @@ triple: none
 """
 exit_code = 0
 
-# A non-Copy (String) payload moves out through `?` correctly on the Some path
+# A non-Copy (StrBuf) payload moves out through `?` correctly on the Some path
 # and is not touched on the None path.
 [[case]]
 name = "try_string_payload"
@@ -54,17 +54,17 @@ files = [
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
-fn lookup(found: bool) -> Option(String) {
-    let O = Option(String);
+fn lookup(found: bool) -> Option(StrBuf) {
+    let O = Option(StrBuf);
     if found { O.Some("world") } else { O.None }
 }
-fn greet(found: bool) -> Option(String) {
-    let O = Option(String);
+fn greet(found: bool) -> Option(StrBuf) {
+    let O = Option(StrBuf);
     let name = lookup(found)?;
     O.Some("hello " + name)
 }
 fn show(found: bool) {
-    let O = Option(String);
+    let O = Option(StrBuf);
     match greet(found) {
         O.Some(s) => println(s),
         O.None => println("(nothing)"),

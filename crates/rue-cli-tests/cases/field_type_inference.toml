@@ -30,7 +30,7 @@ exit_code = 1
 name = "string_field_method_receiver_anchors_literal"
 description = "RUE-126: h.s.len() resolves (field receiver is concrete) and anchors the compared literal."
 files = [{ path = "main.rue", source = """
-struct Holder { s: String }
+struct Holder { s: StrBuf }
 fn main() -> i32 {
     let h = Holder { s: "hello" };
     if h.s.len() == 5 { 5 } else { 0 }

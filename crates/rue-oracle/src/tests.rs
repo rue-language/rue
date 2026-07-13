@@ -209,7 +209,7 @@ fn panic_and_assert_have_exact_observable_semantics() {
 #[test]
 fn assert_eagerly_evaluates_condition_then_message_even_when_true() {
     let out = run(r#"fn condition() -> bool { @dbg(1); true }
-        fn message() -> String { @dbg(2); "unused" }
+        fn message() -> StrBuf { @dbg(2); "unused" }
         fn main() -> i32 { @assert(condition(), message()); 42 }"#);
     assert_eq!(out.exit_code, 42);
     assert_eq!(out.stdout, "1\n2\n");
@@ -220,7 +220,7 @@ fn assert_eagerly_evaluates_condition_then_message_even_when_true() {
 #[test]
 fn panic_stderr_uses_raw_message_bytes_and_native_lossy_decoding() {
     let out = run("fn main() -> i32 {
-            let mut message = String.new();
+            let mut message = StrBuf.new();
             message.push(255);
             @panic(message);
             0
@@ -313,7 +313,7 @@ fn oversized_string_dbg_is_unsupported() {
 #[test]
 fn stdout_cap_counts_raw_bytes_before_lossy_rendering() {
     let src = "fn main() -> i32 {
-        let mut s = String.new();
+        let mut s = StrBuf.new();
         s.push(195);
         @dbg(s);
         0
@@ -489,7 +489,7 @@ fn only_model_gaps_are_registrable() {
 #[test]
 fn exact_string_capacity_is_implementation_defined() {
     let unsupported =
-        expect_unsupported("fn main() -> i32 { let s = String.new(); @intCast(s.capacity()) }");
+        expect_unsupported("fn main() -> i32 { let s = StrBuf.new(); @intCast(s.capacity()) }");
     assert_eq!(
         unsupported.kind(),
         UnsupportedKind::ImplementationDefined(ImplementationDefinedKind::StringCapacityValue)
@@ -867,9 +867,9 @@ fn min_mod_neg_one_traps() {
 #[test]
 fn string_equality_by_content() {
     let src = "fn main() -> i32 {
-        let mut a = String.new();
+        let mut a = StrBuf.new();
         a.push_str(\"hi\");
-        let mut b = String.new();
+        let mut b = StrBuf.new();
         b.push_str(\"hi\");
         if a == b { 7 } else { 0 }
     }";
@@ -879,7 +879,7 @@ fn string_equality_by_content() {
 #[test]
 fn string_build_and_len() {
     let src = "fn main() -> i32 {
-        let mut s = String.new();
+        let mut s = StrBuf.new();
         s.push_str(\"hi\");
         let n: u64 = s.len();
         if n == 2 { 0 } else { 1 }
@@ -890,7 +890,7 @@ fn string_build_and_len() {
 #[test]
 fn string_dbg_and_concat() {
     let src = "fn main() -> i32 {
-        let mut s = String.new();
+        let mut s = StrBuf.new();
         s.push_str(\"foo\");
         s.push_str(\"bar\");
         @dbg(s);
@@ -975,7 +975,7 @@ fn string_push_models_raw_non_utf8_byte() {
     // not valid UTF-8, but the byte-string model permits storing it; byte
     // operations must still see the raw byte.
     let src = "fn main() -> i32 {
-        let mut s = String.new();
+        let mut s = StrBuf.new();
         s.push(195);
         @dbg(s.len());
         @dbg(s[0]);
@@ -988,7 +988,7 @@ fn string_push_models_raw_non_utf8_byte() {
 fn string_chars_traps_on_raw_invalid_utf8_byte() {
     // Strict `.chars()` is the UTF-8 validation boundary for byte strings.
     let src = "fn main() -> i32 {
-        let mut s = String.new();
+        let mut s = StrBuf.new();
         s.push(195);
         for c in s.chars() {
             @dbg(c);
@@ -1005,7 +1005,7 @@ fn string_chars_lossy_replaces_raw_invalid_utf8_byte() {
     // The lossy view mirrors the runtime's replacement behavior: a lone invalid
     // lead byte becomes U+FFFD and advances by one byte.
     let src = "fn main() -> i32 {
-        let mut s = String.new();
+        let mut s = StrBuf.new();
         s.push(195);
         let mut count = 0;
         for c in s.chars_lossy() {
@@ -1060,7 +1060,7 @@ fn string_chars_lossy_matches_strict_over_valid_utf8() {
 #[test]
 fn string_is_empty_and_clear() {
     let src = "fn main() -> i32 {
-        let mut s = String.new();
+        let mut s = StrBuf.new();
         s.push_str(\"x\");
         let a: bool = s.is_empty();
         s.clear();

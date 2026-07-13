@@ -1,16 +1,13 @@
 # StrBuf — the growable-string rung of ADR-0043 (RUE-325).
 #
-# ADR-0043 de-blesses `String` into `StrBuf`, the string analog of `ArrayBuf`.
-# `StrBuf` is now the canonical name for the 3-word {ptr,len,cap} heap-backed
-# growable string; `String` remains a deprecated source-level alias for one
-# migration cycle. These cases pin the runtime-visible behavior (exact stdout)
-# of the canonical `StrBuf` spelling and prove the `String` alias compiles and
-# runs identically.
+# ADR-0043 de-blesses the old `String` type into `StrBuf`, the string analog of
+# `ArrayBuf`. These cases pin the runtime-visible behavior (exact stdout) of
+# the canonical `StrBuf` spelling.
 
 [section]
 id = "cli.strbuf_library"
 name = "StrBuf growable string"
-description = "The StrBuf canonical name (ADR-0043) builds, mutates, concatenates, and prints; the deprecated String alias behaves identically."
+description = "The StrBuf name (ADR-0043) builds, mutates, concatenates, and prints."
 
 [[case]]
 name = "strbuf_new_push_str_len_print"
@@ -45,18 +42,16 @@ stdout = "n=42\n"
 exit_code = 0
 
 [[case]]
-name = "string_alias_parity"
-description = "The deprecated `String` alias resolves to the same StrBuf type: annotation, assoc fn, and equality against a StrBuf all work."
+name = "retired_string_name_is_unknown"
+description = "The retired `String` name receives the normal unknown-type diagnostic."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut a: String = String.new();
-    a.push_str("abc");
-    let mut b = StrBuf.new();
-    b.push_str("abc");
-    if a == b { 0 } else { 1 }
+    let s: String = "abc";
+    0
 }
 """ }]
-exit_code = 0
+compile_fail = true
+error_contains = ["E0204", "unknown type 'String'"]
 
 [[case]]
 name = "strbuf_reserved_name"

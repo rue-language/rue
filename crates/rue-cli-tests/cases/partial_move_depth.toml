@@ -18,9 +18,9 @@ description = "Using an aggregate whole after a nested subfield moved is E0205."
 name = "use_whole_after_subfield_move_depth2"
 files = [
     { path = "main.rue", source = """
-struct Inner { s: String, n: i32 }
+struct Inner { s: StrBuf, n: i32 }
 struct Outer { inner: Inner, tag: i32 }
-fn consume(s: String) -> i32 { @intCast(s.len()) }
+fn consume(s: StrBuf) -> i32 { @intCast(s.len()) }
 fn consume_inner(i: Inner) -> i32 { @intCast(i.s.len()) + i.n }
 fn main() -> i32 {
     let o = Outer { inner: Inner { s: "hi", n: 5 }, tag: 9 };
@@ -37,10 +37,10 @@ error_contains = ["E0205", "o.inner"]
 name = "use_whole_after_subfield_move_depth3"
 files = [
     { path = "main.rue", source = """
-struct A { s: String, k: i32 }
+struct A { s: StrBuf, k: i32 }
 struct B { a: A, k: i32 }
 struct C { b: B, k: i32 }
-fn cs(s: String) -> i32 { @intCast(s.len()) }
+fn cs(s: StrBuf) -> i32 { @intCast(s.len()) }
 fn cb(b: B) -> i32 { @intCast(b.a.s.len()) }
 fn main() -> i32 {
     let c = C { b: B { a: A { s: "hi", k: 1 }, k: 2 }, k: 3 };
@@ -57,8 +57,8 @@ error_contains = ["E0205", "c.b"]
 name = "use_whole_after_field_move_depth1"
 files = [
     { path = "main.rue", source = """
-struct Inner { s: String, n: i32 }
-fn consume(s: String) -> i32 { @intCast(s.len()) }
+struct Inner { s: StrBuf, n: i32 }
+fn consume(s: StrBuf) -> i32 { @intCast(s.len()) }
 fn consume_inner(i: Inner) -> i32 { @intCast(i.s.len()) + i.n }
 fn main() -> i32 {
     let inner = Inner { s: "hi", n: 5 };
@@ -76,8 +76,8 @@ error_contains = ["E0205", "inner"]
 name = "use_whole_element_after_subfield_move"
 files = [
     { path = "main.rue", source = """
-struct Inner { s: String, n: i32 }
-fn consume(s: String) -> i32 { @intCast(s.len()) }
+struct Inner { s: StrBuf, n: i32 }
+fn consume(s: StrBuf) -> i32 { @intCast(s.len()) }
 fn consume_inner(i: Inner) -> i32 { @intCast(i.s.len()) + i.n }
 fn main() -> i32 {
     let arr = [Inner { s: "hi", n: 5 }, Inner { s: "yo", n: 6 }];
@@ -95,9 +95,9 @@ error_contains = ["E0205", "arr[0]"]
 name = "disjoint_sibling_after_subfield_move_ok"
 files = [
     { path = "main.rue", source = """
-struct Inner { s: String, n: i32 }
+struct Inner { s: StrBuf, n: i32 }
 struct Outer { inner: Inner, tag: i32 }
-fn consume(s: String) -> i32 { @intCast(s.len()) }
+fn consume(s: StrBuf) -> i32 { @intCast(s.len()) }
 fn main() -> i32 {
     let o = Outer { inner: Inner { s: "hi", n: 5 }, tag: 9 };
     consume(o.inner.s);
@@ -113,8 +113,8 @@ exit_code = 9
 name = "disjoint_sibling_element_move_ok"
 files = [
     { path = "main.rue", source = """
-struct Inner { s: String, n: i32 }
-fn consume(s: String) -> i32 { @intCast(s.len()) }
+struct Inner { s: StrBuf, n: i32 }
+fn consume(s: StrBuf) -> i32 { @intCast(s.len()) }
 fn main() -> i32 {
     let arr = [Inner { s: "hi", n: 5 }, Inner { s: "yo", n: 6 }];
     consume(arr[0].s);

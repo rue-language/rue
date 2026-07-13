@@ -349,7 +349,7 @@ mod tests {
                         drop fn Resource(self) { () }
 
                         @allow(unused_function)
-                        fn exercise(values: [i32; LENGTH], text: String) -> i32 {
+                        fn exercise(values: [i32; LENGTH], text: StrBuf) -> i32 {
                             let mut resource = Resource.make();
                             resource.set(1);
                             resource.value = 2;

@@ -5,7 +5,7 @@ const shared = @import("shared.rue");
 
 struct Payload {
     value: i32,
-    text: String,
+    text: StrBuf,
 
     fn score(borrow self) -> i32 {
         shared.bump(self.value)
@@ -19,13 +19,13 @@ drop fn Payload(self) {
 
 enum Choice {
     Empty,
-    Text(String),
-    Many([String; 2]),
+    Text(StrBuf),
+    Many([StrBuf; 2]),
 }
 
 // Cross-kind collisions must occupy the same path-qualified glue namespace.
 struct Clash {
-    text: String,
+    text: StrBuf,
 }
 
 fn left_entry(value: i32) -> i32 {

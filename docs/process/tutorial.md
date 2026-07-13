@@ -80,7 +80,7 @@ pretend future library ergonomics already exist.
   `@import("std")`, namespace-qualified access, and no prelude initially.
 - Collection and string examples should follow ADR-0043 terminology:
   fixed arrays, second-class slices, and growable `ArrayBuf` / `StrBuf`-style
-  library types. Avoid reviving deprecated `String`-as-special-type language in
+  library types. Avoid reviving `String`-as-special-type language in
   new tutorial prose.
 
 ## Child issue sequencing

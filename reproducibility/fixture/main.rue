@@ -10,7 +10,7 @@ fn main() -> i32 {
     let right_score = right.compute(5);
 
     // Distinct literals force stable rodata ordering and runtime relocations.
-    let order: String = if left_score < right_score {
+    let order: StrBuf = if left_score < right_score {
         "left-before-right"
     } else {
         "right-before-left"

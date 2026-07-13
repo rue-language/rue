@@ -2057,7 +2057,7 @@ mod tests {
 
     #[test]
     fn declaration_shell_adapter_preserves_semantic_predeclaration_failure_provenance() {
-        let (tokens, interner) = Lexer::new("struct String {} fn main() {}")
+        let (tokens, interner) = Lexer::new("struct StrBuf {} fn main() {}")
             .tokenize()
             .unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();

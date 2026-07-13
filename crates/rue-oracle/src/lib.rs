@@ -840,7 +840,7 @@ impl<'a> Interp<'a> {
     fn is_owned_string_struct(&self, struct_id: rue_air::StructId) -> bool {
         matches!(
             self.state.type_pool.struct_def(struct_id).name.as_str(),
-            "String" | "StrBuf"
+            "StrBuf"
         )
     }
 

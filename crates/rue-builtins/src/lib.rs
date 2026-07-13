@@ -271,7 +271,7 @@ pub struct BuiltinMethod {
 /// its layout (fields), behavior (operators), and available operations (methods).
 #[derive(Debug, Clone)]
 pub struct BuiltinTypeDef {
-    /// Type name as it appears in source code (e.g., "String")
+    /// Type name as it appears in source code (e.g., "StrBuf")
     pub name: &'static str,
     /// Fields that make up the struct layout
     pub fields: &'static [BuiltinField],
@@ -304,10 +304,9 @@ pub struct BuiltinTypeDef {
 /// literals (with `cap = 0`) to be safely dropped without freeing.
 ///
 /// ADR-0043 renamed this type `String` -> `StrBuf` (the growable-string rung of
-/// the collection/string trio, the string analog of `ArrayBuf`). `String`
-/// remains a deprecated source-level alias for one migration cycle (see
-/// [`STRING_ALIAS_NAME`]); the runtime symbols keep their `__rue_String_*`
-/// spelling as an internal implementation detail (not user-visible).
+/// the collection/string trio, the string analog of `ArrayBuf`). The runtime
+/// symbols keep their `__rue_String_*` spelling as an internal implementation
+/// detail (not user-visible).
 pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
     name: "StrBuf",
     fields: &[
@@ -595,19 +594,9 @@ pub fn get_builtin_type(name: &str) -> Option<&'static BuiltinTypeDef> {
     BUILTIN_TYPES.iter().find(|t| t.name == name).copied()
 }
 
-/// Deprecated source-level alias for the growable-string type [`STRING_TYPE`],
-/// which ADR-0043 renamed `String` -> `StrBuf`. Accepted as a spelling of
-/// `StrBuf` for one migration cycle; a type annotation `s: String` resolves to
-/// the same synthetic struct as `s: StrBuf`. The name stays reserved (users may
-/// not define their own `String`) so the alias can later be removed cleanly.
-pub const STRING_ALIAS_NAME: &str = "String";
-
 /// Check if a name is reserved for a built-in type.
-///
-/// Reserves the canonical built-in names (currently just `StrBuf`) plus the
-/// deprecated [`STRING_ALIAS_NAME`] (`String`) that still resolves to `StrBuf`.
 pub fn is_reserved_type_name(name: &str) -> bool {
-    name == STRING_ALIAS_NAME || BUILTIN_TYPES.iter().any(|t| t.name == name)
+    BUILTIN_TYPES.iter().any(|t| t.name == name)
 }
 
 /// Runtime symbols exported UNMANGLED outside the `__rue_` prefix, because
@@ -693,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_string_type_exists() {
-        // ADR-0043: canonical name is `StrBuf`; `String` is a deprecated alias.
+        // ADR-0043: the growable string's source-level name is `StrBuf`.
         assert_eq!(STRING_TYPE.name, "StrBuf");
         assert_eq!(STRING_TYPE.fields.len(), 3);
         assert!(!STRING_TYPE.is_copy);
@@ -759,8 +748,6 @@ mod tests {
 
     #[test]
     fn test_get_builtin_type() {
-        // Canonical lookup is by `StrBuf`; the `String` alias is resolved to
-        // the same synthetic struct at injection time, not here.
         assert!(get_builtin_type("StrBuf").is_some());
         assert!(get_builtin_type("String").is_none());
         assert!(get_builtin_type("Vec").is_none());
@@ -768,10 +755,8 @@ mod tests {
 
     #[test]
     fn test_is_reserved_type_name() {
-        // Both the canonical name and the deprecated alias are reserved.
         assert!(is_reserved_type_name("StrBuf"));
-        assert!(is_reserved_type_name("String"));
-        assert_eq!(STRING_ALIAS_NAME, "String");
+        assert!(!is_reserved_type_name("String"));
         assert!(!is_reserved_type_name("MyStruct"));
     }
 

@@ -1,13 +1,13 @@
 # The `str` string type (ADR-0043 Phase 3, RUE-324).
 #
 # `str` is `[u8]` + the UTF-8 byte-string convention: a read-only two-word view
-# `{ptr, len}`. String literals have type `str` where a `str` is expected, are
+# `{ptr, len}`. StrBuf literals have type `str` where a `str` is expected, are
 # static-backed (bytes in .rodata), and are first-class (Copy, storable,
 # reassignable, returnable). `.len()` is the byte length; `s[i]` is the i-th
 # byte as `u8`, bounds-checked (an out-of-range index traps, exit 101).
 #
 # Gated behind `--preview string_trio`. Deferred to later phases: `str`
-# concatenation, ordering comparison, `str`<->`String` interop, methods beyond
+# concatenation, ordering comparison, `str`<->`StrBuf` interop, methods beyond
 # `.len()`/index, and char iteration.
 
 [section]

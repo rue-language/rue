@@ -1,8 +1,8 @@
 # `print` / `println` builtin free functions (RUE-1).
 #
-# `print(s: String)` writes the raw bytes of `s` to stdout with nothing added;
-# `println(s: String)` writes the bytes then a single `\n`. They borrow the
-# String (do not consume it), so the argument stays usable afterwards. These
+# `print(s: StrBuf)` writes the raw bytes of `s` to stdout with nothing added;
+# `println(s: StrBuf)` writes the bytes then a single `\n`. They borrow the
+# StrBuf (do not consume it), so the argument stays usable afterwards. These
 # are runtime-visible, so every case pins the exact stdout bytes (including the
 # presence or absence of a trailing newline) — the one thing the spec harness's
 # exit-code assertions can't see.
@@ -59,7 +59,7 @@ stdout = "\nend"
 name = "print_borrows_string_reusable_after_call"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     s.push_str("built ");
     s.push_str("string");
     print(s);

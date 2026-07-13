@@ -210,12 +210,12 @@ fn main() -> i32 {
 }  // destructor frees the heap buffer
 ```
 
-## Byte String Semantics
+## Byte StrBuf Semantics
 
 {{ rule(id="3.10:32", cat="informative") }}
 
 Rue strings are *conventionally UTF-8* rather than strictly validated:
-- String literals are valid UTF-8 (validated at compile time)
+- StrBuf literals are valid UTF-8 (validated at compile time)
 - At runtime, strings are byte sequences
 - Methods like `push_str` accept any bytes
 - No runtime UTF-8 validation overhead

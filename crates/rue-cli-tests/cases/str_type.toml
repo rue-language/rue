@@ -2,10 +2,10 @@
 # RUE-324).
 #
 # `str` is `[u8]` + the UTF-8 byte-string convention: a read-only two-word view
-# `{ptr, len}` that reuses the slice representation. String literals have type
+# `{ptr, len}` that reuses the slice representation. StrBuf literals have type
 # `str` where a `str` is expected, and are STATIC-BACKED — their bytes live in
 # `.rodata`, and the value is `{ptr -> rodata bytes, len = byte length}` (a
-# 2-word value, not the 3-word heap `String`). Because static data cannot
+# 2-word value, not the 3-word heap `StrBuf`). Because static data cannot
 # dangle, a literal `str` is FIRST-CLASS: `@copy`, storable, reassignable,
 # returnable, passable.
 #
@@ -13,7 +13,7 @@
 # PACKED byte via `__rue_str_byte_at(ptr, len, index)` (bounds-checked, traps
 # exit 101) — packed bytes, NOT the 8-byte-slotted stride an array slice uses.
 #
-# Deferred to later phases: `str` concat/comparison, `str`<->`String` interop,
+# Deferred to later phases: `str` concat/comparison, `str`<->`StrBuf` interop,
 # methods beyond `.len()`/index, and char iteration.
 
 [section]
@@ -54,7 +54,7 @@ args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 0
 stdout = "5\n102\n195\n169\n"
 
-# An out-of-bounds byte index traps at runtime (exit 101), like array/String.
+# An out-of-bounds byte index traps at runtime (exit 101), like array/StrBuf.
 [[case]]
 name = "str_index_out_of_bounds_traps"
 files = [{ path = "main.rue", source = """
@@ -163,14 +163,14 @@ args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["requires preview feature"]
 
-# A string literal with NO `str` expectation stays the 3-word heap `String`, so
-# existing String operations are unaffected by the `str` preview.
+# A string literal with NO `str` expectation stays the 3-word heap `StrBuf`, so
+# existing StrBuf operations are unaffected by the `str` preview.
 [[case]]
 name = "str_preview_does_not_change_string_default"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let s = "hello";        // no annotation -> String
-    let t: String = s;      // String, not str
+    let s = "hello";        // no annotation -> StrBuf
+    let t: StrBuf = s;      // StrBuf, not str
     @intCast(t.len())
 }
 """ }]

@@ -646,9 +646,8 @@ impl<'a> BodySema<'a> {
     /// The runtime ABI consumes the builtin `StrBuf` representation. Checking
     /// nominal type identity here is important: accepting any aggregate with a
     /// convenient slot count would let codegen reinterpret its first fields as
-    /// a pointer and length. `String` remains accepted because it is a source
-    /// alias for the same builtin type, while `str`, `Str(N)`, and user structs
-    /// are distinct types even when part of their layout happens to match.
+    /// a pointer and length. `str`, `Str(N)`, and user structs are distinct
+    /// types even when part of their layout happens to match.
     fn validate_abort_message_type(
         &self,
         intrinsic_name: &str,

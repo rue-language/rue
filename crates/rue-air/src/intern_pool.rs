@@ -409,18 +409,6 @@ impl TypeInternPool {
         (StructId::from_pool_index(pool_index), true)
     }
 
-    /// Register an additional (alias) name for an already-registered struct.
-    ///
-    /// Register an additional file-qualified name for an existing struct.
-    pub fn alias_struct_name_in_file(&self, file_id: FileId, alias: Spur, struct_id: StructId) {
-        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if inner.struct_by_file_name.contains_key(&(file_id, alias)) {
-            return;
-        }
-        let interned = InternedType::from_pool_index(struct_id.pool_index());
-        inner.struct_by_file_name.insert((file_id, alias), interned);
-    }
-
     /// Reserve a struct ID without registering the full definition yet.
     ///
     /// This is used for anonymous structs where we need to know the ID before

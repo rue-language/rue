@@ -1,6 +1,6 @@
 pub struct Payload {
     number: i32,
-    text: String,
+    text: StrBuf,
 
     fn score(borrow self) -> i32 {
         if self.text.len() > 0 { self.number + 17 } else { -1 }

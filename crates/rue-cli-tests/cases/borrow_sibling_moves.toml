@@ -19,8 +19,8 @@ description = "By-ref receivers and borrow arguments must not erase earlier sibl
 name = "byref_method_on_sibling_keeps_move_record"
 description = "w.t.len() between two consume(w.s) calls must not resurrect w.s (double free)."
 files = [{ path = "main.rue", source = """
-struct Wrap { s: String, t: String }
-fn consume(s: String) -> i32 { 1 }
+struct Wrap { s: StrBuf, t: StrBuf }
+fn consume(s: StrBuf) -> i32 { 1 }
 fn main() -> i32 {
     let w = Wrap { s: "hello", t: "world" };
     let _a = consume(w.s);
@@ -36,9 +36,9 @@ error_contains = ["E0205", "use of moved value 'w.s'"]
 name = "borrow_call_arg_on_sibling_keeps_move_record"
 description = "Site 2 regression pin: peek(borrow w.t) must not resurrect the moved w.s."
 files = [{ path = "main.rue", source = """
-struct Wrap { s: String, t: String }
-fn consume(s: String) -> i32 { 1 }
-fn peek(borrow s: String) -> i32 { 2 }
+struct Wrap { s: StrBuf, t: StrBuf }
+fn consume(s: StrBuf) -> i32 { 1 }
+fn peek(borrow s: StrBuf) -> i32 { 2 }
 fn main() -> i32 {
     let w = Wrap { s: "hello", t: "world" };
     let _a = consume(w.s);
@@ -54,8 +54,8 @@ error_contains = ["E0205", "use of moved value 'w.s'"]
 name = "byref_method_receiver_stays_usable_control"
 description = "Control: a by-ref method does not move its receiver; sibling move alone still errors without the len() call."
 files = [{ path = "main.rue", source = """
-struct Wrap { s: String, t: String }
-fn consume(s: String) -> i32 { 20 }
+struct Wrap { s: StrBuf, t: StrBuf }
+fn consume(s: StrBuf) -> i32 { 20 }
 fn main() -> i32 {
     let w = Wrap { s: "hello", t: "world" };
     let a = consume(w.s);
