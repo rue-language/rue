@@ -10,7 +10,6 @@ use std::collections::HashMap;
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
-use rue_rir::InstData;
 use rue_span::{FileId, Span};
 
 use super::Sema;
@@ -22,7 +21,7 @@ use super::context::AnalysisContext;
 pub(crate) const MAX_TYPE_SIZE_BYTES: u64 = i32::MAX as u64;
 /// [`MAX_TYPE_SIZE_BYTES`] expressed in 8-byte ABI slots.
 pub(crate) const MAX_TYPE_SLOTS: u64 = MAX_TYPE_SIZE_BYTES / 8;
-use super::info::{ConstInfo, FunctionInfo};
+use super::info::FunctionInfo;
 use crate::inference::InferType;
 use crate::sema::ConstValue;
 use crate::types::{
@@ -1233,12 +1232,7 @@ impl<'a> Sema<'a> {
             ));
         };
         let first_sym = self.interner.get_or_intern(first);
-        let Some(binding) = self
-            .module_bindings
-            .get(&(root_file, first_sym))
-            .cloned()
-            .or_else(|| self.resolve_direct_import_module_binding(root_file, first_sym, span))
-        else {
+        let Some(binding) = self.resolve_module_binding_in_file(root_file, first_sym) else {
             return Err(CompileError::new(
                 ErrorKind::UnknownType((*first).to_string()),
                 span,
@@ -1262,13 +1256,7 @@ impl<'a> Sema<'a> {
                     span,
                 ));
             };
-            let Some(binding) = self
-                .module_bindings
-                .get(&(module_file_id, segment_sym))
-                .cloned()
-                .or_else(|| {
-                    self.resolve_direct_import_module_binding(module_file_id, segment_sym, span)
-                })
+            let Some(binding) = self.resolve_module_binding_in_file(module_file_id, segment_sym)
             else {
                 return Err(CompileError::new(
                     ErrorKind::UnknownModuleMember {
@@ -1300,63 +1288,28 @@ impl<'a> Sema<'a> {
         Ok((module_id, module_file_id, module_file_path))
     }
 
-    fn resolve_direct_import_module_binding(
+    /// Look up a module binding in the declaration namespace.
+    ///
+    /// While declaration payloads are being bound, a qualified type may name
+    /// an import whose constant appears later in source order. Resolve that
+    /// dependency through the declaration index, exactly like any other
+    /// constant dependency. Once declaration binding completes, the table is
+    /// authoritative: body analysis never rediscovers imports or mutates the
+    /// source-declaration namespace after the [`super::BoundSema`] boundary.
+    fn resolve_module_binding_in_file(
         &mut self,
         file_id: FileId,
         name: Spur,
-        _span: Span,
-    ) -> Option<ConstInfo> {
-        let found = self.rir.iter().find_map(|(_inst_ref, inst)| {
-            let InstData::ConstDecl {
-                is_pub,
-                name: const_name,
-                init,
-                ..
-            } = inst.data
-            else {
-                return None;
-            };
-            if inst.span.file_id != file_id || const_name != name {
-                return None;
-            }
-            Some((is_pub, init, inst.span))
-        })?;
-
-        let (is_pub, init, const_span) = found;
-        let init_inst = self.rir.get(init);
-        let InstData::Intrinsic {
-            name: intrinsic_name,
-            args_start,
-            args_len,
-        } = &init_inst.data
-        else {
-            return None;
-        };
-        if *intrinsic_name != self.known.import || *args_len != 1 {
+    ) -> Option<super::info::ConstInfo> {
+        if let Some(binding) = self.module_bindings.get(&(file_id, name)) {
+            return Some(binding.clone());
+        }
+        if !self.declaration_binding_active {
             return None;
         }
-        let arg_refs = self.rir.get_inst_refs(*args_start, *args_len);
-        let arg_inst = self.rir.get(arg_refs[0]);
-        let InstData::StringConst(path_spur) = &arg_inst.data else {
-            return None;
-        };
-        let import_path = self.interner.resolve(path_spur).to_string();
-        let resolved_path = self
-            .resolve_import_path(&import_path, init_inst.span)
-            .ok()?;
-        let (module_id, _is_new) = self
-            .module_registry
-            .get_or_create(import_path, resolved_path);
-        let ty = Type::new_module(module_id);
-        let info = ConstInfo {
-            is_pub,
-            ty,
-            init,
-            value: ConstValue::Type(ty),
-            span: const_span,
-        };
-        self.module_bindings.insert((file_id, name), info.clone());
-        Some(info)
+
+        self.try_resolve_indexed_const_during_binding(name, file_id);
+        self.module_bindings.get(&(file_id, name)).cloned()
     }
 
     /// Resolve a type-function application written directly in type position
