@@ -8,7 +8,7 @@
 
 use rue_builtins::{BUILTIN_ENUMS, BUILTIN_TYPES, BuiltinFieldType, BuiltinTypeDef};
 
-use super::Sema;
+use super::{DeclarationPhase, Sema};
 use crate::types::{EnumDef, StructDef, StructField, StructId, Type, TypeKind};
 
 impl<'a> Sema<'a> {
@@ -123,6 +123,9 @@ impl<'a> Sema<'a> {
         }
     }
 
+}
+
+impl<'a, D: DeclarationPhase> Sema<'a, D> {
     // ========================================================================
     // Builtin type helper methods
     // ========================================================================

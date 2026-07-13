@@ -55,7 +55,7 @@ use rue_rir::{InstData, InstRef, RepeatCount, RirPattern};
 use rue_span::{FileId, Span};
 
 use super::context::{AnalysisContext, ConstValue, LocalVar, ParamInfo};
-use super::{FunctionInfo, Sema};
+use super::{DeclarationPhase, FunctionInfo, Sema};
 use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
 use crate::types::{ArrayLen, StructField, Type, TypeKind};
 
@@ -277,7 +277,7 @@ fn comptime_panic_err(reason: String, span: Span) -> CompileError {
     CompileError::new(ErrorKind::ComptimeEvaluationFailed { reason }, span)
 }
 
-impl Sema<'_> {
+impl<D: DeclarationPhase> Sema<'_, D> {
     /// Try to evaluate an RIR expression as a compile-time constant, with no
     /// substitutions or type context.
     ///
@@ -957,7 +957,7 @@ impl Sema<'_> {
                     } = &first_method_inst.data
                     {
                         let needs_registration =
-                            !self.methods.contains_key(&(struct_id, *method_name));
+                            !self.has_method((struct_id, *method_name));
 
                         if needs_registration
                             && self

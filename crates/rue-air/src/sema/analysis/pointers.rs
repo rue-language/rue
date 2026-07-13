@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl<'a> Sema<'a> {
+impl<'a> BodySema<'a> {
     /// Analyze @ptr_read intrinsic: reads value through pointer.
     /// Signature: @ptr_read(ptr: ptr const T) -> T
     pub(super) fn analyze_ptr_read_intrinsic(

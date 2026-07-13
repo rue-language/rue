@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl<'a> Sema<'a> {
+impl<'a> BodySema<'a> {
     /// Implementation for MethodCall.
     pub(crate) fn analyze_method_call_impl(
         &mut self,
@@ -141,7 +141,7 @@ impl<'a> Sema<'a> {
                     .peek_place_type(receiver, ctx)
                     .and_then(|ty| ty.as_struct())
             {
-                let known = self.methods.contains_key(&(struct_id, method))
+                let known = self.has_method((struct_id, method))
                     || self
                         .get_builtin_type_def(struct_id)
                         .is_some_and(|def| def.find_method(&method_name_str).is_some());
@@ -168,7 +168,7 @@ impl<'a> Sema<'a> {
                     return Some(root);
                 }
 
-                let info = self.methods.get(&(struct_id, method))?;
+                let info = self.method_info((struct_id, method))?;
                 matches!(info.self_mode, RirParamMode::Inout | RirParamMode::Borrow).then_some(root)
             })
         };
@@ -315,7 +315,7 @@ impl<'a> Sema<'a> {
 
         // Look up the method using StructId directly
         let method_key = (struct_id, method);
-        let method_info = self.methods.get(&method_key).ok_or_compile_error(
+        let method_info = self.method_info(method_key).ok_or_compile_error(
             ErrorKind::UndefinedMethod {
                 type_name: struct_name_str.clone(),
                 method_name: method_name_str.clone(),
@@ -762,7 +762,7 @@ impl<'a> Sema<'a> {
 
         // Look up the function using StructId
         let method_key = (struct_id, function);
-        let method_info = self.methods.get(&method_key).ok_or_compile_error(
+        let method_info = self.method_info(method_key).ok_or_compile_error(
             ErrorKind::UndefinedAssocFn {
                 type_name: type_name_str.clone(),
                 function_name: function_name_str.clone(),

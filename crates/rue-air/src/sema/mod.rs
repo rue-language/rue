@@ -35,7 +35,6 @@ mod context;
 mod declaration_index;
 mod declarations;
 mod file_paths;
-mod gather;
 mod inference_ctx;
 mod info;
 mod known_symbols;
@@ -57,7 +56,6 @@ pub use binding_manifest::{
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
-pub use gather::GatherOutput;
 pub use inference_ctx::InferenceContext;
 pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
@@ -87,8 +85,124 @@ use crate::intern_pool::TypeInternPool;
 use crate::param_arena::ParamArena;
 use crate::types::{EnumId, StructId, Type};
 
+/// The source declaration namespace while declaration binding is in progress.
+///
+/// This wrapper is the only namespace state that implements `DerefMut`; after
+/// binding, it is consumed into [`SourceDeclarations`], whose maps are
+/// structurally read-only.
+#[repr(transparent)]
+#[doc(hidden)]
+pub struct MutableDeclarations(DeclarationNamespace);
+
+/// The closed source declaration namespace consumed by body analysis.
+#[repr(transparent)]
+#[doc(hidden)]
+pub struct SourceDeclarations(DeclarationNamespace);
+
+#[doc(hidden)]
+pub struct DeclarationNamespace {
+    functions: HashMap<Spur, FunctionInfo>,
+    functions_by_file_name: HashMap<(FileId, Spur), Spur>,
+    function_source_names: HashMap<Spur, Spur>,
+    structs: HashMap<Spur, StructId>,
+    structs_by_file_name: HashMap<(FileId, Spur), StructId>,
+    enums: HashMap<Spur, EnumId>,
+    enums_by_file_name: HashMap<(FileId, Spur), EnumId>,
+    methods: HashMap<(StructId, Spur), MethodInfo>,
+    named_method_declarations: HashMap<(StructId, Spur), rue_rir::InstRef>,
+    constants: HashMap<Spur, ConstInfo>,
+    constants_by_file_name: HashMap<(FileId, Spur), ConstInfo>,
+    module_bindings: HashMap<(FileId, Spur), ConstInfo>,
+}
+
+impl DeclarationNamespace {
+    fn new() -> Self {
+        Self {
+            functions: HashMap::new(),
+            functions_by_file_name: HashMap::new(),
+            function_source_names: HashMap::new(),
+            structs: HashMap::new(),
+            structs_by_file_name: HashMap::new(),
+            enums: HashMap::new(),
+            enums_by_file_name: HashMap::new(),
+            methods: HashMap::new(),
+            named_method_declarations: HashMap::new(),
+            constants: HashMap::new(),
+            constants_by_file_name: HashMap::new(),
+            module_bindings: HashMap::new(),
+        }
+    }
+}
+
+impl std::ops::Deref for MutableDeclarations {
+    type Target = DeclarationNamespace;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+impl std::ops::DerefMut for MutableDeclarations {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+}
+impl std::ops::Deref for SourceDeclarations {
+    type Target = DeclarationNamespace;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+#[doc(hidden)]
+pub trait DeclarationPhase:
+    std::ops::Deref<Target = DeclarationNamespace> + Sized
+{
+    fn resolve_indexed_const(
+        sema: &mut Sema<'_, Self>,
+        name: Spur,
+        file_id: FileId,
+    ) -> Option<ConstValue>;
+
+    fn collect_free_function_signature(
+        sema: &mut Sema<'_, Self>,
+        target: Spur,
+        file_id: Option<FileId>,
+    ) -> rue_error::CompileResult<Option<(FileId, bool)>>;
+}
+
+impl DeclarationPhase for MutableDeclarations {
+    fn resolve_indexed_const(
+        sema: &mut Sema<'_, Self>,
+        name: Spur,
+        file_id: FileId,
+    ) -> Option<ConstValue> {
+        sema.resolve_indexed_const_binding_impl(name, file_id)
+    }
+
+    fn collect_free_function_signature(
+        sema: &mut Sema<'_, Self>,
+        target: Spur,
+        file_id: Option<FileId>,
+    ) -> rue_error::CompileResult<Option<(FileId, bool)>> {
+        sema.collect_free_function_signature_binding_impl(target, file_id)
+    }
+}
+
+impl DeclarationPhase for SourceDeclarations {
+    fn resolve_indexed_const(
+        _sema: &mut Sema<'_, Self>,
+        _name: Spur,
+        _file_id: FileId,
+    ) -> Option<ConstValue> {
+        None
+    }
+
+    fn collect_free_function_signature(
+        _sema: &mut Sema<'_, Self>,
+        _target: Spur,
+        _file_id: Option<FileId>,
+    ) -> rue_error::CompileResult<Option<(FileId, bool)>> {
+        Ok(None)
+    }
+}
+
 /// Semantic analyzer that converts RIR to AIR.
-pub struct Sema<'a> {
+#[repr(C)]
+pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
+    declarations: D,
     pub(crate) rir: &'a Rir,
     pub(crate) interner: &'a ThreadedRodeo,
     /// Request-local declaration candidates for this exact RIR arena.
@@ -98,23 +212,20 @@ pub struct Sema<'a> {
     /// The internal key is normally the source name, but functions with the
     /// same source name in distinct files get deterministic module-qualified
     /// keys so they can coexist without colliding in AIR/codegen.
-    pub(crate) functions: HashMap<Spur, FunctionInfo>,
     /// Source-level function lookup keyed by defining file and source name.
-    pub(crate) functions_by_file_name: HashMap<(FileId, Spur), Spur>,
     /// Internal function key -> source-level function name.
-    pub(crate) function_source_names: HashMap<Spur, Spur>,
     /// Compatibility struct table: maps globally unique struct name symbols to their StructId.
-    pub(crate) structs: HashMap<Spur, StructId>,
     /// Module-local struct table: maps (defining file, source name) to StructId.
-    pub(crate) structs_by_file_name: HashMap<(FileId, Spur), StructId>,
     /// Compatibility enum table: maps globally unique enum name symbols to their EnumId.
-    pub(crate) enums: HashMap<Spur, EnumId>,
     /// Module-local enum table: maps (defining file, source name) to EnumId.
-    pub(crate) enums_by_file_name: HashMap<(FileId, Spur), EnumId>,
     /// Method table: maps (struct_id, method_name) to method info
-    pub(crate) methods: HashMap<(StructId, Spur), MethodInfo>,
     /// Exact named-method FnDecl handles for this RIR snapshot only.
-    pub(crate) named_method_declarations: HashMap<(StructId, Spur), rue_rir::InstRef>,
+    /// Body-created anonymous methods. Named source methods live in the closed
+    /// declaration namespace and are never mutated after binding.
+    pub(crate) anonymous_methods: HashMap<(StructId, Spur), MethodInfo>,
+    /// Body-created synthetic and anonymous type-name overlays.
+    pub(crate) generated_structs: HashMap<Spur, StructId>,
+    pub(crate) generated_enums: HashMap<Spur, EnumId>,
     pub(crate) body_analysis_work: BodyAnalysisWork,
     pub(crate) analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
     pub(crate) ordinary_body_exports: Vec<crate::SemanticBodyExport>,
@@ -146,15 +257,12 @@ pub struct Sema<'a> {
     /// live in [`Self::module_bindings`]. If a value-constant name appears in
     /// multiple files, it is omitted here and remains available through
     /// [`Self::constants_by_file_name`].
-    pub(crate) constants: HashMap<Spur, ConstInfo>,
     /// File-qualified value constants, keyed by defining file and source name.
-    pub(crate) constants_by_file_name: HashMap<(FileId, Spur), ConstInfo>,
     /// Module-binding constants (`const utils = @import("...")`), keyed by
     /// the declaring file. Unlike value constants, module bindings are
     /// per-file scoped (ADR-0026): every file writes its own imports, so two
     /// files binding the same name — even to different modules — must not
     /// collide (RUE-113).
-    pub(crate) module_bindings: HashMap<(FileId, Spur), ConstInfo>,
     /// Active dependency stack while declaration binding resolves constants.
     /// Empty outside the declaration-resolution phase; retained on `Sema` so
     /// recursive type resolution shares one cycle detector without rebuilding
@@ -239,7 +347,163 @@ pub struct Sema<'a> {
     pub(crate) ctor_type_displays: HashMap<Type, String>,
 }
 
-impl Sema<'_> {
+impl<D: DeclarationPhase> std::ops::Deref for Sema<'_, D> {
+    type Target = DeclarationNamespace;
+
+    fn deref(&self) -> &Self::Target {
+        &self.declarations
+    }
+}
+
+impl<D: DeclarationPhase> Sema<'_, D> {
+    pub(crate) fn function_info(&self, name: Spur) -> Option<&FunctionInfo> {
+        self.functions.get(&name)
+    }
+
+    pub(crate) fn method_info(&self, key: (StructId, Spur)) -> Option<&MethodInfo> {
+        self.anonymous_methods
+            .get(&key)
+            .or_else(|| self.methods.get(&key))
+    }
+
+    pub(crate) fn has_method(&self, key: (StructId, Spur)) -> bool {
+        self.method_info(key).is_some()
+    }
+
+    pub(crate) fn struct_id_for_name(&self, name: Spur) -> Option<StructId> {
+        self.generated_structs
+            .get(&name)
+            .or_else(|| self.structs.get(&name))
+            .copied()
+    }
+
+    pub(crate) fn enum_id_for_name(&self, name: Spur) -> Option<EnumId> {
+        self.generated_enums
+            .get(&name)
+            .or_else(|| self.enums.get(&name))
+            .copied()
+    }
+
+    pub(crate) fn require_preview(
+        &self,
+        feature: rue_error::PreviewFeature,
+        what: &str,
+        span: Span,
+    ) -> rue_error::CompileResult<()> {
+        if self.preview_features.contains(&feature) {
+            Ok(())
+        } else {
+            Err(rue_error::CompileError::new(
+                rue_error::ErrorKind::PreviewFeatureRequired {
+                    feature,
+                    what: what.to_string(),
+                },
+                span,
+            )
+            .with_help(format!(
+                "use `--preview {}` to enable this feature ({})",
+                feature.name(),
+                feature.adr()
+            )))
+        }
+    }
+
+    pub(crate) fn try_resolve_indexed_const_during_binding(
+        &mut self,
+        name: Spur,
+        file_id: FileId,
+    ) -> Option<ConstValue> {
+        D::resolve_indexed_const(self, name, file_id)
+    }
+
+    pub(crate) fn collect_free_function_signature_during_binding(
+        &mut self,
+        target: Spur,
+        file_id: Option<FileId>,
+    ) -> rue_error::CompileResult<Option<(FileId, bool)>> {
+        D::collect_free_function_signature(self, target, file_id)
+    }
+
+    pub(crate) fn record_named_const_dependency(
+        &mut self,
+        target: NamedConstDependencyTargetEvent,
+    ) {
+        let Some((file, name)) = self.named_const_dependency_source.clone() else {
+            return;
+        };
+        self.named_const_dependencies.push(NamedConstDependencyEvent {
+            source_file: file.index(),
+            source_name: name,
+            target,
+        });
+        self.body_analysis_work.named_const_dependency_events += 1;
+    }
+
+    pub(crate) fn record_body_named_dependency(
+        &mut self,
+        target: NamedConstDependencyTargetEvent,
+    ) {
+        let Some(source) = self.body_dependency_observer.clone() else {
+            return;
+        };
+        self.body_named_dependencies
+            .push(BodyNamedDependencyEvent { source, target });
+        self.body_analysis_work.named_const_dependency_events += 1;
+    }
+
+    pub(crate) fn validate_explicit_call_modes(
+        &self,
+        args: &[rue_rir::RirCallArg],
+        expected_modes: impl ExactSizeIterator<Item = rue_rir::RirParamMode>,
+    ) -> rue_error::CompileResult<()> {
+        assert_eq!(args.len(), expected_modes.len());
+        for (arg, expected_mode) in args.iter().zip(expected_modes) {
+            use rue_rir::{RirArgMode, RirParamMode};
+            match (expected_mode, arg.mode) {
+                (RirParamMode::Inout, RirArgMode::Inout)
+                | (RirParamMode::Borrow, RirArgMode::Borrow)
+                | (RirParamMode::Normal | RirParamMode::Comptime, RirArgMode::Normal) => {}
+                (RirParamMode::Inout, _) => {
+                    return Err(rue_error::CompileError::new(
+                        rue_error::ErrorKind::InoutKeywordMissing,
+                        self.rir.get(arg.value).span,
+                    ));
+                }
+                (RirParamMode::Borrow, _) => {
+                    return Err(rue_error::CompileError::new(
+                        rue_error::ErrorKind::BorrowKeywordMissing,
+                        self.rir.get(arg.value).span,
+                    ));
+                }
+                (RirParamMode::Normal | RirParamMode::Comptime, actual) => {
+                    let mode = match actual {
+                        RirArgMode::Inout => "inout",
+                        RirArgMode::Borrow => "borrow",
+                        RirArgMode::Normal => unreachable!(),
+                    };
+                    return Err(rue_error::CompileError::new(
+                        rue_error::ErrorKind::UnexpectedCallArgumentMode { mode },
+                        self.rir.get(arg.value).span,
+                    )
+                    .with_help(format!(
+                        "remove the `{mode}` keyword; this argument is passed without an explicit mode"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::ops::DerefMut for Sema<'_, MutableDeclarations> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.declarations
+    }
+}
+
+pub(crate) type BodySema<'a> = Sema<'a, SourceDeclarations>;
+
+impl<D: DeclarationPhase> Sema<'_, D> {
     pub(crate) fn body_owner_token(
         &self,
         file: FileId,
@@ -267,6 +531,19 @@ impl Sema<'_> {
 }
 
 impl<'a> Sema<'a> {
+    fn freeze_declarations(self) -> BodySema<'a> {
+        // `Sema` is `repr(C)` and the two declaration wrappers are
+        // `repr(transparent)` over the same value. The phase transition only
+        // changes which wrapper API is available; it does not move or rewrite
+        // any declaration, type, or parameter storage.
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe {
+            std::ptr::read(
+                (&*this as *const Sema<'a, MutableDeclarations>).cast::<BodySema<'a>>(),
+            )
+        }
+    }
+
     /// Create a new semantic analyzer.
     pub fn new(
         rir: &'a Rir,
@@ -290,18 +567,13 @@ impl<'a> Sema<'a> {
         target: Target,
     ) -> Self {
         Self {
+            declarations: MutableDeclarations(DeclarationNamespace::new()),
             rir,
             interner,
             declaration_index: declaration_index::RirDeclarationIndex::new(rir),
-            functions: HashMap::new(),
-            functions_by_file_name: HashMap::new(),
-            function_source_names: HashMap::new(),
-            structs: HashMap::new(),
-            structs_by_file_name: HashMap::new(),
-            enums: HashMap::new(),
-            enums_by_file_name: HashMap::new(),
-            methods: HashMap::new(),
-            named_method_declarations: HashMap::new(),
+            anonymous_methods: HashMap::new(),
+            generated_structs: HashMap::new(),
+            generated_enums: HashMap::new(),
             body_analysis_work: BodyAnalysisWork::default(),
             analyzed_body_owners: Vec::new(),
             ordinary_body_exports: Vec::new(),
@@ -320,9 +592,6 @@ impl<'a> Sema<'a> {
             named_const_dependencies: Vec::new(),
             named_const_dependency_source: None,
             declaration_type_observer: None,
-            constants: HashMap::new(),
-            constants_by_file_name: HashMap::new(),
-            module_bindings: HashMap::new(),
             const_resolution_in_progress: Vec::new(),
             declaration_binding_active: false,
             preview_features,
@@ -407,8 +676,11 @@ impl<'a> Sema<'a> {
         })
     }
 
-    /// Analyze all function bodies, assuming declarations are already collected.
-    pub fn analyze_all_bodies(self) -> MultiErrorResult<SemaOutput> {
+}
+
+impl BodySema<'_> {
+    /// Analyze all function bodies using a structurally frozen source namespace.
+    fn analyze_all_bodies(self) -> MultiErrorResult<SemaOutput> {
         analysis::analyze_all_function_bodies(self)
     }
 }

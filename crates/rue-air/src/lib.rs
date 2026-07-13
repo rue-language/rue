@@ -45,7 +45,7 @@ pub use sema::{
     DeclarationInstallFailure, DeclarationShells, DeclarationTypeCallHeadDependencyEvent,
     DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
     DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind, DirResolution,
-    FunctionInfo, GatherOutput, ImplicitDropDependencySourceEvent,
+    FunctionInfo, ImplicitDropDependencySourceEvent,
     ImplicitNamedDestructorDependencyEvent, MethodInfo, ModulePath, NamedConstDependencyEvent,
     NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
     NamedMethodDependencyTargetEvent, OrdinaryFreeFunctionDependencyEvent, ParamSlotModes,

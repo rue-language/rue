@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl<'a> Sema<'a> {
+impl<'a> BodySema<'a> {
     pub(super) fn analyze_single_function(
         &mut self,
         infer_ctx: &InferenceContext,

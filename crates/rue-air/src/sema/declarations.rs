@@ -17,7 +17,9 @@ use rue_error::{CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorK
 use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
 use rue_span::{FileId, Span};
 
-use super::{ConstInfo, ConstValue, FunctionInfo, InferenceContext, MethodInfo, Sema};
+use super::{
+    ConstInfo, ConstValue, DeclarationPhase, FunctionInfo, InferenceContext, MethodInfo, Sema,
+};
 use crate::inference::{FunctionSig, MethodSig};
 use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type, TypeKind};
@@ -32,7 +34,7 @@ enum TypeNode {
     Enum(EnumId),
 }
 
-impl<'a> Sema<'a> {
+impl<'a, D: DeclarationPhase> Sema<'a, D> {
     pub(crate) fn source_function_name(&self, internal_name: Spur) -> Spur {
         self.function_source_names
             .get(&internal_name)
@@ -336,6 +338,37 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
+    /// Whether every indexed source free function has a resolved signature.
+    pub(crate) fn source_free_function_signatures_are_complete(&self) -> bool {
+        self.declaration_index
+            .all_free_functions()
+            .iter()
+            .all(|&declaration| {
+                let inst = self.rir.get(declaration);
+                let InstData::FnDecl { name, .. } = inst.data else {
+                    unreachable!("free-function index contains only FnDecl instructions")
+                };
+                self.resolve_function_name_local(name, inst.span.file_id)
+                    .is_some_and(|key| self.functions.contains_key(&key))
+            })
+    }
+}
+
+impl<'a> Sema<'a> {
+    pub(crate) fn has_allow_directive(
+        &self,
+        directives: &[RirDirective],
+        warning_name: &str,
+    ) -> bool {
+        let allow_sym = self.interner.get("allow");
+        let warning_sym = self.interner.get(warning_name);
+        directives.iter().any(|directive| {
+            Some(directive.name) == allow_sym
+                && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
+        })
+    }
+
+
     /// Phase 1: Register all type names (enum and struct IDs).
     ///
     /// This creates name → ID mappings for all enums and structs in a single pass,
@@ -538,23 +571,6 @@ impl<'a> Sema<'a> {
             debug_assert!(self.fn_signatures_in_flight.is_empty());
         }
         result
-    }
-
-    /// Whether every indexed source free function has a resolved signature.
-    /// Anonymous methods are intentionally absent: their signatures belong to
-    /// body-time comptime type construction rather than the source namespace.
-    pub(crate) fn source_free_function_signatures_are_complete(&self) -> bool {
-        self.declaration_index
-            .all_free_functions()
-            .iter()
-            .all(|&declaration| {
-                let inst = self.rir.get(declaration);
-                let InstData::FnDecl { name, .. } = inst.data else {
-                    unreachable!("free-function index contains only FnDecl instructions")
-                };
-                self.resolve_function_name_local(name, inst.span.file_id)
-                    .is_some_and(|key| self.functions.contains_key(&key))
-            })
     }
 
     pub(super) fn capture_resolved_declaration_type_dependencies(&mut self) {
@@ -1735,7 +1751,6 @@ impl<'a> Sema<'a> {
                     ConstInfo {
                         is_pub: p.is_pub,
                         ty: module_ty,
-                        init: p.init,
                         value: ConstValue::Type(module_ty),
                         span: p.span,
                     },
@@ -1746,7 +1761,6 @@ impl<'a> Sema<'a> {
                 let info = ConstInfo {
                     is_pub: p.is_pub,
                     ty,
-                    init: p.init,
                     value,
                     span: p.span,
                 };
@@ -1768,7 +1782,7 @@ impl<'a> Sema<'a> {
     /// During declaration binding, resolve an indexed constant on demand.
     /// After the `BoundSema` boundary, the namespace is closed and a missing
     /// entry is an authoritative lookup miss.
-    pub(crate) fn try_resolve_indexed_const_during_binding(
+    pub(crate) fn resolve_indexed_const_binding_impl(
         &mut self,
         name: Spur,
         file_id: FileId,
@@ -2031,34 +2045,6 @@ impl<'a> Sema<'a> {
             // evaluated by the comptime engine.
             _ => self.eval_const_value_expr(init, file_id, span, declared_ty),
         }
-    }
-
-    pub(crate) fn record_named_const_dependency(
-        &mut self,
-        target: super::NamedConstDependencyTargetEvent,
-    ) {
-        let Some((file, name)) = self.named_const_dependency_source.clone() else {
-            return;
-        };
-        self.named_const_dependencies
-            .push(super::NamedConstDependencyEvent {
-                source_file: file.index(),
-                source_name: name,
-                target,
-            });
-        self.body_analysis_work.named_const_dependency_events += 1;
-    }
-
-    pub(crate) fn record_body_named_dependency(
-        &mut self,
-        target: super::NamedConstDependencyTargetEvent,
-    ) {
-        let Some(source) = self.body_dependency_observer.clone() else {
-            return;
-        };
-        self.body_named_dependencies
-            .push(super::BodyNamedDependencyEvent { source, target });
-        self.body_analysis_work.named_const_dependency_events += 1;
     }
 
     /// Evaluate a (non-module) constant initializer through the comptime
@@ -2833,7 +2819,7 @@ impl<'a> Sema<'a> {
     /// struct-field/enum-payload type resolution, and signature-type
     /// resolution, all of which can run before the main declaration walk
     /// reaches the callee's `FnDecl` (RUE-603).
-    pub(crate) fn collect_free_function_signature_during_binding(
+    pub(crate) fn collect_free_function_signature_binding_impl(
         &mut self,
         target: Spur,
         file_id: Option<FileId>,

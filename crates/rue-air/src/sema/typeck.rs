@@ -12,7 +12,7 @@ use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
 use rue_span::{FileId, Span};
 
-use super::Sema;
+use super::{DeclarationPhase, Sema};
 use super::context::AnalysisContext;
 
 /// Maximum size of a single object in bytes: `i32::MAX`, matching the
@@ -29,7 +29,7 @@ use crate::types::{
     parse_type_call_syntax,
 };
 
-impl<'a> Sema<'a> {
+impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// Get a human-readable name for a type.
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
         // A constructor-produced anonymous type prints its instantiation
@@ -240,7 +240,7 @@ impl<'a> Sema<'a> {
         use crate::types::{StructDef, StructField};
 
         let type_sym = self.interner.get_or_intern(type_name);
-        if let Some(&struct_id) = self.structs.get(&type_sym) {
+        if let Some(struct_id) = self.struct_id_for_name(type_sym) {
             return Ok(Type::new_struct(struct_id));
         }
 
@@ -272,11 +272,8 @@ impl<'a> Sema<'a> {
             is_pub: true,
             file_id: rue_span::FileId::new(0),
         };
-        let file_id = struct_def.file_id;
         let (struct_id, _) = self.type_pool.register_struct(type_sym, struct_def);
-        self.structs.insert(type_sym, struct_id);
-        self.structs_by_file_name
-            .insert((file_id, type_sym), struct_id);
+        self.generated_structs.insert(type_sym, struct_id);
         Ok(Type::new_struct(struct_id))
     }
 
@@ -296,7 +293,7 @@ impl<'a> Sema<'a> {
         use crate::types::{StructDef, StructField};
 
         let type_sym = self.interner.get_or_intern("str");
-        if let Some(&struct_id) = self.structs.get(&type_sym) {
+        if let Some(struct_id) = self.struct_id_for_name(type_sym) {
             return Ok(Type::new_struct(struct_id));
         }
 
@@ -324,11 +321,8 @@ impl<'a> Sema<'a> {
             is_pub: true,
             file_id: rue_span::FileId::new(0),
         };
-        let file_id = struct_def.file_id;
         let (struct_id, _) = self.type_pool.register_struct(type_sym, struct_def);
-        self.structs.insert(type_sym, struct_id);
-        self.structs_by_file_name
-            .insert((file_id, type_sym), struct_id);
+        self.generated_structs.insert(type_sym, struct_id);
         let _ = span;
         Ok(Type::new_struct(struct_id))
     }
@@ -430,7 +424,7 @@ impl<'a> Sema<'a> {
 
         let name = format!("Str({})", capacity);
         let type_sym = self.interner.get_or_intern(&name);
-        if let Some(&struct_id) = self.structs.get(&type_sym) {
+        if let Some(struct_id) = self.struct_id_for_name(type_sym) {
             return Ok(Type::new_struct(struct_id));
         }
 
@@ -456,11 +450,8 @@ impl<'a> Sema<'a> {
             is_pub: true,
             file_id: rue_span::FileId::new(0),
         };
-        let file_id = struct_def.file_id;
         let (struct_id, _) = self.type_pool.register_struct(type_sym, struct_def);
-        self.structs.insert(type_sym, struct_id);
-        self.structs_by_file_name
-            .insert((file_id, type_sym), struct_id);
+        self.generated_structs.insert(type_sym, struct_id);
         let _ = span;
         Ok(Type::new_struct(struct_id))
     }
@@ -1931,9 +1922,9 @@ impl<'a> Sema<'a> {
             return self.resolve_type(type_sym, span).ok();
         }
 
-        if let Some(&struct_id) = self.structs.get(&type_sym) {
+        if let Some(struct_id) = self.struct_id_for_name(type_sym) {
             Some(Type::new_struct(struct_id))
-        } else if let Some(&enum_id) = self.enums.get(&type_sym) {
+        } else if let Some(enum_id) = self.enum_id_for_name(type_sym) {
             Some(Type::new_enum(enum_id))
         } else if let Some(info) = self.constants.get(&type_sym) {
             match info.value {

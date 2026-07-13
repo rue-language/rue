@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl<'a> Sema<'a> {
+impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
     /// Register methods from an anonymous struct type.
     ///
     /// This is called when an anonymous struct with methods is encountered during
@@ -42,7 +42,7 @@ impl<'a> Sema<'a> {
                 let key = (struct_id, *method_name);
 
                 // Check for duplicate methods
-                if self.methods.contains_key(&key) {
+                if self.has_method(key) {
                     let struct_def = self.type_pool.struct_def(struct_id);
                     let method_name_str = self.interner.resolve(method_name).to_string();
                     return Err(CompileError::new(
@@ -77,7 +77,7 @@ impl<'a> Sema<'a> {
                     param_comptime,
                 );
 
-                self.methods.insert(
+                self.anonymous_methods.insert(
                     key,
                     MethodInfo {
                         struct_type,
@@ -132,7 +132,7 @@ impl<'a> Sema<'a> {
                 let key = (struct_id, *method_name);
 
                 // Check for duplicate methods - return None in comptime context
-                if self.methods.contains_key(&key) {
+                if self.has_method(key) {
                     return None;
                 }
 
@@ -170,7 +170,7 @@ impl<'a> Sema<'a> {
                     param_comptime,
                 );
 
-                self.methods.insert(
+                self.anonymous_methods.insert(
                     key,
                     MethodInfo {
                         struct_type,
@@ -290,7 +290,7 @@ impl<'a> Sema<'a> {
                 seen_methods.insert(*method_name);
 
                 // Check if method was already registered from a previous call
-                if self.methods.contains_key(&key) {
+                if self.has_method(key) {
                     return None;
                 }
 
@@ -352,7 +352,7 @@ impl<'a> Sema<'a> {
                 ));
             }
         }
-        self.methods.extend(staged);
+        self.anonymous_methods.extend(staged);
         Some(())
     }
 

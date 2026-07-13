@@ -32,7 +32,7 @@ impl FirstClassStrSite {
     }
 }
 
-impl<'a> Sema<'a> {
+impl<'a> BodySema<'a> {
     /// Check if directives contain @allow for a specific warning name.
     pub(crate) fn has_allow_directive(
         &self,
@@ -632,63 +632,6 @@ impl<'a> Sema<'a> {
                 },
                 span,
             ));
-        }
-        Ok(())
-    }
-
-    /// Validate the source-level passing mode of each explicit call argument.
-    ///
-    /// Callers perform callee resolution and arity checking first, then invoke
-    /// this before any by-ref lvalue, exclusivity, coercion, or argument-analysis
-    /// work. This deliberately compares RIR source modes rather than AIR modes:
-    /// a correctly spelled `borrow` view may later be lowered as a by-value fat
-    /// pointer, and an implicit method receiver is not part of `args`.
-    pub(crate) fn validate_explicit_call_modes(
-        &self,
-        args: &[RirCallArg],
-        expected_modes: impl ExactSizeIterator<Item = RirParamMode>,
-    ) -> CompileResult<()> {
-        // Keep the shared contract fail-closed in release builds too: a new
-        // call surface must not silently skip trailing arguments by supplying
-        // an iterator of the wrong length.
-        assert_eq!(
-            args.len(),
-            expected_modes.len(),
-            "argument modes must be validated only after arity"
-        );
-
-        for (arg, expected_mode) in args.iter().zip(expected_modes) {
-            match (expected_mode, arg.mode) {
-                (RirParamMode::Inout, RirArgMode::Inout)
-                | (RirParamMode::Borrow, RirArgMode::Borrow)
-                | (RirParamMode::Normal | RirParamMode::Comptime, RirArgMode::Normal) => {}
-                (RirParamMode::Inout, _) => {
-                    return Err(CompileError::new(
-                        ErrorKind::InoutKeywordMissing,
-                        self.rir.get(arg.value).span,
-                    ));
-                }
-                (RirParamMode::Borrow, _) => {
-                    return Err(CompileError::new(
-                        ErrorKind::BorrowKeywordMissing,
-                        self.rir.get(arg.value).span,
-                    ));
-                }
-                (RirParamMode::Normal | RirParamMode::Comptime, actual_mode) => {
-                    let mode = match actual_mode {
-                        RirArgMode::Inout => "inout",
-                        RirArgMode::Borrow => "borrow",
-                        RirArgMode::Normal => unreachable!("normal mode matched above"),
-                    };
-                    return Err(CompileError::new(
-                        ErrorKind::UnexpectedCallArgumentMode { mode },
-                        self.rir.get(arg.value).span,
-                    )
-                    .with_help(format!(
-                        "remove the `{mode}` keyword; this argument is passed without an explicit mode"
-                    )));
-                }
-            }
         }
         Ok(())
     }

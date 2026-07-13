@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl<'a> Sema<'a> {
+impl<'a> BodySema<'a> {
     fn import_base_dirs(&self, span: Span) -> Vec<String> {
         use std::path::Path;
 

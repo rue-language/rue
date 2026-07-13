@@ -4,7 +4,7 @@ use lasso::Spur;
 use rue_error::CompileWarning;
 use rue_span::Span;
 
-use super::{AnalyzedFunction, BodyOwnerToken, Sema};
+use super::{AnalyzedFunction, BodyOwnerToken, BodySema};
 use crate::{
     AirInstData, AirPattern, AirProjection, SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg,
     SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind, SemanticBodyExport,
@@ -13,7 +13,7 @@ use crate::{
     TypeKind,
 };
 
-impl Sema<'_> {
+impl BodySema<'_> {
     pub(crate) fn export_ordinary_body(
         &self,
         owner: BodyOwnerToken,
