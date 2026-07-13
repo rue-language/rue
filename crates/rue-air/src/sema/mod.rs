@@ -90,12 +90,10 @@ use crate::types::{EnumId, StructId, Type};
 /// This wrapper is the only namespace state that implements `DerefMut`; after
 /// binding, it is consumed into [`SourceDeclarations`], whose maps are
 /// structurally read-only.
-#[repr(transparent)]
 #[doc(hidden)]
 pub struct MutableDeclarations(DeclarationNamespace);
 
 /// The closed source declaration namespace consumed by body analysis.
-#[repr(transparent)]
 #[doc(hidden)]
 pub struct SourceDeclarations(DeclarationNamespace);
 
@@ -136,20 +134,24 @@ impl DeclarationNamespace {
 
 impl std::ops::Deref for MutableDeclarations {
     type Target = DeclarationNamespace;
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 impl std::ops::DerefMut for MutableDeclarations {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 impl std::ops::Deref for SourceDeclarations {
     type Target = DeclarationNamespace;
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 #[doc(hidden)]
-pub trait DeclarationPhase:
-    std::ops::Deref<Target = DeclarationNamespace> + Sized
-{
+pub trait DeclarationPhase: std::ops::Deref<Target = DeclarationNamespace> + Sized {
     fn resolve_indexed_const(
         sema: &mut Sema<'_, Self>,
         name: Spur,
@@ -200,7 +202,6 @@ impl DeclarationPhase for SourceDeclarations {
 }
 
 /// Semantic analyzer that converts RIR to AIR.
-#[repr(C)]
 pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     declarations: D,
     pub(crate) rir: &'a Rir,
@@ -355,7 +356,112 @@ impl<D: DeclarationPhase> std::ops::Deref for Sema<'_, D> {
     }
 }
 
-impl<D: DeclarationPhase> Sema<'_, D> {
+impl<'a, D: DeclarationPhase> Sema<'a, D> {
+    /// Change only the declaration-phase capability while preserving every
+    /// other analyzer field by value. Keeping this conversion exhaustive makes
+    /// additions to `Sema` fail to compile here until their phase-boundary
+    /// semantics are reviewed.
+    fn map_declarations<E: DeclarationPhase>(self, map: impl FnOnce(D) -> E) -> Sema<'a, E> {
+        let Sema {
+            declarations,
+            rir,
+            interner,
+            declaration_index,
+            anonymous_methods,
+            generated_structs,
+            generated_enums,
+            body_analysis_work,
+            analyzed_body_owners,
+            ordinary_body_exports,
+            body_dependency_observer,
+            body_owner_tokens,
+            body_named_dependencies,
+            ordinary_free_function_dependencies,
+            specialized_free_function_origins,
+            specialized_free_function_dependencies,
+            named_method_dependencies,
+            non_generic_named_method_dependencies_complete,
+            named_destructor_dependencies,
+            declaration_type_dependencies,
+            declaration_type_call_head_dependencies,
+            declaration_builtin_type_call_head_dependencies,
+            named_const_dependencies,
+            named_const_dependency_source,
+            declaration_type_observer,
+            const_resolution_in_progress,
+            declaration_binding_active,
+            preview_features,
+            target,
+            builtin_string_id,
+            builtin_arch_id,
+            builtin_os_id,
+            known,
+            type_pool,
+            module_registry,
+            file_paths,
+            symbol_paths,
+            root_file_id,
+            param_arena,
+            anon_struct_method_sigs,
+            anon_struct_captured_values,
+            anon_struct_type_subst,
+            destructor_spans,
+            infectious_linear,
+            comptime_type_call_depth,
+            fn_signatures_in_flight,
+            ctor_type_displays,
+        } = self;
+        Sema {
+            declarations: map(declarations),
+            rir,
+            interner,
+            declaration_index,
+            anonymous_methods,
+            generated_structs,
+            generated_enums,
+            body_analysis_work,
+            analyzed_body_owners,
+            ordinary_body_exports,
+            body_dependency_observer,
+            body_owner_tokens,
+            body_named_dependencies,
+            ordinary_free_function_dependencies,
+            specialized_free_function_origins,
+            specialized_free_function_dependencies,
+            named_method_dependencies,
+            non_generic_named_method_dependencies_complete,
+            named_destructor_dependencies,
+            declaration_type_dependencies,
+            declaration_type_call_head_dependencies,
+            declaration_builtin_type_call_head_dependencies,
+            named_const_dependencies,
+            named_const_dependency_source,
+            declaration_type_observer,
+            const_resolution_in_progress,
+            declaration_binding_active,
+            preview_features,
+            target,
+            builtin_string_id,
+            builtin_arch_id,
+            builtin_os_id,
+            known,
+            type_pool,
+            module_registry,
+            file_paths,
+            symbol_paths,
+            root_file_id,
+            param_arena,
+            anon_struct_method_sigs,
+            anon_struct_captured_values,
+            anon_struct_type_subst,
+            destructor_spans,
+            infectious_linear,
+            comptime_type_call_depth,
+            fn_signatures_in_flight,
+            ctor_type_displays,
+        }
+    }
+
     pub(crate) fn function_info(&self, name: Spur) -> Option<&FunctionInfo> {
         self.functions.get(&name)
     }
@@ -431,18 +537,16 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let Some((file, name)) = self.named_const_dependency_source.clone() else {
             return;
         };
-        self.named_const_dependencies.push(NamedConstDependencyEvent {
-            source_file: file.index(),
-            source_name: name,
-            target,
-        });
+        self.named_const_dependencies
+            .push(NamedConstDependencyEvent {
+                source_file: file.index(),
+                source_name: name,
+                target,
+            });
         self.body_analysis_work.named_const_dependency_events += 1;
     }
 
-    pub(crate) fn record_body_named_dependency(
-        &mut self,
-        target: NamedConstDependencyTargetEvent,
-    ) {
+    pub(crate) fn record_body_named_dependency(&mut self, target: NamedConstDependencyTargetEvent) {
         let Some(source) = self.body_dependency_observer.clone() else {
             return;
         };
@@ -503,6 +607,66 @@ impl std::ops::DerefMut for Sema<'_, MutableDeclarations> {
 
 pub(crate) type BodySema<'a> = Sema<'a, SourceDeclarations>;
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NamespaceBoundarySnapshot {
+    pub(crate) source_counts: [usize; 12],
+    pub(crate) source_fingerprint: u64,
+    pub(crate) generated_structs: usize,
+    pub(crate) generated_enums: usize,
+    pub(crate) anonymous_methods: usize,
+}
+
+#[cfg(test)]
+impl BodySema<'_> {
+    pub(crate) fn namespace_boundary_snapshot(&self) -> NamespaceBoundarySnapshot {
+        use std::hash::{Hash, Hasher};
+
+        fn fingerprint<T: Hash>(tag: u64, values: impl Iterator<Item = T>) -> u64 {
+            values.fold(0, |fingerprint, value| {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                tag.hash(&mut hasher);
+                value.hash(&mut hasher);
+                fingerprint ^ hasher.finish()
+            })
+        }
+
+        let source_fingerprint = fingerprint(0, self.functions.keys())
+            ^ fingerprint(1, self.functions_by_file_name.iter())
+            ^ fingerprint(2, self.function_source_names.iter())
+            ^ fingerprint(3, self.structs.iter())
+            ^ fingerprint(4, self.structs_by_file_name.iter())
+            ^ fingerprint(5, self.enums.iter())
+            ^ fingerprint(6, self.enums_by_file_name.iter())
+            ^ fingerprint(7, self.methods.keys())
+            ^ fingerprint(8, self.named_method_declarations.iter())
+            ^ fingerprint(9, self.constants.keys())
+            ^ fingerprint(10, self.constants_by_file_name.keys())
+            ^ fingerprint(11, self.module_bindings.keys());
+
+        NamespaceBoundarySnapshot {
+            source_counts: [
+                self.functions.len(),
+                self.functions_by_file_name.len(),
+                self.function_source_names.len(),
+                self.structs.len(),
+                self.structs_by_file_name.len(),
+                self.enums.len(),
+                self.enums_by_file_name.len(),
+                self.methods.len(),
+                self.named_method_declarations.len(),
+                self.constants.len(),
+                self.constants_by_file_name.len(),
+                self.module_bindings.len(),
+            ],
+            source_fingerprint,
+            generated_structs: self.generated_structs.len(),
+            generated_enums: self.generated_enums.len(),
+            anonymous_methods: self.anonymous_methods.len(),
+        }
+    }
+}
+
 impl<D: DeclarationPhase> Sema<'_, D> {
     pub(crate) fn body_owner_token(
         &self,
@@ -532,16 +696,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
 impl<'a> Sema<'a> {
     fn freeze_declarations(self) -> BodySema<'a> {
-        // `Sema` is `repr(C)` and the two declaration wrappers are
-        // `repr(transparent)` over the same value. The phase transition only
-        // changes which wrapper API is available; it does not move or rewrite
-        // any declaration, type, or parameter storage.
-        let this = std::mem::ManuallyDrop::new(self);
-        unsafe {
-            std::ptr::read(
-                (&*this as *const Sema<'a, MutableDeclarations>).cast::<BodySema<'a>>(),
-            )
-        }
+        self.map_declarations(|MutableDeclarations(namespace)| SourceDeclarations(namespace))
     }
 
     /// Create a new semantic analyzer.
@@ -675,7 +830,6 @@ impl<'a> Sema<'a> {
             pending_nominals,
         })
     }
-
 }
 
 impl BodySema<'_> {

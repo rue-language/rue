@@ -173,16 +173,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             .map(|(name, id)| (*name, Type::new_struct(*id)))
             .collect();
 
-        let mut struct_types_by_file_name: HashMap<(FileId, Spur), Type> = self
+        let struct_types_by_file_name: HashMap<(FileId, Spur), Type> = self
             .structs_by_file_name
             .iter()
             .map(|(key, id)| (*key, Type::new_struct(*id)))
             .collect();
-        struct_types_by_file_name.extend(
-            self.generated_structs
-                .iter()
-                .map(|(name, id)| ((FileId::new(0), *name), Type::new_struct(*id))),
-        );
 
         // Build enum types map (name -> Type::new_enum(id))
         let enum_types: HashMap<Spur, Type> = self
@@ -192,16 +187,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             .map(|(name, id)| (*name, Type::new_enum(*id)))
             .collect();
 
-        let mut enum_types_by_file_name: HashMap<(FileId, Spur), Type> = self
+        let enum_types_by_file_name: HashMap<(FileId, Spur), Type> = self
             .enums_by_file_name
             .iter()
             .map(|(key, id)| (*key, Type::new_enum(*id)))
             .collect();
-        enum_types_by_file_name.extend(
-            self.generated_enums
-                .iter()
-                .map(|(name, id)| ((FileId::new(0), *name), Type::new_enum(*id))),
-        );
 
         // Build method signatures with InferType for constraint generation
         let mut method_sigs: HashMap<(StructId, Spur), MethodSig> = self
@@ -380,7 +370,6 @@ impl<'a> Sema<'a> {
                 && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
         })
     }
-
 
     /// Phase 1: Register all type names (enum and struct IDs).
     ///

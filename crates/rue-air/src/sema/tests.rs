@@ -452,6 +452,37 @@ mod tests {
     }
 
     #[test]
+    fn body_generated_overlays_do_not_mutate_the_frozen_source_namespace() {
+        let source = "fn Factory() -> type {
+                struct {
+                    value: i32,
+                    fn get(self) -> i32 { self.value }
+                }
+            }
+            fn main() -> i32 {
+                let Item = Factory();
+                let item = Item { value: 42 };
+                item.get()
+            }";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().unwrap();
+        let rir = AstGen::new(&ast, &mut interner).generate();
+
+        let bound = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+            .bind_declarations()
+            .unwrap();
+        let (output, before, after) = bound.analyze_all_bodies_with_namespace_probe();
+        output.unwrap();
+
+        assert_eq!(after.source_counts, before.source_counts);
+        assert_eq!(after.source_fingerprint, before.source_fingerprint);
+        assert!(after.generated_structs > before.generated_structs);
+        assert!(after.anonymous_methods > before.anonymous_methods);
+    }
+
+    #[test]
     fn late_qualified_import_types_use_one_declaration_index() {
         // Put every import after the declaration that uses it. Binding must
         // resolve each dependency from the declaration index; qualified type
@@ -2140,6 +2171,37 @@ mod tests {
                 RirParamMode::Inout,
                 RirParamMode::Normal,
             ]
+        );
+    }
+
+    #[test]
+    fn qualified_file_zero_lookup_excludes_generated_type_overlays() {
+        // Anonymous structs use names in this form. A genuine file-0 source
+        // declaration with the same interned name must remain authoritative
+        // for qualified lookup even when the body overlay has that name too.
+        let mut sema = gather_declarations_for_testing(
+            "struct __anon_struct_0 { source: i32 }
+             fn main() -> i32 { 0 }",
+        );
+        let name = sema.interner.get("__anon_struct_0").unwrap();
+        let source_id = *sema
+            .structs_by_file_name
+            .get(&(FileId::new(0), name))
+            .unwrap();
+        let generated_id = sema.builtin_string_id.unwrap();
+        assert_ne!(source_id, generated_id);
+        sema.generated_structs.insert(name, generated_id);
+
+        let inference = sema.build_inference_context();
+        assert_eq!(
+            inference.struct_types.get(&name),
+            Some(&Type::new_struct(generated_id))
+        );
+        assert_eq!(
+            inference
+                .struct_types_by_file_name
+                .get(&(FileId::new(0), name)),
+            Some(&Type::new_struct(source_id))
         );
     }
 

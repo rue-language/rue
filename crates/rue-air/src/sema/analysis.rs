@@ -44,6 +44,24 @@ use crate::types::{
 /// Called from Sema::analyze_all after declarations are collected.
 /// Uses the demand-driven driver for every program shape.
 pub(crate) fn analyze_all_function_bodies(mut sema: BodySema<'_>) -> MultiErrorResult<SemaOutput> {
+    analyze_all_function_bodies_mut(&mut sema)
+}
+
+#[cfg(test)]
+pub(crate) fn analyze_all_function_bodies_with_namespace_probe(
+    mut sema: BodySema<'_>,
+) -> (
+    MultiErrorResult<SemaOutput>,
+    super::NamespaceBoundarySnapshot,
+    super::NamespaceBoundarySnapshot,
+) {
+    let before = sema.namespace_boundary_snapshot();
+    let result = analyze_all_function_bodies_mut(&mut sema);
+    let after = sema.namespace_boundary_snapshot();
+    (result, before, after)
+}
+
+fn analyze_all_function_bodies_mut(sema: &mut BodySema<'_>) -> MultiErrorResult<SemaOutput> {
     debug_assert!(!sema.declaration_binding_active);
     debug_assert!(sema.const_resolution_in_progress.is_empty());
     debug_assert!(sema.fn_signatures_in_flight.is_empty());
@@ -52,7 +70,7 @@ pub(crate) fn analyze_all_function_bodies(mut sema: BodySema<'_>) -> MultiErrorR
 
     // ADR-0045 defines reachability from `main` as the function-body analysis
     // frontier for every executable.
-    let result = analyze_function_bodies_lazy(&mut sema);
+    let result = analyze_function_bodies_lazy(sema);
     debug_assert_eq!(
         sema.functions_by_file_name.len(),
         bound_source_function_signature_count,
@@ -249,9 +267,9 @@ fn finalize_function_body_analysis(
                 .map(|(file, name)| (file.index(), sema.interner.resolve(name).to_owned()))
                 .collect::<HashSet<_>>();
             sema.named_const_dependencies.retain(|event| {
-                bound_constants.iter().any(|(file, name)| {
-                    *file == event.source_file && *name == event.source_name
-                })
+                bound_constants
+                    .iter()
+                    .any(|(file, name)| *file == event.source_file && *name == event.source_name)
             });
             sema.named_const_dependencies.sort();
             sema.named_const_dependencies.dedup();
