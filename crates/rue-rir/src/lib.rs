@@ -1,12 +1,22 @@
-//! Rue Intermediate Representation (RIR) - Untyped IR.
+//! Rue Intermediate Representation (RIR), the compiler's untyped IR.
 //!
-//! RIR is the first IR in the Rue compiler pipeline. It is generated from
-//! the AST and represents a lowered, linearized form of the program.
+//! RIR is the first IR in the Rue compiler pipeline. The compiler lowers the
+//! canonical parsed modules for one source revision in a single [`AstGen`]
+//! session, producing one dense instruction space for the complete program.
+//! Module provenance is tracked by the compiler alongside that RIR; it is not
+//! represented by separate per-file RIR fragments or a post-hoc merge step.
 //!
-//! Key characteristics:
-//! - Untyped: type information is not yet resolved
-//! - Per-file: generated for each source file
-//! - Dense encoding: instructions stored in arrays, referenced by index
+//! The canonical construction sequence is:
+//!
+//! 1. Create [`AstGen::with_symbol_normalizer`] with the revision's semantic
+//!    interner and symbol translation function.
+//! 2. Call [`AstGen::append_items`] once for each module in canonical order.
+//! 3. Call [`AstGen::finish`] to obtain the program-wide RIR.
+//!
+//! RIR remains untyped until semantic analysis, while its instructions and
+//! variable-length payloads are stored densely and referenced by index. CLI
+//! presentation may apply a read-only module-order permutation without
+//! changing the canonical instruction references.
 //!
 //! Inspired by Zig's ZIR (Zig Intermediate Representation).
 

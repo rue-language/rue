@@ -1,7 +1,9 @@
-//! AST to RIR generation.
+//! Canonical AST-to-RIR generation.
 //!
-//! AstGen converts the Abstract Syntax Tree into RIR instructions.
-//! This is analogous to Zig's AstGen phase.
+//! [`AstGen`] converts canonical parsed module items into one program-wide RIR
+//! instruction space. It is analogous to Zig's AstGen phase, but intentionally
+//! has no per-AST construction path: callers normalize symbols, append module
+//! items in order, and finish one lowering session.
 
 use lasso::{Key, Spur, ThreadedRodeo};
 
@@ -22,9 +24,9 @@ const TYPE_INTRINSICS: &[&str] = &[
 ];
 use rue_parser::ast::{ConstDecl, DropFn};
 use rue_parser::{
-    ArgMode, ArrayLength, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl,
-    Expr, Function, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement,
-    StructDecl, TypeExpr, UnaryOp, ast::Visibility,
+    ArgMode, ArrayLength, AssignTarget, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
+    Function, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement, StructDecl,
+    TypeExpr, UnaryOp, ast::Visibility,
 };
 
 use crate::inst::{
@@ -34,8 +36,6 @@ use crate::inst::{
 
 /// Generates RIR from an AST.
 pub struct AstGen<'a> {
-    /// The AST being processed by the compatibility constructor.
-    ast: Option<&'a Ast>,
     /// String interner for symbols (thread-safe, takes shared reference)
     interner: &'a ThreadedRodeo,
     /// Output RIR
@@ -48,48 +48,6 @@ pub struct AstGen<'a> {
 }
 
 impl<'a> AstGen<'a> {
-    /// Create a new AstGen for the given AST.
-    pub fn new(ast: &'a Ast, interner: &'a ThreadedRodeo) -> Self {
-        Self {
-            ast: Some(ast),
-            interner,
-            rir: Rir::new(),
-            for_counter: 0,
-            normalize_symbol: Box::new(|symbol| symbol),
-        }
-    }
-
-    /// Generate RIR from the AST.
-    pub fn generate(mut self) -> Rir {
-        let ast = self.ast.expect("AstGen::new always stores an AST");
-        for item in &ast.items {
-            self.gen_item(item);
-        }
-        self.rir
-    }
-
-    /// Generate RIR from an immutable borrowed sequence of AST items.
-    ///
-    /// The iterator order is the lowering order. This lets compiler
-    /// orchestration supply a canonical query/view without cloning item
-    /// payloads or constructing a second [`Ast`].
-    pub fn generate_items<'item>(
-        interner: &'a ThreadedRodeo,
-        items: impl IntoIterator<Item = &'item Item>,
-    ) -> Rir {
-        let mut generator = Self {
-            ast: None,
-            interner,
-            rir: Rir::new(),
-            for_counter: 0,
-            normalize_symbol: Box::new(|symbol| symbol),
-        };
-        for item in items {
-            generator.gen_item(item);
-        }
-        generator.rir
-    }
-
     /// Create a generator whose AST-origin symbols are normalized before use.
     #[doc(hidden)]
     pub fn with_symbol_normalizer(
@@ -97,7 +55,6 @@ impl<'a> AstGen<'a> {
         normalize_symbol: impl Fn(Spur) -> Spur + 'a,
     ) -> Self {
         Self {
-            ast: None,
             interner,
             rir: Rir::new(),
             for_counter: 0,
@@ -1681,28 +1638,10 @@ mod tests {
         let parser = Parser::new(tokens, interner);
         let (ast, interner) = parser.parse().unwrap();
 
-        let astgen = AstGen::new(&ast, &interner);
-        let rir = astgen.generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         (rir, interner)
-    }
-
-    #[test]
-    fn borrowed_item_lowering_matches_reordered_ast_lowering() {
-        let lexer = Lexer::new("fn first() -> i32 { 1 } fn main() -> i32 { first() }");
-        let (tokens, interner) = lexer.tokenize().unwrap();
-        let parser = Parser::new(tokens, interner);
-        let (ast, interner) = parser.parse().unwrap();
-
-        let reordered = Ast {
-            items: ast.items.iter().rev().cloned().collect(),
-        };
-        let compatibility = AstGen::new(&reordered, &interner).generate();
-        let borrowed = AstGen::generate_items(&interner, ast.items.iter().rev());
-
-        assert_eq!(
-            RirPrinter::new(&borrowed, &interner).to_string(),
-            RirPrinter::new(&compatibility, &interner).to_string()
-        );
     }
 
     #[test]

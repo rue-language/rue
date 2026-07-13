@@ -3393,8 +3393,9 @@ mod tests {
         let parser = Parser::new(tokens, interner);
         let (ast, mut interner) = parser.parse().unwrap();
 
-        let astgen = AstGen::new(&ast, &mut interner);
-        let rir = astgen.generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
 
         let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
         let output = sema.analyze_all().unwrap();
@@ -3745,8 +3746,9 @@ mod tests {
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
         let (ast, mut interner) = parser.parse().unwrap();
-        let astgen = AstGen::new(&ast, &mut interner);
-        let rir = astgen.generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
         let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
         let err = sema
             .analyze_all()

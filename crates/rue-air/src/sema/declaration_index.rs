@@ -364,7 +364,7 @@ mod tests {
     use lasso::ThreadedRodeo;
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
-    use rue_parser::{Ast, Parser};
+    use rue_parser::Parser;
     use rue_rir::{AstGen, InstData};
 
     use super::*;
@@ -381,8 +381,9 @@ mod tests {
             items.extend(ast.items);
             interner = next_interner;
         }
-        let ast = Ast { items };
-        let rir = AstGen::new(&ast, &interner).generate();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&items);
+        let rir = astgen.finish();
         (rir, interner)
     }
 
