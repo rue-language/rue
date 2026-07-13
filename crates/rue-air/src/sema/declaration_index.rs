@@ -80,6 +80,7 @@ pub(super) struct RirDeclarationIndex {
     destructors: Vec<RirDestructorDeclaration>,
     const_candidates: Vec<InstRef>,
     const_candidates_by_file_name: HashMap<(FileId, Spur), Vec<InstRef>>,
+    const_candidates_by_name: HashMap<Spur, Vec<InstRef>>,
     shell_declarations: Vec<RirShellDeclaration>,
     work: RirDeclarationIndexWork,
 }
@@ -95,6 +96,7 @@ impl RirDeclarationIndex {
         let mut destructors = Vec::new();
         let mut const_candidates = Vec::new();
         let mut const_candidates_by_file_name = HashMap::<(FileId, Spur), Vec<InstRef>>::new();
+        let mut const_candidates_by_name = HashMap::<Spur, Vec<InstRef>>::new();
         let mut work = RirDeclarationIndexWork {
             build_invocations: 1,
             ..RirDeclarationIndexWork::default()
@@ -159,6 +161,10 @@ impl RirDeclarationIndex {
                     const_candidates.push(inst_ref);
                     const_candidates_by_file_name
                         .entry((inst.span.file_id, *name))
+                        .or_default()
+                        .push(inst_ref);
+                    const_candidates_by_name
+                        .entry(*name)
                         .or_default()
                         .push(inst_ref);
                 }
@@ -240,6 +246,7 @@ impl RirDeclarationIndex {
             destructors,
             const_candidates,
             const_candidates_by_file_name,
+            const_candidates_by_name,
             shell_declarations,
             work,
         }
@@ -338,17 +345,21 @@ impl RirDeclarationIndex {
         &self.destructors
     }
 
-    #[cfg(test)]
-    fn const_candidates(&self, file_id: FileId, name: Spur) -> &[InstRef] {
+    pub(super) fn const_candidates(&self, file_id: FileId, name: Spur) -> &[InstRef] {
         self.const_candidates_by_file_name
             .get(&(file_id, name))
             .map(Vec::as_slice)
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
-    fn all_const_candidates(&self) -> &[InstRef] {
+    pub(super) fn all_const_candidates(&self) -> &[InstRef] {
         &self.const_candidates
+    }
+
+    pub(super) fn const_name_is_globally_unique(&self, name: Spur) -> bool {
+        self.const_candidates_by_name
+            .get(&name)
+            .is_some_and(|candidates| candidates.len() == 1)
     }
 }
 

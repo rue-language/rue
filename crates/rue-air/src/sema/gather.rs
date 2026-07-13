@@ -160,6 +160,8 @@ impl<'a> GatherOutput<'a> {
             constants: self.constants,
             constants_by_file_name: self.constants_by_file_name,
             module_bindings: self.module_bindings,
+            const_resolution_in_progress: Vec::new(),
+            declaration_binding_active: false,
             preview_features: self.preview_features,
             target: self.target,
             builtin_string_id: self.builtin_string_id,

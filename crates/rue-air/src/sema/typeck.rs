@@ -556,13 +556,9 @@ impl<'a> Sema<'a> {
     /// (`const A = Pair(i32);` used as a type). Returns the aliased type, or
     /// `None` if the name is not a `type`-valued constant.
     ///
-    /// The fast path reads an already-collected constant; the slow path collects
-    /// it on demand. The latter is needed because struct-field and enum-payload
-    /// types are resolved in the declaration/collection pass — before the
-    /// constant-collection pass runs — so a const alias would otherwise be
-    /// `unknown type` there while resolving fine in a later-analyzed function
-    /// signature (RUE-603). This mirrors the on-demand collection already used
-    /// for array-length constants.
+    /// During declaration binding, an indexed dependency may be resolved before
+    /// the source-order sweep reaches it. Body analysis only reads the completed
+    /// constant namespace.
     pub(crate) fn resolve_const_type_alias(
         &mut self,
         type_sym: Spur,
@@ -571,8 +567,8 @@ impl<'a> Sema<'a> {
         let mut value = self
             .resolve_const_info_in_file(type_sym, span.file_id)
             .map(|info| info.value);
-        if value.is_none() {
-            value = self.try_collect_const_on_demand(type_sym, span.file_id);
+        if value.is_none() && self.declaration_binding_active {
+            value = self.try_resolve_indexed_const_during_binding(type_sym, span.file_id);
         }
         let Some(ConstValue::Type(alias_ty)) = value else {
             return Ok(None);
@@ -718,10 +714,10 @@ impl<'a> Sema<'a> {
                 // A module-level `const Alias = SomeType;` used as a plain type
                 // name — e.g. the field type of a top-level named struct in its
                 // defining file (RUE-706). The struct/enum tables above don't
-                // include const aliases; RUE-603's on-demand const-alias resolver
-                // (which also collects the const if the field pass runs first)
-                // does. The context-aware `resolve_type_with_ctx` already consults
-                // it; this brings the context-free path to parity.
+                // include const aliases, so consult the declaration-bound
+                // constant namespace as well. The context-aware
+                // `resolve_type_with_ctx` already does this; this brings the
+                // context-free path to parity.
                 Ok(alias_ty)
             } else {
                 Err(CompileError::new(
@@ -924,20 +920,20 @@ impl<'a> Sema<'a> {
             return Ok(Type::new_enum(enum_id));
         }
         // A type-valued constant member (`module.Alias` where the module has
-        // `pub const Alias = SomeType`). Constants are collected on demand
-        // (ADR-0045), so a member referenced from a *type position* in
-        // another file may not be collected yet — ensure it, in the MODULE's
-        // file, exactly as the unqualified same-file path does
+        // `pub const Alias = SomeType`). During declaration binding a member
+        // referenced from a type position may not be resolved yet, so resolve
+        // its indexed declaration in the MODULE's file
         // (`resolve_const_type_alias`); without this the member alias
         // resolved in value positions but was E0707 in field/param/return
         // positions (RUE-630).
         if let Some(file_id) = module_file_id
+            && self.declaration_binding_active
             && self
                 .constants_by_file_name
                 .get(&(file_id, member_sym))
                 .is_none()
         {
-            self.try_collect_const_on_demand(member_sym, file_id);
+            self.try_resolve_indexed_const_during_binding(member_sym, file_id);
         }
         if let Some(info) = module_file_id
             .and_then(|file_id| self.constants_by_file_name.get(&(file_id, member_sym)))
@@ -1501,7 +1497,7 @@ impl<'a> Sema<'a> {
         // signature naming `Vec(i32)` declared above `fn Vec` — used to
         // E0204 while the same application resolved fine later (RUE-603).
         // Collect the same-file declaration on demand, mirroring the
-        // const-alias path (`try_collect_const_on_demand`).
+        // declaration-time indexed const-alias resolution path.
         let mut name_key = self.resolve_function_name_local(name_sym, span.file_id);
         if name_key.is_none() {
             self.ensure_free_function_signature(name_sym, Some(span.file_id))?;
@@ -2163,11 +2159,13 @@ impl<'a> Sema<'a> {
                     // 2. A file-level constant, evaluated during declaration
                     //    gathering.
                     info.value
-                } else if let Some(v) = self.try_collect_const_on_demand(sym, span.file_id) {
-                    // 3. A file-level constant not yet collected because this
-                    //    array length sits in a struct field / enum payload,
-                    //    resolved before the main const pass (RUE-587). Collect
-                    //    it on demand.
+                } else if self.declaration_binding_active
+                    && let Some(v) =
+                        self.try_resolve_indexed_const_during_binding(sym, span.file_id)
+                {
+                    // 3. A file-level constant whose indexed declaration is
+                    //    being dependency-resolved for a struct field / enum
+                    //    payload before the main declaration walk (RUE-587).
                     v
                 } else {
                     return Err(CompileError::new(
