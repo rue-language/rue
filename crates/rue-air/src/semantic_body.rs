@@ -192,43 +192,8 @@ pub enum SemanticBodyInstData<K, M> {
         fields: Arc<[SemanticBodyRef]>,
         source_order: Arc<[u32]>,
     },
-    FieldGet {
-        base: SemanticBodyRef,
-        struct_key: K,
-        field_index: u32,
-    },
-    FieldSet {
-        slot: u32,
-        struct_key: K,
-        field_index: u32,
-        value: SemanticBodyRef,
-    },
-    ParamFieldSet {
-        param_slot: u32,
-        inner_offset: u32,
-        struct_key: K,
-        field_index: u32,
-        value: SemanticBodyRef,
-    },
     ArrayInit {
         elements: Arc<[SemanticBodyRef]>,
-    },
-    IndexGet {
-        base: SemanticBodyRef,
-        array_type: SemanticImportType<K, M>,
-        index: SemanticBodyRef,
-    },
-    IndexSet {
-        slot: u32,
-        array_type: SemanticImportType<K, M>,
-        index: SemanticBodyRef,
-        value: SemanticBodyRef,
-    },
-    ParamIndexSet {
-        param_slot: u32,
-        array_type: SemanticImportType<K, M>,
-        index: SemanticBodyRef,
-        value: SemanticBodyRef,
     },
     PlaceRead {
         place: SemanticBodyPlaceRef,

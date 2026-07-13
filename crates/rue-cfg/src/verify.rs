@@ -447,22 +447,10 @@ impl Cfg {
                 fields_len,
                 ..
             } => out.extend_from_slice(self.get_extra(*fields_start, *fields_len)),
-            CfgInstData::FieldSet { value, .. } => out.push(*value),
-            CfgInstData::ParamFieldSet { value, .. } => out.push(*value),
-
             CfgInstData::ArrayInit {
                 elements_start,
                 elements_len,
             } => out.extend_from_slice(self.get_extra(*elements_start, *elements_len)),
-            CfgInstData::IndexSet { index, value, .. } => {
-                out.push(*index);
-                out.push(*value);
-            }
-            CfgInstData::ParamIndexSet { index, value, .. } => {
-                out.push(*index);
-                out.push(*value);
-            }
-
             CfgInstData::EnumVariant {
                 payload_start,
                 payload_len,

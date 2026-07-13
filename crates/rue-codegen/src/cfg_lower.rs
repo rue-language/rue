@@ -217,53 +217,10 @@ fn format_cfg_inst_data_impl(
                 .collect();
             format!("struct_init #{} {{{}}}", struct_id.0, fields.join(", "))
         }
-        CfgInstData::FieldSet {
-            slot,
-            struct_id,
-            field_index,
-            value,
-        } => format!(
-            "field_set ${}.#{}.{} = {}",
-            slot, struct_id.0, field_index, value
-        ),
-        CfgInstData::ParamFieldSet {
-            param_slot,
-            inner_offset,
-            struct_id,
-            field_index,
-            value,
-        } => format!(
-            "param_field_set %{}+{}.#{}.{} = {}",
-            param_slot, inner_offset, struct_id.0, field_index, value
-        ),
         CfgInstData::ArrayInit { .. } => {
             // Note: Can't show elements without Cfg access
             "array_init [...]".to_string()
         }
-        CfgInstData::IndexSet {
-            slot,
-            array_type,
-            index,
-            value,
-        } => format!(
-            "index_set ${}[{}][{}] = {}",
-            slot,
-            array_type.name(),
-            index,
-            value
-        ),
-        CfgInstData::ParamIndexSet {
-            param_slot,
-            array_type,
-            index,
-            value,
-        } => format!(
-            "param_index_set %{}[{}][{}] = {}",
-            param_slot,
-            array_type.name(),
-            index,
-            value
-        ),
         CfgInstData::EnumVariant {
             enum_id,
             variant_index,
@@ -288,7 +245,7 @@ fn format_cfg_inst_data_impl(
         CfgInstData::Drop { value } => format!("drop {}", value),
         CfgInstData::StorageLive { slot } => format!("storage_live ${}", slot),
         CfgInstData::StorageDead { slot } => format!("storage_dead ${}", slot),
-        // Place operations (ADR-0030)
+        // Place operations
         CfgInstData::PlaceRead { place } => {
             format!("place_read {}", cfg.place_to_string(place))
         }

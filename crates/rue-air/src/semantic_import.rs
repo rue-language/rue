@@ -430,39 +430,6 @@ where
                         source_order_start: os,
                     }
                 }
-                SemanticBodyInstData::FieldGet {
-                    base,
-                    struct_key,
-                    field_index,
-                } => AirInstData::FieldGet {
-                    base: r(*base)?,
-                    struct_id: struct_id(struct_key)?,
-                    field_index: *field_index,
-                },
-                SemanticBodyInstData::FieldSet {
-                    slot,
-                    struct_key,
-                    field_index,
-                    value,
-                } => AirInstData::FieldSet {
-                    slot: *slot,
-                    struct_id: struct_id(struct_key)?,
-                    field_index: *field_index,
-                    value: r(*value)?,
-                },
-                SemanticBodyInstData::ParamFieldSet {
-                    param_slot,
-                    inner_offset,
-                    struct_key,
-                    field_index,
-                    value,
-                } => AirInstData::ParamFieldSet {
-                    param_slot: *param_slot,
-                    inner_offset: *inner_offset,
-                    struct_id: struct_id(struct_key)?,
-                    field_index: *field_index,
-                    value: r(*value)?,
-                },
                 SemanticBodyInstData::ArrayInit { elements } => {
                     let (s, l) = refs(&mut air, elements, current)?;
                     AirInstData::ArrayInit {
@@ -470,37 +437,6 @@ where
                         elems_len: l,
                     }
                 }
-                SemanticBodyInstData::IndexGet {
-                    base,
-                    array_type,
-                    index,
-                } => AirInstData::IndexGet {
-                    base: r(*base)?,
-                    array_type: self.import_type_local(array_type)?,
-                    index: r(*index)?,
-                },
-                SemanticBodyInstData::IndexSet {
-                    slot,
-                    array_type,
-                    index,
-                    value,
-                } => AirInstData::IndexSet {
-                    slot: *slot,
-                    array_type: self.import_type_local(array_type)?,
-                    index: r(*index)?,
-                    value: r(*value)?,
-                },
-                SemanticBodyInstData::ParamIndexSet {
-                    param_slot,
-                    array_type,
-                    index,
-                    value,
-                } => AirInstData::ParamIndexSet {
-                    param_slot: *param_slot,
-                    array_type: self.import_type_local(array_type)?,
-                    index: r(*index)?,
-                    value: r(*value)?,
-                },
                 SemanticBodyInstData::PlaceRead { place } => {
                     if *place as usize >= place_len {
                         return Err(F::InvalidPlaceReference);

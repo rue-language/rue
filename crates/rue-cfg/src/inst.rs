@@ -3,7 +3,7 @@
 //! Unlike AIR, the CFG has explicit basic blocks and terminators.
 //! Control flow only happens at block boundaries via terminators.
 //!
-//! # Place Expressions (ADR-0030)
+//! # Place Expressions
 //!
 //! Memory locations are represented using [`Place`], which consists of:
 //! - A base ([`PlaceBase`]): either a local variable slot or parameter slot
@@ -29,7 +29,7 @@ use rue_air::{EnumId, ParamSlotModes, StructId, Type};
 use rue_span::Span;
 
 // ============================================================================
-// Place Expressions (ADR-0030)
+// Place Expressions
 // ============================================================================
 
 /// A memory location that can be read from or written to.
@@ -327,19 +327,19 @@ pub enum CfgInstData {
         value: CfgValue,
     },
 
-    // Place operations (ADR-0030)
+    // Place operations
     /// Read a value from a memory location.
     ///
-    /// This unifies Load, IndexGet, and FieldGet into a single instruction
-    /// that can handle arbitrarily nested access patterns like `arr[i].field`.
+    /// Projected memory reads are represented canonically by this instruction,
+    /// including arbitrarily nested access patterns like `arr[i].field`.
     PlaceRead {
         place: Place,
     },
 
     /// Write a value to a memory location.
     ///
-    /// This unifies Store, IndexSet, ParamIndexSet, FieldSet, and ParamFieldSet
-    /// into a single instruction that can handle nested writes.
+    /// Projected memory writes are represented canonically by this instruction,
+    /// including nested local and parameter writes.
     PlaceWrite {
         place: Place,
         value: CfgValue,
@@ -378,23 +378,6 @@ pub enum CfgInstData {
         /// Number of fields
         fields_len: u32,
     },
-    FieldSet {
-        slot: u32,
-        struct_id: StructId,
-        field_index: u32,
-        value: CfgValue,
-    },
-    /// Store a value to a struct field (for parameters, including inout)
-    ParamFieldSet {
-        /// The parameter's ABI slot (relative to params, not locals)
-        param_slot: u32,
-        /// Offset within the struct for nested field access
-        inner_offset: u32,
-        struct_id: StructId,
-        field_index: u32,
-        value: CfgValue,
-    },
-
     // Array operations
     /// Array initialization. Element values are stored in the Cfg's extra array.
     /// Use `Cfg::get_extra(elements_start, elements_len)` to retrieve them.
@@ -405,26 +388,6 @@ pub enum CfgInstData {
         /// Number of elements
         elements_len: u32,
     },
-    /// Store a value to an array element.
-    IndexSet {
-        slot: u32,
-        /// The array type (for bounds checking and element size)
-        array_type: Type,
-        index: CfgValue,
-        value: CfgValue,
-    },
-    /// Store a value to an array element of an inout parameter
-    ParamIndexSet {
-        /// The parameter's ABI slot (relative to params, not locals)
-        param_slot: u32,
-        /// The array type (for bounds checking and element size)
-        array_type: Type,
-        /// Index expression
-        index: CfgValue,
-        /// Value to store
-        value: CfgValue,
-    },
-
     // Enum operations
     /// Create an enum variant value: the discriminant plus (for tuple
     /// variants, RUE-221) the payload operands, stored in the Cfg's extra
@@ -586,7 +549,7 @@ pub struct Cfg {
     /// Extra storage for switch cases (value, target block pairs).
     /// Switch terminators store (start, len) indices into this array.
     switch_cases: Vec<(i64, BlockId)>,
-    /// Extra storage for place projections (ADR-0030).
+    /// Extra storage for place projections.
     /// Place instructions store (start, len) indices into this array.
     projections: Vec<Projection>,
     /// Number of local variable slots
@@ -834,7 +797,7 @@ impl Cfg {
 
     /// Add projections to the projections array and return (start, len).
     ///
-    /// Used for PlaceRead and PlaceWrite instructions (ADR-0030).
+    /// Used for `PlaceRead` and `PlaceWrite` instructions.
     pub fn push_projections(&mut self, projs: impl IntoIterator<Item = Projection>) -> (u32, u32) {
         let start = self.projections.len() as u32;
         self.projections.extend(projs);
@@ -1289,31 +1252,6 @@ impl Cfg {
                 }
                 write!(f, "}}")
             }
-            CfgInstData::FieldSet {
-                slot,
-                struct_id,
-                field_index,
-                value,
-            } => {
-                write!(
-                    f,
-                    "field_set ${}.#{}.{} = {}",
-                    slot, struct_id.0, field_index, value
-                )
-            }
-            CfgInstData::ParamFieldSet {
-                param_slot,
-                inner_offset,
-                struct_id,
-                field_index,
-                value,
-            } => {
-                write!(
-                    f,
-                    "param_field_set %{}+{}.#{}.{} = {}",
-                    param_slot, inner_offset, struct_id.0, field_index, value
-                )
-            }
             CfgInstData::ArrayInit {
                 elements_start,
                 elements_len,
@@ -1327,36 +1265,6 @@ impl Cfg {
                     write!(f, "{}", elem)?;
                 }
                 write!(f, "]")
-            }
-            CfgInstData::IndexSet {
-                slot,
-                array_type,
-                index,
-                value,
-            } => {
-                write!(
-                    f,
-                    "index_set ${}({})[{}] = {}",
-                    slot,
-                    array_type.name(),
-                    index,
-                    value
-                )
-            }
-            CfgInstData::ParamIndexSet {
-                param_slot,
-                array_type,
-                index,
-                value,
-            } => {
-                write!(
-                    f,
-                    "param_index_set %{}({})[{}] = {}",
-                    param_slot,
-                    array_type.name(),
-                    index,
-                    value
-                )
             }
             CfgInstData::EnumVariant {
                 enum_id,

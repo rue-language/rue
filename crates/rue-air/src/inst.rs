@@ -2,7 +2,7 @@
 //!
 //! Like RIR, instructions are stored densely and referenced by index.
 //!
-//! # Place Expressions (ADR-0030 Phase 8)
+//! # Place Expressions
 //!
 //! Memory locations are represented using [`AirPlace`], which consists of:
 //! - A base ([`AirPlaceBase`]): either a local variable slot or parameter slot
@@ -28,7 +28,7 @@ use lasso::{Key, Spur, ThreadedRodeo};
 use rue_span::Span;
 
 // ============================================================================
-// Place Expressions (ADR-0030 Phase 8)
+// Place Expressions
 // ============================================================================
 
 /// A reference to a place in AIR - stored as index into the places array.
@@ -386,10 +386,10 @@ pub struct Air {
     extra: Vec<u32>,
     /// The return type of this function
     return_type: Type,
-    /// Storage for place projections (ADR-0030 Phase 8).
+    /// Storage for place projections.
     /// AirPlace instructions store (start, len) indices into this array.
     projections: Vec<AirProjection>,
-    /// Storage for places (ADR-0030 Phase 8).
+    /// Storage for places.
     /// AirPlaceRef values are indices into this array.
     places: Vec<AirPlace>,
     /// Owned (pass-by-value) parameters of this function: (ABI slot, type).
@@ -625,7 +625,7 @@ impl Air {
     }
 
     // ========================================================================
-    // Place operations (ADR-0030 Phase 8)
+    // Place operations
     // ========================================================================
 
     /// Add projections to the projections array and return (start, len).
@@ -925,42 +925,6 @@ pub enum AirInstData {
         source_order_start: u32,
     },
 
-    /// Load a field from a struct value
-    FieldGet {
-        /// The struct value
-        base: AirRef,
-        /// The struct type
-        struct_id: StructId,
-        /// Field index (0-based, in declaration order)
-        field_index: u32,
-    },
-
-    /// Store a value to a struct field (for local variables)
-    FieldSet {
-        /// The struct variable slot
-        slot: u32,
-        /// The struct type
-        struct_id: StructId,
-        /// Field index (0-based, in declaration order)
-        field_index: u32,
-        /// Value to store
-        value: AirRef,
-    },
-
-    /// Store a value to a struct field (for parameters, including inout)
-    ParamFieldSet {
-        /// The parameter's ABI slot (relative to params, not locals)
-        param_slot: u32,
-        /// Offset within the struct for nested field access (e.g., p.inner.x)
-        inner_offset: u32,
-        /// The struct type containing the field being set
-        struct_id: StructId,
-        /// Field index (0-based, in declaration order)
-        field_index: u32,
-        /// Value to store
-        value: AirRef,
-    },
-
     // Array operations
     /// Create a new array with initialized elements.
     /// The array type is stored in `AirInst.ty` as `Type::new_array(...)`.
@@ -971,49 +935,11 @@ pub enum AirInstData {
         elems_len: u32,
     },
 
-    /// Load an element from an array.
-    /// The array type is stored in `AirInst.ty`.
-    IndexGet {
-        /// The array value
-        base: AirRef,
-        /// The array type (for bounds checking and element size)
-        array_type: Type,
-        /// Index expression
-        index: AirRef,
-    },
-
-    /// Store a value to an array element.
-    /// The array type is stored in `AirInst.ty`.
-    IndexSet {
-        /// The array variable slot
-        slot: u32,
-        /// The array type (for bounds checking and element size)
-        array_type: Type,
-        /// Index expression
-        index: AirRef,
-        /// Value to store
-        value: AirRef,
-    },
-
-    /// Store a value to an array element of an inout parameter.
-    /// The array type is stored in `AirInst.ty`.
-    ParamIndexSet {
-        /// The parameter's ABI slot (relative to params, not locals)
-        param_slot: u32,
-        /// The array type (for bounds checking and element size)
-        array_type: Type,
-        /// Index expression
-        index: AirRef,
-        /// Value to store
-        value: AirRef,
-    },
-
-    // Place operations (ADR-0030 Phase 8)
+    // Place operations
     /// Read a value from a memory location.
     ///
-    /// This unifies Load, IndexGet, and FieldGet into a single instruction
-    /// that can handle arbitrarily nested access patterns like `arr[i].field`.
-    /// Eventually, the separate FieldGet/IndexGet instructions will be removed.
+    /// Projected memory reads are represented canonically by this instruction,
+    /// including arbitrarily nested access patterns like `arr[i].field`.
     PlaceRead {
         /// Reference to the place to read from
         place: AirPlaceRef,
@@ -1021,9 +947,8 @@ pub enum AirInstData {
 
     /// Write a value to a memory location.
     ///
-    /// This unifies Store, IndexSet, ParamIndexSet, FieldSet, and ParamFieldSet
-    /// into a single instruction that can handle nested writes.
-    /// Eventually, the separate *Set instructions will be removed.
+    /// Projected memory writes are represented canonically by this instruction,
+    /// including nested local and parameter writes.
     PlaceWrite {
         /// Reference to the place to write to
         place: AirPlaceRef,
@@ -1354,38 +1279,6 @@ impl Air {
                     }
                     writeln!(f, "]")?;
                 }
-                AirInstData::FieldGet {
-                    base,
-                    struct_id,
-                    field_index,
-                } => {
-                    writeln!(f, "field_get {}.#{}.{}", base, struct_id.0, field_index)?;
-                }
-                AirInstData::FieldSet {
-                    slot,
-                    struct_id,
-                    field_index,
-                    value,
-                } => {
-                    writeln!(
-                        f,
-                        "field_set ${}.#{}.{} = {}",
-                        slot, struct_id.0, field_index, value
-                    )?;
-                }
-                AirInstData::ParamFieldSet {
-                    param_slot,
-                    inner_offset,
-                    struct_id,
-                    field_index,
-                    value,
-                } => {
-                    writeln!(
-                        f,
-                        "param_field_set %{}+{}.#{}.{} = {}",
-                        param_slot, inner_offset, struct_id.0, field_index, value
-                    )?;
-                }
                 AirInstData::ArrayInit {
                     elems_start,
                     elems_len,
@@ -1398,43 +1291,6 @@ impl Air {
                         write!(f, "{}", elem)?;
                     }
                     writeln!(f, "]")?;
-                }
-                AirInstData::IndexGet {
-                    base,
-                    array_type,
-                    index,
-                } => {
-                    writeln!(f, "index_get {}({})[{}]", base, array_type.name(), index)?;
-                }
-                AirInstData::IndexSet {
-                    slot,
-                    array_type,
-                    index,
-                    value,
-                } => {
-                    writeln!(
-                        f,
-                        "index_set ${}({})[{}] = {}",
-                        slot,
-                        array_type.name(),
-                        index,
-                        value
-                    )?;
-                }
-                AirInstData::ParamIndexSet {
-                    param_slot,
-                    array_type,
-                    index,
-                    value,
-                } => {
-                    writeln!(
-                        f,
-                        "param_index_set param{}({})[{}] = {}",
-                        param_slot,
-                        array_type.name(),
-                        index,
-                        value
-                    )?;
                 }
                 AirInstData::PlaceRead { place } => {
                     write!(f, "place_read ")?;

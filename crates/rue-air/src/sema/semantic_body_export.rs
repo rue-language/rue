@@ -313,75 +313,11 @@ impl BodySema<'_> {
                             .into(),
                     }
                 }
-                AirInstData::FieldGet {
-                    base,
-                    struct_id,
-                    field_index,
-                } => SemanticBodyInstData::FieldGet {
-                    base: r(*base, current)?,
-                    struct_key: self.struct_identity(*struct_id)?,
-                    field_index: *field_index,
-                },
-                AirInstData::FieldSet {
-                    slot,
-                    struct_id,
-                    field_index,
-                    value,
-                } => SemanticBodyInstData::FieldSet {
-                    slot: *slot,
-                    struct_key: self.struct_identity(*struct_id)?,
-                    field_index: *field_index,
-                    value: r(*value, current)?,
-                },
-                AirInstData::ParamFieldSet {
-                    param_slot,
-                    inner_offset,
-                    struct_id,
-                    field_index,
-                    value,
-                } => SemanticBodyInstData::ParamFieldSet {
-                    param_slot: *param_slot,
-                    inner_offset: *inner_offset,
-                    struct_key: self.struct_identity(*struct_id)?,
-                    field_index: *field_index,
-                    value: r(*value, current)?,
-                },
                 AirInstData::ArrayInit {
                     elems_start,
                     elems_len,
                 } => SemanticBodyInstData::ArrayInit {
                     elements: refs(*elems_start, *elems_len)?,
-                },
-                AirInstData::IndexGet {
-                    base,
-                    array_type,
-                    index,
-                } => SemanticBodyInstData::IndexGet {
-                    base: r(*base, current)?,
-                    array_type: self.export_body_type(*array_type)?,
-                    index: r(*index, current)?,
-                },
-                AirInstData::IndexSet {
-                    slot,
-                    array_type,
-                    index,
-                    value,
-                } => SemanticBodyInstData::IndexSet {
-                    slot: *slot,
-                    array_type: self.export_body_type(*array_type)?,
-                    index: r(*index, current)?,
-                    value: r(*value, current)?,
-                },
-                AirInstData::ParamIndexSet {
-                    param_slot,
-                    array_type,
-                    index,
-                    value,
-                } => SemanticBodyInstData::ParamIndexSet {
-                    param_slot: *param_slot,
-                    array_type: self.export_body_type(*array_type)?,
-                    index: r(*index, current)?,
-                    value: r(*value, current)?,
                 },
                 AirInstData::PlaceRead { place: value } => SemanticBodyInstData::PlaceRead {
                     place: place(*value)?,
