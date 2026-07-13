@@ -23,8 +23,9 @@ jobs:
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
 
       - name: Check formatting
-        # Uses hermetic rustfmt from Buck2 toolchain
-        run: ./fmt.sh check
+        # Buck declares all Rust sources as inputs and applies the hermetic
+        # rustfmt target's platform-specific runtime environment.
+        run: ./buck2 test //:fmt-check
 
   clippy:
     runs-on: ubuntu-latest
