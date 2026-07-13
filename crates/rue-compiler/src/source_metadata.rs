@@ -6,13 +6,17 @@
 //! of the checkout location. Keeping both maps together with an explicit root
 //! makes it impossible for those coupled inputs to drift after construction.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::HashSet;
 
 use rue_air::normalize_module_path;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
-use crate::{ModuleId, SourceFile};
+use crate::ModuleId;
+#[cfg(test)]
+use crate::SourceView;
 
 /// Immutable, validated identities for every source in a compilation.
 ///
@@ -31,9 +35,8 @@ impl SourceMetadata {
     /// Validate complete physical and logical path maps for an explicit root.
     ///
     /// Both maps must have exactly the same nonempty set of `FileId` keys.
-    /// Logical values are lexically normalized before storage. Use
-    /// [`Self::from_sources`] when logical identities may fall back to physical
-    /// paths.
+    /// Logical values are lexically normalized before storage. Callers must
+    /// materialize both maps so relocation-sensitive defaults remain explicit.
     pub fn new(
         root_file_id: FileId,
         physical_paths: HashMap<FileId, String>,
@@ -96,15 +99,9 @@ impl SourceMetadata {
         })
     }
 
-    /// Build metadata from source files and optional logical-path overrides.
-    ///
-    /// Every omitted logical path is materialized from the corresponding
-    /// physical [`SourceFile::path`]. Callers that require identities to be
-    /// stable across relocations must therefore override location-dependent
-    /// physical paths. Overrides for IDs not present in `sources` are rejected
-    /// rather than ignored.
-    pub fn from_sources(
-        sources: &[SourceFile<'_>],
+    #[cfg(test)]
+    pub(crate) fn from_sources(
+        sources: &[SourceView<'_>],
         root_file_id: FileId,
         logical_path_overrides: HashMap<FileId, String>,
     ) -> CompileResult<Self> {
@@ -261,11 +258,8 @@ impl SourceMetadata {
         &self.logical_paths
     }
 
-    /// Validate that a source slice exactly matches this descriptor.
-    ///
-    /// Source contents and vector order are intentionally not metadata.
-    /// Validation diagnostics are selected in ascending `FileId` order.
-    pub(crate) fn validate_sources(&self, sources: &[SourceFile<'_>]) -> CompileResult<()> {
+    #[cfg(test)]
+    pub(crate) fn validate_sources(&self, sources: &[SourceView<'_>]) -> CompileResult<()> {
         let mut counts = HashMap::<FileId, usize>::new();
         for source in sources {
             *counts.entry(source.file_id).or_default() += 1;
@@ -401,8 +395,8 @@ fn display_file_ids(file_ids: &[FileId]) -> String {
 mod tests {
     use super::*;
 
-    fn source<'a>(path: &'a str, file_id: u32) -> SourceFile<'a> {
-        SourceFile::new(path, "", FileId::new(file_id))
+    fn source<'a>(path: &'a str, file_id: u32) -> SourceView<'a> {
+        SourceView::new(path, "", FileId::new(file_id))
     }
 
     fn physical(entries: &[(u32, &str)]) -> HashMap<FileId, String> {

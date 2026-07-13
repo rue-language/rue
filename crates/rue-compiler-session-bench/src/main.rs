@@ -1,15 +1,15 @@
 #![recursion_limit = "256"]
 
-//! Reproducible in-process invalidation workload for `CanonicalFrontendSession`.
+//! Reproducible in-process invalidation workload for `CompilerSession`.
 
 use std::{collections::HashMap, env, process, sync::Arc, time::Instant};
 
 use rue_compiler::{
-    CanonicalFrontendSession, CanonicalFrontendSessionWork, CompileOptions,
-    FRONTEND_DIAGNOSTIC_RETENTION_LIMIT, FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT,
-    ParsedModulesWork, SemanticDependencyIncompleteReason, SemanticDependencyInputManifest,
-    SemanticDependencySurface, SemanticFullInvalidationReason, SemanticInvalidationPlan,
-    SemanticInvalidationScope, SourceMetadata, SourceSnapshot,
+    CompileOptions, CompilerSession, CompilerSessionWork, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
+    FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT, ParsedModulesWork,
+    SemanticDependencyIncompleteReason, SemanticDependencyInputManifest, SemanticDependencySurface,
+    SemanticFullInvalidationReason, SemanticInvalidationPlan, SemanticInvalidationScope,
+    SourceMetadata, SourceSnapshot,
 };
 use rue_span::FileId;
 use serde_json::{Value, json};
@@ -52,7 +52,7 @@ struct QueryCounts {
 }
 
 impl QueryCounts {
-    fn from(work: &CanonicalFrontendSessionWork) -> Self {
+    fn from(work: &CompilerSessionWork) -> Self {
         Self {
             merge_executions: work.merge.executions,
             merge_reuses: work.merge.reuses,
@@ -223,7 +223,7 @@ fn parse_json(work: ParsedModulesWork) -> Value {
     })
 }
 
-fn semantic_work_json(work: &CanonicalFrontendSessionWork, from: usize) -> Value {
+fn semantic_work_json(work: &CompilerSessionWork, from: usize) -> Value {
     let records = &work.semantic_records[from..];
     json!({
         "bind_invocations": records.iter().map(|record| record.work.binding.bind_invocations).sum::<usize>(),
@@ -325,7 +325,7 @@ fn semantic_work_json(work: &CanonicalFrontendSessionWork, from: usize) -> Value
     })
 }
 
-fn definition_work_json(work: &CanonicalFrontendSessionWork, from: usize) -> Value {
+fn definition_work_json(work: &CompilerSessionWork, from: usize) -> Value {
     let records = &work.definition_records[from..];
     json!({
         "bind_invocations": records.iter().map(|record| record.binding.bind_invocations).sum::<usize>(),
@@ -335,7 +335,7 @@ fn definition_work_json(work: &CanonicalFrontendSessionWork, from: usize) -> Val
     })
 }
 
-fn retention_json(work: &CanonicalFrontendSessionWork) -> Value {
+fn retention_json(work: &CompilerSessionWork) -> Value {
     json!({
         "diagnostic_entries": work.retention.diagnostic_entries,
         "diagnostic_source_attempts": work.retention.diagnostic_source_attempts,
@@ -345,9 +345,9 @@ fn retention_json(work: &CanonicalFrontendSessionWork) -> Value {
     })
 }
 
-fn measure<F>(session: &mut CanonicalFrontendSession, operation: F) -> Value
+fn measure<F>(session: &mut CompilerSession, operation: F) -> Value
 where
-    F: FnOnce(&mut CanonicalFrontendSession) -> ParsedModulesWork,
+    F: FnOnce(&mut CompilerSession) -> ParsedModulesWork,
 {
     let before = QueryCounts::from(session.work());
     let semantic_records = session.work().semantic_records.len();
@@ -488,7 +488,7 @@ fn dependency_reason_name(reason: SemanticDependencyIncompleteReason) -> &'stati
 }
 
 fn measure_manifest_plan(
-    session: &mut CanonicalFrontendSession,
+    session: &mut CompilerSession,
     source: &SourceSnapshot,
     previous: Option<&Arc<SemanticDependencyInputManifest>>,
     options: &CompileOptions,
@@ -548,7 +548,7 @@ fn measure_manifest_plan(
 
 fn run_iteration(fixture: &Fixture) -> Vec<Value> {
     let options = CompileOptions::default();
-    let mut session = CanonicalFrontendSession::new();
+    let mut session = CompilerSession::new();
     let mut scenarios = Vec::new();
 
     scenarios.push(named(
@@ -620,7 +620,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         }),
     ));
 
-    let mut stable = CanonicalFrontendSession::new();
+    let mut stable = CompilerSession::new();
     scenarios.push(named(
         "stable_definitions_cold",
         measure(&mut stable, |session| {
@@ -636,7 +636,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
             ParsedModulesWork::default()
         }),
     ));
-    let mut planner = CanonicalFrontendSession::new();
+    let mut planner = CompilerSession::new();
     let (cold_plan, base_manifest) =
         measure_manifest_plan(&mut planner, &fixture.base, None, &options);
     scenarios.push(named("invalidation_plan_cold", cold_plan));
@@ -1109,7 +1109,7 @@ fn main() {
         "{}",
         json!({
             "schema_version": 8,
-            "workload": "canonical_frontend_session_invalidation",
+            "workload": "compiler_session_invalidation",
             "configuration": {
                 "modules": config.modules,
                 "warmup_iterations": config.warmup,

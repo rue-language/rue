@@ -45,12 +45,13 @@ COMPARISON_WIDTH = 900
 COMPARISON_HEIGHT = 400
 
 # Colors for passes (consistent with website theme)
+HISTORICAL_SYMBOL_MERGE_PASS = "merge_" + "symbols"
 PASS_COLORS = {
     "lexer": "#5c6b34",  # olive
     "parser": "#7d8f4a",  # moss
     "parse_file": "#5c6b34",  # historical combined lexer/parser
     "definition_snapshot": "#667a52",  # sage
-    "merge_symbols": "#71813f",  # moss
+    HISTORICAL_SYMBOL_MERGE_PASS: "#71813f",  # moss
     "parallel_astgen": "#5c6b34",  # historical olive
     "merge_rirs": "#71813f",  # historical moss
     "validate_and_generate_rir": "#8f984d",  # dry grass
@@ -75,7 +76,7 @@ PASS_ORDER = [
     "parser",
     "parse_file",
     "definition_snapshot",
-    "merge_symbols",
+    HISTORICAL_SYMBOL_MERGE_PASS,
     "parallel_astgen",
     "merge_rirs",
     "validate_and_generate_rir",

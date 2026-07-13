@@ -1,6 +1,6 @@
-# Canonical frontend session invalidation benchmark
+# Compiler session invalidation benchmark
 
-This opt-in benchmark characterizes `CanonicalFrontendSession` without starting
+This opt-in benchmark characterizes `CompilerSession` without starting
 a compiler process per query. It uses generated source held in memory, performs
 no filesystem discovery during measured updates, and stops before backend code
 generation or linking.
@@ -46,7 +46,7 @@ At N=128 the structural gates require the supported reachable-root-body-edit
 workload to reuse and atomically install all 128 durable declaration records,
 skip ordinary declaration resolution, and perform zero cache-population binds.
 Cold compilation remains one bind. This is a measured declaration-resolution
-saving, not whole-pipeline incremental compilation: canonical merge/RIR and
+saving, not whole-pipeline incremental compilation: program merge/RIR and
 current body/CFG work still run. Constants, module values, function aliases,
 generic named methods, and anonymous structural owners currently fail closed to
 ordinary declaration resolution with zero partial installs. Persistent cache

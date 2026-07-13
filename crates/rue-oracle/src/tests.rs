@@ -15,7 +15,7 @@ fn run(src: &str) -> Outcome {
 }
 
 fn run_with_budget(src: &str, budget: u64) -> Result<Outcome, Unsupported> {
-    let state = compile_to_cfg(src).unwrap_or_else(|e| panic!("compile error: {e:#?}"));
+    let state = query_cfg_state(src).unwrap_or_else(|e| panic!("compile error: {e:#?}"));
     run_state_with_budget(state, budget)
 }
 
@@ -28,7 +28,7 @@ fn run_with_output_caps(
     stdout_cap: usize,
     stderr_cap: usize,
 ) -> Result<Outcome, Unsupported> {
-    let state = compile_to_cfg(src).unwrap_or_else(|e| panic!("compile error: {e:#?}"));
+    let state = query_cfg_state(src).unwrap_or_else(|e| panic!("compile error: {e:#?}"));
     run_state_with_output_limits(state, STEP_BUDGET, stdout_cap, stderr_cap)
 }
 

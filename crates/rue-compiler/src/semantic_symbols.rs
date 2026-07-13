@@ -46,7 +46,7 @@ pub struct SemanticSymbolUniverse {
 }
 
 impl SemanticSymbolUniverse {
-    pub(crate) fn into_interner(self) -> ThreadedRodeo {
+    pub fn into_interner(self) -> ThreadedRodeo {
         self.interner
     }
 
@@ -155,7 +155,7 @@ impl SemanticSymbolUniverse {
         self.translate_shared(owner, &symbol)
     }
 
-    pub(crate) fn interner(&self) -> &ThreadedRodeo {
+    pub fn interner(&self) -> &ThreadedRodeo {
         &self.interner
     }
 

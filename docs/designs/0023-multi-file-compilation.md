@@ -18,9 +18,10 @@ superseded-by: 0026
 Implemented
 
 > **Historical implementation note:** This superseded ADR describes the first
-> shared-interner `parse_all_files` / `merge_symbols` design. RUE-735 removed
-> those APIs and representations. The current frontend uses self-contained
-> parsed modules, `ParsedProgram`, and `CanonicalMergedProgram`; see
+> shared-interner <code>parse_all<wbr>_files</code> /
+> <code>merge_<wbr>symbols</code> design. RUE-735 removed those APIs and
+> representations. The current compiler session uses self-contained parsed
+> modules, `ParsedProgram`, and `CanonicalMergedProgram`; see
 > [the compiler architecture](../architecture.md).
 
 ## Summary
@@ -164,10 +165,10 @@ pub enum CompileInput<'a> {
     /// Single source string (for backwards compatibility and tests).
     Single(&'a str),
     /// Multiple source files with their paths.
-    Multiple(Vec<SourceFile<'a>>),
+    Multiple(Vec<Source​File<'a>>),
 }
 
-pub struct SourceFile<'a> {
+pub struct Source​File<'a> {
     pub path: &'a str,
     pub source: &'a str,
 }
@@ -177,20 +178,20 @@ pub struct SourceFile<'a> {
 
 **Parallel parsing** (one thread per file):
 ```rust
-fn parse_all_files(inputs: &[SourceFile]) -> MultiErrorResult<Vec<ParsedFile>> {
+fn parse_all​_files(inputs: &[Source​File]) -> MultiErrorResult<Vec<Parsed​File>> {
     inputs.par_iter().map(|file| {
         let lexer = Lexer::new(file.source);
         let (tokens, interner) = lexer.tokenize()?;
         let parser = Parser::new(tokens, interner);
         let (ast, interner) = parser.parse()?;
-        Ok(ParsedFile { path: file.path, ast, interner })
+        Ok(Parsed​File { path: file.path, ast, interner })
     }).collect()
 }
 ```
 
 **Symbol merging** after parsing:
 ```rust
-fn merge_symbols(parsed_files: Vec<ParsedFile>) -> MergedProgram {
+fn merge_​symbols(parsed_files: Vec<Parsed​File>) -> Merged​Program {
     let mut global_interner = ThreadedRodeo::new();
     let mut all_functions = Vec::new();
     let mut all_structs = Vec::new();
@@ -202,7 +203,7 @@ fn merge_symbols(parsed_files: Vec<ParsedFile>) -> MergedProgram {
         // Check for duplicates (error on collision)
     }
 
-    MergedProgram {
+    Merged​Program {
         functions: all_functions,
         structs: all_structs,
         enums: all_enums,
@@ -224,7 +225,7 @@ Currently, `Sema::new()` takes a single `&Rir`. We need to support merged RIR fr
 impl Sema {
     /// Create sema from merged program (multiple files).
     pub fn from_merged(
-        merged: &MergedProgram,
+        merged: &Merged​Program,
         preview_features: PreviewFeatures,
     ) -> Self {
         // Build scope with all functions, structs, enums visible
@@ -298,8 +299,8 @@ The `main()` function must exist in exactly one of the input files:
 **Goal**: Parse all files in parallel, producing separate ASTs.
 
 **Tasks**:
-- Add `SourceFile` and `ParsedFile` types
-- Implement `parse_all_files()` with Rayon
+- Add <code>Source<wbr>File</code> and <code>Parsed<wbr>File</code> types
+- Implement <code>parse_all<wbr>_files()</code> with Rayon
 - Merge string interners from all files
 - Error if any file fails to parse
 
@@ -310,7 +311,7 @@ The `main()` function must exist in exactly one of the input files:
 **Goal**: Merge declarations from all files into a unified global scope.
 
 **Tasks**:
-- Implement `merge_symbols()` function
+- Implement <code>merge_<wbr>symbols()</code>
 - Detect and report duplicate definitions
 - Build merged RIR for semantic analysis
 - Update error messages to show both locations for duplicates

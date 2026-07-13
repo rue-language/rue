@@ -9,14 +9,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(test)]
 use lasso::ThreadedRodeo;
 use rue_air::{DirResolution, ModulePath, normalize_module_path};
 use rue_error::{CompileError, CompileResult, ErrorKind};
+#[cfg(test)]
 use rue_rir::{InstData, Rir};
 
+#[cfg(test)]
+use crate::SourceMetadata;
 use crate::{
-    CompileOptions, ModuleId, ModuleResolutionInputs, SemanticInputDescriptor, SourceMetadata,
-    StableLinkerInput, StableOptLevel,
+    CompileOptions, ModuleId, ModuleResolutionInputs, SemanticInputDescriptor, StableLinkerInput,
+    StableOptLevel,
 };
 
 /// One valid import call, identified independently of request-local file IDs.
@@ -111,7 +115,8 @@ impl ImportEdge {
 
 /// Immutable canonical import topology for a loaded source snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ImportGraph {
+#[cfg(test)]
+pub(crate) struct ImportGraph {
     root: ModuleId,
     directives: ImportDirectives,
     resolutions: Arc<[ImportResolution]>,
@@ -387,13 +392,10 @@ fn validate_resolved_compile_options(
     Ok(())
 }
 
+#[cfg(test)]
 impl ImportGraph {
     pub fn root(&self) -> &ModuleId {
         &self.root
-    }
-
-    pub fn directives(&self) -> &ImportDirectives {
-        &self.directives
     }
 
     /// Outcomes parallel to [`Self::directives`].
@@ -411,7 +413,8 @@ impl ImportGraph {
 /// Malformed calls are deliberately absent: this function neither resolves
 /// modules nor competes with semantic analysis for diagnostic precedence.
 /// `interner` must be the matching interner used to build `rir`.
-pub fn extract_import_directives(
+#[cfg(test)]
+pub(crate) fn extract_import_directives(
     rir: &Rir,
     interner: &ThreadedRodeo,
     metadata: &SourceMetadata,
@@ -457,7 +460,8 @@ pub fn extract_import_directives(
 /// optional standard-library directory. This function never reads the
 /// environment, probes for new source inputs, or emits diagnostics. Missing
 /// and ambiguous imports are retained as graph data.
-pub fn resolve_import_graph(
+#[cfg(test)]
+pub(crate) fn resolve_import_graph(
     directives: &ImportDirectives,
     metadata: &SourceMetadata,
     std_dir: Option<&str>,
@@ -895,9 +899,7 @@ mod tests {
     use rue_span::FileId;
 
     use super::*;
-    use crate::{
-        CanonicalFrontendSession, CanonicalRirOutput, CompileOptions, SourceFile, SourceSnapshot,
-    };
+    use crate::{CanonicalRirOutput, CompileOptions, CompilerSession, SourceSnapshot, SourceView};
 
     fn value_hash(value: &impl Hash) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -933,8 +935,10 @@ mod tests {
         }
 
         fn analyze(&self) -> Result<Arc<crate::CanonicalSemanticOutput>, crate::CompileErrors> {
-            let mut session = CanonicalFrontendSession::new();
-            session.update_for_batch(&self.snapshot).into_result()?;
+            let mut session = CompilerSession::new();
+            session
+                .update_for_presentation(&self.snapshot)
+                .into_result()?;
             session.semantic(&CompileOptions::default())
         }
 
@@ -944,14 +948,17 @@ mod tests {
     }
 
     fn lower<'a>(
-        sources: Vec<SourceFile<'a>>,
+        sources: Vec<SourceView<'a>>,
         root: FileId,
         logical_paths: HashMap<FileId, String>,
     ) -> LoweredFrontend {
         let metadata = SourceMetadata::from_sources(&sources, root, logical_paths).unwrap();
         let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
-        let mut session = CanonicalFrontendSession::new();
-        let parsed = session.update_for_batch(&snapshot).into_result().unwrap();
+        let mut session = CompilerSession::new();
+        let parsed = session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
         let directives = parsed.import_directives().clone();
         let rir = session.rir().unwrap();
         LoweredFrontend {
@@ -989,7 +996,7 @@ fn main() -> i32 {
 "#;
         let id = FileId::new(1);
         let unit = lower(
-            vec![SourceFile::new("main.rue", source, id)],
+            vec![SourceView::new("main.rue", source, id)],
             id,
             HashMap::new(),
         );
@@ -1023,7 +1030,7 @@ fn main() -> i32 {
 "#;
         let id = FileId::new(8);
         let unit = lower(
-            vec![SourceFile::new("main.rue", source, id)],
+            vec![SourceView::new("main.rue", source, id)],
             id,
             HashMap::new(),
         );
@@ -1057,7 +1064,7 @@ fn main() -> i32 {
             let source = format!("fn main() -> i32 {{ let value = {call}; 0 }}");
             let id = FileId::new(1);
             let unit = lower(
-                vec![SourceFile::new("main.rue", &source, id)],
+                vec![SourceView::new("main.rue", &source, id)],
                 id,
                 HashMap::new(),
             );
@@ -1092,7 +1099,7 @@ fn main() -> i32 {
     fn extraction_rejects_import_spans_absent_from_metadata() {
         let id = FileId::new(7);
         let unit = lower(
-            vec![SourceFile::new(
+            vec![SourceView::new(
                 "main.rue",
                 "fn main() -> i32 { let m = @import(\"a\"); 0 }",
                 id,
@@ -1124,12 +1131,12 @@ fn main() -> i32 {
     ) -> ImportDirectives {
         let root_id = FileId::new(root_id);
         let helper_id = FileId::new(helper_id);
-        let root = SourceFile::new(
+        let root = SourceView::new(
             root_physical,
             "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }",
             root_id,
         );
-        let helper = SourceFile::new(
+        let helper = SourceView::new(
             helper_physical,
             "fn helper() -> i32 { let h = @import(\"leaf.rue\"); 1 }",
             helper_id,
@@ -1164,7 +1171,7 @@ fn main() -> i32 {
         let id = FileId::new(1);
         let build = |source| {
             lower(
-                vec![SourceFile::new("main.rue", source, id)],
+                vec![SourceView::new("main.rue", source, id)],
                 id,
                 HashMap::new(),
             )
@@ -1182,7 +1189,7 @@ fn main() -> i32 {
     fn graph_unit(entries: &[(u32, &str, &str, &str)], root: u32) -> LoweredFrontend {
         let sources = entries
             .iter()
-            .map(|(id, physical, _, source)| SourceFile::new(physical, source, FileId::new(*id)))
+            .map(|(id, physical, _, source)| SourceView::new(physical, source, FileId::new(*id)))
             .collect();
         let logical = entries
             .iter()
@@ -1328,12 +1335,12 @@ fn main() -> i32 {
     fn invariant_graph(prefix: &str, root_id: u32, helper_id: u32, reverse: bool) -> ImportGraph {
         let root_path = format!("{prefix}/main.rue");
         let helper_path = format!("{prefix}/helper.rue");
-        let root = SourceFile::new(
+        let root = SourceView::new(
             &root_path,
             "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }",
             FileId::new(root_id),
         );
-        let helper = SourceFile::new(&helper_path, "fn helper() {}", FileId::new(helper_id));
+        let helper = SourceView::new(&helper_path, "fn helper() {}", FileId::new(helper_id));
         let sources = if reverse {
             vec![helper, root]
         } else {
@@ -1570,8 +1577,8 @@ fn main() -> i32 {
         let helper_path = format!("{prefix}/helper.rue");
         let unit = lower(
             vec![
-                SourceFile::new(&helper_path, "fn helper() {}", FileId::new(helper_id)),
-                SourceFile::new(
+                SourceView::new(&helper_path, "fn helper() {}", FileId::new(helper_id)),
+                SourceView::new(
                     &root_path,
                     "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }",
                     FileId::new(root_id),

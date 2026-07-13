@@ -470,11 +470,13 @@ pub struct CanonicalParseUpdate {
     result: Result<Arc<ParsedProgram>, CompileErrors>,
     work: ParsedModulesWork,
     invalidation: ParseInvalidationSummary,
+    #[cfg_attr(not(test), allow(dead_code))]
     baseline_advanced: bool,
 }
 
 impl CanonicalParseUpdate {
-    pub fn result(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
+    #[cfg(test)]
+    pub(crate) fn result(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
         self.result.as_ref()
     }
 
@@ -490,7 +492,8 @@ impl CanonicalParseUpdate {
         &self.invalidation
     }
 
-    pub fn baseline_advanced(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn baseline_advanced(&self) -> bool {
         self.baseline_advanced
     }
 }
@@ -502,12 +505,14 @@ pub struct CanonicalParseSession {
 }
 
 impl CanonicalParseSession {
-    pub fn new() -> Self {
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Seed a session only with a program belonging to this exact snapshot revision.
-    pub fn from_baseline(
+    #[cfg(test)]
+    pub(crate) fn from_baseline(
         snapshot: &SourceSnapshot,
         baseline: Arc<ParsedProgram>,
     ) -> CompileResult<Self> {
@@ -521,7 +526,8 @@ impl CanonicalParseSession {
         })
     }
 
-    pub fn baseline(&self) -> Option<&Arc<ParsedProgram>> {
+    #[cfg(test)]
+    pub(crate) fn baseline(&self) -> Option<&Arc<ParsedProgram>> {
         self.baseline.as_ref()
     }
 
@@ -632,7 +638,8 @@ pub(crate) struct ParsedModulesOutcome {
 }
 
 /// Parse every snapshot module independently and assemble canonical artifacts.
-pub fn parse_source_snapshot_modules(
+#[cfg(test)]
+pub(crate) fn parse_source_snapshot_modules(
     snapshot: &SourceSnapshot,
 ) -> Result<ParsedProgram, CompileErrors> {
     parse_source_snapshot_modules_reusing(snapshot, None).map(|(program, _)| program)
@@ -645,7 +652,8 @@ pub fn parse_source_snapshot_modules(
 /// visited in canonical ModuleId order and performs at most one point lookup.
 /// Caller-ordered syntax diagnostics are handled by the explicit AST
 /// presentation adapter rather than another parsed-program representation.
-pub fn parse_source_snapshot_modules_reusing(
+#[cfg(test)]
+pub(crate) fn parse_source_snapshot_modules_reusing(
     snapshot: &SourceSnapshot,
     previous: Option<&ParsedProgram>,
 ) -> Result<(ParsedProgram, ParsedModulesWork), CompileErrors> {
@@ -715,24 +723,9 @@ pub fn parse_source_snapshot_for_ast_presentation(
     })
 }
 
-/// Parse canonical modules and return the exact syntax work performed.
-pub fn parse_source_snapshot_modules_with_stats(
-    snapshot: &SourceSnapshot,
-) -> Result<(ParsedProgram, SyntaxWork), CompileErrors> {
-    parse_source_snapshot_modules_reusing(snapshot, None)
-        .map(|(program, work)| (program, work.syntax))
-}
-
-/// Parse one module selected by its stable logical identity.
-pub fn parse_source_snapshot_module(
-    snapshot: &SourceSnapshot,
-    module: &ModuleId,
-) -> Result<Arc<ParsedModule>, CompileErrors> {
-    parse_source_snapshot_module_with_stats(snapshot, module).map(|(module, _)| module)
-}
-
 /// Parse one stable module and return the exact syntax work performed.
-pub fn parse_source_snapshot_module_with_stats(
+#[cfg(test)]
+pub(crate) fn parse_source_snapshot_module_with_stats(
     snapshot: &SourceSnapshot,
     module: &ModuleId,
 ) -> Result<(Arc<ParsedModule>, SyntaxWork), CompileErrors> {
@@ -753,7 +746,7 @@ fn parse_snapshot_file(
     snapshot: &SourceSnapshot,
     file_id: FileId,
 ) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
-    let source = snapshot.source_file(file_id).expect("metadata membership");
+    let source = snapshot.source(file_id).expect("metadata membership");
     let outcome = crate::syntax::parse_file(source, ThreadedRodeo::new());
     let work = outcome.work;
     let result = outcome.result.and_then(|ast| {

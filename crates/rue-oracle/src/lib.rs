@@ -1,7 +1,7 @@
 //! # rue-oracle — the executable reference semantics
 //!
 //! A tree-walking interpreter over the compiler's **CFG** (the typed
-//! control-flow IR, produced by the canonical frontend session, *before* the
+//! control-flow IR, produced by `CompilerSession`, *before* the
 //! MIR/codegen lowering where every miscompile of the 2026-07 work lived).
 //! Running a program through this interpreter and through the compiled binary
 //! and comparing the observable behavior (exit code, stdout, stderr, trap cause)
@@ -65,29 +65,62 @@
 //! - **Deeply-nested `inout` field writes** (non-zero inner offset).
 
 use lasso::ThreadedRodeo;
-use rue_air::{Type, TypeKind, parse_array_type_syntax};
+use rue_air::{Type, TypeInternPool, TypeKind, parse_array_type_syntax};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{
-    CompileErrors, CompileOptions, CompileState, PreviewFeatures, query_canonical_frontend_source,
+    CompileErrors, CompileOptions, CompilerSession, FunctionWithCfg, PreviewFeatures,
+    SourceSnapshot,
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
-fn compile_to_cfg(source: &str) -> Result<CompileState, CompileErrors> {
-    query_canonical_frontend_source(source, &CompileOptions::default())
-        .map(|frontend| frontend.into_compile_state())
+struct CompileState {
+    interner: ThreadedRodeo,
+    functions: Vec<FunctionWithCfg>,
+    type_pool: TypeInternPool,
+    strings: Vec<String>,
 }
 
-fn compile_to_cfg_with_preview_features(
+fn query_cfg_state(source: &str) -> Result<CompileState, CompileErrors> {
+    query_cfg_state_with_options(source, &CompileOptions::default())
+}
+
+fn query_cfg_state_with_preview_features(
     source: &str,
     preview_features: &PreviewFeatures,
 ) -> Result<CompileState, CompileErrors> {
-    let options = CompileOptions {
-        preview_features: preview_features.clone(),
-        ..CompileOptions::default()
-    };
-    query_canonical_frontend_source(source, &options).map(|frontend| frontend.into_compile_state())
+    query_cfg_state_with_options(
+        source,
+        &CompileOptions {
+            preview_features: preview_features.clone(),
+            ..CompileOptions::default()
+        },
+    )
+}
+
+fn query_cfg_state_with_options(
+    source: &str,
+    options: &CompileOptions,
+) -> Result<CompileState, CompileErrors> {
+    let snapshot = SourceSnapshot::single("<oracle>", source).map_err(CompileErrors::from)?;
+    let mut session = CompilerSession::new();
+    session.update(&snapshot).into_result()?;
+    let rir = session.rir()?;
+    let semantic = session.semantic(options)?;
+    drop(session);
+    let rir = std::sync::Arc::try_unwrap(rir)
+        .expect("one-shot oracle session uniquely owns its RIR artifact");
+    let semantic = std::sync::Arc::try_unwrap(semantic)
+        .expect("one-shot oracle session uniquely owns its semantic artifact");
+    let (_, symbols) = rir.into_parts();
+    let (functions, type_pool, strings, _) = semantic.into_parts();
+    Ok(CompileState {
+        interner: symbols.into_interner(),
+        functions,
+        type_pool,
+        strings,
+    })
 }
 
 /// A modeled oracle trap category.
@@ -419,7 +452,7 @@ impl std::error::Error for RunSourceError {
 /// could not produce an outcome; inspect [`Unsupported::kind`] rather than
 /// parsing its diagnostic text.
 pub fn run_source(source: &str) -> Result<Outcome, RunSourceError> {
-    let state = compile_to_cfg(source).map_err(RunSourceError::Compile)?;
+    let state = query_cfg_state(source).map_err(RunSourceError::Compile)?;
     run_state(state).map_err(RunSourceError::Unsupported)
 }
 
@@ -433,7 +466,7 @@ pub fn run_source_with_preview_features(
     source: &str,
     preview_features: &PreviewFeatures,
 ) -> Result<Outcome, RunSourceError> {
-    let state = compile_to_cfg_with_preview_features(source, preview_features)
+    let state = query_cfg_state_with_preview_features(source, preview_features)
         .map_err(RunSourceError::Compile)?;
     run_state(state).map_err(RunSourceError::Unsupported)
 }

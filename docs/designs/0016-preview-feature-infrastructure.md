@@ -33,14 +33,14 @@ ADR-0005 introduced the preview feature system design, but the implementation wa
 
 4. **No example usage**: New contributors have no working example of how to gate a feature at each compiler stage.
 
-The current data flow is:
+The historical incomplete data flow was:
 ```
-CLI (--preview flag) → CompileOptions.preview_features → compile_with_options() → [dead end]
+CLI (--preview flag) → CompileOptions.preview_features → old batch driver → [dead end]
 ```
 
-What we need:
+The implemented data flow is:
 ```
-CLI → CompileOptions → compile_frontend_*() → Sema::new(preview_features) → require_preview() checks
+CLI → CompileOptions → CompilerSession::semantic() → Sema::new(preview_features) → require_preview() checks
 ```
 
 ### Why Sema is Sufficient
@@ -64,15 +64,8 @@ This architecture is intentional and matches how Zig and Rust handle feature gat
 Add `preview_features` to the compilation pipeline:
 
 ```rust
-// rue-compiler/src/lib.rs
-pub fn compile_frontend_with_options(
-    source: &str,
-    opt_level: OptLevel,
-    preview_features: &PreviewFeatures,  // NEW
-) -> CompileResult<CompileState>
-
 let options = CompileOptions {
-    preview_features,
+    preview_features: features,
     ..CompileOptions::default()
 };
 session.update(&source_snapshot).into_result()?;
@@ -168,17 +161,18 @@ fn main() -> i32 {
 }
 ```
 
-### 5. Update test helpers
+### 5. Update tests
 
-Add preview feature support to the in-process test helpers:
+Publish an in-memory snapshot and query the session with explicit options:
 
 ```rust
-// rue-compiler/src/lib.rs (test module)
-pub fn compile_to_air(source: &str) -> CompileResult<SemaOutput> { ... }
-pub fn compile_to_air_with_preview(
-    source: &str,
-    features: PreviewFeatures,
-) -> CompileResult<SemaOutput> { ... }
+let snapshot = SourceSnapshot::single("main.rue", source)?;
+let mut session = CompilerSession::new();
+session.update(&snapshot).into_result()?;
+let semantic = session.semantic(&CompileOptions {
+    preview_features: features,
+    ..CompileOptions::default()
+})?;
 ```
 
 ## Implementation Phases

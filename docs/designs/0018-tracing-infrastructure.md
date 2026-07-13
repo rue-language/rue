@@ -83,7 +83,7 @@ Each compilation pass gets a tracing span:
 ```rust
 use tracing::{info_span, info};
 
-pub fn compile_frontend_with_options(...) -> CompileResult<...> {
+pub fn compile_snapshot(...) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("compile", file = %source_path, size = source.len()).entered();
 
     let tokens = {
@@ -131,7 +131,7 @@ pub fn compile_frontend_with_options(...) -> CompileResult<...> {
   - Closes rue-uxgx (historical bd ID, pre-Linear)
 
 - [x] **Phase 4: Instrument compiler** - (historical bd ID rue-irz1.4, pre-Linear)
-  - Add spans to `compile_frontend_with_options()`
+  - Add spans to session queries and `compile_snapshot()`
   - Add spans to backend functions
   - Include context: file size, token/instruction counts
 

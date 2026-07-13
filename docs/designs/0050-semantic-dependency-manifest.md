@@ -1,11 +1,11 @@
 ---
 id: 0050
 title: Stable semantic dependency manifests
-status: proposal
+status: accepted
 tags: [compiler, incremental, tooling]
 feature-flag: null
 created: 2026-07-12
-accepted:
+accepted: 2026-07-13
 implemented:
 spec-sections: []
 superseded-by:
@@ -120,7 +120,7 @@ and specialization, so extraction must occur at the points above.
 
 ## First implemented slice
 
-`CanonicalFrontendSession::semantic_dependency_inputs` is tooling-only and
+`CompilerSession::semantic_dependency_inputs` is tooling-only and
 shares `import_graph` plus `stable_definitions`. It publishes an immutable,
 ordered stable definition universe with semantic and import inputs. It also
 contains the first complete edge surface: ordered module import dependencies
@@ -205,7 +205,7 @@ the production body query consumes these records.
 
 ## Invalidation planning seam
 
-`CanonicalFrontendSession::semantic_invalidation_plan` now memoizes an immutable
+`CompilerSession::semantic_invalidation_plan` now memoizes an immutable
 comparison of two manifests. It computes exact stable-key additions, removals,
 and fingerprint changes, and contains a deterministic reverse-dependency closure
 whose work counters explicitly pin zero RIR traversal. Root, canonical import,
@@ -409,7 +409,7 @@ fresh binder and runs ordinary resolution rather than observing partial state.
 Installation and installed-payload counters distinguish this path from ordinary
 declaration resolution, and installation performs no additional RIR scan.
 
-The canonical session now retains a successful stable-keyed durable baseline
+`CompilerSession` now retains a successful stable-keyed durable baseline
 across source updates. Exact no-op/relocation and body-only edits of the
 supported universe install that baseline into current shells; a 128-module
 workload pins 128 records installed and zero ordinary declaration-resolution
@@ -446,5 +446,5 @@ boundary using current resolution and preserves historical diagnostic and
 constant-evaluation order. Anonymous structural methods remain deferred because
 they lack a durable structural-owner identity. Module bindings and value
 constants also cannot be distinguished before dependency-ordered initializer
-evaluation, though their value-namespace identity is already fixed. No cached
-AIR bodies, CFGs, and RIR fragments are never imported by this boundary.
+evaluation, though their value-namespace identity is already fixed. Cached AIR
+bodies, CFGs, and RIR fragments are never imported by this boundary.

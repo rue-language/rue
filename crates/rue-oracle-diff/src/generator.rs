@@ -956,10 +956,14 @@ impl Program {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_compiler::{CompileOptions, query_canonical_frontend_source};
+    use rue_compiler::{CompileOptions, CompilerSession, SourceSnapshot};
 
-    fn compile_to_cfg(source: &str) -> rue_compiler::MultiErrorResult<()> {
-        query_canonical_frontend_source(source, &CompileOptions::default()).map(|_| ())
+    fn validate_semantics(source: &str) -> rue_compiler::MultiErrorResult<()> {
+        let snapshot = SourceSnapshot::single("<generator>", source)
+            .map_err(rue_compiler::CompileErrors::from)?;
+        let mut session = CompilerSession::new();
+        session.update(&snapshot).into_result()?;
+        session.semantic(&CompileOptions::default()).map(|_| ())
     }
 
     const COMPILE_CONTRACT_SEEDS: u64 = 500;
@@ -1018,7 +1022,7 @@ mod tests {
         for seed in 0..COMPILE_CONTRACT_SEEDS {
             let source = generate(seed);
             saw_string_associated_call |= source.contains("String.new()");
-            if let Err(errors) = compile_to_cfg(&source) {
+            if let Err(errors) = validate_semantics(&source) {
                 panic!(
                     "generated seed {seed} did not compile: {errors:#?}\n\n--- source ---\n{source}"
                 );

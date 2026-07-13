@@ -26,3 +26,12 @@ rue_crate(
         "//third-party:tracing",
     ],
 )
+
+# Compiles against rue-compiler as an external crate so curated reexports and
+# visibility cannot be satisfied accidentally by crate-private test access.
+rust_test(
+    name = "rue-compiler-public-api-test",
+    srcs = ["tests/public_api.rs"],
+    crate_root = "tests/public_api.rs",
+    deps = [":rue-compiler"],
+)

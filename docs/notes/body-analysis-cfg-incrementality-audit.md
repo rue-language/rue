@@ -23,7 +23,7 @@ remain zero.
 
 ## Conclusion
 
-The canonical frontend has one semantic path, but its body-analysis result is
+`CompilerSession` has one semantic path, but its body-analysis result is
 not a per-definition query result. `BoundSema::analyze_all_bodies` consumes one
 request-local semantic epoch and runs a joint, program-wide reachability and
 specialization fixed point. `build_functions_and_cfgs` then consumes the whole
@@ -46,7 +46,7 @@ specialization and CFG representations remain later design steps.
 
 ## Live phase and ownership map
 
-The production session reaches this path through `CanonicalFrontendSession`:
+The production session reaches this path through `CompilerSession`:
 
 1. Canonical parse and merge create `CanonicalMergedProgram`, its
    `DefinitionSnapshot`, and parser-authored signature/body partitions.

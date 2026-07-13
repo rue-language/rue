@@ -134,14 +134,14 @@ mod integration_tests {
 
     #[test]
     fn test_arithmetic_compiles() {
-        let result = compile_to_air("fn main() -> i32 { 1 + 2 * 3 }");
+        let result = test_semantics("fn main() -> i32 { 1 + 2 * 3 }");
         assert!(result.is_ok());
         // Can optionally verify AIR structure
     }
 
     #[test]
     fn test_type_mismatch_error() {
-        let result = compile_to_air("fn main() -> i32 { true }");
+        let result = test_semantics("fn main() -> i32 { true }");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("type mismatch"));
     }
@@ -191,7 +191,7 @@ Add a new script `./quick-test.sh` that runs only unit tests for faster iteratio
   - All 1021 tests pass with 100% normative spec coverage maintained
 
 - [x] **Phase 4: Integration Unit Tests** - (historical bd ID rue-9jdv.4, pre-Linear)
-  - Added `compile_to_air()` and `compile_to_cfg()` test helpers to `rue-compiler`
+  - Added private session-based semantic and CFG test projections to `rue-compiler`
   - Added 115+ integration unit tests covering major language features
   - Tests organized by category: types, arithmetic, comparison, logical, bitwise, control flow, functions, structs, enums, arrays, strings, intrinsics, CFG construction, error messages, warnings, and edge cases
 

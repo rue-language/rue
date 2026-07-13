@@ -1,27 +1,23 @@
 # Compiler compatibility cleanup follow-ups
 
-Normal snapshot compilation and semantic emit modes now query a fresh
-`CanonicalFrontendSession`. The former `CompilationUnit` peer orchestrator has
-been removed, and canonical RIR presentation preserves caller-ordered text
-without selecting a legacy frontend. The remaining compatibility paths are
-separate API/driver concerns and should be removed in this order:
+The RUE-734 through RUE-736 compatibility cleanup is complete. Semantic
+consumers now construct a `SourceSnapshot`, publish it to `CompilerSession`,
+and retain immutable query artifacts. The compiler facade has one final-output
+adapter, `compile_snapshot`.
 
-1. **Retire duplicate RIR import extraction from production concepts.**
-   `extract_import_directives` remains a public compatibility query and has
-   direct tests, but production snapshot compilation now retains import
-   directives from canonical parsed modules. Deprecate rather than delete the
-   API, with parity tests covering nested and type-position imports.
-2. **Remove raw-AST semantic re-lowering (completed by RUE-734).** The public
-   raw `Ast` semantic entry points were removed rather than shimmed: they had no
-   production consumer and could not carry complete source identity. Embedders
-   now construct `SourceSnapshot` plus `CompileOptions` and query
-   `CanonicalFrontendSession`. Syntax-only AST parsing and presentation remain
-   available. This also removes anonymous metadata synthesis, minimum-`FileId`
-   root inference, and the positional-plus-semantic double RIR walk.
-3. **Remove legacy parse/merge representations (completed by RUE-735).** The
-   shared-interner `ParsedFile`/`ParsedProgram`, compatibility `MergedAst` and
-   `MergedProgram`, `parse_all_files*`, `merge_symbols`, and their duplicate
-   checker are gone. Canonical parsed modules and canonical candidate
-   validation are now the only semantic path. Caller-order syntax diagnostics
-   remain available through the presentation-only `ParsedAstPresentation`
-   adapter.
+Completed cleanup:
+
+1. Production import discovery consumes directives retained by parsed session
+   modules. The extraction helper is test-only.
+2. Public raw-AST semantic lowering was removed. `Ast` and
+   `ParsedAstPresentation` remain syntax and presentation values only.
+3. Shared-interner parse records and concatenated merge records were removed.
+   Stable-module parsed values and candidate validation are the only semantic
+   path.
+4. The peer compilation driver and duplicate single/multi-file adapters were
+   removed. CLI, fuzzing, oracle, timing tests, and benchmarks use session
+   queries or the sole batch adapter.
+
+The exact removed-symbol inventory and intentionally separate responsibilities
+are recorded in
+[the RUE-730 completion audit](canonical-query-completion-audit.md).
