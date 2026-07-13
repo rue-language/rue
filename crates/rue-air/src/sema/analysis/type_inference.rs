@@ -81,7 +81,7 @@ impl<'a> BodySema<'a> {
         // receiver inferred to `<error>` and poisoned sibling constraints
         // (RUE-164).
         let extra_method_sigs: HashMap<(StructId, Spur), crate::inference::MethodSig> = self
-            .methods
+            .anonymous_methods
             .iter()
             .filter(|(key, _)| !infer_ctx.method_sigs.contains_key(*key))
             .map(|(key, info)| {

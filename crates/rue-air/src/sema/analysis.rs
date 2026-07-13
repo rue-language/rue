@@ -633,7 +633,7 @@ fn enqueue_anonymous_destructors(
     pending_methods: &mut Vec<(StructId, Spur)>,
 ) {
     let mut destructors: Vec<(StructId, Spur)> = sema
-        .methods
+        .anonymous_methods
         .keys()
         .copied()
         .filter(|&method_key @ (struct_id, method_name)| {
