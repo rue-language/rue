@@ -17,6 +17,12 @@ superseded-by: 0026
 
 Implemented
 
+> **Historical implementation note:** This superseded ADR describes the first
+> shared-interner `parse_all_files` / `merge_symbols` design. RUE-735 removed
+> those APIs and representations. The current frontend uses self-contained
+> parsed modules, `ParsedProgram`, and `CanonicalMergedProgram`; see
+> [the compiler architecture](../architecture.md).
+
 ## Summary
 
 Enable the Rue compiler to accept multiple source files and compile them into a single executable. This is a foundational capability that unblocks real-world programs that don't fit in a single file, and lays groundwork for a future module system.

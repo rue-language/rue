@@ -18,3 +18,10 @@ separate API/driver concerns and should be removed in this order:
    `CanonicalFrontendSession`. Syntax-only AST parsing and presentation remain
    available. This also removes anonymous metadata synthesis, minimum-`FileId`
    root inference, and the positional-plus-semantic double RIR walk.
+3. **Remove legacy parse/merge representations (completed by RUE-735).** The
+   shared-interner `ParsedFile`/`ParsedProgram`, compatibility `MergedAst` and
+   `MergedProgram`, `parse_all_files*`, `merge_symbols`, and their duplicate
+   checker are gone. Canonical parsed modules and canonical candidate
+   validation are now the only semantic path. Caller-order syntax diagnostics
+   remain available through the presentation-only `ParsedAstPresentation`
+   adapter.

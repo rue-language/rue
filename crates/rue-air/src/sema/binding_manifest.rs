@@ -2004,8 +2004,8 @@ mod tests {
     }
 
     #[test]
-    fn declaration_shell_adapter_preserves_early_failure_provenance() {
-        let (tokens, interner) = Lexer::new("struct Clash {} fn Clash() {} fn main() {}")
+    fn declaration_shell_adapter_preserves_semantic_predeclaration_failure_provenance() {
+        let (tokens, interner) = Lexer::new("struct String {} fn main() {}")
             .tokenize()
             .unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
@@ -2014,11 +2014,11 @@ mod tests {
         let direct = Sema::new(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .err()
-            .expect("cross-kind collision must fail");
+            .expect("reserved type must fail");
         let split = Sema::new(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
             .err()
-            .expect("collision must short-circuit before nominal predeclaration");
+            .expect("reserved type must short-circuit during nominal predeclaration");
         assert_eq!(format!("{direct:?}"), format!("{split:?}"));
     }
 

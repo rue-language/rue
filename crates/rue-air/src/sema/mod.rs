@@ -370,15 +370,9 @@ impl<'a> Sema<'a> {
     pub fn predeclare_declaration_shells(mut self) -> MultiErrorResult<DeclarationShells<'a>> {
         let mut binding_work =
             DeclarationBindingWork::from_inputs(self.rir.len(), self.declaration_index.work());
-        // Phase 0a: Reject a top-level name claimed by two of function /
-        // struct / enum, order-independently (spec 10.3:1, 10.5:1, RUE-239).
-        // Runs before builtin injection so it scans only user RIR. Value
-        // constants are folded in later, after collection separates them from
-        // per-file module bindings (see `check_const_cross_kind_collisions`).
-        self.check_top_level_name_collisions()
-            .map_err(CompileErrors::from)?;
-
-        // Phase 0b: Inject built-in types (String, etc.) before user code
+        // Phase 0: Inject built-in types (String, etc.) before user code.
+        // Canonical merge has already validated function/type/main conflicts;
+        // value constants are checked later once module bindings are known.
         self.inject_builtin_types();
         binding_work.namespace_setup_invocations += 1;
 

@@ -6,8 +6,7 @@
 use tracing::{info, info_span};
 
 use crate::{
-    CompileErrors, Lexer, MultiErrorResult, ParsedFile, ParsedProgram, Parser, SourceFile,
-    SourceSnapshot, ThreadedRodeo,
+    CompileErrors, Lexer, MultiErrorResult, Parser, SourceFile, SourceSnapshot, ThreadedRodeo,
 };
 
 /// Work performed while lexing and parsing source files.
@@ -30,13 +29,13 @@ pub struct SyntaxWork {
 }
 
 pub(crate) struct FileParseOutcome {
-    pub(crate) result: MultiErrorResult<ParsedFile>,
+    pub(crate) result: MultiErrorResult<std::sync::Arc<rue_parser::Ast>>,
     pub(crate) interner: ThreadedRodeo,
     pub(crate) work: SyntaxWork,
 }
 
-pub(crate) struct SnapshotParseOutcome {
-    pub(crate) result: MultiErrorResult<ParsedProgram>,
+pub(crate) struct SyntaxPresentationOutcome {
+    pub(crate) result: MultiErrorResult<Vec<std::sync::Arc<rue_parser::Ast>>>,
     pub(crate) work: SyntaxWork,
 }
 
@@ -85,27 +84,22 @@ pub(crate) fn parse_file(source: SourceFile<'_>, interner: ThreadedRodeo) -> Fil
     info!(item_count = ast.items.len(), "parsing complete");
 
     FileParseOutcome {
-        result: Ok(ParsedFile {
-            path: source.path.to_owned(),
-            file_id: source.file_id,
-            ast: std::sync::Arc::new(ast),
-        }),
+        result: Ok(std::sync::Arc::new(ast)),
         interner,
         work,
     }
 }
 
-pub(crate) fn parse_snapshot(snapshot: &SourceSnapshot) -> SnapshotParseOutcome {
-    let _span = info_span!("parse", file_count = snapshot.len()).entered();
-    run_snapshot_unspanned(snapshot)
-}
-
-/// Run the shared snapshot parser without creating its outer `parse` span.
+/// Parse a snapshot in caller-selected order for syntax presentation only.
 ///
-/// Entry points own the outer span so presentation and canonical parse queries
-/// can expose their distinct timing trees while sharing the parser kernel.
-pub(crate) fn run_snapshot_unspanned(snapshot: &SourceSnapshot) -> SnapshotParseOutcome {
-    let mut files = Vec::with_capacity(snapshot.len());
+/// This deliberately returns only AST handles, not a second parsed-program
+/// representation. Entry points own the outer span so presentation and
+/// canonical parse queries can expose distinct timing trees while sharing the
+/// per-file parser kernel.
+pub(crate) fn parse_snapshot_for_presentation(
+    snapshot: &SourceSnapshot,
+) -> SyntaxPresentationOutcome {
+    let mut asts = Vec::with_capacity(snapshot.len());
     let mut interner = ThreadedRodeo::new();
     let mut errors = CompileErrors::new();
     let mut work = SyntaxWork::default();
@@ -119,18 +113,18 @@ pub(crate) fn run_snapshot_unspanned(snapshot: &SourceSnapshot) -> SnapshotParse
         work.tokens += outcome.work.tokens;
 
         match outcome.result {
-            Ok(file) => files.push(file),
+            Ok(ast) => asts.push(ast),
             Err(file_errors) => errors.extend(file_errors),
         }
     }
 
     let result = if errors.is_empty() {
-        Ok(ParsedProgram { files, interner })
+        Ok(asts)
     } else {
         Err(errors)
     };
 
-    SnapshotParseOutcome { result, work }
+    SyntaxPresentationOutcome { result, work }
 }
 
 #[cfg(test)]
@@ -170,17 +164,10 @@ mod tests {
         ];
         let snapshot = snapshot(&sources);
 
-        let SnapshotParseOutcome { result, work } = parse_snapshot(&snapshot);
-        let program = result.unwrap();
+        let SyntaxPresentationOutcome { result, work } = parse_snapshot_for_presentation(&snapshot);
+        let asts = result.unwrap();
 
-        assert_eq!(
-            program
-                .files
-                .iter()
-                .map(|file| file.file_id)
-                .collect::<Vec<_>>(),
-            vec![FileId::new(7), FileId::new(3), FileId::new(9)]
-        );
+        assert_eq!(asts.len(), 3);
         assert_eq!(
             work,
             SyntaxWork {
@@ -201,7 +188,7 @@ mod tests {
         ];
         let snapshot = snapshot(&sources);
 
-        let SnapshotParseOutcome { result, work } = parse_snapshot(&snapshot);
+        let SyntaxPresentationOutcome { result, work } = parse_snapshot_for_presentation(&snapshot);
         let errors = result.unwrap_err();
 
         assert_eq!(errors.len(), 2);
@@ -233,7 +220,7 @@ mod tests {
         let source = "fn broken() { $ # }";
         let snapshot = snapshot(&[(1, "broken.rue", source)]);
 
-        let SnapshotParseOutcome { result, work } = parse_snapshot(&snapshot);
+        let SyntaxPresentationOutcome { result, work } = parse_snapshot_for_presentation(&snapshot);
         let errors = result.unwrap_err();
 
         assert_eq!(errors.len(), 2);
@@ -280,7 +267,7 @@ mod tests {
             result, interner, ..
         } = parse_file(good_source, interner);
         let parsed = result.unwrap();
-        let Item::Function(function) = &parsed.ast.items[0] else {
+        let Item::Function(function) = &parsed.items[0] else {
             panic!("expected a function");
         };
 
