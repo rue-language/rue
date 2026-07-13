@@ -22,6 +22,24 @@
 # files so that `buck2 test //crates/...` (quick-test.sh, test.sh's filtered
 # path) still means "unit tests only".
 
+# Formatting is a first-class repository check. The source files are both
+# passed to rustfmt and declared as resources, so Buck invalidates the cached
+# result when any Rust source changes. The rustfmt target's RunInfo owns host
+# selection and dynamic-library setup; write-mode formatting remains in
+# fmt.sh because build/test actions must not mutate the source tree.
+_RUST_SOURCES = glob(["crates/**/*.rs"])
+
+sh_test(
+    name = "fmt-check",
+    test = "toolchains//rust:rustfmt",
+    args = [
+        "--edition",
+        "2024",
+        "--check",
+    ] + _RUST_SOURCES,
+    resources = _RUST_SOURCES,
+)
+
 # The std library sources are runtime inputs to the CLI integration tests
 # (compiled programs `@import` them via ${REAL_STD} / RUE_STD_DIR).
 filegroup(

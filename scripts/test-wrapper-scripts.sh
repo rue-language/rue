@@ -91,10 +91,13 @@ EOF
   rm -rf "$sb"
 }
 
-# fmt.sh resolves rustfmt the same way; a failing `./buck2` must be loud too.
+# fmt.sh delegates rustfmt's runtime environment to `buck2 run`; a failing
+# invocation must remain loud.
 test_fmt_build_failure_is_loud() {
   local sb; sb="$(mktemp -d)"
+  mkdir -p "$sb/crates"
   cp "$SRC_ROOT/fmt.sh" "$sb/fmt.sh"; chmod +x "$sb/fmt.sh"
+  printf 'fn main() {}\n' >"$sb/crates/sample.rs"
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 echo "BUCK-DIAGNOSTIC: rustfmt toolchain unavailable" >&2
@@ -107,6 +110,38 @@ EOF
   check "fmt.sh: buck failure exits non-zero" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
   check "fmt.sh: buck stderr is surfaced" \
     "$(printf '%s' "$out" | grep -q 'BUCK-DIAGNOSTIC' && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# fmt.sh must make one Buck RunInfo-based invocation and preserve every source
+# path as one argument, including paths containing spaces.
+test_fmt_uses_one_buck_run_and_preserves_paths() {
+  local sb; sb="$(mktemp -d)"
+  mkdir -p "$sb/crates/with space"
+  cp "$SRC_ROOT/fmt.sh" "$sb/fmt.sh"; chmod +x "$sb/fmt.sh"
+  printf 'fn a() {}\n' >"$sb/crates/a.rs"
+  printf 'fn b() {}\n' >"$sb/crates/with space/b.rs"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf 'invocation\n' >>"$BUCK_CALLS"
+printf '%s\n' "$@" >"$BUCK_ARGS"
+EOF
+  chmod +x "$sb/buck2"
+
+  local rc=0
+  BUCK_CALLS="$sb/calls" BUCK_ARGS="$sb/args" \
+    bash "$sb/fmt.sh" check >/dev/null 2>&1 || rc=$?
+
+  check "fmt.sh: check succeeds through fake Buck" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "fmt.sh: invokes Buck exactly once" \
+    "$([ "$(wc -l <"$sb/calls" 2>/dev/null | tr -d ' ')" = 1 ] && echo 0 || echo 1)"
+  check "fmt.sh: uses the rustfmt RunInfo target" \
+    "$(grep -Fxq 'run' "$sb/args" && grep -Fxq 'toolchains//rust:rustfmt' "$sb/args" && echo 0 || echo 1)"
+  check "fmt.sh: preserves an ordinary source path" \
+    "$(grep -Fxq "$sb/crates/a.rs" "$sb/args" && echo 0 || echo 1)"
+  check "fmt.sh: preserves a source path containing spaces" \
+    "$(grep -Fxq "$sb/crates/with space/b.rs" "$sb/args" && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -343,6 +378,7 @@ EOF
 test_ruebin_build_failure_is_loud
 test_ruebin_success_prints_clean_path
 test_fmt_build_failure_is_loud
+test_fmt_uses_one_buck_run_and_preserves_paths
 test_rue_exec_resolves_from_caller_cwd
 test_rue_run_resolves_relative_output
 test_rue_cli_examples_survive_case_chdir
