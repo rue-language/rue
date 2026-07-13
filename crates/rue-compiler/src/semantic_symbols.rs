@@ -46,6 +46,10 @@ pub struct SemanticSymbolUniverse {
 }
 
 impl SemanticSymbolUniverse {
+    pub(crate) fn into_interner(self) -> ThreadedRodeo {
+        self.interner
+    }
+
     /// Start a destination universe for one canonical program traversal.
     pub fn new(program: &ParsedProgram) -> Self {
         let universe = Self::from_modules(program.modules());

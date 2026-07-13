@@ -89,7 +89,7 @@ impl FuzzTarget for ParserTarget {
 /// - Type IDs are valid
 /// - Symbol references exist in the interner
 ///
-/// Currently uses source-level fuzzing through compile_frontend.
+/// Uses source-level fuzzing through the canonical frontend session.
 /// Future enhancement: structured RIR generation with Arbitrary trait.
 pub struct SemaTarget;
 
@@ -101,13 +101,16 @@ impl FuzzTarget for SemaTarget {
     fn fuzz(&self, input: &[u8]) {
         // Only test valid UTF-8
         if let Ok(source) = std::str::from_utf8(input) {
-            // compile_frontend runs through sema (semantic analysis)
+            // The canonical frontend runs through sema (semantic analysis)
             // without code generation. This tests:
             // - Type inference (Hindley-Milner with Algorithm W)
             // - Affine type checking (partial moves, linearity)
             // - Name resolution
             // - Multi-error collection
-            let result = rue_compiler::compile_frontend(source);
+            let result = rue_compiler::query_canonical_frontend_source(
+                source,
+                &rue_compiler::CompileOptions::default(),
+            );
             assert_no_ice(&result);
         }
     }
@@ -126,9 +129,12 @@ impl FuzzTarget for CompilerTarget {
     fn fuzz(&self, input: &[u8]) {
         // Only test valid UTF-8
         if let Ok(source) = std::str::from_utf8(input) {
-            // Use compile_frontend to avoid code generation (which is slower)
+            // Query the canonical frontend without code generation (which is slower)
             // and focus on the analysis phases where bugs are more likely
-            let result = rue_compiler::compile_frontend(source);
+            let result = rue_compiler::query_canonical_frontend_source(
+                source,
+                &rue_compiler::CompileOptions::default(),
+            );
             assert_no_ice(&result);
         }
     }

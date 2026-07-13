@@ -48,6 +48,10 @@ pub struct CanonicalRirPresentationOrder {
 }
 
 impl CanonicalRirOutput {
+    pub(crate) fn into_parts(self) -> (Rir, SemanticSymbolUniverse) {
+        (self.rir, self.symbols)
+    }
+
     pub fn source_revision(&self) -> &SourceRevision {
         &self.source_revision
     }

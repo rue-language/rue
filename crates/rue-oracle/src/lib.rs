@@ -1,7 +1,7 @@
 //! # rue-oracle — the executable reference semantics
 //!
 //! A tree-walking interpreter over the compiler's **CFG** (the typed
-//! control-flow IR, produced by [`rue_compiler::compile_to_cfg`], *before* the
+//! control-flow IR, produced by the canonical frontend session, *before* the
 //! MIR/codegen lowering where every miscompile of the 2026-07 work lived).
 //! Running a program through this interpreter and through the compiled binary
 //! and comparing the observable behavior (exit code, stdout, stderr, trap cause)
@@ -68,12 +68,25 @@ use lasso::ThreadedRodeo;
 use rue_air::{Type, TypeKind, parse_array_type_syntax};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{
-    CompileErrors, CompileState, PreviewFeatures, compile_to_cfg,
-    compile_to_cfg_with_preview_features,
+    CompileErrors, CompileOptions, CompileState, PreviewFeatures, query_canonical_frontend_source,
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
+
+fn compile_to_cfg(source: &str) -> Result<CompileState, CompileErrors> {
+    query_canonical_frontend_source(source, &CompileOptions::default())
+        .map(|frontend| frontend.into_compile_state())
+}
+
+fn compile_to_cfg_with_preview_features(
+    source: &str,
+    preview_features: &PreviewFeatures,
+) -> Result<CompileState, CompileErrors> {
+    let mut options = CompileOptions::default();
+    options.preview_features = preview_features.clone();
+    query_canonical_frontend_source(source, &options).map(|frontend| frontend.into_compile_state())
+}
 
 /// A modeled oracle trap category.
 ///
