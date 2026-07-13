@@ -102,3 +102,14 @@ instructions, places and strings; compiler-owned durable conversions and
 stable-key joins; projections into AIR's neutral import DTO; atomic fresh-epoch
 imports and installed contents. `reused_bodies` and `skipped_body_analyses` are
 explicitly zero in this observational slice.
+
+Schema version 8 adds a `retention` object to every scenario. It reports current
+session-owned diagnostic entries, distinct diagnostic source attempts and
+bytes, unique dependency manifests, and invalidation plans. Structural gates
+enforce the production caps (16 diagnostics and eight plans, with no more than
+two plan-owned manifests per plan plus the current manifest). These gauges do
+not count diagnostic `Arc`s pinned by benchmark callers: ownership of those
+artifacts has intentionally left the session. Compiler unit stress tests run a
+32-round syntax-failure, semantic-failure, recovery, and edit sequence and a
+plan workload beyond the eviction cap, pinning bounded bytes, deterministic
+FIFO recomputation, last-good recovery, and clean-session parity.
