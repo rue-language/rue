@@ -2144,30 +2144,6 @@ mod tests {
     }
 
     #[test]
-    fn gather_adapter_rebuilds_exact_named_method_records() {
-        let sema = gather_declarations_for_testing(
-            "struct Probe { fn answer() -> i32 { 42 } }
-             fn main() -> i32 { Probe.answer() }",
-        );
-        let rebuilt = crate::sema::gather::rebuild_named_method_declarations(
-            sema.rir,
-            &sema.structs,
-            &sema.structs_by_file_name,
-        );
-
-        assert_eq!(rebuilt, sema.named_method_declarations);
-        let probe = sema.interner.get("Probe").unwrap();
-        let answer = sema.interner.get("answer").unwrap();
-        let struct_id = sema.structs[&probe];
-        let declaration = rebuilt[&(struct_id, answer)];
-        let rue_rir::InstData::FnDecl { name, body, .. } = sema.rir.get(declaration).data else {
-            panic!("rebuilt named method record must point at FnDecl");
-        };
-        assert_eq!(name, answer);
-        assert_eq!(body, sema.methods[&(struct_id, answer)].body);
-    }
-
-    #[test]
     fn anonymous_method_self_mode_participates_in_structural_identity() {
         let output = compile_to_air(
             "fn ByValue() -> type {

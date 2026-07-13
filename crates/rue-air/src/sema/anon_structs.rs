@@ -16,10 +16,10 @@ use lasso::Spur;
 use crate::sema::context::ConstValue;
 use crate::types::{EnumDef, StructDef, StructField, Type};
 
-use super::Sema;
+use super::{DeclarationPhase, Sema};
 use super::info::AnonMethodSig;
 
-impl Sema<'_> {
+impl<D: DeclarationPhase> Sema<'_, D> {
     /// Find an existing anonymous struct with the same fields, methods, and captured values, or create a new one.
     ///
     /// This implements structural type equality for anonymous structs: two anonymous
@@ -163,7 +163,7 @@ impl Sema<'_> {
         }
 
         // Register in struct lookup
-        self.structs.insert(name_spur, struct_id);
+        self.generated_structs.insert(name_spur, struct_id);
 
         // Return with is_new=true
         (Type::new_struct(struct_id), true)
@@ -225,7 +225,7 @@ impl Sema<'_> {
 
         // Mirror `find_or_create_anon_struct`, which records the type in the
         // name→id lookup so later resolution paths see it.
-        self.enums.insert(name_spur, enum_id);
+        self.generated_enums.insert(name_spur, enum_id);
 
         Type::new_enum(enum_id)
     }

@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl<'a> Sema<'a> {
+impl<'a> BodySema<'a> {
     /// Run Hindley-Milner type inference on a function body.
     ///
     /// This is Phases 1-2 of the HM algorithm:

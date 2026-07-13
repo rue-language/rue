@@ -12,9 +12,9 @@ use rue_span::FileId;
 use crate::types::EnumId;
 use rue_rir::InstData;
 
-use super::Sema;
+use super::{DeclarationPhase, Sema};
 
-impl Sema<'_> {
+impl<D: DeclarationPhase> Sema<'_, D> {
     /// Check if the accessing file can see a private item from the target file.
     ///
     /// Visibility rules (per ADR-0026):

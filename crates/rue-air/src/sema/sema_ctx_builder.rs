@@ -11,9 +11,9 @@ use lasso::Spur;
 use crate::inference::MethodSig;
 use crate::types::{StructId, Type};
 
-use super::Sema;
+use super::{DeclarationPhase, Sema};
 
-impl<'a> Sema<'a> {
+impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// Builtin methods live in the `rue-builtins` registry, not in `self.methods`
     /// (they have no RIR body), so the constraint generator can't find them by the
     /// `(StructId, method_name)` key it uses for user methods. We add an equivalent

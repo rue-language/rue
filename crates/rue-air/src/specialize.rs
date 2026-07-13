@@ -36,7 +36,7 @@ use rue_rir::RirParamMode;
 use rue_span::Span;
 
 use crate::inst::{Air, AirInstData};
-use crate::sema::{AnalyzedFunction, ConstValue, FunctionInfo, InferenceContext, Sema};
+use crate::sema::{AnalyzedFunction, ConstValue, FunctionInfo, InferenceContext};
 use crate::types::{StructId, Type};
 
 /// A key for a specialized function:
@@ -211,7 +211,7 @@ impl Specializer {
         &mut self,
         functions_with_strings: &mut Vec<(AnalyzedFunction, Vec<String>)>,
         all_warnings: &mut Vec<CompileWarning>,
-        sema: &mut Sema<'_>,
+        sema: &mut crate::sema::BodySema<'_>,
         infer_ctx: &InferenceContext,
         interner: &ThreadedRodeo,
     ) -> CompileResult<DiscoveredReferences> {
@@ -270,7 +270,7 @@ impl Specializer {
             for key in &pending {
                 sema.body_analysis_work.specialized_bodies_attempted += 1;
                 let info = &self.specializations[key];
-                let base_info = match sema.functions.get(&key.base_name) {
+                let base_info = match sema.function_info(key.base_name) {
                     Some(info) => info.clone(),
                     None => {
                         let func_name = interner.resolve(&key.base_name);
@@ -319,7 +319,7 @@ impl Specializer {
                 );
                 sema.body_analysis_work.specialized_origin_records += 1;
                 for callee in &specialized.referenced_functions {
-                    let callee_info = sema.functions.get(callee).ok_or_else(|| {
+                    let callee_info = sema.function_info(*callee).ok_or_else(|| {
                         CompileError::new(
                             ErrorKind::InvalidCompilerInput(format!(
                                 "specialized body '{}' references a free function absent from semantic declarations",
@@ -557,7 +557,7 @@ fn mangle_type(ty: Type) -> String {
 /// comptime value parameters to their concrete values (RUE-166), then
 /// re-analyzes the function body with these substitutions.
 fn create_specialized_function(
-    sema: &mut Sema<'_>,
+    sema: &mut crate::sema::BodySema<'_>,
     infer_ctx: &InferenceContext,
     key: &SpecializationKey,
     specialized_name: Spur,

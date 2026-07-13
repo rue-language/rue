@@ -285,7 +285,7 @@ impl SemanticBindingManifest {
 }
 
 pub struct BoundSema<'a> {
-    sema: Sema<'a>,
+    sema: super::BodySema<'a>,
     manifest: OnceLock<SemanticBindingManifest>,
     binding_work: DeclarationBindingWork,
 }
@@ -581,6 +581,12 @@ impl<'a> DeclarationShells<'a> {
                             .sema
                             .rir
                             .get_directives(*directives_start, *directives_len);
+                        let allow_unused_function =
+                            self.sema.has_allow_directive(&directives, "unused_function");
+                        let allow_unused_variable =
+                            self.sema.has_allow_directive(&directives, "unused_variable");
+                        let allow_unreachable_code =
+                            self.sema.has_allow_directive(&directives, "unreachable_code");
                         self.sema
                             .functions_by_file_name
                             .insert((pending.shell.declaration_span.file_id, *name), internal);
@@ -598,15 +604,9 @@ impl<'a> DeclarationShells<'a> {
                                 is_generic: pending.shell.is_generic,
                                 is_pub: pending.shell.is_public,
                                 is_unchecked: pending.shell.is_unchecked,
-                                allow_unused_function: self
-                                    .sema
-                                    .has_allow_directive(&directives, "unused_function"),
-                                allow_unused_variable: self
-                                    .sema
-                                    .has_allow_directive(&directives, "unused_variable"),
-                                allow_unreachable_code: self
-                                    .sema
-                                    .has_allow_directive(&directives, "unreachable_code"),
+                                allow_unused_function,
+                                allow_unused_variable,
+                                allow_unreachable_code,
                                 file_id: pending.shell.declaration_span.file_id,
                             },
                         );
@@ -840,7 +840,7 @@ impl<'a> BoundSema<'a> {
     }
 }
 
-impl<'a> Sema<'a> {
+impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     pub(super) fn predeclare_callable_value_shells(
         &self,
     ) -> (Vec<PendingDeclarationPayload>, Vec<PendingNominalPayload>) {
@@ -1309,17 +1309,6 @@ impl<'a> Sema<'a> {
             },
         ))
     }
-    pub(super) fn into_bound_with_work(
-        self,
-        binding_work: DeclarationBindingWork,
-    ) -> BoundSema<'a> {
-        BoundSema {
-            binding_work,
-            sema: self,
-            manifest: OnceLock::new(),
-        }
-    }
-
     fn build_binding_manifest(&self) -> SemanticBindingManifest {
         let mut bindings = Vec::new();
         let mut work = SemanticBindingManifestWork {
@@ -1488,6 +1477,23 @@ impl<'a> Sema<'a> {
         SemanticBindingManifest {
             bindings: bindings.into(),
             work,
+        }
+    }
+}
+
+impl<'a> Sema<'a> {
+    pub(super) fn into_bound_with_work(
+        mut self,
+        binding_work: DeclarationBindingWork,
+    ) -> BoundSema<'a> {
+        // This updates source nominal definitions and therefore belongs on
+        // the declaration side of the phase boundary. Body analysis receives
+        // an immutable namespace with final destructor symbols.
+        self.requalify_colliding_destructor_symbols();
+        BoundSema {
+            binding_work,
+            sema: self.freeze_declarations(),
+            manifest: OnceLock::new(),
         }
     }
 }

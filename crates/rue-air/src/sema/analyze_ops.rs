@@ -34,7 +34,7 @@ use rue_span::Span;
 
 use super::analysis::{FirstClassStrSite, move_out_of_inout_error};
 use super::context::{AnalysisContext, AnalysisResult, LocalVar, VariableMoveState};
-use super::{FunctionInfo, Sema};
+use super::{BodySema, FunctionInfo};
 use crate::inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef,
     AirProjection, AirRef,
@@ -145,7 +145,7 @@ impl PlaceTrace {
     }
 }
 
-impl<'a> Sema<'a> {
+impl<'a> BodySema<'a> {
     // ========================================================================
     // Place Tracing (ADR-0030 Phase 8)
     // ========================================================================

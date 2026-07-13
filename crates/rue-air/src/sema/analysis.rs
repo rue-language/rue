@@ -26,7 +26,7 @@ use super::context::{
     AnalysisContext, AnalysisResult, BuiltinMethodContext, CallLoanKind, ConstValue, ParamInfo,
     ReceiverInfo, StringReceiverStorage,
 };
-use super::{AnalyzedFunction, InferenceContext, MethodInfo, ParamSlotModes, Sema, SemaOutput};
+use super::{AnalyzedFunction, BodySema, InferenceContext, MethodInfo, ParamSlotModes, SemaOutput};
 use crate::inference::{
     Constraint, ConstraintContext, ConstraintGenerator, InferType, ParamVarInfo, Unifier,
     UnifyResult,
@@ -43,18 +43,12 @@ use crate::types::{
 ///
 /// Called from Sema::analyze_all after declarations are collected.
 /// Uses the demand-driven driver for every program shape.
-pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
+pub(crate) fn analyze_all_function_bodies(mut sema: BodySema<'_>) -> MultiErrorResult<SemaOutput> {
     debug_assert!(!sema.declaration_binding_active);
     debug_assert!(sema.const_resolution_in_progress.is_empty());
     debug_assert!(sema.fn_signatures_in_flight.is_empty());
     debug_assert!(sema.source_free_function_signatures_are_complete());
     let bound_source_function_signature_count = sema.functions_by_file_name.len();
-
-    // Declarations are complete: re-point destructor symbols of struct
-    // names that span multiple files at their file-qualified form (RUE-571).
-    // Must precede any body analysis — destructor definitions build their
-    // symbol from the same helper.
-    sema.requalify_colliding_destructor_symbols();
 
     // ADR-0045 defines reachability from `main` as the function-body analysis
     // frontier for every executable.
@@ -122,7 +116,7 @@ fn find_undiagnosed_error_type(output: &SemaOutput) -> Option<CompileError> {
 
 /// Shared finalization for demand-driven function-body analysis.
 fn finalize_function_body_analysis(
-    sema: &mut Sema<'_>,
+    sema: &mut BodySema<'_>,
     functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)>,
     mut all_warnings: Vec<CompileWarning>,
     unused_function_roots: &HashSet<Spur>,
@@ -249,10 +243,14 @@ fn finalize_function_body_analysis(
         },
         supported_type_call_heads_complete: true,
         named_const_dependencies: {
+            let bound_constants = sema
+                .constants_by_file_name
+                .keys()
+                .map(|(file, name)| (file.index(), sema.interner.resolve(name).to_owned()))
+                .collect::<HashSet<_>>();
             sema.named_const_dependencies.retain(|event| {
-                sema.constants_by_file_name.keys().any(|(file, name)| {
-                    file.index() == event.source_file
-                        && sema.interner.resolve(name) == event.source_name
+                bound_constants.iter().any(|(file, name)| {
+                    *file == event.source_file && *name == event.source_name
                 })
             });
             sema.named_const_dependencies.sort();
@@ -270,7 +268,7 @@ fn finalize_function_body_analysis(
 /// This intentionally excludes methods/destructors; they have different
 /// reachability rules and are not covered by the current spec/UI cases.
 fn add_unused_function_warnings(
-    sema: &Sema<'_>,
+    sema: &BodySema<'_>,
     referenced_functions: &HashSet<Spur>,
     warnings: &mut Vec<CompileWarning>,
 ) {
@@ -297,7 +295,7 @@ fn add_unused_function_warnings(
     }
 }
 
-fn collect_static_function_references(sema: &Sema<'_>) -> HashSet<Spur> {
+fn collect_static_function_references(sema: &BodySema<'_>) -> HashSet<Spur> {
     let mut referenced = HashSet::new();
 
     for (_, inst) in sema.rir.iter() {
@@ -387,12 +385,12 @@ fn collect_static_function_references(sema: &Sema<'_>) -> HashSet<Spur> {
 /// be `pub` — already exempt from the unused warning — so only unqualified
 /// heads need marking.
 fn mark_type_syntax_refs(
-    sema: &Sema<'_>,
+    sema: &BodySema<'_>,
     ty_sym: Spur,
     file_id: FileId,
     referenced: &mut HashSet<Spur>,
 ) {
-    fn walk(sema: &Sema<'_>, name: &str, file_id: FileId, referenced: &mut HashSet<Spur>) {
+    fn walk(sema: &BodySema<'_>, name: &str, file_id: FileId, referenced: &mut HashSet<Spur>) {
         if let Some((element, _len)) = parse_array_type_syntax(name) {
             walk(sema, &element, file_id, referenced);
             return;
@@ -458,7 +456,7 @@ fn enqueue_references_sorted(
 }
 
 fn named_method_dependency_events(
-    sema: &Sema<'_>,
+    sema: &BodySema<'_>,
     caller_struct: StructId,
     caller_method: Spur,
     referenced_functions: &HashSet<Spur>,
@@ -553,7 +551,7 @@ fn named_method_dependency_events(
 }
 
 fn named_destructor_dependency_events(
-    sema: &Sema<'_>,
+    sema: &BodySema<'_>,
     caller_struct: StructId,
     caller_span: rue_span::Span,
     referenced_functions: &HashSet<Spur>,
@@ -629,7 +627,7 @@ fn named_destructor_dependency_events(
 /// roots need an explicit deterministic scan whenever the ordinary reference
 /// frontier drains.
 fn enqueue_anonymous_destructors(
-    sema: &Sema<'_>,
+    sema: &BodySema<'_>,
     drop_marker_sym: Spur,
     analyzed_methods: &HashSet<(StructId, Spur)>,
     pending_methods: &mut Vec<(StructId, Spur)>,
@@ -660,7 +658,7 @@ fn enqueue_anonymous_destructors(
 /// from the full type pool.
 ///
 /// This is the same trade-off Zig makes for faster builds and smaller binaries.
-fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOutput> {
+fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<SemaOutput> {
     // Build inference context once
     let infer_ctx = sema.build_inference_context();
 
@@ -902,7 +900,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
             analyzed_methods.insert((struct_id, method_name));
 
             // Look up the method info
-            let method_info = match sema.methods.get(&(struct_id, method_name)) {
+            let method_info = match sema.method_info((struct_id, method_name)) {
                 Some(info) => info.clone(),
                 None => continue,
             };
@@ -1828,44 +1826,7 @@ fn emit_module_member_call(
     AnalysisResult::new(air_ref, return_type)
 }
 
-impl<'a> Sema<'a> {
-    /// Check that a preview feature is enabled.
-    ///
-    /// This is used to gate experimental features behind the `--preview` flag.
-    /// Returns an error with a helpful message if the feature is not enabled.
-    ///
-    /// # Arguments
-    /// - `feature`: The preview feature to check
-    /// - `what`: Human-readable description of what requires this feature
-    /// - `span`: The source location where the feature is used
-    ///
-    /// # Returns
-    /// - `Ok(())` if the feature is enabled
-    /// - `Err(CompileError)` with a helpful message if not enabled
-    pub(crate) fn require_preview(
-        &self,
-        feature: PreviewFeature,
-        what: &str,
-        span: Span,
-    ) -> CompileResult<()> {
-        if self.preview_features.contains(&feature) {
-            Ok(())
-        } else {
-            Err(CompileError::new(
-                ErrorKind::PreviewFeatureRequired {
-                    feature,
-                    what: what.to_string(),
-                },
-                span,
-            )
-            .with_help(format!(
-                "use `--preview {}` to enable this feature ({})",
-                feature.name(),
-                feature.adr()
-            )))
-        }
-    }
-
+impl<'a> BodySema<'a> {
     /// Create a type mismatch error with safe type name resolution.
     ///
     /// This helper method safely resolves type names even for anonymous structs

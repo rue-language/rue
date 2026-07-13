@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl<'a> Sema<'a> {
+impl<'a> BodySema<'a> {
     /// Convert RIR argument mode to AIR argument mode.
     pub(super) fn convert_arg_mode(mode: RirArgMode) -> AirArgMode {
         match mode {

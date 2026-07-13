@@ -5,12 +5,81 @@
 
 use std::collections::HashMap;
 
-use rue_span::FileId;
+use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_span::{FileId, Span};
 
 use super::Sema;
 use crate::path_norm::normalize_module_path;
 
-impl<'a> Sema<'a> {
+impl Sema<'_> {
+    fn binding_import_base_dirs(&self, span: Span) -> Vec<String> {
+        use std::path::Path;
+        let dir_of = |path: &str| {
+            Path::new(path)
+                .parent()
+                .map(|dir| dir.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let importer = self.get_source_path(span).map(&dir_of);
+        let root = self
+            .root_file_id
+            .and_then(|id| self.file_paths.get(&id))
+            .or_else(|| self.file_paths.iter().min_by_key(|(id, _)| id.index()).map(|(_, p)| p))
+            .map(|path| dir_of(path));
+        let mut dirs = Vec::new();
+        if let Some(dir) = importer { dirs.push(dir); }
+        if let Some(dir) = root && !dirs.contains(&dir) { dirs.push(dir); }
+        if dirs.is_empty() { dirs.push(String::new()); }
+        dirs
+    }
+
+    pub(crate) fn resolve_import_path(
+        &self,
+        import_path: &str,
+        span: Span,
+    ) -> CompileResult<String> {
+        let dirs = self.binding_import_base_dirs(span);
+        let refs = dirs.iter().map(String::as_str).collect::<Vec<_>>();
+        let module = if import_path == "std" {
+            super::module_path::ModulePath::Std
+        } else {
+            super::module_path::ModulePath::parse(import_path)
+        };
+        let std_dir = std::env::var("RUE_STD_PATH").ok();
+        match module.resolve_in_dirs_with_std_dir(
+            &refs,
+            self.file_paths.values(),
+            std_dir.as_deref(),
+        ) {
+            super::module_path::DirResolution::Resolved(path) => Ok(path),
+            super::module_path::DirResolution::Ambiguous { file_module, dir_module } => {
+                Err(CompileError::new(
+                    ErrorKind::AmbiguousModule(Box::new(rue_error::AmbiguousModuleData {
+                        path: import_path.to_owned(),
+                        file_module,
+                        dir_module,
+                    })),
+                    span,
+                ))
+            }
+            super::module_path::DirResolution::NotFound if import_path == "std" => {
+                Err(CompileError::new(ErrorKind::StdLibNotFound, span))
+            }
+            super::module_path::DirResolution::NotFound => Err(CompileError::new(
+                ErrorKind::ModuleNotFound {
+                    path: import_path.to_owned(),
+                    candidates: super::module_path::import_candidate_groups(import_path, &dirs, None)
+                        .into_iter()
+                        .flatten()
+                        .collect(),
+                },
+                span,
+            )),
+        }
+    }
+}
+
+impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     /// Set the designated semantic root module.
     ///
     /// FileIds are diagnostic handles, not semantic ranks. Multi-source
