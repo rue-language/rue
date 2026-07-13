@@ -581,12 +581,15 @@ impl<'a> DeclarationShells<'a> {
                             .sema
                             .rir
                             .get_directives(*directives_start, *directives_len);
-                        let allow_unused_function =
-                            self.sema.has_allow_directive(&directives, "unused_function");
-                        let allow_unused_variable =
-                            self.sema.has_allow_directive(&directives, "unused_variable");
-                        let allow_unreachable_code =
-                            self.sema.has_allow_directive(&directives, "unreachable_code");
+                        let allow_unused_function = self
+                            .sema
+                            .has_allow_directive(&directives, "unused_function");
+                        let allow_unused_variable = self
+                            .sema
+                            .has_allow_directive(&directives, "unused_variable");
+                        let allow_unreachable_code = self
+                            .sema
+                            .has_allow_directive(&directives, "unreachable_code");
                         self.sema
                             .functions_by_file_name
                             .insert((pending.shell.declaration_span.file_id, *name), internal);
@@ -711,6 +714,17 @@ impl<'a> BoundSema<'a> {
     #[cfg(test)]
     pub(crate) fn source_free_function_signature_count(&self) -> usize {
         self.sema.functions_by_file_name.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn analyze_all_bodies_with_namespace_probe(
+        self,
+    ) -> (
+        MultiErrorResult<SemaOutput>,
+        super::NamespaceBoundarySnapshot,
+        super::NamespaceBoundarySnapshot,
+    ) {
+        super::analysis::analyze_all_function_bodies_with_namespace_probe(self.sema)
     }
 
     /// Install the compiler-issued identity universe used by ordinary body
