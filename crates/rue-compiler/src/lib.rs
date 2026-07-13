@@ -1596,10 +1596,8 @@ pub fn compile_multi_file_with_source_metadata_and_options_and_stats(
     compile_source_snapshot_with_options_and_stats(&snapshot, options)
 }
 
-/// Compile an immutable owned source snapshot.
-///
-/// This is the canonical batch compilation boundary. Cloning the snapshot for
-/// the compilation unit shares both its validated metadata and source text.
+/// Compile an immutable owned source snapshot through a one-shot canonical
+/// frontend session, then through the existing backend and linker boundary.
 pub fn compile_source_snapshot_with_options(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
@@ -1615,6 +1613,83 @@ pub struct CanonicalPipelineWork {
     pub merged: CanonicalMergeWork,
     pub lowered: CanonicalRirWork,
     pub semantic: CanonicalSemanticWork,
+}
+
+/// Owned artifacts from one successful canonical frontend session query.
+///
+/// Batch compilation and semantic emit modes consume this same boundary.
+/// Keeping the artifacts `Arc`-owned also preserves the session's ability to
+/// retain and reuse them across later revisions.
+#[derive(Debug)]
+pub struct CanonicalFrontendArtifacts {
+    parsed: Arc<parsed_modules::ParsedProgram>,
+    rir: Arc<CanonicalRirOutput>,
+    semantic: Arc<CanonicalSemanticOutput>,
+    work: CanonicalPipelineWork,
+    session_work: CanonicalFrontendSessionWork,
+}
+
+impl CanonicalFrontendArtifacts {
+    pub fn parsed(&self) -> &Arc<parsed_modules::ParsedProgram> {
+        &self.parsed
+    }
+
+    pub fn rir(&self) -> &Arc<CanonicalRirOutput> {
+        &self.rir
+    }
+
+    pub fn semantic(&self) -> &Arc<CanonicalSemanticOutput> {
+        &self.semantic
+    }
+
+    pub fn work(&self) -> CanonicalPipelineWork {
+        self.work
+    }
+
+    pub fn session_work(&self) -> &CanonicalFrontendSessionWork {
+        &self.session_work
+    }
+
+    pub fn interner(&self) -> &ThreadedRodeo {
+        self.rir.semantic_symbols().interner()
+    }
+}
+
+/// Update a fresh canonical session and query its complete frontend artifacts.
+///
+/// This is the authoritative one-shot frontend boundary. It deliberately
+/// queries RIR before semantics so the established `semantic_astgen` timing
+/// leaf remains visible; the semantic query then reuses that exact RIR.
+pub fn query_canonical_frontend(
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+) -> MultiErrorResult<CanonicalFrontendArtifacts> {
+    let mut session = CanonicalFrontendSession::new();
+    let parsed = session.update_for_batch(snapshot).into_result()?;
+    let rir = {
+        let _span = info_span!("semantic_astgen").entered();
+        session.rir()?
+    };
+    let semantic = session.semantic(options)?;
+    let session_work = session.work().clone();
+    let work = &session_work;
+    let semantic_work = semantic.work();
+    debug_assert_eq!(work.semantic.executions, 1);
+    debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
+    debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
+    debug_assert!(semantic.bound_definitions().is_none());
+    Ok(CanonicalFrontendArtifacts {
+        parsed,
+        rir,
+        semantic,
+        work: CanonicalPipelineWork {
+            parsed: work.last_parse,
+            merged: work.last_merge,
+            lowered: work.last_rir,
+            semantic: semantic_work,
+        },
+        session_work,
+    })
 }
 
 /// Compile a snapshot and return compatible source stats plus canonical phase work.
@@ -1666,25 +1741,9 @@ fn compile_source_snapshot_with_options_impl(
     )
     .entered();
 
-    let (parsed, parsed_work) = parsed_modules::parse_source_snapshot_modules_for_batch(snapshot)?;
-    let diagnostic_order = snapshot
-        .files()
-        .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
-        .collect::<Vec<_>>();
-    let merged = canonical_merge::merge_parsed_modules_for_batch(&parsed, &diagnostic_order)?;
-    let merged_work = merged.work();
-    let rir = {
-        // Preserve the established production timing phase name while the
-        // canonical lowering replaces the unit pipeline's second AST walk.
-        let _span = info_span!("semantic_astgen").entered();
-        lower_canonical_rir(&merged).map_err(CompileErrors::from)?
-    };
-    let lowered_work = rir.work();
-    let semantic = analyze_canonical_program(&merged, &rir, options, false)?;
-    let semantic_work = semantic.work();
-    debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
-    debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
-    debug_assert!(semantic.bound_definitions().is_none());
+    let frontend = query_canonical_frontend(snapshot, options)?;
+    let semantic = frontend.semantic();
+    let rir = frontend.rir();
     let output = compile_backend(
         semantic.functions(),
         semantic.type_pool(),
@@ -1697,18 +1756,9 @@ fn compile_source_snapshot_with_options_impl(
         files: snapshot.len(),
         bytes: total_source_bytes,
         lines: 0,
-        tokens: parsed_work.syntax.tokens,
+        tokens: frontend.work().parsed.syntax.tokens,
     });
-    Ok((
-        output,
-        stats,
-        CanonicalPipelineWork {
-            parsed: parsed_work,
-            merged: merged_work,
-            lowered: lowered_work,
-            semantic: semantic_work,
-        },
-    ))
+    Ok((output, stats, frontend.work()))
 }
 
 /// Link using the internal linker.
@@ -2662,6 +2712,14 @@ mod tests {
         assert_eq!(work.lowered.source_text_clones, 0);
         assert_eq!(work.semantic.binding.bind_invocations, 1);
         assert_eq!(work.semantic.manifest.build_invocations, 1);
+        assert_eq!(work.semantic.declaration_reuse.semantic_epochs_started, 1);
+        assert_eq!(work.semantic.declaration_reuse.declaration_indexes_built, 1);
+        assert_eq!(
+            work.semantic.declaration_reuse.shell_predeclaration_epochs,
+            1
+        );
+        assert_eq!(work.semantic.cfg.cfg_builds_attempted, 2);
+        assert_eq!(work.semantic.cfg.cfg_builds_succeeded, 2);
         assert!(!work.semantic.stable_ids_requested);
         assert!(work.semantic.bound_definitions.is_none());
     }
