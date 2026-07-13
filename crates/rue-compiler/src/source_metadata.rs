@@ -12,7 +12,7 @@ use rue_air::normalize_module_path;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
-use crate::{Ast, ModuleId, SourceFile, semantic_order::item_span};
+use crate::{ModuleId, SourceFile};
 
 /// Immutable, validated identities for every source in a compilation.
 ///
@@ -328,34 +328,6 @@ impl SourceMetadata {
             return Err(invalid_input(format!(
                 "source files are missing metadata file IDs: {}",
                 display_file_ids(&missing_ids)
-            )));
-        }
-
-        Ok(())
-    }
-
-    /// Validate that every top-level AST item belongs to a described source.
-    ///
-    /// Descriptors may contain files with no items, but an AST may never
-    /// introduce an undeclared `FileId`. Diagnostics list IDs in numeric order
-    /// and are therefore independent of item order. Parser-produced items have
-    /// one file ID throughout their descendants; callers constructing ASTs by
-    /// hand must preserve that parser invariant.
-    pub(crate) fn validate_ast(&self, ast: &Ast) -> CompileResult<()> {
-        let mut unknown_ids: Vec<_> = ast
-            .items
-            .iter()
-            .map(item_span)
-            .map(|span| span.file_id)
-            .filter(|&file_id| !self.contains_file(file_id))
-            .collect();
-        unknown_ids.sort_by_key(|file_id| file_id.index());
-        unknown_ids.dedup();
-
-        if !unknown_ids.is_empty() {
-            return Err(invalid_input(format!(
-                "AST contains unknown file IDs: {}",
-                display_file_ids(&unknown_ids)
             )));
         }
 
@@ -737,32 +709,6 @@ mod tests {
         assert_eq!(
             first.to_string(),
             "invalid compiler input: physical path for 2 is \"root.rue\", but source file uses \"wrong-root.rue\""
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_ast_file_ids_deterministically() {
-        use rue_parser::Item;
-        use rue_span::Span;
-
-        let metadata = SourceMetadata::new(
-            FileId::new(2),
-            physical(&[(2, "root.rue"), (8, "empty.rue")]),
-            physical(&[(2, "root"), (8, "empty")]),
-        )
-        .unwrap();
-        let ast = Ast {
-            items: vec![
-                Item::Error(Span::with_file(FileId::new(9), 0, 1)),
-                Item::Error(Span::with_file(FileId::new(2), 1, 2)),
-                Item::Error(Span::with_file(FileId::new(4), 2, 3)),
-                Item::Error(Span::with_file(FileId::new(9), 3, 4)),
-            ],
-        };
-
-        assert_eq!(
-            metadata.validate_ast(&ast).unwrap_err().to_string(),
-            "invalid compiler input: AST contains unknown file IDs: 4, 9"
         );
     }
 }

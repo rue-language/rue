@@ -24,6 +24,33 @@
 //!
 //! This crate is instrumented with `tracing` spans for performance analysis.
 //! Use `--log-level info` or `--time-passes` to see timing information.
+//!
+//! # Embedding the canonical frontend
+//!
+//! Semantic compilation starts from owned source text and explicit identity
+//! metadata. Update a session with a [`SourceSnapshot`], then query it with
+//! [`CompileOptions`]; raw parser ASTs are syntax-only artifacts and are not a
+//! semantic compiler input.
+//!
+//! ```
+//! use std::{collections::HashMap, sync::Arc};
+//! use rue_compiler::{
+//!     CanonicalFrontendSession, CompileOptions, FileId, SourceMetadata, SourceSnapshot,
+//! };
+//!
+//! let root = FileId::new(7);
+//! let paths = HashMap::from([(root, "src/main.rue".to_owned())]);
+//! let metadata = SourceMetadata::new(root, paths.clone(), paths)?;
+//! let snapshot = SourceSnapshot::new(
+//!     metadata,
+//!     vec![(root, Arc::new("fn main() -> i32 { 0 }".to_owned()))],
+//! )?;
+//! let mut session = CanonicalFrontendSession::new();
+//! session.update(&snapshot).into_result()?;
+//! let semantic = session.semantic(&CompileOptions::default())?;
+//! assert_eq!(semantic.functions().len(), 1);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
 mod bound_definitions;
 mod canonical_lower;
@@ -37,7 +64,6 @@ mod durable_semantics;
 mod frontend_session;
 mod import_graph;
 pub mod parsed_modules;
-mod semantic_order;
 pub mod semantic_symbols;
 mod source_identity;
 mod source_metadata;
@@ -333,31 +359,6 @@ pub use rue_rir::{AstGen, Rir, RirPrinter};
 pub use rue_span::{FileId, Span};
 pub use rue_target::{Arch, Target};
 
-/// Construct one semantic request while measuring its snapshot-local RIR
-/// declaration index independently from semantic analysis.
-fn build_sema_for_target<'a>(
-    rir: &'a Rir,
-    interner: &'a ThreadedRodeo,
-    preview_features: PreviewFeatures,
-    target: Target,
-) -> Sema<'a> {
-    let _span = info_span!("rir_declaration_index", instruction_count = rir.len()).entered();
-    let sema = Sema::new_for_target(rir, interner, preview_features, target);
-    let work = sema.rir_declaration_index_work();
-    info!(
-        build_invocations = work.build_invocations,
-        rir_instructions_visited = work.rir_instructions_visited,
-        method_references_visited = work.method_references_visited,
-        free_functions_indexed = work.free_functions_indexed,
-        named_methods_indexed = work.named_methods_indexed,
-        anonymous_methods_indexed = work.anonymous_methods_indexed,
-        destructors_indexed = work.destructors_indexed,
-        const_candidates_indexed = work.const_candidates_indexed,
-        "RIR declaration index built"
-    );
-    sema
-}
-
 // ============================================================================
 // Multi-file Compilation Types
 // ============================================================================
@@ -513,12 +514,6 @@ impl MergedAst {
     /// Access the immutable per-file ASTs in source order.
     pub fn files(&self) -> &[Arc<Ast>] {
         &self.files
-    }
-
-    fn from_ast(ast: Ast) -> Self {
-        Self {
-            files: vec![Arc::new(ast)],
-        }
     }
 }
 
@@ -1140,287 +1135,6 @@ pub fn compile_frontend_with_options(
     };
     query_canonical_frontend_source(source, &options)
         .map(CanonicalFrontendArtifacts::into_compile_state)
-}
-
-/// Compile from an already-parsed AST through all remaining frontend phases.
-///
-/// This runs: AST to RIR → semantic analysis → CFG construction.
-/// Use this when you already have a parsed AST (e.g., for `--emit` modes that
-/// need both AST output and later stage output without double-parsing).
-///
-/// Uses default optimization level (O0) and no preview features. For custom options,
-/// use [`compile_frontend_from_ast_with_options`].
-pub fn compile_frontend_from_ast(
-    ast: Ast,
-    interner: ThreadedRodeo,
-) -> MultiErrorResult<CompileState> {
-    compile_frontend_from_ast_with_options(
-        ast,
-        interner,
-        OptLevel::default(),
-        &PreviewFeatures::new(),
-    )
-}
-
-/// Compile from an already-parsed AST through all remaining frontend phases with optimization.
-///
-/// This runs: AST to RIR → semantic analysis → CFG construction → optimization.
-/// Use this when you already have a parsed AST (e.g., for `--emit` modes that
-/// need both AST output and later stage output without double-parsing).
-///
-/// This function collects errors from multiple functions instead of stopping at the
-/// first error, allowing users to see all issues at once.
-///
-/// This compatibility entry point accepts the anonymous `FileId::DEFAULT`
-/// produced by [`Lexer::new`]. ASTs carrying explicit file IDs must use
-/// [`compile_frontend_from_ast_with_source_metadata_and_target`] so their root
-/// and source identities are not inferred.
-pub fn compile_frontend_from_ast_with_options(
-    ast: Ast,
-    interner: ThreadedRodeo,
-    opt_level: OptLevel,
-    preview_features: &PreviewFeatures,
-) -> MultiErrorResult<CompileState> {
-    let source_metadata = anonymous_source_metadata(&ast).map_err(CompileErrors::from)?;
-    compile_frontend_from_ast_with_source_metadata_and_target(
-        ast,
-        interner,
-        opt_level,
-        preview_features,
-        CompileOptions::default().target,
-        &source_metadata,
-    )
-}
-
-fn anonymous_source_metadata(ast: &Ast) -> CompileResult<SourceMetadata> {
-    let mut file_ids: Vec<_> = ast
-        .items
-        .iter()
-        .map(semantic_order::item_span)
-        .map(|span| span.file_id)
-        .collect();
-    file_ids.sort_by_key(|file_id| file_id.index());
-    file_ids.dedup();
-    if file_ids.is_empty() {
-        file_ids.push(FileId::DEFAULT);
-    }
-
-    if file_ids != [FileId::DEFAULT] {
-        let displayed_ids = file_ids
-            .iter()
-            .map(|file_id| file_id.index().to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
-            format!(
-                "raw AST uses non-anonymous file IDs {displayed_ids}; pass SourceMetadata explicitly"
-            ),
-        )));
-    }
-
-    let physical_paths: std::collections::HashMap<_, _> = file_ids
-        .iter()
-        .copied()
-        .map(|file_id| (file_id, "<source>".to_string()))
-        .collect();
-    SourceMetadata::new(file_ids[0], physical_paths.clone(), physical_paths)
-}
-
-fn source_metadata_from_legacy_maps(
-    ast: &Ast,
-    file_paths: std::collections::HashMap<FileId, String>,
-    mut logical_path_overrides: std::collections::HashMap<FileId, String>,
-) -> CompileResult<SourceMetadata> {
-    if file_paths.is_empty() && logical_path_overrides.is_empty() {
-        return anonymous_source_metadata(ast);
-    }
-
-    let root_file_id = semantic_order::legacy_root_file_id(ast, &file_paths);
-    for (&file_id, physical_path) in &file_paths {
-        logical_path_overrides
-            .entry(file_id)
-            .or_insert_with(|| physical_path.clone());
-    }
-    SourceMetadata::new(root_file_id, file_paths, logical_path_overrides)
-}
-
-/// Like [`compile_frontend_from_ast_with_options`], but with the
-/// file_id -> path mapping sema needs for `@import` resolution. The `--emit`
-/// pipeline used to skip this, so module programs that built normally failed
-/// with E0704 under `--emit` (RUE-130).
-pub fn compile_frontend_from_ast_with_file_paths(
-    ast: Ast,
-    interner: ThreadedRodeo,
-    opt_level: OptLevel,
-    preview_features: &PreviewFeatures,
-    file_paths: std::collections::HashMap<FileId, String>,
-) -> MultiErrorResult<CompileState> {
-    compile_frontend_from_ast_with_file_paths_and_target(
-        ast,
-        interner,
-        opt_level,
-        preview_features,
-        CompileOptions::default().target,
-        file_paths,
-    )
-}
-
-/// Like [`compile_frontend_from_ast_with_file_paths`], but with the explicit
-/// target sema needs for target-dependent intrinsics such as `@target_arch()`
-/// and `@target_os()` under cross-target `--emit` (RUE-417).
-pub fn compile_frontend_from_ast_with_file_paths_and_target(
-    ast: Ast,
-    interner: ThreadedRodeo,
-    opt_level: OptLevel,
-    preview_features: &PreviewFeatures,
-    target: Target,
-    file_paths: std::collections::HashMap<FileId, String>,
-) -> MultiErrorResult<CompileState> {
-    let symbol_paths = file_paths.clone();
-    compile_frontend_from_ast_with_file_paths_and_symbol_paths_and_target(
-        ast,
-        interner,
-        opt_level,
-        preview_features,
-        target,
-        file_paths,
-        symbol_paths,
-    )
-}
-
-/// Like [`compile_frontend_from_ast_with_file_paths_and_target`], but keeps
-/// physical paths used for module resolution separate from stable paths used
-/// in generated symbol names.
-///
-/// The Rue CLI uses this entry point for relocated builds. Most embedders can
-/// continue using [`compile_frontend_from_ast_with_file_paths_and_target`],
-/// which treats the supplied physical paths as symbol paths as well.
-pub fn compile_frontend_from_ast_with_file_paths_and_symbol_paths_and_target(
-    ast: Ast,
-    interner: ThreadedRodeo,
-    opt_level: OptLevel,
-    preview_features: &PreviewFeatures,
-    target: Target,
-    file_paths: std::collections::HashMap<FileId, String>,
-    symbol_paths: std::collections::HashMap<FileId, String>,
-) -> MultiErrorResult<CompileState> {
-    let source_metadata = source_metadata_from_legacy_maps(&ast, file_paths, symbol_paths)
-        .map_err(CompileErrors::from)?;
-    compile_frontend_from_ast_with_source_metadata_and_target(
-        ast,
-        interner,
-        opt_level,
-        preview_features,
-        target,
-        &source_metadata,
-    )
-}
-
-/// Compile an already-parsed program with complete multi-file source metadata.
-///
-/// Unlike the compatibility wrappers above, this entry point receives one
-/// descriptor carrying the designated semantic root and complete path maps.
-/// FileIds are arbitrary diagnostic handles; their numeric order must not
-/// affect import fallback, semantic allocation, or generated artifacts.
-pub fn compile_frontend_from_ast_with_source_metadata_and_target(
-    ast: Ast,
-    interner: ThreadedRodeo,
-    opt_level: OptLevel,
-    preview_features: &PreviewFeatures,
-    target: Target,
-    source_metadata: &SourceMetadata,
-) -> MultiErrorResult<CompileState> {
-    compile_frontend_from_merged_ast_with_source_metadata_and_target(
-        MergedAst::from_ast(ast),
-        interner,
-        opt_level,
-        preview_features,
-        target,
-        source_metadata,
-    )
-}
-
-/// Compile a shareable multi-file AST view through all frontend phases.
-pub fn compile_frontend_from_merged_ast_with_source_metadata_and_target(
-    ast: MergedAst,
-    interner: ThreadedRodeo,
-    opt_level: OptLevel,
-    preview_features: &PreviewFeatures,
-    target: Target,
-    source_metadata: &SourceMetadata,
-) -> MultiErrorResult<CompileState> {
-    for file_ast in ast.files() {
-        source_metadata
-            .validate_ast(file_ast)
-            .map_err(CompileErrors::from)?;
-    }
-
-    // Preserve the caller-visible AST/RIR order for inspection and --emit rir.
-    let (rir, interner) = {
-        let _span = info_span!("astgen").entered();
-        let rir = AstGen::generate_items(&interner, ast.items());
-        info!(instruction_count = rir.len(), "AST generation complete");
-        (rir, interner)
-    };
-
-    // Sema allocation order is a machine-level input: it controls nominal and
-    // composite type IDs, destructor/drop-glue traversal, string IDs, and
-    // object layout. Lower a private logical-path-ordered RIR without changing
-    // the observable AST/RIR above (RUE-624).
-    let semantic_rir = {
-        let _span = info_span!("semantic_astgen").entered();
-        let order = semantic_order::SemanticItemOrder::from_items(ast.items(), source_metadata);
-        let work = order.work();
-        let rir = AstGen::generate_items(&interner, order.iter());
-        info!(
-            items_indexed = work.items_indexed,
-            item_payloads_cloned = work.item_payloads_cloned,
-            "semantic item order lowered"
-        );
-        rir
-    };
-
-    let mut sema =
-        build_sema_for_target(&semantic_rir, &interner, preview_features.clone(), target);
-
-    // Semantic analysis (RIR to AIR) - this now collects multiple errors
-    let sema_output = {
-        let _span = info_span!("sema").entered();
-        sema.set_root_file_id(source_metadata.root_file_id());
-        sema.set_file_paths(source_metadata.physical_path_map().clone());
-        sema.set_symbol_paths(source_metadata.logical_path_map().clone());
-        let output = sema.analyze_all()?;
-        info!(
-            function_count = output.functions.len(),
-            struct_count = output.type_pool.stats().struct_count,
-            free_function_record_lookups = output.body_analysis_work.free_function_record_lookups,
-            named_method_record_lookups = output.body_analysis_work.named_method_record_lookups,
-            anonymous_method_record_lookups =
-                output.body_analysis_work.anonymous_method_record_lookups,
-            named_destructor_declarations_visited = output
-                .body_analysis_work
-                .named_destructor_declarations_visited,
-            named_destructor_selection_rir_visits = output
-                .body_analysis_work
-                .named_destructor_selection_rir_visits,
-            reachable_declaration_rir_visits =
-                output.body_analysis_work.reachable_declaration_rir_visits,
-            "semantic analysis complete"
-        );
-        output
-    };
-
-    let cfg_output = build_functions_and_cfgs(sema_output, opt_level, &interner)?;
-
-    Ok(CompileState {
-        ast,
-        interner,
-        rir,
-        functions: cfg_output.functions,
-        type_pool: cfg_output.type_pool,
-        strings: cfg_output.strings,
-        warnings: cfg_output.warnings,
-    })
 }
 
 /// Compile source code to an ELF binary.
@@ -2491,6 +2205,31 @@ mod tests {
         assert_eq!(state.functions.len(), 1);
     }
 
+    #[test]
+    fn documented_snapshot_session_embedding_carries_complete_identity() {
+        let root = FileId::new(7);
+        let paths = std::collections::HashMap::from([(root, "src/main.rue".to_owned())]);
+        let metadata = SourceMetadata::new(root, paths.clone(), paths).unwrap();
+        let snapshot = SourceSnapshot::new(
+            metadata,
+            vec![(root, Arc::new("fn main() -> i32 { 0 }".to_owned()))],
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let expected_link = LinkInputDescriptor::from_compile_options(&snapshot, &options);
+
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&snapshot).into_result().unwrap();
+        let semantic = session.semantic(&options).unwrap();
+
+        assert_eq!(semantic.functions().len(), 1);
+        assert_eq!(semantic.input(), &expected_link.codegen);
+        assert_eq!(
+            semantic.input().semantic.sources.root(),
+            snapshot.source_revision().root()
+        );
+    }
+
     fn assert_invalid_compiler_input(errors: CompileErrors, expected: &str) {
         assert_eq!(errors.len(), 1);
         let error = errors.iter().next().unwrap();
@@ -2563,96 +2302,6 @@ mod tests {
         };
 
         assert_eq!(fingerprint(&borrowed), fingerprint(&owned));
-    }
-
-    #[test]
-    fn raw_ast_boundary_rejects_undeclared_file_ids_before_lowering() {
-        let declared = FileId::new(2);
-        let metadata = SourceMetadata::new(
-            declared,
-            std::collections::HashMap::from([(declared, "main.rue".to_string())]),
-            std::collections::HashMap::from([(declared, "main.rue".to_string())]),
-        )
-        .unwrap();
-        let ast = Ast {
-            items: vec![Item::Error(Span::with_file(FileId::new(9), 0, 1))],
-        };
-
-        let result = compile_frontend_from_ast_with_source_metadata_and_target(
-            ast,
-            ThreadedRodeo::new(),
-            OptLevel::default(),
-            &PreviewFeatures::new(),
-            CompileOptions::default().target,
-            &metadata,
-        );
-        let errors = match result {
-            Ok(_) => panic!("undeclared AST file ID should fail"),
-            Err(errors) => errors,
-        };
-        assert_invalid_compiler_input(
-            errors,
-            "invalid compiler input: AST contains unknown file IDs: 9",
-        );
-    }
-
-    #[test]
-    fn legacy_raw_ast_wrapper_only_synthesizes_truly_anonymous_metadata() {
-        let ast = Ast {
-            items: vec![Item::Error(Span::with_file(FileId::new(9), 0, 1))],
-        };
-        let result = compile_frontend_from_ast_with_options(
-            ast,
-            ThreadedRodeo::new(),
-            OptLevel::default(),
-            &PreviewFeatures::new(),
-        );
-        let errors = match result {
-            Ok(_) => panic!("non-anonymous AST should require source metadata"),
-            Err(errors) => errors,
-        };
-        assert_invalid_compiler_input(
-            errors,
-            "invalid compiler input: raw AST uses non-anonymous file IDs 9; pass SourceMetadata explicitly",
-        );
-    }
-
-    #[test]
-    fn legacy_raw_ast_maps_materialize_partial_logical_paths_and_reject_unknown_ids() {
-        let root = FileId::new(2);
-        let empty_file = FileId::new(8);
-        let unknown = FileId::new(9);
-        let ast = Ast {
-            items: vec![Item::Error(Span::with_file(root, 0, 1))],
-        };
-        let file_paths = std::collections::HashMap::from([
-            (root, "physical/root.rue".to_string()),
-            (empty_file, "physical/empty.rue".to_string()),
-        ]);
-
-        let metadata = source_metadata_from_legacy_maps(
-            &ast,
-            file_paths.clone(),
-            std::collections::HashMap::from([(root, "stable/root.rue".to_string())]),
-        )
-        .unwrap();
-        assert_eq!(metadata.root_file_id(), root);
-        assert_eq!(metadata.logical_path(root), Some("stable/root.rue"));
-        assert_eq!(
-            metadata.logical_path(empty_file),
-            Some("physical/empty.rue")
-        );
-
-        let error = source_metadata_from_legacy_maps(
-            &ast,
-            file_paths,
-            std::collections::HashMap::from([(unknown, "unknown.rue".to_string())]),
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "invalid compiler input: logical path map contains unknown file IDs: 9"
-        );
     }
 
     #[test]
