@@ -27,7 +27,7 @@ impl<'a> BodySema<'a> {
     /// - **Structs**: StructDecl, StructInit, FieldGet, FieldSet
     /// - **Arrays**: ArrayInit, IndexGet, IndexSet
     /// - **Enums**: EnumDecl, EnumVariant
-    /// - **Calls**: Call, MethodCall, AssocFnCall
+    /// - **Calls**: Call, MethodCall
     /// - **Intrinsics**: Intrinsic, TypeIntrinsic, OffsetOf
     /// - **Declarations**: DropFnDecl, FnDecl
     pub(crate) fn analyze_inst(
@@ -192,7 +192,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Call operations
-            InstData::Call { .. } | InstData::MethodCall { .. } | InstData::AssocFnCall { .. } => {
+            InstData::Call { .. } | InstData::MethodCall { .. } => {
                 self.analyze_call_ops(air, inst_ref, ctx)
             }
 

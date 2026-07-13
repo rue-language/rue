@@ -157,10 +157,10 @@ Methods can only be defined for structs in the same compilation unit. (This is a
   - Parse method calls as a variant of field access
 
 - [x] **Phase 2: RIR Generation** - (historical bd ID rue-qs3z.2, pre-Linear)
-  - Add method info to RIR (ImplDecl, MethodCall, AssocFnCall instructions)
+  - Add method info to RIR (ImplDecl and MethodCall instructions)
   - Generate RIR for impl blocks
   - Handle method calls in expression generation
-  - Parse associated function calls (Type::fn() syntax)
+  - Parse associated function calls (`Type.fn()` syntax)
 
 - [x] **Phase 3: Type Checking** - (historical bd ID rue-qs3z.3, pre-Linear)
   - Add method registry to struct definitions

@@ -1214,12 +1214,6 @@ fn walk_expr(
                 walk_expr(base, module, resolver, imports)?;
             }
         }
-        Expr::AssocFnCall(value) => {
-            if let Some(base) = &value.base {
-                walk_expr(base, module, resolver, imports)?;
-            }
-            walk_args(&value.args, module, resolver, imports)?;
-        }
         Expr::Comptime(value) => walk_expr(&value.expr, module, resolver, imports)?,
         Expr::Checked(value) => walk_expr(&value.expr, module, resolver, imports)?,
     }

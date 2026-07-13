@@ -83,11 +83,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 );
             }
 
-            // Associated functions (e.g. `String::new`, `String::with_capacity`) are
-            // resolved by inference through the same `(StructId, name)` method map (see
-            // `InstData::AssocFnCall` in inference/generate.rs). Like methods, they live
+            // Associated functions (e.g. `StrBuf.new`, `StrBuf.with_capacity`) are
+            // resolved by inference through the same `(StructId, name)` method map. Like methods, they live
             // only in the rue-builtins registry, so without registering them an untyped
-            // literal arg (`String::with_capacity(8)`) isn't constrained to the param's
+            // literal arg (`StrBuf.with_capacity(8)`) isn't constrained to the param's
             // `u64` and a result feeding a literal resolves to `<error>`. (RUE-95 sibling)
             for assoc_fn in builtin.associated_fns {
                 let Some(fn_spur) = self.interner.get(assoc_fn.name) else {

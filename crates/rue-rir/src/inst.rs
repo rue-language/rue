@@ -1130,19 +1130,6 @@ pub enum InstData {
         args_len: u32,
     },
 
-    /// Associated function call: Type::function(args)
-    /// Args are stored in the extra array using add_call_args/get_call_args.
-    AssocFnCall {
-        /// Type name (e.g., Point)
-        type_name: Spur,
-        /// Function name (e.g., origin)
-        function: Spur,
-        /// Index into extra data where args start
-        args_start: u32,
-        /// Number of arguments
-        args_len: u32,
-    },
-
     /// User-defined destructor declaration: drop fn TypeName(self) { ... }
     DropFnDecl {
         /// The struct type this destructor is for
@@ -2027,22 +2014,6 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         "method_call {}.{}({})",
                         self.display_ref(*receiver),
                         self.interner.resolve(&*method),
-                        self.format_call_args(&args)
-                    )
-                    .unwrap();
-                }
-                InstData::AssocFnCall {
-                    type_name,
-                    function,
-                    args_start,
-                    args_len,
-                } => {
-                    let args = self.rir.get_call_args(*args_start, *args_len);
-                    writeln!(
-                        out,
-                        "assoc_fn_call {}::{}({})",
-                        self.interner.resolve(&*type_name),
-                        self.interner.resolve(&*function),
                         self.format_call_args(&args)
                     )
                     .unwrap();
@@ -3479,71 +3450,6 @@ mod tests {
         let printer = RirPrinter::new(&rir, &interner);
         let output = printer.to_string();
         assert!(output.contains("method_call %0.modify(inout %1, borrow %2)"));
-    }
-
-    #[test]
-    fn test_printer_assoc_fn_call() {
-        let (mut rir, interner) = create_printer_test_rir();
-
-        let type_name = interner.get_or_intern("Point");
-        let function = interner.get_or_intern("origin");
-
-        let (args_start, args_len) = rir.add_call_args(&[]);
-
-        rir.add_inst(Inst {
-            data: InstData::AssocFnCall {
-                type_name,
-                function,
-                args_start,
-                args_len,
-            },
-            span: Span::new(0, 15),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("assoc_fn_call Point::origin()"));
-    }
-
-    #[test]
-    fn test_printer_assoc_fn_call_with_args() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let arg1 = rir.add_inst(Inst {
-            data: InstData::IntConst(10),
-            span: Span::new(0, 2),
-        });
-        let arg2 = rir.add_inst(Inst {
-            data: InstData::IntConst(20),
-            span: Span::new(0, 2),
-        });
-
-        let type_name = interner.get_or_intern("Point");
-        let function = interner.get_or_intern("new");
-
-        let (args_start, args_len) = rir.add_call_args(&[
-            RirCallArg {
-                value: arg1,
-                mode: RirArgMode::Normal,
-            },
-            RirCallArg {
-                value: arg2,
-                mode: RirArgMode::Normal,
-            },
-        ]);
-
-        rir.add_inst(Inst {
-            data: InstData::AssocFnCall {
-                type_name,
-                function,
-                args_start,
-                args_len,
-            },
-            span: Span::new(0, 20),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("assoc_fn_call Point::new(%0, %1)"));
     }
 
     #[test]

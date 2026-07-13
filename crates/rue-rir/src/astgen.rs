@@ -976,24 +976,6 @@ impl<'a> AstGen<'a> {
                     span: method_call.span,
                 })
             }
-            Expr::AssocFnCall(assoc_fn_call) => {
-                let args: Vec<_> = assoc_fn_call
-                    .args
-                    .iter()
-                    .map(|a| self.convert_call_arg(a))
-                    .collect();
-                let (args_start, args_len) = self.rir.add_call_args(&args);
-
-                self.rir.add_inst(Inst {
-                    data: InstData::AssocFnCall {
-                        type_name: self.symbol(assoc_fn_call.type_name.name),
-                        function: self.symbol(assoc_fn_call.function.name),
-                        args_start,
-                        args_len,
-                    },
-                    span: assoc_fn_call.span,
-                })
-            }
             Expr::SelfExpr(self_expr) => {
                 // `self` in method bodies is just a variable reference to the implicit self parameter
                 let name = self.interner.get_or_intern("self");
@@ -2060,7 +2042,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gen_assoc_fn_call() {
+    fn test_gen_associated_function_as_method_call() {
         // Associated functions are called with `.` (RUE-488). At the RIR level
         // `Point.origin()` is a `MethodCall` whose receiver is the type name;
         // sema reinterprets it as an associated-function call.

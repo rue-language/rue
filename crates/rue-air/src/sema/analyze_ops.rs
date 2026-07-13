@@ -10,7 +10,7 @@
 //! - [`analyze_struct_ops`] - StructDecl, StructInit, FieldGet, FieldSet
 //! - [`analyze_array_ops`] - ArrayInit, IndexGet, IndexSet
 //! - [`analyze_enum_ops`] - EnumDecl, EnumVariant
-//! - [`analyze_call_ops`] - Call, MethodCall, AssocFnCall
+//! - [`analyze_call_ops`] - Call and MethodCall
 //! - [`analyze_intrinsic_ops`] - Intrinsic, TypeIntrinsic
 //! - [`analyze_decl_noop`] - DropFnDecl (declarations that produce Unit)
 //!
@@ -5867,12 +5867,12 @@ impl<'a> BodySema<'a> {
     }
 
     // ========================================================================
-    // Call operations: Call, MethodCall, AssocFnCall
+    // Call operations: Call, MethodCall
     // ========================================================================
 
     /// Analyze a call operation instruction.
     ///
-    /// Handles: Call, MethodCall, AssocFnCall
+    /// Handles: Call and MethodCall.
     pub(crate) fn analyze_call_ops(
         &mut self,
         air: &mut Air,
@@ -5902,21 +5902,6 @@ impl<'a> BodySema<'a> {
                 air,
                 *receiver,
                 *method,
-                *args_start,
-                *args_len,
-                inst.span,
-                ctx,
-            ),
-
-            InstData::AssocFnCall {
-                type_name,
-                function,
-                args_start,
-                args_len,
-            } => self.analyze_assoc_fn_call(
-                air,
-                *type_name,
-                *function,
                 *args_start,
                 *args_len,
                 inst.span,
