@@ -30,7 +30,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             let Some(name_spur) = self.interner.get(builtin.name) else {
                 continue;
             };
-            let Some(&struct_id) = self.structs.get(&name_spur) else {
+            let Some(&struct_id) = self.builtin_structs.get(&name_spur) else {
                 continue;
             };
             let struct_type = Type::new_struct(struct_id);

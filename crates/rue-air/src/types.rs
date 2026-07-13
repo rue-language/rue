@@ -146,10 +146,9 @@ impl ModuleId {
     /// Type inference uses this for `@import(...)` in expression position:
     /// resolving an import to a real `ModuleId` needs the module registry and
     /// file-path resolution, which the constraint generator doesn't have.
-    /// Inference only needs module-NESS — module member-call lookup is global
-    /// by name (see RUE-140 in `check_module_member_call`) — and sema assigns
-    /// the real id when it analyzes the expression, so the sentinel id itself
-    /// is never consulted. The value is the maximum id representable in
+    /// Inference only needs module-NESS; sema resolves member calls with the
+    /// receiver's real module/file identity and replaces this sentinel during
+    /// analysis. The value is the maximum id representable in
     /// `Type`'s 24-bit id field, which the registry's sequential allocation
     /// never reaches in practice.
     pub const UNRESOLVED: ModuleId = ModuleId(0xFF_FFFF);
@@ -469,8 +468,8 @@ impl EnumDef {
 /// Definition of a module (imported file).
 ///
 /// A module records the import spelling and resolved file identity. Member
-/// lookup uses the compiler's global declaration tables plus this file identity
-/// for visibility checks; declarations are not duplicated here.
+/// lookup uses this file identity to select the defining-file declaration
+/// tables and apply visibility; declarations are not duplicated here.
 #[derive(Debug, Clone)]
 pub struct ModuleDef {
     /// The path used in @import (e.g., "math.rue")

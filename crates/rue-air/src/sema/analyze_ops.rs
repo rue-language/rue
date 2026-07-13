@@ -3063,7 +3063,7 @@ impl<'a> BodySema<'a> {
         // Check if it's a module binding declared in this file (`const math =
         // @import("math")`). Module bindings are per-file scoped (RUE-113),
         // so the lookup is keyed by the reference's own file and takes
-        // precedence over the global value-const table.
+        // precedence over file-local value constants.
         if let Some(binding) = self.module_bindings.get(&(span.file_id, name)).cloned() {
             self.record_body_named_dependency(
                 super::NamedConstDependencyTargetEvent::ModuleBinding {
@@ -3087,10 +3087,8 @@ impl<'a> BodySema<'a> {
         // gathering (RUE-171); materialize it directly — the initializer is
         // never re-analyzed at use sites.
         if let Some(const_info) = self.resolve_const_info_in_file(name, span.file_id).cloned() {
-            // Privacy (E0460, RUE-183): fallback bare-name lookup can still
-            // resolve to a globally unique private constant defined in another
-            // directory — reject it, privacy is uniform across item kinds
-            // (spec 10.3:1, 10.3:7).
+            // Apply the uniform privacy rule even though ordinary unqualified
+            // lookup resolves in the reference file (spec 10.3:1, 10.3:7).
             self.check_unqualified_visibility(
                 "constant",
                 name_str,
@@ -4636,9 +4634,8 @@ impl<'a> BodySema<'a> {
         };
 
         // Enum member: `module.Enum.Variant(payload)` is tuple-variant
-        // construction. Resolve the enum through the module (the enum is not in
-        // the caller's file, so the global name resolvers cannot find it) and
-        // apply module-qualified visibility (E0706).
+        // construction. Resolve the enum in the receiver module's defining
+        // file and apply module-qualified visibility (E0706).
         if let Some(enum_id) = self.enums_by_file_name.get(&(file_id, type_name)).copied() {
             let enum_def = self.type_pool.enum_def(enum_id);
             if !self.is_accessible(span.file_id, enum_def.file_id, enum_def.is_pub) {
@@ -5790,7 +5787,7 @@ impl<'a> BodySema<'a> {
                 // Look up the enum type, potentially through a module
                 let enum_id = if let Some(module_ref) = module {
                     // Qualified access: module.EnumName::Variant
-                    self.resolve_enum_through_module(*module_ref, *type_name, inst.span)?
+                    self.resolve_enum_through_module(*module_ref, *type_name, inst.span, ctx)?
                 } else {
                     // Unqualified access: EnumName::Variant, or the generic
                     // form `O::None` where `O` is a comptime type-variable
@@ -6021,7 +6018,7 @@ impl<'a> BodySema<'a> {
     /// such as `std.option.Option(i64)` resolve and validate their member in
     /// `analyze_module_member_call_impl`; generic members use this helper
     /// directly so module-qualified type constructors do not re-enter
-    /// unqualified-call fallback lookup.
+    /// unqualified source-name lookup.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn analyze_resolved_function_call(
         &mut self,
@@ -6039,9 +6036,8 @@ impl<'a> BodySema<'a> {
 
         // Visibility (E0460, RUE-37/RUE-180): an unqualified call must not
         // reach a private function defined in another directory — privacy is
-        // uniform in every multi-file compilation, imports or not (spec
-        // 10.3:7), so the flat namespace resolves the name but the callee
-        // must be `pub` (or in the caller's directory).
+        // uniform in every multi-file compilation (spec 10.3:7). The lookup
+        // has already selected a declaration using the reference file.
         if check_unqualified_visibility {
             self.check_unqualified_visibility(
                 "function",
@@ -6562,7 +6558,7 @@ impl<'a> BodySema<'a> {
             });
         }
         if let Some(module_ref) = module {
-            let enum_id = self.resolve_enum_through_module(module_ref, type_name, span)?;
+            let enum_id = self.resolve_enum_through_module(module_ref, type_name, span, ctx)?;
             Ok(Some((enum_id, true)))
         } else {
             Ok(self.resolve_enum_type_name(type_name, ctx))

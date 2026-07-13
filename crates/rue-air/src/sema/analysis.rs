@@ -1264,7 +1264,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 let struct_id = match sema
                     .structs_by_file_name
                     .get(&(destructor.span.file_id, destructor.type_name))
-                    .or_else(|| sema.structs.get(&destructor.type_name))
                 {
                     Some(id) => *id,
                     None => continue,
@@ -1785,13 +1784,10 @@ fn check_exclusive_access_in(
 /// Shared checks for a module-member function call. Validates module
 /// membership, visibility, and arity against the callee.
 ///
-/// Membership (spec 4.13:90, RUE-140): a module's type contains only the
-/// declarations from the imported file, but the function table is a flat
-/// global namespace, so a name-only lookup would resolve a function from
-/// any file in the compilation. The callee must be defined in the receiver
-/// module's file: `member_file_id` (the callee's source file) must equal the
-/// module's canonical file `module_file_id`, otherwise the call is rejected as
-/// an unknown member of `module_name`. Comparing by canonical FileId (rather
+/// Membership (spec 4.13:90, RUE-140): a module contains only declarations
+/// from the imported file. The callee is resolved by the receiver module's
+/// canonical `FileId`, and `member_file_id` is checked as a defensive invariant.
+/// Comparing by canonical FileId (rather
 /// than raw path string) makes equivalent import spellings — `helper.rue` vs
 /// `./helper.rue` — resolve members identically (spec 10.2:4, RUE-240).
 ///

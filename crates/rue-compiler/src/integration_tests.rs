@@ -612,7 +612,9 @@ mod integration_tests {
             assert_eq!(all_struct_ids.len(), 2);
             // Verify Point is present
             let point_name = result.interner.get_or_intern("Point");
-            let point_interned = result.type_pool.get_struct_by_name(point_name);
+            let point_interned = result
+                .type_pool
+                .get_struct_by_file_name(rue_span::FileId::DEFAULT, point_name);
             assert!(
                 point_interned.is_some(),
                 "Point struct should exist in pool"

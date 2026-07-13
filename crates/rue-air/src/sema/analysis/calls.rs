@@ -44,11 +44,8 @@ impl<'a> BodySema<'a> {
 
         // Module-qualified associated-function call / tuple-variant construction:
         // `module.Type.function(args)` (RUE-488). The receiver is `module.Type`
-        // (a field access) whose module member is a struct or enum type. In the
-        // transitional flat namespace the type name resolves globally — the same
-        // resolution the removed `module.Type::function(args)` form used — so
-        // dispatch on the type name once the receiver is confirmed to be a
-        // module-qualified type reference.
+        // (a field access) whose module member is a struct or enum type. The
+        // receiver module's defining file is authoritative for the type name.
         if let InstData::FieldGet {
             base: module_ref,
             field: type_name,
@@ -518,11 +515,9 @@ impl<'a> BodySema<'a> {
 
     /// Analyze a module member call: `module.function(args)` becomes a direct function call.
     ///
-    /// In Phase 1 of the module system, modules are virtual namespaces. When you import
-    /// a module with `@import("foo.rue")`, all of foo.rue's functions are already in the
-    /// global function table (via multi-file compilation). The module provides a
-    /// namespace at the source level; `check_module_member_call` enforces that only
-    /// functions defined in the imported file resolve as members.
+    /// Modules are virtual namespaces. A member resolves through the imported
+    /// file's `(FileId, source name)` entry, or through an explicit public
+    /// function-valued re-export in that file.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn analyze_module_member_call_impl(
         &mut self,
@@ -573,9 +568,18 @@ impl<'a> BodySema<'a> {
             }
         }
 
+        let function_key = function_key.ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::UnknownModuleMember {
+                    module_name: module_def.import_path.clone(),
+                    member_name: fn_name_str.clone(),
+                },
+                span,
+            )
+        })?;
         let fn_info = self
             .functions
-            .get(&function_key.unwrap_or(function_name))
+            .get(&function_key)
             .ok_or_compile_error(
                 ErrorKind::UnknownModuleMember {
                     module_name: module_def.import_path.clone(),
@@ -586,7 +590,6 @@ impl<'a> BodySema<'a> {
             .clone();
 
         // Track this function as referenced (for lazy analysis)
-        let function_key = function_key.unwrap_or(function_name);
         ctx.referenced_functions.insert(function_key);
 
         let param_types = self.param_arena.types(fn_info.params).to_vec();
@@ -611,7 +614,7 @@ impl<'a> BodySema<'a> {
         // Call to the base name would reference a body that is never
         // analyzed (generic bodies are only materialized per specialization,
         // RUE-166). Use the already-resolved call path so module-qualified
-        // type constructors do not re-enter unqualified-call fallback lookup;
+        // type constructors do not re-enter unqualified source-name lookup;
         // module membership and accessibility were checked above.
         if fn_info.is_generic {
             return self.analyze_resolved_function_call(
@@ -642,6 +645,23 @@ impl<'a> BodySema<'a> {
         // this way.
         let air_args =
             self.analyze_call_args_coerced(air, &args, &param_types, &param_modes, ctx)?;
+
+        // Inference cannot recover the defining file for a function-local
+        // `let m = @import(...)`: the intrinsic deliberately carries an
+        // unresolved module sentinel until semantic analysis resolves the
+        // path. We have the exact member and its parameter types here, so make
+        // this path authoritative too instead of silently accepting a bad
+        // argument when inference could not add the constraint.
+        for ((arg, air_arg), expected) in args.iter().zip(&air_args).zip(&param_types) {
+            let found = air.get(air_arg.value).ty;
+            if !found.can_coerce_to(expected) {
+                return Err(self.type_mismatch_error(
+                    *expected,
+                    found,
+                    self.rir.get(arg.value).span,
+                ));
+            }
+        }
 
         Ok(emit_module_member_call(
             air,

@@ -181,12 +181,12 @@ pub struct ConstraintGenerator<'a> {
     expr_types: HashMap<InstRef, InferType>,
     /// Function signatures (for call type checking).
     functions: &'a HashMap<Spur, FunctionSig>,
-    /// Struct types (name -> Type::new_struct(id)).
-    structs: &'a HashMap<Spur, Type>,
+    /// Built-in struct types, which have no defining source file.
+    builtin_structs: &'a HashMap<Spur, Type>,
     /// Module-local struct types ((defining file, source name) -> Type::new_struct(id)).
     structs_by_file_name: Option<&'a HashMap<(FileId, Spur), Type>>,
-    /// Enum types (name -> Type::new_enum(id)).
-    enums: &'a HashMap<Spur, Type>,
+    /// Built-in enum types, which have no defining source file.
+    builtin_enums: &'a HashMap<Spur, Type>,
     /// Module-local enum types ((defining file, source name) -> Type::new_enum(id)).
     enums_by_file_name: Option<&'a HashMap<(FileId, Spur), Type>>,
     /// Method signatures: (struct_id, method_name) -> MethodSig
@@ -293,13 +293,20 @@ impl<'a> ConstraintGenerator<'a> {
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
         functions: &'a HashMap<Spur, FunctionSig>,
-        structs: &'a HashMap<Spur, Type>,
-        enums: &'a HashMap<Spur, Type>,
+        builtin_structs: &'a HashMap<Spur, Type>,
+        builtin_enums: &'a HashMap<Spur, Type>,
         methods: &'a HashMap<(StructId, Spur), MethodSig>,
         type_pool: &'a TypeInternPool,
     ) -> Self {
         Self::with_type_subst(
-            rir, interner, functions, structs, enums, methods, type_pool, None,
+            rir,
+            interner,
+            functions,
+            builtin_structs,
+            builtin_enums,
+            methods,
+            type_pool,
+            None,
         )
     }
 
@@ -313,8 +320,8 @@ impl<'a> ConstraintGenerator<'a> {
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
         functions: &'a HashMap<Spur, FunctionSig>,
-        structs: &'a HashMap<Spur, Type>,
-        enums: &'a HashMap<Spur, Type>,
+        builtin_structs: &'a HashMap<Spur, Type>,
+        builtin_enums: &'a HashMap<Spur, Type>,
         methods: &'a HashMap<(StructId, Spur), MethodSig>,
         type_pool: &'a TypeInternPool,
         type_subst: Option<&'a HashMap<Spur, Type>>,
@@ -326,9 +333,9 @@ impl<'a> ConstraintGenerator<'a> {
             constraints: Vec::new(),
             expr_types: HashMap::new(),
             functions,
-            structs,
+            builtin_structs,
             structs_by_file_name: None,
-            enums,
+            builtin_enums,
             enums_by_file_name: None,
             methods,
             int_literal_vars: Vec::new(),
@@ -778,7 +785,7 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::StringConst(_) => {
                 // Look up the StrBuf type from the structs map
                 if let Some(string_spur) = self.interner.get("StrBuf") {
-                    if let Some(&string_ty) = self.structs.get(&string_spur) {
+                    if let Some(&string_ty) = self.builtin_structs.get(&string_spur) {
                         InferType::Concrete(string_ty)
                     } else {
                         // Fallback if StrBuf struct not found (shouldn't happen after builtin injection)
@@ -906,8 +913,8 @@ impl<'a> ConstraintGenerator<'a> {
                     .and_then(|bindings| bindings.get(&(span.file_id, *name)))
                 {
                     // Module binding declared in this file (`const m =
-                    // @import(...)`): per-file scoped, checked before the
-                    // global value-const table (RUE-113).
+                    // @import(...)`): per-file scoped and distinct from the
+                    // file's value-constant namespace (RUE-113).
                     self.type_to_infer(*binding_ty)
                 } else if let Some(const_ty) = self
                     .const_types
@@ -953,7 +960,9 @@ impl<'a> ConstraintGenerator<'a> {
                                 .and_then(|aliases| aliases.get(&(span.file_id, *ty_sym)).copied())
                         })
                         .map(|ty| self.type_to_infer(ty))
-                        .or_else(|| self.resolve_type_name(self.interner.resolve(ty_sym)));
+                        .or_else(|| {
+                            self.resolve_type_name(self.interner.resolve(ty_sym), span.file_id)
+                        });
                     if let Some(annotated_ty) = annotated {
                         // A `str` annotation (ADR-0043 Phase 3, RUE-324) accepts
                         // a string literal (HM type `String`) by coercion, and a
@@ -1087,17 +1096,22 @@ impl<'a> ConstraintGenerator<'a> {
                 args_start,
                 args_len,
             } => {
-                let name = self
+                let alias_target = self
                     .const_function_aliases
                     .and_then(|aliases| aliases.get(&(span.file_id, *name)))
-                    .unwrap_or(name);
+                    .copied();
+                let function_key = alias_target.or_else(|| {
+                    self.functions_by_file_name
+                        .and_then(|functions| functions.get(&(span.file_id, *name)))
+                        .copied()
+                });
                 let args = self.rir.get_call_args(*args_start, *args_len);
                 // `print(s)` / `println(s)` builtin free functions (RUE-1):
                 // constrain the single argument to String and yield unit, so a
                 // literal argument resolves to String and the call type-checks.
                 // Only when the program hasn't shadowed the name with its own
                 // `fn print`/`fn println` (a user definition wins).
-                let is_print_builtin = !self.functions.contains_key(name)
+                let is_print_builtin = function_key.is_none()
                     && matches!(self.interner.resolve(name), "print" | "println");
                 if is_print_builtin {
                     for arg in args.iter() {
@@ -1109,7 +1123,7 @@ impl<'a> ConstraintGenerator<'a> {
                         ));
                     }
                     InferType::Concrete(Type::UNIT)
-                } else if let Some(func) = self.functions.get(name) {
+                } else if let Some(func) = function_key.and_then(|key| self.functions.get(&key)) {
                     // For generic functions, build the type substitution map from the
                     // comptime type arguments, then constrain each runtime argument
                     // against its (substituted) parameter type. When a type parameter
@@ -1172,6 +1186,7 @@ impl<'a> ConstraintGenerator<'a> {
                                         *sym,
                                         &type_subst,
                                         &value_subst,
+                                        span.file_id,
                                     )
                                 }) {
                                     Some(ty) => ty,
@@ -1202,6 +1217,7 @@ impl<'a> ConstraintGenerator<'a> {
                                     func.return_type_sym,
                                     &type_subst,
                                     &value_subst,
+                                    span.file_id,
                                 ) {
                                     Some(ty) => ty,
                                     None => {
@@ -1472,7 +1488,7 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "target_arch" {
                     // @target_arch: returns Arch enum
                     if let Some(arch_spur) = self.interner.get("Arch") {
-                        if let Some(&arch_ty) = self.enums.get(&arch_spur) {
+                        if let Some(&arch_ty) = self.builtin_enums.get(&arch_spur) {
                             InferType::Concrete(arch_ty)
                         } else {
                             InferType::Concrete(Type::ERROR)
@@ -1483,7 +1499,7 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "target_os" {
                     // @target_os: returns Os enum
                     if let Some(os_spur) = self.interner.get("Os") {
-                        if let Some(&os_ty) = self.enums.get(&os_spur) {
+                        if let Some(&os_ty) = self.builtin_enums.get(&os_spur) {
                             InferType::Concrete(os_ty)
                         } else {
                             InferType::Concrete(Type::ERROR)
@@ -1495,8 +1511,8 @@ impl<'a> ConstraintGenerator<'a> {
                     // @import("path"): a module value. Resolving the path to a
                     // real ModuleId needs the registry, which inference doesn't
                     // have, so use the documented sentinel id — inference only
-                    // needs module-ness (member-call lookup is global by name,
-                    // RUE-140) and sema assigns the real id during analysis.
+                    // needs module-ness; sema resolves the member with the
+                    // receiver's real module/file identity during analysis.
                     // Returning Unit here (the old catch-all) made a member
                     // call on the binding unresolvable (RUE-142) and let a
                     // bare module expression coerce to `()` silently.
@@ -1866,8 +1882,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // matching sema. Unqualified literals check type_subst first
                 // (for Self/type parameters), then comptime type aliases
                 // (`let P = F(); P { ... }`, RUE-170), then the current
-                // file's module-local type table, then the unique-name
-                // compatibility map.
+                // file's module-local type table, then builtins.
                 let struct_ty = if let Some(head) = ctor_head {
                     self.inline_ctor_head_types
                         .and_then(|heads| heads.get(head).copied())
@@ -1897,7 +1912,7 @@ impl<'a> ConstraintGenerator<'a> {
                             self.structs_by_file_name
                                 .and_then(|structs| structs.get(&(span.file_id, *type_name)))
                                 .copied()
-                                .or_else(|| self.structs.get(type_name).copied())
+                                .or_else(|| self.builtin_structs.get(type_name).copied())
                         })
                 };
 
@@ -2007,9 +2022,8 @@ impl<'a> ConstraintGenerator<'a> {
                         // Module receiver: `m.CONST` resolves to a module
                         // member value-constant; yield its declared type so
                         // uses like `m.CONST + 1` are anchored (RUE-160).
-                        // Resolved in the receiver module's defining file —
-                        // the by-file const tables (RUE-638) closed the old
-                        // global-by-name looseness (RUE-140).
+                        // Resolved authoritatively in the receiver module's
+                        // defining file (RUE-140, RUE-638).
                         let member_const_ty = match &base_info.ty {
                             InferType::Concrete(ty) if ty.is_module() => ty
                                 .as_module()
@@ -2289,14 +2303,10 @@ impl<'a> ConstraintGenerator<'a> {
                     // Module receiver: `m.go(...)` is a module member call.
                     // Resolve the member in the receiver module's file first
                     // (RUE-576): same-named functions across files carry
-                    // module-qualified internal keys in `functions`, so the
-                    // bare source name misses for exactly those and the call
-                    // decayed to `<error>` — which surfaced as a bogus E0903
-                    // when the result seeded an array literal's element type.
-                    // The bare-name fallback keeps unique names (and unit
-                    // tests without the map) working. Yielding the callee's
-                    // return type anchors uses like `m.go() + 1` that
-                    // previously decayed to `<error>` (RUE-142).
+                    // module-qualified internal keys in `functions`. Yielding
+                    // the exact member's return type anchors uses like
+                    // `m.go() + 1` that previously decayed to `<error>`
+                    // (RUE-142).
                     InferType::Concrete(ty) if ty.is_module() => {
                         let function_key = ty
                             .as_module()
@@ -2309,9 +2319,8 @@ impl<'a> ConstraintGenerator<'a> {
                                 self.functions_by_file_name
                                     .and_then(|m| m.get(&(file_id, *method)))
                                     .copied()
-                            })
-                            .unwrap_or(*method);
-                        if let Some(func) = self.functions.get(&function_key) {
+                            });
+                        if let Some(func) = function_key.and_then(|key| self.functions.get(&key)) {
                             if !func.is_generic && args.len() == func.param_types.len() {
                                 // Constrain each argument against its declared
                                 // parameter type (same as a direct Call).
@@ -2383,6 +2392,7 @@ impl<'a> ConstraintGenerator<'a> {
                                                     *sym,
                                                     &type_subst,
                                                     &value_subst,
+                                                    span.file_id,
                                                 )
                                             }) {
                                                 Some(ty) => ty,
@@ -2704,7 +2714,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// injected (should not happen once builtin types are registered).
     fn string_infer_type(&self) -> InferType {
         if let Some(string_spur) = self.interner.get("StrBuf") {
-            if let Some(&string_ty) = self.structs.get(&string_spur) {
+            if let Some(&string_ty) = self.builtin_structs.get(&string_spur) {
                 return InferType::Concrete(string_ty);
             }
         }
@@ -2716,7 +2726,7 @@ impl<'a> ConstraintGenerator<'a> {
     fn is_string_concrete(&self, ty: &InferType) -> bool {
         if let InferType::Concrete(t) = ty {
             if let Some(string_spur) = self.interner.get("StrBuf") {
-                if let Some(&string_ty) = self.structs.get(&string_spur) {
+                if let Some(&string_ty) = self.builtin_structs.get(&string_spur) {
                     return *t == string_ty;
                 }
             }
@@ -2753,7 +2763,7 @@ impl<'a> ConstraintGenerator<'a> {
 
         // Struct associated function: constrain each argument to the declared
         // parameter type and yield the return type. Resolved through
-        // `struct_type_for` (not just the global table) so comptime and
+        // `struct_type_for` so comptime and
         // file-level const aliases participate — `const Ints = ArrayBuf(i64);
         // Ints.new()` must yield the concrete instantiation or downstream
         // method arguments go unconstrained (RUE-633).
@@ -2841,10 +2851,9 @@ impl<'a> ConstraintGenerator<'a> {
     /// table. Mirrors sema's `resolve_enum_type_name`; without the
     /// comptime-alias lookup, generic-enum construction/matching inferred
     /// `<error>` and poisoned the surrounding constraints (RUE-6 phase 2).
-    /// Struct type for an unqualified name, module-local first (RUE-525).
-    /// The trailing global lookup covers builtins and stays as inference-side
-    /// permissiveness only — sema's module-local resolution is authoritative
-    /// and rejects cross-file unqualified references (E0204).
+    /// Struct type for an unqualified name. Present precedence is substitutions,
+    /// lexical aliases, file-level aliases, a declaration in the reference
+    /// file, then builtins (RUE-525).
     fn struct_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
         // `Self` (and comptime type parameters) resolve through the enclosing
         // substitution first, so `Self.assoc_fn(args)` constrains its
@@ -2875,7 +2884,7 @@ impl<'a> ConstraintGenerator<'a> {
                     .and_then(|structs| structs.get(&(file_id, *type_name)))
                     .copied()
             })
-            .or_else(|| self.structs.get(type_name).copied())
+            .or_else(|| self.builtin_structs.get(type_name).copied())
     }
 
     fn enum_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
@@ -2901,7 +2910,7 @@ impl<'a> ConstraintGenerator<'a> {
                     .and_then(|enums| enums.get(&(file_id, *type_name)))
                     .copied()
             })
-            .or_else(|| self.enums.get(type_name).copied())
+            .or_else(|| self.builtin_enums.get(type_name).copied())
     }
 
     fn enum_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
@@ -3023,10 +3032,10 @@ impl<'a> ConstraintGenerator<'a> {
                     return Some(ty);
                 }
             }
-            if let Some(&ty) = self.structs.get(sym) {
+            if let Some(&ty) = self.builtin_structs.get(sym) {
                 return Some(ty);
             }
-            if let Some(&ty) = self.enums.get(sym) {
+            if let Some(&ty) = self.builtin_enums.get(sym) {
                 return Some(ty);
             }
             None
@@ -3037,7 +3046,10 @@ impl<'a> ConstraintGenerator<'a> {
                 if let Some(ty) = resolve_sym(type_name) {
                     return Some(ty);
                 }
-                match self.resolve_type_name(self.interner.resolve(type_name)) {
+                match self.resolve_type_name(
+                    self.interner.resolve(type_name),
+                    self.rir.get(arg).span.file_id,
+                ) {
                     Some(InferType::Concrete(ty)) => Some(ty),
                     _ => None,
                 }
@@ -3316,11 +3328,12 @@ impl<'a> ConstraintGenerator<'a> {
         sym: Spur,
         subst: &HashMap<Spur, Type>,
         values: &HashMap<Spur, i128>,
+        file_id: FileId,
     ) -> Option<InferType> {
         if let Some(&ty) = subst.get(&sym) {
             return Some(InferType::Concrete(ty));
         }
-        self.resolve_type_name_with_subst(self.interner.resolve(&sym), subst, values)
+        self.resolve_type_name_with_subst(self.interner.resolve(&sym), subst, values, file_id)
     }
 
     fn resolve_type_name_with_subst(
@@ -3328,6 +3341,7 @@ impl<'a> ConstraintGenerator<'a> {
         name: &str,
         subst: &HashMap<Spur, Type>,
         values: &HashMap<Spur, i128>,
+        file_id: FileId,
     ) -> Option<InferType> {
         if let Some(name_spur) = self.interner.get(name) {
             if let Some(&ty) = subst.get(&name_spur) {
@@ -3337,7 +3351,8 @@ impl<'a> ConstraintGenerator<'a> {
 
         // Array syntax: [T; N] - recurse so substituted element types work.
         if let Some((element_type_str, len)) = parse_array_type_syntax(name) {
-            let element_ty = self.resolve_type_name_with_subst(&element_type_str, subst, values)?;
+            let element_ty =
+                self.resolve_type_name_with_subst(&element_type_str, subst, values, file_id)?;
             let length = self.resolve_infer_array_length_with_values(&len, values)?;
             return Some(InferType::Array {
                 element: Box::new(element_ty),
@@ -3348,7 +3363,7 @@ impl<'a> ConstraintGenerator<'a> {
         // Pointer syntax: ptr mut T / ptr const T - recurse on the pointee.
         if let Some((pointee_type_str, mutability)) = parse_pointer_type_syntax(name) {
             let pointee_infer_ty =
-                self.resolve_type_name_with_subst(&pointee_type_str, subst, values)?;
+                self.resolve_type_name_with_subst(&pointee_type_str, subst, values, file_id)?;
             // Only concrete pointees can be interned during constraint generation
             // (same limitation as resolve_type_name).
             let pointee_ty = match pointee_infer_ty {
@@ -3366,14 +3381,14 @@ impl<'a> ConstraintGenerator<'a> {
             return Some(InferType::Concrete(ptr_ty));
         }
 
-        self.resolve_type_name(name)
+        self.resolve_type_name(name, file_id)
     }
 
-    fn resolve_type_name(&self, name: &str) -> Option<InferType> {
+    fn resolve_type_name(&self, name: &str, file_id: FileId) -> Option<InferType> {
         // Check for array syntax first: [T; N]
         if let Some((element_type_str, len)) = parse_array_type_syntax(name) {
             // Recursively resolve the element type
-            let element_ty = self.resolve_type_name(&element_type_str)?;
+            let element_ty = self.resolve_type_name(&element_type_str, file_id)?;
             let length = self.resolve_infer_array_length(&len)?;
             return Some(InferType::Array {
                 element: Box::new(element_ty),
@@ -3384,7 +3399,7 @@ impl<'a> ConstraintGenerator<'a> {
         // Check for pointer syntax: ptr mut T / ptr const T
         if let Some((pointee_type_str, mutability)) = parse_pointer_type_syntax(name) {
             // Recursively resolve the pointee type
-            let pointee_infer_ty = self.resolve_type_name(&pointee_type_str)?;
+            let pointee_infer_ty = self.resolve_type_name(&pointee_type_str, file_id)?;
 
             // Convert InferType to Type so we can intern the pointer
             let pointee_ty = match pointee_infer_ty {
@@ -3414,10 +3429,22 @@ impl<'a> ConstraintGenerator<'a> {
 
         // Check for struct types (including builtin String)
         if let Some(name_spur) = self.interner.get(name) {
-            if let Some(&struct_ty) = self.structs.get(&name_spur) {
+            if let Some(ty) = self
+                .structs_by_file_name
+                .and_then(|types| types.get(&(file_id, name_spur)).copied())
+            {
+                return Some(InferType::Concrete(ty));
+            }
+            if let Some(ty) = self
+                .enums_by_file_name
+                .and_then(|types| types.get(&(file_id, name_spur)).copied())
+            {
+                return Some(InferType::Concrete(ty));
+            }
+            if let Some(&struct_ty) = self.builtin_structs.get(&name_spur) {
                 return Some(InferType::Concrete(struct_ty));
             }
-            if let Some(&enum_ty) = self.enums.get(&name_spur) {
+            if let Some(&enum_ty) = self.builtin_enums.get(&name_spur) {
                 return Some(InferType::Concrete(enum_ty));
             }
             if let Some(alias_ty) = self.unique_const_type_alias(&name_spur) {
@@ -4127,6 +4154,7 @@ mod tests {
                 InferType::Concrete(Type::BOOL),
             ),
         );
+        let functions_by_file_name = HashMap::from([((FileId::DEFAULT, func_name), func_name)]);
 
         // Create a call with only 1 argument (mismatch)
         let arg = rir.add_inst(rue_rir::Inst {
@@ -4148,7 +4176,8 @@ mod tests {
 
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
-        );
+        )
+        .with_functions_by_file_name(&functions_by_file_name);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 

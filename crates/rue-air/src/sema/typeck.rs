@@ -973,9 +973,14 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         {
             self.collect_free_function_signature_during_binding(member_sym, Some(module_file_id))?;
         }
-        let function_key = module_file_id
+        let Some(function_key) = module_file_id
             .and_then(|file_id| self.resolve_function_name_local(member_sym, file_id))
-            .unwrap_or(member_sym);
+        else {
+            return Err(CompileError::new(
+                ErrorKind::UnknownType(format!("{}(...)", call_path)),
+                span,
+            ));
+        };
 
         let Some(fn_info) = self
             .functions
@@ -1063,12 +1068,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// to the concrete element type) and every failure yields `None` rather than
     /// a diagnostic — the caller reports the comptime failure (E1200).
     ///
-    /// The membership check (`fn_info.file_id == module_file_id`) is essential:
-    /// functions live in a flat global table keyed by name, so a same-named
-    /// constructor in a *different* file must not satisfy `m.Mk` (that would
-    /// reintroduce the RUE-564 cross-module-membership hole inside comptime
-    /// evaluation). A default span carries no file context for the prefix walk,
-    /// so it is treated as non-evaluable.
+    /// Member resolution uses the receiver module's defining file. A default
+    /// span carries no file context for the prefix walk, so it is treated as
+    /// non-evaluable.
     ///
     /// [`resolve_qualified_type_function_call`]:
     /// Sema::resolve_qualified_type_function_call
@@ -1108,12 +1110,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         if let Some(ty) = type_subst.get(&sym) {
             return Some(ConstValue::Type(*ty));
         }
-        if span != Span::default()
-            && let Some(info) = self.resolve_const_info_in_file(sym, span.file_id)
-        {
-            return Some(info.value);
-        }
-        self.constants.get(&sym).map(|info| info.value)
+        (span != Span::default())
+            .then(|| self.resolve_const_info_in_file(sym, span.file_id))
+            .flatten()
+            .map(|info| info.value)
     }
 
     fn resolve_qualified_type_call_for_comptime(
@@ -1141,9 +1141,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             self.collect_free_function_signature_during_binding(member_sym, Some(module_file_id))
                 .ok()?;
         }
-        let function_key = self
-            .resolve_function_name_local(member_sym, module_file_id)
-            .unwrap_or(member_sym);
+        let function_key = self.resolve_function_name_local(member_sym, module_file_id)?;
         // Membership (RUE-564 hole guard) + `-> type` + visibility.
         let fn_info = self
             .functions
@@ -1682,9 +1680,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 span,
             )?;
         } else {
-            // Resolve concrete leaves in the declaration's file, not through
-            // global compatibility maps. This keeps same-named module-local
-            // types isolated inside deferred arrays and pointers.
+            // Resolve concrete leaves in the declaration's file. This keeps
+            // same-named module-local types isolated inside deferred arrays
+            // and pointers.
             self.resolve_type(type_sym, span)?;
         }
         Ok(())
@@ -1926,11 +1924,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             Some(Type::new_struct(struct_id))
         } else if let Some(enum_id) = self.enum_id_for_name(type_sym) {
             Some(Type::new_enum(enum_id))
-        } else if let Some(info) = self.constants.get(&type_sym) {
-            match info.value {
-                ConstValue::Type(alias_ty) => Some(alias_ty),
-                _ => None,
-            }
         } else if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
             // Resolve the element type first
             let element_sym = self.interner.get_or_intern(&element_type);

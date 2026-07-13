@@ -69,8 +69,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 
     /// Resolve a source-level function name only in the given source file.
     ///
-    /// This is the module-local lookup path used for unqualified calls before
-    /// considering the legacy graph-global compatibility fallback.
+    /// This is the sole source-level lookup path for unqualified calls.
     pub(crate) fn resolve_function_name_local(
         &self,
         source_name: Spur,
@@ -79,23 +78,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.functions_by_file_name
             .get(&(file_id, source_name))
             .copied()
-    }
-
-    /// Resolve a source-level function name from a given file, preserving the
-    /// legacy global fallback while the flat model is being removed.
-    pub(crate) fn resolve_function_name_in_file(
-        &self,
-        source_name: Spur,
-        file_id: FileId,
-    ) -> Option<Spur> {
-        self.resolve_function_name_local(source_name, file_id)
-            .or_else(|| {
-                if self.functions.contains_key(&source_name) {
-                    Some(source_name)
-                } else {
-                    None
-                }
-            })
     }
 
     pub(crate) fn resolve_const_info_in_file(
@@ -107,14 +89,14 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     }
 
     pub(crate) fn resolve_builtin_struct_name(&self, name: Spur) -> Option<StructId> {
-        self.structs
+        self.builtin_structs
             .get(&name)
             .copied()
             .filter(|id| self.type_pool.struct_def(*id).is_builtin)
     }
 
     pub(crate) fn resolve_builtin_enum_name(&self, name: Spur) -> Option<EnumId> {
-        self.enums
+        self.builtin_enums
             .get(&name)
             .copied()
             .filter(|id| Some(*id) == self.builtin_arch_id || Some(*id) == self.builtin_os_id)
@@ -165,33 +147,48 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             })
             .collect();
 
-        // Build struct types map (name -> Type::new_struct(id))
-        let struct_types: HashMap<Spur, Type> = self
-            .structs
+        // Builtins have no defining source module. Every source declaration
+        // appears only in the by-file map below.
+        let mut builtin_struct_types: HashMap<Spur, Type> = self
+            .builtin_structs
             .iter()
-            .chain(self.generated_structs.iter())
             .map(|(name, id)| (*name, Type::new_struct(*id)))
             .collect();
+        for (name, id) in &self.generated_structs {
+            if self.type_pool.struct_def(*id).is_builtin {
+                builtin_struct_types.insert(*name, Type::new_struct(*id));
+            }
+        }
 
-        let struct_types_by_file_name: HashMap<(FileId, Spur), Type> = self
+        let mut struct_types_by_file_name: HashMap<(FileId, Spur), Type> = self
             .structs_by_file_name
             .iter()
             .map(|(key, id)| (*key, Type::new_struct(*id)))
             .collect();
+        for (name, id) in &self.generated_structs {
+            let file_id = self.type_pool.struct_def(*id).file_id;
+            struct_types_by_file_name
+                .entry((file_id, *name))
+                .or_insert(Type::new_struct(*id));
+        }
 
-        // Build enum types map (name -> Type::new_enum(id))
-        let enum_types: HashMap<Spur, Type> = self
-            .enums
+        let builtin_enum_types: HashMap<Spur, Type> = self
+            .builtin_enums
             .iter()
-            .chain(self.generated_enums.iter())
             .map(|(name, id)| (*name, Type::new_enum(*id)))
             .collect();
 
-        let enum_types_by_file_name: HashMap<(FileId, Spur), Type> = self
+        let mut enum_types_by_file_name: HashMap<(FileId, Spur), Type> = self
             .enums_by_file_name
             .iter()
             .map(|(key, id)| (*key, Type::new_enum(*id)))
             .collect();
+        for (name, id) in &self.generated_enums {
+            let file_id = self.type_pool.enum_def(*id).file_id;
+            enum_types_by_file_name
+                .entry((file_id, *name))
+                .or_insert(Type::new_enum(*id));
+        }
 
         // Build method signatures with InferType for constraint generation
         let mut method_sigs: HashMap<(StructId, Spur), MethodSig> = self
@@ -228,9 +225,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         // `<error>` (RUE-142).
         // All four const maps are keyed by (declaring file, name), built from
         // the by-file table: same-named constants in sibling modules are
-        // distinct declarations, and building these from the transitional
-        // flat `constants` map let the last-gathered file's constant silently
-        // type every other file's code (RUE-638).
+        // distinct declarations, so every inference lookup carries the
+        // reference file or receiver-module identity (RUE-638).
         let const_types: HashMap<(FileId, Spur), Type> = self
             .constants_by_file_name
             .iter()
@@ -293,9 +289,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 
         InferenceContext {
             func_sigs,
-            struct_types,
+            builtin_struct_types,
             struct_types_by_file_name,
-            enum_types,
+            builtin_enum_types,
             enum_types_by_file_name,
             method_sigs,
             const_types,
@@ -438,23 +434,8 @@ impl<'a> Sema<'a> {
                     // Register in type pool and get pool-based EnumId
                     let (enum_id, _) = self.type_pool.register_enum(*name, enum_def);
 
-                    let name_was_unique = !self
-                        .enums_by_file_name
-                        .keys()
-                        .any(|(_, existing_name)| *existing_name == *name)
-                        && !self
-                            .structs_by_file_name
-                            .keys()
-                            .any(|(_, existing_name)| *existing_name == *name);
-
-                    // Register in enum lookups with pool-based EnumId.
+                    // Source declarations are always keyed by their defining file.
                     self.enums_by_file_name.insert(key, enum_id);
-                    if name_was_unique {
-                        self.enums.insert(*name, enum_id);
-                    } else {
-                        self.enums.remove(name);
-                        self.structs.remove(name);
-                    }
                 }
                 InstData::StructDecl {
                     directives_start,
@@ -504,23 +485,8 @@ impl<'a> Sema<'a> {
                     // Register in type pool and get pool-based StructId
                     let (struct_id, _) = self.type_pool.register_struct(*name, struct_def);
 
-                    let name_was_unique = !self
-                        .structs_by_file_name
-                        .keys()
-                        .any(|(_, existing_name)| *existing_name == *name)
-                        && !self
-                            .enums_by_file_name
-                            .keys()
-                            .any(|(_, existing_name)| *existing_name == *name);
-
-                    // Register in struct lookups with pool-based StructId.
+                    // Source declarations are always keyed by their defining file.
                     self.structs_by_file_name.insert(key, struct_id);
-                    if name_was_unique {
-                        self.structs.insert(*name, struct_id);
-                    } else {
-                        self.structs.remove(name);
-                        self.enums.remove(name);
-                    }
                 }
                 _ => {}
             }
@@ -1766,16 +1732,7 @@ impl<'a> Sema<'a> {
                     value,
                     span: p.span,
                 };
-                self.constants_by_file_name.insert(key, info.clone());
-
-                // Preserve the old bare-name lookup only when this source name
-                // is globally unique. Same-named value constants in distinct
-                // files are resolved through their defining file/module.
-                if self.declaration_index.const_name_is_globally_unique(name) {
-                    self.constants.insert(name, info);
-                } else {
-                    self.constants.remove(&name);
-                }
+                self.constants_by_file_name.insert(key, info);
             }
         }
         Ok(())
@@ -1946,10 +1903,8 @@ impl<'a> Sema<'a> {
                             name: self.interner.resolve(&name).to_string(),
                         },
                     );
-                    // Privacy (E0460, RUE-183): fallback bare-name lookup can
-                    // still find a globally unique constant from another
-                    // directory. The initializer's own span locates the
-                    // referencing file.
+                    // Apply the uniform privacy rule; the initializer's own
+                    // span identifies the referencing file (E0460, RUE-183).
                     self.check_unqualified_visibility(
                         "constant",
                         self.interner.resolve(&name),
@@ -2145,9 +2100,7 @@ impl<'a> Sema<'a> {
             // declared type, so arithmetic against it is checked at that width
             // (RUE-267). Resolve the member in the RECEIVER MODULE's file
             // (RUE-572): same-named constants across modules may differ in
-            // width, and the flat table would check against whichever
-            // declaration it kept. The global table remains a fallback for
-            // legacy flat-mode inputs only.
+            // width, so lookup is authoritative in the receiver module.
             InstData::FieldGet { base, field } => {
                 let (base, field) = (*base, *field);
                 let via_module = if let InstData::VarRef { name } = &self.rir.get(base).data {
@@ -2166,9 +2119,7 @@ impl<'a> Sema<'a> {
                 } else {
                     None
                 };
-                via_module
-                    .or_else(|| self.constants.get(&field).map(|info| info.ty))
-                    .filter(|t| t.is_integer())
+                via_module.filter(|t| t.is_integer())
             }
 
             // Unary ops preserve the operand's (integer) type. A bare integer
@@ -2671,7 +2622,7 @@ impl<'a> Sema<'a> {
         )?;
 
         let function_key = self
-            .resolve_function_name_in_file(member, mfile)
+            .resolve_function_name_local(member, mfile)
             .unwrap_or_else(|| self.internal_function_name(member, mfile));
         let Some(fn_info) = self.functions.get(&function_key).copied() else {
             return Err(CompileError::new(
