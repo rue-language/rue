@@ -895,7 +895,9 @@ mod tests {
     use rue_span::FileId;
 
     use super::*;
-    use crate::{CompilationUnit, CompileOptions, SourceFile};
+    use crate::{
+        CanonicalFrontendSession, CanonicalRirOutput, CompileOptions, SourceFile, SourceSnapshot,
+    };
 
     fn value_hash(value: &impl Hash) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -903,22 +905,63 @@ mod tests {
         hasher.finish()
     }
 
+    struct LoweredFrontend {
+        snapshot: SourceSnapshot,
+        rir: Arc<CanonicalRirOutput>,
+        directives: ImportDirectives,
+    }
+
+    impl LoweredFrontend {
+        fn source_snapshot(&self) -> &SourceSnapshot {
+            &self.snapshot
+        }
+
+        fn source_metadata(&self) -> &SourceMetadata {
+            self.snapshot.metadata()
+        }
+
+        fn import_directives(&self) -> Option<&ImportDirectives> {
+            Some(&self.directives)
+        }
+
+        fn rir(&self) -> &rue_rir::Rir {
+            self.rir.rir()
+        }
+
+        fn interner(&self) -> &crate::ThreadedRodeo {
+            self.rir.semantic_symbols().interner()
+        }
+
+        fn analyze(&self) -> Result<Arc<crate::CanonicalSemanticOutput>, crate::CompileErrors> {
+            let mut session = CanonicalFrontendSession::new();
+            session.update_for_batch(&self.snapshot).into_result()?;
+            session.semantic(&CompileOptions::default())
+        }
+
+        fn resolve_import_graph(&self, std_dir: Option<&str>) -> crate::CompileResult<ImportGraph> {
+            resolve_import_graph(&self.directives, self.snapshot.metadata(), std_dir)
+        }
+    }
+
     fn lower<'a>(
         sources: Vec<SourceFile<'a>>,
         root: FileId,
         logical_paths: HashMap<FileId, String>,
-    ) -> CompilationUnit<'a> {
+    ) -> LoweredFrontend {
         let metadata = SourceMetadata::from_sources(&sources, root, logical_paths).unwrap();
-        let mut unit =
-            CompilationUnit::with_source_metadata(sources, metadata, CompileOptions::default())
-                .unwrap();
-        unit.parse().unwrap();
-        assert!(unit.import_directives().is_none());
-        unit.lower().unwrap();
-        unit
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+        let mut session = CanonicalFrontendSession::new();
+        let parsed = session.update_for_batch(&snapshot).into_result().unwrap();
+        let directives = parsed.import_directives().clone();
+        let rir = session.rir().unwrap();
+        LoweredFrontend {
+            snapshot,
+            rir,
+            directives,
+        }
     }
 
-    fn specifiers<'a>(unit: &'a CompilationUnit<'_>) -> Vec<&'a str> {
+    fn specifiers(unit: &LoweredFrontend) -> Vec<&str> {
         unit.import_directives()
             .unwrap()
             .iter()
@@ -979,7 +1022,7 @@ fn main() -> i32 {
 }
 "#;
         let id = FileId::new(8);
-        let mut unit = lower(
+        let unit = lower(
             vec![SourceFile::new("main.rue", source, id)],
             id,
             HashMap::new(),
@@ -1013,7 +1056,7 @@ fn main() -> i32 {
         for (call, expected) in cases {
             let source = format!("fn main() -> i32 {{ let value = {call}; 0 }}");
             let id = FileId::new(1);
-            let mut unit = lower(
+            let unit = lower(
                 vec![SourceFile::new("main.rue", &source, id)],
                 id,
                 HashMap::new(),
@@ -1136,29 +1179,7 @@ fn main() -> i32 {
         assert_ne!(original, renamed);
     }
 
-    #[test]
-    fn a_new_parse_invalidates_and_relowering_restores_directives() {
-        let id = FileId::new(1);
-        let mut unit = lower(
-            vec![SourceFile::new(
-                "main.rue",
-                "fn main() -> i32 { let m = @import(\"a\"); 0 }",
-                id,
-            )],
-            id,
-            HashMap::new(),
-        );
-        let first = unit.import_directives().unwrap().clone();
-        unit.parse().unwrap();
-        assert!(unit.import_directives().is_none());
-        unit.lower().unwrap();
-        assert_eq!(unit.import_directives(), Some(&first));
-    }
-
-    fn graph_unit<'a>(
-        entries: &[(u32, &'a str, &'a str, &'a str)],
-        root: u32,
-    ) -> CompilationUnit<'a> {
+    fn graph_unit(entries: &[(u32, &str, &str, &str)], root: u32) -> LoweredFrontend {
         let sources = entries
             .iter()
             .map(|(id, physical, _, source)| SourceFile::new(physical, source, FileId::new(*id)))
@@ -1370,8 +1391,8 @@ fn main() -> i32 {
             "main.rue",
             "fn main() -> i32 { let m = @import(\"missing\"); 0 }",
         )];
-        let mut direct = graph_unit(&entries, 1);
-        let mut queried = graph_unit(&entries, 1);
+        let direct = graph_unit(&entries, 1);
+        let queried = graph_unit(&entries, 1);
         resolve_canonical_import_graph(
             queried.import_directives().unwrap(),
             &ModuleResolutionInputs::from_metadata(queried.source_metadata()),
@@ -1403,8 +1424,8 @@ fn main() -> i32 {
             (2, "/p/foo.rue", "foo.rue", "fn file_item() {}"),
             (3, "/p/foo/_foo.rue", "foo/_foo.rue", "fn facade_item() {}"),
         ];
-        let mut direct = graph_unit(&ambiguous_entries, 1);
-        let mut queried = graph_unit(&ambiguous_entries, 1);
+        let direct = graph_unit(&ambiguous_entries, 1);
+        let queried = graph_unit(&ambiguous_entries, 1);
         assert!(matches!(
             queried.resolve_import_graph(None).unwrap().resolutions()[0],
             ImportResolution::Ambiguous { .. }

@@ -120,33 +120,6 @@ pub(crate) fn merge_parsed_modules_for_batch(
     merge_parsed_modules_in_order(program, Some(diagnostic_order))
 }
 
-pub(crate) struct UnitMergeOutcome {
-    pub result: Result<CanonicalMergedProgram, CompileErrors>,
-    /// Retained only when merge diagnostics reject the program.
-    pub rejected_definitions: Option<DefinitionSnapshot>,
-}
-
-/// Merge for `CompilationUnit`, moving its one compatibility definition
-/// snapshot into the canonical artifact on success and returning it on error.
-pub(crate) fn merge_parsed_modules_for_unit(
-    program: &ParsedProgram,
-    diagnostic_order: &[ModuleId],
-    definitions: DefinitionSnapshot,
-) -> UnitMergeOutcome {
-    let (work, ordered_modules) = merge_inputs(program, Some(diagnostic_order));
-    let errors = canonical_duplicate_errors(&ordered_modules);
-    if !errors.is_empty() {
-        return UnitMergeOutcome {
-            result: Err(CompileErrors::from(errors)),
-            rejected_definitions: Some(definitions),
-        };
-    }
-    UnitMergeOutcome {
-        result: Ok(assemble_merged_program(program, definitions, work)),
-        rejected_definitions: None,
-    }
-}
-
 fn merge_parsed_modules_in_order(
     program: &ParsedProgram,
     diagnostic_order: Option<&[ModuleId]>,

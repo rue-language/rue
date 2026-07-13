@@ -706,11 +706,22 @@ where
 #[cfg(test)]
 mod tests {
     use rue_compiler::{
-        CompilationUnit, CompileOptions, FileId, SourceFile, parse_all_files_with_source_snapshot,
+        CompileOptions, FileId, SourceFile, SourceMetadata, SourceSnapshot,
+        parse_all_files_with_source_snapshot, query_canonical_frontend,
     };
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::*;
+
+    #[test]
+    fn emit_driver_does_not_restore_the_retired_peer_orchestrator() {
+        let retired_type = ["Compilation", "Unit"].concat();
+        let source = include_str!("main.rs");
+        assert!(
+            !source.contains(&retired_type),
+            "emit paths must query CanonicalFrontendSession directly"
+        );
+    }
 
     #[test]
     fn real_compiler_phase_spans_preserve_leaf_boundaries() {
@@ -719,8 +730,13 @@ mod tests {
             "fn main() -> i32 { 42 }",
             FileId::new(1),
         )];
-        let seed = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
-        let snapshot = seed.source_snapshot().clone();
+        let metadata = SourceMetadata::from_sources(
+            &sources,
+            FileId::new(1),
+            std::collections::HashMap::new(),
+        )
+        .unwrap();
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
 
         let direct_data = TimingData::new();
         let direct_subscriber =
@@ -753,63 +769,44 @@ mod tests {
         assert_eq!(direct_parse.invocations, 1);
         assert_eq!(direct_parse.root_invocations, 1);
 
-        let unit_data = TimingData::new();
-        let unit_subscriber =
-            tracing_subscriber::registry().with(TimingLayer::new(unit_data.clone()));
-        tracing::subscriber::with_default(unit_subscriber, || {
-            let mut unit =
-                CompilationUnit::from_source_snapshot(snapshot.clone(), CompileOptions::default());
-            unit.parse().unwrap();
-            unit.lower().unwrap();
-            unit.analyze().unwrap();
+        let session_data = TimingData::new();
+        let session_subscriber =
+            tracing_subscriber::registry().with(TimingLayer::new(session_data.clone()));
+        tracing::subscriber::with_default(session_subscriber, || {
+            query_canonical_frontend(&snapshot, &CompileOptions::default()).unwrap();
         });
 
-        let unit_edges = unit_data.parent_edges();
+        let session_edges = session_data.parent_edges();
         for expected in [
-            ("parse", "parse_file"),
             ("parse_file", "lexer"),
             ("parse_file", "parser"),
-            ("parse", "definition_snapshot"),
-            ("parse", "merge_symbols"),
+            ("semantic_astgen", "definition_snapshot_modules"),
         ] {
             assert!(
-                unit_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
-                "missing {expected:?} in compilation-unit edges: {unit_edges:?}"
+                session_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+                "missing {expected:?} in canonical-session edges: {session_edges:?}"
             );
         }
 
-        let unit_timing = unit_data.to_benchmark_timing_with_metrics("test", "test", None, None);
-        let unit_parse = unit_timing
+        let session_timing =
+            session_data.to_benchmark_timing_with_metrics("test", "test", None, None);
+        let session_parse_file = session_timing
             .passes
             .iter()
-            .find(|pass| pass.name == "parse")
+            .find(|pass| pass.name == "parse_file")
             .unwrap();
-        let merge = unit_timing
-            .passes
-            .iter()
-            .find(|pass| pass.name == "merge_symbols")
-            .unwrap();
-        let definition_snapshot = unit_timing
-            .passes
-            .iter()
-            .find(|pass| pass.name == "definition_snapshot")
-            .unwrap();
-        let rir_declaration_index = unit_timing
+        let rir_declaration_index = session_timing
             .passes
             .iter()
             .find(|pass| pass.name == "rir_declaration_index")
             .unwrap();
-        let sema = unit_timing
+        let sema = session_timing
             .passes
             .iter()
             .find(|pass| pass.name == "sema")
             .unwrap();
-        assert_eq!(unit_parse.invocations, 1);
-        assert_eq!(unit_parse.root_invocations, 1);
-        assert_eq!(definition_snapshot.invocations, 1);
-        assert_eq!(definition_snapshot.root_invocations, 0);
-        assert_eq!(definition_snapshot.leaf_invocations, 1);
-        assert_eq!(merge.root_invocations, 0);
+        assert_eq!(session_parse_file.invocations, 1);
+        assert_eq!(session_parse_file.root_invocations, 1);
         assert_eq!(rir_declaration_index.invocations, 1);
         assert_eq!(rir_declaration_index.root_invocations, 1);
         assert_eq!(rir_declaration_index.leaf_invocations, 1);
@@ -817,8 +814,8 @@ mod tests {
         assert_eq!(sema.root_invocations, 1);
         assert_eq!(sema.leaf_invocations, 1);
         assert!(
-            !unit_edges.contains(&("sema".to_owned(), "rir_declaration_index".to_owned())),
-            "the index and sema analysis must remain sibling leaves: {unit_edges:?}"
+            !session_edges.contains(&("sema".to_owned(), "rir_declaration_index".to_owned())),
+            "the index and sema analysis must remain sibling leaves: {session_edges:?}"
         );
 
         let compile_data = TimingData::new();

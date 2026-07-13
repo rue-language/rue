@@ -281,24 +281,6 @@ impl CanonicalSemanticOutput {
     pub fn work(&self) -> CanonicalSemanticWork {
         self.work
     }
-
-    pub(crate) fn into_codegen_parts(
-        self,
-    ) -> (
-        Vec<FunctionWithCfg>,
-        TypeInternPool,
-        Vec<String>,
-        Vec<CompileWarning>,
-        CanonicalSemanticWork,
-    ) {
-        (
-            self.functions,
-            self.type_pool,
-            self.strings,
-            self.warnings,
-            self.work,
-        )
-    }
 }
 
 /// Bind declarations once, optionally issue stable IDs, then consume the same
@@ -750,8 +732,8 @@ mod tests {
     };
     use crate::parsed_modules::parse_source_snapshot_modules;
     use crate::{
-        CanonicalRirOutput, CompilationUnit, CompileOptions, FunctionWithCfg, SourceMetadata,
-        SourceSnapshot, lower_canonical_rir, merge_parsed_modules,
+        CanonicalRirOutput, CompileOptions, FunctionWithCfg, SourceMetadata, SourceSnapshot,
+        lower_canonical_rir, merge_parsed_modules,
     };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -963,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_semantic_and_cfg_artifacts_match_existing_unit_pipeline() {
+    fn canonical_semantic_query_provides_backend_artifacts() {
         let source = snapshot(
             &[
                 (
@@ -993,30 +975,16 @@ mod tests {
                 validation_failures: 0,
             }
         );
-        let mut legacy = CompilationUnit::from_source_snapshot(source, options);
-        legacy.run_frontend().unwrap();
-
-        assert_eq!(
-            function_fingerprint(
-                canonical.functions(),
-                canonical_rir.semantic_symbols().interner()
-            ),
-            function_fingerprint(legacy.functions(), legacy.interner())
+        let functions = function_fingerprint(
+            canonical.functions(),
+            canonical_rir.semantic_symbols().interner(),
         );
-        assert_eq!(canonical.type_pool().stats(), legacy.type_pool().stats());
-        assert_eq!(canonical.strings(), legacy.strings());
-        assert_eq!(
-            canonical
-                .warnings()
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
-            legacy
-                .warnings()
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        );
+        assert_eq!(functions.len(), 2);
+        assert!(functions.iter().any(|function| function.contains("main")));
+        assert!(functions.iter().any(|function| function.contains("answer")));
+        let _type_pool = canonical.type_pool();
+        assert!(canonical.strings().is_empty());
+        assert!(canonical.warnings().is_empty());
         assert_eq!(canonical.work().binding.bind_invocations, 1);
         assert_eq!(canonical.work().manifest.build_invocations, 1);
         assert!(canonical.bound_definitions().is_none());

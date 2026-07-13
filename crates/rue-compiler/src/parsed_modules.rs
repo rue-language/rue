@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+#[cfg(test)]
 use lasso::Key;
 use lasso::{RodeoResolver, Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
@@ -654,14 +655,7 @@ pub fn parse_source_snapshot_modules_reusing(
     outcome.result.map(|program| (program, outcome.work))
 }
 
-/// Canonical modules plus the cheap inputs for the legacy unit AST/interner view.
-pub(crate) struct UnitParsedModules {
-    pub program: ParsedProgram,
-    pub ast_files: Vec<Arc<Ast>>,
-    pub symbol_strings: Vec<String>,
-}
-
-/// Shared-resolver, caller-ordered syntax presentation for legacy AST output.
+/// Caller-ordered syntax presentation for AST output.
 #[derive(Debug)]
 pub struct ParsedAstPresentation {
     files: Vec<(String, Arc<Ast>)>,
@@ -691,96 +685,26 @@ impl ParsedAstPresentation {
 pub fn parse_source_snapshot_for_ast_presentation(
     snapshot: &SourceSnapshot,
 ) -> MultiErrorResult<ParsedAstPresentation> {
-    let (parsed, work) = parse_source_snapshot_modules_for_unit(snapshot);
-    let parsed = parsed?;
+    let outcome = crate::syntax::run_snapshot_unspanned(snapshot);
+    let syntax = outcome.work;
+    let parsed = outcome.result?;
     let files = snapshot
         .files()
-        .zip(parsed.ast_files)
-        .map(|(source, ast)| (source.path.to_string(), ast))
+        .zip(parsed.files)
+        .map(|(source, parsed)| (source.path.to_string(), parsed.ast))
         .collect();
     Ok(ParsedAstPresentation {
         files,
         work: ParsedAstPresentationWork {
-            parsed: work,
+            parsed: ParsedModulesWork {
+                syntax,
+                modules_considered: snapshot.len(),
+                modules_reparsed: snapshot.len(),
+                ..ParsedModulesWork::default()
+            },
             ..ParsedAstPresentationWork::default()
         },
     })
-}
-
-/// Parse once with a shared symbol universe for `CompilationUnit` compatibility.
-pub(crate) fn parse_source_snapshot_modules_for_unit(
-    snapshot: &SourceSnapshot,
-) -> (MultiErrorResult<UnitParsedModules>, ParsedModulesWork) {
-    let outcome = crate::syntax::run_snapshot_unspanned(snapshot);
-    let syntax = outcome.work;
-    let work = ParsedModulesWork {
-        syntax,
-        modules_considered: snapshot.len(),
-        modules_reparsed: snapshot.len(),
-        ..ParsedModulesWork::default()
-    };
-    let legacy = match outcome.result {
-        Ok(legacy) => legacy,
-        Err(errors) => return (Err(errors), work),
-    };
-    let mut symbol_strings = legacy
-        .interner
-        .iter()
-        .map(|(key, value)| (key.into_usize(), value.to_owned()))
-        .collect::<Vec<_>>();
-    symbol_strings.sort_by_key(|(key, _)| *key);
-    let symbol_strings = symbol_strings
-        .into_iter()
-        .map(|(_, value)| value)
-        .collect::<Vec<_>>();
-    let import_sites = legacy
-        .files
-        .iter()
-        .map(|file| {
-            let module = snapshot
-                .module_id(file.file_id)
-                .expect("snapshot membership");
-            collect_imports(&file.ast, module, &legacy.interner)
-        })
-        .collect::<CompileResult<Vec<_>>>();
-    let import_sites = match import_sites {
-        Ok(import_sites) => import_sites,
-        Err(error) => return (Err(CompileErrors::from(error)), work),
-    };
-    let resolver = Arc::new(legacy.interner.into_resolver());
-    let provenance = Arc::new(SymbolProvenance);
-    let ast_files = legacy
-        .files
-        .iter()
-        .map(|file| file.ast.clone())
-        .collect::<Vec<_>>();
-    let mut modules = Vec::with_capacity(legacy.files.len());
-    for (file, import_sites) in legacy.files.into_iter().zip(import_sites) {
-        let module = build_module_with_resolver(
-            snapshot,
-            file.file_id,
-            file.ast,
-            resolver.clone(),
-            provenance.clone(),
-            import_sites,
-        );
-        match module {
-            Ok(module) => modules.push(module),
-            Err(error) => return (Err(CompileErrors::from(error)), work),
-        }
-    }
-    let program = match ParsedProgram::new(snapshot.source_revision().root().clone(), modules) {
-        Ok(program) => program,
-        Err(error) => return (Err(CompileErrors::from(error)), work),
-    };
-    (
-        Ok(UnitParsedModules {
-            program,
-            ast_files,
-            symbol_strings,
-        }),
-        work,
-    )
 }
 
 /// Parse canonical modules and return the exact syntax work performed.
@@ -1412,8 +1336,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CompilationUnit, CompileOptions, ModuleResolutionInput, ModuleResolutionInputs,
-        SemanticInputDescriptor, SourceFile, SourceMetadata, extract_import_directives,
+        ModuleResolutionInput, ModuleResolutionInputs, SemanticInputDescriptor, SourceMetadata,
+        extract_import_directives, lower_canonical_rir, merge_parsed_modules,
     };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -1861,23 +1785,14 @@ fn main() -> i32 {
             .map(|directive| (directive.source_offset(), directive.specifier()))
             .collect::<Vec<_>>();
 
-        let file_id = FileId::new(3);
-        let sources = vec![SourceFile::new("/main.rue", source, file_id)];
-        let metadata = SourceMetadata::from_sources(
-            &sources,
-            file_id,
-            HashMap::from([(file_id, String::from("main.rue"))]),
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let lowered = lower_canonical_rir(&merged).unwrap();
+        let rir = extract_import_directives(
+            lowered.rir(),
+            lowered.semantic_symbols().interner(),
+            snapshot.metadata(),
         )
         .unwrap();
-        let mut unit = CompilationUnit::with_source_metadata(
-            sources,
-            metadata.clone(),
-            CompileOptions::default(),
-        )
-        .unwrap();
-        unit.parse().unwrap();
-        unit.lower().unwrap();
-        let rir = extract_import_directives(unit.rir(), unit.interner(), &metadata).unwrap();
         let rir_values = rir
             .iter()
             .map(|directive| (directive.source_offset(), directive.specifier()))
