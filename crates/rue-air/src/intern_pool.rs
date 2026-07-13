@@ -271,20 +271,8 @@ struct TypeInternPoolInner {
     /// Structural type deduplication: pointee -> InternedType for ptr mut.
     ptr_mut_map: HashMap<InternedType, InternedType>,
 
-    /// Nominal type lookup for globally unique struct names.
-    ///
-    /// Module-local user types are keyed by `(defining file, source name)` in
-    /// `struct_by_file_name`. This compatibility map keeps unqualified lookup
-    /// working for names that are still unique across the loaded source graph.
-    struct_by_name: HashMap<Spur, InternedType>,
-
     /// Nominal struct lookup: (defining file, source name) -> InternedType.
     struct_by_file_name: HashMap<(FileId, Spur), InternedType>,
-
-    /// Nominal type lookup for globally unique enum names.
-    ///
-    /// See `struct_by_name` for the compatibility semantics.
-    enum_by_name: HashMap<Spur, InternedType>,
 
     /// Nominal enum lookup: (defining file, source name) -> InternedType.
     enum_by_file_name: HashMap<(FileId, Spur), InternedType>,
@@ -302,9 +290,7 @@ impl TypeInternPool {
                 array_map: HashMap::new(),
                 ptr_const_map: HashMap::new(),
                 ptr_mut_map: HashMap::new(),
-                struct_by_name: HashMap::new(),
                 struct_by_file_name: HashMap::new(),
-                enum_by_name: HashMap::new(),
                 enum_by_file_name: HashMap::new(),
                 symbol_paths: HashMap::new(),
             }),
@@ -418,34 +404,21 @@ impl TypeInternPool {
         let interned = InternedType::from_pool_index(pool_index);
 
         inner.types.push(TypeData::Struct(StructData { name, def }));
-        let name_was_unique = !inner
-            .struct_by_file_name
-            .keys()
-            .any(|(_, existing_name)| *existing_name == name);
         inner.struct_by_file_name.insert(key, interned);
-        if name_was_unique {
-            inner.struct_by_name.insert(name, interned);
-        } else {
-            inner.struct_by_name.remove(&name);
-        }
 
         (StructId::from_pool_index(pool_index), true)
     }
 
     /// Register an additional (alias) name for an already-registered struct.
     ///
-    /// The alias resolves to the *same* struct via [`Self::get_struct_by_name`]
-    /// without creating a second struct entry, keeping the registry/pool
-    /// by-name invariant intact. Used for deprecated built-in type-name aliases
-    /// (ADR-0043: `String` is an alias for `StrBuf`). A no-op if `alias` is
-    /// already registered.
-    pub fn alias_struct_name(&self, alias: Spur, struct_id: StructId) {
+    /// Register an additional file-qualified name for an existing struct.
+    pub fn alias_struct_name_in_file(&self, file_id: FileId, alias: Spur, struct_id: StructId) {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if inner.struct_by_name.contains_key(&alias) {
+        if inner.struct_by_file_name.contains_key(&(file_id, alias)) {
             return;
         }
         let interned = InternedType::from_pool_index(struct_id.pool_index());
-        inner.struct_by_name.insert(alias, interned);
+        inner.struct_by_file_name.insert((file_id, alias), interned);
     }
 
     /// Reserve a struct ID without registering the full definition yet.
@@ -527,18 +500,9 @@ impl TypeInternPool {
         let key = (def.file_id, name);
         inner.types[pool_index] = TypeData::Struct(StructData { name, def });
 
-        // Register in the name lookup
+        // Register in the defining-file lookup.
         let interned = InternedType::from_pool_index(pool_index as u32);
-        let name_was_unique = !inner
-            .struct_by_file_name
-            .keys()
-            .any(|(_, existing_name)| *existing_name == name);
         inner.struct_by_file_name.insert(key, interned);
-        if name_was_unique {
-            inner.struct_by_name.insert(name, interned);
-        } else {
-            inner.struct_by_name.remove(&name);
-        }
     }
 
     /// Register a new enum (nominal - no deduplication).
@@ -571,16 +535,7 @@ impl TypeInternPool {
         let interned = InternedType::from_pool_index(pool_index);
 
         inner.types.push(TypeData::Enum(EnumData { name, def }));
-        let name_was_unique = !inner
-            .enum_by_file_name
-            .keys()
-            .any(|(_, existing_name)| *existing_name == name);
         inner.enum_by_file_name.insert(key, interned);
-        if name_was_unique {
-            inner.enum_by_name.insert(name, interned);
-        } else {
-            inner.enum_by_name.remove(&name);
-        }
 
         (EnumId::from_pool_index(pool_index), true)
     }
@@ -680,23 +635,10 @@ impl TypeInternPool {
         interned
     }
 
-    /// Look up a struct by name.
-    ///
-    pub fn get_struct_by_name(&self, name: Spur) -> Option<InternedType> {
-        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.struct_by_name.get(&name).copied()
-    }
-
     /// Look up a struct by defining file and source name.
     pub fn get_struct_by_file_name(&self, file_id: FileId, name: Spur) -> Option<InternedType> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.struct_by_file_name.get(&(file_id, name)).copied()
-    }
-
-    /// Look up an enum by name.
-    pub fn get_enum_by_name(&self, name: Spur) -> Option<InternedType> {
-        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.enum_by_name.get(&name).copied()
     }
 
     /// Look up an enum by defining file and source name.
@@ -1302,9 +1244,7 @@ impl Clone for TypeInternPool {
                 array_map: inner.array_map.clone(),
                 ptr_const_map: inner.ptr_const_map.clone(),
                 ptr_mut_map: inner.ptr_mut_map.clone(),
-                struct_by_name: inner.struct_by_name.clone(),
                 struct_by_file_name: inner.struct_by_file_name.clone(),
-                enum_by_name: inner.enum_by_name.clone(),
                 enum_by_file_name: inner.enum_by_file_name.clone(),
                 symbol_paths: inner.symbol_paths.clone(),
             }),
@@ -1479,12 +1419,15 @@ mod tests {
     }
 
     #[test]
-    fn test_pool_get_struct_by_name() {
+    fn test_pool_get_struct_by_file_name() {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let name = interner.get_or_intern("Point");
 
-        assert!(pool.get_struct_by_name(name).is_none());
+        assert!(
+            pool.get_struct_by_file_name(rue_span::FileId::DEFAULT, name)
+                .is_none()
+        );
 
         let def = StructDef {
             name: "Point".to_string(),
@@ -1498,18 +1441,23 @@ mod tests {
         };
 
         let (struct_id, _) = pool.register_struct(name, def);
-        // get_struct_by_name returns InternedType, convert StructId for comparison
         let expected = pool.struct_id_to_interned(struct_id);
-        assert_eq!(pool.get_struct_by_name(name), Some(expected));
+        assert_eq!(
+            pool.get_struct_by_file_name(rue_span::FileId::DEFAULT, name),
+            Some(expected)
+        );
     }
 
     #[test]
-    fn test_pool_get_enum_by_name() {
+    fn test_pool_get_enum_by_file_name() {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let name = interner.get_or_intern("Status");
 
-        assert!(pool.get_enum_by_name(name).is_none());
+        assert!(
+            pool.get_enum_by_file_name(rue_span::FileId::DEFAULT, name)
+                .is_none()
+        );
 
         let def = EnumDef {
             name: "Status".to_string(),
@@ -1520,9 +1468,11 @@ mod tests {
         };
 
         let (enum_id, _) = pool.register_enum(name, def);
-        // get_enum_by_name returns InternedType, convert EnumId for comparison
         let expected = pool.enum_id_to_interned(enum_id);
-        assert_eq!(pool.get_enum_by_name(name), Some(expected));
+        assert_eq!(
+            pool.get_enum_by_file_name(rue_span::FileId::DEFAULT, name),
+            Some(expected)
+        );
     }
 
     #[test]
@@ -1921,7 +1871,10 @@ mod tests {
 
         // Each name should map to a valid type
         for name in &names {
-            assert!(pool.get_struct_by_name(*name).is_some());
+            assert!(
+                pool.get_struct_by_file_name(rue_span::FileId::DEFAULT, *name)
+                    .is_some()
+            );
         }
     }
 
@@ -1989,7 +1942,10 @@ mod tests {
 
         // Verify registration succeeded
         assert_eq!(pool.len(), 1); // No new entry, just updated
-        assert!(pool.get_struct_by_name(name).is_some());
+        assert!(
+            pool.get_struct_by_file_name(rue_span::FileId::DEFAULT, name)
+                .is_some()
+        );
 
         // Can retrieve the struct definition
         let retrieved = pool.struct_def(struct_id);

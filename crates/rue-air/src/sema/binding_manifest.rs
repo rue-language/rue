@@ -125,7 +125,7 @@ pub struct SemanticDeclarationExportWork {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeclarationBindingWork {
     pub bind_invocations: usize,
-    /// Global collision validation and builtin/module namespace setup.
+    /// Module-local collision validation and builtin/module namespace setup.
     pub namespace_setup_invocations: usize,
     /// Deterministic named struct/enum shell predeclaration.
     pub nominal_type_predeclaration_invocations: usize,
@@ -290,7 +290,7 @@ pub struct BoundSema<'a> {
     binding_work: DeclarationBindingWork,
 }
 
-/// A semantic request whose global namespace and nominal declaration shells
+/// A semantic request whose module-keyed declaration namespace and nominal shells
 /// are complete, but whose declaration payloads have not yet been resolved.
 ///
 /// This boundary deliberately owns the request-local `Sema` state.  A future

@@ -12,7 +12,7 @@ use rue_span::FileId;
 use crate::types::EnumId;
 use rue_rir::InstData;
 
-use super::{DeclarationPhase, Sema};
+use super::{DeclarationPhase, Sema, context::AnalysisContext};
 
 impl<D: DeclarationPhase> Sema<'_, D> {
     /// Check if the accessing file can see a private item from the target file.
@@ -59,11 +59,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// Check that an *unqualified* reference may reach the item (RUE-37,
     /// RUE-180, RUE-183, RUE-185).
     ///
-    /// All loaded files share one flat global namespace for *name
-    /// resolution* (spec 10.5:2, transitional), but privacy is uniform in
-    /// every multi-file compilation, imports or not (spec 10.3:7), and it
-    /// covers every item kind — functions, structs, enums, and constants
-    /// alike (spec 10.3:1):
+    /// Unqualified references resolve only in the reference file. This helper
+    /// then applies the uniform privacy rule to the declaration found there
+    /// (spec 10.3:1, 10.3:7):
     ///
     /// - If the item is accessible per [`Sema::is_accessible`] (it is
     ///   `pub`, or the reference is in the item's directory — ADR-0026
@@ -113,39 +111,30 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     ///
     /// Used for qualified enum paths like `module.EnumName::Variant` in match patterns.
     /// Checks visibility: private enums are only accessible from the same directory.
-    pub fn resolve_enum_through_module(
+    pub(crate) fn resolve_enum_through_module(
         &self,
         module_ref: rue_rir::InstRef,
         type_name: lasso::Spur,
         span: rue_span::Span,
+        ctx: &AnalysisContext,
     ) -> CompileResult<EnumId> {
         let type_name_str = self.interner.resolve(&type_name);
 
-        let module_file_id = match &self.rir.get(module_ref).data {
-            InstData::VarRef { name } => self
-                .module_bindings
-                .get(&(span.file_id, *name))
-                .and_then(|binding| binding.ty.as_module())
-                .and_then(|module_id| {
-                    let module_def = self.module_registry.get_def(module_id);
-                    self.canonical_file_id(&module_def.file_path)
-                }),
-            _ => None,
-        };
+        // Resolve the receiver's full module spine.  The root binding belongs
+        // to the source file containing the expression; every subsequent
+        // field is a module binding in the preceding module's defining file.
+        // This mirrors inference's module-member walk for paths such as
+        // `std.geo.Sign.Pos`, while keeping every lookup file-qualified.
+        let module_file_id = self.module_file_for_ref(module_ref, ctx);
 
-        // Find the enum in the referenced module. When the module's file is
-        // known, the member must be defined THERE (RUE-572): falling back to
-        // the global compatibility table let a same-named enum from an
-        // unrelated file satisfy the lookup (and its visibility check). The
-        // compatibility table serves only legacy/simple paths where the
-        // module expression is not a direct module binding.
-        let enum_id = match module_file_id {
-            Some(file_id) => self.enums_by_file_name.get(&(file_id, type_name)).copied(),
-            None => self.enums.get(&type_name).copied(),
-        }
-        .ok_or_else(|| {
-            CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
-        })?;
+        // A qualified member is resolved only in the referenced module's
+        // defining file. If the receiver has no module identity, it is not a
+        // valid qualified type path.
+        let enum_id = module_file_id
+            .and_then(|file_id| self.enums_by_file_name.get(&(file_id, type_name)).copied())
+            .ok_or_else(|| {
+                CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
+            })?;
 
         // Check visibility
         let enum_def = self.type_pool.enum_def(enum_id);
@@ -163,6 +152,33 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         }
 
         Ok(enum_id)
+    }
+
+    fn module_file_for_ref(
+        &self,
+        module_ref: rue_rir::InstRef,
+        ctx: &AnalysisContext,
+    ) -> Option<FileId> {
+        let inst = self.rir.get(module_ref);
+        let module_ty = match inst.data {
+            InstData::VarRef { name } => {
+                ctx.locals.get(&name).map(|local| local.ty).or_else(|| {
+                    self.module_bindings
+                        .get(&(inst.span.file_id, name))
+                        .map(|binding| binding.ty)
+                })
+            }
+            InstData::FieldGet { base, field } => {
+                let parent_file = self.module_file_for_ref(base, ctx)?;
+                self.module_bindings
+                    .get(&(parent_file, field))
+                    .map(|binding| binding.ty)
+            }
+            _ => None,
+        }?;
+        let module_id = module_ty.as_module()?;
+        let module_def = self.module_registry.get_def(module_id);
+        self.canonical_file_id(&module_def.file_path)
     }
 }
 

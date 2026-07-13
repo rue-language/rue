@@ -2222,7 +2222,10 @@ mod tests {
 
         let probe_name = sema.interner.get("Probe").unwrap();
         let method_name = sema.interner.get("modes").unwrap();
-        let struct_id = *sema.structs.get(&probe_name).unwrap();
+        let struct_id = *sema
+            .structs_by_file_name
+            .get(&(FileId::DEFAULT, probe_name))
+            .unwrap();
         let method = sema.methods.get(&(struct_id, method_name)).unwrap();
 
         assert_eq!(
@@ -2274,10 +2277,6 @@ mod tests {
         sema.generated_structs.insert(name, generated_id);
 
         let inference = sema.build_inference_context();
-        assert_eq!(
-            inference.struct_types.get(&name),
-            Some(&Type::new_struct(generated_id))
-        );
         assert_eq!(
             inference
                 .struct_types_by_file_name
@@ -2392,12 +2391,14 @@ mod tests {
         let sema = gather_declarations_for_testing("fn main() -> i32 { 0 }");
 
         let strbuf_name = sema.interner.get("StrBuf").unwrap();
-        let pool_string = sema.type_pool.get_struct_by_name(strbuf_name);
+        let pool_string = sema
+            .type_pool
+            .get_struct_by_file_name(FileId::DEFAULT, strbuf_name);
 
         assert!(pool_string.is_some(), "StrBuf should be in the type pool");
 
         // Verify the struct lookup has it
-        let registry_string = sema.structs.get(&strbuf_name);
+        let registry_string = sema.builtin_structs.get(&strbuf_name);
         assert!(
             registry_string.is_some(),
             "StrBuf should be in struct registry"
@@ -2407,7 +2408,7 @@ mod tests {
         // registry, so existing `s: String` annotations keep type-checking.
         let alias_name = sema.interner.get("String").unwrap();
         assert_eq!(
-            sema.structs.get(&alias_name),
+            sema.builtin_structs.get(&alias_name),
             registry_string,
             "`String` alias should resolve to the StrBuf struct"
         );
@@ -2429,11 +2430,15 @@ mod tests {
         let point_name = sema.interner.get("Point").unwrap();
 
         // Check the pool has the struct
-        let pool_point = sema.type_pool.get_struct_by_name(point_name);
+        let pool_point = sema
+            .type_pool
+            .get_struct_by_file_name(FileId::DEFAULT, point_name);
         assert!(pool_point.is_some(), "Point should be in the type pool");
 
         // Verify struct lookup has it
-        let registry_point = sema.structs.get(&point_name);
+        let registry_point = sema
+            .structs_by_file_name
+            .get(&(FileId::DEFAULT, point_name));
         assert!(
             registry_point.is_some(),
             "Point should be in struct registry"
@@ -2462,11 +2467,13 @@ mod tests {
         let color_name = sema.interner.get("Color").unwrap();
 
         // Check the pool has the enum
-        let pool_color = sema.type_pool.get_enum_by_name(color_name);
+        let pool_color = sema
+            .type_pool
+            .get_enum_by_file_name(FileId::DEFAULT, color_name);
         assert!(pool_color.is_some(), "Color should be in the type pool");
 
         // Verify pool and registry agree - enum_id is now pool-based
-        let registry_color = sema.enums.get(&color_name);
+        let registry_color = sema.enums_by_file_name.get(&(FileId::DEFAULT, color_name));
         assert!(registry_color.is_some(), "Color should be in enum registry");
 
         // Use type_pool.enum_def() to get the definition using pool-based EnumId
@@ -2489,7 +2496,10 @@ mod tests {
         );
 
         let data_name = sema.interner.get("Data").unwrap();
-        let pool_data = sema.type_pool.get_struct_by_name(data_name).unwrap();
+        let pool_data = sema
+            .type_pool
+            .get_struct_by_file_name(FileId::DEFAULT, data_name)
+            .unwrap();
         let pool_def = sema.type_pool.get_struct_def(pool_data).unwrap();
 
         assert!(pool_def.is_copy, "Data should be marked as @copy");
@@ -2529,12 +2539,12 @@ mod tests {
         );
 
         // Verify all structs in registry are in pool
-        for (name_spur, &struct_id) in &sema.structs {
+        for ((file_id, name_spur), &struct_id) in &sema.structs_by_file_name {
             // Use type_pool.struct_def() which takes pool-based struct_id
             let pool_def = sema.type_pool.struct_def(struct_id);
 
             // Also verify the pool can look up by name
-            let pool_type = sema.type_pool.get_struct_by_name(*name_spur);
+            let pool_type = sema.type_pool.get_struct_by_file_name(*file_id, *name_spur);
             assert!(
                 pool_type.is_some(),
                 "Struct '{}' should be in pool by name",
@@ -2543,12 +2553,12 @@ mod tests {
         }
 
         // Verify all enums in registry are in pool
-        for (name_spur, &enum_id) in &sema.enums {
+        for ((file_id, name_spur), &enum_id) in &sema.enums_by_file_name {
             // Use type_pool.enum_def() which takes pool-based enum_id
             let pool_def = sema.type_pool.enum_def(enum_id);
 
             // Also verify the pool can look up by name
-            let pool_type = sema.type_pool.get_enum_by_name(*name_spur);
+            let pool_type = sema.type_pool.get_enum_by_file_name(*file_id, *name_spur);
             assert!(
                 pool_type.is_some(),
                 "Enum '{}' should be in pool by name",

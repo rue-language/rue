@@ -1227,7 +1227,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 args_len,
             } => {
                 let (name, args_start, args_len) = (*name, *args_start, *args_len);
-                self.eval_comptime_type_call(name, args_start, args_len, env)
+                self.eval_comptime_type_call(name, args_start, args_len, env, false)
                     .map_err(|e| Self::label_ctor_instantiation_site(e, span))
             }
 
@@ -1317,10 +1317,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// environment's `defining_file`, and the named member is a `-> type`
     /// constructor that actually belongs to that module's file.
     ///
-    /// The membership check (`fn_info.file_id == module_file_id`) closes the
-    /// RUE-564 cross-module hole: functions live in a flat global table keyed by
-    /// name, so a same-named constructor in a different file must not satisfy
-    /// `b.Mk`. Visibility is enforced the same way the qualified type-annotation
+    /// The receiver module's defining file is authoritative, so a same-named
+    /// constructor in a different file cannot satisfy `b.Mk`. Visibility is
+    /// enforced the same way the qualified type-annotation
     /// path enforces it (E0460/E0706 surface as the reduction's E1200 here since
     /// the comptime engine cannot itself emit a diagnostic mid-reduction).
     fn eval_module_qualified_comptime_call(
@@ -1401,9 +1400,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         if self.declaration_binding_active {
             self.collect_free_function_signature_during_binding(method, Some(module_file_id))?;
         }
-        let function_key = self
-            .resolve_function_name_local(method, module_file_id)
-            .unwrap_or(method);
+        let Some(function_key) = self.resolve_function_name_local(method, module_file_id) else {
+            return Ok(None);
+        };
         let Some(fn_info) = self
             .functions
             .get(&function_key)
@@ -1424,7 +1423,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         )?;
         // Reduce through the shared path; arguments are evaluated in the current
         // environment so `T` (an enclosing comptime parameter) still resolves.
-        self.eval_comptime_type_call(function_key, args_start, args_len, env)
+        self.eval_comptime_type_call(function_key, args_start, args_len, env, true)
             .map_err(|e| Self::label_ctor_instantiation_site(e, span))
     }
 
@@ -1522,29 +1521,32 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         args_start: u32,
         args_len: u32,
         env: &mut ComptimeEnv,
+        name_is_resolved_key: bool,
     ) -> CompileResult<Option<ConstValue>> {
-        let (name_key, fn_info) = if let Some(info) = self.functions.get(&name).copied() {
-            (name, info)
+        // During declaration binding, the callee may simply not be collected yet:
+        // constant initializers and struct-field / enum-payload types can
+        // evaluate before the source-order sweep reaches the callee's `FnDecl`
+        // (RUE-603). Resolve only in the evaluating expression's defining file.
+        let Some(file_id) = env.defining_file else {
+            return Ok(None);
+        };
+        if self.declaration_binding_active {
+            self.collect_free_function_signature_during_binding(name, Some(file_id))?;
+        }
+        // Qualified callers have already resolved the source member through
+        // the receiver module's defining file and pass the exact internal
+        // function key here. Unqualified callers pass a source name, which
+        // must be resolved by the current environment's defining file. Keep
+        // those representations explicit so neither path can fall back to a
+        // graph-global source-name lookup.
+        let resolved = if name_is_resolved_key {
+            self.functions.get(&name).copied().map(|info| (name, info))
         } else {
-            // During declaration binding, the callee may simply not be collected yet:
-            // constant initializers and struct-field / enum-payload types can
-            // evaluate before the source-order sweep reaches the callee's
-            // `FnDecl` (RUE-603). Collect the evaluating expression's own file's
-            // function declaration; a genuinely unknown name stays
-            // non-evaluable.
-            let Some(file_id) = env.defining_file else {
-                return Ok(None);
-            };
-            if self.declaration_binding_active {
-                self.collect_free_function_signature_during_binding(name, Some(file_id))?;
-            }
-            let Some((key, info)) = self
-                .resolve_function_name_local(name, file_id)
+            self.resolve_function_name_local(name, file_id)
                 .and_then(|key| self.functions.get(&key).copied().map(|info| (key, info)))
-            else {
-                return Ok(None);
-            };
-            (key, info)
+        };
+        let Some((name_key, fn_info)) = resolved else {
+            return Ok(None);
         };
         let is_type_fn = self.function_returns_type(&fn_info);
         self.record_named_const_dependency(super::NamedConstDependencyTargetEvent::FreeFunction {

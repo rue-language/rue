@@ -58,7 +58,7 @@ impl<'a> Sema<'a> {
             let (struct_id, _) = self.type_pool.register_struct(name_spur, struct_def);
 
             // Register in struct lookup with pool-based StructId
-            self.structs.insert(name_spur, struct_id);
+            self.builtin_structs.insert(name_spur, struct_id);
             self.structs_by_file_name
                 .insert((file_id, name_spur), struct_id);
 
@@ -73,13 +73,11 @@ impl<'a> Sema<'a> {
                 // uses `StrBuf`. The name also stays reserved
                 // (`is_reserved_type_name`) so users cannot shadow it.
                 let alias_spur = self.interner.get_or_intern(rue_builtins::STRING_ALIAS_NAME);
-                self.structs.insert(alias_spur, struct_id);
+                self.builtin_structs.insert(alias_spur, struct_id);
                 self.structs_by_file_name
                     .insert((file_id, alias_spur), struct_id);
-                // Also alias the name in the type pool so pool-by-name lookups
-                // (`get_struct_by_name`) resolve `String`, keeping the
-                // registry/pool by-name invariant consistent.
-                self.type_pool.alias_struct_name(alias_spur, struct_id);
+                self.type_pool
+                    .alias_struct_name_in_file(file_id, alias_spur, struct_id);
             }
 
             // Note: Associated functions and methods are not registered here.
@@ -110,7 +108,7 @@ impl<'a> Sema<'a> {
             let (enum_id, _) = self.type_pool.register_enum(name_spur, enum_def);
 
             // Register in enum lookup
-            self.enums.insert(name_spur, enum_id);
+            self.builtin_enums.insert(name_spur, enum_id);
             self.enums_by_file_name
                 .insert((file_id, name_spur), enum_id);
 

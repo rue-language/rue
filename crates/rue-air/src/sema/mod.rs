@@ -102,13 +102,12 @@ pub struct DeclarationNamespace {
     functions: HashMap<Spur, FunctionInfo>,
     functions_by_file_name: HashMap<(FileId, Spur), Spur>,
     function_source_names: HashMap<Spur, Spur>,
-    structs: HashMap<Spur, StructId>,
+    builtin_structs: HashMap<Spur, StructId>,
     structs_by_file_name: HashMap<(FileId, Spur), StructId>,
-    enums: HashMap<Spur, EnumId>,
+    builtin_enums: HashMap<Spur, EnumId>,
     enums_by_file_name: HashMap<(FileId, Spur), EnumId>,
     methods: HashMap<(StructId, Spur), MethodInfo>,
     named_method_declarations: HashMap<(StructId, Spur), rue_rir::InstRef>,
-    constants: HashMap<Spur, ConstInfo>,
     constants_by_file_name: HashMap<(FileId, Spur), ConstInfo>,
     module_bindings: HashMap<(FileId, Spur), ConstInfo>,
 }
@@ -119,13 +118,12 @@ impl DeclarationNamespace {
             functions: HashMap::new(),
             functions_by_file_name: HashMap::new(),
             function_source_names: HashMap::new(),
-            structs: HashMap::new(),
+            builtin_structs: HashMap::new(),
             structs_by_file_name: HashMap::new(),
-            enums: HashMap::new(),
+            builtin_enums: HashMap::new(),
             enums_by_file_name: HashMap::new(),
             methods: HashMap::new(),
             named_method_declarations: HashMap::new(),
-            constants: HashMap::new(),
             constants_by_file_name: HashMap::new(),
             module_bindings: HashMap::new(),
         }
@@ -213,16 +211,9 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     /// The internal key is normally the source name, but functions with the
     /// same source name in distinct files get deterministic module-qualified
     /// keys so they can coexist without colliding in AIR/codegen.
-    /// Source-level function lookup keyed by defining file and source name.
-    /// Internal function key -> source-level function name.
-    /// Compatibility struct table: maps globally unique struct name symbols to their StructId.
-    /// Module-local struct table: maps (defining file, source name) to StructId.
-    /// Compatibility enum table: maps globally unique enum name symbols to their EnumId.
-    /// Module-local enum table: maps (defining file, source name) to EnumId.
-    /// Method table: maps (struct_id, method_name) to method info
-    /// Exact named-method FnDecl handles for this RIR snapshot only.
-    /// Body-created anonymous methods. Named source methods live in the closed
-    /// declaration namespace and are never mutated after binding.
+    /// Source declarations live in `declarations`; source-name lookup there is
+    /// keyed by defining file/module. Internal function symbols remain the
+    /// stable keys used by AIR and codegen.
     pub(crate) anonymous_methods: HashMap<(StructId, Spur), MethodInfo>,
     /// Body-created synthetic and anonymous type-name overlays.
     pub(crate) generated_structs: HashMap<Spur, StructId>,
@@ -253,17 +244,6 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
         DeclarationTypeDependencySourceKind,
         DeclarationTypeDependencyKind,
     )>,
-    /// Compatibility value-constant table for globally unique bare names.
-    /// Holds value constants only (e.g. `const MAX: i32 = 10`); module bindings
-    /// live in [`Self::module_bindings`]. If a value-constant name appears in
-    /// multiple files, it is omitted here and remains available through
-    /// [`Self::constants_by_file_name`].
-    /// File-qualified value constants, keyed by defining file and source name.
-    /// Module-binding constants (`const utils = @import("...")`), keyed by
-    /// the declaring file. Unlike value constants, module bindings are
-    /// per-file scoped (ADR-0026): every file writes its own imports, so two
-    /// files binding the same name — even to different modules — must not
-    /// collide (RUE-113).
     /// Active dependency stack while declaration binding resolves constants.
     /// Empty outside the declaration-resolution phase; retained on `Sema` so
     /// recursive type resolution shares one cycle detector without rebuilding
@@ -479,14 +459,14 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     pub(crate) fn struct_id_for_name(&self, name: Spur) -> Option<StructId> {
         self.generated_structs
             .get(&name)
-            .or_else(|| self.structs.get(&name))
+            .or_else(|| self.builtin_structs.get(&name))
             .copied()
     }
 
     pub(crate) fn enum_id_for_name(&self, name: Spur) -> Option<EnumId> {
         self.generated_enums
             .get(&name)
-            .or_else(|| self.enums.get(&name))
+            .or_else(|| self.builtin_enums.get(&name))
             .copied()
     }
 
@@ -610,7 +590,7 @@ pub(crate) type BodySema<'a> = Sema<'a, SourceDeclarations>;
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NamespaceBoundarySnapshot {
-    pub(crate) source_counts: [usize; 12],
+    pub(crate) source_counts: [usize; 11],
     pub(crate) source_fingerprint: u64,
     pub(crate) generated_structs: usize,
     pub(crate) generated_enums: usize,
@@ -634,28 +614,26 @@ impl BodySema<'_> {
         let source_fingerprint = fingerprint(0, self.functions.keys())
             ^ fingerprint(1, self.functions_by_file_name.iter())
             ^ fingerprint(2, self.function_source_names.iter())
-            ^ fingerprint(3, self.structs.iter())
+            ^ fingerprint(3, self.builtin_structs.iter())
             ^ fingerprint(4, self.structs_by_file_name.iter())
-            ^ fingerprint(5, self.enums.iter())
+            ^ fingerprint(5, self.builtin_enums.iter())
             ^ fingerprint(6, self.enums_by_file_name.iter())
             ^ fingerprint(7, self.methods.keys())
             ^ fingerprint(8, self.named_method_declarations.iter())
-            ^ fingerprint(9, self.constants.keys())
-            ^ fingerprint(10, self.constants_by_file_name.keys())
-            ^ fingerprint(11, self.module_bindings.keys());
+            ^ fingerprint(9, self.constants_by_file_name.keys())
+            ^ fingerprint(10, self.module_bindings.keys());
 
         NamespaceBoundarySnapshot {
             source_counts: [
                 self.functions.len(),
                 self.functions_by_file_name.len(),
                 self.function_source_names.len(),
-                self.structs.len(),
+                self.builtin_structs.len(),
                 self.structs_by_file_name.len(),
-                self.enums.len(),
+                self.builtin_enums.len(),
                 self.enums_by_file_name.len(),
                 self.methods.len(),
                 self.named_method_declarations.len(),
-                self.constants.len(),
                 self.constants_by_file_name.len(),
                 self.module_bindings.len(),
             ],
@@ -796,7 +774,7 @@ impl<'a> Sema<'a> {
         self.predeclare_declaration_shells()?.resolve_declarations()
     }
 
-    /// Validate the global namespace and predeclare all nominal type shells.
+    /// Validate module-keyed declaration namespaces and predeclare nominal shells.
     ///
     /// This is the explicit boundary before resolved declaration semantics are
     /// installed. The batch adapter [`Self::bind_declarations`] immediately

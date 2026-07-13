@@ -28,12 +28,12 @@ use crate::types::{StructId, Type};
 pub struct InferenceContext {
     /// Function signatures with InferType (for constraint generation).
     pub func_sigs: HashMap<Spur, FunctionSig>,
-    /// Struct types: name -> Type::new_struct(id).
-    pub struct_types: HashMap<Spur, Type>,
+    /// Built-in struct types, which are not owned by a source module.
+    pub builtin_struct_types: HashMap<Spur, Type>,
     /// Module-local struct types: (defining file, source name) -> Type::new_struct(id).
     pub struct_types_by_file_name: HashMap<(FileId, Spur), Type>,
-    /// Enum types: name -> Type::new_enum(id).
-    pub enum_types: HashMap<Spur, Type>,
+    /// Built-in enum types, which are not owned by a source module.
+    pub builtin_enum_types: HashMap<Spur, Type>,
     /// Module-local enum types: (defining file, source name) -> Type::new_enum(id).
     pub enum_types_by_file_name: HashMap<(FileId, Spur), Type>,
     /// Method signatures with InferType: (struct_id, method_name) -> MethodSig.
