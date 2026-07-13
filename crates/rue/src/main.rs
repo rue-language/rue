@@ -14,7 +14,7 @@ use tracing_subscriber::{EnvFilter, Layer as _, fmt};
 mod timing;
 
 use rue_compiler::{
-    CompilationUnit, CompilationUnitWork, CompileError, CompileErrors, CompileOptions,
+    CanonicalFrontendArtifacts, CanonicalPipelineWork, CompileError, CompileErrors, CompileOptions,
     CompileState, CompileWarning, ErrorKind, FileId, Lexer, LinkerMode, MAX_SOURCE_BYTES,
     MultiFileFormatter, MultiFileJsonFormatter, OptLevel, ParsedProgram, PreviewFeature,
     PreviewFeatures, SourceInfo, SourceMetadata, SourceSnapshot, Span, TokenKind,
@@ -22,7 +22,7 @@ use rue_compiler::{
     configure_thread_pool, generate_emitted_asm, generate_liveness_info, generate_lowering_info,
     generate_mir, generate_regalloc_info, generate_stack_frame_info, import_candidate_groups,
     merge_symbols, parse_all_files_with_source_snapshot,
-    parse_source_snapshot_for_ast_presentation,
+    parse_source_snapshot_for_ast_presentation, query_canonical_frontend,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -58,7 +58,7 @@ enum EmitStage {
 }
 
 enum EmitFrontend {
-    Canonical(Box<CompilationUnit<'static>>),
+    Canonical(Box<CanonicalFrontendArtifacts>),
     LegacyRir(Box<CompileState>),
 }
 
@@ -97,60 +97,56 @@ fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
 fn build_canonical_emit_frontend(
     source_snapshot: &SourceSnapshot,
     options: CompileOptions,
-) -> Result<CompilationUnit<'static>, CompileErrors> {
-    let mut unit = CompilationUnit::from_source_snapshot(source_snapshot.clone(), options);
-    unit.parse()?;
-    unit.lower()?;
-    unit.analyze()?;
-    Ok(unit)
+) -> Result<CanonicalFrontendArtifacts, CompileErrors> {
+    query_canonical_frontend(source_snapshot, &options)
 }
 
 impl EmitFrontend {
     fn rir(&self) -> &rue_compiler::Rir {
         match self {
-            Self::Canonical(unit) => unit.rir(),
+            Self::Canonical(frontend) => frontend.rir().rir(),
             Self::LegacyRir(state) => &state.rir,
         }
     }
 
     fn interner(&self) -> &rue_compiler::ThreadedRodeo {
         match self {
-            Self::Canonical(unit) => unit.interner(),
+            Self::Canonical(frontend) => frontend.interner(),
             Self::LegacyRir(state) => &state.interner,
         }
     }
 
     fn functions(&self) -> &[rue_compiler::FunctionWithCfg] {
         match self {
-            Self::Canonical(unit) => unit.functions(),
+            Self::Canonical(frontend) => frontend.semantic().functions(),
             Self::LegacyRir(state) => &state.functions,
         }
     }
 
     fn type_pool(&self) -> &rue_compiler::TypeInternPool {
         match self {
-            Self::Canonical(unit) => unit.type_pool(),
+            Self::Canonical(frontend) => frontend.semantic().type_pool(),
             Self::LegacyRir(state) => &state.type_pool,
         }
     }
 
     fn strings(&self) -> &[String] {
         match self {
-            Self::Canonical(unit) => unit.strings(),
+            Self::Canonical(frontend) => frontend.semantic().strings(),
             Self::LegacyRir(state) => &state.strings,
         }
     }
 
     fn warnings(&self) -> &[CompileWarning] {
         match self {
-            Self::Canonical(unit) => unit.warnings(),
+            Self::Canonical(frontend) => frontend.semantic().warnings(),
             Self::LegacyRir(state) => &state.warnings,
         }
     }
 
-    fn canonical_work(&self) -> Option<CompilationUnitWork> {
+    fn canonical_work(&self) -> Option<CanonicalPipelineWork> {
         match self {
-            Self::Canonical(unit) => Some(unit.work()),
+            Self::Canonical(frontend) => Some(frontend.work()),
             Self::LegacyRir(_) => None,
         }
     }
@@ -2209,8 +2205,8 @@ fn handle_emit_multi_file(
             opt_level: options.opt_level,
             preview_features: options.preview_features.clone(),
         };
-        let unit = match build_canonical_emit_frontend(source_snapshot, compile_options) {
-            Ok(unit) => unit,
+        let frontend = match build_canonical_emit_frontend(source_snapshot, compile_options) {
+            Ok(frontend) => frontend,
             Err(errors) => {
                 diagnostics.print_errors(&errors);
                 return Err(());
@@ -2220,12 +2216,19 @@ fn handle_emit_multi_file(
             per_file_asts = Some(
                 source_snapshot
                     .files()
-                    .zip(unit.ast().files())
-                    .map(|(source, ast)| (source.path.to_string(), ast.clone()))
+                    .map(|source| {
+                        let module = frontend
+                            .parsed()
+                            .modules()
+                            .iter()
+                            .find(|module| module.file_id() == source.file_id)
+                            .expect("frontend parsed every snapshot source");
+                        (source.path.to_string(), module.shared_ast())
+                    })
                     .collect(),
             );
         }
-        Some(EmitFrontend::Canonical(Box::new(unit)))
+        Some(EmitFrontend::Canonical(Box::new(frontend)))
     } else {
         None
     };
@@ -2839,8 +2842,8 @@ mod tests {
         )
         .unwrap();
         let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
-        let unit = build_canonical_emit_frontend(&snapshot, CompileOptions::default()).unwrap();
-        let work = unit.work();
+        let frontend = build_canonical_emit_frontend(&snapshot, CompileOptions::default()).unwrap();
+        let work = frontend.work();
 
         assert_eq!(work.parsed.syntax.lexer_invocations, sources.len());
         assert_eq!(work.parsed.syntax.parser_invocations, sources.len());
@@ -2848,7 +2851,11 @@ mod tests {
         assert_eq!(work.lowered.ast_payload_clones, 0);
         assert_eq!(work.semantic.binding.bind_invocations, 1);
         assert_eq!(work.semantic.manifest.build_invocations, 1);
-        assert_eq!(work.compatibility_projections, 0);
+        let session_work = frontend.session_work();
+        assert_eq!(session_work.updates, 1);
+        assert_eq!(session_work.merge.executions, 1);
+        assert_eq!(session_work.rir.executions, 1);
+        assert_eq!(session_work.semantic.executions, 1);
 
         let presentation = parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();
         let legacy = parse_all_files_with_source_snapshot(&snapshot).unwrap();

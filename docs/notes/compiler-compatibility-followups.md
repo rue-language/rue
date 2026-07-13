@@ -1,12 +1,13 @@
 # Compiler compatibility cleanup follow-ups
 
-The canonical snapshot and `CompilationUnit` pipelines no longer repeat parsing,
-RIR lowering, or semantic analysis. The remaining compatibility paths are
-separate API/driver concerns and should be removed in this order:
+Normal snapshot compilation and semantic emit modes now query a fresh
+`CanonicalFrontendSession`; `CompilationUnit` is a compatibility facade rather
+than a production orchestrator. The remaining compatibility paths are separate
+API/driver concerns and should be removed in this order:
 
 1. **Finish canonical `--emit rir` presentation.** AIR, CFG, lowering, MIR,
    liveness, register allocation, assembly, and stack-frame modes now consume
-   cached canonical `CompilationUnit` artifacts. AST-only remains a deliberate
+   canonical session artifacts. AST-only remains a deliberate
    syntax compatibility route. Exact RIR text is still isolated on the legacy
    caller-positional path because its printed `%N` instruction references are
    observable. Replace that route with a read-only presentation mapping that

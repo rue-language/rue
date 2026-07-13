@@ -991,6 +991,7 @@ pub struct CanonicalFrontendSession {
     parse: CanonicalParseSession,
     published: Option<Arc<ParsedProgram>>,
     published_snapshot: Option<SourceSnapshot>,
+    batch_diagnostic_order: Option<Vec<crate::ModuleId>>,
     merge_cache: Option<Result<Arc<CanonicalMergedProgram>, CompileErrors>>,
     definition_shard_baseline: Option<crate::DefinitionSnapshot>,
     rir_cache: Option<Arc<CanonicalRirOutput>>,
@@ -1099,8 +1100,33 @@ impl CanonicalFrontendSession {
     }
 
     pub fn update(&mut self, snapshot: &SourceSnapshot) -> CanonicalFrontendUpdate {
-        self.work.updates += 1;
+        self.batch_diagnostic_order = None;
         let update = self.parse.update(snapshot);
+        self.finish_update(snapshot, update)
+    }
+
+    /// Update a fresh session for batch presentation, retaining caller-order
+    /// diagnostics without changing canonical artifact identity.
+    pub(crate) fn update_for_batch(
+        &mut self,
+        snapshot: &SourceSnapshot,
+    ) -> CanonicalFrontendUpdate {
+        self.batch_diagnostic_order = Some(
+            snapshot
+                .files()
+                .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
+                .collect(),
+        );
+        let update = self.parse.update_for_batch(snapshot);
+        self.finish_update(snapshot, update)
+    }
+
+    fn finish_update(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        update: crate::CanonicalParseUpdate,
+    ) -> CanonicalFrontendUpdate {
+        self.work.updates += 1;
         let parse_work = update.work();
         let invalidation = update.invalidation().clone();
         self.work.last_parse = parse_work;
@@ -1234,10 +1260,14 @@ impl CanonicalFrontendSession {
         }
         let parsed = self.published.as_deref().ok_or_else(no_published_program)?;
         self.work.merge.executions += 1;
-        let merged = merge_parsed_modules_reusing_definitions(
-            parsed,
-            self.definition_shard_baseline.as_ref(),
-        )
+        let merged = if let Some(order) = &self.batch_diagnostic_order {
+            crate::canonical_merge::merge_parsed_modules_for_batch(parsed, order)
+        } else {
+            merge_parsed_modules_reusing_definitions(
+                parsed,
+                self.definition_shard_baseline.as_ref(),
+            )
+        }
         .map(Arc::new);
         if let Ok(merged) = &merged {
             debug_assert_eq!(merged.ast().source_revision(), parsed.source_revision());

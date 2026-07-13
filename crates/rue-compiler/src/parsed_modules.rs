@@ -298,6 +298,11 @@ impl ParsedModule {
     pub fn ast(&self) -> &Ast {
         &self.payload.ast.ast
     }
+    /// Retain the immutable AST payload without projecting it into a
+    /// compatibility merged program.
+    pub fn shared_ast(&self) -> Arc<Ast> {
+        self.payload.ast.ast.clone()
+    }
     pub fn definitions(&self) -> &ParsedDefinitionIndex {
         &self.payload.definitions
     }
@@ -523,11 +528,25 @@ impl CanonicalParseSession {
     /// On failure, invalidations are still relative to the last successful
     /// baseline and that baseline is not advanced.
     pub fn update(&mut self, snapshot: &SourceSnapshot) -> CanonicalParseUpdate {
+        self.update_in_order(snapshot, DiagnosticOrder::Canonical)
+    }
+
+    /// One-shot batch adapter preserving the caller's established diagnostic
+    /// order while publishing the same canonical parsed artifacts.
+    pub(crate) fn update_for_batch(&mut self, snapshot: &SourceSnapshot) -> CanonicalParseUpdate {
+        self.update_in_order(snapshot, DiagnosticOrder::Snapshot)
+    }
+
+    fn update_in_order(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        diagnostic_order: DiagnosticOrder,
+    ) -> CanonicalParseUpdate {
         let invalidation = classify_invalidation(snapshot, self.baseline.as_deref());
         let outcome = parse_source_snapshot_modules_reusing_with_work(
             snapshot,
             self.baseline.as_deref(),
-            DiagnosticOrder::Canonical,
+            diagnostic_order,
         );
         match outcome.result {
             Ok(program) => {
@@ -632,14 +651,6 @@ pub fn parse_source_snapshot_modules_reusing(
         previous,
         DiagnosticOrder::Canonical,
     );
-    outcome.result.map(|program| (program, outcome.work))
-}
-
-pub(crate) fn parse_source_snapshot_modules_for_batch(
-    snapshot: &SourceSnapshot,
-) -> Result<(ParsedProgram, ParsedModulesWork), CompileErrors> {
-    let outcome =
-        parse_source_snapshot_modules_reusing_with_work(snapshot, None, DiagnosticOrder::Snapshot);
     outcome.result.map(|program| (program, outcome.work))
 }
 
