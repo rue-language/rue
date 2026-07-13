@@ -2389,7 +2389,6 @@ fn handle_emit_multi_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_compiler::parse_all_files_with_source_snapshot;
 
     struct TestDir {
         path: PathBuf,
@@ -2787,18 +2786,13 @@ mod tests {
         assert_eq!(session_work.semantic.executions, 1);
 
         let presentation = parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();
-        let legacy = parse_all_files_with_source_snapshot(&snapshot).unwrap();
         assert_eq!(
             presentation
                 .files()
                 .iter()
-                .map(|(path, ast)| (path.clone(), ast.to_string()))
+                .map(|(path, ast)| (path.as_str(), ast.items.len()))
                 .collect::<Vec<_>>(),
-            legacy
-                .files
-                .iter()
-                .map(|file| (file.path.clone(), file.ast.to_string()))
-                .collect::<Vec<_>>()
+            [("/checkout/main.rue", 2), ("/checkout/helper.rue", 1)]
         );
         let ast_work = presentation.work();
         assert_eq!(ast_work.parsed.syntax.parser_invocations, sources.len());

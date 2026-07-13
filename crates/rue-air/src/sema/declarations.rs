@@ -313,134 +313,13 @@ impl<'a> Sema<'a> {
         false
     }
 
-    /// Phase 0: Order-independent name-collision check across the function and
-    /// type (struct/enum) name spaces (spec 10.3:1, 10.5:1, RUE-239).
-    ///
-    /// Functions, structs, enums, and constants are module-local top-level
-    /// items, except that `main` remains the program-global executable entry
-    /// point until root-module identity reaches Sema. This pass over the
-    /// merged RIR is the order-independent source of truth for collisions among
-    /// **functions, structs, and enums**; the previously order-dependent gap
-    /// was a function colliding with a struct/enum, which was never checked.
-    /// The per-kind checks in [`register_type_names`](Self::register_type_names)
-    /// and the compiler's cross-file duplicate scan remain as backstops but no
-    /// longer decide legality by order.
-    ///
-    /// Constants are handled separately, after collection, in
-    /// [`check_const_cross_kind_collisions`](Self::check_const_cross_kind_collisions):
-    /// their global-vs-per-file identity (value constant vs `@import` module
-    /// binding, spec 10.4:8) is only known once initializers are evaluated, so
-    /// they cannot be classified from the raw RIR here.
-    ///
-    /// The error code reuses the existing per-kind codes based on the kinds
-    /// involved, so pre-existing diagnostics are unchanged:
-    /// - two types (struct/enum) → E0405 (`DuplicateTypeDefinition`)
-    /// - any pair involving a function → E0436 (`DuplicateFunctionDefinition`)
-    ///
-    /// Methods and associated functions live in a type-scoped namespace, not
-    /// the global one, so they are excluded here (matching the collection
-    /// logic in `resolve_remaining_declarations`).
-    pub(crate) fn check_top_level_name_collisions(&self) -> CompileResult<()> {
-        // Free functions duplicate-conflict only within their defining file
-        // (RUE-441), except for the program-global `main` entry point (RUE-582).
-        // Types and function/type cross-kind collisions are per-file too
-        // (RUE-454, RUE-572, spec 10.5:1/10.5:2): top-level names are
-        // module-scoped, so non-entry items in separate files may share a name.
-        let mut seen_function_names: HashMap<Spur, Span> = HashMap::new();
-        let mut seen_functions_by_file: HashMap<(FileId, Spur), Span> = HashMap::new();
-        let mut seen_types_by_file: HashMap<(FileId, Spur), Span> = HashMap::new();
-        let main_sym = self.interner.get("main");
-        for (inst_ref, inst) in self.rir.iter() {
-            match &inst.data {
-                InstData::StructDecl { name, .. } | InstData::EnumDecl { name, .. } => {
-                    let key = (inst.span.file_id, *name);
-                    if let Some(first_span) = seen_types_by_file.get(&key).copied() {
-                        let name_str = self.interner.resolve(name).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: name_str,
-                            },
-                            inst.span,
-                        )
-                        .with_label("first defined here".to_string(), first_span));
-                    }
-                    if let Some(first_span) = seen_functions_by_file.get(&key).copied() {
-                        let name_str = self.interner.resolve(name).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateFunctionDefinition {
-                                function_name: name_str,
-                            },
-                            inst.span,
-                        )
-                        .with_label("first defined here".to_string(), first_span));
-                    }
-                    seen_types_by_file.insert(key, inst.span);
-                }
-                InstData::FnDecl { name, has_self, .. } => {
-                    if *has_self || self.declaration_index.is_type_scoped_method(inst_ref) {
-                        continue;
-                    }
-                    if let Some(first_span) =
-                        seen_types_by_file.get(&(inst.span.file_id, *name)).copied()
-                    {
-                        let name_str = self.interner.resolve(name).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateFunctionDefinition {
-                                function_name: name_str,
-                            },
-                            inst.span,
-                        )
-                        .with_label("first defined here".to_string(), first_span));
-                    }
-                    if Some(*name) == main_sym
-                        && let Some(first_span) = seen_function_names.get(name).copied()
-                    {
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateFunctionDefinition {
-                                function_name: "main".to_string(),
-                            },
-                            inst.span,
-                        )
-                        .with_label("first defined here".to_string(), first_span));
-                    }
-                    seen_function_names.entry(*name).or_insert(inst.span);
-                    if let Some(first_span) =
-                        seen_functions_by_file.insert((inst.span.file_id, *name), inst.span)
-                    {
-                        let name_str = self.interner.resolve(name).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateFunctionDefinition {
-                                function_name: name_str,
-                            },
-                            inst.span,
-                        )
-                        .with_label("first defined here".to_string(), first_span));
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
     /// Post-collection check: a value constant's name must not collide with a
     /// function, struct, or enum (spec 10.3:1, 10.5:1, RUE-239).
     ///
-    /// Runs after [`resolve_declarations`](Self::resolve_declarations), when
-    /// [`Sema::constants`] holds exactly the value constants — module bindings
-    /// went to [`Sema::module_bindings`], which are per-file scoped and exempt
-    /// (spec 10.4:8). Comparing the fully-populated tables makes the check
-    /// order-independent: a `const shared` and a `fn shared` collide whichever
-    /// file or definition comes first. All such collisions reuse E0436, so a
-    /// value-constant-vs-function collision no longer depends on which was
-    /// collected first (previously E0418 only when the function came first).
+    /// This remains a semantic check because only initializer evaluation can
+    /// distinguish value constants from per-file module bindings.
     pub(crate) fn check_const_cross_kind_collisions(&self) -> CompileResult<()> {
         for ((file_id, name), info) in self.constants_by_file_name.iter() {
-            // Per-FILE cross-kind check (RUE-572): items are module-local
-            // (RUE-490/491 removed unqualified cross-file resolution), so a
-            // `const shared` only collides with a `fn`/`struct`/`enum shared`
-            // in the SAME file. The old global-table check falsely rejected a
-            // constant in one module against a function in an unrelated one.
             if self.functions_by_file_name.contains_key(&(*file_id, *name))
                 || self.structs_by_file_name.contains_key(&(*file_id, *name))
                 || self.enums_by_file_name.contains_key(&(*file_id, *name))
@@ -485,20 +364,6 @@ impl<'a> Sema<'a> {
                     }
 
                     let key = (inst.span.file_id, *name);
-
-                    // Check for duplicate type definitions in this file
-                    // (struct or enum with same name). Same-named types in
-                    // different files have distinct module-local identities.
-                    if self.enums_by_file_name.contains_key(&key)
-                        || self.structs_by_file_name.contains_key(&key)
-                    {
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: enum_name,
-                            },
-                            inst.span,
-                        ));
-                    }
 
                     let variants = self.rir.get_symbols(*variants_start, *variants_len);
 
@@ -577,20 +442,6 @@ impl<'a> Sema<'a> {
                     }
 
                     let key = (inst.span.file_id, *name);
-
-                    // Check for duplicate type definitions in this file
-                    // (struct or enum with same name). Same-named types in
-                    // different files have distinct module-local identities.
-                    if self.structs_by_file_name.contains_key(&key)
-                        || self.enums_by_file_name.contains_key(&key)
-                    {
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: struct_name,
-                            },
-                            inst.span,
-                        ));
-                    }
 
                     let directives = self.rir.get_directives(*directives_start, *directives_len);
                     let is_copy = self.has_copy_directive(&directives);

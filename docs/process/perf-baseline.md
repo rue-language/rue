@@ -41,14 +41,11 @@ so the raw timing JSON contains both leaf passes and their aggregate parents:
 
 ```
 compile                 <- compiler pipeline; excludes discovery/driver startup
-├─ parse                <- aggregate (excluded from the leaf table)
-│  ├─ parse_file        <- aggregate, repeated for each input file
-│  │  ├─ lexer          <- leaf
-│  │  └─ parser         <- leaf
-│  ├─ definition_snapshot <- leaf: durable module/name-candidate index
-│  └─ merge_symbols     <- leaf: cross-file symbol merge
-├─ astgen               <- leaf: AST -> RIR
+├─ parse_file           <- aggregate, repeated for each canonical module
+│  ├─ lexer             <- leaf
+│  └─ parser            <- leaf
 ├─ semantic_astgen      <- leaf: canonical semantic AST -> RIR
+│  └─ definition_snapshot_modules <- durable module/name-candidate index
 ├─ rir_declaration_index <- leaf: snapshot-local RIR declaration candidates
 ├─ sema                 <- leaf: type checking / AIR
 ├─ cfg_construction     <- leaf
@@ -97,11 +94,12 @@ per-workload medians, not the accounting for a single run.
 **These are absolute milliseconds and are MACHINE-SPECIFIC — treat them as a
 relative profile (which passes dominate), not a hard threshold.**
 
-This historical table predates schema v2, `definition_snapshot`, and
-`rir_declaration_index`, so it shows the then-combined `parse_file` leaf rather
-than separate `lexer` and `parser` rows and has neither index row. Its totals
-were already taken from the old `compile` row, not the inflated old `total_ms`,
-and remain valid as compiler-pipeline measurements.
+This historical table predates schema v2, the canonical parsed-module frontend,
+`definition_snapshot_modules`, and `rir_declaration_index`. It therefore shows
+the retired `merge_symbols` span and the then-combined `parse_file` leaf rather
+than separate `lexer` and `parser` rows. Its totals were already taken from the
+old `compile` row, not the inflated old `total_ms`, and remain valid as
+compiler-pipeline measurements.
 
 - Host: Intel Core i9-14900K, Linux x86-64 (WSL2), 32 logical CPUs.
 - Build: the buck2 **DEFAULT** profile as produced by `scripts/rue-bin`
@@ -171,8 +169,8 @@ and remain valid as compiler-pipeline measurements.
    negligible on large programs. It matters for edit-compile-run latency on
    small inputs but is not a throughput bottleneck.
 
-5. **`astgen`, `merge_symbols`, `cfg_construction` are all <2%** — not worth
-   optimizing at current program sizes.
+5. **The historical `astgen`, retired `merge_symbols`, and `cfg_construction`
+   rows were all <2%** — they were not bottlenecks at these program sizes.
 
 ### What would speed the hot passes up
 

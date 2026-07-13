@@ -707,7 +707,7 @@ where
 mod tests {
     use rue_compiler::{
         CompileOptions, FileId, SourceFile, SourceMetadata, SourceSnapshot,
-        parse_all_files_with_source_snapshot, query_canonical_frontend,
+        parse_source_snapshot_for_ast_presentation, query_canonical_frontend,
     };
     use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -742,7 +742,7 @@ mod tests {
         let direct_subscriber =
             tracing_subscriber::registry().with(TimingLayer::new(direct_data.clone()));
         tracing::subscriber::with_default(direct_subscriber, || {
-            parse_all_files_with_source_snapshot(&snapshot).unwrap();
+            parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();
         });
 
         let direct_edges = direct_data.parent_edges();

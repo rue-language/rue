@@ -29,8 +29,12 @@ can be repeated to request several views.
 - **`rue-lexer`** tokenizes source and records byte spans and interned names.
 - **`rue-parser`** constructs a syntax tree without resolving names or types.
 - **`rue-rir`** lowers syntax into a dense, index-addressed, untyped IR. Each
-  source file is parsed to its own AST; the compiler merges those ASTs and then
-  generates a single RIR from the merged AST before semantic analysis.
+  source file is parsed into a self-contained `ParsedModule`. A canonical
+  `ParsedProgram` orders those modules by stable identity, and
+  `CanonicalMergedProgram` validates definition candidates while retaining
+  their module provenance. RIR lowering traverses those canonical module views
+  directly; there is no shared-interner parse representation or concatenated
+  compatibility AST.
 - **`rue-air`** performs declaration collection, name resolution, inference,
   type checking, ownership/exclusivity analysis, comptime evaluation, and
   production of typed AIR.
@@ -89,6 +93,12 @@ and query it with `CompileOptions`. Parser `Ast` values remain available for
 syntax inspection and presentation, but are not semantic compiler inputs; this
 prevents source, module, target, preview-feature, and optimization identity from
 being inferred or split across unrelated arguments.
+
+Syntax output uses an explicit `ParsedAstPresentation` adapter. It walks the
+`SourceSnapshot` in caller-selected order so diagnostics and `--emit ast`
+retain presentation order without constructing a second parsed or merged
+program. Duplicate, cross-kind, and program-wide `main` legality is implemented
+once by canonical merge candidate validation.
 
 `rue-error` defines stable error categories, suggestions, warnings, preview
 features, and internal-compiler-error reporting. `rue-span` maps byte spans to

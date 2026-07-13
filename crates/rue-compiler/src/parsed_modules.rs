@@ -1,8 +1,8 @@
 //! Self-contained immutable parsed-module artifacts.
 //!
-//! This is the reuse-safe syntax boundary. The root-level `ParsedProgram`
-//! remains the shared-interner compatibility representation until assembly
-//! symbol translation is introduced separately.
+//! This is the reuse-safe syntax boundary. Each module owns its parser symbol
+//! universe, while [`ParsedProgram`] provides the sole parsed-program
+//! representation used by semantic compilation.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use rue_parser::{
     AssignTarget, Ast, Expr, IntrinsicArg, Item, Pattern, Statement, TypeExpr, ast::Visibility,
 };
 use rue_span::{FileId, Span};
+use tracing::info_span;
 
 use crate::definition_snapshot::{definition_parts, validate_span};
 use crate::{
@@ -299,8 +300,8 @@ impl ParsedModule {
     pub fn ast(&self) -> &Ast {
         &self.payload.ast.ast
     }
-    /// Retain the immutable AST payload without projecting it into a
-    /// compatibility merged program.
+    /// Retain the immutable AST payload without projecting it into another
+    /// syntax representation.
     pub fn shared_ast(&self) -> Arc<Ast> {
         self.payload.ast.ast.clone()
     }
@@ -642,7 +643,8 @@ pub fn parse_source_snapshot_modules(
 /// Previous modules are indexed once by FileId. Hash-map iteration never
 /// drives parsing, diagnostics, or artifact order; every snapshot module is
 /// visited in canonical ModuleId order and performs at most one point lookup.
-/// Legacy caller-order projections remain a separate compatibility concern.
+/// Caller-ordered syntax diagnostics are handled by the explicit AST
+/// presentation adapter rather than another parsed-program representation.
 pub fn parse_source_snapshot_modules_reusing(
     snapshot: &SourceSnapshot,
     previous: Option<&ParsedProgram>,
@@ -685,13 +687,19 @@ impl ParsedAstPresentation {
 pub fn parse_source_snapshot_for_ast_presentation(
     snapshot: &SourceSnapshot,
 ) -> MultiErrorResult<ParsedAstPresentation> {
-    let outcome = crate::syntax::run_snapshot_unspanned(snapshot);
+    let _span = info_span!(
+        "parse",
+        file_count = snapshot.len(),
+        purpose = "ast_presentation"
+    )
+    .entered();
+    let outcome = crate::syntax::parse_snapshot_for_presentation(snapshot);
     let syntax = outcome.work;
-    let parsed = outcome.result?;
+    let asts = outcome.result?;
     let files = snapshot
         .files()
-        .zip(parsed.files)
-        .map(|(source, parsed)| (source.path.to_string(), parsed.ast))
+        .zip(asts)
+        .map(|(source, ast)| (source.path.to_string(), ast))
         .collect();
     Ok(ParsedAstPresentation {
         files,
@@ -748,8 +756,8 @@ fn parse_snapshot_file(
     let source = snapshot.source_file(file_id).expect("metadata membership");
     let outcome = crate::syntax::parse_file(source, ThreadedRodeo::new());
     let work = outcome.work;
-    let result = outcome.result.and_then(|file| {
-        build_module(snapshot, file_id, file.ast, outcome.interner).map_err(CompileErrors::from)
+    let result = outcome.result.and_then(|ast| {
+        build_module(snapshot, file_id, ast, outcome.interner).map_err(CompileErrors::from)
     });
     (result, work)
 }
@@ -1846,7 +1854,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn reordered_broken_inputs_have_identical_diagnostics_and_legacy_kernel_parity() {
+    fn reordered_broken_inputs_have_identical_canonical_diagnostics() {
         let entries = [
             (9, "/z.rue", "z.rue", "fn z( {"),
             (2, "/a.rue", "a.rue", "fn a() { let x = #; }"),
@@ -1872,9 +1880,6 @@ fn main() -> i32 {
         let first = parse_source_snapshot_modules(&canonical).unwrap_err();
         let second = parse_source_snapshot_modules(&reversed).unwrap_err();
         assert_eq!(error_fingerprint(&first), error_fingerprint(&second));
-
-        let legacy = crate::parse_all_files_with_source_snapshot(&canonical).unwrap_err();
-        assert_eq!(error_fingerprint(&first), error_fingerprint(&legacy));
     }
 
     #[test]

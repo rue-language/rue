@@ -32,6 +32,13 @@ pub struct CanonicalMergedAst {
 }
 
 impl CanonicalMergedAst {
+    pub(crate) fn from_parsed_program(program: &ParsedProgram) -> Self {
+        Self {
+            source_revision: program.source_revision().clone(),
+            modules: program.modules().to_vec().into(),
+        }
+    }
+
     pub fn source_revision(&self) -> &SourceRevision {
         &self.source_revision
     }
@@ -180,10 +187,7 @@ fn assemble_merged_program(
     work: CanonicalMergeWork,
 ) -> CanonicalMergedProgram {
     CanonicalMergedProgram {
-        ast: CanonicalMergedAst {
-            source_revision: program.source_revision().clone(),
-            modules: program.modules().to_vec().into(),
-        },
+        ast: CanonicalMergedAst::from_parsed_program(program),
         definitions,
         work,
     }
@@ -313,10 +317,7 @@ mod tests {
 
     use super::*;
     use crate::parsed_modules::parse_source_snapshot_modules;
-    use crate::{
-        SourceFile, SourceMetadata, SourceSnapshot, merge_symbols,
-        parse_all_files_with_source_snapshot,
-    };
+    use crate::{SourceFile, SourceMetadata, SourceSnapshot};
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
         let physical = entries
@@ -370,20 +371,45 @@ mod tests {
     }
 
     #[test]
-    fn canonical_duplicate_and_cross_kind_diagnostics_match_legacy() {
-        let source =
-            "fn dup() {} fn dup() {} struct clash {} fn clash() {} enum kind {} struct kind {}";
+    fn canonical_duplicate_and_cross_kind_diagnostics_are_complete_and_ordered() {
+        let source = "fn dup() {} fn dup() {} struct clash {} fn clash() {} \
+            enum kind {} struct kind {} struct record {} struct record {} \
+            enum choice {} enum choice {}";
         let snapshot = snapshot(&[(1, "main.rue", "main.rue", source)], 1);
         let canonical = parse_source_snapshot_modules(&snapshot).unwrap();
         let canonical_errors = merge_parsed_modules(&canonical).unwrap_err();
-
-        let legacy = parse_all_files_with_source_snapshot(&snapshot).unwrap();
-        let legacy_errors = merge_symbols(legacy).unwrap_err();
-        assert_eq!(errors(&canonical_errors), errors(&legacy_errors));
+        assert_eq!(canonical_errors.len(), 5);
+        let errors = canonical_errors.as_slice();
+        assert!(matches!(
+            &errors[0].kind,
+            ErrorKind::DuplicateFunctionDefinition { function_name } if function_name == "dup"
+        ));
+        assert!(matches!(
+            &errors[1].kind,
+            ErrorKind::DuplicateFunctionDefinition { function_name } if function_name == "clash"
+        ));
+        assert!(matches!(
+            &errors[2].kind,
+            ErrorKind::DuplicateTypeDefinition { type_name }
+                if type_name == "struct `kind` (conflicts with enum)"
+        ));
+        assert!(matches!(
+            &errors[3].kind,
+            ErrorKind::DuplicateTypeDefinition { type_name } if type_name == "struct `record`"
+        ));
+        assert!(matches!(
+            &errors[4].kind,
+            ErrorKind::DuplicateTypeDefinition { type_name } if type_name == "enum `choice`"
+        ));
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.diagnostic().labels.len() == 1)
+        );
     }
 
     #[test]
-    fn canonical_cross_module_main_diagnostics_match_legacy_and_ignore_input_order() {
+    fn canonical_cross_module_main_diagnostics_ignore_program_storage_order() {
         let snapshot = snapshot(
             &[
                 (1, "a.rue", "a.rue", "fn main() {}"),
@@ -398,10 +424,38 @@ mod tests {
         let reordered = ParsedProgram::new(canonical.root().clone(), reversed).unwrap();
         let reordered = merge_parsed_modules(&reordered).unwrap_err();
         assert_eq!(errors(&expected), errors(&reordered));
+    }
 
-        let legacy = parse_all_files_with_source_snapshot(&snapshot).unwrap();
-        let legacy = merge_symbols(legacy).unwrap_err();
-        assert_eq!(errors(&expected), errors(&legacy));
+    #[test]
+    fn batch_merge_uses_explicit_presentation_order_without_reordering_program() {
+        let snapshot = snapshot(
+            &[
+                (1, "a.rue", "a.rue", "fn main() {}"),
+                (2, "b.rue", "b.rue", "fn main() {}"),
+            ],
+            1,
+        );
+        let parsed = parse_source_snapshot_modules(&snapshot).unwrap();
+        let order = [
+            ModuleId::from_logical_path("b.rue").unwrap(),
+            ModuleId::from_logical_path("a.rue").unwrap(),
+        ];
+        let error = merge_parsed_modules_for_batch(&parsed, &order)
+            .unwrap_err()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert_eq!(error.span().unwrap().file_id, FileId::new(1));
+        assert_eq!(error.diagnostic().labels[0].span.file_id, FileId::new(2));
+        assert_eq!(
+            parsed
+                .modules()
+                .iter()
+                .map(|module| module.file_id())
+                .collect::<Vec<_>>(),
+            [FileId::new(1), FileId::new(2)]
+        );
     }
 
     #[test]
@@ -533,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_source_file_constructor_remains_available() {
+    fn borrowed_source_file_constructor_remains_available() {
         let source = SourceFile::new("main.rue", "fn main() {}", FileId::new(1));
         assert_eq!(source.path, "main.rue");
     }
