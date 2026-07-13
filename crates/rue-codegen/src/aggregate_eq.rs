@@ -23,7 +23,7 @@ pub trait AggregateEqBackend {
     fn map_value(&mut self, value: CfgValue, vreg: VReg);
 
     /// Return the flattened slot vregs for an aggregate CFG value.
-    fn aggregate_slots(&mut self, value: CfgValue) -> Option<Vec<VReg>>;
+    fn aggregate_slots(&mut self, value: CfgValue) -> Vec<VReg>;
 
     /// Emit `dst = value` for boolean values represented as 0/1 integers.
     fn emit_bool_const(&mut self, dst: VReg, value: bool);
@@ -59,12 +59,8 @@ pub fn emit_aggregate_equality<B: AggregateEqBackend>(
         return;
     }
 
-    let lhs_slots = b
-        .aggregate_slots(lhs)
-        .expect("aggregate should have slot vregs");
-    let rhs_slots = b
-        .aggregate_slots(rhs)
-        .expect("aggregate should have slot vregs");
+    let lhs_slots = b.aggregate_slots(lhs);
+    let rhs_slots = b.aggregate_slots(rhs);
     assert_aggregate_slot_count("lhs", lhs_slots.len(), leaf_types.len());
     assert_aggregate_slot_count("rhs", rhs_slots.len(), leaf_types.len());
 

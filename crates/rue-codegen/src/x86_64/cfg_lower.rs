@@ -501,6 +501,12 @@ impl<'a> CfgLower<'a> {
         crate::agg_slots::get_or_compute_field_vregs(self, value)
     }
 
+    /// Materialize every slot of a multi-slot aggregate or fail the CFG
+    /// representation invariant.
+    fn require_aggregate_slots(&mut self, value: CfgValue) -> Vec<VReg> {
+        crate::agg_slots::require_aggregate_slots(self, value)
+    }
+
     /// Copy an aggregate value's slot vregs to a block parameter's slot vregs.
     /// Covers structs, builtin String, and fixed-size arrays — every slot must
     /// cross the join edge, not just the primary vreg (RUE-167).
@@ -512,17 +518,7 @@ impl<'a> CfgLower<'a> {
     ) {
         let target_param = self.ctx.cfg.get_block(target_block).params[param_idx as usize].0;
 
-        // The accessor covers StructInit/ArrayInit/Call/BlockParam (cache
-        // hits) and Load/Param/static PlaceRead; fall back to the recursive
-        // flatteners for anything it doesn't model (mirrors Alloc lowering).
-        let src_slots = self.get_or_compute_field_vregs(arg).unwrap_or_else(|| {
-            let arg_ty = self.ctx.cfg.get_inst(arg).ty;
-            if arg_ty.is_array() {
-                self.collect_array_scalar_vregs(arg)
-            } else {
-                self.collect_struct_scalar_vregs(arg)
-            }
-        });
+        let src_slots = self.require_aggregate_slots(arg);
         let dst_slots = self
             .struct_slot_vregs
             .get(&target_param)
@@ -1786,26 +1782,20 @@ impl<'a> CfgLower<'a> {
                         // The old per-source array ladder iterated array_len (element
                         // count), not slot_count, so a multidimensional array dropped
                         // every row after the first. (RUE-118, RUE-79)
-                        if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_value) {
-                            // Pass a Rue callee's aggregate slots in REVERSED
-                            // logical order (ADR-0040 / RUE-311). The callee
-                            // prologue spills ABI slot j to frame slot base+j, so
-                            // pushing logical slot k at ABI slot (C-1-k) lands it
-                            // at frame slot base + (C-1-k) — exactly the
-                            // ascending frame layout `store_slots`/
-                            // `load_consecutive` use for locals (logical slot 0
-                            // at the low-address end). Without this, by-value
-                            // aggregate params would sit in descending order
-                            // while every other aggregate is ascending, and field
-                            // reads (which now assume ascending) would transpose
-                            // the fields. Runtime callees keep natural order.
-                            if callee_is_runtime {
-                                flattened_vregs.extend(field_vregs);
-                            } else {
-                                flattened_vregs.extend(field_vregs.into_iter().rev());
-                            }
+                        let field_vregs = self.require_aggregate_slots(arg_value);
+                        // Pass a Rue callee's aggregate slots in REVERSED
+                        // logical order (ADR-0040 / RUE-311). The callee
+                        // prologue spills ABI slot j to frame slot base+j, so
+                        // pushing logical slot k at ABI slot (C-1-k) lands it
+                        // at frame slot base + (C-1-k) — exactly the
+                        // ascending frame layout `store_slots`/
+                        // `load_consecutive` use for locals (logical slot 0
+                        // at the low-address end). Runtime callees keep
+                        // natural order.
+                        if callee_is_runtime {
+                            flattened_vregs.extend(field_vregs);
                         } else {
-                            flattened_vregs.push(self.get_vreg(arg_value));
+                            flattened_vregs.extend(field_vregs.into_iter().rev());
                         }
                     } else {
                         // Note: String is now Type::Struct, handled above
@@ -1900,9 +1890,8 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(slot_vregs[0]),
                     });
                 } else if self.ctx.is_multislot_aggregate(ty) {
-                    // Aggregates that fit return in registers. Capture
-                    // every slot from RET_REGS, not just rax — arrays previously fell
-                    // to the scalar path and lost all elements but the first. (RUE-78)
+                    // Aggregates that fit return in registers have a complete
+                    // cached representation populated from RET_REGS. (RUE-78)
                     let slot_count = ret_slot_count;
                     let mut slot_vregs = Vec::new();
                     for slot_idx in 0..slot_count {
@@ -2361,9 +2350,7 @@ impl<'a> CfgLower<'a> {
                         // RUE-566). Logical effects (`len` bookkeeping) live
                         // in the caller.
                     } else if slot_count > 1 {
-                        let slot_vregs = self
-                            .get_or_compute_field_vregs(value_val)
-                            .unwrap_or_else(|| vec![self.get_vreg(value_val)]);
+                        let slot_vregs = self.require_aggregate_slots(value_val);
                         crate::agg_slots::store_slots_through_ptr(self, &slot_vregs, ptr_vreg, 0);
                     } else {
                         let value_vreg = self.get_vreg(value_val);
@@ -2779,9 +2766,7 @@ impl<'a> CfgLower<'a> {
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
                 } else {
-                    let base_slots = self
-                        .get_or_compute_field_vregs(base)
-                        .expect("enum payload base must have slot vregs");
+                    let base_slots = self.require_aggregate_slots(base);
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
                     if field_slots > 1 {
@@ -2856,9 +2841,7 @@ impl<'a> CfgLower<'a> {
                     // String requires all 3 slots as arguments to __rue_drop_String.
                     // The accessor handles every source (cache for StructInit/Call/
                     // BlockParam; materialize for Load/Param/PlaceRead). (RUE-118)
-                    let field_vregs = self
-                        .get_or_compute_field_vregs(*dropped_value)
-                        .expect("String value should have field vregs");
+                    let field_vregs = self.require_aggregate_slots(*dropped_value);
 
                     // Correctness guard (must run in release): passing the wrong
                     // slot count to __rue_drop_String corrupts the drop call, so
@@ -2877,14 +2860,14 @@ impl<'a> CfgLower<'a> {
                 if let TypeKind::Struct(struct_id) = dropped_ty.kind() {
                     let struct_def = self.ctx.type_pool.struct_def(struct_id);
 
-                    // All flattened field slots. The accessor materializes
-                    // lazily-sourced values (Load/Param/PlaceRead) so glue
-                    // functions dropping a multi-slot Param element pass real
-                    // slots, not just slot 0 + garbage (RUE-193); fall back to
-                    // the recursive flattener for StructInit.
-                    let field_vregs = self
-                        .get_or_compute_field_vregs(*dropped_value)
-                        .unwrap_or_else(|| self.collect_struct_scalar_vregs(*dropped_value));
+                    // Multi-slot structs use the complete aggregate
+                    // representation. Zero- and one-slot structs use their
+                    // scalar/ZST flattening.
+                    let field_vregs = if self.ctx.is_multislot_aggregate(dropped_ty) {
+                        self.require_aggregate_slots(*dropped_value)
+                    } else {
+                        self.collect_struct_scalar_vregs(*dropped_value)
+                    };
 
                     // For builtin types (e.g., String), the destructor IS the drop glue.
                     // We call only the destructor and skip the drop glue to avoid double-calling.
@@ -2945,9 +2928,11 @@ impl<'a> CfgLower<'a> {
                     // slot counts past the argument registers go on the stack
                     // via emit_call_with_slot_args — e.g. [String; 3] is 9
                     // slots, RUE-193)
-                    let mut element_vregs = self
-                        .get_or_compute_field_vregs(*dropped_value)
-                        .unwrap_or_else(|| self.collect_array_scalar_vregs(*dropped_value));
+                    let mut element_vregs = if self.ctx.is_multislot_aggregate(dropped_ty) {
+                        self.require_aggregate_slots(*dropped_value)
+                    } else {
+                        self.collect_array_scalar_vregs(*dropped_value)
+                    };
 
                     // The array drop glue reconstructs each multi-slot element
                     // via one aggregate `Param` read, which uses the reversed
@@ -2971,9 +2956,7 @@ impl<'a> CfgLower<'a> {
                 // which switches on the discriminant and drops the active
                 // variant's payload.
                 if let TypeKind::Enum(enum_id) = dropped_ty.kind() {
-                    let field_vregs = self
-                        .get_or_compute_field_vregs(*dropped_value)
-                        .expect("payload enum value should have field vregs");
+                    let field_vregs = self.require_aggregate_slots(*dropped_value);
                     // File-qualified when the enum name spans files (RUE-571).
                     let drop_fn_name = format!(
                         "__rue_drop_{}",
@@ -3010,10 +2993,9 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::PlaceWrite { place, value: val } => {
-                // A multi-slot aggregate value (struct, String, array) must write
-                // ALL its slots to the place, not just the first. The accessor
-                // materializes lazily-sourced values; if it can't model the source,
-                // fall back to the old single-slot behavior. (RUE-118, RUE-23)
+                // A multi-slot aggregate value (struct, String, array, or
+                // payload enum) has one vreg per logical slot; PlaceWrite must
+                // store that complete representation. (RUE-118, RUE-23)
                 let val_type = self.ctx.cfg.get_inst(*val).ty;
                 // A zero-sized value has no bytes to store (RUE-577): writing
                 // the dummy vreg CFG carries for unit would clobber a
@@ -3023,8 +3005,7 @@ impl<'a> CfgLower<'a> {
                     return;
                 }
                 let vals = if self.ctx.is_multislot_aggregate(val_type) {
-                    self.get_or_compute_field_vregs(*val)
-                        .unwrap_or_else(|| vec![self.get_vreg(*val)])
+                    self.require_aggregate_slots(*val)
                 } else {
                     vec![self.get_vreg(*val)]
                 };
@@ -3723,29 +3704,16 @@ impl<'a> CfgLower<'a> {
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(X86Inst::CallRel { symbol_id });
                 } else if self.ctx.is_multislot_aggregate(return_type) {
-                    // Return a multi-slot aggregate (struct, array, or a
-                    // payload-carrying enum). Payload enums were previously
-                    // omitted from this gate (it tested `struct || array`
-                    // only), so a by-value enum return fell into the scalar
-                    // branch and shipped only the discriminant in rax while
-                    // the payload slot in rdx was never written (RUE-237).
-                    // Gather all slots through the single accessor, regardless of source
-                    // (StructInit/ArrayInit/Call/BlockParam cache-hit; Load/Param/
-                    // PlaceRead materialize). Previously the `_` arm returned only slot 0
-                    // of a place-read aggregate, and arrays had NO return path at all —
-                    // only the ArrayInit placeholder vreg reached rax. (RUE-118, RUE-78)
-                    let slot_vregs = self
-                        .get_or_compute_field_vregs(*value)
-                        .unwrap_or_else(|| vec![self.get_vreg(*value)]);
+                    // Return a multi-slot aggregate (struct, array, or payload
+                    // enum). Every valid source has exactly `type_slot_count`
+                    // materialized vregs. (RUE-118, RUE-78, RUE-237)
+                    let slot_vregs = self.require_aggregate_slots(*value);
                     if self.ctx.uses_sret_return(RET_REGS.len() as u32) {
                         // sret return (String always; aggregates that don't fit
                         // the return registers): the caller passed a buffer
                         // pointer as a hidden first argument, which the
                         // prologue saved at the dedicated frame slot one past
                         // the param area. Store every slot through it.
-                        // Previously String returns took the register path
-                        // here while the caller read the (never-written) sret
-                        // buffer — len/cap arrived as garbage. (RUE-92)
                         crate::agg_slots::store_slots_to_sret(self, &slot_vregs);
                     } else {
                         // Move slot values to return registers in REVERSE order: regalloc
@@ -3952,10 +3920,6 @@ impl crate::place_lower::PlaceLowerBackend for CfgLower<'_> {
 }
 
 impl crate::storage_lower::StorageLowerBackend for CfgLower<'_> {
-    fn collect_struct_scalars(&mut self, value: CfgValue) -> Vec<VReg> {
-        self.collect_struct_scalar_vregs(value)
-    }
-
     fn emit_store_ptr_base(&mut self, src: VReg, ptr: VReg) {
         self.mir.push(X86Inst::MovMRIndexed {
             base: ptr,
@@ -3975,8 +3939,8 @@ impl crate::aggregate_eq::AggregateEqBackend for CfgLower<'_> {
     fn map_value(&mut self, value: CfgValue, vreg: VReg) {
         self.value_map.insert(value, vreg);
     }
-    fn aggregate_slots(&mut self, value: CfgValue) -> Option<Vec<VReg>> {
-        self.get_or_compute_field_vregs(value)
+    fn aggregate_slots(&mut self, value: CfgValue) -> Vec<VReg> {
+        self.require_aggregate_slots(value)
     }
     fn emit_bool_const(&mut self, dst: VReg, value: bool) {
         self.mir.push(X86Inst::MovRI32 {

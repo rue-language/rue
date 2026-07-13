@@ -2,11 +2,8 @@
 //!
 //! Multi-slot aggregates (structs, fixed-size arrays, the 3-slot `String` fat
 //! pointer) are tracked during CFG lowering as a list of one vreg per slot in
-//! the lowerer's `struct_slot_vregs` cache. Historically each backend carried
-//! its own hand-mirrored copy of the logic that produces that list, and the
-//! copies drifted — several confirmed miscompiles (the RUE-118 family, the
-//! `is_struct`-before-`is_builtin_string` ordering bug) were pure drift
-//! between the two `cfg_lower.rs` files.
+//! the lowerer's `struct_slot_vregs` cache. Both backends use this module so
+//! every aggregate consumer observes the same representation.
 //!
 //! This module is the single implementation. The slot *logic* is entirely
 //! target-independent — "load N consecutive frame slots", "walk static field
@@ -107,7 +104,9 @@ pub trait SlotBackend {
 ///   `s.rows[i]`) or a by-ref param base: bounds-check every index, form the
 ///   place's address, and load all `slot_count` slots through it (RUE-188)
 ///
-/// Returns `None` for non-aggregate types and unmodeled sources.
+/// Returns `None` for non-aggregate types. Valid multi-slot aggregate values
+/// are either materialized directly here or are lowered on demand and read
+/// from the cache populated by their lowering rule.
 pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) -> Option<Vec<VReg>> {
     // Check cache first
     if let Some(vregs) = b.slot_cache().get(&value).cloned() {
@@ -127,24 +126,6 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
     }
 
     match data {
-        CfgInstData::StructInit {
-            fields_start,
-            fields_len,
-            ..
-        } => {
-            let fields = b.ctx().cfg.get_extra(fields_start, fields_len).to_vec();
-            // Zero-sized fields (unit, [T; 0]) occupy no slots (RUE-577):
-            // including their dummy vregs would shift every later field.
-            let mut vregs = Vec::with_capacity(fields.len());
-            for f in &fields {
-                let field_ty = b.ctx().cfg.get_inst(*f).ty;
-                if b.ctx().type_slot_count(field_ty) == 0 {
-                    continue;
-                }
-                vregs.push(b.get_vreg(*f));
-            }
-            Some(vregs)
-        }
         CfgInstData::Load { slot } => {
             let slot_count = b.ctx().type_slot_count(ty);
             Some(load_consecutive(b, slot, slot_count))
@@ -213,9 +194,6 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
             // every index projection, form the place's low-end address, then
             // load each slot through it. Slot k lives at addr + k*8 (ascending,
             // ADR-0040 / RUE-311), matching `store_slots_through_ptr`.
-            // Previously these sources returned None and every consumer's
-            // fallback materialized only slot 0 — the RUE-188 miscompile
-            // family. (RUE-188/192)
             for proj in &projections {
                 if let Projection::Index { array_type, index } = proj {
                     let length = b.ctx().array_length(*array_type);
@@ -227,9 +205,52 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
             b.emit_place_addr(addr_vreg, &place);
             Some(load_through_ptr(b, addr_vreg, slot_count))
         }
-        // BlockParam and Call should already have slot vregs in the cache
-        _ => None,
+        // Eager aggregate producers (StructInit, ArrayInit, EnumVariant,
+        // EnumPayloadGet, Call, Intrinsic, and BlockParam) establish their
+        // complete slot list as part of lowering. Trigger lazy lowering when
+        // necessary, then retrieve that representation. A missing entry is
+        // malformed internal IR and is rejected by `require_aggregate_slots`.
+        _ => {
+            b.get_vreg(value);
+            b.slot_cache().get(&value).cloned()
+        }
     }
+}
+
+/// Materialize and return the complete representation of a multi-slot
+/// aggregate value.
+///
+/// Every valid CFG producer of a multi-slot aggregate has exactly one vreg per
+/// logical type slot. Consumers must use this total accessor: continuing with
+/// a primary vreg alone would emit a partial value. Missing or incorrectly
+/// sized representations therefore indicate malformed internal IR and fail an
+/// invariant in release builds.
+pub fn require_aggregate_slots<B: SlotBackend>(b: &mut B, value: CfgValue) -> Vec<VReg> {
+    let ty = b.ctx().cfg.get_inst(value).ty;
+    assert!(
+        b.ctx().is_multislot_aggregate(ty),
+        "aggregate slot materialization requires a multi-slot aggregate value: {value}"
+    );
+    let expected = b.ctx().type_slot_count(ty) as usize;
+    let slots = get_or_compute_field_vregs(b, value).unwrap_or_else(|| {
+        if expected == 1 {
+            // A one-slot aggregate's primary vreg is its complete
+            // representation. Some scalar-producing intrinsics intentionally
+            // do not populate the aggregate slot cache for that case.
+            vec![b.get_vreg(value)]
+        } else {
+            panic!("multi-slot aggregate {value} has no complete slot representation")
+        }
+    });
+    assert_complete_slot_count(value, slots.len(), expected);
+    slots
+}
+
+fn assert_complete_slot_count(value: CfgValue, actual: usize, expected: usize) {
+    assert_eq!(
+        actual, expected,
+        "multi-slot aggregate {value} slot count mismatch: representation has {actual} slots, type requires {expected}"
+    );
 }
 
 /// Total slot count of the ROOT object a place is rooted at. Ascending place addressing
@@ -306,29 +327,16 @@ pub fn lower_struct_init<B: SlotBackend>(
         }
         match field_ty.kind() {
             TypeKind::Struct(_) | TypeKind::Enum(_) => {
-                // Struct/payload-enum field: contribute every slot. A
-                // payload enum here previously fell to the scalar `_` arm and
-                // contributed only its discriminant vreg, so the struct stored
-                // just the tag and dropped the payload (RUE-237). The accessor
-                // returns None for a discriminant-only (1-slot) enum, which
-                // correctly falls back to the single-vreg push.
-                if let Some(nested) = get_or_compute_field_vregs(b, *field) {
-                    slot_vregs.extend(nested);
+                // Struct/payload-enum fields contribute their complete slot
+                // representation. Discriminant-only enums remain scalars.
+                if b.ctx().is_multislot_aggregate(field_ty) {
+                    slot_vregs.extend(require_aggregate_slots(b, *field));
                 } else {
                     slot_vregs.push(b.get_vreg(*field));
                 }
             }
             TypeKind::Array(_) => {
-                // Try the accessor first: it materializes lazily-sourced
-                // arrays (Load/Param/PlaceRead — including an indexed read
-                // like `S { arr: m[i], .. }`, RUE-188) and cache-hits eager
-                // ones. Fall back to the recursive flattener for ArrayInit,
-                // whose element vregs it gathers directly.
-                if let Some(nested) = get_or_compute_field_vregs(b, *field) {
-                    slot_vregs.extend(nested);
-                } else {
-                    slot_vregs.extend(b.collect_array_scalars(*field));
-                }
+                slot_vregs.extend(require_aggregate_slots(b, *field));
             }
             _ => {
                 // Scalar field - single vreg
@@ -388,18 +396,14 @@ pub fn lower_enum_variant<B: SlotBackend>(
         }
         match field_ty.kind() {
             TypeKind::Struct(_) | TypeKind::Enum(_) => {
-                if let Some(nested) = get_or_compute_field_vregs(b, *field) {
-                    slot_vregs.extend(nested);
+                if b.ctx().is_multislot_aggregate(field_ty) {
+                    slot_vregs.extend(require_aggregate_slots(b, *field));
                 } else {
                     slot_vregs.push(b.get_vreg(*field));
                 }
             }
             TypeKind::Array(_) => {
-                if let Some(nested) = get_or_compute_field_vregs(b, *field) {
-                    slot_vregs.extend(nested);
-                } else {
-                    slot_vregs.extend(b.collect_array_scalars(*field));
-                }
+                slot_vregs.extend(require_aggregate_slots(b, *field));
             }
             _ => slot_vregs.push(b.get_vreg(*field)),
         }
@@ -454,8 +458,8 @@ pub fn lower_array_init<B: SlotBackend>(
             e_ty.kind(),
             TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_)
         ) {
-            if let Some(nested) = get_or_compute_field_vregs(b, *e) {
-                element_vregs.extend(nested);
+            if b.ctx().is_multislot_aggregate(e_ty) {
+                element_vregs.extend(require_aggregate_slots(b, *e));
             } else {
                 element_vregs.push(b.get_vreg(*e));
             }
@@ -566,4 +570,24 @@ fn load_through_ptr<B: SlotBackend>(b: &mut B, addr_vreg: VReg, count: u32) -> V
         vregs.push(vreg);
     }
     vregs
+}
+
+#[cfg(test)]
+mod tests {
+    use rue_cfg::CfgValue;
+
+    use super::assert_complete_slot_count;
+
+    #[test]
+    fn complete_aggregate_slot_count_is_valid() {
+        assert_complete_slot_count(CfgValue::from_raw(7), 4, 4);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "multi-slot aggregate v7 slot count mismatch: representation has 1 slots, type requires 4"
+    )]
+    fn partial_aggregate_slot_representation_panics() {
+        assert_complete_slot_count(CfgValue::from_raw(7), 1, 4);
+    }
 }

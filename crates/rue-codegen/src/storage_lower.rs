@@ -13,9 +13,6 @@ use crate::vreg::VReg;
 
 /// Narrow target-specific leaves used by shared storage lowering.
 pub(crate) trait StorageLowerBackend: PlaceLowerBackend {
-    /// Recursively flatten a struct value not modeled by the slot accessor.
-    fn collect_struct_scalars(&mut self, value: CfgValue) -> Vec<VReg>;
-
     /// Store through `ptr` using the backend's base-only MIR form.
     ///
     /// AArch64 intentionally distinguishes `StrIndexed` from
@@ -27,17 +24,10 @@ pub(crate) trait StorageLowerBackend: PlaceLowerBackend {
 /// Lower a local allocation and its initializer.
 pub(crate) fn lower_alloc<B: StorageLowerBackend>(b: &mut B, slot: u32, init: CfgValue) {
     let init_type = b.ctx().cfg.get_inst(init).ty;
-    if init_type.is_array() {
-        // Materialize lazily-sourced arrays through the accessor and fall back
-        // to recursively flattening ArrayInit values.
-        let scalar_vregs = agg_slots::get_or_compute_field_vregs(b, init)
-            .unwrap_or_else(|| b.collect_array_scalars(init));
-        agg_slots::store_slots(b, &scalar_vregs, slot);
-    } else if b.ctx().is_builtin_string(init_type) {
+    if b.ctx().is_builtin_string(init_type) {
         // StrBuf is always the ptr/len/cap three-slot fat pointer. Keep this
-        // before generic structs so a layout drift fails loudly.
-        let field_vregs = agg_slots::get_or_compute_field_vregs(b, init)
-            .expect("string should have fat pointer fields in Alloc");
+        // before generic aggregates so a layout drift fails loudly.
+        let field_vregs = agg_slots::require_aggregate_slots(b, init);
         assert_eq!(
             field_vregs.len(),
             3,
@@ -45,10 +35,12 @@ pub(crate) fn lower_alloc<B: StorageLowerBackend>(b: &mut B, slot: u32, init: Cf
         );
         agg_slots::store_slots(b, &field_vregs, slot);
     } else if b.ctx().is_multislot_aggregate(init_type) {
-        // Struct or payload enum: the accessor handles cached and lazy values;
-        // retain the recursive fallback for sources it does not model.
-        let scalar_vregs = agg_slots::get_or_compute_field_vregs(b, init)
-            .unwrap_or_else(|| b.collect_struct_scalars(init));
+        // Every multi-slot aggregate initializer has one vreg per logical slot.
+        let scalar_vregs = agg_slots::require_aggregate_slots(b, init);
+        agg_slots::store_slots(b, &scalar_vregs, slot);
+    } else if init_type.is_array() {
+        // Zero- and one-slot arrays use their scalar/ZST representation.
+        let scalar_vregs = b.collect_array_scalars(init);
         agg_slots::store_slots(b, &scalar_vregs, slot);
     } else {
         let init_vreg = b.get_vreg(init);
@@ -90,11 +82,10 @@ pub(crate) fn lower_load<B: StorageLowerBackend>(b: &mut B, value: CfgValue, slo
 /// Lower a store to either a local frame slot or an inout parameter's pointee.
 pub(crate) fn lower_store<B: StorageLowerBackend>(b: &mut B, slot: u32, value: CfgValue) {
     let value_type = b.ctx().cfg.get_inst(value).ty;
-    let aggregate_vregs = if b.ctx().is_multislot_aggregate(value_type) {
-        agg_slots::get_or_compute_field_vregs(b, value)
-    } else {
-        None
-    };
+    let aggregate_vregs = b
+        .ctx()
+        .is_multislot_aggregate(value_type)
+        .then(|| agg_slots::require_aggregate_slots(b, value));
 
     if let Some(slot_vregs) = aggregate_vregs {
         if let Some(param_slot) = inout_param_for_slot(b, slot) {
@@ -125,11 +116,10 @@ pub(crate) fn lower_param_store<B: StorageLowerBackend>(
     }
 
     let value_type = b.ctx().cfg.get_inst(value).ty;
-    let aggregate_vregs = if b.ctx().is_multislot_aggregate(value_type) {
-        agg_slots::get_or_compute_field_vregs(b, value)
-    } else {
-        None
-    };
+    let aggregate_vregs = b
+        .ctx()
+        .is_multislot_aggregate(value_type)
+        .then(|| agg_slots::require_aggregate_slots(b, value));
 
     let ptr = b.ensure_inout_param_ptr(param_slot);
     if let Some(slot_vregs) = aggregate_vregs {
