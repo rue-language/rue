@@ -11,8 +11,7 @@
 //! Like [`crate::agg_slots`], the decision logic here is target-independent —
 //! which argument shapes are addressable, that every index projection is
 //! bounds-checked before the address is formed — so backends only provide
-//! the leaf operations in [`crate::place_lower::PlaceLowerBackend`], plus the
-//! deferred-diagnostic hook on [`ByrefAddrBackend`]. Bounds checks and
+//! the leaf operations in [`crate::place_lower::PlaceLowerBackend`]. Bounds checks and
 //! projected-place address formation are shared through
 //! [`crate::agg_slots::SlotBackend`]
 //! (the indexed-place-read materialization in `agg_slots` needs them too,
@@ -21,33 +20,17 @@
 //! address, from which aggregate slots ascend (`slot k` at `+k*8`), uniform
 //! for frame- and heap-rooted places (ADR-0040 / RUE-311).
 
-use rue_cfg::{CfgInstData, CfgValue, Place, Projection};
-use rue_error::{CompileError, ErrorKind};
-
 use crate::place_lower::PlaceLowerBackend;
 use crate::vreg::VReg;
-
-/// The deferred-diagnostic hook by-ref argument lowering needs on top of the
-/// shared place-lowering operations.
-pub trait ByrefAddrBackend: PlaceLowerBackend {
-    /// Record a user-facing diagnostic discovered during the (infallible)
-    /// lowering pass, to be surfaced by `generate()` once lowering finishes.
-    /// Only the FIRST recorded error is kept. See [`lower_byref_arg_addr`].
-    fn record_deferred_error(&mut self, err: CompileError);
-}
+use rue_cfg::{CfgInstData, CfgValue, Place, Projection};
 
 /// Lower a by-ref (inout/borrow) call argument to the vreg holding its
 /// address.
 ///
 /// Sema accepts as a by-ref argument a place: a variable (`Load`/`Param`) or a
 /// field/index projection chain rooted at one (`PlaceRead`). A non-place value
-/// with no storage to address — most reachably a `const` folded to an
-/// immediate, which sema currently lets slip through as a bare identifier
-/// (RUE-52) — records a clean diagnostic (`inout`/`borrow` argument must be an
-/// lvalue) via [`ByrefAddrBackend::record_deferred_error`] and falls back to a
-/// dummy vreg so lowering finishes before `generate()` surfaces the error,
-/// rather than aborting the process.
-pub fn lower_byref_arg_addr<B: ByrefAddrBackend + ?Sized>(
+/// with no storage to address is a violated sema/CFG invariant (RUE-760).
+pub fn lower_byref_arg_addr<B: PlaceLowerBackend + ?Sized>(
     b: &mut B,
     arg_value: CfgValue,
     is_inout: bool,
@@ -60,9 +43,6 @@ pub fn lower_byref_arg_addr<B: ByrefAddrBackend + ?Sized>(
         Place(Place),
         NotAPlace,
     }
-    // The argument span, captured (Copy) before the match so the borrow of the
-    // CFG ends and a diagnostic can carry a source location.
-    let arg_span = b.ctx().cfg.get_inst(arg_value).span;
     // Slot count of the addressed value: a by-ref pointer must point at the
     // place's LOW end (ADR-0040 / RUE-311), which for a frame-resident
     // aggregate is its highest-numbered slot `base + count - 1`.
@@ -77,15 +57,10 @@ pub fn lower_byref_arg_addr<B: ByrefAddrBackend + ?Sized>(
 
     match shape {
         ArgShape::NotAPlace => {
-            let kind = if is_inout {
-                ErrorKind::InoutNonLvalue
-            } else {
-                ErrorKind::BorrowNonLvalue
-            };
-            b.record_deferred_error(CompileError::new(kind, arg_span));
-            // Dead value: the whole codegen result is discarded once the
-            // deferred error is surfaced, but lowering must produce SOME vreg.
-            b.alloc_vreg()
+            unreachable!(
+                "malformed CFG: {} argument is not an addressable place",
+                if is_inout { "inout" } else { "borrow" }
+            )
         }
         ArgShape::Local(slot) => {
             let addr_vreg = b.alloc_vreg();

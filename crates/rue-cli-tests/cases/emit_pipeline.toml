@@ -163,8 +163,8 @@ compile_only = true
 compile_stdout_contains = ["=== Assembly", "main"]
 
 [[case]]
-name = "emit_lowering_reports_deferred_lowering_errors"
-description = "--emit lowering used to ignore deferred by-ref lowering diagnostics and exit successfully (RUE-482)."
+name = "emit_lowering_reports_semantic_byref_errors"
+description = "--emit lowering reports by-ref non-place operands rejected during semantic/AIR construction (RUE-760)."
 files = [{ path = "main.rue", source = """
 const X: i32 = 1;
 
@@ -182,8 +182,8 @@ compile_fail = true
 error_contains = ["E0425", "inout argument must be an lvalue"]
 
 [[case]]
-name = "emit_mir_suppresses_partial_stdout_on_late_lowering_error"
-description = "--emit mir buffers fallible per-function output so a later lowering error does not leave partial MIR on stdout (RUE-483)."
+name = "emit_mir_suppresses_stdout_on_semantic_byref_error"
+description = "--emit mir leaves no partial MIR on stdout when semantic/AIR construction rejects a by-ref non-place operand (RUE-760)."
 files = [{ path = "main.rue", source = """
 const X: i32 = 1;
 
