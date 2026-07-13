@@ -17,8 +17,8 @@
 //! ## Safety argument
 //!
 //! - Slots written more than once (mutated variables) are skipped.
-//! - Partial or aliased writes disqualify the slot: `FieldSet`/`IndexSet`/
-//!   `PlaceWrite`, and by-ref (`inout`/`borrow`) call arguments — those pass
+//! - Partial or aliased writes disqualify the slot: projected `PlaceWrite`,
+//!   and by-ref (`inout`/`borrow`) call arguments — those pass
 //!   the slot's ADDRESS to the callee, which may write through it, and the
 //!   by-ref lowering requires the argument to stay a place (`Load`) anyway.
 //! - Dominance: with a single write site, sema's definite-initialization
@@ -95,11 +95,6 @@ pub fn run(cfg: &mut Cfg) -> bool {
                         _ => None,
                     };
                     record_write(&mut slots, *slot, payload);
-                }
-                // Partial writes: the slot's contents change through a
-                // projection, so its Loads are not the stored constant.
-                CfgInstData::FieldSet { slot, .. } | CfgInstData::IndexSet { slot, .. } => {
-                    record_write(&mut slots, *slot, None);
                 }
                 CfgInstData::PlaceWrite { place, .. } => {
                     if let PlaceBase::Local(slot) = place.base {

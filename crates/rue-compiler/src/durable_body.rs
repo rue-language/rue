@@ -159,43 +159,8 @@ pub enum DurableAirInstData {
         fields: Arc<[DurableAirRef]>,
         source_order: Arc<[u32]>,
     },
-    FieldGet {
-        base: DurableAirRef,
-        struct_key: StableDefinitionKey,
-        field_index: u32,
-    },
-    FieldSet {
-        slot: u32,
-        struct_key: StableDefinitionKey,
-        field_index: u32,
-        value: DurableAirRef,
-    },
-    ParamFieldSet {
-        param_slot: u32,
-        inner_offset: u32,
-        struct_key: StableDefinitionKey,
-        field_index: u32,
-        value: DurableAirRef,
-    },
     ArrayInit {
         elements: Arc<[DurableAirRef]>,
-    },
-    IndexGet {
-        base: DurableAirRef,
-        array_type: DurableType,
-        index: DurableAirRef,
-    },
-    IndexSet {
-        slot: u32,
-        array_type: DurableType,
-        index: DurableAirRef,
-        value: DurableAirRef,
-    },
-    ParamIndexSet {
-        param_slot: u32,
-        array_type: DurableType,
-        index: DurableAirRef,
-        value: DurableAirRef,
     },
     PlaceRead {
         place: DurablePlaceRef,
@@ -643,72 +608,8 @@ pub fn convert_semantic_body_exports(
                     fields: fields.clone(),
                     source_order: source_order.clone(),
                 },
-                SemanticBodyInstData::FieldGet {
-                    base,
-                    struct_key,
-                    field_index,
-                } => DurableAirInstData::FieldGet {
-                    base: *base,
-                    struct_key: key(struct_key, work)?,
-                    field_index: *field_index,
-                },
-                SemanticBodyInstData::FieldSet {
-                    slot,
-                    struct_key,
-                    field_index,
-                    value,
-                } => DurableAirInstData::FieldSet {
-                    slot: *slot,
-                    struct_key: key(struct_key, work)?,
-                    field_index: *field_index,
-                    value: *value,
-                },
-                SemanticBodyInstData::ParamFieldSet {
-                    param_slot,
-                    inner_offset,
-                    struct_key,
-                    field_index,
-                    value,
-                } => DurableAirInstData::ParamFieldSet {
-                    param_slot: *param_slot,
-                    inner_offset: *inner_offset,
-                    struct_key: key(struct_key, work)?,
-                    field_index: *field_index,
-                    value: *value,
-                },
                 SemanticBodyInstData::ArrayInit { elements } => DurableAirInstData::ArrayInit {
                     elements: elements.clone(),
-                },
-                SemanticBodyInstData::IndexGet {
-                    base,
-                    array_type,
-                    index,
-                } => DurableAirInstData::IndexGet {
-                    base: *base,
-                    array_type: ty(array_type, work)?,
-                    index: *index,
-                },
-                SemanticBodyInstData::IndexSet {
-                    slot,
-                    array_type,
-                    index,
-                    value,
-                } => DurableAirInstData::IndexSet {
-                    slot: *slot,
-                    array_type: ty(array_type, work)?,
-                    index: *index,
-                    value: *value,
-                },
-                SemanticBodyInstData::ParamIndexSet {
-                    param_slot,
-                    array_type,
-                    index,
-                    value,
-                } => DurableAirInstData::ParamIndexSet {
-                    param_slot: *param_slot,
-                    array_type: ty(array_type, work)?,
-                    index: *index,
-                    value: *value,
                 },
                 SemanticBodyInstData::PlaceRead { place } => {
                     DurableAirInstData::PlaceRead { place: *place }
@@ -1049,10 +950,7 @@ impl DurableOrdinaryBodyPayload {
                     check(*scrutinee).and_then(|()| arms.iter().try_for_each(|arm| check(arm.body)))
                 }
                 D::Alloc { init, .. } => check(*init),
-                D::Store { value, .. }
-                | D::ParamStore { value, .. }
-                | D::FieldSet { value, .. }
-                | D::ParamFieldSet { value, .. } => check(*value),
+                D::Store { value, .. } | D::ParamStore { value, .. } => check(*value),
                 D::Ret(value) => value.map_or(Ok(()), &check),
                 D::Call { args, .. } | D::Intrinsic { args, .. } => {
                     args.iter().try_for_each(|arg| check(arg.value))
@@ -1077,15 +975,11 @@ impl DurableOrdinaryBodyPayload {
                         check_all(fields)
                     }
                 }
-                D::FieldGet { base, .. } | D::EnumPayloadGet { base, .. } => check(*base),
+                D::EnumPayloadGet { base, .. } => check(*base),
                 D::ArrayInit { elements }
                 | D::EnumVariant {
                     payload: elements, ..
                 } => check_all(elements),
-                D::IndexGet { base, index, .. } => check(*base).and_then(|()| check(*index)),
-                D::IndexSet { index, value, .. } | D::ParamIndexSet { index, value, .. } => {
-                    check(*index).and_then(|()| check(*value))
-                }
                 D::PlaceRead { place } => {
                     if *place as usize >= place_len {
                         Err(DurableBodyProjectionFailure::InvalidPlaceReference)
@@ -1225,72 +1119,8 @@ impl DurableOrdinaryBodyPayload {
                     fields: fields.clone(),
                     source_order: source_order.clone(),
                 },
-                DurableAirInstData::FieldGet {
-                    base,
-                    struct_key,
-                    field_index,
-                } => S::FieldGet {
-                    base: *base,
-                    struct_key: struct_key.clone(),
-                    field_index: *field_index,
-                },
-                DurableAirInstData::FieldSet {
-                    slot,
-                    struct_key,
-                    field_index,
-                    value,
-                } => S::FieldSet {
-                    slot: *slot,
-                    struct_key: struct_key.clone(),
-                    field_index: *field_index,
-                    value: *value,
-                },
-                DurableAirInstData::ParamFieldSet {
-                    param_slot,
-                    inner_offset,
-                    struct_key,
-                    field_index,
-                    value,
-                } => S::ParamFieldSet {
-                    param_slot: *param_slot,
-                    inner_offset: *inner_offset,
-                    struct_key: struct_key.clone(),
-                    field_index: *field_index,
-                    value: *value,
-                },
                 DurableAirInstData::ArrayInit { elements } => S::ArrayInit {
                     elements: elements.clone(),
-                },
-                DurableAirInstData::IndexGet {
-                    base,
-                    array_type,
-                    index,
-                } => S::IndexGet {
-                    base: *base,
-                    array_type: array_type.import_dto(),
-                    index: *index,
-                },
-                DurableAirInstData::IndexSet {
-                    slot,
-                    array_type,
-                    index,
-                    value,
-                } => S::IndexSet {
-                    slot: *slot,
-                    array_type: array_type.import_dto(),
-                    index: *index,
-                    value: *value,
-                },
-                DurableAirInstData::ParamIndexSet {
-                    param_slot,
-                    array_type,
-                    index,
-                    value,
-                } => S::ParamIndexSet {
-                    param_slot: *param_slot,
-                    array_type: array_type.import_dto(),
-                    index: *index,
-                    value: *value,
                 },
                 DurableAirInstData::PlaceRead { place } => S::PlaceRead { place: *place },
                 DurableAirInstData::PlaceWrite { place, value } => S::PlaceWrite {

@@ -43,7 +43,7 @@ use crate::scope::ScopedContext;
 use crate::types::{Type, TypeKind};
 
 // ============================================================================
-// Place Building (ADR-0030 Phase 8)
+// Place Building
 // ============================================================================
 
 /// Projection info collected during place tracing.
@@ -146,8 +146,57 @@ impl PlaceTrace {
 }
 
 impl<'a> BodySema<'a> {
+    /// Materialize an rvalue in a temporary and read one projection from it.
+    ///
+    /// AIR models every projected memory access as a place operation. Values
+    /// that do not already name a local or parameter therefore need a short-
+    /// lived addressable home before they can be projected.
+    pub(crate) fn emit_projected_rvalue_read(
+        &mut self,
+        air: &mut Air,
+        base: AirRef,
+        base_type: Type,
+        projection: AirProjection,
+        result_type: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef> {
+        let temp_slot = ctx.next_slot;
+        ctx.next_slot += self.require_layout_slots(base_type, span)?;
+
+        let storage_live = air.add_inst(AirInst {
+            data: AirInstData::StorageLive { slot: temp_slot },
+            ty: base_type,
+            span,
+        });
+        let alloc = air.add_inst(AirInst {
+            data: AirInstData::Alloc {
+                slot: temp_slot,
+                init: base,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+        let place = air.make_place(AirPlaceBase::Local(temp_slot), base_type, [projection]);
+        let value = air.add_inst(AirInst {
+            data: AirInstData::PlaceRead { place },
+            ty: result_type,
+            span,
+        });
+        let stmts_start = air.add_extra(&[storage_live.as_u32(), alloc.as_u32()]);
+        Ok(air.add_inst(AirInst {
+            data: AirInstData::Block {
+                stmts_start,
+                stmts_len: 2,
+                value,
+            },
+            ty: result_type,
+            span,
+        }))
+    }
+
     // ========================================================================
-    // Place Tracing (ADR-0030 Phase 8)
+    // Place Tracing
     // ========================================================================
 
     /// Try to trace an RIR expression to a place (lvalue).
@@ -3893,7 +3942,8 @@ impl<'a> BodySema<'a> {
 
     /// Analyze a field access.
     ///
-    /// Uses place-based analysis (ADR-0030) when possible for efficient code generation.
+    /// Addressable field chains become a `PlaceRead`; computed bases are first
+    /// materialized in a temporary place.
     fn analyze_field_get(
         &mut self,
         air: &mut Air,
@@ -5055,7 +5105,8 @@ impl<'a> BodySema<'a> {
 
     /// Analyze an array index read.
     ///
-    /// Uses place-based analysis (ADR-0030) when possible for efficient code generation.
+    /// Addressable index chains become a `PlaceRead`; computed bases are first
+    /// materialized in a temporary place.
     fn analyze_index_get(
         &mut self,
         air: &mut Air,
@@ -5570,24 +5621,30 @@ impl<'a> BodySema<'a> {
         }
 
         // Read the fat pointer's two words from the slice value.
-        let ptr_ref = air.add_inst(AirInst {
-            data: AirInstData::FieldGet {
-                base: base_result.air_ref,
+        let ptr_ref = self.emit_projected_rvalue_read(
+            air,
+            base_result.air_ref,
+            base_result.ty,
+            AirProjection::Field {
                 struct_id: slice_struct_id,
                 field_index: 0,
             },
-            ty: ptr_ty,
+            ptr_ty,
             span,
-        });
-        let len_ref = air.add_inst(AirInst {
-            data: AirInstData::FieldGet {
-                base: base_result.air_ref,
+            ctx,
+        )?;
+        let len_ref = self.emit_projected_rvalue_read(
+            air,
+            base_result.air_ref,
+            base_result.ty,
+            AirProjection::Field {
                 struct_id: slice_struct_id,
                 field_index: 1,
             },
-            ty: Type::U64,
+            Type::U64,
             span,
-        });
+            ctx,
+        )?;
 
         // Runtime bounds check: `@assert(index >= 0); @assert(index < len)`
         // traps (exit 101) when the index is out of range. Unsigned indices only
@@ -5715,15 +5772,18 @@ impl<'a> BodySema<'a> {
 
         if method_name == "len" && arg_count == 0 {
             // Read the `len` word (field 1) from the fat pointer.
-            let len_ref = air.add_inst(AirInst {
-                data: AirInstData::FieldGet {
-                    base: recv_result.air_ref,
+            let len_ref = self.emit_projected_rvalue_read(
+                air,
+                recv_result.air_ref,
+                recv_result.ty,
+                AirProjection::Field {
                     struct_id: slice_struct_id,
                     field_index: 1,
                 },
-                ty: Type::U64,
+                Type::U64,
                 span,
-            });
+                ctx,
+            )?;
             return Ok(AnalysisResult::new(len_ref, Type::U64));
         }
 

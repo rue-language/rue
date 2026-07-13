@@ -555,9 +555,9 @@ impl<'a> CfgLower<'a> {
                     Some("From stack (AAPCS64, args > 8)".to_string())
                 }
             }
-            CfgInstData::IndexSet { .. }
-            | CfgInstData::PlaceRead { .. }
-            | CfgInstData::PlaceWrite { .. } => Some("Includes bounds check".to_string()),
+            CfgInstData::PlaceRead { .. } | CfgInstData::PlaceWrite { .. } => {
+                Some("Includes bounds check".to_string())
+            }
             _ => None,
         }
     }
@@ -2261,12 +2261,10 @@ impl<'a> CfgLower<'a> {
                     });
                     self.value_map.insert(value, result_vreg);
                 } else if name_str == "raw" || name_str == "raw_mut" || name_str == "field_ptr" {
-                    // @raw(lvalue) / @raw_mut(lvalue) / @field_ptr(s.field) -
-                    // Take the address of a place. @field_ptr (RUE-301) is the
-                    // field-restricted form; its operand analyzes to a field
-                    // PlaceRead, so it flows through the same PlaceRead arm
-                    // below (lower_place_addr computes the field's address).
-                    // The argument should be a local variable, and we compute its stack address.
+                    // Address-taking intrinsics consume the canonical place
+                    // representation. `field_ptr` is restricted by sema to a
+                    // field projection; all three forms lower that place to an
+                    // address without reading its value.
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let lvalue_val = args[0];
 
@@ -2274,8 +2272,8 @@ impl<'a> CfgLower<'a> {
                     let lvalue_inst = self.ctx.cfg.get_inst(lvalue_val);
                     let lvalue_ty = lvalue_inst.ty;
                     if let CfgInstData::Load { slot } = &lvalue_inst.data {
-                        // Address of a whole local: @raw yields the value's LOW
-                        // end (ADR-0040 / RUE-311) — the highest-numbered frame
+                        // The address of a whole local is its LOW end
+                        // (ADR-0040 / RUE-311) — the highest-numbered frame
                         // slot `slot + count - 1`.
                         let count = self.ctx.type_slot_count(lvalue_ty).max(1);
                         let offset = self.ctx.local_offset(*slot + count - 1);
@@ -2295,13 +2293,11 @@ impl<'a> CfgLower<'a> {
                         crate::place_lower::lower_place_addr(self, result_vreg, place);
                         self.value_map.insert(value, result_vreg);
                     } else if let CfgInstData::Param { index } = &lvalue_inst.data {
-                        // @raw of a function parameter: take the ADDRESS of the
-                        // parameter's storage, not its value (RUE-273). The
+                        // A parameter place denotes the address of its storage,
+                        // not the parameter's value (RUE-273). The
                         // prologue spills every param into the contiguous frame
-                        // param area (slots num_locals..), so the address is the
-                        // frame slot; previously this fell through to the
-                        // value-load fallback below, reinterpreting the param's
-                        // value as a pointer -> segfault.
+                        // param area (slots num_locals..), so its address is the
+                        // corresponding frame slot.
                         let index = *index;
                         if self.ctx.cfg.is_param_inout(index) {
                             // inout params hold a POINTER to the caller's storage;
@@ -2323,7 +2319,7 @@ impl<'a> CfgLower<'a> {
                             self.value_map.insert(value, result_vreg);
                         }
                     } else {
-                        // Sema (RUE-274) requires @raw's operand to be a place, so
+                        // Sema (RUE-274) requires the operand to be a place, so
                         // Load/PlaceRead/Param above cover every legal case. Keep a
                         // defensive fallback for any not-yet-modeled place kind.
                         let vreg = self.get_vreg(lvalue_val);
@@ -2373,150 +2369,11 @@ impl<'a> CfgLower<'a> {
                 crate::agg_slots::lower_struct_init(self, value, *fields_start, *fields_len);
             }
 
-            CfgInstData::FieldSet {
-                slot,
-                struct_id,
-                field_index,
-                value: val,
-            } => {
-                let val_vreg = self.get_vreg(*val);
-                let field_slot_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
-                // Ascending layout (ADR-0040 / RUE-311): the field's slot sits
-                // at the struct's low end (`slot + count - 1`) plus the field's
-                // byte offset — i.e. minus the offset in slot number.
-                let struct_count = self.ctx.struct_total_slot_count(*struct_id);
-                let actual_slot = slot + (struct_count - 1) - field_slot_offset;
-                let offset = self.ctx.local_offset(actual_slot);
-                self.mir.push(Aarch64Inst::Str {
-                    src: Operand::Virtual(val_vreg),
-                    base: Reg::Fp,
-                    offset,
-                });
-            }
-
-            CfgInstData::ParamFieldSet {
-                param_slot,
-                inner_offset,
-                struct_id,
-                field_index,
-                value: val,
-            } => {
-                let val_vreg = self.get_vreg(*val);
-                let field_slot_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
-                let total_offset = *inner_offset + field_slot_offset;
-
-                // Check if this is an inout parameter
-                if self.ctx.cfg.is_param_inout(*param_slot) {
-                    // For inout params, store through the pointer. The pointer is
-                    // the caller place's low end, so the field's ascending byte
-                    // offset is added (ADR-0040 / RUE-311).
-                    let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
-                    self.mir.push(Aarch64Inst::StrIndexedOffset {
-                        src: Operand::Virtual(val_vreg),
-                        base: ptr_vreg,
-                        offset: (total_offset as i32) * 8,
-                    });
-                } else {
-                    // Non-inout param: struct is on our stack
-                    let param_stack_slot = self.ctx.num_locals + *param_slot + total_offset;
-                    let offset = self.ctx.local_offset(param_stack_slot);
-                    self.mir.push(Aarch64Inst::Str {
-                        src: Operand::Virtual(val_vreg),
-                        base: Reg::Fp,
-                        offset,
-                    });
-                }
-            }
-
             CfgInstData::ArrayInit {
                 elements_start,
                 elements_len,
             } => {
                 crate::agg_slots::lower_array_init(self, value, *elements_start, *elements_len);
-            }
-
-            CfgInstData::IndexSet {
-                slot,
-                array_type,
-                index,
-                value: val,
-            } => {
-                let val_vreg = self.get_vreg(*val);
-                let index_vreg = self.get_vreg(*index);
-
-                // Emit runtime bounds check
-                let array_length = self.ctx.array_length(*array_type);
-                self.emit_bounds_check(index_vreg, array_length);
-
-                // Shift left by 3 (multiply by 8)
-                let scaled_index = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::LslImm {
-                    dst: Operand::Virtual(scaled_index),
-                    src: Operand::Virtual(index_vreg),
-                    imm: 3,
-                });
-
-                // Compute base address (base_offset is negative, e.g., -8)
-                // We need addr = FP + base_offset = FP - abs(base_offset)
-                let base_offset = self.ctx.local_offset(*slot);
-                let addr_vreg = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::SubImm {
-                    dst: Operand::Virtual(addr_vreg),
-                    src: Operand::Physical(Reg::Fp),
-                    imm: -base_offset,
-                });
-
-                // Subtract scaled index
-                self.mir.push(Aarch64Inst::SubRR {
-                    dst: Operand::Virtual(addr_vreg),
-                    src1: Operand::Virtual(addr_vreg),
-                    src2: Operand::Virtual(scaled_index),
-                });
-
-                // Store to computed address
-                self.mir.push(Aarch64Inst::StrIndexed {
-                    src: Operand::Virtual(val_vreg),
-                    base: addr_vreg,
-                });
-            }
-
-            CfgInstData::ParamIndexSet {
-                param_slot,
-                array_type,
-                index,
-                value: val,
-            } => {
-                let val_vreg = self.get_vreg(*val);
-                let index_vreg = self.get_vreg(*index);
-
-                // Emit runtime bounds check
-                let array_length = self.ctx.array_length(*array_type);
-                self.emit_bounds_check(index_vreg, array_length);
-
-                // Shift left by 3 (multiply by 8)
-                let scaled_index = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::LslImm {
-                    dst: Operand::Virtual(scaled_index),
-                    src: Operand::Virtual(index_vreg),
-                    imm: 3,
-                });
-
-                // For inout params, store through the pointer
-                // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
-                let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
-                // Calculate address: ptr - (index * 8)
-                // (Arrays are stored with element 0 at the highest address)
-                let addr_vreg = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::SubRR {
-                    dst: Operand::Virtual(addr_vreg),
-                    src1: Operand::Virtual(ptr_vreg),
-                    src2: Operand::Virtual(scaled_index),
-                });
-
-                self.mir.push(Aarch64Inst::StrIndexed {
-                    src: Operand::Virtual(val_vreg),
-                    base: addr_vreg,
-                });
             }
 
             CfgInstData::EnumVariant {
@@ -2781,8 +2638,7 @@ impl<'a> CfgLower<'a> {
                 // for stack slot optimization (LLVM lifetime intrinsics).
             }
 
-            // Place operations (ADR-0030)
-            // These provide a unified abstraction for memory access with projections.
+            // Canonical projected memory operations.
             CfgInstData::PlaceRead { place } => {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);

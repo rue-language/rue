@@ -407,6 +407,20 @@ impl<'a> BodySema<'a> {
                 return Ok(result);
             }
 
+            // Projection-mode reads borrow their source rather than moving it.
+            // Keep addressable local/parameter chains as one canonical place;
+            // only computed rvalues need the temporary spill below.
+            if let Some(trace) = self.try_trace_place(inst_ref, air, ctx)? {
+                let field_type = trace.result_type();
+                let place = Self::build_place_ref(air, &trace);
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::PlaceRead { place },
+                    ty: field_type,
+                    span: field_span,
+                });
+                return Ok(AnalysisResult::new(air_ref, field_type));
+            }
+
             let base_result = self.analyze_inst_for_projection(air, base, ctx)?;
             let base_type = base_result.ty;
 
@@ -447,15 +461,18 @@ impl<'a> BodySema<'a> {
 
             let field_type = struct_field.ty;
 
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::FieldGet {
-                    base: base_result.air_ref,
+            let air_ref = self.emit_projected_rvalue_read(
+                air,
+                base_result.air_ref,
+                base_type,
+                AirProjection::Field {
                     struct_id,
                     field_index: field_index as u32,
                 },
-                ty: field_type,
-                span: field_span,
-            });
+                field_type,
+                field_span,
+                ctx,
+            )?;
             return Ok(AnalysisResult::new(air_ref, field_type));
         }
 
@@ -563,15 +580,18 @@ impl<'a> BodySema<'a> {
             // In projection mode, we allow accessing elements for further projection
             // (e.g., arr[i].field where field is Copy).
 
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::IndexGet {
-                    base: base_result.air_ref,
+            let air_ref = self.emit_projected_rvalue_read(
+                air,
+                base_result.air_ref,
+                base_type,
+                AirProjection::Index {
                     array_type: base_type,
                     index: index_result.air_ref,
                 },
-                ty: element_type,
-                span: inst.span,
-            });
+                element_type,
+                inst.span,
+                ctx,
+            )?;
             return Ok(AnalysisResult::new(air_ref, element_type));
         }
 

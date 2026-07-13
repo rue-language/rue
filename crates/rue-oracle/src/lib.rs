@@ -318,7 +318,6 @@ pub enum ContractViolationKind {
     NonAggregateProjectionRead,
     NonAggregateProjectionWrite,
     PlaceProjectionMetadata,
-    UnexpectedLegacyMutationInstruction,
     InoutArgumentNotLvalue,
     NonIntegerOperationType,
     UnsupportedDebugType,
@@ -2342,17 +2341,6 @@ impl<'a> Interp<'a> {
             } => {
                 let elems = cfg.get_extra(*elements_start, *elements_len).to_vec();
                 Value::Aggregate(self.eval_all(cfg, frame, &elems)?)
-            }
-            legacy @ (CfgInstData::FieldSet { .. }
-            | CfgInstData::IndexSet { .. }
-            | CfgInstData::ParamFieldSet { .. }
-            | CfgInstData::ParamIndexSet { .. }) => {
-                return Err(unsupported(
-                    UnsupportedKind::ContractViolation(
-                        ContractViolationKind::UnexpectedLegacyMutationInstruction,
-                    ),
-                    format!("legacy convenience mutation instruction reached oracle: {legacy:?}"),
-                ));
             }
             // A discriminant-only variant is its tag (an `Int`); a payload-
             // carrying variant is an `Aggregate` whose element 0 is the tag and

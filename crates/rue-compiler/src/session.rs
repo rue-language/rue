@@ -456,14 +456,11 @@ mod durable_body_integration_tests {
                 .iter()
                 .any(|data| matches!(data, crate::DurableAirInstData::Drop { .. }))
         );
-        assert!(instructions.iter().any(|data| matches!(
-            data,
-            crate::DurableAirInstData::PlaceWrite { .. }
-                | crate::DurableAirInstData::FieldSet { .. }
-                | crate::DurableAirInstData::ParamFieldSet { .. }
-                | crate::DurableAirInstData::IndexSet { .. }
-                | crate::DurableAirInstData::ParamIndexSet { .. }
-        )));
+        assert!(
+            instructions
+                .iter()
+                .any(|data| matches!(data, crate::DurableAirInstData::PlaceWrite { .. }))
+        );
         assert!(
             candidates
                 .iter()

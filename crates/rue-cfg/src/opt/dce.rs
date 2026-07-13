@@ -18,7 +18,7 @@
 //! - Intrinsic calls (e.g., @dbg)
 //! - Store instructions (write to memory)
 //! - Alloc instructions (initialize memory)
-//! - FieldSet, IndexSet (write to memory)
+//! - PlaceWrite (write to projected memory)
 //! - Drop instructions (run destructors)
 //! - StorageLive, StorageDead (affect stack allocation)
 
@@ -145,10 +145,6 @@ fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
         CfgInstData::Alloc { .. } => true,
         CfgInstData::Store { .. } => true,
         CfgInstData::ParamStore { .. } => true,
-        CfgInstData::FieldSet { .. } => true,
-        CfgInstData::ParamFieldSet { .. } => true,
-        CfgInstData::IndexSet { .. } => true,
-        CfgInstData::ParamIndexSet { .. } => true,
 
         // Drop runs destructors
         CfgInstData::Drop { .. } => true,
@@ -305,9 +301,6 @@ fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue
                 f(v);
             }
         }
-        CfgInstData::FieldSet { value, .. } => f(*value),
-        CfgInstData::ParamFieldSet { value, .. } => f(*value),
-
         // Array operations
         CfgInstData::ArrayInit {
             elements_start,
@@ -318,15 +311,6 @@ fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue
                 f(v);
             }
         }
-        CfgInstData::IndexSet { index, value, .. } => {
-            f(*index);
-            f(*value);
-        }
-        CfgInstData::ParamIndexSet { index, value, .. } => {
-            f(*index);
-            f(*value);
-        }
-
         // Enum operations: a tuple variant reads its payload operands.
         CfgInstData::EnumVariant {
             payload_start,
