@@ -43,7 +43,6 @@ mod source_identity;
 mod source_metadata;
 mod source_snapshot;
 mod syntax;
-mod unit;
 
 pub use bound_definitions::{
     BoundDefinitionId, BoundDefinitionRecord, BoundDefinitionSet, BoundDefinitionWork,
@@ -113,7 +112,15 @@ pub use source_identity::{
 pub use source_metadata::SourceMetadata;
 pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};
 pub use syntax::SyntaxWork;
-pub use unit::{CompilationUnit, CompilationUnitWork, PhaseReuseWork, SourceStats};
+
+/// Source-volume metrics collected by one-shot batch compilation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceStats {
+    pub files: usize,
+    pub bytes: usize,
+    pub lines: usize,
+    pub tokens: usize,
+}
 
 use rayon::prelude::*;
 use tracing::{info, info_span};
@@ -549,7 +556,7 @@ pub(crate) struct DuplicateSymbolCheck {
 /// pointing at the redefinition, with a label at the first definition.
 ///
 /// This is the single source of truth for duplicate-symbol detection, shared
-/// by [`merge_symbols`] and `CompilationUnit::parse`.
+/// by the legacy raw-AST merge API and canonical batch diagnostics.
 pub(crate) fn detect_duplicate_symbols<'a>(
     files: impl IntoIterator<Item = (&'a str, &'a Ast)>,
     interner: &ThreadedRodeo,
@@ -905,8 +912,8 @@ struct CfgFrontendOutput {
 /// Lower semantic-analysis output through drop-glue synthesis, comptime filtering,
 /// CFG construction, and CFG optimization.
 ///
-/// This is shared by the `CompilationUnit` pipeline and the `--emit` frontend
-/// helpers so the live frontend tail stays in one place.
+/// This is shared by the canonical session and `--emit` frontend helpers so
+/// the live frontend tail stays in one place.
 fn build_functions_and_cfgs(
     sema_output: SemaOutput,
     opt_level: OptLevel,
@@ -1922,8 +1929,8 @@ fn link_system_with_warnings(
 /// 2. Creates object files with relocations
 /// 3. Links them into an executable
 ///
-/// This function is used by `CompilationUnit::compile()` and the legacy
-/// compile functions.
+/// This function is used by canonical batch compilation and legacy compile
+/// entry points.
 pub fn compile_backend(
     functions: &[FunctionWithCfg],
     type_pool: &TypeInternPool,
@@ -2653,20 +2660,6 @@ mod tests {
         );
     }
 
-    fn error_fingerprint(errors: &CompileErrors) -> Vec<(String, Option<Span>, String, String)> {
-        errors
-            .iter()
-            .map(|error| {
-                (
-                    error.kind.code().to_string(),
-                    error.span(),
-                    error.to_string(),
-                    format!("{:?}", error.diagnostic()),
-                )
-            })
-            .collect()
-    }
-
     #[test]
     fn canonical_batch_reports_one_pass_structural_work() {
         let root = FileId::new(7);
@@ -2725,7 +2718,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_batch_preserves_legacy_caller_order_for_frontend_errors() {
+    fn canonical_batch_frontend_errors_are_deterministic() {
         let cases = [
             ("fn z() -> i32 { # }", "fn main() -> i32 { $ }"),
             (
@@ -2760,23 +2753,34 @@ mod tests {
                 .unwrap();
                 let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
                 let options = CompileOptions::default();
-                let mut legacy =
-                    CompilationUnit::from_source_snapshot(snapshot.clone(), options.clone());
-
-                let legacy_errors = legacy.run_all().unwrap_err();
                 let canonical_errors =
                     compile_source_snapshot_with_options(&snapshot, &options).unwrap_err();
+                let repeated =
+                    compile_source_snapshot_with_options(&snapshot, &options).unwrap_err();
+                let fingerprint = |errors: &CompileErrors| {
+                    errors
+                        .iter()
+                        .map(|error| {
+                            (
+                                error.kind.code().to_string(),
+                                error.span(),
+                                error.to_string(),
+                                format!("{:?}", error.diagnostic()),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
                 assert_eq!(
-                    error_fingerprint(&legacy_errors),
-                    error_fingerprint(&canonical_errors),
-                    "reversed={reversed}, left={left}"
+                    fingerprint(&canonical_errors),
+                    fingerprint(&repeated),
+                    "diagnostics changed between identical queries: reversed={reversed}, left={left}"
                 );
             }
         }
     }
 
     #[test]
-    fn canonical_batch_matches_legacy_output_for_import_graph() {
+    fn canonical_batch_output_is_stable_for_relocated_import_graph() {
         let snapshot = |root: FileId, helper: FileId, directory: &str, reversed: bool| {
             let main_path = format!("{directory}/main.rue");
             let helper_path = format!("{directory}/helper.rue");
@@ -2814,9 +2818,6 @@ mod tests {
             };
             let mut expected = None;
             for snapshot in &snapshots {
-                let mut legacy =
-                    CompilationUnit::from_source_snapshot(snapshot.clone(), options.clone());
-                let legacy = legacy.run_all().unwrap();
                 let canonical = compile_source_snapshot_with_options(snapshot, &options).unwrap();
                 let warnings = canonical
                     .warnings
@@ -2824,15 +2825,6 @@ mod tests {
                     .map(ToString::to_string)
                     .collect::<Vec<_>>();
 
-                assert_eq!(legacy.elf, canonical.elf);
-                assert_eq!(
-                    legacy
-                        .warnings
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>(),
-                    warnings
-                );
                 if let Some((elf, expected_warnings)) = &expected {
                     assert_eq!(elf, &canonical.elf);
                     assert_eq!(expected_warnings, &warnings);
@@ -2855,12 +2847,45 @@ mod tests {
                 ..CompileOptions::default()
             },
         ] {
-            let mut legacy =
-                CompilationUnit::from_source_snapshot(snapshots[0].clone(), options.clone());
-            let legacy = legacy.run_all().unwrap_err();
-            let canonical =
-                compile_source_snapshot_with_options(&snapshots[0], &options).unwrap_err();
-            assert_eq!(error_fingerprint(&legacy), error_fingerprint(&canonical));
+            compile_source_snapshot_with_options(&snapshots[0], &options).unwrap_err();
+        }
+    }
+
+    #[test]
+    fn production_sources_do_not_restore_the_retired_peer_orchestrator() {
+        let retired_type = ["Compilation", "Unit"].concat();
+        let retired_module = ["mod ", "unit", ";"].concat();
+        for (path, source) in [
+            ("rue-compiler/src/lib.rs", include_str!("lib.rs")),
+            (
+                "rue-compiler/src/frontend_session.rs",
+                include_str!("frontend_session.rs"),
+            ),
+            (
+                "rue-compiler/src/parsed_modules.rs",
+                include_str!("parsed_modules.rs"),
+            ),
+            (
+                "rue-compiler/src/canonical_merge.rs",
+                include_str!("canonical_merge.rs"),
+            ),
+            (
+                "rue-compiler/src/canonical_lower.rs",
+                include_str!("canonical_lower.rs"),
+            ),
+            (
+                "rue-compiler/src/canonical_semantic.rs",
+                include_str!("canonical_semantic.rs"),
+            ),
+        ] {
+            assert!(
+                !source.contains(&retired_type),
+                "{path} must query CanonicalFrontendSession directly"
+            );
+            assert!(
+                !source.contains(&retired_module),
+                "{path} must not restore independent unit.rs phase sequencing"
+            );
         }
     }
 
@@ -3768,14 +3793,11 @@ mod tests {
                 ]),
             )
             .unwrap();
-            let mut unit = CompilationUnit::with_source_metadata(
-                sources,
-                source_metadata,
-                CompileOptions::default(),
-            )
-            .unwrap();
-            unit.run_frontend().expect("frontend should compile");
-            let mut names: Vec<_> = unit
+            let snapshot = SourceSnapshot::from_sources(&sources, source_metadata).unwrap();
+            let frontend = query_canonical_frontend(&snapshot, &CompileOptions::default())
+                .expect("frontend should compile");
+            let mut names: Vec<_> = frontend
+                .semantic()
                 .functions()
                 .iter()
                 .map(|func| func.analyzed.name.clone())
@@ -3879,15 +3901,11 @@ mod tests {
                 ]),
             )
             .unwrap();
-            let mut unit = CompilationUnit::with_source_metadata(
-                sources,
-                source_metadata,
-                CompileOptions::default(),
-            )
-            .unwrap();
-            unit.run_frontend().expect("frontend should compile");
-
-            let pool = unit.type_pool();
+            let snapshot = SourceSnapshot::from_sources(&sources, source_metadata).unwrap();
+            let frontend = query_canonical_frontend(&snapshot, &CompileOptions::default())
+                .expect("frontend should compile");
+            let semantic = frontend.semantic();
+            let pool = semantic.type_pool();
             let mut names = std::collections::BTreeSet::new();
             for id in pool.all_struct_ids() {
                 if pool.struct_def(id).name == "Payload" {
@@ -3899,7 +3917,7 @@ mod tests {
                     names.insert(format!("enum:{}", pool.enum_symbol_name(id)));
                 }
             }
-            for function in unit.functions() {
+            for function in semantic.functions() {
                 let name = &function.analyzed.name;
                 if name.contains("Payload$") || name.contains("Choice$") {
                     names.insert(format!("fn:{name}"));
@@ -3970,15 +3988,11 @@ mod tests {
             ]),
         )
         .unwrap();
-        let mut unit = CompilationUnit::with_source_metadata(
-            sources,
-            source_metadata,
-            CompileOptions::default(),
-        )
-        .unwrap();
-        unit.run_frontend().expect("frontend should compile");
-
-        let drop_glue_names: std::collections::BTreeSet<_> = unit
+        let snapshot = SourceSnapshot::from_sources(&sources, source_metadata).unwrap();
+        let frontend = query_canonical_frontend(&snapshot, &CompileOptions::default())
+            .expect("frontend should compile");
+        let drop_glue_names: std::collections::BTreeSet<_> = frontend
+            .semantic()
             .functions()
             .iter()
             .map(|function| function.analyzed.name.as_str())
@@ -4011,10 +4025,17 @@ mod tests {
                 FileId::new(2),
             ),
         ];
-        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
-        unit.run_frontend().expect("frontend should compile");
-
-        let warnings = unit
+        let metadata = SourceMetadata::from_sources(
+            &sources,
+            FileId::new(1),
+            std::collections::HashMap::new(),
+        )
+        .unwrap();
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+        let frontend = query_canonical_frontend(&snapshot, &CompileOptions::default())
+            .expect("frontend should compile");
+        let warnings = frontend
+            .semantic()
             .warnings()
             .iter()
             .map(ToString::to_string)

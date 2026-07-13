@@ -102,9 +102,8 @@ pub(crate) fn parse_snapshot(snapshot: &SourceSnapshot) -> SnapshotParseOutcome 
 
 /// Run the shared snapshot parser without creating its outer `parse` span.
 ///
-/// Entry points own that span because `CompilationUnit::parse` historically
-/// includes symbol merging in it, while direct snapshot parsing ends after the
-/// per-file syntax work. The lexer/parser kernel itself remains shared.
+/// Entry points own the outer span so presentation and canonical parse queries
+/// can expose their distinct timing trees while sharing the parser kernel.
 pub(crate) fn run_snapshot_unspanned(snapshot: &SourceSnapshot) -> SnapshotParseOutcome {
     let mut files = Vec::with_capacity(snapshot.len());
     let mut interner = ThreadedRodeo::new();
