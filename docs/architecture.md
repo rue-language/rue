@@ -82,6 +82,14 @@ the CLI and tests. The `rue` crate implements source discovery, module loading,
 file processing, target and optimization selection, emit modes,
 linking, timing, and diagnostic rendering.
 
+Embedding semantic compilation uses the same canonical boundary as the CLI:
+construct a `SourceSnapshot` whose `SourceMetadata` explicitly identifies the
+root, physical and logical module paths, update a `CanonicalFrontendSession`,
+and query it with `CompileOptions`. Parser `Ast` values remain available for
+syntax inspection and presentation, but are not semantic compiler inputs; this
+prevents source, module, target, preview-feature, and optimization identity from
+being inferred or split across unrelated arguments.
+
 `rue-error` defines stable error categories, suggestions, warnings, preview
 features, and internal-compiler-error reporting. `rue-span` maps byte spans to
 files and line/column positions.

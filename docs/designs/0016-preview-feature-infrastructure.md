@@ -71,14 +71,19 @@ pub fn compile_frontend_with_options(
     preview_features: &PreviewFeatures,  // NEW
 ) -> CompileResult<CompileState>
 
-pub fn compile_frontend_from_ast_with_options(
-    ast: Ast,
-    opt_level: OptLevel,
-    preview_features: &PreviewFeatures,  // NEW
-) -> CompileResult<CompileState>
+let options = CompileOptions {
+    preview_features,
+    ..CompileOptions::default()
+};
+session.update(&source_snapshot).into_result()?;
+let semantic = session.semantic(&options)?;
 ```
 
-Update the call in `compile_with_options()` to pass the features through.
+`SourceSnapshot` supplies source/module identity, while `CompileOptions`
+supplies the target, preview features, optimization, and link configuration.
+Raw parser AST entry points were removed by RUE-734; the snippet above reflects
+the current canonical embedding boundary rather than that retired historical
+adapter.
 
 ### 2. Add `preview_features` to Sema
 

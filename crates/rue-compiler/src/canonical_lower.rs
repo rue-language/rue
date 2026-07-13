@@ -172,15 +172,12 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use rue_rir::{AstGen, RirPrinter};
+    use rue_rir::RirPrinter;
     use rue_span::FileId;
 
     use super::*;
     use crate::parsed_modules::{ParsedProgram, parse_source_snapshot_modules};
-    use crate::{
-        SourceMetadata, SourceSnapshot, merge_parsed_modules, merge_symbols,
-        parse_all_files_with_source_snapshot,
-    };
+    use crate::{SourceMetadata, SourceSnapshot, merge_parsed_modules};
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -270,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn caller_order_presentation_matches_legacy_without_relowering() {
+    fn caller_order_presentation_differs_from_canonical_semantic_order() {
         let source = snapshot(
             &[
                 (
@@ -290,17 +287,10 @@ mod tests {
         );
         let parsed = parse_source_snapshot_modules(&source).unwrap();
         let canonical = lower_canonical_rir(&merge_parsed_modules(&parsed).unwrap()).unwrap();
-        let legacy = merge_symbols(parse_all_files_with_source_snapshot(&source).unwrap()).unwrap();
-        let legacy_rir = AstGen::generate_items(&legacy.interner, legacy.ast.items());
-
-        assert_ne!(
-            print(&canonical),
-            RirPrinter::new(&legacy_rir, &legacy.interner).to_string()
-        );
-        assert_eq!(
-            print_in_snapshot_order(&canonical, &source),
-            RirPrinter::new(&legacy_rir, &legacy.interner).to_string()
-        );
+        let semantic = print(&canonical);
+        let presentation = print_in_snapshot_order(&canonical, &source);
+        assert!(semantic.find("alpha").unwrap() < semantic.find("zed").unwrap());
+        assert!(presentation.find("zed").unwrap() < presentation.find("alpha").unwrap());
         assert_eq!(canonical.work().parser_invocations, 0);
     }
 
@@ -334,31 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_rir_matches_the_legacy_shared_interner_lowering() {
-        let source = snapshot(
-            &[
-                (
-                    1,
-                    "/a.rue",
-                    "a.rue",
-                    "struct Point { x: i32 } fn make(value: i32) -> Point { Point { x: value } }",
-                ),
-                (2, "/b.rue", "b.rue", "fn answer() -> i32 { 42 }"),
-            ],
-            1,
-        );
-        let parsed = parse_source_snapshot_modules(&source).unwrap();
-        let canonical = lower_canonical_rir(&merge_parsed_modules(&parsed).unwrap()).unwrap();
-
-        let legacy = merge_symbols(parse_all_files_with_source_snapshot(&source).unwrap()).unwrap();
-        let legacy_rir = AstGen::generate_items(&legacy.interner, legacy.ast.items());
-        let legacy = RirPrinter::new(&legacy_rir, &legacy.interner).to_string();
-
-        assert_eq!(print(&canonical), legacy);
-    }
-
-    #[test]
-    fn adversarial_symbol_surfaces_match_legacy_lowering() {
+    fn adversarial_symbol_surfaces_are_translated() {
         let source = snapshot(
             &[
                 (
@@ -422,11 +388,6 @@ mod tests {
         let canonical = lower_canonical_rir(&merge_parsed_modules(&parsed).unwrap()).unwrap();
         let rendered = print(&canonical);
 
-        let legacy = merge_symbols(parse_all_files_with_source_snapshot(&source).unwrap()).unwrap();
-        let legacy_rir = AstGen::generate_items(&legacy.interner, legacy.ast.items());
-        let legacy = RirPrinter::new(&legacy_rir, &legacy.interner).to_string();
-
-        assert_eq!(rendered, legacy);
         assert!(canonical.work().symbol_fields_translated > 40);
         assert!(
             canonical
