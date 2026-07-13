@@ -2542,24 +2542,6 @@ impl<'a> ConstraintGenerator<'a> {
                 result_type
             }
 
-            // Associated function call: `Type.function(args)` lowers to an
-            // `AssocFnCall` only through legacy AST nodes; `.`-spelled calls
-            // reach the `MethodCall` arm above, which forwards a type-name
-            // receiver here (RUE-488).
-            InstData::AssocFnCall {
-                type_name,
-                function,
-                args_start,
-                args_len,
-            } => self.generate_type_qualified_call(
-                *type_name,
-                *function,
-                *args_start,
-                *args_len,
-                span,
-                ctx,
-            ),
-
             // Comptime block: the type depends on whether evaluation succeeds at compile time.
             // For type inference, we use a fresh type variable that can unify with
             // whatever type is expected from the context (e.g., a let binding's type annotation).
@@ -2737,8 +2719,8 @@ impl<'a> ConstraintGenerator<'a> {
     /// Generate constraints for a type-qualified call — an associated-function
     /// call or an enum tuple-variant construction — resolving the callee by type
     /// name and constraining each argument to the declared parameter/payload
-    /// type. Shared by the `AssocFnCall` arm and the `MethodCall` arm's
-    /// type-name-receiver forwarding (`Type.function(args)`, RUE-488). Getting
+    /// type. The `MethodCall` arm forwards type-name receivers here
+    /// (`Type.function(args)`, RUE-488). Getting
     /// the argument constraints here — not just in sema — is what pins a literal
     /// like the `8` in `String.with_capacity(8)` to the declared `u64` parameter
     /// instead of letting it default to `i32`.

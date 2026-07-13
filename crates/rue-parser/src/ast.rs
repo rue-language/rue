@@ -637,8 +637,6 @@ pub enum Expr {
     Index(IndexExpr),
     /// Path expression (e.g., `Color::Red`)
     Path(PathExpr),
-    /// Associated function call (e.g., `Point::origin()`)
-    AssocFnCall(AssocFnCallExpr),
     /// Self expression (e.g., `self` in method bodies)
     SelfExpr(SelfExpr),
     /// Comptime block expression (e.g., `comptime { 1 + 2 }`)
@@ -1018,20 +1016,6 @@ pub struct PathExpr {
     pub span: Span,
 }
 
-/// An associated function call expression (e.g., `Point::origin()` or `module.Point::origin()`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AssocFnCallExpr {
-    /// Optional module/namespace prefix (e.g., `utils` in `utils.Point::origin()`)
-    pub base: Option<Box<Expr>>,
-    /// The type name (e.g., `Point`)
-    pub type_name: Ident,
-    /// The function name (e.g., `origin`)
-    pub function: Ident,
-    /// Arguments
-    pub args: Vec<CallArg>,
-    pub span: Span,
-}
-
 /// A statement (does not produce a value).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
@@ -1224,7 +1208,6 @@ impl Expr {
             Expr::ArrayLit(array_lit) => array_lit.span,
             Expr::Index(index_expr) => index_expr.span,
             Expr::Path(path_expr) => path_expr.span,
-            Expr::AssocFnCall(assoc_fn_call) => assoc_fn_call.span,
             Expr::SelfExpr(self_expr) => self_expr.span,
             Expr::Comptime(comptime_expr) => comptime_expr.span,
             Expr::Checked(checked_expr) => checked_expr.span,
@@ -1589,18 +1572,6 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             path.type_name.name.into_usize(),
             path.variant.name.into_usize()
         ),
-        Expr::AssocFnCall(assoc_fn_call) => {
-            writeln!(
-                f,
-                "AssocFnCall sym:{}::sym:{}",
-                assoc_fn_call.type_name.name.into_usize(),
-                assoc_fn_call.function.name.into_usize()
-            )?;
-            for arg in &assoc_fn_call.args {
-                fmt_call_arg(f, arg, level + 1)?;
-            }
-            Ok(())
-        }
         Expr::SelfExpr(_) => {
             writeln!(f, "SelfExpr")
         }

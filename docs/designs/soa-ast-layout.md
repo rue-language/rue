@@ -152,7 +152,6 @@ pub enum NodeTag {
     Call,               // lhs=callee_name, rhs=extra(args)
     MethodCall,         // lhs=receiver, rhs=extra(method_name, args)
     IntrinsicCall,      // lhs=intrinsic_name, rhs=extra(args)
-    AssocFnCall,        // lhs=type_name, rhs=extra(fn_name, args)
 
     // Struct operations
     StructLit,          // lhs=struct_name, rhs=extra(field_inits)

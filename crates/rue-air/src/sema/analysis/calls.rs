@@ -672,7 +672,7 @@ impl<'a> BodySema<'a> {
         ))
     }
 
-    /// Implementation for AssocFnCall.
+    /// Analyze a type-qualified associated-function call.
     ///
     /// `resolved` carries a struct already resolved (and visibility-checked,
     /// E0706) by the module-qualified path (`m.Type.assoc()`, RUE-525): the

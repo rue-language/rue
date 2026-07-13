@@ -299,14 +299,6 @@ impl Validator<'_> {
                     self.check_expr(base);
                 }
             }
-            Expr::AssocFnCall(a) => {
-                if let Some(base) = &a.base {
-                    self.check_expr(base);
-                }
-                for arg in &a.args {
-                    self.check_expr(&arg.expr);
-                }
-            }
             Expr::Comptime(c) => self.check_expr(&c.expr),
             Expr::Checked(c) => self.check_expr(&c.expr),
             Expr::TypeLit(t) => self.check_type_expr(&t.type_expr),

@@ -84,7 +84,6 @@ mod tests {
         "IndexSet",
         // Methods
         "MethodCall",
-        "AssocFnCall",
         "DropFnDecl",
     ];
 
