@@ -295,6 +295,13 @@ impl RirDeclarationIndex {
         candidates.first().copied()
     }
 
+    /// Every source free-function declaration in deterministic RIR order.
+    /// Used to verify that declaration binding has materialized the complete
+    /// source-function namespace before constructing `BoundSema`.
+    pub(super) fn all_free_functions(&self) -> &[InstRef] {
+        &self.free_functions
+    }
+
     #[inline]
     pub(super) fn is_named_method(&self, inst_ref: InstRef) -> bool {
         self.named_method_refs.contains(&inst_ref)
@@ -316,7 +323,7 @@ impl RirDeclarationIndex {
 
     #[cfg(test)]
     fn free_functions(&self) -> &[InstRef] {
-        &self.free_functions
+        self.all_free_functions()
     }
 
     #[cfg(test)]

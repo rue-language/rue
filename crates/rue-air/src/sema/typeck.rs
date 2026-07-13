@@ -977,8 +977,10 @@ impl<'a> Sema<'a> {
             self.resolve_type_module_prefix(&segments[..segments.len() - 1], span)?;
         let member = segments[segments.len() - 1];
         let member_sym = self.interner.get_or_intern(member);
-        if let Some(module_file_id) = module_file_id {
-            self.ensure_free_function_signature(member_sym, Some(module_file_id))?;
+        if self.declaration_binding_active
+            && let Some(module_file_id) = module_file_id
+        {
+            self.collect_free_function_signature_during_binding(member_sym, Some(module_file_id))?;
         }
         let function_key = module_file_id
             .and_then(|file_id| self.resolve_function_name_local(member_sym, file_id))
@@ -1144,8 +1146,10 @@ impl<'a> Sema<'a> {
         let module_file_id = module_file_id?;
         let member = segments[segments.len() - 1];
         let member_sym = self.interner.get_or_intern(member);
-        self.ensure_free_function_signature(member_sym, Some(module_file_id))
-            .ok()?;
+        if self.declaration_binding_active {
+            self.collect_free_function_signature_during_binding(member_sym, Some(module_file_id))
+                .ok()?;
+        }
         let function_key = self
             .resolve_function_name_local(member_sym, module_file_id)
             .unwrap_or(member_sym);
@@ -1443,7 +1447,7 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<Type> {
         let declaration_type_observer = self.declaration_type_observer.clone();
         let name_sym = self.interner.get_or_intern(call_name);
-        // The constructor may not be collected yet: struct-field and
+        // During declaration binding, the constructor may not be collected yet: struct-field and
         // enum-payload types, const initializers, and earlier function
         // signatures all resolve before the main declaration sweep reaches
         // the callee's `FnDecl`, so `struct S { v: Vec(i32) }` — or a
@@ -1452,8 +1456,8 @@ impl<'a> Sema<'a> {
         // Collect the same-file declaration on demand, mirroring the
         // declaration-time indexed const-alias resolution path.
         let mut name_key = self.resolve_function_name_local(name_sym, span.file_id);
-        if name_key.is_none() {
-            self.ensure_free_function_signature(name_sym, Some(span.file_id))?;
+        if name_key.is_none() && self.declaration_binding_active {
+            self.collect_free_function_signature_during_binding(name_sym, Some(span.file_id))?;
             name_key = self.resolve_function_name_local(name_sym, span.file_id);
         }
         let Some(name_key) = name_key else {
@@ -1728,8 +1732,8 @@ impl<'a> Sema<'a> {
             Some(name_sym)
         } else {
             let mut key = self.resolve_function_name_local(name_sym, span.file_id);
-            if key.is_none() {
-                self.ensure_free_function_signature(name_sym, Some(span.file_id))?;
+            if key.is_none() && self.declaration_binding_active {
+                self.collect_free_function_signature_during_binding(name_sym, Some(span.file_id))?;
                 key = self.resolve_function_name_local(name_sym, span.file_id);
             }
             key
@@ -2437,7 +2441,12 @@ impl<'a> Sema<'a> {
             let module_file_id = module_file_id.ok_or_else(unknown)?;
             let member = segments[segments.len() - 1];
             let member_sym = self.interner.get_or_intern(member);
-            self.ensure_free_function_signature(member_sym, Some(module_file_id))?;
+            if self.declaration_binding_active {
+                self.collect_free_function_signature_during_binding(
+                    member_sym,
+                    Some(module_file_id),
+                )?;
+            }
             let key = self
                 .resolve_function_name_local(member_sym, module_file_id)
                 .ok_or_else(unknown)?;
@@ -2450,8 +2459,8 @@ impl<'a> Sema<'a> {
         } else {
             let name_sym = self.interner.get_or_intern(call_name);
             let mut key = self.resolve_function_name_local(name_sym, span.file_id);
-            if key.is_none() {
-                self.ensure_free_function_signature(name_sym, Some(span.file_id))?;
+            if key.is_none() && self.declaration_binding_active {
+                self.collect_free_function_signature_during_binding(name_sym, Some(span.file_id))?;
                 key = self.resolve_function_name_local(name_sym, span.file_id);
             }
             let key = key.ok_or_else(unknown)?;

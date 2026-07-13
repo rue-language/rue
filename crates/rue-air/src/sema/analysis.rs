@@ -46,6 +46,9 @@ use crate::types::{
 pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
     debug_assert!(!sema.declaration_binding_active);
     debug_assert!(sema.const_resolution_in_progress.is_empty());
+    debug_assert!(sema.fn_signatures_in_flight.is_empty());
+    debug_assert!(sema.source_free_function_signatures_are_complete());
+    let bound_source_function_signature_count = sema.functions_by_file_name.len();
 
     // Declarations are complete: re-point destructor symbols of struct
     // names that span multiple files at their file-qualified form (RUE-571).
@@ -56,6 +59,12 @@ pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResul
     // ADR-0045 defines reachability from `main` as the function-body analysis
     // frontier for every executable.
     let result = analyze_function_bodies_lazy(&mut sema);
+    debug_assert_eq!(
+        sema.functions_by_file_name.len(),
+        bound_source_function_signature_count,
+        "body analysis may not insert or remove source function signatures"
+    );
+    debug_assert!(sema.source_free_function_signatures_are_complete());
 
     // Sema→CFG boundary invariant (RUE-153): a value may only carry the
     // `<error>` type as part of error recovery, i.e. when at least one

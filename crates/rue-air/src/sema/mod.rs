@@ -223,8 +223,8 @@ pub struct Sema<'a> {
     /// `MAX_SPECIALIZATION_ROUNDS`, emitting the same E1200 (RUE-261).
     pub(crate) comptime_type_call_depth: usize,
     /// Internal names of free functions whose signatures are mid-collection in
-    /// [`Self::ensure_free_function_signature`]. Collecting a signature
-    /// resolves its parameter/return types, which may name other type
+    /// [`Self::collect_free_function_signature_during_binding`]. Collecting a
+    /// signature resolves its parameter/return types, which may name other type
     /// constructors and collect *them* on demand (RUE-603); a signature cycle
     /// (`fn A(x: B(i32))` / `fn B(x: A(i32))`) must not re-enter a
     /// mid-collection signature, or the reduction would recurse forever.

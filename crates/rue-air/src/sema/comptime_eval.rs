@@ -1396,9 +1396,12 @@ impl Sema<'_> {
             };
             module_file_id
         };
-        // Ensure the member's signature is collected, then require membership:
-        // the resolved function must actually be declared in the module's file.
-        self.ensure_free_function_signature(method, Some(module_file_id))?;
+        // Declaration binding may reach this call before its source-order
+        // signature pass. Once `BoundSema` exists, membership is read-only and
+        // a missing signature is authoritative.
+        if self.declaration_binding_active {
+            self.collect_free_function_signature_during_binding(method, Some(module_file_id))?;
+        }
         let function_key = self
             .resolve_function_name_local(method, module_file_id)
             .unwrap_or(method);
@@ -1524,7 +1527,7 @@ impl Sema<'_> {
         let (name_key, fn_info) = if let Some(info) = self.functions.get(&name).copied() {
             (name, info)
         } else {
-            // The callee may simply not be collected yet: declaration-bound
+            // During declaration binding, the callee may simply not be collected yet:
             // constant initializers and struct-field / enum-payload types can
             // evaluate before the source-order sweep reaches the callee's
             // `FnDecl` (RUE-603). Collect the evaluating expression's own file's
@@ -1533,7 +1536,9 @@ impl Sema<'_> {
             let Some(file_id) = env.defining_file else {
                 return Ok(None);
             };
-            self.ensure_free_function_signature(name, Some(file_id))?;
+            if self.declaration_binding_active {
+                self.collect_free_function_signature_during_binding(name, Some(file_id))?;
+            }
             let Some((key, info)) = self
                 .resolve_function_name_local(name, file_id)
                 .and_then(|key| self.functions.get(&key).copied().map(|info| (key, info)))

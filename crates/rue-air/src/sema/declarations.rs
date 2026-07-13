@@ -530,7 +530,31 @@ impl<'a> Sema<'a> {
         })();
         self.declaration_binding_active = false;
         debug_assert!(self.const_resolution_in_progress.is_empty());
+        if result.is_ok() {
+            debug_assert!(
+                self.source_free_function_signatures_are_complete(),
+                "BoundSema requires every indexed source free-function signature"
+            );
+            debug_assert!(self.fn_signatures_in_flight.is_empty());
+        }
         result
+    }
+
+    /// Whether every indexed source free function has a resolved signature.
+    /// Anonymous methods are intentionally absent: their signatures belong to
+    /// body-time comptime type construction rather than the source namespace.
+    pub(crate) fn source_free_function_signatures_are_complete(&self) -> bool {
+        self.declaration_index
+            .all_free_functions()
+            .iter()
+            .all(|&declaration| {
+                let inst = self.rir.get(declaration);
+                let InstData::FnDecl { name, .. } = inst.data else {
+                    unreachable!("free-function index contains only FnDecl instructions")
+                };
+                self.resolve_function_name_local(name, inst.span.file_id)
+                    .is_some_and(|key| self.functions.contains_key(&key))
+            })
     }
 
     pub(super) fn capture_resolved_declaration_type_dependencies(&mut self) {
@@ -1920,7 +1944,7 @@ impl<'a> Sema<'a> {
                     return Ok(ConstInit::Value(info.value));
                 }
                 if let Some((fn_file_id, is_pub)) =
-                    self.ensure_free_function_signature(name, Some(file_id))?
+                    self.collect_free_function_signature_during_binding(name, Some(file_id))?
                 {
                     self.record_named_const_dependency(
                         super::NamedConstDependencyTargetEvent::FreeFunction {
@@ -2640,7 +2664,7 @@ impl<'a> Sema<'a> {
             ));
         };
         let Some((_fn_file_id, is_pub)) =
-            self.ensure_free_function_signature(member, Some(mfile))?
+            self.collect_free_function_signature_during_binding(member, Some(mfile))?
         else {
             return Err(CompileError::new(
                 ErrorKind::UnknownModuleMember {
@@ -2798,15 +2822,26 @@ impl<'a> Sema<'a> {
         Some((inst.span.file_id, *is_pub))
     }
 
-    /// Ensure a free function's signature is available during const
-    /// collection, struct-field/enum-payload type resolution, and
-    /// signature-type resolution — all of which can run before the main
-    /// declaration walk reaches the callee's `FnDecl` (RUE-603).
-    pub(crate) fn ensure_free_function_signature(
+    /// Materialize a free function's signature during declaration binding.
+    ///
+    /// This supports dependency-ordered const, aggregate, and signature type
+    /// resolution before the main declaration walk reaches the callee. It is
+    /// deliberately unavailable as a body-phase fallback: after `BoundSema`,
+    /// source function lookup is read-only and a miss is authoritative.
+    ///
+    /// These declaration-time callers include const collection,
+    /// struct-field/enum-payload type resolution, and signature-type
+    /// resolution, all of which can run before the main declaration walk
+    /// reaches the callee's `FnDecl` (RUE-603).
+    pub(crate) fn collect_free_function_signature_during_binding(
         &mut self,
         target: Spur,
         file_id: Option<FileId>,
     ) -> CompileResult<Option<(FileId, bool)>> {
+        debug_assert!(
+            self.declaration_binding_active,
+            "source function signatures may only be materialized during declaration binding"
+        );
         let Some(inst_ref) = self.declaration_index.first_free_function(target, file_id) else {
             return Ok(None);
         };
