@@ -36,8 +36,12 @@ impl<'a> Sema<'a> {
         // binding site (the `let`'s Alloc); the generator brings each alias
         // into scope when its statement is reached and unwinds it with the
         // enclosing block (RUE-530).
+        let runtime_params: Vec<Spur> = params
+            .iter()
+            .filter_map(|(name, _, _, is_comptime)| (!is_comptime).then_some(*name))
+            .collect();
         let comptime_local_bindings =
-            self.precompute_comptime_type_locals(body, type_subst, value_subst);
+            self.precompute_comptime_type_locals(body, type_subst, value_subst, &runtime_params);
 
         // The inline-head pre-reduction below evaluates head expressions
         // without walking the body, so it can't replay lexical scope; give it

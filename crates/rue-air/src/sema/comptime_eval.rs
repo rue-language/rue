@@ -46,7 +46,7 @@
 //!   ([`Sema::try_evaluate_const`] and friends) convert it to `None` and
 //!   defer to the runtime check.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use lasso::{Key, Spur};
@@ -86,6 +86,11 @@ pub(crate) struct ComptimeEnv<'a> {
     /// constants just like locals; comptime parameters resolve through the
     /// substitution maps before this guard is consulted.
     runtime_params: Option<&'a [ParamInfo]>,
+    /// Runtime bindings known only by name during the pre-inference local
+    /// type-alias walk. This lightweight lexical view prevents ordinary
+    /// parameters and earlier `let` bindings from falling through to global
+    /// constant/type lookup before `AnalysisContext` exists.
+    runtime_binding_names: Option<&'a HashSet<Spur>>,
     /// `let` bindings introduced by blocks inside the comptime expression.
     locals: HashMap<Spur, ConstValue>,
     /// Values of module-member accesses (`m.CONST`) appearing in this
@@ -139,6 +144,7 @@ impl<'a> ComptimeEnv<'a> {
             resolved_types: None,
             runtime_locals: None,
             runtime_params: None,
+            runtime_binding_names: None,
             locals: HashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
             defining_file: None,
@@ -157,6 +163,7 @@ impl<'a> ComptimeEnv<'a> {
             resolved_types: None,
             runtime_locals: None,
             runtime_params: None,
+            runtime_binding_names: None,
             locals: HashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
             defining_file: None,
@@ -172,6 +179,7 @@ impl<'a> ComptimeEnv<'a> {
             resolved_types: Some(ctx.resolved_types),
             runtime_locals: Some(&ctx.locals),
             runtime_params: Some(ctx.params),
+            runtime_binding_names: None,
             locals: HashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
             defining_file: Some(ctx.current_file_id),
@@ -204,6 +212,7 @@ impl<'a> ComptimeEnv<'a> {
             resolved_types: Some(resolved_types),
             runtime_locals: None,
             runtime_params: None,
+            runtime_binding_names: None,
             locals: HashMap::new(),
             const_module_members,
             defining_file: Some(defining_file),
@@ -1121,6 +1130,11 @@ impl Sema<'_> {
                         return Ok(None);
                     }
                 }
+                if let Some(names) = env.runtime_binding_names
+                    && names.contains(name)
+                {
+                    return Ok(None);
+                }
                 // 3. Comptime type parameters in scope
                 if let Some(&ty) = env.type_subst.get(name) {
                     return Ok(Some(ConstValue::Type(ty)));
@@ -1510,11 +1524,11 @@ impl Sema<'_> {
         let (name_key, fn_info) = if let Some(info) = self.functions.get(&name).copied() {
             (name, info)
         } else {
-            // The callee may simply not be collected yet: const initializers
-            // (`const V = Vec(i32);`) and struct-field / enum-payload types
-            // evaluate before the main declaration sweep reaches the callee's
-            // `FnDecl` (RUE-603). Collect the evaluating expression's own
-            // file's declaration on demand; a genuinely unknown name stays
+            // The callee may simply not be collected yet: declaration-bound
+            // constant initializers and struct-field / enum-payload types can
+            // evaluate before the source-order sweep reaches the callee's
+            // `FnDecl` (RUE-603). Collect the evaluating expression's own file's
+            // function declaration; a genuinely unknown name stays
             // non-evaluable.
             let Some(file_id) = env.defining_file else {
                 return Ok(None);
@@ -1879,16 +1893,19 @@ impl Sema<'_> {
         body: InstRef,
         type_subst: Option<&HashMap<Spur, Type>>,
         value_subst: Option<&HashMap<Spur, ConstValue>>,
+        runtime_params: &[Spur],
     ) -> HashMap<InstRef, Type> {
         let mut discovered: HashMap<InstRef, Type> = HashMap::new();
         let mut eval_types: HashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
         let eval_values: HashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
+        let mut runtime_bindings: HashSet<Spur> = runtime_params.iter().copied().collect();
         let mut root_frame = Vec::new();
         self.walk_comptime_type_locals(
             body,
             &mut discovered,
             &mut eval_types,
             &eval_values,
+            &mut runtime_bindings,
             &mut root_frame,
         );
         discovered
@@ -1909,7 +1926,8 @@ impl Sema<'_> {
         discovered: &mut HashMap<InstRef, Type>,
         eval_types: &mut HashMap<Spur, Type>,
         eval_values: &HashMap<Spur, ConstValue>,
-        frame: &mut Vec<(Spur, Option<Type>)>,
+        runtime_bindings: &mut HashSet<Spur>,
+        frame: &mut Vec<(Spur, Option<Type>, bool)>,
     ) {
         match &self.rir.get(inst_ref).data {
             InstData::Block { extra_start, len } => {
@@ -1926,22 +1944,39 @@ impl Sema<'_> {
                         discovered,
                         eval_types,
                         eval_values,
+                        runtime_bindings,
                         &mut inner_frame,
                     );
                 }
-                for (name, old) in inner_frame.into_iter().rev() {
-                    match old {
+                for (name, old_type, was_runtime) in inner_frame.into_iter().rev() {
+                    match old_type {
                         Some(ty) => eval_types.insert(name, ty),
                         None => eval_types.remove(&name),
                     };
+                    if was_runtime {
+                        runtime_bindings.insert(name);
+                    } else {
+                        runtime_bindings.remove(&name);
+                    }
                 }
             }
             InstData::Alloc { name, init, .. } => {
                 let (name, init) = (*name, *init);
                 if let Some(name) = name {
-                    if let Some(ty) = self.try_eval_type_alias_init(init, eval_types, eval_values) {
+                    let alias = self.try_eval_type_alias_init(
+                        init,
+                        eval_types,
+                        eval_values,
+                        runtime_bindings,
+                    );
+                    let old_type = eval_types.remove(&name);
+                    let was_runtime = runtime_bindings.remove(&name);
+                    frame.push((name, old_type, was_runtime));
+                    if let Some(ty) = alias {
                         discovered.insert(inst_ref, ty);
-                        frame.push((name, eval_types.insert(name, ty)));
+                        eval_types.insert(name, ty);
+                    } else {
+                        runtime_bindings.insert(name);
                     }
                 }
             }
@@ -1956,6 +1991,7 @@ impl Sema<'_> {
                     discovered,
                     eval_types,
                     eval_values,
+                    runtime_bindings,
                     frame,
                 );
                 if let Some(else_block) = else_block {
@@ -1964,13 +2000,21 @@ impl Sema<'_> {
                         discovered,
                         eval_types,
                         eval_values,
+                        runtime_bindings,
                         frame,
                     );
                 }
             }
             InstData::Loop { body, .. } | InstData::InfiniteLoop { body, .. } => {
                 let body = *body;
-                self.walk_comptime_type_locals(body, discovered, eval_types, eval_values, frame);
+                self.walk_comptime_type_locals(
+                    body,
+                    discovered,
+                    eval_types,
+                    eval_values,
+                    runtime_bindings,
+                    frame,
+                );
             }
             InstData::Match {
                 arms_start,
@@ -1989,6 +2033,7 @@ impl Sema<'_> {
                         discovered,
                         eval_types,
                         eval_values,
+                        runtime_bindings,
                         frame,
                     );
                 }
@@ -2007,12 +2052,16 @@ impl Sema<'_> {
         init: InstRef,
         eval_types: &HashMap<Spur, Type>,
         eval_values: &HashMap<Spur, ConstValue>,
+        runtime_bindings: &HashSet<Spur>,
     ) -> Option<Type> {
         // `eval_const_expr`'s `Call` arm reduces type-function calls
         // compositionally (including nested/delegating ones), so a single
         // evaluation of the initializer handles `let P = Q;`,
         // `let P = struct { .. };`, and `let P = Pair(i32);` alike (RUE-251).
-        match self.try_evaluate_const_with_subst(init, eval_types, eval_values) {
+        let mut env = ComptimeEnv::with_subst(eval_types, eval_values);
+        env.runtime_binding_names = Some(runtime_bindings);
+        env.defining_file = Some(self.rir.get(init).span.file_id);
+        match self.eval_const_expr(init, &mut env).ok().flatten() {
             Some(ConstValue::Type(t)) => Some(t),
             _ => None,
         }

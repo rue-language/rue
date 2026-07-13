@@ -363,6 +363,67 @@ mod tests {
         assert_eq!(many.reachable_declaration_rir_visits, 0);
     }
 
+    #[test]
+    fn arithmetic_heavy_runtime_local_chain_uses_one_declaration_index() {
+        // This mirrors the shape that exposed quadratic semantic work in the
+        // arithmetic_heavy performance fixture: each runtime local depends on
+        // the preceding local. None of these names is a declaration candidate,
+        // so body analysis must not restart top-level constant discovery for
+        // every failed comptime-type-alias probe.
+        const LOCAL_COUNT: usize = 2_500;
+        let mut source = String::from("fn chain(start: i32) -> i32 {\n");
+        source.push_str("let v0 = start + 1;\n");
+        for index in 1..LOCAL_COUNT {
+            source.push_str(&format!("let v{index} = v{} + 1;\n", index - 1));
+        }
+        source.push_str(&format!("v{}\n}}\n", LOCAL_COUNT - 1));
+        source.push_str("fn main() -> i32 { chain(0) }\n");
+
+        let lexer = Lexer::new(&source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().unwrap();
+        let rir = AstGen::new(&ast, &mut interner).generate();
+
+        let bound = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+            .bind_declarations()
+            .unwrap();
+        let binding_work = bound.binding_work();
+        assert_eq!(binding_work.bind_invocations, 1);
+        assert_eq!(binding_work.declaration_index_build_invocations, 1);
+        assert_eq!(binding_work.indexed_const_candidates, 0);
+
+        let output = bound.analyze_all_bodies().unwrap();
+        assert_eq!(output.body_analysis_work.bodies_succeeded, 2);
+        assert_eq!(output.body_analysis_work.bodies_failed, 0);
+        assert_eq!(
+            output.body_analysis_work.reachable_declaration_rir_visits,
+            0
+        );
+    }
+
+    #[test]
+    fn runtime_parameter_prevents_false_local_type_alias_precomputation() {
+        // The file-level type-valued constant has the same name as the runtime
+        // parameter. The parameter wins lexically, so `local` is an ordinary
+        // runtime value and cannot subsequently be used as a type alias.
+        let errors = compile_to_air(
+            "const value = i32;\n\
+             fn use(value: i32) -> i32 {\n\
+                 let local = value;\n\
+                 let result: local = 1;\n\
+                 result\n\
+             }\n\
+             fn main() -> i32 { use(0) }",
+        )
+        .unwrap_err();
+        assert!(
+            errors.iter().any(
+                |error| matches!(&error.kind, ErrorKind::UnknownType(name) if name == "local")
+            )
+        );
+    }
+
     fn named_destructor_lookup_work(irrelevant: usize) -> crate::BodyAnalysisWork {
         let mut source = String::from(
             "struct Target { value: i32 }\n\
