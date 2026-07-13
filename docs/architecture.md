@@ -94,6 +94,20 @@ syntax inspection and presentation, but are not semantic compiler inputs; this
 prevents source, module, target, preview-feature, and optimization identity from
 being inferred or split across unrelated arguments.
 
+Long-lived frontend sessions use explicit bounded historical ownership. A
+session strongly retains at most 16 diagnostic snapshots, evicting in insertion
+order while protecting the latest attempted query, latest successful query,
+and last successful semantic query. Syntax and semantic failures therefore do
+not displace the last-good semantic diagnostics. Callers that need older
+diagnostics clone the returned `Arc`; that caller-owned pin remains valid after
+the session evicts its entry. Invalidation planning strongly retains the eight
+most recently inserted plans and both manifests for each plan, evicting the
+oldest plan first. It deliberately uses no weak-key fallback: every retained
+plan continues to own the complete dependency evidence from which it was
+computed. `CanonicalFrontendSessionWork::retention` reports the current
+session-owned diagnostic entries, distinct source attempts and bytes, unique
+dependency manifests, and invalidation plans.
+
 Syntax output uses an explicit `ParsedAstPresentation` adapter. It walks the
 `SourceSnapshot` in caller-selected order so diagnostics and `--emit ast`
 retain presentation order without constructing a second parsed or merged

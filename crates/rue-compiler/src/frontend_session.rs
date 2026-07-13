@@ -33,6 +33,26 @@ pub struct FrontendQueryWork {
     pub reuses: usize,
 }
 
+/// Session-owned historical artifacts retained after the latest query.
+///
+/// These are gauges, not cumulative work counters. Caller-owned
+/// [`Arc<FrontendDiagnosticSnapshot>`] values are deliberately excluded: once
+/// returned, their lifetime is controlled by the caller rather than the
+/// session's eviction policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrontendRetentionMetrics {
+    /// Diagnostic snapshots strongly owned by the session.
+    pub diagnostic_entries: usize,
+    /// Distinct diagnostic source attempts strongly owned by the session.
+    pub diagnostic_source_attempts: usize,
+    /// Source bytes across those distinct attempts (shared stages count once).
+    pub diagnostic_source_bytes: usize,
+    /// Distinct dependency manifests strongly owned by all session caches.
+    pub dependency_manifests: usize,
+    /// Recent semantic invalidation plans strongly owned by the session.
+    pub invalidation_plans: usize,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CanonicalFrontendSessionWork {
     pub updates: usize,
@@ -71,7 +91,24 @@ pub struct CanonicalFrontendSessionWork {
     /// successful durable baseline. Kept explicit until export is folded into
     /// the primary ordinary bind.
     pub durable_cache_population_bindings: usize,
+    /// Current bounded-retention gauges for long-lived service integrations.
+    pub retention: FrontendRetentionMetrics,
 }
+
+/// Maximum number of diagnostic snapshots owned by a frontend session.
+///
+/// Eviction is deterministic insertion order, except that the latest attempt,
+/// latest successful query, and last successful semantic query are protected.
+/// Those three protected entries fit within this limit. Callers can explicitly
+/// pin any returned snapshot by retaining its `Arc` after session eviction.
+pub const FRONTEND_DIAGNOSTIC_RETENTION_LIMIT: usize = 16;
+
+/// Maximum number of recent invalidation plans owned by a frontend session.
+///
+/// Each entry strongly owns both input manifests. Oldest insertion is evicted
+/// first; weak references are intentionally not used because a plan's
+/// dependency inputs must remain sound for as long as the cached plan exists.
+pub const FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SemanticDependencyManifestWork {
@@ -999,10 +1036,12 @@ pub struct CanonicalFrontendSession {
     semantic_cache: Vec<SemanticCacheEntry>,
     definition_cache: Vec<DefinitionCacheEntry>,
     work: CanonicalFrontendSessionWork,
-    diagnostic_cache: Vec<Arc<FrontendDiagnosticSnapshot>>,
+    diagnostic_cache: VecDeque<Arc<FrontendDiagnosticSnapshot>>,
     latest_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
+    latest_successful_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
+    last_good_semantic_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
     dependency_manifest_cache: Vec<Arc<SemanticDependencyInputManifest>>,
-    invalidation_plan_cache: Vec<InvalidationPlanCacheEntry>,
+    invalidation_plan_cache: VecDeque<InvalidationPlanCacheEntry>,
     durable_declaration_cache: Option<DurableDeclarationCache>,
 }
 
@@ -1050,9 +1089,27 @@ impl CanonicalFrontendSession {
     pub fn work(&self) -> &CanonicalFrontendSessionWork {
         &self.work
     }
+    /// Diagnostic snapshot from the most recently attempted query, whether it
+    /// succeeded or failed.
     pub fn latest_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
         self.latest_diagnostics.as_ref()
     }
+    /// Most recently queried diagnostic snapshot with no errors.
+    pub fn latest_successful_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        self.latest_successful_diagnostics.as_ref()
+    }
+    /// Most recent successful semantic diagnostic snapshot.
+    ///
+    /// Syntax or semantic failures never replace this last-good semantic
+    /// baseline. A caller may clone the returned `Arc` to pin it independently
+    /// of later session eviction.
+    pub fn last_good_semantic_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        self.last_good_semantic_diagnostics.as_ref()
+    }
+    /// Look up an exact source-attempt and query-stage pair while it remains in
+    /// the bounded recent cache.
+    ///
+    /// Clone a returned `Arc` when the artifact must outlive cache eviction.
     pub fn diagnostics_for(
         &self,
         source: &SourceSnapshot,
@@ -1075,10 +1132,18 @@ impl CanonicalFrontendSession {
             .diagnostic_cache
             .iter()
             .find(|entry| same_attempt(entry.source(), source) && entry.stage() == &stage)
+            .cloned()
         {
             self.work.diagnostic_reuses += 1;
-            let existing = existing.clone();
             self.latest_diagnostics = Some(existing.clone());
+            if existing.is_success() {
+                self.latest_successful_diagnostics = Some(existing.clone());
+                if matches!(existing.stage(), FrontendDiagnosticStage::Semantic(_)) {
+                    self.last_good_semantic_diagnostics = Some(existing.clone());
+                }
+            }
+            self.evict_diagnostics();
+            self.refresh_retention_metrics();
             return existing;
         }
         if self.latest_diagnostics.is_some() {
@@ -1094,9 +1159,76 @@ impl CanonicalFrontendSession {
             warnings: warnings.to_vec().into(),
         });
         self.work.diagnostic_publications += 1;
-        self.diagnostic_cache.push(snapshot.clone());
+        self.diagnostic_cache.push_back(snapshot.clone());
         self.latest_diagnostics = Some(snapshot.clone());
+        if snapshot.is_success() {
+            self.latest_successful_diagnostics = Some(snapshot.clone());
+            if matches!(snapshot.stage(), FrontendDiagnosticStage::Semantic(_)) {
+                self.last_good_semantic_diagnostics = Some(snapshot.clone());
+            }
+        }
+        self.evict_diagnostics();
+        self.refresh_retention_metrics();
         snapshot
+    }
+
+    fn evict_diagnostics(&mut self) {
+        while self.diagnostic_cache.len() > FRONTEND_DIAGNOSTIC_RETENTION_LIMIT {
+            let evict = self.diagnostic_cache.iter().position(|entry| {
+                !self
+                    .latest_diagnostics
+                    .as_ref()
+                    .is_some_and(|protected| Arc::ptr_eq(entry, protected))
+                    && !self
+                        .latest_successful_diagnostics
+                        .as_ref()
+                        .is_some_and(|protected| Arc::ptr_eq(entry, protected))
+                    && !self
+                        .last_good_semantic_diagnostics
+                        .as_ref()
+                        .is_some_and(|protected| Arc::ptr_eq(entry, protected))
+            });
+            let Some(evict) = evict else {
+                break;
+            };
+            self.diagnostic_cache.remove(evict);
+        }
+        debug_assert!(self.diagnostic_cache.len() <= FRONTEND_DIAGNOSTIC_RETENTION_LIMIT);
+    }
+
+    fn refresh_retention_metrics(&mut self) {
+        let mut attempts: Vec<&SourceSnapshot> = Vec::new();
+        let mut diagnostic_source_bytes = 0;
+        for diagnostic in &self.diagnostic_cache {
+            if attempts
+                .iter()
+                .any(|source| same_attempt(source, diagnostic.source()))
+            {
+                continue;
+            }
+            diagnostic_source_bytes += diagnostic
+                .source()
+                .files()
+                .map(|source| source.source.len())
+                .sum::<usize>();
+            attempts.push(diagnostic.source());
+        }
+
+        let mut manifests = BTreeSet::new();
+        for manifest in &self.dependency_manifest_cache {
+            manifests.insert(Arc::as_ptr(manifest) as usize);
+        }
+        for entry in &self.invalidation_plan_cache {
+            manifests.insert(Arc::as_ptr(&entry.previous) as usize);
+            manifests.insert(Arc::as_ptr(&entry.current) as usize);
+        }
+        self.work.retention = FrontendRetentionMetrics {
+            diagnostic_entries: self.diagnostic_cache.len(),
+            diagnostic_source_attempts: attempts.len(),
+            diagnostic_source_bytes,
+            dependency_manifests: manifests.len(),
+            invalidation_plans: self.invalidation_plan_cache.len(),
+        };
     }
 
     pub fn update(&mut self, snapshot: &SourceSnapshot) -> CanonicalFrontendUpdate {
@@ -1172,6 +1304,7 @@ impl CanonicalFrontendSession {
                     self.work.definition_entries = 0;
                     self.work.definition_records.clear();
                     self.dependency_manifest_cache.clear();
+                    self.refresh_retention_metrics();
                     self.published = Some(candidate.clone());
                     self.published_snapshot = Some(snapshot.clone());
                     CanonicalFrontendUpdate {
@@ -2409,6 +2542,7 @@ impl CanonicalFrontendSession {
             work,
         });
         self.dependency_manifest_cache.push(manifest.clone());
+        self.refresh_retention_metrics();
         Ok(manifest)
     }
 
@@ -2432,11 +2566,15 @@ impl CanonicalFrontendSession {
         self.work.invalidation_plans.executions += 1;
         let plan = Arc::new(plan_semantic_invalidation(previous, current));
         self.invalidation_plan_cache
-            .push(InvalidationPlanCacheEntry {
+            .push_back(InvalidationPlanCacheEntry {
                 previous: previous.clone(),
                 current: current.clone(),
                 plan: plan.clone(),
             });
+        while self.invalidation_plan_cache.len() > FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT {
+            self.invalidation_plan_cache.pop_front();
+        }
+        self.refresh_retention_metrics();
         plan
     }
 }
@@ -6155,6 +6293,151 @@ mod tests {
         assert!(matches!(first.stage(), FrontendDiagnosticStage::Merge));
         assert_eq!(session.work().merge.executions, 1);
         assert_eq!(session.work().diagnostic_reuses, 1);
+    }
+
+    #[test]
+    fn long_failure_recovery_sequence_bounds_diagnostics_and_preserves_last_good() {
+        let options = CompileOptions::default();
+        let source = |text: &str| snapshot(&[(7, "/p/main.rue", "main.rue", text)], 7);
+        let initial = source("fn main() -> i32 { 0 }");
+        let mut session = CanonicalFrontendSession::new();
+        session.update(&initial).into_result().unwrap();
+        session.semantic(&options).unwrap();
+        assert_eq!(session.work().retention.diagnostic_entries, 3);
+        assert_eq!(session.work().retention.diagnostic_source_attempts, 1);
+        assert_eq!(
+            session.work().retention.diagnostic_source_bytes,
+            initial.files().map(|file| file.source.len()).sum::<usize>()
+        );
+        let initial_good = session.last_good_semantic_diagnostics().unwrap().clone();
+        assert!(initial_good.is_success());
+
+        let first_bad = source("fn main( {");
+        let first_update = session.update(&first_bad);
+        assert!(first_update.result().is_err());
+        let caller_pinned = first_update.diagnostics().clone();
+        assert!(Arc::ptr_eq(
+            session.last_good_semantic_diagnostics().unwrap(),
+            &initial_good
+        ));
+
+        let mut maximum_attempt_bytes: usize = initial.files().map(|file| file.source.len()).sum();
+        for revision in 1..=32 {
+            let syntax_text = format!("// {}\nfn main( {{", "x".repeat(revision));
+            maximum_attempt_bytes = maximum_attempt_bytes.max(syntax_text.len());
+            let syntax_bad = source(&syntax_text);
+            assert!(session.update(&syntax_bad).result().is_err());
+            let before_semantic_failure = session.last_good_semantic_diagnostics().unwrap().clone();
+
+            let semantic_text = format!("fn main() -> i32 {{ missing_{revision} }}");
+            maximum_attempt_bytes = maximum_attempt_bytes.max(semantic_text.len());
+            let semantic_bad = source(&semantic_text);
+            session.update(&semantic_bad).into_result().unwrap();
+            session.semantic(&options).unwrap_err();
+            assert!(Arc::ptr_eq(
+                session.last_good_semantic_diagnostics().unwrap(),
+                &before_semantic_failure
+            ));
+            assert!(!session.latest_diagnostics().unwrap().is_success());
+
+            let valid_text = format!("fn main() -> i32 {{ {revision} }}");
+            maximum_attempt_bytes = maximum_attempt_bytes.max(valid_text.len());
+            let valid = source(&valid_text);
+            session.update(&valid).into_result().unwrap();
+            let recovered = session.semantic(&options).unwrap();
+            let recovered_diagnostics = session.latest_diagnostics().unwrap();
+            assert!(recovered_diagnostics.is_success());
+            assert!(Arc::ptr_eq(
+                recovered_diagnostics,
+                session.latest_successful_diagnostics().unwrap()
+            ));
+            assert!(Arc::ptr_eq(
+                recovered_diagnostics,
+                session.last_good_semantic_diagnostics().unwrap()
+            ));
+            assert!(Arc::ptr_eq(
+                recovered_diagnostics,
+                session
+                    .diagnostics_for(
+                        &valid,
+                        &FrontendDiagnosticStage::Semantic(recovered.input().clone())
+                    )
+                    .unwrap()
+            ));
+        }
+
+        let retention = session.work().retention;
+        assert!(retention.diagnostic_entries <= FRONTEND_DIAGNOSTIC_RETENTION_LIMIT);
+        assert!(retention.diagnostic_source_attempts <= retention.diagnostic_entries);
+        assert!(
+            retention.diagnostic_source_bytes
+                <= FRONTEND_DIAGNOSTIC_RETENTION_LIMIT * maximum_attempt_bytes
+        );
+        assert!(
+            session
+                .diagnostics_for(&first_bad, &FrontendDiagnosticStage::Syntax)
+                .is_none(),
+            "unpinned old cache entry should be evicted"
+        );
+        assert_eq!(caller_pinned.source_revision(), first_bad.source_revision());
+        assert!(!caller_pinned.errors().is_empty());
+
+        let final_source = source("fn main() -> i32 { 32 }");
+        let mut fresh = CanonicalFrontendSession::new();
+        fresh.update(&final_source).into_result().unwrap();
+        let fresh_output = fresh.semantic(&options).unwrap();
+        let retained_output = session.semantic(&options).unwrap();
+        assert_eq!(
+            format!("{:?}", retained_output.functions()),
+            format!("{:?}", fresh_output.functions())
+        );
+        assert_eq!(retained_output.strings(), fresh_output.strings());
+    }
+
+    #[test]
+    fn invalidation_plan_retention_is_fifo_bounded_with_strong_manifest_ownership() {
+        let source = snapshot(
+            &[(7, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            7,
+        );
+        let mut builder = CanonicalFrontendSession::new();
+        builder.update(&source).into_result().unwrap();
+        let base = builder
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        let manifests = (0..=FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT + 3)
+            .map(|_| Arc::new((*base).clone()))
+            .collect::<Vec<_>>();
+        let mut planner = CanonicalFrontendSession::new();
+        let first = planner.semantic_invalidation_plan(&manifests[0], &manifests[1]);
+        let mut last = first.clone();
+        for pair in manifests.windows(2).skip(1) {
+            last = planner.semantic_invalidation_plan(&pair[0], &pair[1]);
+        }
+
+        assert_eq!(
+            planner.work().retention.invalidation_plans,
+            FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT
+        );
+        assert_eq!(
+            planner.work().retention.dependency_manifests,
+            FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT + 1
+        );
+        let executions = planner.work().invalidation_plans.executions;
+        let recomputed = planner.semantic_invalidation_plan(&manifests[0], &manifests[1]);
+        assert!(!Arc::ptr_eq(&first, &recomputed));
+        assert_eq!(planner.work().invalidation_plans.executions, executions + 1);
+        let reused = planner
+            .semantic_invalidation_plan(&manifests[manifests.len() - 2], manifests.last().unwrap());
+        assert!(Arc::ptr_eq(&last, &reused));
+        assert_eq!(
+            planner.work().retention.invalidation_plans,
+            FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT
+        );
+        assert_eq!(
+            planner.work().retention.dependency_manifests,
+            FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT + 2
+        );
     }
 
     #[test]

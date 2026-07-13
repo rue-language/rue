@@ -5,10 +5,11 @@
 use std::{collections::HashMap, env, process, sync::Arc, time::Instant};
 
 use rue_compiler::{
-    CanonicalFrontendSession, CanonicalFrontendSessionWork, CompileOptions, ParsedModulesWork,
-    SemanticDependencyIncompleteReason, SemanticDependencyInputManifest, SemanticDependencySurface,
-    SemanticFullInvalidationReason, SemanticInvalidationPlan, SemanticInvalidationScope,
-    SourceMetadata, SourceSnapshot,
+    CanonicalFrontendSession, CanonicalFrontendSessionWork, CompileOptions,
+    FRONTEND_DIAGNOSTIC_RETENTION_LIMIT, FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT,
+    ParsedModulesWork, SemanticDependencyIncompleteReason, SemanticDependencyInputManifest,
+    SemanticDependencySurface, SemanticFullInvalidationReason, SemanticInvalidationPlan,
+    SemanticInvalidationScope, SourceMetadata, SourceSnapshot,
 };
 use rue_span::FileId;
 use serde_json::{Value, json};
@@ -334,6 +335,16 @@ fn definition_work_json(work: &CanonicalFrontendSessionWork, from: usize) -> Val
     })
 }
 
+fn retention_json(work: &CanonicalFrontendSessionWork) -> Value {
+    json!({
+        "diagnostic_entries": work.retention.diagnostic_entries,
+        "diagnostic_source_attempts": work.retention.diagnostic_source_attempts,
+        "diagnostic_source_bytes": work.retention.diagnostic_source_bytes,
+        "dependency_manifests": work.retention.dependency_manifests,
+        "invalidation_plans": work.retention.invalidation_plans,
+    })
+}
+
 fn measure<F>(session: &mut CanonicalFrontendSession, operation: F) -> Value
 where
     F: FnOnce(&mut CanonicalFrontendSession) -> ParsedModulesWork,
@@ -372,6 +383,7 @@ where
         },
         "semantic_work": semantic_work_json(work, semantic_records),
         "definition_work": definition_work_json(work, definition_records),
+        "retention": retention_json(work),
     })
 }
 
@@ -528,6 +540,7 @@ fn measure_manifest_plan(
             },
             "planner_queries": after_plan.delta(after_manifest).json(),
             "plan": invalidation_plan_json(&plan),
+            "retention": retention_json(session.work()),
         }),
         current,
     )
@@ -667,6 +680,20 @@ fn count(value: &Value, path: &[&str]) -> u64 {
 }
 
 fn assert_structure(scenarios: &[Value], modules: usize) {
+    for scenario in scenarios {
+        assert!(
+            count(scenario, &["retention", "diagnostic_entries"])
+                <= FRONTEND_DIAGNOSTIC_RETENTION_LIMIT as u64
+        );
+        assert!(
+            count(scenario, &["retention", "invalidation_plans"])
+                <= FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT as u64
+        );
+        assert!(
+            count(scenario, &["retention", "dependency_manifests"])
+                <= (FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT * 2 + 1) as u64
+        );
+    }
     let get = |name: &str| {
         scenarios
             .iter()
@@ -1081,7 +1108,7 @@ fn main() {
     println!(
         "{}",
         json!({
-            "schema_version": 7,
+            "schema_version": 8,
             "workload": "canonical_frontend_session_invalidation",
             "configuration": {
                 "modules": config.modules,
