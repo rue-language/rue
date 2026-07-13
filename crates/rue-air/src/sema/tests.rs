@@ -422,6 +422,36 @@ mod tests {
     }
 
     #[test]
+    fn bound_sema_contains_every_source_free_function_signature() {
+        // The struct and `main` both use a type constructor declared later in
+        // source order. Declaration binding may collect that signature early,
+        // but the resulting BoundSema must contain the complete source
+        // function namespace before any body is analyzed.
+        let source = "struct Holder { value: Wrapper(i32) }\n\
+                      fn helper(value: i32) -> i32 { value }\n\
+                      fn main() -> i32 { helper(1) }\n\
+                      fn Wrapper(comptime T: type) -> type { struct { value: T } }";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().unwrap();
+        let rir = AstGen::new(&ast, &mut interner).generate();
+
+        let bound = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+            .bind_declarations()
+            .unwrap();
+        assert_eq!(bound.binding_work().indexed_free_functions, 3);
+        assert_eq!(bound.source_free_function_signature_count(), 3);
+        assert!(bound.source_free_function_signatures_are_complete());
+
+        // Body analysis exercises ordinary source-function lookup; the shared
+        // boundary invariant rejects source-signature mutation on every body
+        // path, including anonymous and specialized bodies.
+        let output = bound.analyze_all_bodies().unwrap();
+        assert_eq!(output.body_analysis_work.bodies_failed, 0);
+    }
+
+    #[test]
     fn late_qualified_import_types_use_one_declaration_index() {
         // Put every import after the declaration that uses it. Binding must
         // resolve each dependency from the declaration index; qualified type

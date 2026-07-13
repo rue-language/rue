@@ -703,6 +703,16 @@ impl Sema<'_> {
 }
 
 impl<'a> BoundSema<'a> {
+    #[cfg(test)]
+    pub(crate) fn source_free_function_signatures_are_complete(&self) -> bool {
+        self.sema.source_free_function_signatures_are_complete()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn source_free_function_signature_count(&self) -> usize {
+        self.sema.functions_by_file_name.len()
+    }
+
     /// Install the compiler-issued identity universe used by ordinary body
     /// analysis. Installation is atomic and rejects duplicate, mixed-issuer,
     /// or non-existent endpoints.
