@@ -1,12 +1,16 @@
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::inst::{AirArgMode, AirInstData, AirRef};
     use crate::sema::{Sema, SemaOutput};
     use crate::types::Type;
+    use lasso::ThreadedRodeo;
     use rue_error::{CompileErrors, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures};
     use rue_lexer::Lexer;
     use rue_parser::Parser;
-    use rue_rir::{AstGen, RirParamMode};
+    use rue_rir::{AstGen, Rir, RirParamMode};
+    use rue_span::FileId;
 
     fn compile_to_air(source: &str) -> MultiErrorResult<SemaOutput> {
         compile_to_air_with_preview_features(source, PreviewFeatures::new())
@@ -26,6 +30,21 @@ mod tests {
 
         let sema = Sema::new(&rir, &mut interner, preview_features);
         sema.analyze_all()
+    }
+
+    fn lower_files(files: &[(&str, FileId)]) -> (Rir, ThreadedRodeo) {
+        let mut interner = ThreadedRodeo::default();
+        let mut items = Vec::new();
+        for &(source, file_id) in files {
+            let (tokens, next) = Lexer::with_interner_and_file_id(source, interner, file_id)
+                .tokenize()
+                .unwrap();
+            let (ast, next) = Parser::new(tokens, next).parse().unwrap();
+            items.extend(ast.items);
+            interner = next;
+        }
+        let rir = AstGen::new(&rue_parser::Ast { items }, &mut interner).generate();
+        (rir, interner)
     }
 
     #[test]
@@ -395,6 +414,56 @@ mod tests {
 
         let output = bound.analyze_all_bodies().unwrap();
         assert_eq!(output.body_analysis_work.bodies_succeeded, 2);
+        assert_eq!(output.body_analysis_work.bodies_failed, 0);
+        assert_eq!(
+            output.body_analysis_work.reachable_declaration_rir_visits,
+            0
+        );
+    }
+
+    #[test]
+    fn late_qualified_import_types_use_one_declaration_index() {
+        // Put every import after the declaration that uses it. Binding must
+        // resolve each dependency from the declaration index; qualified type
+        // lookup must never rediscover an import by scanning the full RIR.
+        const IMPORT_COUNT: usize = 64;
+        let mut main = String::from("struct Holder {\n");
+        for index in 0..IMPORT_COUNT {
+            main.push_str(&format!("field{index}: dep{index}.Item,\n"));
+        }
+        main.push_str("}\nfn main() {}\n");
+        for index in 0..IMPORT_COUNT {
+            main.push_str(&format!(
+                "const dep{index} = @import(\"dep{index}.rue\");\n"
+            ));
+        }
+
+        let dependencies = (0..IMPORT_COUNT)
+            .map(|_| "pub struct Item { value: i32 }")
+            .collect::<Vec<_>>();
+        let mut files = vec![(main.as_str(), FileId::DEFAULT)];
+        files.extend(
+            dependencies
+                .iter()
+                .enumerate()
+                .map(|(index, source)| (*source, FileId::new((index + 1) as u32))),
+        );
+        let (rir, mut interner) = lower_files(&files);
+
+        let mut paths = HashMap::from([(FileId::DEFAULT, "/main.rue".to_string())]);
+        for index in 0..IMPORT_COUNT {
+            paths.insert(FileId::new((index + 1) as u32), format!("/dep{index}.rue"));
+        }
+        let mut sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
+        sema.set_root_file_id(FileId::DEFAULT);
+        sema.set_file_paths(paths);
+
+        let bound = sema.bind_declarations().unwrap();
+        let binding_work = bound.binding_work();
+        assert_eq!(binding_work.declaration_index_build_invocations, 1);
+        assert_eq!(binding_work.indexed_const_candidates, IMPORT_COUNT);
+
+        let output = bound.analyze_all_bodies().unwrap();
         assert_eq!(output.body_analysis_work.bodies_failed, 0);
         assert_eq!(
             output.body_analysis_work.reachable_declaration_rir_visits,
