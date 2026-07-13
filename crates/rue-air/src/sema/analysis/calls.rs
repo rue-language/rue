@@ -373,6 +373,13 @@ impl<'a> BodySema<'a> {
         };
 
         if receiver_mode != AirArgMode::Normal {
+            require_air_byref_place(
+                air,
+                receiver_result.air_ref,
+                receiver_mode == AirArgMode::Inout,
+                self.rir.get(receiver).span,
+            )?;
+
             // The receiver must be a place (a variable or a field/index chain
             // rooted at one): codegen forms its address. A temporary (call
             // result, literal, …) has no caller-visible storage to borrow.

@@ -1564,6 +1564,40 @@ fn require_byref_place_arg(rir: &Rir, arg: &RirCallArg) -> CompileResult<Spur> {
     })
 }
 
+/// Validate the semantic shape of an analyzed by-reference operand.
+///
+/// RIR place tracing is intentionally syntactic and therefore treats a named
+/// constant like an ordinary variable reference. After analysis, however, a
+/// real place read has exactly one of these AIR shapes. Keeping this check at
+/// the AIR boundary prevents constants and any other computed values from
+/// reaching CFG/codegen as by-reference arguments (RUE-760).
+pub(crate) fn require_air_byref_place(
+    air: &Air,
+    mut value: AirRef,
+    is_inout: bool,
+    span: Span,
+) -> CompileResult<()> {
+    if let AirInstData::MarkMoved { value: inner, .. } = air.get(value).data {
+        value = inner;
+    }
+
+    if matches!(
+        air.get(value).data,
+        AirInstData::Load { .. } | AirInstData::Param { .. } | AirInstData::PlaceRead { .. }
+    ) {
+        Ok(())
+    } else {
+        Err(CompileError::new(
+            if is_inout {
+                ErrorKind::InoutNonLvalue
+            } else {
+                ErrorKind::BorrowNonLvalue
+            },
+            span,
+        ))
+    }
+}
+
 /// Result of the element-wise linear array consumption check (RUE-186); see
 /// [`Sema::check_array_elementwise_consumption`].
 enum ElementwiseConsumption {

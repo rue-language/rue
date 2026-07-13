@@ -1009,6 +1009,14 @@ impl<'a> BodySema<'a> {
             let arg_result = self.analyze_inst(air, arg.value, ctx);
             ctx.byref_arg_root = prev_byref_root;
             let arg_result = arg_result?;
+            if arg.is_inout() || arg.is_borrow() {
+                require_air_byref_place(
+                    air,
+                    arg_result.air_ref,
+                    arg.is_inout(),
+                    self.rir.get(arg.value).span,
+                )?;
+            }
             // Two-types model (ADR-0043, RUE-386): an `inout str` parameter is
             // an *exclusive* view and requires local provenance — a first-class
             // / static `str` value is never a legal exclusive operand (closes

@@ -61,6 +61,87 @@ mod tests {
     }
 
     #[test]
+    fn byref_arguments_reject_non_places_during_air_analysis() {
+        let cases = [
+            (
+                "const VALUE: i32 = 1; fn take(inout x: i32) {} fn main() -> i32 { take(inout VALUE); 0 }",
+                true,
+            ),
+            (
+                "const VALUE: i32 = 1; fn take(borrow x: i32) {} fn main() -> i32 { take(borrow VALUE); 0 }",
+                false,
+            ),
+            (
+                "fn take(inout x: i32) {} fn main() -> i32 { take(inout 1); 0 }",
+                true,
+            ),
+            (
+                "fn take(borrow x: i32) {} fn main() -> i32 { take(borrow (1 + 2)); 0 }",
+                false,
+            ),
+            (
+                "fn value() -> i32 { 1 } fn take(borrow x: i32) {} fn main() -> i32 { take(borrow value()); 0 }",
+                false,
+            ),
+        ];
+
+        for (source, is_inout) in cases {
+            let errors = compile_to_air(source).expect_err("non-place must fail in sema");
+            assert!(
+                errors.iter().any(|error| {
+                    if is_inout {
+                        matches!(error.kind, ErrorKind::InoutNonLvalue)
+                    } else {
+                        matches!(error.kind, ErrorKind::BorrowNonLvalue)
+                    }
+                }),
+                "source: {source}\nerrors: {errors:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn byref_arguments_accept_places_and_forwarded_projections() {
+        compile_to_air(
+            "struct Pair { value: i32 }
+             fn edit(inout x: i32) { x = x + 1; }
+             fn read(borrow x: i32) -> i32 { x }
+             fn forward(inout edit_pair: Pair, borrow read_pair: Pair) -> i32 {
+                 edit(inout edit_pair.value);
+                 read(borrow read_pair.value)
+             }
+             fn main() -> i32 {
+                 let mut pair = Pair { value: 1 };
+                 let other = Pair { value: 2 };
+                 let mut values = [1, 2];
+                 edit(inout pair.value);
+                 edit(inout values[0]);
+                 read(borrow pair.value) + read(borrow values[1]) + forward(inout pair, borrow other)
+             }",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn byref_method_receiver_rejects_call_result_during_air_analysis() {
+        let errors = compile_to_air(
+            "struct Pair {
+                 value: i32,
+                 fn read(borrow self) -> i32 { self.value }
+             }
+             fn make() -> Pair { Pair { value: 1 } }
+             fn main() -> i32 { make().read() }",
+        )
+        .expect_err("a call result is not an addressable method receiver");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error.kind, ErrorKind::BorrowNonLvalue)),
+            "errors: {errors:#?}"
+        );
+    }
+
+    #[test]
     fn body_work_counts_reachable_call_graph_exactly() {
         let output = compile_to_air(
             "fn leaf() -> i32 { 1 }\nfn middle() -> i32 { leaf() }\nfn main() -> i32 { middle() }",

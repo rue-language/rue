@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use lasso::ThreadedRodeo;
 use rue_air::{TypeInternPool, TypeKind};
 use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, Terminator, Type};
-use rue_error::{CompileError, CompileResult};
+use rue_error::CompileResult;
 use rue_target::Target;
 
 use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Operand, Reg, VReg};
@@ -67,11 +67,6 @@ pub struct CfgLower<'a> {
     /// For inout params, the slot contains a pointer to the caller's memory.
     /// This map stores the vreg holding that pointer so Store can use it.
     inout_param_ptrs: HashMap<u32, VReg>,
-    /// First user-facing diagnostic recorded during lowering (RUE-52). Lowering
-    /// is infallible for speed; a by-ref argument with no addressable storage
-    /// (a `const` folded to an immediate) records its error here and `lower()`
-    /// surfaces it instead of the process aborting.
-    deferred_error: Option<CompileError>,
 }
 
 impl<'a> CfgLower<'a> {
@@ -104,7 +99,6 @@ impl<'a> CfgLower<'a> {
             fn_name: cfg.fn_name(),
             struct_slot_vregs: HashMap::with_capacity(estimated_struct_inits),
             inout_param_ptrs: HashMap::with_capacity(estimated_inout_params),
-            deferred_error: None,
         }
     }
 
@@ -399,9 +393,6 @@ impl<'a> CfgLower<'a> {
             self.lower_block(block);
         }
 
-        if let Some(err) = self.deferred_error.take() {
-            return Err(err);
-        }
         Ok(self.mir)
     }
 
@@ -508,10 +499,6 @@ impl<'a> CfgLower<'a> {
             });
 
             debug_info.blocks.push(block_info);
-        }
-
-        if let Some(err) = self.deferred_error.take() {
-            return Err(err);
         }
 
         Ok((self.mir, debug_info))
@@ -4207,12 +4194,6 @@ impl crate::aggregate_eq::AggregateEqBackend for CfgLower<'_> {
             src: Operand::Virtual(value),
             imm: 1,
         });
-    }
-}
-
-impl crate::byref_args::ByrefAddrBackend for CfgLower<'_> {
-    fn record_deferred_error(&mut self, err: CompileError) {
-        self.deferred_error.get_or_insert(err);
     }
 }
 
