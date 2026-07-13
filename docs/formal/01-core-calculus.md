@@ -93,7 +93,7 @@ extension; their whole point is to step outside the guarantees the core proves,
 so they are modeled separately rather than threaded through every rule.
 
 **Heap-backed and view types are referenced but not defined here.** A few rules
-mention `String`/`StrBuf`, `str`, `Str(N)`, slices `[T]`, or the mode-position
+mention `StrBuf`, `str`, `Str(N)`, slices `[T]`, or the mode-position
 compatibility relation `⊳` (for example the builtin-call note in §6.9, string
 content equality in §6.4, and the `⊳` examples in §5.7). None of these appears
 in the grammar above: they are **library/extension types outside the current
@@ -1068,7 +1068,7 @@ signedness (the value `n_T` already carries the sign). Only `==`/`!=` may reach 
 aggregate (ordering on aggregates is a §5 type error); there they compare
 **structurally** — a struct field-by-field, an array element-by-element, an enum
 same-tag-and-equal-payload, recursing into nested aggregates (RUE-285) — and a
-`String` by its byte content (`4.3:2`):
+`StrBuf` by its byte content (`4.3:2`):
 
 ```
   v1 ≈ v2  ⟺  v1 and v2 are structurally equal      (scalars by value; aggregates componentwise; strings by content)
@@ -1284,7 +1284,7 @@ place is unaliased for the call's duration, so copy-out is observably identical 
 the shared-cell rule above; the paper machine takes the sharing form because it is
 simpler to state and the two agree exactly on well-typed programs.
 
-A call whose callee is a builtin with no core body (e.g. a `String` method, or
+A call whose callee is a builtin with no core body (e.g. a `StrBuf` method, or
 `@dbg` / `@to_string`) reduces by the builtin's defining equation rather than by
 `(D-Call)`; these are elaboration-level primitives, and the oracle dispatches them
 directly (`string_builtin`; `@dbg` appends its argument's rendering
@@ -1341,7 +1341,7 @@ drop in `3.9` order (`run_drop`):
 where `drop*(H, [c1,…,cm])` folds `drop` over the list left-to-right, and
 `dtor_S` runs `S`'s destructor as an ordinary call (§6.9) if `S` declares one
 (skipping it, and the whole field recursion, for a **builtin** `S` such as
-`String`, whose destructor *is* its entire drop glue and has no observable effect
+`StrBuf`, whose destructor *is* its entire drop glue and has no observable effect
 in the model — `run_drop`'s builtin arm). The **enum** case reads the runtime tag `Kj` to
 recurse into the *active* variant's payload only: an inactive variant's payload
 has no storage, and a discriminant-only active variant (`a = 0`) drops nothing

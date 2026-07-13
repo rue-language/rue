@@ -500,7 +500,7 @@ fn malformed_outer_calls_are_rejected_before_unmodeled_operands_run() {
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
     let source = r#"fn main() -> i32 {
         let entropy: u32 = @random_u32();
-        let text = String.new();
+        let text = StrBuf.new();
         @intCast(text.capacity()) + @intCast((text + "suffix").len())
     }"#;
 
@@ -1381,7 +1381,7 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
             match @parse_i64("2") { O.Some(n) => @intCast(n), O.None => 0 }
         }
         fn line() -> i32 {
-            let O = Option(String);
+            let O = Option(StrBuf);
             match @read_line() { O.Some(_s) => 1, O.None => 0 }
         }
         fn main() -> i32 { parse32() + parse64() + line() }"#,

@@ -1,17 +1,17 @@
-# String byte access (RUE-17 Phase 2, ADR-0035).
+# StrBuf byte access (RUE-17 Phase 2, ADR-0035).
 #
-# Rue's String is a byte string (conventionally UTF-8, not guaranteed valid).
+# Rue's StrBuf is a byte string (conventionally UTF-8, not guaranteed valid).
 # `s[i]` reads the i-th BYTE as u8 (O(1), out-of-range traps exit 101), and
-# `s.substring(start, len)` returns a NEW String holding bytes [start, start+len)
+# `s.substring(start, len)` returns a NEW StrBuf holding bytes [start, start+len)
 # (any byte range valid; out-of-range traps). These are exact-stdout runs of the
-# "café" demo through the real driver — the ABI (String passed as ptr/len/cap to
+# "café" demo through the real driver — the ABI (StrBuf passed as ptr/len/cap to
 # the runtime byte_at / substring calls) is exactly what a spec-harness stdout
 # check cannot exercise end to end.
 
 [section]
 id = "cli.string_byte_access"
-name = "String byte access"
-description = "Byte indexing and substring on the byte-string String type."
+name = "StrBuf byte access"
+description = "Byte indexing and substring on the byte-string StrBuf type."
 
 [[case]]
 name = "cafe_byte_indexing"
@@ -46,7 +46,7 @@ runtime_error_contains = ["index out of bounds"]
 
 [[case]]
 name = "substring_byte_range"
-description = "s.substring(3, 2) yields the two bytes of é as an independent String; source s is untouched."
+description = "s.substring(3, 2) yields the two bytes of é as an independent StrBuf; source s is untouched."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let s = "café";
@@ -63,7 +63,7 @@ stdout = "2\n195\n169\n5\n"
 
 [[case]]
 name = "substring_result_is_mutable"
-description = "The new String from substring owns a heap buffer and can be mutated further."
+description = "The new StrBuf from substring owns a heap buffer and can be mutated further."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let s = "café";

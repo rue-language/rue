@@ -14,7 +14,7 @@ use crate::types::{EnumDef, StructDef, StructField, StructId, Type, TypeKind};
 impl<'a> Sema<'a> {
     /// Phase 0: Inject built-in types as synthetic structs and enums.
     ///
-    /// This creates `StructDef` entries for built-in types like `String` and
+    /// This creates `StructDef` entries for built-in types like `StrBuf` and
     /// `EnumDef` entries for built-in enums like `Arch` and `Os` before
     /// processing user code. The built-in types are registered in the `structs`
     /// and `enums` HashMaps so they can be looked up by name, and their IDs are
@@ -23,7 +23,7 @@ impl<'a> Sema<'a> {
     /// Built-in types are marked with `is_builtin: true` and have their fields,
     /// destructor, and copy status derived from the `rue-builtins` registry.
     pub(crate) fn inject_builtin_types(&mut self) {
-        // Inject built-in struct types (String, etc.)
+        // Inject built-in struct types (StrBuf, etc.)
         for builtin in BUILTIN_TYPES {
             // Convert builtin field types to our Type enum
             let fields: Vec<StructField> = builtin
@@ -65,19 +65,6 @@ impl<'a> Sema<'a> {
             // Store special IDs for quick access
             if builtin.name == "StrBuf" {
                 self.builtin_string_id = Some(struct_id);
-
-                // ADR-0043 renamed `String` -> `StrBuf`. Keep `String` as a
-                // deprecated source-level alias for one migration cycle: it
-                // resolves to the *same* synthetic struct, so existing code
-                // (`let s: String = ...`) keeps type-checking while new code
-                // uses `StrBuf`. The name also stays reserved
-                // (`is_reserved_type_name`) so users cannot shadow it.
-                let alias_spur = self.interner.get_or_intern(rue_builtins::STRING_ALIAS_NAME);
-                self.builtin_structs.insert(alias_spur, struct_id);
-                self.structs_by_file_name
-                    .insert((file_id, alias_spur), struct_id);
-                self.type_pool
-                    .alias_struct_name_in_file(file_id, alias_spur, struct_id);
             }
 
             // Note: Associated functions and methods are not registered here.

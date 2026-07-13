@@ -1,4 +1,4 @@
-# Builtin String mutation methods on non-bare-local receivers (RUE-256).
+# Builtin StrBuf mutation methods on non-bare-local receivers (RUE-256).
 #
 # push_str/push/clear/reserve are `inout self`: they access the receiver by
 # reference and write the result back in place. They used to accept only a
@@ -9,17 +9,17 @@
 
 [section]
 id = "cli.string_mutation_receivers"
-name = "String mutation-method receivers"
-description = "String mutation methods accept struct-field, array-element, and inout-parameter receivers."
+name = "StrBuf mutation-method receivers"
+description = "StrBuf mutation methods accept struct-field, array-element, and inout-parameter receivers."
 
 # Struct-field receiver: b.data.push_str(..) mutates the field in place.
 [[case]]
 name = "field_receiver_push_str"
 description = "push_str through a struct field mutates the field (observed via its length)."
 files = [{ path = "main.rue", source = """
-struct Buf { data: String }
+struct Buf { data: StrBuf }
 fn main() -> i32 {
-    let mut b = Buf { data: String.new() };
+    let mut b = Buf { data: StrBuf.new() };
     b.data.push_str("hi");
     b.data.push_str("!!!");
     @dbg(b.data.len());
@@ -35,7 +35,7 @@ name = "array_element_const_index_push"
 description = "arr[0].push(65) mutates element 0 and leaves element 1 untouched."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut arr = [String.new(), String.new()];
+    let mut arr = [StrBuf.new(), StrBuf.new()];
     arr[0].push(65);
     @dbg(arr[0].len());
     @dbg(arr[1].len());
@@ -51,7 +51,7 @@ name = "array_element_dynamic_index_push"
 description = "arr[i].push(66) with a runtime index mutates exactly the selected element."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut arr = [String.new(), String.new()];
+    let mut arr = [StrBuf.new(), StrBuf.new()];
     let i: u64 = 1;
     arr[i].push(66);
     @dbg(arr[1].len());
@@ -65,13 +65,13 @@ stdout = "1\n0\n"
 # inout-parameter receiver: the mutation is visible in the caller's variable.
 [[case]]
 name = "inout_param_receiver_push_str"
-description = "push_str on an inout String parameter mutates the caller's variable through the borrow."
+description = "push_str on an inout StrBuf parameter mutates the caller's variable through the borrow."
 files = [{ path = "main.rue", source = """
-fn appendit(inout s: String) {
+fn appendit(inout s: StrBuf) {
     s.push_str("more");
 }
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     appendit(inout s);
     appendit(inout s);
     @dbg(s.len());
@@ -84,15 +84,15 @@ stdout = "8\n"
 # Field-of-self receiver inside an inout-self method.
 [[case]]
 name = "self_field_receiver_via_method"
-description = "self.data.push_str(..) inside an `inout self` method mutates the receiver's String field."
+description = "self.data.push_str(..) inside an `inout self` method mutates the receiver's StrBuf field."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Buf {
-    data: String,
+    data: StrBuf,
     fn append(inout self) { self.data.push_str("ab"); }
 }
 fn main() -> i32 {
-    let mut b = Buf { data: String.new() };
+    let mut b = Buf { data: StrBuf.new() };
     b.append();
     b.append();
     b.append();
@@ -106,10 +106,10 @@ stdout = "6\n"
 # Control: an immutable-local receiver is still rejected (mutation needs `let mut`).
 [[case]]
 name = "immutable_local_receiver_rejected"
-description = "A String mutation method on an immutable binding is still E0203."
+description = "A StrBuf mutation method on an immutable binding is still E0203."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let s = String.new();
+    let s = StrBuf.new();
     s.push_str("x");
     0
 }
@@ -117,13 +117,13 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["E0203", "cannot assign"]
 
-# Control: a genuinely-moved String is still caught (use-after-move).
+# Control: a genuinely-moved StrBuf is still caught (use-after-move).
 [[case]]
 name = "moved_string_receiver_rejected"
-description = "Mutating a String after it was moved is still a use-after-move error."
+description = "Mutating a StrBuf after it was moved is still a use-after-move error."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     let s2 = s;
     s.push_str("x");
     @dbg(s2.len());

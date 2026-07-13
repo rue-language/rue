@@ -3195,9 +3195,9 @@ mod tests {
         // local (s and t) is dropped exactly once.
         let cfg = build_cfg(
             "fn main() -> i32 {\n\
-                 let mut s = String.with_capacity(8);\n\
+                 let mut s = StrBuf.with_capacity(8);\n\
                  loop {\n\
-                     let mut t = String.with_capacity(8);\n\
+                     let mut t = StrBuf.with_capacity(8);\n\
                      break;\n\
                      let unreachable_tail = 0;\n\
                  }\n\
@@ -3218,7 +3218,7 @@ mod tests {
         // scope exit; s's drop is suppressed by the MarkMoved marker.
         let cfg = build_cfg(
             "fn main() -> i32 {\n\
-                 let s = String.with_capacity(8);\n\
+                 let s = StrBuf.with_capacity(8);\n\
                  let t = s;\n\
                  0\n\
              }",
@@ -3231,11 +3231,11 @@ mod tests {
         // The callee owns its pass-by-value parameters and drops them at
         // function exit (unless moved out).
         let cfg = build_cfg_named(
-            "fn f(s: String) -> i32 { 0 }\n\
-             fn main() -> i32 { f(String.with_capacity(8)) }",
+            "fn f(s: StrBuf) -> i32 { 0 }\n\
+             fn main() -> i32 { f(StrBuf.with_capacity(8)) }",
             "f",
         );
-        assert_eq!(count_drops(&cfg), 1, "owned String param must be dropped");
+        assert_eq!(count_drops(&cfg), 1, "owned StrBuf param must be dropped");
     }
 
     #[test]
@@ -3243,8 +3243,8 @@ mod tests {
         // A param moved into a local is dropped via the local, not again as
         // a param at exit.
         let cfg = build_cfg_named(
-            "fn f(s: String) -> i32 { let t = s; 0 }\n\
-             fn main() -> i32 { f(String.with_capacity(8)) }",
+            "fn f(s: StrBuf) -> i32 { let t = s; 0 }\n\
+             fn main() -> i32 { f(StrBuf.with_capacity(8)) }",
             "f",
         );
         assert_eq!(count_drops(&cfg), 1, "moved param must drop only via t");
@@ -3259,7 +3259,7 @@ mod tests {
         // flag plumbing: a conditional branch on the flag around s's drop.
         let cfg = build_cfg(
             "fn main() -> i32 {\n\
-                 let s = String.with_capacity(8);\n\
+                 let s = StrBuf.with_capacity(8);\n\
                  let c = true;\n\
                  if c {\n\
                      let t = s;\n\
@@ -3287,9 +3287,9 @@ mod tests {
     #[test]
     fn test_move_on_both_branches_suppresses_drop() {
         // Moved in BOTH branches => moved on all paths => exit drop suppressed.
-        let source = "fn consume(s: String) -> i32 { 0 }\n\
+        let source = "fn consume(s: StrBuf) -> i32 { 0 }\n\
              fn main() -> i32 {\n\
-                 let s = String.with_capacity(8);\n\
+                 let s = StrBuf.with_capacity(8);\n\
                  let c = true;\n\
                  if c {\n\
                      consume(s);\n\
@@ -3318,10 +3318,10 @@ mod tests {
         // field-granular — only the still-owned droppable field is dropped
         // (one Drop), not the whole struct (which would re-drop the moved
         // field via the drop glue).
-        let source = "fn eat(s: String) -> i32 { 0 }\n\
-             struct H { a: String, b: String }\n\
+        let source = "fn eat(s: StrBuf) -> i32 { 0 }\n\
+             struct H { a: StrBuf, b: StrBuf }\n\
              fn main() -> i32 {\n\
-                 let h = H { a: String.with_capacity(8), b: String.with_capacity(8) };\n\
+                 let h = H { a: StrBuf.with_capacity(8), b: StrBuf.with_capacity(8) };\n\
                  eat(h.a);\n\
                  0\n\
              }";
@@ -3375,12 +3375,12 @@ mod tests {
         // so scope exit is back on the whole-struct fast path — ONE Drop
         // whose operand is a whole-slot Load (covering both fields via the
         // drop glue), not a field-granular PlaceRead drop of just field b.
-        let source = "fn eat(s: String) -> i32 { 0 }\n\
-             struct H { a: String, b: String }\n\
+        let source = "fn eat(s: StrBuf) -> i32 { 0 }\n\
+             struct H { a: StrBuf, b: StrBuf }\n\
              fn main() -> i32 {\n\
-                 let mut h = H { a: String.with_capacity(8), b: String.with_capacity(8) };\n\
+                 let mut h = H { a: StrBuf.with_capacity(8), b: StrBuf.with_capacity(8) };\n\
                  eat(h.a);\n\
-                 h.a = String.with_capacity(4);\n\
+                 h.a = StrBuf.with_capacity(4);\n\
                  0\n\
              }";
         let main_cfg = build_cfg_named(source, "main");

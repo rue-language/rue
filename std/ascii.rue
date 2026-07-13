@@ -4,7 +4,7 @@
 // `<ctype.h>` predicates (`isdigit`, `isalpha`, …) plus lowercase/uppercase
 // mapping, written directly against the ASCII code points. They inspect one
 // byte at a time and never look at UTF-8 boundaries, so they compose cleanly
-// with `String`'s byte indexing (`s[i] -> u8`) — see std.strings.
+// with `StrBuf`'s byte indexing (`s[i] -> u8`) — see std.strings.
 //
 //     const std = @import("std");
 //     std.ascii.is_digit(52);      // true  ('4')

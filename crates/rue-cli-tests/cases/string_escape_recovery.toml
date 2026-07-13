@@ -1,6 +1,6 @@
 [section]
 id = "cli.string_escape_recovery"
-name = "String escape error recovery"
+name = "StrBuf escape error recovery"
 description = """
 RUE-535: an invalid escape in a properly-TERMINATED string must produce only
 the invalid-escape diagnostic (E0003). The lexer used to bail mid-string, then

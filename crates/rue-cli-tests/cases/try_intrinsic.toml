@@ -2,7 +2,7 @@
 #
 # `@read_line()?` and `@parse_i64(s)?` used directly — with no annotated `let`
 # and no `match` to supply the concrete `Option` — resolve the intrinsic's own
-# fixed `Option(payload)` (read_line -> Option(String), parse_i64 -> Option(i64))
+# fixed `Option(payload)` (read_line -> Option(StrBuf), parse_i64 -> Option(i64))
 # and short-circuit the enclosing Option-returning function with None on failure
 # (EOF for read_line, unparseable string for parse_i64). Exercised end to end
 # from real stdin so a driver/ABI regression surfaces, not just a type-check.
@@ -90,7 +90,7 @@ files = [
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
-fn add_one(s: String) -> Option(i64) {
+fn add_one(s: StrBuf) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)
@@ -117,7 +117,7 @@ files = [
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
-fn add_one(s: String) -> Option(i64) {
+fn add_one(s: StrBuf) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)

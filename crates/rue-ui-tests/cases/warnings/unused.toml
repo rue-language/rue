@@ -218,7 +218,7 @@ no_warnings = true
 name = "method_call_on_field_receiver_no_warning"
 description = "A method call on a field receiver uses the base variable (RUE-135)"
 source = """
-struct H { s: String }
+struct H { s: StrBuf }
 
 fn main() -> i32 {
     let h = H { s: "hello" };

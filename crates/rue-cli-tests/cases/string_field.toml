@@ -1,23 +1,23 @@
 [section]
 id = "string_field"
-name = "String fat-pointer materialization from places (RUE-111)"
+name = "StrBuf fat-pointer materialization from places (RUE-111)"
 description = """
-Regression tests for the struct-field / parameter String ICEs (RUE-63, RUE-94).
-A multi-slot aggregate (builtin String, or a struct containing one) obtained by
+Regression tests for the struct-field / parameter StrBuf ICEs (RUE-63, RUE-94).
+A multi-slot aggregate (builtin StrBuf, or a struct containing one) obtained by
 reading a place — a struct field or a rebound parameter — must materialize all of
 its fat-pointer slots, not just the first. Previously these aborted the compiler
 with "string should have fat pointer fields" / "builtin type should have field
 vregs" panics in codegen (both x86-64 and aarch64 backends).
 """
 
-# RUE-63: a String parameter rebound to a local. Lowering the Alloc of the local
+# RUE-63: a StrBuf parameter rebound to a local. Lowering the Alloc of the local
 # previously panicked "string should have fat pointer fields in Alloc" because the
-# param-sourced String had no struct_slot_vregs entry. (No call needed to repro the
+# param-sourced StrBuf had no struct_slot_vregs entry. (No call needed to repro the
 # ICE — defining the function was enough.)
 [[case]]
 name = "string_param_rebound_to_local"
 files = [{ path = "main.rue", source = """
-fn consume(s: String) -> i32 {
+fn consume(s: StrBuf) -> i32 {
     let held = s;
     0
 }
@@ -25,13 +25,13 @@ fn main() -> i32 { consume(\"hi\") }
 """ }]
 exit_code = 0
 
-# RUE-94: comparing a String read from a struct field with ==. emit_builtin_eq_call
+# RUE-94: comparing a StrBuf read from a struct field with ==. emit_builtin_eq_call
 # previously panicked "builtin type should have field vregs" because the field-read
-# String was not registered in struct_slot_vregs.
+# StrBuf was not registered in struct_slot_vregs.
 [[case]]
 name = "string_struct_field_eq_true"
 files = [{ path = "main.rue", source = """
-struct Holder { s: String }
+struct Holder { s: StrBuf }
 fn main() -> i32 {
     let h = Holder { s: \"hello\" };
     if h.s == \"hello\" { 0 } else { 1 }
@@ -42,7 +42,7 @@ exit_code = 0
 [[case]]
 name = "string_struct_field_eq_false"
 files = [{ path = "main.rue", source = """
-struct Holder { s: String }
+struct Holder { s: StrBuf }
 fn main() -> i32 {
     let h = Holder { s: \"hello\" };
     if h.s == \"world\" { 0 } else { 7 }
@@ -50,13 +50,13 @@ fn main() -> i32 {
 """ }]
 exit_code = 7
 
-# RUE-63 (field flavor): a String read from a struct field, rebound to a new local,
+# RUE-63 (field flavor): a StrBuf read from a struct field, rebound to a new local,
 # then consumed. Exercises both the field-read materialization and the re-store
 # (Alloc) of the fat pointer.
 [[case]]
 name = "string_field_rebound_then_eq"
 files = [{ path = "main.rue", source = """
-struct Holder { s: String }
+struct Holder { s: StrBuf }
 fn main() -> i32 {
     let h = Holder { s: \"hello\" };
     let s2 = h.s;
@@ -65,13 +65,13 @@ fn main() -> i32 {
 """ }]
 exit_code = 5
 
-# A struct that contains a String field, compared by value. The generic struct
-# equality path reads both operands' field vregs; with a String field this required
-# materializing the String sub-slots from the struct place-read.
+# A struct that contains a StrBuf field, compared by value. The generic struct
+# equality path reads both operands' field vregs; with a StrBuf field this required
+# materializing the StrBuf sub-slots from the struct place-read.
 [[case]]
 name = "struct_with_string_field_eq"
 files = [{ path = "main.rue", source = """
-struct P { name: String, age: i32 }
+struct P { name: StrBuf, age: i32 }
 fn main() -> i32 {
     let a = P { name: \"bob\", age: 3 };
     let b = P { name: \"bob\", age: 3 };

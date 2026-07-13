@@ -93,21 +93,21 @@ exit_code = 42
 
 [[case]]
 name = "string_param_rebound_to_local_rue63"
-description = "RUE-63: rebinding a String parameter to a local ('string should have fat pointer fields in Alloc') -> SIGABRT."
+description = "RUE-63: rebinding a StrBuf parameter to a local ('string should have fat pointer fields in Alloc') -> SIGABRT."
 files = [{ path = "main.rue", source = """
-fn consume(s: String) -> i32 {
+fn consume(s: StrBuf) -> i32 {
     let held = s;
     0
 }
-fn main() -> i32 { consume(String.new()) }
+fn main() -> i32 { consume(StrBuf.new()) }
 """ }]
 exit_code = 0
 
 [[case]]
 name = "struct_field_string_eq_rue94"
-description = "RUE-94: comparing a struct-field String with == ('builtin type should have field vregs') -> SIGABRT."
+description = "RUE-94: comparing a struct-field StrBuf with == ('builtin type should have field vregs') -> SIGABRT."
 files = [{ path = "main.rue", source = """
-struct Holder { s: String }
+struct Holder { s: StrBuf }
 fn main() -> i32 {
     let h = Holder { s: "hello" };
     if h.s == "hello" { 0 } else { 1 }
@@ -117,10 +117,10 @@ exit_code = 0
 
 [[case]]
 name = "array_literal_string_element_rue96"
-description = "RUE-96: array literal with a String element inferred the element as <error> -> E9000 ICE."
+description = "RUE-96: array literal with a StrBuf element inferred the element as <error> -> E9000 ICE."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let a = String.new();
+    let a = StrBuf.new();
     let arr = [a];
     0
 }
@@ -129,10 +129,10 @@ exit_code = 0
 
 [[case]]
 name = "array_literal_string_exprs_rue190"
-description = "RUE-190: array literal of String-producing expressions used to ICE (E9000)."
+description = "RUE-190: array literal of StrBuf-producing expressions used to ICE (E9000)."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr = [String.new(), String.new()];
+    let arr = [StrBuf.new(), StrBuf.new()];
     0
 }
 """ }]
@@ -251,10 +251,10 @@ exit_code = 70
 
 [[case]]
 name = "dbg_string_array_element_rue192"
-description = "RUE-192: @dbg(arr[0]) on a [String; 1] ('string value should have field vregs for fat pointer') -> SIGABRT."
+description = "RUE-192: @dbg(arr[0]) on a [StrBuf; 1] ('string value should have field vregs for fat pointer') -> SIGABRT."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr: [String; 1] = ["hi"];
+    let arr: [StrBuf; 1] = ["hi"];
     @dbg(arr[0]);
     0
 }
@@ -278,10 +278,10 @@ exit_code = 0
 
 [[case]]
 name = "string_array_drop_register_budget_rue193"
-description = "RUE-193: [String; 3] = 9 element slots exceeded the 6 argument registers in drop glue -> SIGABRT at cfg_lower."
+description = "RUE-193: [StrBuf; 3] = 9 element slots exceeded the 6 argument registers in drop glue -> SIGABRT at cfg_lower."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr: [String; 3] = ["aa", "bb", "cc"];
+    let arr: [StrBuf; 3] = ["aa", "bb", "cc"];
     0
 }
 """ }]

@@ -32,7 +32,7 @@ stdout = "42\n"
 
 [[case]]
 name = "comptime_match_selects_other_arm_type"
-description = "RUE-268: when the comptime value selects a different arm, that arm's type is the match type (the dead first arm's String is ignored)."
+description = "RUE-268: when the comptime value selects a different arm, that arm's type is the match type (the dead first arm's StrBuf is ignored)."
 files = [{ path = "main.rue", source = """
 fn f(comptime n: i32) -> i32 { match n { 0 => "wrong", _ => 7 } }
 fn main() -> i32 {

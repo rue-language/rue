@@ -377,7 +377,7 @@ fn text_projection_gap_requires_the_complete_place_chain_to_be_well_typed() {
     let source = r#"struct Pair { value: i32 }
         fn read(p: Pair) -> i32 { p.value }
         fn main() -> i32 {
-            let text = String.new();
+            let text = StrBuf.new();
             if text.is_empty() { read(Pair { value: 1 }) } else { 0 }
         }"#;
 
@@ -400,7 +400,7 @@ fn text_projection_gap_requires_the_complete_place_chain_to_be_well_typed() {
                 }
             }
         }
-        let owned_ty = owned_ty.expect("String.new result type");
+        let owned_ty = owned_ty.expect("StrBuf.new result type");
         let TypeKind::Struct(owned_struct) = owned_ty.kind() else {
             panic!("String must be represented by a struct type")
         };

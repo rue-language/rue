@@ -1,11 +1,11 @@
 [section]
 id = "types.strings"
 spec_chapter = "3.7"
-name = "String Type"
-description = "The String type represents immutable UTF-8 encoded string literals."
+name = "StrBuf Type"
+description = "The StrBuf type represents immutable UTF-8 encoded string literals."
 
 # =============================================================================
-# String Type Definition
+# StrBuf Type Definition
 # =============================================================================
 
 [[case]]
@@ -42,26 +42,26 @@ fn main() -> i32 {
 exit_code = 0
 
 # =============================================================================
-# String Representation and Ownership
+# StrBuf Representation and Ownership
 # =============================================================================
 
-# 3.7:2 — a String is three machine words (ptr, len, capacity), 24 bytes.
+# 3.7:2 — a StrBuf is three machine words (ptr, len, capacity), 24 bytes.
 [[case]]
 name = "string_size_is_24"
 spec = ["3.7:2"]
-description = "@size_of(String) is 24: three machine words (ptr, len, capacity)."
+description = "@size_of(StrBuf) is 24: three machine words (ptr, len, capacity)."
 source = """
 fn main() -> i32 {
-    @size_of(String)
+    @size_of(StrBuf)
 }
 """
 exit_code = 24
 
-# 3.7:39 — String is a move type: using it after a move is E0205.
+# 3.7:39 — StrBuf is a move type: using it after a move is E0205.
 [[case]]
 name = "string_is_move_type"
 spec = ["3.7:39"]
-description = "String is an affine (move) type; use after move is a compile error."
+description = "StrBuf is an affine (move) type; use after move is a compile error."
 source = """
 fn main() -> i32 {
     let a = "hello";
@@ -74,14 +74,14 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "use of moved value"
 
-# 3.7:39 — String is not a Copy type, so a @copy struct cannot hold one.
+# 3.7:39 — StrBuf is not a Copy type, so a @copy struct cannot hold one.
 [[case]]
 name = "string_not_copy_field"
 spec = ["3.7:39"]
-description = "StrBuf is not Copy: a @copy struct with a StrBuf field is rejected (via the deprecated `String` alias spelling)."
+description = "StrBuf is not Copy: a @copy struct with a StrBuf field is rejected."
 source = """
 @copy
-struct Bad { s: String }
+struct Bad { s: StrBuf }
 
 fn main() -> i32 {
     0
@@ -90,11 +90,11 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "non-Copy type 'StrBuf'"
 
-# 3.7:39 — an unused String is dropped implicitly (affine, not linear).
+# 3.7:39 — an unused StrBuf is dropped implicitly (affine, not linear).
 [[case]]
 name = "string_dropped_implicitly"
 spec = ["3.7:39"]
-description = "A String need not be explicitly consumed; an unused one drops at scope end."
+description = "A StrBuf need not be explicitly consumed; an unused one drops at scope end."
 source = """
 fn main() -> i32 {
     let _s = "foo" + "bar";   // heap-allocated, never used again
@@ -103,11 +103,11 @@ fn main() -> i32 {
 """
 exit_code = 0
 
-# 3.7:40 — a heap-owning String is freed exactly once; the program runs cleanly.
+# 3.7:40 — a heap-owning StrBuf is freed exactly once; the program runs cleanly.
 [[case]]
 name = "string_heap_freed_once"
 spec = ["3.7:40"]
-description = "A heap-allocated String is dropped once (no double free); program runs to completion."
+description = "A heap-allocated StrBuf is dropped once (no double free); program runs to completion."
 source = """
 fn main() -> i32 {
     let a = "foo" + "bar";   // heap-allocated: capacity > 0
@@ -120,7 +120,7 @@ exit_code = 0
 expected_stdout = "foobar\n"
 
 # =============================================================================
-# String Escape Sequences
+# StrBuf Escape Sequences
 # =============================================================================
 
 [[case]]
@@ -213,7 +213,7 @@ fn main() -> i32 {
 compile_fail = true
 
 # =============================================================================
-# String Equality (literal comparisons)
+# StrBuf Equality (literal comparisons)
 # =============================================================================
 
 [[case]]
@@ -311,7 +311,7 @@ fn main() -> i32 {
 compile_fail = true
 
 # =============================================================================
-# String Edge Cases
+# StrBuf Edge Cases
 # =============================================================================
 
 [[case]]
@@ -337,7 +337,7 @@ fn main() -> i32 {
 exit_code = 0
 
 # =============================================================================
-# String Type Annotation
+# StrBuf Type Annotation
 # =============================================================================
 
 [[case]]
@@ -345,7 +345,7 @@ name = "string_type_annotation"
 spec = ["3.7:1"]
 source = """
 fn main() -> i32 {
-    let s: String = "hello";
+    let s: StrBuf = "hello";
     0
 }
 """
@@ -356,14 +356,14 @@ name = "string_type_annotation_empty"
 spec = ["3.7:1"]
 source = """
 fn main() -> i32 {
-    let s: String = "";
+    let s: StrBuf = "";
     0
 }
 """
 exit_code = 0
 
 # =============================================================================
-# String Variables in Equality Comparisons
+# StrBuf Variables in Equality Comparisons
 # =============================================================================
 
 [[case]]
@@ -460,7 +460,7 @@ fn main() -> i32 {
 exit_code = 1
 
 # =============================================================================
-# String Debugging with @dbg
+# StrBuf Debugging with @dbg
 # =============================================================================
 
 [[case]]
@@ -538,7 +538,7 @@ exit_code = 0
 expected_stdout = "col1\tcol2\n"
 
 # =============================================================================
-# String in Complex Expressions
+# StrBuf in Complex Expressions
 # =============================================================================
 
 [[case]]
@@ -559,7 +559,7 @@ fn main() -> i32 {
 exit_code = 1
 
 # =============================================================================
-# Mutable String Reassignment
+# Mutable StrBuf Reassignment
 # =============================================================================
 
 [[case]]
@@ -612,7 +612,7 @@ fn main() -> i32 {
 exit_code = 1
 
 # =============================================================================
-# Mutable String Construction
+# Mutable StrBuf Construction
 # =============================================================================
 
 [[case]]
@@ -620,7 +620,7 @@ name = "string_new_basic"
 spec = ["3.10:7"]
 source = """
 fn main() -> i32 {
-    let s = String.new();
+    let s = StrBuf.new();
     0
 }
 """
@@ -631,7 +631,7 @@ name = "string_new_equality_with_empty"
 spec = ["3.10:7", "3.7:9"]
 source = """
 fn main() -> i32 {
-    let s = String.new();
+    let s = StrBuf.new();
     if s == "" { 1 } else { 0 }
 }
 """
@@ -643,7 +643,7 @@ spec = ["3.10:8"]
 source = """
 fn main() -> i32 {
     let cap: u64 = 1024;
-    let s = String.with_capacity(cap);
+    let s = StrBuf.with_capacity(cap);
     0
 }
 """
@@ -655,7 +655,7 @@ spec = ["3.10:8"]
 source = """
 fn main() -> i32 {
     let cap: u64 = 0;
-    let s = String.with_capacity(cap);
+    let s = StrBuf.with_capacity(cap);
     0
 }
 """
@@ -667,7 +667,7 @@ spec = ["3.10:8", "3.7:9"]
 source = """
 fn main() -> i32 {
     let cap: u64 = 64;
-    let s = String.with_capacity(cap);
+    let s = StrBuf.with_capacity(cap);
     if s == "" { 1 } else { 0 }
 }
 """
@@ -679,8 +679,8 @@ spec = ["3.10:7", "3.10:9"]
 source = """
 fn main() -> i32 {
     let cap: u64 = 1024;
-    let empty = String.new();
-    let prealloc = String.with_capacity(cap);
+    let empty = StrBuf.new();
+    let prealloc = StrBuf.with_capacity(cap);
     0
 }
 """
@@ -736,7 +736,7 @@ expected_stdout = "104\n5\n101\n"
 [[case]]
 name = "string_index_in_condition"
 spec = ["3.7:16"]
-description = "A String byte index reads correctly in condition position (if/while), not only when let-bound first (RUE-700: binary-op operands are analyzed in projection mode, which previously rejected a non-array base with E0900)."
+description = "A StrBuf byte index reads correctly in condition position (if/while), not only when let-bound first (RUE-700: binary-op operands are analyzed in projection mode, which previously rejected a non-array base with E0900)."
 source = """
 fn main() -> i32 {
     let s = "a1b2";

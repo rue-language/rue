@@ -239,7 +239,7 @@ exit_code = 0
 [[case]]
 name = "dbg_output_format_pinned"
 spec = ["4.13:8", "4.13:8a"]
-description = "The exact textual form @dbg prints: decimal integers (signed with -), true/false, raw String bytes, each newline-terminated (RUE-299)"
+description = "The exact textual form @dbg prints: decimal integers (signed with -), true/false, raw StrBuf bytes, each newline-terminated (RUE-299)"
 source = """
 fn main() -> i32 {
     @dbg(42);
@@ -274,10 +274,10 @@ exit_code = 0
 [[case]]
 name = "dbg_string_borrows_not_consumed"
 spec = ["4.13:6", "4.13:7"]
-description = "@dbg borrows a String; the value stays usable after the call (RUE-21)"
+description = "@dbg borrows a StrBuf; the value stays usable after the call (RUE-21)"
 source = """
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     s.push_str("hello");
     @dbg(s);
     let n: u64 = s.len();
@@ -294,14 +294,14 @@ exit_code = 0
 [[case]]
 name = "dbg_string_dropped_exactly_once"
 spec = ["4.13:6"]
-description = "A @dbg'd String is dropped exactly once by its owner, not consumed by @dbg (RUE-21)"
+description = "A @dbg'd StrBuf is dropped exactly once by its owner, not consumed by @dbg (RUE-21)"
 source = """
-struct Holder { s: String }
+struct Holder { s: StrBuf }
 drop fn Holder(self) {
     @dbg(self.s);
 }
 fn main() -> i32 {
-    let mut tmp = String.new();
+    let mut tmp = StrBuf.new();
     tmp.push_str("world");
     let h = Holder { s: tmp };
     @dbg(h.s);
@@ -851,7 +851,7 @@ runtime_error = "integer cast overflow"
 # =============================================================================
 # @read_line Intrinsic
 #
-# Since RUE-6 (ADR-0038) @read_line returns Option(String): Some(line) normally,
+# Since RUE-6 (ADR-0038) @read_line returns Option(StrBuf): Some(line) normally,
 # None at end-of-input (no trap). The concrete Option is taken from context, so
 # each case defines the ordinary comptime-generic Option enum in-file and
 # threads it via a `let` annotation or the match arms.
@@ -863,8 +863,8 @@ spec = ["4.13:33", "4.13:35"]
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    // Type checking: @read_line returns Option(String).
-    let Opt = Option(String);
+    // Type checking: @read_line returns Option(StrBuf).
+    let Opt = Option(StrBuf);
     let line: Opt = @read_line();
     match line {
         Opt.Some(s) => @dbg(s),
@@ -884,7 +884,7 @@ source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     // Verify @read_line takes no arguments.
-    let Opt = Option(String);
+    let Opt = Option(StrBuf);
     let line: Opt = @read_line();
     match line {
         Opt.Some(s) => @dbg(s),
@@ -929,7 +929,7 @@ spec = ["4.13:33", "4.13:36", "4.13:37"]
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(String);
+    let Opt = Option(StrBuf);
     match @read_line() {
         Opt.Some(line) => @dbg(line),
         Opt.None => {},
@@ -947,7 +947,7 @@ spec = ["4.13:37"]
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(String);
+    let Opt = Option(StrBuf);
     match @read_line() {
         Opt.Some(line) => @dbg(line),
         Opt.None => {},
@@ -965,7 +965,7 @@ spec = ["4.13:36"]
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(String);
+    let Opt = Option(StrBuf);
     match @read_line() {
         Opt.Some(line) => @dbg(line),
         Opt.None => {},
@@ -990,7 +990,7 @@ spec = ["4.13:38"]
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(String);
+    let Opt = Option(StrBuf);
     match @read_line() {
         Opt.Some(line) => @dbg(line),
         Opt.None => {},
@@ -1009,7 +1009,7 @@ spec = ["4.13:36", "4.13:37"]
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(String);
+    let Opt = Option(StrBuf);
     match @read_line() {
         Opt.Some(line) => @dbg(line),
         Opt.None => {},
@@ -1028,7 +1028,7 @@ spec = ["4.13:39"]
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(String);
+    let Opt = Option(StrBuf);
     let line: Opt = @read_line();
     // EOF with no data is None, not a trap: this returns 0, exit success.
     match line {

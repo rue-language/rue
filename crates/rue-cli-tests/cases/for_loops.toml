@@ -3,14 +3,14 @@
 # These drive the real compiler and check exact
 # stdout / exit codes end to end. The `.chars()` cases in particular exercise
 # the `__rue_String_char_scalar` / `__rue_String_char_next` runtime ABI (a
-# String flattened to ptr/len/cap plus a byte offset, returning a scalar / next
+# StrBuf flattened to ptr/len/cap plus a byte offset, returning a scalar / next
 # offset), and the strict-UTF-8 decode trap, which the spec harness cannot fully
 # observe.
 
 [section]
 id = "cli.for_loops"
 name = "For loops (iteration layer 1)"
-description = "for over arrays, String bytes, and String .chars()."
+description = "for over arrays, StrBuf bytes, and StrBuf .chars()."
 
 [[case]]
 name = "for_array_dbg_elements"
@@ -33,7 +33,7 @@ stdout = "3\n1\n4\n1\n3\n"
 
 [[case]]
 name = "for_string_bytes_dbg"
-description = "for over a String yields each byte as u8 in ascending byte order; 'café' is 5 bytes (é = 0xC3 0xA9 = 195, 169)."
+description = "for over a StrBuf yields each byte as u8 in ascending byte order; 'café' is 5 bytes (é = 0xC3 0xA9 = 195, 169)."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
@@ -105,11 +105,11 @@ stdout = "99\n97\n102\n233\n"
 
 [[case]]
 name = "for_chars_lossy_replaces_raw_invalid_bytes"
-description = "Lossy decode over a String holding a raw invalid byte (0xFF): the bad byte becomes U+FFFD (65533) and iteration continues without trapping — the surrounding ASCII bytes decode normally."
+description = "Lossy decode over a StrBuf holding a raw invalid byte (0xFF): the bad byte becomes U+FFFD (65533) and iteration continues without trapping — the surrounding ASCII bytes decode normally."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     s.push(97);
     s.push(255);
     s.push(98);

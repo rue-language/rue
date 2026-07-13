@@ -1,15 +1,15 @@
 [section]
 id = "array_literal_string"
-name = "Array literals of String-producing expressions (RUE-190)"
+name = "Array literals of StrBuf-producing expressions (RUE-190)"
 description = """
 Regression tests for RUE-190: an array literal whose elements are
-String-producing expressions used to abort the compiler with
+StrBuf-producing expressions used to abort the compiler with
 E9000 "Array literal inferred as non-array type: <error>".
 
 Two flavors:
-  1. Valid String array literals must compile and run — elements are usable
+  1. Valid StrBuf array literals must compile and run — elements are usable
      (indexing, .len(), .capacity()), and each fat pointer materializes fully.
-  2. Ill-typed elements (e.g. a nonexistent `String.from`, an undefined
+  2. Ill-typed elements (e.g. a nonexistent `StrBuf.from`, an undefined
      function) must surface the element's REAL diagnostic (E0412 / E0202),
      never an internal-compiler-error about a non-array type. HM inference
      collapses an array with an error-typed element to `<error>`; the array
@@ -17,21 +17,21 @@ Two flavors:
      of ICEing on the collapsed type.
 """
 
-# --- Flavor 1: valid String array literals compile and run ----------------
+# --- Flavor 1: valid StrBuf array literals compile and run ----------------
 
-# Two String.new() elements; array indexes usable, .len() is 0.
+# Two StrBuf.new() elements; array indexes usable, .len() is 0.
 [[case]]
 name = "array_of_string_new_len"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr = [String.new(), String.new()];
+    let arr = [StrBuf.new(), StrBuf.new()];
     let n: u64 = arr[0].len();
     if n == 0 { 0 } else { 1 }
 }
 """ }]
 exit_code = 0
 
-# String literal elements; both slots readable and correct.
+# StrBuf literal elements; both slots readable and correct.
 [[case]]
 name = "array_of_string_literals_len"
 files = [{ path = "main.rue", source = """
@@ -49,7 +49,7 @@ exit_code = 0
 name = "array_of_string_with_capacity"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr = [String.with_capacity(16), String.with_capacity(16)];
+    let arr = [StrBuf.with_capacity(16), StrBuf.with_capacity(16)];
     let a: u64 = arr[0].capacity();
     let b: u64 = arr[1].capacity();
     if a >= 16 { if b >= 16 { 0 } else { 2 } } else { 1 }
@@ -57,12 +57,12 @@ fn main() -> i32 {
 """ }]
 exit_code = 0
 
-# Single-element array built from a String binding, then indexed.
+# Single-element array built from a StrBuf binding, then indexed.
 [[case]]
 name = "array_of_string_var_single"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let a = String.new();
+    let a = StrBuf.new();
     let arr = [a];
     let n: u64 = arr[0].len();
     if n == 0 { 0 } else { 1 }
@@ -72,13 +72,13 @@ exit_code = 0
 
 # --- Flavor 2: ill-typed elements surface the real error, not an ICE ------
 
-# The reported RUE-190 shape: `String.from` does not exist. Must report
+# The reported RUE-190 shape: `StrBuf.from` does not exist. Must report
 # E0412 (unknown associated function), never E9000 about a non-array type.
 [[case]]
 name = "array_of_bad_assoc_fn_reports_real_error"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr = [String.from(\"a\"), String.from(\"b\")];
+    let arr = [StrBuf.from(\"a\"), StrBuf.from(\"b\")];
     0
 }
 """ }]

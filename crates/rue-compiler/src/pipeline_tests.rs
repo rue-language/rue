@@ -1057,11 +1057,11 @@ mod tests {
                     &left_path,
                     r#"pub struct Payload {
                         value: i32,
-                        text: String,
+                        text: StrBuf,
                         fn score(borrow self) -> i32 { self.value }
                     }
                     drop fn Payload(self) { @dbg(self.value); }
-                    pub enum Choice { Empty, Text(String) }
+                    pub enum Choice { Empty, Text(StrBuf) }
                     pub fn entry() -> i32 {
                         let payload = Payload { value: 10, text: "left" };
                         payload.score()
@@ -1072,11 +1072,11 @@ mod tests {
                     &right_path,
                     r#"pub struct Payload {
                         value: i32,
-                        text: String,
+                        text: StrBuf,
                         fn score(borrow self) -> i32 { self.value }
                     }
                     drop fn Payload(self) { @dbg(self.value); }
-                    pub enum Choice { Empty, Text(String) }
+                    pub enum Choice { Empty, Text(StrBuf) }
                     pub fn entry() -> i32 {
                         let payload = Payload { value: 20, text: "right" };
                         payload.score()
@@ -1164,12 +1164,12 @@ mod tests {
             SourceView::new("main.rue", "fn main() -> i32 { 0 }", main_id),
             SourceView::new(
                 "left/clash.rue",
-                "pub struct Clash { text: String }",
+                "pub struct Clash { text: StrBuf }",
                 struct_id,
             ),
             SourceView::new(
                 "right/clash.rue",
-                "pub enum Clash { Text(String) }",
+                "pub enum Clash { Text(StrBuf) }",
                 enum_id,
             ),
         ];

@@ -94,9 +94,9 @@ stabilized, so they are omitted from the normative inventory above, but they
 are no longer no-ops (RUE-319):
 
 - `@panic(msg?: StrBuf)` has type `!` (never): it aborts the process and never
-  returns. The optional message must have the builtin `StrBuf` type (`String`
-  is an alias for the same type); `str`, `Str(N)`, and unrelated aggregates are
-  not accepted. It writes `panic: <msg>` (or just `panic` when called with no
+  returns. The optional message must have the builtin `StrBuf` type; `str`,
+  `Str(N)`, and unrelated aggregates are not accepted. It writes
+  `panic: <msg>` (or just `panic` when called with no
   argument) to standard error and exits with status 101 — the same abort
   discipline as the `@intCast` overflow, division-by-zero, and bounds-check
   traps. As a diverging expression it participates in never coercion (3.4:2),

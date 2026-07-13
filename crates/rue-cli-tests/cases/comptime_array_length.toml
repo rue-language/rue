@@ -166,7 +166,7 @@ exit_code = 42
 name = "local_annotation_drop_element_no_ice"
 files = [{ path = "main.rue", source = """
 fn f(comptime N: i32) -> i32 {
-    let y: [String; N] = ["ab", "cde"];
+    let y: [StrBuf; N] = ["ab", "cde"];
     42
 }
 

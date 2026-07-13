@@ -160,7 +160,7 @@ exit_code = 6
 # ── (b) diverged statement mid-block: scope_stack stays balanced ─────────────
 
 # The original leak shape: break followed by another statement, with droppable
-# (String) locals both inside and outside the loop. Before the fix the CFG
+# (StrBuf) locals both inside and outside the loop. Before the fix the CFG
 # re-dropped `t` on the loop-exit path (after `break` had already dropped it).
 # The program must run to completion with both strings intact.
 [[case]]
@@ -168,10 +168,10 @@ name = "break_mid_block_no_double_drop"
 description = "Diverged statement mid-block must not re-drop the inner local on the exit path."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String.with_capacity(8);
+    let mut s = StrBuf.with_capacity(8);
     s.push_str("outer");
     loop {
-        let mut t = String.with_capacity(8);
+        let mut t = StrBuf.with_capacity(8);
         t.push_str("inner");
         break;
         let unreachable_tail = 0;
@@ -193,7 +193,7 @@ description = "Mid-block return in an untaken branch: fall-through path must not
 files = [{ path = "main.rue", source = """
 fn check(flag: bool) -> i32 {
     if flag {
-        let mut t = String.with_capacity(8);
+        let mut t = StrBuf.with_capacity(8);
         t.push_str("taken");
         return 1;
         let unreachable_tail = 0;

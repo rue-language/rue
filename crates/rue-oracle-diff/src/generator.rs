@@ -889,7 +889,7 @@ impl Program {
 
     fn snippet_string(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
         let sname = self.fresh("s");
-        body.push(format!("    let mut {sname} = String.new();"));
+        body.push(format!("    let mut {sname} = StrBuf.new();"));
         let chunks = 1 + self.rng.below(3);
         for _ in 0..chunks {
             let word = *self.rng.pick(&["foo", "bar", "baz", "hi", "x"]);
@@ -1021,7 +1021,7 @@ mod tests {
 
         for seed in 0..COMPILE_CONTRACT_SEEDS {
             let source = generate(seed);
-            saw_string_associated_call |= source.contains("String.new()");
+            saw_string_associated_call |= source.contains("StrBuf.new()");
             if let Err(errors) = validate_semantics(&source) {
                 panic!(
                     "generated seed {seed} did not compile: {errors:#?}\n\n--- source ---\n{source}"

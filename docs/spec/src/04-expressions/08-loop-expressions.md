@@ -218,8 +218,8 @@ element type and iteration order:
 
 - an array `[T; N]` — each element of type `T` is bound in ascending index
   order;
-- a `String` — each byte is bound as `u8` in ascending byte order;
-- the character view `s.chars()` of a `String` — each Unicode scalar value is
+- a `StrBuf` — each byte is bound as `u8` in ascending byte order;
+- the character view `s.chars()` of a `StrBuf` — each Unicode scalar value is
   bound as `u32`, in ascending byte order (or `s.chars_lossy()`, which decodes
   invalid UTF-8 to `U+FFFD` instead of trapping).
 

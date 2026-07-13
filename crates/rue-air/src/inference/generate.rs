@@ -2222,7 +2222,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // associated-function call / enum tuple-variant construction
                 // (RUE-488): forward to the type-qualified path so arguments are
                 // constrained to the callee signature (a bare `MethodCall` arm
-                // would leave a literal like the `8` in `String.with_capacity(8)`
+                // would leave a literal like the `8` in `StrBuf.with_capacity(8)`
                 // unconstrained, defaulting it to `i32` and later clashing with a
                 // `u64` parameter). Skip when a runtime value (a parameter, or a
                 // local that is not itself a comptime type value) shadows the type
@@ -2740,7 +2740,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// type. Shared by the `AssocFnCall` arm and the `MethodCall` arm's
     /// type-name-receiver forwarding (`Type.function(args)`, RUE-488). Getting
     /// the argument constraints here — not just in sema — is what pins a literal
-    /// like the `8` in `String.with_capacity(8)` to the declared `u64` parameter
+    /// like the `8` in `StrBuf.with_capacity(8)` to the declared `u64` parameter
     /// instead of letting it default to `i32`.
     fn generate_type_qualified_call(
         &mut self,
@@ -2795,7 +2795,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// type: enum tuple-variant construction (`Shape.Circle(5)`, RUE-221) or a
     /// struct associated-function call. Imposing the declared payload/parameter
     /// types on the arguments here — not just in sema — is what pins a literal
-    /// like the `8` in `String.with_capacity(8)` to the declared `u64` instead
+    /// like the `8` in `StrBuf.with_capacity(8)` to the declared `u64` instead
     /// of letting it default to `i32`. Shared by
     /// [`Self::generate_type_qualified_call`] (name-resolved heads) and the
     /// inline type-constructor head path (sema-reduced heads, RUE-599).

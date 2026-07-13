@@ -1,7 +1,7 @@
 # Trailing comma inside `@import("...",)` must still be discovered from disk
 # (RUE-536). The parser accepted `@import("x",)` as a one-argument list, but the
 # driver's import-discovery scan matched only the exact four-token shape
-# `@import ( String )`, so the trailing comma made the import silently bypass
+# `@import ( StrBuf )`, so the trailing comma made the import silently bypass
 # discovery and the module failed to load (E0704 cannot find module). The scan
 # now tolerates a comma before the close paren. Driven through the real binary
 # with the imported file resolved from disk.

@@ -78,7 +78,7 @@ graph LR
 | `rue-cli-tests` | CLI integration tests (real binary, real files) |
 | `rue-fuzz` | Fuzz testing infrastructure |
 | `rue-runtime` | Runtime support |
-| `rue-builtins` | Built-in type definitions (String) |
+| `rue-builtins` | Built-in type definitions (StrBuf) |
 
 ### Modules and Multi-File Compilation
 
@@ -120,11 +120,11 @@ tests or examples that rely on flat file lists.
 - **Index-based references**: Instructions stored in vectors, referenced by u32 indices (cache-friendly, no lifetimes)
 - **Direct code emission**: No LLVM dependency; machine code emitted directly
 - **Minimal linking**: Static executables with direct syscalls
-- **Built-in types as synthetic structs**: Types like `String` are defined in `rue-builtins` and injected as synthetic structs, not as hardcoded special-cased built-in types (see [ADR-0020](docs/designs/0020-builtin-types-as-structs.md))
+- **Built-in types as synthetic structs**: Types like `StrBuf` are defined in `rue-builtins` and injected as synthetic structs, not as hardcoded special-cased built-in types (see [ADR-0020](docs/designs/0020-builtin-types-as-structs.md))
 
 ### Built-in Types Architecture
 
-Built-in types (currently `String`) are "synthetic structs" injected before user
+Built-in types (currently `StrBuf`) are "synthetic structs" injected before user
 code, so they flow through the same paths as user structs (see
 [ADR-0020](docs/designs/0020-builtin-types-as-structs.md)). Collection types
 like `ArrayBuf` are NOT builtins — they are ordinary Rue source in `std/`,

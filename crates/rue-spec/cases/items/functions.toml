@@ -880,14 +880,14 @@ error_contains = "into a call that also passes it"
 [[case]]
 name = "move_while_loaned_string_heap"
 spec = ["6.1:36"]
-description = "The heap shape: moving a String into a call that passes it inout would double-free the buffer"
+description = "The heap shape: moving a StrBuf into a call that passes it inout would double-free the buffer"
 source = """
-fn f(inout a: String, b: String) -> u64 {
+fn f(inout a: StrBuf, b: StrBuf) -> u64 {
     a.push(120);
     b.len()
 }
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     s.push(104);
     let r = f(inout s, s);
     if r == 1 { 0 } else { 1 }
@@ -922,14 +922,14 @@ name = "move_field_while_root_loaned"
 spec = ["6.1:36"]
 description = "Moving one field by value while loaning the whole variable shares a root and is rejected"
 source = """
-struct Inner { s: String }
+struct Inner { s: StrBuf }
 struct Outer { inner: Inner, n: i32 }
 fn f(inout a: Outer, b: Inner) -> i32 {
     a.n = 1;
     if b.s.len() == 1 { 7 } else { 8 }
 }
 fn main() -> i32 {
-    let mut st = String.new();
+    let mut st = StrBuf.new();
     st.push(120);
     let mut o = Outer { inner: Inner { s: st }, n: 0 };
     f(inout o, o.inner)

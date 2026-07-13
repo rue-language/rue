@@ -204,7 +204,7 @@ source = """
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
-fn add_one(s: String) -> Option(i64) {
+fn add_one(s: StrBuf) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)
@@ -227,7 +227,7 @@ source = """
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
-fn add_one(s: String) -> Option(i64) {
+fn add_one(s: StrBuf) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)

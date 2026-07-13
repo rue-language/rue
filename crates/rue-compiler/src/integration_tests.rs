@@ -606,8 +606,7 @@ mod integration_tests {
             let result = test_air(src).unwrap();
             // type_pool includes builtin types (StrBuf) plus user-defined
             // structs. There's 1 builtin (StrBuf) + 1 user-defined (Point) = 2
-            // distinct structs (the deprecated `String` alias names the same
-            // StrBuf struct, so `all_struct_ids` de-dups it away).
+            // distinct structs.
             let all_struct_ids = result.type_pool.all_struct_ids();
             assert_eq!(all_struct_ids.len(), 2);
             // Verify Point is present

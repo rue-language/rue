@@ -362,30 +362,30 @@ exit_code = 3
 expected_stdout = "2\n1\n"
 
 # =============================================================================
-# Types with Destructors (String)
+# Types with Destructors (StrBuf)
 # =============================================================================
 
-# These tests verify destructor behavior using String, which has a destructor
+# These tests verify destructor behavior using StrBuf, which has a destructor
 # that frees heap-allocated buffers when capacity > 0.
 
 [[case]]
 name = "type_with_destructor"
 spec = ["3.9:11", "3.10:29"]
-description = "A type has a destructor if dropping requires cleanup (String drops heap buffer)"
+description = "A type has a destructor if dropping requires cleanup (StrBuf drops heap buffer)"
 source = """
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     s.push_str("hello");
     // s has heap allocation
     0
-}  // String destructor frees heap buffer
+}  // StrBuf destructor frees heap buffer
 """
 exit_code = 0
 
 [[case]]
 name = "type_with_destructor_literal_promoted"
 spec = ["3.9:11", "3.10:29", "3.10:21"]
-description = "String promoted from literal has destructor that frees heap"
+description = "StrBuf promoted from literal has destructor that frees heap"
 source = """
 fn main() -> i32 {
     let mut s = "hello";
@@ -399,7 +399,7 @@ exit_code = 0
 [[case]]
 name = "type_with_destructor_literal_no_heap"
 spec = ["3.9:11", "3.10:29"]
-description = "String literal (cap=0) has no cleanup action"
+description = "StrBuf literal (cap=0) has no cleanup action"
 source = """
 fn main() -> i32 {
     let s = "hello";
@@ -415,16 +415,16 @@ spec = ["3.9:12"]
 description = "Struct has destructor if any field has destructor"
 source = """
 struct Container {
-    name: String,
+    name: StrBuf,
     value: i32,
 }
 
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     s.push_str("test");
     let c = Container { name: s, value: 42 };
     c.value
-}  // Container dropped: name field (String) is dropped, freeing heap
+}  // Container dropped: name field (StrBuf) is dropped, freeing heap
 """
 exit_code = 42
 
@@ -455,17 +455,17 @@ expected_stdout = "1\n2\n"
 [[case]]
 name = "struct_with_string_fields_dropped"
 spec = ["3.9:13"]
-description = "Struct whose String fields require cleanup drops each field (heap buffers freed)"
+description = "Struct whose StrBuf fields require cleanup drops each field (heap buffers freed)"
 source = """
 struct TwoStrings {
-    first: String,
-    second: String,
+    first: StrBuf,
+    second: StrBuf,
 }
 
 fn main() -> i32 {
-    let mut a = String.new();
+    let mut a = StrBuf.new();
     a.push_str("first");
-    let mut b = String.new();
+    let mut b = StrBuf.new();
     b.push_str("second");
     let ts = TwoStrings { first: a, second: b };
     0
@@ -677,7 +677,7 @@ spec = ["3.9:21", "3.10:29"]
 description = "Non-trivially droppable types generate destructor calls"
 source = """
 fn main() -> i32 {
-    let mut s = String.new();
+    let mut s = StrBuf.new();
     s.push_str("hello");
     0
 }

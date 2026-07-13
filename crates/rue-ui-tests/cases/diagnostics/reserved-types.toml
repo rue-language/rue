@@ -8,9 +8,9 @@ description = "Tests that user-defined types cannot collide with built-in type n
 # =============================================================================
 
 [[case]]
-name = "struct_named_string"
+name = "struct_named_strbuf"
 source = """
-struct String {
+struct StrBuf {
     data: i32,
 }
 
@@ -19,12 +19,12 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "cannot define type `String`: name is reserved for built-in type"
+error_contains = "cannot define type `StrBuf`: name is reserved for built-in type"
 
 [[case]]
-name = "enum_named_string"
+name = "enum_named_strbuf"
 source = """
-enum String {
+enum StrBuf {
     Empty,
     Full,
 }
@@ -34,4 +34,4 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "cannot define type `String`: name is reserved for built-in type"
+error_contains = "cannot define type `StrBuf`: name is reserved for built-in type"

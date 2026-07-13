@@ -113,9 +113,9 @@ When an array with a destructor is dropped, each element is dropped in index ord
 
 ```rue
 fn main() -> i32 {
-    let arr: [String; 3] = ["a", "b", "c"];
+    let arr: [StrBuf; 3] = ["a", "b", "c"];
     0
-}  // Each String in arr is dropped: arr[0], arr[1], arr[2]
+}  // Each StrBuf in arr is dropped: arr[0], arr[1], arr[2]
 ```
 
 {{ rule(id="3.9:17", cat="informative") }}

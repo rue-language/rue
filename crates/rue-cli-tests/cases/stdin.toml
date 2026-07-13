@@ -1,7 +1,7 @@
 # Programs that read stdin: the @read_line / @parse_i32 loop.
 #
 # Since RUE-6 (ADR-0038) these intrinsics are fallible-by-Option, not
-# trapping: @read_line returns Option(String) (None at EOF) and @parse_* return
+# trapping: @read_line returns Option(StrBuf) (None at EOF) and @parse_* return
 # Option(int) (None on bad input). The concrete Option is imported from a small
 # local module (no prelude yet) and threaded via a `let` annotation or the
 # match arms.
@@ -16,7 +16,7 @@ name = "read_and_echo_number"
 files = [
   { path = "main.rue", source = """
 fn main() -> i32 {
-    let OptStr = @import("opt.rue").Option(String);
+    let OptStr = @import("opt.rue").Option(StrBuf);
     let OptInt = @import("opt.rue").Option(i32);
     let line: OptStr = @read_line();
     match line {
@@ -43,7 +43,7 @@ name = "guessing_loop_scripted"
 files = [
   { path = "main.rue", source = """
 fn main() -> i32 {
-    let OptStr = @import("opt.rue").Option(String);
+    let OptStr = @import("opt.rue").Option(StrBuf);
     let OptInt = @import("opt.rue").Option(i32);
     let secret = 73;
     loop {
@@ -90,7 +90,7 @@ name = "parse_error_yields_none"
 files = [
   { path = "main.rue", source = """
 fn main() -> i32 {
-    let OptStr = @import("opt.rue").Option(String);
+    let OptStr = @import("opt.rue").Option(StrBuf);
     let OptInt = @import("opt.rue").Option(i32);
     let line: OptStr = @read_line();
     match line {
@@ -116,7 +116,7 @@ name = "read_line_at_eof_yields_none"
 files = [
   { path = "main.rue", source = """
 fn main() -> i32 {
-    let OptStr = @import("opt.rue").Option(String);
+    let OptStr = @import("opt.rue").Option(StrBuf);
     let line: OptStr = @read_line();
     match line {
         OptStr.Some(_text) => 1,

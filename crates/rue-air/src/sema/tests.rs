@@ -675,7 +675,7 @@ mod tests {
         // and CFG (RUE-512). `@assert` returns on the success path, so it stays
         // unit-typed. Both must agree with the inference contract. The message
         // operand's own type never changes the intrinsic's result type
-        // (StrBuf/String-alias messages, never-typed operands).
+        // (StrBuf messages, never-typed operands).
         for (name, body, expected) in [
             ("panic_no_message", "@panic()", Type::NEVER),
             ("panic_with_message", "@panic(\"boom\")", Type::NEVER),
@@ -688,11 +688,6 @@ mod tests {
             (
                 "panic_with_strbuf",
                 "let message: StrBuf = \"boom\"; @panic(message)",
-                Type::NEVER,
-            ),
-            (
-                "panic_with_string_alias",
-                "let message: String = \"boom\"; @panic(message)",
                 Type::NEVER,
             ),
             (
@@ -2416,15 +2411,6 @@ mod tests {
             "StrBuf should be in struct registry"
         );
 
-        // The deprecated `String` alias resolves to the *same* struct id in the
-        // registry, so existing `s: String` annotations keep type-checking.
-        let alias_name = sema.interner.get("String").unwrap();
-        assert_eq!(
-            sema.builtin_structs.get(&alias_name),
-            registry_string,
-            "`String` alias should resolve to the StrBuf struct"
-        );
-
         // Check the pool definition
         let pool_def = sema.type_pool.get_struct_def(pool_string.unwrap()).unwrap();
 
@@ -2528,7 +2514,7 @@ mod tests {
 
         let stats = sema.type_pool.stats();
 
-        // 3 structs: String (builtin) + A + B
+        // 3 structs: StrBuf (builtin) + A + B
         assert_eq!(stats.struct_count, 3);
         // 3 enums: Arch (builtin) + Os (builtin) + E
         assert_eq!(stats.enum_count, 3);

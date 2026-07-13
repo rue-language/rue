@@ -10,7 +10,7 @@
 #     registers (x86-64: 6, aarch64: 8) go on the caller's stack, and the
 #     callee prologue copies them into its frame param area.
 #   - Returns: aggregates that fit the return registers (x86-64: 6, aarch64:
-#     8) use them; larger aggregates — and String always — return via a
+#     8) use them; larger aggregates — and StrBuf always — return via a
 #     caller-allocated sret buffer whose address is a hidden first argument.
 # All sizes here (5/7/9 slots) pass and return correctly on both backends.
 
@@ -217,14 +217,14 @@ fn main() -> i32 {
 """ }]
 stdout = "8\n"
 
-# RUE-92: a user function returning String by value. The caller has always
+# RUE-92: a user function returning StrBuf by value. The caller has always
 # used the sret convention (buffer pointer as hidden first argument) for
-# String-returning calls, but the callee used to return the three slots in
+# StrBuf-returning calls, but the callee used to return the three slots in
 # registers and never write the buffer — len/cap arrived as garbage.
 [[case]]
 name = "string_return_by_value"
 files = [{ path = "main.rue", source = """
-fn make() -> String {
+fn make() -> StrBuf {
     "hello"
 }
 
@@ -245,7 +245,7 @@ hello
 [[case]]
 name = "string_return_with_args"
 files = [{ path = "main.rue", source = """
-fn pick(a: String, b: String, n: i32) -> String {
+fn pick(a: StrBuf, b: StrBuf, n: i32) -> StrBuf {
     if n > 0 { a } else { b }
 }
 
