@@ -16,8 +16,8 @@ use lasso::Spur;
 use crate::sema::context::ConstValue;
 use crate::types::{EnumDef, StructDef, StructField, Type};
 
-use super::{DeclarationPhase, Sema};
 use super::info::AnonMethodSig;
+use super::{DeclarationPhase, Sema};
 
 impl<D: DeclarationPhase> Sema<'_, D> {
     /// Find an existing anonymous struct with the same fields, methods, and captured values, or create a new one.

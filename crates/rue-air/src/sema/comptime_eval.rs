@@ -956,8 +956,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                         name: method_name, ..
                     } = &first_method_inst.data
                     {
-                        let needs_registration =
-                            !self.has_method((struct_id, *method_name));
+                        let needs_registration = !self.has_method((struct_id, *method_name));
 
                         if needs_registration
                             && self

@@ -12,8 +12,8 @@ use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
 use rue_span::{FileId, Span};
 
-use super::{DeclarationPhase, Sema};
 use super::context::AnalysisContext;
+use super::{DeclarationPhase, Sema};
 
 /// Maximum size of a single object in bytes: `i32::MAX`, matching the
 /// codegen frame-offset (disp32) addressing range (Appendix C practical
