@@ -232,15 +232,16 @@ pub fn require_aggregate_slots<B: SlotBackend>(b: &mut B, value: CfgValue) -> Ve
         "aggregate slot materialization requires a multi-slot aggregate value: {value}"
     );
     let expected = b.ctx().type_slot_count(ty) as usize;
-    let slots = get_or_compute_field_vregs(b, value).unwrap_or_else(|| {
-        if expected == 1 {
-            // A one-slot aggregate's primary vreg is its complete
-            // representation. Some scalar-producing intrinsics intentionally
-            // do not populate the aggregate slot cache for that case.
-            vec![b.get_vreg(value)]
-        } else {
-            panic!("multi-slot aggregate {value} has no complete slot representation")
-        }
+    let slots = get_or_compute_field_vregs(b, value).unwrap_or_else(|| match expected {
+        // A zero-slot aggregate's empty representation is complete. Producers
+        // intentionally have no slot-cache entry because there are no vregs to
+        // record (for example, an ArrayBuf element whose type is a ZST).
+        0 => Vec::new(),
+        // A one-slot aggregate's primary vreg is its complete representation.
+        // Some scalar-producing intrinsics intentionally do not populate the
+        // aggregate slot cache for that case.
+        1 => vec![b.get_vreg(value)],
+        _ => panic!("multi-slot aggregate {value} has no complete slot representation"),
     });
     assert_complete_slot_count(value, slots.len(), expected);
     slots
@@ -581,6 +582,11 @@ mod tests {
     #[test]
     fn complete_aggregate_slot_count_is_valid() {
         assert_complete_slot_count(CfgValue::from_raw(7), 4, 4);
+    }
+
+    #[test]
+    fn empty_zero_sized_aggregate_representation_is_valid() {
+        assert_complete_slot_count(CfgValue::from_raw(7), 0, 0);
     }
 
     #[test]
