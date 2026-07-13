@@ -24,12 +24,25 @@ impl Sema<'_> {
         let root = self
             .root_file_id
             .and_then(|id| self.file_paths.get(&id))
-            .or_else(|| self.file_paths.iter().min_by_key(|(id, _)| id.index()).map(|(_, p)| p))
+            .or_else(|| {
+                self.file_paths
+                    .iter()
+                    .min_by_key(|(id, _)| id.index())
+                    .map(|(_, p)| p)
+            })
             .map(|path| dir_of(path));
         let mut dirs = Vec::new();
-        if let Some(dir) = importer { dirs.push(dir); }
-        if let Some(dir) = root && !dirs.contains(&dir) { dirs.push(dir); }
-        if dirs.is_empty() { dirs.push(String::new()); }
+        if let Some(dir) = importer {
+            dirs.push(dir);
+        }
+        if let Some(dir) = root
+            && !dirs.contains(&dir)
+        {
+            dirs.push(dir);
+        }
+        if dirs.is_empty() {
+            dirs.push(String::new());
+        }
         dirs
     }
 
@@ -52,26 +65,31 @@ impl Sema<'_> {
             std_dir.as_deref(),
         ) {
             super::module_path::DirResolution::Resolved(path) => Ok(path),
-            super::module_path::DirResolution::Ambiguous { file_module, dir_module } => {
-                Err(CompileError::new(
-                    ErrorKind::AmbiguousModule(Box::new(rue_error::AmbiguousModuleData {
-                        path: import_path.to_owned(),
-                        file_module,
-                        dir_module,
-                    })),
-                    span,
-                ))
-            }
+            super::module_path::DirResolution::Ambiguous {
+                file_module,
+                dir_module,
+            } => Err(CompileError::new(
+                ErrorKind::AmbiguousModule(Box::new(rue_error::AmbiguousModuleData {
+                    path: import_path.to_owned(),
+                    file_module,
+                    dir_module,
+                })),
+                span,
+            )),
             super::module_path::DirResolution::NotFound if import_path == "std" => {
                 Err(CompileError::new(ErrorKind::StdLibNotFound, span))
             }
             super::module_path::DirResolution::NotFound => Err(CompileError::new(
                 ErrorKind::ModuleNotFound {
                     path: import_path.to_owned(),
-                    candidates: super::module_path::import_candidate_groups(import_path, &dirs, None)
-                        .into_iter()
-                        .flatten()
-                        .collect(),
+                    candidates: super::module_path::import_candidate_groups(
+                        import_path,
+                        &dirs,
+                        None,
+                    )
+                    .into_iter()
+                    .flatten()
+                    .collect(),
                 },
                 span,
             )),

@@ -122,7 +122,6 @@ impl<'a> Sema<'a> {
             }
         }
     }
-
 }
 
 impl<'a, D: DeclarationPhase> Sema<'a, D> {
