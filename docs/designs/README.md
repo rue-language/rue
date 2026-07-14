@@ -212,4 +212,5 @@ The table is generated from ADR frontmatter. Run
 | [0047](0047-root-module-build-inputs.md) | Root-module compilation units and build-system inputs | Accepted | modules, compiler, build-system, packages, cli, language-shape |
 | [0048](0048-shared-codegen-middle-layer.md) | Shared codegen middle layer (reduce x86-64/aarch64 backend duplication) | Proposal | codegen, architecture, backends, refactor, maintainability |
 | [0050](0050-semantic-dependency-manifest.md) | Stable semantic dependency manifests | Accepted | compiler, incremental, tooling |
+| [0051](0051-canonical-import-resolution-authority.md) | CanonicalImportGraph as the sole import-resolution authority | Accepted | architecture, compiler, modules, incremental, tooling |
 <!-- ADR-INDEX:END -->
