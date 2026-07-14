@@ -27,6 +27,8 @@
 const ascii = @import("ascii.rue");
 const option = @import("option.rue");
 const math = @import("math.rue");
+const strbuf = @import("strbuf.rue");
+const StrBuf = strbuf.StrBuf;
 
 // Parse a decimal integer with an optional leading '-'. Returns `None` on an
 // empty string, a lone '-', any non-digit byte, or arithmetic overflow of

@@ -195,16 +195,13 @@ pub struct ConstraintGenerator<'a> {
     /// These start as unbound and need to be defaulted to i32 if unconstrained.
     int_literal_vars: Vec<TypeVarId>,
     /// Type variables allocated for string literals. Unlike integer literals,
-    /// these have a concrete, edition/preview-dependent default supplied by
-    /// semantic analysis: legacy programs default to `StrBuf`, while the
-    /// `string_trio` preview defaults to the canonical synthetic `str` type.
-    /// Contextual constraints may still bind a literal to `StrBuf` first.
+    /// these default to the canonical core `str` type. Context may still bind
+    /// a literal to the trusted standard-library `StrBuf` language item.
     string_literal_vars: Vec<TypeVarId>,
     /// Concrete default for an otherwise-unconstrained string literal.
     string_literal_default: Type,
-    /// Explicit compiler-provided identity for the transitional growable
-    /// string type used by intrinsic signatures and StrBuf-only contexts.
-    strbuf_type: Type,
+    /// Trusted standard-library growable string identity, when imported.
+    strbuf_type: Option<Type>,
     /// Type substitutions for Self and type parameters (used in method bodies).
     /// Maps type names (like "Self") to their concrete types.
     type_subst: Option<&'a HashMap<Spur, Type>>,
@@ -337,8 +334,8 @@ impl<'a> ConstraintGenerator<'a> {
         type_pool: &'a TypeInternPool,
         type_subst: Option<&'a HashMap<Spur, Type>>,
     ) -> Self {
-        let strbuf_type = type_pool.builtin_strbuf_type().unwrap_or(Type::ERROR);
-        let string_literal_default = strbuf_type;
+        let strbuf_type = type_pool.lang_item_type(crate::LangItem::StrBuf);
+        let string_literal_default = Type::ERROR;
         Self {
             rir,
             interner,
@@ -375,16 +372,14 @@ impl<'a> ConstraintGenerator<'a> {
 
     /// Override the default used for unconstrained string literals.
     ///
-    /// Semantic analysis uses this for the `string_trio` preview after it has
-    /// registered the canonical synthetic `str` type in the shared type pool.
+    /// Semantic analysis supplies the canonical core `str` type.
     pub fn with_string_literal_default(mut self, ty: Type) -> Self {
         self.string_literal_default = ty;
         self
     }
 
-    /// Supply the transitional StrBuf nominal through an already-resolved
-    /// semantic identity instead of rediscovering it from a source spelling.
-    pub fn with_strbuf_type(mut self, ty: Type) -> Self {
+    /// Supply the trusted StrBuf language item when its module is imported.
+    pub fn with_strbuf_type(mut self, ty: Option<Type>) -> Self {
         self.strbuf_type = ty;
         self
     }
@@ -818,9 +813,9 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::BoolConst(_) => InferType::Concrete(Type::BOOL),
 
             // String literals are context-sensitive. A fresh variable lets an
-            // explicit `StrBuf` context retain the legacy owning-buffer type;
+            // explicit `StrBuf` context retain the owning-buffer type;
             // otherwise semantic analysis defaults it after unification (to
-            // `str` under `string_trio`, and `StrBuf` without the preview).
+            // core `str`, with contextual promotion to trusted `StrBuf`).
             InstData::StringConst(_) => {
                 let var = self.fresh_var();
                 self.string_literal_vars.push(var);
@@ -1348,14 +1343,10 @@ impl<'a> ConstraintGenerator<'a> {
                     // here — rather than leaning on the generic unit fallback —
                     // stops HM and semantic analysis from drifting apart.
                     for arg_ref in args.iter() {
-                        let info = self.generate(*arg_ref, ctx);
-                        if self.is_string_literal_candidate(&info.ty) {
-                            self.add_constraint(Constraint::equal(
-                                info.ty,
-                                self.string_infer_type(),
-                                info.span,
-                            ));
-                        }
+                        // Text-taking intrinsics accept every stable text view.
+                        // Leave literals unconstrained so they take the
+                        // canonical `str` default when std is not imported.
+                        self.generate(*arg_ref, ctx);
                     }
                     InferType::Concrete(Type::NEVER)
                 } else if intrinsic_name == "assert" {
@@ -1363,15 +1354,10 @@ impl<'a> ConstraintGenerator<'a> {
                     // and evaluates to `()`. It only aborts when the condition is
                     // false, so its static type is unit on both paths (spec
                     // 4.13:5b). Keep it explicit so HM and sema stay in lockstep.
-                    for (index, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
-                        if index == 1 && self.is_string_literal_candidate(&info.ty) {
-                            self.add_constraint(Constraint::equal(
-                                info.ty,
-                                self.string_infer_type(),
-                                info.span,
-                            ));
-                        }
+                    for arg_ref in args.iter() {
+                        // As with `@panic`, a literal message keeps the stable
+                        // `str` default instead of requiring imported StrBuf.
+                        self.generate(*arg_ref, ctx);
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "read_line" {
@@ -2412,11 +2398,11 @@ impl<'a> ConstraintGenerator<'a> {
 
                 // A string literal is otherwise defaulted only after solving,
                 // but method lookup needs a receiver type while constraints
-                // are still being generated. Use the StrBuf registry signature
-                // as contextual information for legacy buffer-only methods.
-                // `len` is shared by `str` and StrBuf; under the preview it may
-                // use the same result signature without forcing the receiver
-                // away from its `str` default.
+                // are still being generated. Use the canonical source StrBuf
+                // method signature as contextual information for buffer-only
+                // methods. `len` is shared by `str` and StrBuf and may use the
+                // same result signature without forcing the receiver away from
+                // its stable `str` default.
                 if self.is_string_literal_candidate(&receiver_info.ty)
                     && let InferType::Concrete(string_ty) = self.string_infer_type()
                     && let Some(string_id) = string_ty.as_struct()
@@ -2851,14 +2837,13 @@ impl<'a> ConstraintGenerator<'a> {
         result_ty
     }
 
-    /// The builtin growable-string type `StrBuf` (ADR-0043; formerly `String`)
-    /// as an [`InferType::Concrete`], or `Concrete(ERROR)` if it hasn't been
-    /// injected (should not happen once builtin types are registered).
+    /// The canonical standard-library `StrBuf` lang item as an
+    /// [`InferType::Concrete`], or `Concrete(ERROR)` when std is absent.
     fn string_infer_type(&self) -> InferType {
-        InferType::Concrete(self.strbuf_type)
+        InferType::Concrete(self.strbuf_type.unwrap_or(Type::ERROR))
     }
 
-    /// Whether `ty` is concretely either canonical or transitional StrBuf.
+    /// Whether `ty` is concretely the canonical StrBuf lang item.
     fn is_string_concrete(&self, ty: &InferType) -> bool {
         matches!(ty, InferType::Concrete(t) if t.as_struct().is_some_and(|id| self.type_pool.is_strbuf(id)))
     }

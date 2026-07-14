@@ -9,7 +9,7 @@
 # against the length; an out-of-range index traps, exit 101), and coerces to a
 # `str` view (§3.7:43) so it reads through the universal `str` interface.
 #
-# Gated behind `--preview string_trio` (shared with `str`). Deferred to later
+# Stable with `str`. Deferred to later
 # phases: mutation/append to `Str(N)`, ordering comparison, and methods beyond
 # `.len()`/index/borrow.
 
@@ -19,9 +19,9 @@ spec_chapter = "3.7"
 name = "The Str(N) Type"
 description = "Str(N) is the fixed-capacity [u8; N] string rung: literal-constructed, len/index, coercible to str."
 
-# 3.7:49 — `Str(N)` is a resolvable type, gated behind `--preview string_trio`.
+# 3.7:49 — `Str(N)` is a resolvable type.
 [[case]]
-name = "str_fixed_requires_preview"
+name = "str_fixed_is_stable"
 spec = ["3.7:49"]
 source = """
 fn main() -> i32 {
@@ -29,16 +29,13 @@ fn main() -> i32 {
     0
 }
 """
-compile_fail = true
-error_contains = "requires preview feature"
+exit_code = 0
 
 # 3.7:49 / 3.7:50 — a fitting string literal has type `Str(N)` where a `Str(N)`
 # is expected, and is storable in a binding.
 [[case]]
 name = "str_fixed_literal_binding"
 spec = ["3.7:49", "3.7:50"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: Str(8) = "hello";
@@ -51,8 +48,6 @@ exit_code = 0
 [[case]]
 name = "str_fixed_in_struct_field"
 spec = ["3.7:50"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 struct Holder { s: Str(8) }
 fn main() -> i32 {
@@ -66,8 +61,6 @@ exit_code = 2
 [[case]]
 name = "str_fixed_returnable"
 spec = ["3.7:50"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn make() -> Str(8) {
     "hi there"
@@ -83,8 +76,6 @@ exit_code = 8
 [[case]]
 name = "str_fixed_over_capacity_is_error"
 spec = ["3.7:51"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: Str(3) = "hello";
@@ -98,8 +89,6 @@ error_contains = "E0492"
 [[case]]
 name = "str_fixed_exact_capacity_ok"
 spec = ["3.7:51"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: Str(5) = "hello";
@@ -112,8 +101,6 @@ exit_code = 5
 [[case]]
 name = "str_fixed_len_is_current_not_capacity"
 spec = ["3.7:52"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: Str(64) = "hello";
@@ -126,8 +113,6 @@ exit_code = 5
 [[case]]
 name = "str_fixed_byte_index"
 spec = ["3.7:53"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: Str(8) = "hello";
@@ -140,8 +125,6 @@ exit_code = 104
 [[case]]
 name = "str_fixed_byte_index_multibyte"
 spec = ["3.7:53"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: Str(8) = "café";   // 5 bytes: c a f 0xC3 0xA9
@@ -154,8 +137,6 @@ exit_code = 195
 [[case]]
 name = "str_fixed_index_out_of_bounds_traps"
 spec = ["3.7:54"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: Str(8) = "hi";
@@ -171,8 +152,6 @@ runtime_error = "index out of bounds"
 [[case]]
 name = "str_fixed_coerces_to_borrow_str_param"
 spec = ["3.7:55"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn len_of(borrow s: str) -> u64 {
     s.len()
@@ -192,8 +171,6 @@ exit_code = 0
 [[case]]
 name = "str_fixed_to_first_class_str_param_rejected"
 spec = ["3.7:59"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn len_of(s: str) -> u64 {
     s.len()
@@ -211,8 +188,6 @@ error_contains = "first-class `str`"
 [[case]]
 name = "str_fixed_equality_compares_byte_content"
 spec = ["3.7:10", "4.3:3"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn choose(c: bool) -> Str(8) {
     if c { "hello" } else { "world" }

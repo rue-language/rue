@@ -155,6 +155,8 @@ name = "try_read_line_intrinsic_some"
 spec = ["4.15:9"]
 description = "`@read_line()?` unwraps the line at a non-EOF read; the tail @parse_i64 yields the number."
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
@@ -170,6 +172,7 @@ fn main() -> i32 {
     }
 }
 """
+real_std = true
 stdin = "42\n"
 exit_code = 42
 
@@ -178,6 +181,8 @@ name = "try_read_line_intrinsic_none_at_eof"
 spec = ["4.15:9"]
 description = "`@read_line()?` short-circuits the function to None at end-of-input (no trap)."
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
@@ -193,6 +198,7 @@ fn main() -> i32 {
     }
 }
 """
+real_std = true
 stdin = ""
 exit_code = 7
 
@@ -204,7 +210,7 @@ source = """
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
-fn add_one(s: StrBuf) -> Option(i64) {
+fn add_one(s: str) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)
@@ -227,7 +233,7 @@ source = """
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
-fn add_one(s: StrBuf) -> Option(i64) {
+fn add_one(s: str) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)

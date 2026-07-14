@@ -104,8 +104,22 @@ fn query_cfg_state_with_options(
     options: &CompileOptions,
 ) -> Result<CompileState, CompileErrors> {
     let snapshot = SourceSnapshot::single("<oracle>", source).map_err(CompileErrors::from)?;
+    query_cfg_state_from_snapshot(&snapshot, options)
+}
+
+fn query_cfg_state_from_snapshot(
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+) -> Result<CompileState, CompileErrors> {
     let mut session = CompilerSession::new();
-    session.update(&snapshot).into_result()?;
+    session.update(snapshot).into_result()?;
+    query_cfg_state_from_session(session, options)
+}
+
+fn query_cfg_state_from_session(
+    mut session: CompilerSession,
+    options: &CompileOptions,
+) -> Result<CompileState, CompileErrors> {
     let rir = session.rir()?;
     let semantic = session.semantic(options)?;
     drop(session);
@@ -475,6 +489,24 @@ pub fn run_source_with_preview_features(
     run_state(state).map_err(RunSourceError::Unsupported)
 }
 
+/// Run a compiler session whose caller has already completed any required
+/// import discovery. This keeps filesystem policy in the harness while letting
+/// the oracle consume the same canonical multi-module compiler state.
+pub fn run_session_with_preview_features(
+    session: CompilerSession,
+    preview_features: &PreviewFeatures,
+) -> Result<Outcome, RunSourceError> {
+    let state = query_cfg_state_from_session(
+        session,
+        &CompileOptions {
+            preview_features: preview_features.clone(),
+            ..CompileOptions::default()
+        },
+    )
+    .map_err(RunSourceError::Compile)?;
+    run_state(state).map_err(RunSourceError::Unsupported)
+}
+
 fn run_state(state: CompileState) -> Result<Outcome, Unsupported> {
     run_state_with_budget(state, STEP_BUDGET)
 }
@@ -567,7 +599,7 @@ enum Value {
     /// String-like data, modeled as raw byte content plus ABI slot width.
     ///
     /// `String`/`StrBuf` occupies three slots (`ptr`, `len`, `cap`), while
-    /// preview `str`/`Str(N)` occupies two (`ptr`, `len`). Keeping the width on
+    /// `str`/`Str(N)` occupies two (`ptr`, `len`). Keeping the width on
     /// the value prevents a `str` parameter from shifting later parameters as if
     /// it were a growable string.
     Str {
@@ -842,7 +874,44 @@ impl<'a> Interp<'a> {
     }
 
     fn is_matching_text_projection(&self, projection: Projection, actual_slots: usize) -> bool {
-        self.text_projection_slots(projection) == Some(actual_slots)
+        matches!(
+            (self.text_projection_slots(projection), actual_slots),
+            (Some(expected), actual) if expected == actual
+                // A literal contextualized as source StrBuf is still carried
+                // as its two-slot static view until the unmodeled projection
+                // materializes the three-slot header.
+                || (expected == 3 && actual == 2)
+        )
+    }
+
+    /// The canonical core `str` length field is part of the stable language
+    /// model, so the oracle can derive it directly from its byte-vector
+    /// representation. Other text-header projections remain explicit model
+    /// gaps: in particular, source `StrBuf` storage and raw pointers are not
+    /// materialized by the interpreter.
+    fn is_core_str_length_projection(&self, projection: Projection, actual_slots: usize) -> bool {
+        let Projection::Field {
+            struct_id,
+            field_index,
+        } = projection
+        else {
+            return false;
+        };
+        let def = self.state.type_pool.struct_def(struct_id);
+        actual_slots == 2 && def.name == "str" && def.field_count() == 2 && field_index == 1
+    }
+
+    fn is_owned_string_capacity_projection(&self, projection: Projection) -> bool {
+        let Projection::Field {
+            struct_id,
+            field_index,
+        } = projection
+        else {
+            return false;
+        };
+        self.is_owned_string_struct(struct_id)
+            && self.state.type_pool.struct_def(struct_id).field_count() == 3
+            && field_index == 2
     }
 
     fn is_owned_string_type(&self, ty: Type) -> bool {
@@ -854,10 +923,7 @@ impl<'a> Interp<'a> {
     }
 
     fn is_owned_string_struct(&self, struct_id: rue_air::StructId) -> bool {
-        matches!(
-            self.state.type_pool.struct_def(struct_id).name.as_str(),
-            "StrBuf"
-        )
+        self.state.type_pool.is_strbuf(struct_id)
     }
 
     fn classify_unsupported_runtime_call_static(
@@ -1227,13 +1293,14 @@ impl<'a> Interp<'a> {
         }
 
         let ty = |index: usize| cfg.get_inst(args[index]).ty;
-        let is_owned_string = |index: usize| self.is_owned_string_type(ty(index));
+        let is_text =
+            |index: usize| self.is_str_like_type(ty(index)) || self.is_owned_string_type(ty(index));
         let mut validated_kind = kind;
         let signature_matches = match name {
-            "parse_i32" => is_owned_string(0) && self.is_option_of(result_ty, Type::I32),
-            "parse_i64" => is_owned_string(0) && self.is_option_of(result_ty, Type::I64),
-            "parse_u32" => is_owned_string(0) && self.is_option_of(result_ty, Type::U32),
-            "parse_u64" => is_owned_string(0) && self.is_option_of(result_ty, Type::U64),
+            "parse_i32" => is_text(0) && self.is_option_of(result_ty, Type::I32),
+            "parse_i64" => is_text(0) && self.is_option_of(result_ty, Type::I64),
+            "parse_u32" => is_text(0) && self.is_option_of(result_ty, Type::U32),
+            "parse_u64" => is_text(0) && self.is_option_of(result_ty, Type::U64),
             "ptr_read" => self
                 .pointer_pointee(ty(0))
                 .is_some_and(|(pointee, _)| pointee == result_ty),
@@ -1374,12 +1441,16 @@ impl<'a> Interp<'a> {
         let signature_matches = match intrinsic {
             AbortIntrinsic::Panic => {
                 result_ty == PANIC_CFG_RESULT_TYPE
-                    && (args.is_empty() || self.is_owned_string_type(ty(0)))
+                    && (args.is_empty()
+                        || self.is_str_like_type(ty(0))
+                        || self.is_owned_string_type(ty(0)))
             }
             AbortIntrinsic::Assert => {
                 result_ty == Type::UNIT
                     && ty(0) == Type::BOOL
-                    && (args.len() == 1 || self.is_owned_string_type(ty(1)))
+                    && (args.len() == 1
+                        || self.is_str_like_type(ty(1))
+                        || self.is_owned_string_type(ty(1)))
             }
         };
         if !signature_matches {
@@ -1442,7 +1513,12 @@ impl<'a> Interp<'a> {
         match intrinsic {
             AbortIntrinsic::Panic => match values.as_slice() {
                 [] => self.abort_with_stderr(TrapKind::UserPanic, &[b"panic\n"]),
-                [Value::Str { bytes, slots: 3 }] => self
+                [
+                    Value::Str {
+                        bytes,
+                        slots: 2 | 3,
+                    },
+                ] => self
                     .abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", bytes.as_slice(), b"\n"]),
                 [_] => Err(unsupported(
                     UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
@@ -1453,9 +1529,13 @@ impl<'a> Interp<'a> {
             AbortIntrinsic::Assert => {
                 let (condition, message) = match values.as_slice() {
                     [Value::Bool(condition)] => (*condition, None),
-                    [Value::Bool(condition), Value::Str { bytes, slots: 3 }] => {
-                        (*condition, Some(bytes.as_slice()))
-                    }
+                    [
+                        Value::Bool(condition),
+                        Value::Str {
+                            bytes,
+                            slots: 2 | 3,
+                        },
+                    ] => (*condition, Some(bytes.as_slice())),
                     _ => {
                         return Err(unsupported(
                             UnsupportedKind::ContractViolation(
@@ -2862,6 +2942,19 @@ impl<'a> Interp<'a> {
                 Value::Aggregate(mut v) if idx < v.len() => v.swap_remove(idx),
                 Value::Aggregate(_) => {
                     return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
+                }
+                Value::Str { .. } if self.is_owned_string_capacity_projection(projection) => {
+                    return Err(unsupported(
+                        UnsupportedKind::ImplementationDefined(
+                            ImplementationDefinedKind::StringCapacityValue,
+                        ),
+                        "source StrBuf capacity value",
+                    ));
+                }
+                Value::Str { bytes, slots }
+                    if self.is_core_str_length_projection(projection, slots) =>
+                {
+                    Value::Int(bytes.len() as i128)
                 }
                 Value::Str { slots, .. } if self.is_matching_text_projection(projection, slots) => {
                     return Err(unsupported(

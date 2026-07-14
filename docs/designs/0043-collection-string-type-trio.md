@@ -1,12 +1,12 @@
 ---
 id: 0043
 title: "The collection & string type trio: fixed / slice / growable"
-status: accepted
+status: implemented
 tags: [strings, collections, slices, arrays, vec, allocators, stdlib]
 feature-flag:
 created: 2026-07-03
 accepted: 2026-07-03
-implemented:
+implemented: 2026-07-14
 spec-sections: ["3.7", "3.9"]
 supersedes:
 amends: [0020, 0035, 0041, 0042]
@@ -16,12 +16,11 @@ amends: [0020, 0035, 0041, 0042]
 
 ## Status
 
-Accepted — **experimental**. Ratified by Steve on 2026-07-03. It amends
-several accepted ADRs (0035, 0041) and supersedes others in part (0020, 0042) —
-see "Relationship to prior ADRs". Adopted to be *tried* while the surface is
-still small enough to change cheaply (the `Vec`→`ArrayBuf` and `String`→`StrBuf`
-renames included); repealed via `superseded-by:` if it proves wrong.
-Implementation is tracked in the ADR-0043 epic.
+Implemented and stabilized on 2026-07-14 by RUE-876. The core `str` and
+`Str(N)` types and static-backed literal default are stable. The growable
+`StrBuf` nominal is defined only by the trusted `std/strbuf.rue` module; it is
+not injected into roots that do not import the standard library. Runtime ABI
+symbols retain their historical `__rue_String_*` spellings pending RUE-877.
 
 ## Summary
 
@@ -208,7 +207,8 @@ not an owned copy. This revises ADR-0035, which specified `s[a..b] -> String`
 - **ADR-0020 (Built-in types as synthetic structs) — SUPERSEDED (for `String`).**
   `String` is no longer a blessed synthetic struct injected into scope; `str`
   and slices are genuine primitives, `StrBuf` is a library type. Whether the
-  synthetic-struct injection mechanism retains any use is out of scope here.
+  synthetic-struct injection mechanism no longer has a struct-type user; only
+  compiler-provided target enums remain synthetic.
 - **ADR-0037 (Exclusivity / access-point model) — BUILDS ON.** Slices are new
   second-class access points; `borrow`/`inout` slice forms are the shared/
   exclusive loans of that model. No change to 0037.

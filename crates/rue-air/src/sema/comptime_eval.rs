@@ -458,7 +458,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     }
 
     /// Resolve a bare name used as a type value through the canonical type
-    /// resolver. Preview types such as `str` are registered lazily, so looking
+    /// resolver. Synthetic type values such as `str` are registered lazily, so looking
     /// only in the already-populated struct and enum maps made their first use
     /// as a generic type argument spuriously non-constant.
     fn resolve_named_type_value(&mut self, name: Spur, span: Span) -> CompileResult<Option<Type>> {

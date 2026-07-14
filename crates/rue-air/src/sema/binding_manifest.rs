@@ -2145,7 +2145,7 @@ mod tests {
     }
 
     #[test]
-    fn declaration_shell_adapter_preserves_semantic_predeclaration_failure_provenance() {
+    fn user_strbuf_declaration_is_ordinary_and_split_binding_agrees() {
         let (tokens, interner) = Lexer::new("struct StrBuf {} fn main() {}")
             .tokenize()
             .unwrap();
@@ -2156,13 +2156,16 @@ mod tests {
 
         let direct = Sema::new(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
-            .err()
-            .expect("reserved type must fail");
+            .expect("StrBuf is not a reserved root type");
         let split = Sema::new(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
-            .err()
-            .expect("reserved type must short-circuit during nominal predeclaration");
-        assert_eq!(format!("{direct:?}"), format!("{split:?}"));
+            .expect("StrBuf nominal predeclaration succeeds")
+            .resolve_declarations()
+            .expect("StrBuf declaration resolution succeeds");
+        assert_eq!(
+            format!("{:?}", direct.binding_manifest()),
+            format!("{:?}", split.binding_manifest())
+        );
     }
 
     #[test]

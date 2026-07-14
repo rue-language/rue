@@ -25,8 +25,11 @@ exit_code = 42
 
 [[case]]
 name = "discarded_non_copy_payload_drops_once"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "A discarded non-Copy payload's destructor runs exactly once — printed once, not zero (leak-semantics) or twice (double-drop)."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Res { id: i32 }
 drop fn Res(self) { println(@to_string(self.id)); }
 enum Box { Full(Res), Empty }

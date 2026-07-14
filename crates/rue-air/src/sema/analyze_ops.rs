@@ -575,7 +575,7 @@ impl<'a> BodySema<'a> {
                 // 3-word heap `String` as before.
                 let ty = if let Some(expected) = ctx
                     .expected_type
-                    .filter(|ty| self.is_str_like(*ty) || self.is_builtin_string(*ty))
+                    .filter(|ty| self.is_str_like(*ty) || self.is_strbuf(*ty))
                 {
                     expected
                 } else {
@@ -2768,7 +2768,7 @@ impl<'a> BodySema<'a> {
         } else if let Some(inferred) = ctx.resolved_types.get(&init).copied()
             && self.is_str_struct(inferred)
         {
-            // Under `string_trio`, an unannotated literal-derived initializer
+            // An unannotated literal-derived initializer
             // defaults to the canonical first-class `str`. Propagate that HM
             // result while materializing nested branch, match, aggregate, and
             // block tails so every consumer uses the same two-slot type rather
@@ -5365,7 +5365,7 @@ impl<'a> BodySema<'a> {
         // String byte indexing: `s[i]` reads the i-th BYTE of a String as `u8`
         // (RUE-17 Phase 2, ADR-0035). O(1), bounds-checked at runtime: an
         // `index >= s.len()` traps (exit 101), exactly like array indexing.
-        if self.is_builtin_string(base_type) {
+        if self.is_strbuf(base_type) {
             return self.analyze_string_index_get(
                 air,
                 base_result,
@@ -5514,8 +5514,7 @@ impl<'a> BodySema<'a> {
     ///
     /// Indexing a StrBuf yields the i-th BYTE (not a char) as `u8`, lowering to
     /// the canonical source algorithm. An `index >= len` traps (exit 101),
-    /// mirroring array indexing rather than producing UB. The runtime call is
-    /// retained only for the transitional no-stdlib nominal.
+    /// mirroring array indexing rather than producing UB.
     ///
     /// The index only *borrows* the String (it is neither consumed nor
     /// mutated), so — like a `ByRef` builtin method — we undo the move the base
@@ -5564,44 +5563,31 @@ impl<'a> BodySema<'a> {
             (self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf))
                 .then_some(struct_id)
         });
-        let (call_name, receiver, receiver_mode, temp_scope) =
-            if let Some(struct_id) = source_method {
-                let method = self.interner.get_or_intern("byte_at_borrowed");
-                if self.method_info((struct_id, method)).is_some() {
-                    ctx.referenced_methods.insert((struct_id, method));
-                    let (receiver, temp_scope) = self.materialize_borrow_argument(
-                        air,
-                        base_result.air_ref,
-                        base_result.ty,
-                        span,
-                        ctx,
-                    )?;
-                    (
-                        self.interner.get_or_intern(&self.method_symbol(
-                            struct_id,
-                            "byte_at_borrowed",
-                            false,
-                        )),
-                        receiver,
-                        AirArgMode::Borrow,
-                        temp_scope,
-                    )
-                } else {
-                    (
-                        self.interner.get_or_intern("__rue_String_byte_at"),
-                        base_result.air_ref,
-                        AirArgMode::Normal,
-                        Vec::new(),
-                    )
-                }
-            } else {
-                (
-                    self.interner.get_or_intern("__rue_String_byte_at"),
-                    base_result.air_ref,
-                    AirArgMode::Normal,
-                    Vec::new(),
-                )
-            };
+        let Some(struct_id) = source_method else {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "string indexing reached a non-canonical StrBuf".to_string(),
+                ),
+                span,
+            ));
+        };
+        let method = self.interner.get_or_intern("byte_at_borrowed");
+        if self.method_info((struct_id, method)).is_none() {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "trusted std StrBuf is missing its source `byte_at_borrowed` method"
+                        .to_string(),
+                ),
+                span,
+            ));
+        }
+        ctx.referenced_methods.insert((struct_id, method));
+        let (receiver, temp_scope) =
+            self.materialize_borrow_argument(air, base_result.air_ref, base_result.ty, span, ctx)?;
+        let call_name =
+            self.interner
+                .get_or_intern(&self.method_symbol(struct_id, "byte_at_borrowed", false));
+        let receiver_mode = AirArgMode::Borrow;
         let extra = [
             receiver.as_u32(),
             receiver_mode.as_u32(),

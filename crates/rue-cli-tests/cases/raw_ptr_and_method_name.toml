@@ -5,7 +5,7 @@
 # Previously taking a raw pointer silently suppressed the operand's destructor
 # (leak) and rejected any later use with E0205.
 #
-# RUE-223: a user struct method whose name collides with a builtin StrBuf
+# RUE-223: a user struct method whose name collides with a standard-library StrBuf
 # mutation method (push/push_str/clear/reserve) must not be misclassified as a
 # StrBuf ByMutRef mutation demanding a `mut` receiver. Classification now gates
 # the name match on the receiver's resolved type actually being StrBuf.
@@ -69,7 +69,10 @@ stdout = "999\n777\n777\n111\n"
 # --- RUE-222 facet B: using the operand after @raw is legal (no E0205) -------
 [[case]]
 name = "raw_ptr_operand_usable_after"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = "hello";
     let _p: ptr const StrBuf = checked { @raw(s) };
@@ -99,7 +102,10 @@ stdout = "42\n"
 # --- RUE-223: user `clear` / `reserve` on immutable bindings compile ---------
 [[case]]
 name = "user_struct_clear_reserve_no_mut_required"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Bag {
     n: i32,
     fn clear(self) -> i32 { 5 }
@@ -118,7 +124,10 @@ stdout = "5\n9\n"
 # --- RUE-223 guard: StrBuf's real mutation methods STILL require `mut` -------
 [[case]]
 name = "string_push_str_still_requires_mut"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.new();
     s.push_str("x");
@@ -131,7 +140,10 @@ error_contains = ["E0203"]
 # --- RUE-223 guard: StrBuf mutation on a `mut` binding still works -----------
 [[case]]
 name = "string_push_str_on_mut_ok"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hi");

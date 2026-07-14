@@ -33,11 +33,14 @@ stdout = "3\n1\n4\n1\n3\n"
 
 [[case]]
 name = "for_string_bytes_dbg"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "for over a StrBuf yields each byte as u8 in ascending byte order; 'café' is 5 bytes (é = 0xC3 0xA9 = 195, 169)."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "café";
+    let s: StrBuf = "café";
     let mut count = 0;
     for b in s {
         @dbg(b);
@@ -51,11 +54,14 @@ stdout = "99\n97\n102\n195\n169\n"
 
 [[case]]
 name = "for_chars_scalars_dbg"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "for c in s.chars() decodes UTF-8 and binds each Unicode scalar as u32; 'café' is 4 scalars with é = U+00E9 = 233."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "héllo";
+    let s: StrBuf = "héllo";
     let mut count = 0;
     for c in s.chars() {
         @dbg(c);
@@ -69,11 +75,14 @@ stdout = "104\n233\n108\n108\n111\n"
 
 [[case]]
 name = "for_chars_invalid_utf8_traps"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "Strict decode: a truncated multi-byte sequence traps at the decode boundary (exit 101) after the valid prefix has been emitted."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let full = "café";
+    let full: StrBuf = "café";
     let s = full.substring(0, 4);
     for c in s.chars() {
         @dbg(c);
@@ -87,11 +96,14 @@ runtime_error_contains = ["invalid UTF-8"]
 
 [[case]]
 name = "for_chars_lossy_valid_dbg"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "for c in s.chars_lossy() decodes well-formed UTF-8 identically to .chars(); 'café' is 4 scalars ending in é = 233."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "café";
+    let s: StrBuf = "café";
     let mut count = 0;
     for c in s.chars_lossy() {
         @dbg(c);
@@ -105,9 +117,12 @@ stdout = "99\n97\n102\n233\n"
 
 [[case]]
 name = "for_chars_lossy_replaces_raw_invalid_bytes"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "Lossy decode over a StrBuf holding a raw invalid byte (0xFF): the bad byte becomes U+FFFD (65533) and iteration continues without trapping — the surrounding ASCII bytes decode normally."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push(97);

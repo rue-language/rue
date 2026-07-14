@@ -81,6 +81,9 @@ echo "run-sanitizer: workdir $work" >&2
 #     can hammer growth loops without cluttering the user-facing examples.
 cat > "$work/san_str_grow.rue" <<'RUE'
 // Many push_str calls -> repeated StrBuf realloc (the RUE-34 grow path).
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
     let mut s = StrBuf.new();
     let mut i = 0;
@@ -95,6 +98,9 @@ RUE
 
 cat > "$work/san_str_push_char.rue" <<'RUE'
 // Byte-at-a-time growth: exercises the smallest grow increments.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
     let mut s = StrBuf.new();
     let mut i = 0;
@@ -109,6 +115,9 @@ RUE
 
 cat > "$work/san_str_mixed.rue" <<'RUE'
 // with_capacity + mixed appends: pre-sized buffer then repeated growth.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
     let mut s = StrBuf.with_capacity(4);
     s.push_str("hello");
@@ -142,6 +151,9 @@ RUE
 cat > "$work/san_fallible_initializer.rue" <<'RUE'
 // EOF returns from the initializer before `line` owns a StrBuf. Cleanup must
 // end its storage without reading or dropping the uninitialized slot.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }

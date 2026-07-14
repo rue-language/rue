@@ -13,8 +13,11 @@ description = "Piping input to compiled programs; recoverable Option-based read/
 
 [[case]]
 name = "read_and_echo_number"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let OptStr = @import("opt.rue").Option(StrBuf);
     let OptInt = @import("opt.rue").Option(i32);
@@ -40,8 +43,11 @@ stdout = "42\n"
 
 [[case]]
 name = "guessing_loop_scripted"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let OptStr = @import("opt.rue").Option(StrBuf);
     let OptInt = @import("opt.rue").Option(i32);
@@ -87,8 +93,11 @@ You got it!
 
 [[case]]
 name = "parse_error_yields_none"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let OptStr = @import("opt.rue").Option(StrBuf);
     let OptInt = @import("opt.rue").Option(i32);
@@ -113,8 +122,11 @@ exit_code = 7
 
 [[case]]
 name = "read_line_at_eof_yields_none"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let OptStr = @import("opt.rue").Option(StrBuf);
     let line: OptStr = @read_line();

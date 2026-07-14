@@ -46,13 +46,13 @@ User-defined type names (structs and enums) **MUST** be unique within a program.
 
 {{ rule(id="6.0:3", cat="legality-rule") }}
 
-User-defined types **MUST NOT** use names reserved for built-in types. Currently, the reserved growable-string type name is `StrBuf`.
+User-defined type names are resolved by ordinary lexical and module lookup. The language currently reserves no type-name spellings; in particular, `StrBuf` is an ordinary standard-library declaration and may also name an unrelated user type.
 
 {{ rule(id="6.0:4", cat="example") }}
 
 ```rue
-// Error: cannot define type with reserved name
-struct StrBuf { data: i32 }  // compile error
+// OK: this is an ordinary user nominal, unrelated to std.strbuf.StrBuf.
+struct StrBuf { data: i32 }
 ```
 
 {{ rule(id="6.0:5", cat="legality-rule") }}

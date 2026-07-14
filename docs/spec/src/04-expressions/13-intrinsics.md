@@ -58,10 +58,10 @@ Expression intrinsics (usable in any expression position):
 | `@to_string` | Format an integer as its decimal `StrBuf` | 1 expression (any integer) | `StrBuf` |
 | `@drop` | Run a value's drop glue and consume it (RUE-187) | 1 expression (any type) | `()` |
 | `@read_line` | Read line from stdin | none | `Option(StrBuf)` |
-| `@parse_i32` | Parse string to i32 | 1 expression (`StrBuf`) | `Option(i32)` |
-| `@parse_i64` | Parse string to i64 | 1 expression (`StrBuf`) | `Option(i64)` |
-| `@parse_u32` | Parse string to u32 | 1 expression (`StrBuf`) | `Option(u32)` |
-| `@parse_u64` | Parse string to u64 | 1 expression (`StrBuf`) | `Option(u64)` |
+| `@parse_i32` | Parse text to i32 | 1 expression (any text rung) | `Option(i32)` |
+| `@parse_i64` | Parse text to i64 | 1 expression (any text rung) | `Option(i64)` |
+| `@parse_u32` | Parse text to u32 | 1 expression (any text rung) | `Option(u32)` |
+| `@parse_u64` | Parse text to u64 | 1 expression (any text rung) | `Option(u64)` |
 | `@random_u32` | Generate random u32 | none | `u32` |
 | `@random_u64` | Generate random u64 | none | `u64` |
 | `@target_arch` | Get target architecture | none | `Arch` |
@@ -98,9 +98,9 @@ The compiler frontend additionally reserves the names `@cast`, `@panic`,
 stabilized, so they are omitted from the normative inventory above, but they
 are no longer no-ops (RUE-319):
 
-- `@panic(msg?: StrBuf)` has type `!` (never): it aborts the process and never
-  returns. The optional message must have the builtin `StrBuf` type; `str`,
-  `Str(N)`, and unrelated aggregates are not accepted. It writes
+- `@panic(msg?: text)` has type `!` (never): it aborts the process and never
+  returns. The optional message may use any canonical text rung; unrelated
+  aggregates are not accepted. It writes
   `panic: <msg>` (or just `panic` when called with no
   argument) to standard error and exits with status 101 — the same abort
   discipline as the `@intCast` overflow, division-by-zero, and bounds-check
@@ -108,8 +108,8 @@ are no longer no-ops (RUE-319):
   so it may appear wherever a value of any type is expected — a typed `let`
   initializer, an `if`/`else` or `match` arm whose other arms produce a value,
   or a bare function tail.
-- `@assert(cond: bool, msg?: StrBuf)` requires an exact boolean condition and
-  the same optional builtin message type as `@panic`. When `cond` is `false` it
+- `@assert(cond: bool, msg?: text)` requires an exact boolean condition and
+  the same optional text contract as `@panic`. When `cond` is `false` it
   aborts exactly like `@panic`: with a message it writes `panic: <msg>`,
   otherwise it writes `assertion failed`, and in both cases exits with status
   101. When `cond` is `true` it has no effect. The expression has type `()` on
@@ -401,8 +401,10 @@ through portable source-level input.)
 {{ rule(id="4.13:41") }}
 
 ```rue
+const std = @import("std");
+const Opt = std.option.Option(std.strbuf.StrBuf);
+
 fn main() -> i32 {
-    let Opt = @import("std/option.rue").Option(StrBuf);
     @dbg("What is your name?");
     match @read_line() {
         Opt.Some(name) => @dbg(name),
@@ -417,8 +419,10 @@ fn main() -> i32 {
 Reading every line until end-of-input:
 
 ```rue
+const std = @import("std");
+const Opt = std.option.Option(std.strbuf.StrBuf);
+
 fn main() -> i32 {
-    let Opt = @import("std/option.rue").Option(StrBuf);
     loop {
         let line: Opt = @read_line();
         match line {
@@ -448,7 +452,8 @@ The concrete `Option(T)` type is taken from the surrounding context (a `let` ann
 
 {{ rule(id="4.13:45", cat="normative") }}
 
-Each parsing intrinsic accepts exactly one argument, which **MUST** be of type `StrBuf`.
+Each parsing intrinsic accepts exactly one argument, which **MUST** be one of
+the text types `str`, `Str(N)`, or `StrBuf`.
 
 {{ rule(id="4.13:46", cat="normative") }}
 

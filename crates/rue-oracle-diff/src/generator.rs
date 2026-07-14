@@ -889,16 +889,11 @@ impl Program {
 
     fn snippet_string(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
         let sname = self.fresh("s");
-        body.push(format!("    let mut {sname} = StrBuf.new();"));
-        let chunks = 1 + self.rng.below(3);
-        for _ in 0..chunks {
-            let word = *self.rng.pick(&["foo", "bar", "baz", "hi", "x"]);
-            body.push(format!("    {sname}.push_str(\"{word}\");"));
-        }
+        let word = *self.rng.pick(&["foo", "bar", "baz", "hi", "x"]);
+        body.push(format!("    let {sname}: str = \"{word}\";"));
         let ln = self.fresh("v");
         body.push(format!("    let {ln}: u64 = {sname}.len();"));
         scope.push(ln, Ty::U64);
-        // @dbg last (String may be consumed by dbg in codegen; keep it terminal).
         body.push(format!("    @dbg({sname});"));
         self.shapes.record(GeneratedShape::String);
     }
@@ -1017,11 +1012,11 @@ mod tests {
     /// oracle reports `Unsupported`.
     #[test]
     fn generated_programs_compile() {
-        let mut saw_string_associated_call = false;
+        let mut saw_string_method_call = false;
 
         for seed in 0..COMPILE_CONTRACT_SEEDS {
             let source = generate(seed);
-            saw_string_associated_call |= source.contains("StrBuf.new()");
+            saw_string_method_call |= source.contains(": str =") && source.contains(".len()");
             if let Err(errors) = validate_semantics(&source) {
                 panic!(
                     "generated seed {seed} did not compile: {errors:#?}\n\n--- source ---\n{source}"
@@ -1030,8 +1025,8 @@ mod tests {
         }
 
         assert!(
-            saw_string_associated_call,
-            "compile-contract corpus did not exercise associated calls"
+            saw_string_method_call,
+            "compile-contract corpus did not exercise stable str method calls"
         );
     }
 

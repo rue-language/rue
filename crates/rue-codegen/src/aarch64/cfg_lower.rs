@@ -2561,26 +2561,6 @@ impl<'a> CfgLower<'a> {
                 // destructor function to call.
                 let dropped_ty = self.ctx.cfg.get_inst(*dropped_value).ty;
 
-                // Handle String specially - it's a fat pointer (ptr, len, cap)
-                if self.ctx.is_legacy_builtin_string(dropped_ty) {
-                    // String requires all 3 slots as arguments to __rue_drop_String.
-                    // The accessor handles every source (cache for StructInit/Call/
-                    // BlockParam; materialize for Load/Param/PlaceRead). (RUE-118)
-                    let field_vregs = self.require_aggregate_slots(*dropped_value);
-
-                    // Correctness guard (must run in release): passing the wrong
-                    // slot count to __rue_drop_String corrupts the drop call, so
-                    // plain `assert!` not `debug_assert!` (RUE-45).
-                    assert_eq!(
-                        field_vregs.len(),
-                        3,
-                        "String should have 3 slots (ptr, len, cap)"
-                    );
-                    // Pass all 3 components (ptr, len, cap) to __rue_drop_String
-                    self.emit_call_with_slot_args(&field_vregs, "__rue_drop_String");
-                    return;
-                }
-
                 // Handle struct drops - need to pass all flattened field values
                 if let Some(struct_id) = dropped_ty.as_struct() {
                     let struct_def = self.ctx.type_pool.struct_def(struct_id);
@@ -4246,9 +4226,8 @@ mod tests {
     }
 
     #[test]
-    fn preview_default_string_literal_lowers_only_ptr_and_len() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+    fn default_string_literal_lowers_only_ptr_and_len() {
+        let preview = PreviewFeatures::new();
         let mir = lower_function_to_mir_with_preview(
             "fn main() -> i32 { let s = \"hello\"; @intCast(s.len()) }",
             "main",

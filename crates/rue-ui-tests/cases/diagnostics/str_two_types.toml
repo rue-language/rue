@@ -17,15 +17,18 @@ regressions are pinned in the CLI suite (str_type.toml).
 [[case]]
 name = "buffer_to_str_param_suggests_borrow_str"
 description = "A `StrBuf` argument to a bare `str` parameter is E0495 with the `borrow str` did-you-mean."
-preview = "string_trio"
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn cap(s: str) -> u64 { s.len() }
 fn main() -> i32 {
-    let b = "xx" + "yy";
+    let b: StrBuf = "xxyy";
     @intCast(cap(b))
 }
 """
 compile_fail = true
+real_std = true
 error_contains = [
     "E0495",
     "parameter type `str` accepts only string literals; did you mean `borrow str`?",
@@ -35,7 +38,6 @@ error_contains = [
 [[case]]
 name = "str_fixed_to_str_param_suggests_borrow_str"
 description = "A `Str(N)` argument to a bare `str` parameter is E0495 with the `borrow str` did-you-mean."
-preview = "string_trio"
 source = """
 fn cap(s: str) -> u64 { s.len() }
 fn main() -> i32 {
@@ -54,15 +56,18 @@ error_contains = [
 [[case]]
 name = "buffer_to_str_binding_rejected"
 description = "A `StrBuf` bound to a `str` local is E0495 (buffer is not a first-class str)."
-preview = "string_trio"
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
-    let b = "xx" + "yy";
+    let b: StrBuf = "xxyy";
     let s: str = b;
     @intCast(s.len())
 }
 """
 compile_fail = true
+real_std = true
 error_contains = [
     "E0495",
     "a string buffer can be viewed with `borrow str` / `inout str`",
@@ -72,16 +77,19 @@ error_contains = [
 [[case]]
 name = "borrow_str_view_return_is_e0497"
 description = "Returning a `borrow str` parameter as a first-class `str` is E0497 (view cannot escape)."
-preview = "string_trio"
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn bad(borrow s: str) -> str { s }
 fn main() -> i32 {
-    let b = "x" + "y";
+    let b: StrBuf = "xy";
     let _s = bad(borrow b);
     0
 }
 """
 compile_fail = true
+real_std = true
 error_contains = [
     "E0497",
     "cannot escape the call",
@@ -92,7 +100,6 @@ error_contains = [
 [[case]]
 name = "static_str_as_inout_is_e0496"
 description = "A static `str` value as an `inout str` operand is E0496 (requires a local buffer)."
-preview = "string_trio"
 source = """
 fn take(inout s: str) { let _length = s.len(); }
 fn main() -> i32 {

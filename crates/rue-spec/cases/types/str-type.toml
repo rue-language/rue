@@ -6,7 +6,7 @@
 # reassignable, returnable). `.len()` is the byte length; `s[i]` is the i-th
 # byte as `u8`, bounds-checked (an out-of-range index traps, exit 101).
 #
-# Gated behind `--preview string_trio`. Deferred to later phases: `str`
+# Stable. Deferred to later phases: `str`
 # concatenation, ordering comparison, `str`<->`StrBuf` interop, methods beyond
 # `.len()`/index, and char iteration.
 
@@ -16,9 +16,9 @@ spec_chapter = "3.7"
 name = "The str Type"
 description = "str is the read-only [u8] byte-string slice with static-backed first-class literals."
 
-# 3.7:43 — `str` is a resolvable type, gated behind `--preview string_trio`.
+# 3.7:43 — `str` is a resolvable type.
 [[case]]
-name = "str_type_requires_preview"
+name = "str_type_is_stable"
 spec = ["3.7:43"]
 source = """
 fn main() -> i32 {
@@ -26,16 +26,13 @@ fn main() -> i32 {
     0
 }
 """
-compile_fail = true
-error_contains = "requires preview feature"
+exit_code = 0
 
 # 3.7:43 / 3.7:44 — a string literal has type `str` where a `str` is expected,
 # static-backed and storable in a binding.
 [[case]]
 name = "str_literal_binding"
 spec = ["3.7:43", "3.7:44"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: str = "hello";
@@ -49,8 +46,6 @@ exit_code = 0
 [[case]]
 name = "str_literal_unconstrained_default_is_copy_str"
 spec = ["3.7:44"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s = if true { "hello" } else { "goodbye" };
@@ -66,9 +61,10 @@ exit_code = 10
 [[case]]
 name = "str_literal_explicit_strbuf_context"
 spec = ["3.7:44"]
-preview = "string_trio"
-preview_should_pass = true
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s: StrBuf = "hello";
     @intCast(s.len())
@@ -80,8 +76,6 @@ exit_code = 5
 [[case]]
 name = "str_len_bytes"
 spec = ["3.7:45"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: str = "hello";
@@ -94,8 +88,6 @@ exit_code = 5
 [[case]]
 name = "str_len_multibyte"
 spec = ["3.7:45"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: str = "café";   // 5 bytes ('é' is 2 bytes)
@@ -108,8 +100,6 @@ exit_code = 5
 [[case]]
 name = "str_byte_index"
 spec = ["3.7:46"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: str = "hello";
@@ -126,8 +116,6 @@ expected_stdout = "104\n101\n111\n"
 [[case]]
 name = "str_byte_index_multibyte"
 spec = ["3.7:46"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: str = "café";   // 'c' 'a' 'f' 0xC3 0xA9
@@ -143,8 +131,6 @@ expected_stdout = "195\n169\n"
 [[case]]
 name = "str_byte_index_oob_traps"
 spec = ["3.7:47"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: str = "hi";
@@ -158,8 +144,6 @@ runtime_error = "index out of bounds"
 [[case]]
 name = "str_first_class_param"
 spec = ["3.7:44"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn first(s: str) -> u8 {
     s[0]
@@ -174,8 +158,6 @@ exit_code = 104
 [[case]]
 name = "str_first_class_return"
 spec = ["3.7:44"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn greeting() -> str {
     "hello"
@@ -191,8 +173,6 @@ exit_code = 5
 [[case]]
 name = "str_first_class_struct_field"
 spec = ["3.7:44"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 struct Named { label: str }
 fn main() -> i32 {
@@ -206,8 +186,6 @@ exit_code = 3
 [[case]]
 name = "str_first_class_reassign"
 spec = ["3.7:44"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let mut s: str = "hello";
@@ -222,8 +200,6 @@ exit_code = 2
 [[case]]
 name = "str_equality_compares_byte_content"
 spec = ["3.7:10", "4.3:3"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn choose(c: bool) -> str {
     if c { "hello" } else { "world" }
@@ -239,8 +215,6 @@ exit_code = 0
 [[case]]
 name = "str_inequality_compares_byte_content"
 spec = ["3.7:10", "4.3:3"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn choose(c: bool) -> str {
     if c { "hello" } else { "world" }
@@ -262,8 +236,6 @@ exit_code = 0
 [[case]]
 name = "borrow_str_view_reads_and_reborrows"
 spec = ["3.7:58"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn inner(borrow s: str) -> u64 {
     s.len()
@@ -287,9 +259,10 @@ exit_code = 5
 [[case]]
 name = "borrow_str_view_of_strbuf_reads_values"
 spec = ["3.7:58"]
-preview = "string_trio"
-preview_should_pass = true
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn view_len(borrow s: str) -> u64 {
     s.len()
 }
@@ -297,7 +270,9 @@ fn first_byte(borrow s: str) -> u8 {
     s[0]
 }
 fn main() -> i32 {
-    let b = "xx" + "yy";                        // heap-backed StrBuf, len 4
+    let left: StrBuf = "xx";
+    let right: StrBuf = "yy";
+    let b = left + right;                         // heap-backed StrBuf, len 4
     let len_ok = view_len(borrow b) == 4;       // len, not cap
     let byte_ok = first_byte(borrow b) == 120;  // 'x'
     let still_usable = b.len() == 4;            // borrowed, not moved
@@ -311,14 +286,12 @@ exit_code = 42
 [[case]]
 name = "borrow_str_view_return_rejected"
 spec = ["3.7:59"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn bad(borrow s: str) -> str {
     s
 }
 fn main() -> i32 {
-    let b = "x" + "y";
+    let b: Str(2) = "xy";
     let _s = bad(borrow b);
     0
 }
@@ -330,15 +303,13 @@ error_contains = "E0497"
 [[case]]
 name = "borrow_str_view_struct_field_rejected"
 spec = ["3.7:59"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 struct Keep { s: str }
 fn bad(borrow s: str) -> Keep {
     Keep { s: s }
 }
 fn main() -> i32 {
-    let b = "x" + "y";
+    let b: Str(2) = "xy";
     let _keep = bad(borrow b);
     0
 }
@@ -351,8 +322,6 @@ error_contains = "E0497"
 [[case]]
 name = "inout_str_accepts_local_buffer"
 spec = ["3.7:60"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn take(inout s: str) -> u64 {
     s.len()
@@ -370,8 +339,6 @@ exit_code = 5
 [[case]]
 name = "inout_str_view_can_be_forwarded"
 spec = ["3.7:58", "3.7:60", "6.1:35"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn inner(inout s: str) -> u64 {
     s.len()
@@ -392,8 +359,6 @@ exit_code = 5
 [[case]]
 name = "shadowed_local_str_is_not_an_inout_view"
 spec = ["3.7:60"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn inner(inout s: str) {}
 fn outer(inout s: str) {
@@ -416,8 +381,6 @@ error_contains = "E0496"
 name = "string_param_rejects_unrelated_type_{contract}"
 spec = ["4.10:4"]
 description = "A string or string-view parameter rejects an unrelated value before emitting an ABI-invalid call"
-preview = "string_trio"
-preview_should_pass = true
 source = "{source}"
 compile_fail = true
 error_contains = "E0206"
@@ -434,8 +397,6 @@ params = [
 [[case]]
 name = "inout_str_view_whole_reassignment_rejected"
 spec = ["3.7:58"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn replace(inout s: str) {
     s = "hi";
@@ -454,8 +415,6 @@ error_contains = "E0210"
 [[case]]
 name = "inout_str_static_operand_rejected"
 spec = ["3.7:60"]
-preview = "string_trio"
-preview_should_pass = true
 source = """
 fn take(inout s: str) {
     let _length = s.len();

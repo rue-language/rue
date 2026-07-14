@@ -7,8 +7,8 @@
 #   buck2 test //...        # runs unit tests + spec/UI/CLI suites + repo gates
 #
 # An edit under crates/rue-spec/cases/ re-runs only the spec suite; an edit
-# under std/ re-runs the CLI suite (std/ MUST be a declared input here or the
-# CLI suite would get false cache hits on std library changes).
+# under std/ re-runs the CLI and spec suites (std/ MUST be a declared input here
+# or either suite could get false cache hits on standard-library changes).
 #
 # Mechanics: the harness binaries already locate everything via env vars
 # (rue-test-runner's find_rue_binary / find_dir), `$(exe_target ...)` /
@@ -40,11 +40,13 @@ sh_test(
     resources = _RUST_SOURCES,
 )
 
-# The std library sources are runtime inputs to the CLI integration tests
-# (compiled programs `@import` them via ${REAL_STD} / RUE_STD_DIR).
+# The std library sources are runtime inputs to CLI integration tests and spec
+# cases that opt into the real std (compiled programs `@import` them via
+# ${REAL_STD}, RUE_STD_DIR, or RUE_REAL_STD_PATH).
 filegroup(
     name = "std",
     srcs = glob(["std/**"]),
+    visibility = ["PUBLIC"],
 )
 
 # The example programs are runtime inputs to the CLI integration tests: the
@@ -114,6 +116,7 @@ sh_test(
     args = ["--quiet"],
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_REAL_STD_PATH": "$(location :std)/std",
         "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
     },
 )
@@ -160,6 +163,7 @@ sh_test(
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_REPRO_FIXTURE": "$(location :reproducibility-fixture)/reproducibility/fixture",
+        "RUE_STD_DIR": "$(location :std)/std",
     },
 )
 

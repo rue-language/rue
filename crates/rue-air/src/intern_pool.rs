@@ -275,10 +275,6 @@ struct TypeInternPoolInner {
 
     /// Reverse index enforcing one canonical nominal for each language item.
     lang_item_structs: HashMap<LangItem, StructId>,
-
-    /// Transitional compiler-injected StrBuf identity, recorded when its
-    /// runtime-backed nominal is registered rather than rediscovered by name.
-    builtin_strbuf: Option<StructId>,
 }
 
 impl TypeInternPool {
@@ -295,7 +291,6 @@ impl TypeInternPool {
                 symbol_paths: HashMap::new(),
                 struct_lang_items: HashMap::new(),
                 lang_item_structs: HashMap::new(),
-                builtin_strbuf: None,
             }),
         }
     }
@@ -406,10 +401,6 @@ impl TypeInternPool {
         let pool_index = inner.types.len() as u32;
         let interned = InternedType::from_pool_index(pool_index);
         let struct_id = StructId::from_pool_index(pool_index);
-
-        if def.is_builtin && def.destructor.as_deref() == Some("__rue_drop_String") {
-            inner.builtin_strbuf = Some(struct_id);
-        }
 
         inner.types.push(TypeData::Struct(StructData { name, def }));
         inner.struct_by_file_name.insert(key, interned);
@@ -792,20 +783,10 @@ impl TypeInternPool {
         inner.lang_item_structs.insert(lang_item, struct_id);
     }
 
-    /// Whether a nominal is the canonical source StrBuf or the transitional
-    /// synthetic StrBuf. The two remain distinct nominal types.
+    /// Whether a nominal is the canonical trusted standard-library StrBuf.
     pub fn is_strbuf(&self, struct_id: StructId) -> bool {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        if inner.builtin_strbuf == Some(struct_id) {
-            return true;
-        }
         inner.struct_lang_items.get(&struct_id) == Some(&LangItem::StrBuf)
-    }
-
-    /// The transitional compiler-injected StrBuf type, if registered.
-    pub fn builtin_strbuf_type(&self) -> Option<Type> {
-        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.builtin_strbuf.map(Type::new_struct)
     }
 
     /// Get an enum definition by EnumId.
@@ -1328,7 +1309,6 @@ impl Clone for TypeInternPool {
                 symbol_paths: inner.symbol_paths.clone(),
                 struct_lang_items: inner.struct_lang_items.clone(),
                 lang_item_structs: inner.lang_item_structs.clone(),
-                builtin_strbuf: inner.builtin_strbuf,
             }),
         }
     }

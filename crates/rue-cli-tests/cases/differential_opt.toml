@@ -225,7 +225,7 @@ fn main() -> i32 {
     }
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 stdout = ""
 exit_code = 42
 

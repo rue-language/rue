@@ -11,6 +11,8 @@ Functions are declared with `fn`, followed by parameters and a return type.
 ## Basic Functions
 
 ```rue check
+const std = @import("std");
+
 fn add(a: i32, b: i32) -> i32 {
     a + b
 }
@@ -62,6 +64,8 @@ Note the lack of a semicolon. Adding one would make it a statement instead of an
 You can use `return` for early exits:
 
 ```rue check
+const std = @import("std");
+
 fn absolute(n: i32) -> i32 {
     if n < 0 {
         return -n;

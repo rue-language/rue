@@ -164,7 +164,10 @@ exit_code = 42
 
 [[case]]
 name = "local_annotation_drop_element_no_ice"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn f(comptime N: i32) -> i32 {
     let y: [StrBuf; N] = ["ab", "cde"];
     42

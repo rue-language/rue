@@ -1385,14 +1385,25 @@ mod tests {
             Err(DurableBodyConversionFailure::WrongDefinitionKind)
         );
         assert_eq!(
-            durable_builtin_nominal(&Arc::from("StrBuf"), Enum),
+            durable_builtin_nominal(&Arc::from("StrBuf"), Struct),
             Err(DurableBodyConversionFailure::WrongDefinitionKind)
         );
         assert_eq!(
-            durable_builtin_nominal(&Arc::from("StrBuf"), Struct),
+            durable_builtin_nominal(&Arc::from("str"), Struct),
             Ok(DurableType::BuiltinNominal {
-                name: Arc::from("StrBuf"),
+                name: Arc::from("str"),
                 kind: Struct,
+            })
+        );
+        assert_eq!(
+            durable_builtin_nominal(&Arc::from("Arch"), Struct),
+            Err(DurableBodyConversionFailure::WrongDefinitionKind)
+        );
+        assert_eq!(
+            durable_builtin_nominal(&Arc::from("Arch"), Enum),
+            Ok(DurableType::BuiltinNominal {
+                name: Arc::from("Arch"),
+                kind: Enum,
             })
         );
     }

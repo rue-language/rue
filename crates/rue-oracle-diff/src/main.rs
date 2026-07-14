@@ -47,14 +47,23 @@ mod generator;
 mod model_gaps;
 mod trap;
 
+use rue_compiler::{
+    AcceptedImportSource, CompilerSession, DiscoverySourceAssembler, FileMetadataFingerprint,
+    ImportDiscoveryContext, ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
+};
 use rue_error::{PreviewFeature, PreviewFeatures};
-use rue_oracle::{ModelGapKind, RunSourceError, TrapKind, run_source_with_preview_features};
+use rue_oracle::{
+    ModelGapKind, Outcome, RunSourceError, TrapKind, run_session_with_preview_features,
+    run_source_with_preview_features,
+};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 struct TestFile {
@@ -643,6 +652,96 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
     check_spec_case_with_known_gap(ident, case, is_known_gap)
 }
 
+fn run_source_with_real_std(
+    source: &str,
+    preview_features: &PreviewFeatures,
+) -> Result<Result<Outcome, RunSourceError>, String> {
+    let std_root = std::env::var_os("RUE_ORACLE_DIFF_STD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("std"));
+    let std_root = std_root
+        .canonicalize()
+        .map_err(|error| format!("cannot locate real std at {}: {error}", std_root.display()))?;
+    let context = ImportDiscoveryContext::new(
+        1,
+        "/oracle",
+        Some(std_root.to_string_lossy().as_ref()),
+        "oracle-real-std",
+    )
+    .map_err(|error| error.to_string())?;
+    let root_source = Arc::new(source.to_owned());
+    let root_len = root_source.len() as u64;
+    let mut assembler = DiscoverySourceAssembler::new(
+        context.clone(),
+        "/oracle/test.rue",
+        "/oracle/test.rue",
+        PhysicalFileIdentity::new(1, 1),
+        FileMetadataFingerprint::new(root_len, 0, 0),
+        root_source,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut ledger = ImportObservationLedger::default();
+    let mut session = CompilerSession::new();
+    let mut identities = BTreeMap::<PathBuf, PhysicalFileIdentity>::new();
+
+    loop {
+        let snapshot = assembler.snapshot().map_err(|error| error.to_string())?;
+        let plan = session
+            .stage_import_discovery(
+                &snapshot,
+                context.clone(),
+                assembler.accepted_read_manifest(),
+                ledger.clone(),
+            )
+            .map_err(|errors| format!("{errors:#?}"))?;
+        for request in plan.pending_requests(&ledger) {
+            let requested = request.requested_path().to_owned();
+            let path = Path::new(&requested);
+            let observation = match path.canonicalize() {
+                Ok(canonical) if canonical.is_file() => {
+                    let source = fs::read_to_string(&canonical).map_err(|error| {
+                        format!(
+                            "cannot read imported source {}: {error}",
+                            canonical.display()
+                        )
+                    })?;
+                    let next = (identities.len() + 2) as u64;
+                    let identity = *identities
+                        .entry(canonical.clone())
+                        .or_insert_with(|| PhysicalFileIdentity::new(1, next));
+                    let fingerprint = FileMetadataFingerprint::new(source.len() as u64, 0, 0);
+                    let accepted = AcceptedImportSource::new(
+                        requested,
+                        canonical.to_string_lossy().into_owned(),
+                        identity,
+                        fingerprint,
+                        Arc::new(source),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    ImportObservation::accepted(request, accepted)
+                        .map_err(|error| error.to_string())?
+                }
+                _ => ImportObservation::absent(request),
+            };
+            ledger
+                .record(observation)
+                .map_err(|error| error.to_string())?;
+        }
+        if plan.failures(&ledger).next().is_some() {
+            return Err("real-std import discovery failed".to_string());
+        }
+        let added = assembler
+            .add_plan_reads(&plan, &ledger)
+            .map_err(|error| error.to_string())?;
+        if added == 0 {
+            session
+                .close_import_discovery(ledger)
+                .map_err(|errors| format!("{errors:#?}"))?;
+            return Ok(run_session_with_preview_features(session, preview_features));
+        }
+    }
+}
+
 fn check_spec_case_with_known_gap(
     ident: &str,
     case: &rue_test_runner::Case,
@@ -713,7 +812,20 @@ fn check_spec_case_with_known_gap(
         |runtime_error| trap::trap_expectation([runtime_error]),
     );
 
-    match run_source_with_preview_features(&case.source, &preview_features) {
+    let oracle_result = if case.real_std {
+        match run_source_with_real_std(&case.source, &preview_features) {
+            Ok(result) => result,
+            Err(error) => {
+                return CaseOutcome::FrontendFailure(format!(
+                    "{ident} :: {}\n      {error}",
+                    case.name
+                ));
+            }
+        }
+    } else {
+        run_source_with_preview_features(&case.source, &preview_features)
+    };
+    match oracle_result {
         // Only Unsupported values carrying a registrable ModelGapKind count as
         // coverage. Resource/contract failures and eligible compile rejections
         // fail rather than disappearing as unmodeled.
@@ -875,9 +987,12 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
     if case.stdin.is_some() {
         return CaseOutcome::Ineligible(IneligibleReason::StandardInput);
     }
-    // The in-process oracle compiles one source string; it cannot reproduce
-    // CLI-only environment-dependent loading such as RUE_STD_PATH.
-    if !case.env.is_empty() {
+    // The canonical real-std opt-in is reproducible through the compiler-owned
+    // import-discovery path below. Other CLI process environments remain
+    // outside this in-process harness.
+    let real_std = case.env.len() == 1
+        && case.env.get("RUE_STD_PATH").map(String::as_str) == Some("${REAL_STD}");
+    if !case.env.is_empty() && !real_std {
         return CaseOutcome::Ineligible(IneligibleReason::CompilerEnvironment);
     }
     // A stack-overflow trap (deep/unbounded recursion) is structurally
@@ -923,7 +1038,21 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
             101
         });
 
-    match run_source_with_preview_features(source, &preview_features) {
+    let oracle_result = if real_std {
+        match run_source_with_real_std(source, &preview_features) {
+            Ok(result) => result,
+            Err(error) => {
+                return CaseOutcome::FrontendFailure(format!(
+                    "{} :: {}\n      {error}",
+                    rel(path),
+                    case.name
+                ));
+            }
+        }
+    } else {
+        run_source_with_preview_features(source, &preview_features)
+    };
+    match oracle_result {
         Err(error) => {
             let context = format!("{} :: {}", rel(path), case.name);
             record_oracle_error(&context, error)
@@ -1522,25 +1651,19 @@ files = [{ path = "probe.rue", source = "not Rue" }]
 
         case.args = Some(
             [
-                "--preview",
-                "string_trio",
                 "-o",
                 "-unusual-output-name",
                 "probe.rue",
                 "--preview",
                 "slices",
-                "--preview",
-                "string_trio",
             ]
             .into_iter()
             .map(str::to_string)
             .collect(),
         );
         let features = corpus_preview_features(&case).expect("supported invocation");
-        assert_eq!(features.len(), 2);
-        for name in ["string_trio", "slices"] {
-            assert!(features.contains(&PreviewFeature::from_str(name).unwrap()));
-        }
+        assert_eq!(features.len(), 1);
+        assert!(features.contains(&PreviewFeature::from_str("slices").unwrap()));
     }
 
     #[test]
@@ -2361,10 +2484,10 @@ files = [{ path = "probe.rue", source = "not Rue" }]
     }
 
     #[test]
-    fn environment_dependent_case_is_prefiltered() {
+    fn noncanonical_environment_dependent_case_is_prefiltered() {
         let mut case = corpus_case("this would fail if the oracle compiled it", false);
         case.env
-            .insert("RUE_STD_PATH".to_string(), "${REAL_STD}".to_string());
+            .insert("RUE_STD_PATH".to_string(), "some/custom/std".to_string());
         let mut report = Report::default();
 
         report.record(check_case(Path::new("environment.toml"), &case));

@@ -9,10 +9,13 @@ description = "Leading and interior ZSTs do not shift aggregate drop-glue parame
 
 [[case]]
 name = "struct_fields_keep_drop_offsets"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "Leading/interior unit fields before custom-destructor and StrBuf fields occupy no drop-glue slots."
 differential_opt = true
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct D { value: i32 }
 drop fn D(self) { @dbg(self.value); }
 
@@ -45,10 +48,13 @@ exit_code = 0
 
 [[case]]
 name = "enum_payload_fields_keep_drop_offsets"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "Unit fields interleaved through an enum payload do not shift its custom-destructor or StrBuf drops."
 differential_opt = true
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct D { value: i32 }
 drop fn D(self) { @dbg(self.value); }
 
@@ -70,10 +76,13 @@ exit_code = 0
 
 [[case]]
 name = "nested_struct_array_keeps_drop_offsets_and_stride"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "Nested aggregates and arrays retain canonical element strides when their droppable fields follow ZSTs."
 differential_opt = true
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct D { value: i32 }
 drop fn D(self) { @dbg(self.value); }
 

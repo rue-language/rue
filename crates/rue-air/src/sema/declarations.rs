@@ -12,7 +12,6 @@
 use std::collections::{HashMap, HashSet};
 
 use lasso::{Key, Spur};
-use rue_builtins::is_reserved_type_name;
 use rue_error::{CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, ice};
 use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
 use rue_span::{FileId, Span};
@@ -89,11 +88,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     }
 
     pub(crate) fn resolve_builtin_struct_name(&self, name: Spur) -> Option<StructId> {
-        if self.interner.resolve(&name) == "StrBuf"
-            && let Some(ty) = self.type_pool.lang_item_type(crate::LangItem::StrBuf)
-        {
-            return ty.as_struct();
-        }
         self.builtin_structs
             .get(&name)
             .copied()
@@ -164,12 +158,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 builtin_struct_types.insert(*name, Type::new_struct(*id));
             }
         }
-        if let Some(strbuf_ty) = self.type_pool.lang_item_type(crate::LangItem::StrBuf)
-            && let Some(strbuf_name) = self.interner.get("StrBuf")
-        {
-            builtin_struct_types.insert(strbuf_name, strbuf_ty);
-        }
-
         let mut struct_types_by_file_name: HashMap<(FileId, Spur), Type> = self
             .structs_by_file_name
             .iter()
@@ -201,7 +189,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         }
 
         // Build method signatures with InferType for constraint generation
-        let mut method_sigs: HashMap<(StructId, Spur), MethodSig> = self
+        let method_sigs: HashMap<(StructId, Spur), MethodSig> = self
             .methods
             .iter()
             .chain(self.anonymous_methods.iter())
@@ -223,12 +211,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 )
             })
             .collect();
-
-        // Register builtin-type method signatures (String::len, etc.) so inference
-        // can resolve their return types. Without this, a builtin method-call result
-        // used in a binop (e.g. `s.len() == 2`) was left unconstrained and resolved
-        // to `<error>`, poisoning the other operand's literal-range check. (RUE-95)
-        self.register_builtin_method_sigs(&mut method_sigs);
 
         // Constant types (resolved during declaration gathering) so a const
         // reference in a function body infers to its declared type instead of
@@ -393,22 +375,6 @@ impl<'a> Sema<'a> {
                 } => {
                     let enum_name = self.interner.resolve(&*name).to_string();
 
-                    // Builtins occupy the root source namespace. An imported
-                    // module has its own nominal namespace, so the same short
-                    // name there does not collide with the builtin.
-                    if is_reserved_type_name(&enum_name)
-                        && self
-                            .root_file_id
-                            .is_none_or(|root| root == inst.span.file_id)
-                    {
-                        return Err(CompileError::new(
-                            ErrorKind::ReservedTypeName {
-                                type_name: enum_name,
-                            },
-                            inst.span,
-                        ));
-                    }
-
                     let key = (inst.span.file_id, *name);
 
                     let variants = self.rir.get_symbols(*variants_start, *variants_len);
@@ -461,22 +427,6 @@ impl<'a> Sema<'a> {
                     ..
                 } => {
                     let struct_name = self.interner.resolve(&*name).to_string();
-
-                    // Builtins occupy the root source namespace. An imported
-                    // module has its own nominal namespace, so the same short
-                    // name there does not collide with the builtin.
-                    if is_reserved_type_name(&struct_name)
-                        && self
-                            .root_file_id
-                            .is_none_or(|root| root == inst.span.file_id)
-                    {
-                        return Err(CompileError::new(
-                            ErrorKind::ReservedTypeName {
-                                type_name: struct_name,
-                            },
-                            inst.span,
-                        ));
-                    }
 
                     let key = (inst.span.file_id, *name);
 

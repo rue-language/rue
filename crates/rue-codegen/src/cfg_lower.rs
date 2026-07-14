@@ -21,7 +21,6 @@ use std::fmt;
 
 use lasso::{Key, ThreadedRodeo};
 use rue_air::{StructId, TypeInternPool, TypeKind};
-use rue_builtins::{BinOp, get_builtin_type};
 use rue_cfg::{BlockId, Cfg, CfgValue, Type};
 
 use crate::types;
@@ -468,59 +467,28 @@ impl<'a> CfgLowerContext<'a> {
     // Builtin type helpers
     // ========================================================================
 
-    /// Check if a type is the canonical or transitional growable-string struct.
-    pub fn is_builtin_string(&self, ty: Type) -> bool {
+    /// Check if a type is the canonical trusted standard-library StrBuf.
+    pub fn is_strbuf(&self, ty: Type) -> bool {
         match ty.kind() {
             TypeKind::Struct(struct_id) => self.type_pool.is_strbuf(struct_id),
             _ => false,
         }
     }
 
-    /// Whether `ty` is the transitional compiler-injected StrBuf whose drop
-    /// implementation is supplied directly by the runtime.
-    pub fn is_legacy_builtin_string(&self, ty: Type) -> bool {
-        ty.as_struct().is_some_and(|id| {
-            self.type_pool.struct_def(id).is_builtin && self.type_pool.is_strbuf(id)
-        })
-    }
-
     /// Check if a type has string byte-content equality semantics.
     ///
-    /// `StrBuf` is the growable string type. The `string_trio` preview also
-    /// represents `str` and `Str(N)` as synthetic structs, but equality for
-    /// those types is still byte-content equality, not structural pointer/len
-    /// equality.
+    /// `StrBuf`, `str`, and `Str(N)` use byte-content equality rather than
+    /// structural pointer/length equality.
     pub fn is_string_like_for_equality(&self, ty: Type) -> bool {
         match ty.kind() {
             TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
-                self.is_builtin_string(ty)
+                self.is_strbuf(ty)
                     || struct_def.name == "str"
                     || (struct_def.name.starts_with("Str(") && struct_def.name.ends_with(')'))
             }
             _ => false,
         }
-    }
-
-    /// Get the builtin operator runtime function for a type and operation.
-    ///
-    /// Returns `Some((runtime_fn, invert_result))` if the type has a builtin
-    /// operator implementation, `None` otherwise.
-    pub fn get_builtin_operator(&self, ty: Type, op: BinOp) -> Option<(&'static str, bool)> {
-        let builtin = match ty.kind() {
-            TypeKind::Struct(struct_id) => {
-                let struct_def = self.type_pool.struct_def(struct_id);
-                if struct_def.is_builtin {
-                    get_builtin_type(&struct_def.name)?
-                } else {
-                    return None;
-                }
-            }
-            _ => return None,
-        };
-        builtin
-            .find_operator(op)
-            .map(|op_def| (op_def.runtime_fn, op_def.invert_result))
     }
 
     /// Does a by-value return of `ty` use the sret convention for the

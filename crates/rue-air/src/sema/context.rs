@@ -7,7 +7,6 @@
 use std::collections::{HashMap, HashSet};
 
 use lasso::Spur;
-use rue_builtins::BuiltinTypeDef;
 use rue_error::CompileWarning;
 use rue_rir::RirParamMode;
 use rue_span::{FileId, Span};
@@ -783,7 +782,7 @@ pub(crate) struct AnalysisResult {
     pub ty: Type,
 }
 
-use crate::inst::{AirPlaceRef, AirRef};
+use crate::inst::AirRef;
 
 impl AnalysisResult {
     #[must_use]
@@ -882,60 +881,6 @@ impl ConstValue {
             ConstValue::Unit => Type::UNIT,
         }
     }
-}
-
-/// Storage location for a String receiver in mutation methods.
-///
-/// This is used by `analyze_builtin_method` to store the updated
-/// String back to the original variable after calling the runtime function.
-pub(crate) enum StringReceiverStorage {
-    /// The receiver is a local variable with the given slot.
-    Local { slot: u32 },
-    /// The receiver is a parameter with the given ABI slot.
-    Param { abi_slot: u32 },
-    /// The receiver is a projection place — a struct field, an array element,
-    /// or a chain rooted at a local/parameter (`b.data`, `arr[0]`,
-    /// `self.inner`). The mutation result is written back through this place
-    /// (RUE-256).
-    Place { place: AirPlaceRef },
-}
-
-/// Context for analyzing a method call on a builtin type.
-///
-/// Groups together the parameters that describe which builtin method is being
-/// called, reducing the number of parameters to `analyze_builtin_method`.
-pub(crate) struct BuiltinMethodContext<'a> {
-    /// The struct ID of the builtin type (e.g., String).
-    pub struct_id: StructId,
-    /// The builtin type definition containing method metadata.
-    pub builtin_def: &'static BuiltinTypeDef,
-    /// The name of the method being called.
-    pub method_name: &'a str,
-    /// The source span for error reporting.
-    pub span: Span,
-}
-
-/// Information about the receiver of a method call.
-///
-/// Groups together the receiver-related parameters for `analyze_builtin_method`,
-/// including the analyzed receiver expression, the original variable (if any),
-/// and the storage location for mutation methods.
-pub(crate) struct ReceiverInfo {
-    /// The analysis result of the receiver expression.
-    pub result: AnalysisResult,
-    /// The root variable symbol if the receiver is a variable reference.
-    /// Used to track moves and "unmove" for borrow semantics.
-    pub var: Option<Spur>,
-    /// The move state of `var` captured BEFORE the receiver expression was
-    /// analyzed (`None` = the variable had no move state). ByRef/ByMutRef
-    /// methods restore this snapshot to undo exactly the move the receiver
-    /// analysis recorded — a whole-map `remove` would also erase earlier,
-    /// unrelated moves of sibling fields (`consume(w.s); w.t.len()` must not
-    /// forget that `w.s` is moved — RUE-33).
-    pub move_state_before: Option<VariableMoveState>,
-    /// Storage location for mutation methods that need to write back.
-    /// Only set when the receiver is a mutable lvalue and the method mutates.
-    pub storage: Option<StringReceiverStorage>,
 }
 
 #[cfg(test)]

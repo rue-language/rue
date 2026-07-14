@@ -1,28 +1,27 @@
 [section]
 id = "diagnostics.reserved-types"
-name = "Reserved Type Name Errors"
-description = "Tests that user-defined types cannot collide with built-in type names."
+name = "Ordinary Type Names"
+description = "Standard-library type spellings are not globally reserved."
 
 # =============================================================================
 # Reserved Type Names
 # =============================================================================
 
 [[case]]
-name = "struct_named_strbuf"
+name = "struct_named_strbuf_is_allowed"
 source = """
 struct StrBuf {
     data: i32,
 }
 
 fn main() -> i32 {
-    0
+    StrBuf { data: 7 }.data
 }
 """
-compile_fail = true
-error_contains = "cannot define type `StrBuf`: name is reserved for built-in type"
+exit_code = 7
 
 [[case]]
-name = "enum_named_strbuf"
+name = "enum_named_strbuf_is_allowed"
 source = """
 enum StrBuf {
     Empty,
@@ -30,8 +29,7 @@ enum StrBuf {
 }
 
 fn main() -> i32 {
-    0
+    match StrBuf.Full { StrBuf.Empty => 0, StrBuf.Full => 8 }
 }
 """
-compile_fail = true
-error_contains = "cannot define type `StrBuf`: name is reserved for built-in type"
+exit_code = 8

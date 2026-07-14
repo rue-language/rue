@@ -216,38 +216,33 @@ impl<'a> BodySema<'a> {
         }
 
         // String byte view: the bound is the byte length `s.len()`.
-        if self.is_builtin_string(coll_type) {
+        if self.is_strbuf(coll_type) {
             let source_method = coll_type.as_struct().and_then(|struct_id| {
                 let method = self.interner.get_or_intern("len");
                 (self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
                     && self.method_info((struct_id, method)).is_some())
                 .then_some((struct_id, method))
             });
-            let (call_name, receiver, mode, temp_scope) =
-                if let Some((struct_id, method)) = source_method {
-                    ctx.referenced_methods.insert((struct_id, method));
-                    let (receiver, temp_scope) = self.materialize_borrow_argument(
-                        air,
-                        coll_result.air_ref,
-                        coll_result.ty,
-                        span,
-                        ctx,
-                    )?;
-                    (
-                        self.interner
-                            .get_or_intern(&self.method_symbol(struct_id, "len", true)),
-                        receiver,
-                        AirArgMode::Borrow,
-                        temp_scope,
-                    )
-                } else {
-                    (
-                        self.interner.get_or_intern("__rue_String_len"),
-                        coll_result.air_ref,
-                        AirArgMode::Normal,
-                        Vec::new(),
-                    )
-                };
+            let Some((struct_id, method)) = source_method else {
+                return Err(CompileError::new(
+                    ErrorKind::InternalError(
+                        "trusted std StrBuf is missing its source `len` method".to_string(),
+                    ),
+                    span,
+                ));
+            };
+            ctx.referenced_methods.insert((struct_id, method));
+            let (receiver, temp_scope) = self.materialize_borrow_argument(
+                air,
+                coll_result.air_ref,
+                coll_result.ty,
+                span,
+                ctx,
+            )?;
+            let call_name = self
+                .interner
+                .get_or_intern(&self.method_symbol(struct_id, "len", true));
+            let mode = AirArgMode::Borrow;
             let extra = [receiver.as_u32(), mode.as_u32()];
             let args_start = air.add_extra(&extra);
             let call_ref = air.add_inst(AirInst {
@@ -300,7 +295,7 @@ impl<'a> BodySema<'a> {
         let pos = args[1].value;
 
         let coll_result = self.analyze_borrowed_collection(air, coll, ctx)?;
-        if !self.is_builtin_string(coll_result.ty) && !coll_result.ty.is_error() {
+        if !self.is_strbuf(coll_result.ty) && !coll_result.ty.is_error() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "StrBuf".to_string(),
@@ -313,57 +308,35 @@ impl<'a> BodySema<'a> {
 
         let pos_result = self.analyze_inst(air, pos, ctx)?;
 
-        let source_strbuf = coll_result.ty.as_struct().is_some_and(|struct_id| {
-            self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
-        });
-        let (fn_name, ret_ty) = match (source_strbuf, is_next, lossy) {
-            (true, true, false) => ("__rue_str_char_next", Type::U64),
-            (true, true, true) => ("__rue_str_char_next_lossy", Type::U64),
-            (true, false, false) => ("__rue_str_char_scalar", Type::U32),
-            (true, false, true) => ("__rue_str_char_scalar_lossy", Type::U32),
-            (false, true, false) => ("__rue_String_char_next", Type::U64),
-            (false, true, true) => ("__rue_String_char_next_lossy", Type::U64),
-            (false, false, false) => ("__rue_String_char_scalar", Type::U32),
-            (false, false, true) => ("__rue_String_char_scalar_lossy", Type::U32),
+        if coll_result.ty.is_error() {
+            return Ok(AnalysisResult::new(
+                coll_result.air_ref,
+                if is_next { Type::U64 } else { Type::U32 },
+            ));
+        }
+        let (fn_name, ret_ty) = match (is_next, lossy) {
+            (true, false) => ("__rue_str_char_next", Type::U64),
+            (true, true) => ("__rue_str_char_next_lossy", Type::U64),
+            (false, false) => ("__rue_str_char_scalar", Type::U32),
+            (false, true) => ("__rue_str_char_scalar_lossy", Type::U32),
         };
         let call_name = self.interner.get_or_intern(fn_name);
-        let extra = if source_strbuf {
-            let (ptr, len, temp_scope) = self.project_strbuf_text_fields(
-                air,
-                coll_result.air_ref,
-                coll_result.ty,
-                span,
-                ctx,
-            )?;
-            (
-                vec![
-                    ptr.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                    len.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                    pos_result.air_ref.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                ],
-                temp_scope,
-            )
-        } else {
-            (
-                vec![
-                    coll_result.air_ref.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                    pos_result.air_ref.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                ],
-                Vec::new(),
-            )
-        };
-        let (extra, temp_scope) = extra;
+        let (ptr, len, temp_scope) =
+            self.project_strbuf_text_fields(air, coll_result.air_ref, coll_result.ty, span, ctx)?;
+        let extra = vec![
+            ptr.as_u32(),
+            AirArgMode::Normal.as_u32(),
+            len.as_u32(),
+            AirArgMode::Normal.as_u32(),
+            pos_result.air_ref.as_u32(),
+            AirArgMode::Normal.as_u32(),
+        ];
         let args_start = air.add_extra(&extra);
         let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
                 name: call_name,
                 args_start,
-                args_len: if source_strbuf { 3 } else { 2 },
+                args_len: 3,
             },
             ty: ret_ty,
             span,
@@ -454,7 +427,7 @@ impl<'a> BodySema<'a> {
         // strings"), which the spec mandates as a compile error instead.
         if !arg_type.is_integer()
             && arg_type != Type::BOOL
-            && !self.is_builtin_string(arg_type)
+            && !self.is_strbuf(arg_type)
             && !self.is_str_like(arg_type)
             && !arg_type.is_never()
         {
@@ -738,21 +711,17 @@ impl<'a> BodySema<'a> {
 
     /// Validate the shared message contract of `@panic` and `@assert`.
     ///
-    /// The runtime ABI consumes the builtin `StrBuf` representation. Checking
-    /// nominal type identity here is important: accepting any aggregate with a
-    /// convenient slot count would let codegen reinterpret its first fields as
-    /// a pointer and length. `str`, `Str(N)`, and user structs are distinct
-    /// types even when part of their layout happens to match.
+    /// The runtime ABI consumes the canonical text family through its trusted
+    /// pointer-and-length representation. Checking text identity here is
+    /// important: accepting an arbitrary aggregate with a convenient slot
+    /// count would let codegen reinterpret unrelated fields as text.
     fn validate_abort_message_type(
         &self,
         intrinsic_name: &str,
         message_ty: Type,
         message_span: Span,
     ) -> CompileResult<()> {
-        if !self.is_builtin_string(message_ty)
-            && !self.is_str_like(message_ty)
-            && !message_ty.is_never()
-        {
+        if !self.is_strbuf(message_ty) && !self.is_str_like(message_ty) && !message_ty.is_never() {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_name.to_string(),
@@ -999,7 +968,9 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        let string_type = self.builtin_string_type();
+        let string_type = self
+            .strbuf_type()
+            .ok_or_compile_error(ErrorKind::UnknownType("StrBuf".to_string()), span)?;
         let option_ty = self.resolve_option_result_type(
             ctx,
             result_expected,
@@ -1092,7 +1063,9 @@ impl<'a> BodySema<'a> {
             })
         };
 
-        let string_type = self.builtin_string_type();
+        let string_type = self
+            .strbuf_type()
+            .ok_or_compile_error(ErrorKind::UnknownType("StrBuf".to_string()), span)?;
         let runtime_fn = if unsigned {
             rue_builtins::TO_STRING_UNSIGNED_RUNTIME_FN
         } else {
@@ -1146,7 +1119,7 @@ impl<'a> BodySema<'a> {
         let arg_type = arg_result.ty;
 
         // Every text rung is consumed through its shared `{ptr, len}` view.
-        if !self.is_builtin_string(arg_type) && !self.is_str_like(arg_type) {
+        if !self.is_strbuf(arg_type) && !self.is_str_like(arg_type) {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: format!("@{}", intrinsic_name_str),

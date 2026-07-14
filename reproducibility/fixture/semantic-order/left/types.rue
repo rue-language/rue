@@ -1,3 +1,6 @@
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 // No left/shared.rue exists: both reordered siblings must resolve this import
 // relative to the explicitly designated root. The compiler unit regression
 // separately proves that the root need not have the lowest numeric FileId.

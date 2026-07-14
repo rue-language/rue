@@ -92,7 +92,10 @@ stdout = """
 
 [[case]]
 name = "string_builder_push_str"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("Hello");
@@ -111,7 +114,10 @@ Hello, Rue!
 # @dbg borrows its argument, so print-then-use of a non-Copy value works (RUE-21).
 [[case]]
 name = "dbg_string_then_use"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("Hello");
@@ -127,8 +133,11 @@ Hello
 
 [[case]]
 name = "string_equality_branches"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let OptStr = @import("opt.rue").Option(StrBuf);
     match @read_line() {

@@ -46,10 +46,13 @@ runtime_error_contains = ["index out of bounds"]
 
 [[case]]
 name = "substring_byte_range"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "s.substring(3, 2) yields the two bytes of é as an independent StrBuf; source s is untouched."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "café";
+    let s: StrBuf = "café";
     let tail = s.substring(3, 2);
     @dbg(tail.len());
     @dbg(tail[0]);
@@ -63,10 +66,13 @@ stdout = "2\n195\n169\n5\n"
 
 [[case]]
 name = "substring_result_is_mutable"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "The new StrBuf from substring owns a heap buffer and can be mutated further."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "café";
+    let s: StrBuf = "café";
     let mut g = s.substring(0, 3);
     g.push_str("X");
     @dbg(g.len());
@@ -79,10 +85,13 @@ stdout = "4\n88\n"
 
 [[case]]
 name = "substring_out_of_range_traps"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "start+len past the end traps at runtime (exit 101)."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "café";
+    let s: StrBuf = "café";
     let bad = s.substring(3, 3);
     @dbg(bad.len());
     0

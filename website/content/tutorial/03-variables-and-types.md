@@ -13,6 +13,8 @@ Rue is statically typed—every variable has a type known at compile time.
 Rue has the integer types you'd expect:
 
 ```rue check
+const std = @import("std");
+
 fn main() -> i32 {
     // Signed integers: i8, i16, i32, i64
     let x: i32 = 42;
@@ -34,6 +36,8 @@ The number after `i` or `u` is the bit width. Signed integers (`i`) can be negat
 You don't always need to write types explicitly. The compiler can often infer them:
 
 ```rue check
+const std = @import("std");
+
 fn main() -> i32 {
     let x = 42;        // inferred as i32 (the default)
     let y = true;      // inferred as bool
@@ -77,11 +81,17 @@ not done yet
 `@to_string` turns integers into strings, but a boolean is easiest to report by
 branching on it, as above.
 
+`@to_string` returns the standard library's growable string type, so examples
+that use it import `std` explicitly. Rue has no implicit standard-library
+prelude.
+
 ## Mutability
 
 Variables are immutable by default. Use `let mut` to make them mutable:
 
 ```rue check
+const std = @import("std");
+
 fn main() -> i32 {
     let mut count = 0;
     count = count + 1;

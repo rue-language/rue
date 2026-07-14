@@ -170,11 +170,14 @@ fn main() -> i32 {
 
 [[case]]
 name = "mutate_via_method_in_chars_loop_is_e0428"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "RUE-257: `s.clear()` inside `for c in s.chars()` mutates a shared-borrowed StrBuf (E0428), not a runtime UTF-8 trap."
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0428"]
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = "abc".clone();
     for c in s.chars() {
@@ -188,12 +191,15 @@ fn main() -> i32 {
 [[case]]
 name = "mutate_via_method_in_byte_loop_is_e0428"
 description = "RUE-257: `s.clear()` inside `for b in s` (byte view) is E0428, not an out-of-bounds trap."
+env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0428"]
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let mut s = "abc".clone();
+    let mut s: StrBuf = "abc";
     for b in s {
         s.clear();
     }

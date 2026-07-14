@@ -24,7 +24,7 @@ pub(crate) trait StorageLowerBackend: PlaceLowerBackend {
 /// Lower a local allocation and its initializer.
 pub(crate) fn lower_alloc<B: StorageLowerBackend>(b: &mut B, slot: u32, init: CfgValue) {
     let init_type = b.ctx().cfg.get_inst(init).ty;
-    if b.ctx().is_builtin_string(init_type) {
+    if b.ctx().is_strbuf(init_type) {
         // StrBuf is always the ptr/len/cap three-slot fat pointer. Keep this
         // before generic aggregates so a layout drift fails loudly.
         let field_vregs = agg_slots::require_aggregate_slots(b, init);
@@ -52,7 +52,7 @@ pub(crate) fn lower_alloc<B: StorageLowerBackend>(b: &mut B, slot: u32, init: Cf
 pub(crate) fn lower_load<B: StorageLowerBackend>(b: &mut B, value: CfgValue, slot: u32) {
     let load_type = b.ctx().cfg.get_inst(value).ty;
 
-    if b.ctx().is_builtin_string(load_type) {
+    if b.ctx().is_strbuf(load_type) {
         let slot_vregs = agg_slots::load_slots_at_low(b, slot + 2, 3);
         let ptr_vreg = slot_vregs[0];
         b.slot_cache().insert(value, slot_vregs);

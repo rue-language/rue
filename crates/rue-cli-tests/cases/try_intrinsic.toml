@@ -17,8 +17,11 @@ description = "@read_line()? and @parse_i64(s)? resolve their own Option and pro
 # bad line). Two numbers then EOF: count 2, sum 30, exits with the count.
 [[case]]
 name = "read_line_try_sum_until_eof"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "prog.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
@@ -53,8 +56,11 @@ exit_code = 2
 # call, so the loop body never runs. No trap; the program exits cleanly.
 [[case]]
 name = "read_line_try_eof_no_trap"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "prog.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
@@ -90,7 +96,7 @@ files = [
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
-fn add_one(s: StrBuf) -> Option(i64) {
+fn add_one(s: str) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)
@@ -117,7 +123,7 @@ files = [
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
-fn add_one(s: StrBuf) -> Option(i64) {
+fn add_one(s: str) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)

@@ -13,7 +13,10 @@ description = "Builtin associated functions must constrain literal args and anch
 
 [[case]]
 name = "with_capacity_literal_arg_is_u64"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.with_capacity(8);
     0
@@ -23,7 +26,10 @@ exit_code = 0
 
 [[case]]
 name = "string_new_result_is_empty"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.new();
     if s.is_empty() { 0 } else { 1 }
@@ -33,7 +39,10 @@ exit_code = 0
 
 [[case]]
 name = "string_new_len_eq_literal"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.new();
     if s.len() == 0 { 0 } else { 1 }

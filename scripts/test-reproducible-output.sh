@@ -9,6 +9,8 @@ set -euo pipefail
 
 : "${RUE_BINARY:?RUE_BINARY must point to the Rue compiler}"
 : "${RUE_REPRO_FIXTURE:?RUE_REPRO_FIXTURE must point to the reproducibility fixture}"
+: "${RUE_STD_DIR:?RUE_STD_DIR must point to the Rue standard library}"
+export RUE_STD_PATH="$RUE_STD_DIR"
 
 scratch="$(mktemp -d)"
 cleanup() {
@@ -33,6 +35,7 @@ find "$root_b/project" -type f -name '*.rue' -exec touch -t 203001010000 {} +
     cd "$root_a/project"
     {
         find . -type f -name '*.rue' -print | sed 's#^\./##'
+        find "$RUE_STD_DIR" -type f -name '*.rue' -print
         # ADR-0051 read policy: resolution observes these absent
         # importer-relative arms before the root-relative shared module.
         printf '%s\n' \
@@ -44,6 +47,7 @@ find "$root_b/project" -type f -name '*.rue' -exec touch -t 203001010000 {} +
     cd "$root_b/project"
     {
         find . -type f -name '*.rue' -print | sed 's#^\./##'
+        find "$RUE_STD_DIR" -type f -name '*.rue' -print
         printf '%s\n' \
             semantic-order/left/shared.rue \
             semantic-order/right/shared.rue

@@ -744,7 +744,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
-        if self.is_builtin_string(found) || self.is_str_fixed_struct(found) {
+        if self.is_strbuf(found) || self.is_str_fixed_struct(found) {
             let found_name = found.safe_name_with_pool(Some(&self.type_pool));
             let mut err = CompileError::new(
                 ErrorKind::BufferNotFirstClassStr {
@@ -796,7 +796,7 @@ impl<'a> BodySema<'a> {
         if found.is_never() || found.is_error() {
             return Ok(());
         }
-        if self.is_builtin_string(found)
+        if self.is_strbuf(found)
             || self.is_str_fixed_struct(found)
             || self.str_view_operand_mode(operand, ctx) == Some(RirParamMode::Inout)
         {
@@ -1214,8 +1214,8 @@ impl<'a> BodySema<'a> {
 
         // `StrBuf` source: the view is the `{ptr, len}` prefix of the 3-word
         // buffer header, read field-by-field from the borrowed place.
-        if self.is_builtin_string(src_ty) {
-            let buf_struct_id = src_ty.as_struct().expect("StrBuf is a synthetic struct");
+        if self.is_strbuf(src_ty) {
+            let buf_struct_id = src_ty.as_struct().expect("StrBuf lang item is a struct");
             let str_struct_id = str_ty.as_struct().expect("str is a synthetic struct");
             let mut field_words = Vec::with_capacity(2);
             for field_index in 0..2u32 {

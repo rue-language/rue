@@ -33,7 +33,7 @@ fn main() -> i32 {
     if n == 5 && b == 104 { 42 } else { 0 }
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
 # Byte indexing sees raw packed bytes (a multibyte char decomposes into its
@@ -50,7 +50,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 0
 stdout = "5\n102\n195\n169\n"
 
@@ -64,7 +64,7 @@ fn main() -> i32 {
     @intCast(b)
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 101
 runtime_error_contains = ["index out of bounds"]
 
@@ -86,7 +86,7 @@ fn main() -> i32 {
     if lit == 104 && n == 5 { 7 } else { 0 }
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 7
 
 # A literal `str` is first-class: returned from a function, stored in a struct
@@ -108,7 +108,7 @@ fn main() -> i32 {
     @intCast(t.name.len() + picked.len() + m.len())
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 8
 
 # Two-types model (ADR-0043, RUE-386): a first-class / static `str` value is NOT
@@ -130,7 +130,7 @@ fn main() -> i32 {
     @intCast(s.len())
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0496"]
 
@@ -147,12 +147,12 @@ fn main() -> i32 {
     @intCast(take(inout b))
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 5
 
-# Without the preview flag, `str` is gated with a clear diagnostic (not an ICE).
+# `str` is stable without a preview flag.
 [[case]]
-name = "str_requires_preview_flag"
+name = "str_is_stable_without_preview_flag"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let s: str = "hello";
@@ -160,13 +160,12 @@ fn main() -> i32 {
 }
 """ }]
 args = ["main.rue", "-o", "prog"]
-compile_fail = true
-error_contains = ["requires preview feature"]
+exit_code = 5
 
 # A string literal with no buffer expectation defaults to the 2-word, Copy
-# first-class `str` value under the preview.
+# first-class `str` value.
 [[case]]
-name = "str_preview_defaults_unconstrained_literal_to_copy_str"
+name = "str_defaults_unconstrained_literal_to_copy_str"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let s = if true { "hello" } else { "goodbye" };
@@ -175,19 +174,22 @@ fn main() -> i32 {
     @intCast(first.len() + second.len())
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 10
 
-# An explicit StrBuf context retains the legacy three-word materialization.
+# An explicit, imported StrBuf context selects three-word materialization.
 [[case]]
-name = "str_preview_preserves_explicit_strbuf_literal_context"
+name = "str_preserves_explicit_strbuf_literal_context"
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s: StrBuf = "hello";
     @intCast(s.len())
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 5
 
 # A source-defined type with the same spelling in another module is a distinct
@@ -221,11 +223,16 @@ error_contains = ["E0206", "expected string type"]
 [[case]]
 name = "strbuf_to_first_class_str_param_field_escape_rejected"
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 struct Keep { s: str }
 fn cap(s: str) -> Keep { Keep { s: s } }
 fn main() -> i32 {
     let k = {
-        let b = "xx" + "yy";
+        let left: StrBuf = "xx";
+        let right: StrBuf = "yy";
+        let b = left + right;
         cap(b)
     };
     @dbg(k.s.len());
@@ -233,7 +240,8 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
 compile_fail = true
 error_contains = ["E0495", "did you mean `borrow str`?"]
 
@@ -241,10 +249,15 @@ error_contains = ["E0495", "did you mean `borrow str`?"]
 [[case]]
 name = "strbuf_to_first_class_str_return_escape_rejected"
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn take(s: str) -> str { s }
 fn main() -> i32 {
     let r = {
-        let b = "xx" + "yy";
+        let left: StrBuf = "xx";
+        let right: StrBuf = "yy";
+        let b = left + right;
         take(b)
     };
     @dbg(r.len());
@@ -252,7 +265,8 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
 compile_fail = true
 error_contains = ["E0495"]
 
@@ -261,18 +275,24 @@ error_contains = ["E0495"]
 [[case]]
 name = "borrow_str_view_field_escape_rejected"
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 struct Keep { s: str }
 fn cap(borrow s: str) -> Keep { Keep { s: s } }
 fn main() -> i32 {
     let k = {
-        let b = "xx" + "yy";
+        let left: StrBuf = "xx";
+        let right: StrBuf = "yy";
+        let b = left + right;
         cap(borrow b)
     };
     @dbg(k.s.len());
     0
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
 compile_fail = true
 error_contains = ["E0497"]
 
@@ -289,7 +309,7 @@ fn main() -> i32 {
     if len_of(borrow buf) == 5 && first(borrow buf) == 104 { 7 } else { 0 }
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 7
 
 # RUE-559 facet 1: the SAME reads with a heap `StrBuf` source. Before the
@@ -301,10 +321,15 @@ exit_code = 7
 [[case]]
 name = "strbuf_read_through_borrow_str_view_values"
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn len_of(borrow s: str) -> u64 { s.len() }
 fn first(borrow s: str) -> u8 { s[0] }
 fn main() -> i32 {
-    let b = "xx" + "yy";                 // heap StrBuf: len 4, cap != 4
+    let left: StrBuf = "xx";
+    let right: StrBuf = "yy";
+    let b = left + right;                 // heap StrBuf: len 4, cap != 4
     let len_ok = len_of(borrow b) == 4;  // the length, NOT the capacity
     let byte_ok = first(borrow b) == 120;    // 'x', no segfault
     let reuse_ok = len_of(borrow b) == 4;    // borrow again: not moved
@@ -312,23 +337,23 @@ fn main() -> i32 {
     if len_ok && byte_ok && reuse_ok && own_ok { 9 } else { 0 }
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 9
 
-# RUE-559 facet 2: an unannotated literal binding is a `StrBuf` too (see
-# str_preview_does_not_change_string_default) — its borrowed view used to
-# read length 0. Also pins the loan/move interaction (RUE-523): a single
+# RUE-559 facet 2: an unannotated literal binding is a first-class `str`.
+# This also pins the loan/move interaction (RUE-523): a single
 # `borrow` argument must NOT be misread as a move of its own loan (E0208).
 [[case]]
 name = "strbuf_literal_binding_borrow_str_len"
 files = [{ path = "main.rue", source = """
 fn rd(borrow s: str) -> u64 { s.len() }
 fn main() -> i32 {
-    let s = "hello";             // StrBuf (no `str` annotation)
+    let s = "hello";             // stable first-class str
     @intCast(rd(borrow s))
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 5
 
 # RUE-559: module-qualified calls take a separate argument-analysis path
@@ -345,14 +370,19 @@ pub fn rd(borrow s: str) -> u64 {
 """ },
     { path = "main.rue", source = """
 const util = @import("util.rue");
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 
 fn main() -> i32 {
-    let b = "xx" + "yy";
+    let left: StrBuf = "xx";
+    let right: StrBuf = "yy";
+    let b = left + right;
     @intCast(util.rd(borrow b))
 }
 """ },
 ]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 4
 
 # The comptime evaluator must use the canonical type resolver: `str` is
@@ -368,23 +398,8 @@ fn main() -> i32 {
     choose(str, 42)
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
-exit_code = 42
-
-[[case]]
-name = "generic_lazy_str_type_argument_preserves_preview_diagnostic"
-files = [{ path = "main.rue", source = """
-fn choose(comptime T: type, trailing: i32) -> i32 {
-    trailing
-}
-
-fn main() -> i32 {
-    choose(str, 42)
-}
-""" }]
 args = ["main.rue", "-o", "prog"]
-compile_fail = true
-error_contains = ["E1100", "requires preview feature"]
+exit_code = 42
 
 [[case]]
 name = "runtime_parameter_shadows_lazy_str_type_value"
@@ -397,7 +412,7 @@ fn outer(str: i32) -> i32 {
 
 fn main() -> i32 { outer(42) }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["compile-time known value"]
 
@@ -421,14 +436,20 @@ error_contains = ["must be a type"]
 [[case]]
 name = "strbuf_field_borrow_str_view"
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 struct Holder { buf: StrBuf }
 
 fn rd(borrow s: str) -> u64 { s.len() }
 
 fn main() -> i32 {
-    let h = Holder { buf: "xyz" + "w" };
+    let left: StrBuf = "xyz";
+    let right: StrBuf = "w";
+    let h = Holder { buf: left + right };
     @intCast(rd(borrow h.buf))
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 4

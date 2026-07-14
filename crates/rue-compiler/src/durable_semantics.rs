@@ -279,7 +279,7 @@ use crate::{
 pub const DURABLE_SEMANTIC_SCHEMA_VERSION: u32 = 2;
 
 pub(crate) fn builtin_nominal_kind(name: &str) -> Option<SemanticImportNominalKind> {
-    if rue_builtins::get_builtin_type(name).is_some() {
+    if name == "str" {
         Some(SemanticImportNominalKind::Struct)
     } else if rue_builtins::get_builtin_enum(name).is_some() {
         Some(SemanticImportNominalKind::Enum)
@@ -1073,10 +1073,7 @@ mod tests {
             .into_iter()
             .find(|id| epoch.type_pool().struct_lang_item(*id) == Some(rue_air::LangItem::StrBuf))
             .expect("durable import should restore StrBuf language-item identity");
-        assert_eq!(
-            epoch.type_pool().struct_symbol_name(strbuf),
-            "StrBuf$_00rue_2dstd_2fstrbuf_2erue"
-        );
+        assert_eq!(epoch.type_pool().struct_symbol_name(strbuf), "StrBuf");
         assert!(rue_codegen::cfg_lower::type_uses_sret_return(
             epoch.type_pool(),
             rue_air::Type::new_struct(strbuf),

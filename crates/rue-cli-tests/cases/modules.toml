@@ -2666,7 +2666,7 @@ error_contains = ["E0707", "has no member `E`"]
 [[case]]
 name = "qualified_builtin_wrong_module_rejected"
 env = { RUE_STD_PATH = "${REAL_STD}" }
-description = "The global builtin StrBuf is not reachable through an arbitrary module prefix"
+description = "The standard-library StrBuf is not reachable through an arbitrary module prefix"
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 

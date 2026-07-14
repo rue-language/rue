@@ -124,9 +124,12 @@ error_contains = "cannot move out of borrowed value"
 [[case]]
 name = "for_mutate_collection_in_body_error"
 spec = ["4.8:26"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let mut s = "abc".clone();
+    let mut s: StrBuf = "abc";
     for c in s.chars() {
         s.clear();
         @dbg(c);
@@ -143,9 +146,12 @@ error_contains = "cannot mutate borrowed value"
 [[case]]
 name = "for_string_borrows_not_consumes"
 spec = ["4.8:26"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "abcd";
+    let s: StrBuf = "abcd";
     let mut count = 0;
     for _b in s {
         count = count + 1;
@@ -165,9 +171,12 @@ exit_code = 8
 [[case]]
 name = "for_string_bytes_count"
 spec = ["4.8:25"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "abc";
+    let s: StrBuf = "abc";
     let mut count = 0;
     for _b in s {
         count = count + 1;
@@ -181,9 +190,12 @@ exit_code = 3
 [[case]]
 name = "for_string_bytes_multibyte"
 spec = ["4.8:25"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "café";
+    let s: StrBuf = "café";
     let mut count = 0;
     for _b in s {
         count = count + 1;
@@ -200,9 +212,12 @@ exit_code = 5
 [[case]]
 name = "for_chars_scalars"
 spec = ["4.8:25", "3.7:31"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "café";
+    let s: StrBuf = "café";
     let mut count = 0;
     for c in s.chars() {
         @dbg(c);
@@ -266,9 +281,12 @@ exit_code = 129
 [[case]]
 name = "for_chars_invalid_utf8_traps"
 spec = ["4.8:28", "3.7:32"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let full = "café";
+    let full: StrBuf = "café";
     let s = full.substring(0, 4);
     for c in s.chars() {
         @dbg(c);
@@ -288,9 +306,12 @@ expected_stdout = "99\n97\n102\n"
 [[case]]
 name = "for_chars_lossy_valid"
 spec = ["3.7:34"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "café";
+    let s: StrBuf = "café";
     let mut count = 0;
     for c in s.chars_lossy() {
         @dbg(c);
@@ -308,9 +329,12 @@ expected_stdout = "99\n97\n102\n233\n"
 [[case]]
 name = "for_chars_lossy_replaces_invalid"
 spec = ["3.7:34"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let full = "café";
+    let full: StrBuf = "café";
     let s = full.substring(0, 4);
     let mut count = 0;
     for c in s.chars_lossy() {

@@ -205,7 +205,7 @@ The table is generated from ADR frontmatter. Run
 | [0040](0040-array-layout-ascending.md) | Array layout is ascending; @ptr_offset is standard pointer arithmetic | Implemented | layout, arrays, pointers, codegen, abi |
 | [0041](0041-vec.md) | Vec — a growable collection on unchecked raw pointers | Accepted | stdlib, collections, generics, ownership, unchecked |
 | [0042](0042-std-availability-model.md) | Standard-library availability model (str/String split, prelude vs explicit std) | Accepted | stdlib, modules, strings, prelude, ergonomics, language-shape |
-| [0043](0043-collection-string-type-trio.md) | The collection & string type trio: fixed / slice / growable | Accepted | strings, collections, slices, arrays, vec, allocators, stdlib |
+| [0043](0043-collection-string-type-trio.md) | The collection & string type trio: fixed / slice / growable | Implemented | strings, collections, slices, arrays, vec, allocators, stdlib |
 | [0044](0044-optimization-levels.md) | Optimization Levels (-O0/-O1/-O2/-O3) | Accepted | compiler, codegen, process |
 | [0045](0045-lazy-semantic-analysis.md) | Lazy semantic analysis (compile-on-reference) | Accepted | compiler, semantics, comptime, modules, stdlib, language-shape |
 | [0046](0046-delete-flat-mode.md) | Delete flat multi-file mode (all cross-file references go through @import) | Accepted | modules, semantics, cli, language-shape, ergonomics |

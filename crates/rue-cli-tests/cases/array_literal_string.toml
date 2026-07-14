@@ -22,7 +22,10 @@ Two flavors:
 # Two StrBuf.new() elements; array indexes usable, .len() is 0.
 [[case]]
 name = "array_of_string_new_len"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let arr = [StrBuf.new(), StrBuf.new()];
     let n: u64 = arr[0].len();
@@ -47,7 +50,10 @@ exit_code = 0
 # with_capacity elements (heap-allocated); second slot's capacity readable.
 [[case]]
 name = "array_of_string_with_capacity"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let arr = [StrBuf.with_capacity(16), StrBuf.with_capacity(16)];
     let a: u64 = arr[0].capacity();
@@ -60,7 +66,10 @@ exit_code = 0
 # Single-element array built from a StrBuf binding, then indexed.
 [[case]]
 name = "array_of_string_var_single"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let a = StrBuf.new();
     let arr = [a];
@@ -76,7 +85,10 @@ exit_code = 0
 # E0412 (unknown associated function), never E9000 about a non-array type.
 [[case]]
 name = "array_of_bad_assoc_fn_reports_real_error"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let arr = [StrBuf.from(\"a\"), StrBuf.from(\"b\")];
     0

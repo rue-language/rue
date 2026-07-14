@@ -21,7 +21,10 @@ description = "User functions may not shadow runtime/codegen helper symbols; the
 # the user's `String__len()` returns 7 -> 5*10 + 7 = 57.
 [[case]]
 name = "builtin_method_name_allowed"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn String__len() -> i32 { 7 }
 fn main() -> i32 {
     let mut s = StrBuf.new();

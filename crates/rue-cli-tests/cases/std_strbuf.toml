@@ -1,6 +1,6 @@
 # Source-defined std.strbuf.StrBuf (RUE-871), exercised through the real std
 # bundle. These cases intentionally use only the qualified or aliased library
-# type so the synthetic builtin `StrBuf` cannot satisfy the coverage.
+# type so no compiler-injected `StrBuf` can satisfy the coverage.
 
 [section]
 id = "cli.std_strbuf"
@@ -88,7 +88,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "raw_bytes", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "--preview", "raw_bytes", "-o", "prog"]
 exit_code = 0
 
 [[case]]
@@ -123,7 +123,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "raw_bytes", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "--preview", "raw_bytes", "-o", "prog"]
 exit_code = 0
 
 [[case]]
@@ -148,7 +148,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 0
 
 [[case]]
@@ -200,7 +200,7 @@ fn main() -> i32 {
     @intCast(impossible.len())
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 101
 runtime_error_contains = ["index out of bounds"]
 
@@ -222,7 +222,7 @@ fn main() -> i32 {
     @intCast(joined.len())
 }
 """ }]
-args = ["--emit", "mir", "main.rue", "--preview", "string_trio"]
+args = ["--emit", "mir", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["duplicate", "byte_range", "concat_borrowed", "read_packed_byte", "write_packed_byte"]
 compile_stdout_not_contains = [
@@ -282,7 +282,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["into a call that also passes it"]
 
@@ -292,6 +292,7 @@ description = "Qualified and aliased std StrBuf values use view coercions, index
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 const S = std.strbuf.StrBuf;
 
 fn read_len(borrow value: str) -> u64 { value.len() }
@@ -314,7 +315,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 0
 
 [[case]]

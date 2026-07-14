@@ -5,7 +5,7 @@
 # params into per-slot vregs; array-typed params got a single vreg — and an
 # array's primary vreg is just a zero placeholder — so every element was
 # dropped at the join (silent miscompile: a[i] read 0 at every opt level, both
-# backends). Structs and StrBuf (a synthetic struct) already crossed joins
+# backends). Structs and the source-defined StrBuf already crossed joins
 # intact; these cases pin them as regressions alongside the array fixes.
 #
 # Conditions go through a function call so constant folding can't delete the
@@ -176,7 +176,7 @@ stdout = "1\n2\n"
 exit_code = 3
 
 # StrBuf (3-slot fat pointer) through a join — also pinned as a regression
-# guard; StrBuf is a synthetic struct so it used the working struct path.
+# guard; StrBuf uses the working ordinary-struct path.
 [[case]]
 name = "string_through_if_join"
 files = [{ path = "main.rue", source = """

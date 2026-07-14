@@ -5,30 +5,28 @@ name = "Items General"
 description = "General rules for items, including type name uniqueness."
 
 # =============================================================================
-# Reserved Type Names
+# Ordinary Standard-Library Type Spellings
 # =============================================================================
 
 [[case]]
-name = "struct_reserved_strbuf"
+name = "struct_named_strbuf_is_ordinary"
 spec = ["6.0:3"]
-description = "User-defined struct cannot use reserved name 'StrBuf'"
+description = "A user-defined StrBuf is an ordinary nominal"
 source = """
 struct StrBuf { data: i32 }
-fn main() -> i32 { 0 }
+fn main() -> i32 { StrBuf { data: 7 }.data }
 """
-compile_fail = true
-error_contains = "cannot define type `StrBuf`: name is reserved for built-in type"
+exit_code = 7
 
 [[case]]
-name = "enum_reserved_strbuf"
+name = "enum_named_strbuf_is_ordinary"
 spec = ["6.0:3"]
-description = "User-defined enum cannot use reserved name 'StrBuf'"
+description = "A user-defined enum may use the StrBuf spelling"
 source = """
 enum StrBuf { Empty, Full }
-fn main() -> i32 { 0 }
+fn main() -> i32 { match StrBuf.Full { StrBuf.Empty => 0, StrBuf.Full => 8 } }
 """
-compile_fail = true
-error_contains = "cannot define type `StrBuf`: name is reserved for built-in type"
+exit_code = 8
 
 # =============================================================================
 # Type Name Uniqueness - Duplicate Definitions
@@ -96,7 +94,10 @@ exit_code = 42
 name = "fn_builtin_method_name_allowed"
 spec = ["6.0:5"]
 description = "A `Type__method` name is an ordinary identifier: runtime symbols moved under `__rue_` (RUE-125), so it is no longer reserved and is distinct from the built-in method"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn String__len() -> i32 { 7 }
 fn main() -> i32 {
     let mut s = StrBuf.new();

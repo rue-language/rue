@@ -22,12 +22,10 @@ fn find_call_metadata(
     state: &CompileState,
     expected_name: &str,
 ) -> (Vec<Type>, Vec<CfgArgMode>, Type) {
-    let mut found = None;
     for function in &state.functions {
-        let cfg = &function.cfg;
-        for block in cfg.blocks() {
+        for block in function.cfg.blocks() {
             for &value in &block.insts {
-                let inst = cfg.get_inst(value);
+                let inst = function.cfg.get_inst(value);
                 let CfgInstData::Call {
                     name,
                     args_start,
@@ -36,23 +34,134 @@ fn find_call_metadata(
                 else {
                     continue;
                 };
-                if state.interner.resolve(name) != expected_name {
-                    continue;
+                if state.interner.resolve(name) == expected_name {
+                    let args = function.cfg.get_call_args(*args_start, *args_len);
+                    return (
+                        args.iter()
+                            .map(|arg| function.cfg.get_inst(arg.value).ty)
+                            .collect(),
+                        args.iter().map(|arg| arg.mode).collect(),
+                        inst.ty,
+                    );
                 }
-                let args = cfg.get_call_args(*args_start, *args_len);
-                let metadata = (
-                    args.iter().map(|arg| cfg.get_inst(arg.value).ty).collect(),
-                    args.iter().map(|arg| arg.mode).collect(),
-                    inst.ty,
-                );
-                assert!(
-                    found.replace(metadata).is_none(),
-                    "expected exactly one call to {expected_name}"
-                );
             }
         }
     }
-    found.unwrap_or_else(|| panic!("missing call to {expected_name}"))
+    panic!("missing call to {expected_name}")
+}
+
+#[test]
+fn stable_text_runtime_calls_require_exact_metadata() {
+    use SemanticGapKind as Semantic;
+    use UnsupportedRuntimeCallKind as RuntimeCall;
+
+    let state = query_cfg_state("fn main() -> i32 { print(\"x\"); println(\"y\"); 0 }")
+        .expect("stable text print probes must compile");
+    let interp = Interp {
+        state: &state,
+        stdout: String::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+    };
+    for (name, kind) in [
+        ("__rue_str_print", RuntimeCall::Print),
+        ("__rue_str_println", RuntimeCall::Println),
+    ] {
+        let (types, modes, result) = find_call_metadata(&state, name);
+        let values = [Value::str_view("x")];
+        assert_eq!(
+            interp.classify_unsupported_runtime_call(name, &values, &types, &modes, result),
+            UnsupportedKind::SemanticGap(Semantic::RuntimeCall(kind))
+        );
+        for values in [&[][..], &[Value::str_view("x"), Value::str_view("y")][..]] {
+            assert_eq!(
+                interp.classify_unsupported_runtime_call(name, values, &types, &modes, result),
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity)
+            );
+        }
+        for (types, modes) in [
+            (&[][..], &[][..]),
+            (
+                &[types[0], types[0], types[0]][..],
+                &[CfgArgMode::Normal; 3][..],
+            ),
+            (&types[..], &[][..]),
+        ] {
+            assert_eq!(
+                interp.classify_unsupported_runtime_call(name, &values, types, modes, result),
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity)
+            );
+        }
+        assert_eq!(
+            interp.classify_unsupported_runtime_call(name, &values, &[Type::BOOL], &modes, result,),
+            UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
+        );
+        assert_eq!(
+            interp.classify_unsupported_runtime_call(
+                name,
+                &values,
+                &types,
+                &[CfgArgMode::Borrow],
+                result,
+            ),
+            UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
+        );
+        assert_eq!(
+            interp.classify_unsupported_runtime_call(
+                name,
+                &[Value::Int(0)],
+                &types,
+                &modes,
+                result,
+            ),
+            UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
+        );
+        assert_eq!(
+            interp.classify_unsupported_runtime_call(name, &values, &types, &modes, Type::BOOL),
+            UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
+        );
+    }
+    for name in [
+        "__rue_str_eq",
+        "__rue_fn_user_function",
+        "__rue_new_runtime_helper",
+    ] {
+        assert_eq!(
+            interp.classify_unsupported_runtime_call(name, &[], &[], &[], Type::UNIT),
+            UnsupportedKind::ContractViolation(ContractViolationKind::MissingFunctionBody)
+        );
+    }
+}
+
+#[test]
+fn random_intrinsic_requires_exact_arity_and_result_type() {
+    let state = query_cfg_state("fn main() -> i32 { let n: u32 = @random_u32(); @intCast(n) }")
+        .expect("random probe must compile");
+    let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "main", "random_u32");
+    let interp = Interp {
+        state: &state,
+        stdout: String::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+    };
+    assert_eq!(
+        interp.classify_unsupported_intrinsic(cfg, inst, "random_u32", &args, result),
+        UnsupportedKind::ExternalDependency(ExternalDependencyKind::RandomU32)
+    );
+    assert_eq!(
+        interp.classify_unsupported_intrinsic(cfg, inst, "random_u32", &[inst], result),
+        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity)
+    );
+    assert_eq!(
+        interp.classify_unsupported_intrinsic(cfg, inst, "random_u32", &args, Type::U64),
+        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature)
+    );
 }
 
 fn find_intrinsic_in_function<'a>(
@@ -97,247 +206,6 @@ fn find_intrinsic_in_function<'a>(
     let (value, args, ty) =
         found.unwrap_or_else(|| panic!("missing @{expected_name} in {function_name}"));
     (cfg, value, args, ty)
-}
-
-#[test]
-fn runtime_call_classification_requires_exact_metadata() {
-    use SemanticGapKind as Semantic;
-    use UnsupportedRuntimeCallKind as RuntimeCall;
-
-    let mut preview_features = PreviewFeatures::new();
-    preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
-    let state = query_cfg_state_with_preview_features(
-        r#"fn probe_concat() -> i32 { @intCast(("a" + "b").len()) }
-        fn probe_contains() -> i32 { if "abc".contains("b") { 1 } else { 0 } }
-        fn probe_starts() -> i32 { if "abc".starts_with("a") { 1 } else { 0 } }
-        fn probe_substring() -> i32 { @intCast("abc".substring(0, 1).len()) }
-        fn probe_print() -> i32 { print("x"); 0 }
-        fn probe_println() -> i32 { println("x"); 0 }
-        fn probe_view() -> i32 { let view: str = "view"; @intCast(view.len()) }
-        fn main() -> i32 {
-            probe_concat() + probe_contains() + probe_starts() + probe_substring()
-                + probe_print() + probe_println() + probe_view()
-        }"#,
-        &preview_features,
-    )
-    .expect("runtime-call and str-view probes must compile");
-    let interp = Interp {
-        state: &state,
-        stdout: String::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-    };
-    let view = state
-        .functions
-        .iter()
-        .flat_map(|function| {
-            function
-                .cfg
-                .blocks()
-                .iter()
-                .flat_map(|block| block.insts.iter().copied())
-                .map(|value| function.cfg.get_inst(value))
-        })
-        .find_map(|inst| {
-            (matches!(inst.data, CfgInstData::StringConst(_)) && interp.is_str_like_type(inst.ty))
-                .then_some(inst.ty)
-        })
-        .expect("str-view constant type");
-
-    let cases = [
-        ("__rue_String_concat", RuntimeCall::StringConcat),
-        ("__rue_String_contains", RuntimeCall::StringContains),
-        ("__rue_String_starts_with", RuntimeCall::StringStartsWith),
-        ("__rue_String_substring", RuntimeCall::StringSubstring),
-        ("__rue_str_print", RuntimeCall::Print),
-        ("__rue_str_println", RuntimeCall::Println),
-    ];
-    let values_for = |types: &[Type]| {
-        types
-            .iter()
-            .map(|ty| {
-                if interp.is_owned_string_type(*ty) {
-                    Value::string("probe")
-                } else if interp.is_str_like_type(*ty) {
-                    Value::str_view("probe".to_string())
-                } else if interp
-                    .pointer_pointee(*ty)
-                    .is_some_and(|(pointee, _)| pointee == Type::U8)
-                {
-                    // Raw text pointers retain their bytes as provenance in the
-                    // oracle value model; the following scalar argument is len.
-                    Value::str_view("probe".to_string())
-                } else {
-                    Value::Int(0)
-                }
-            })
-            .collect::<Vec<_>>()
-    };
-
-    for (name, runtime_call) in cases {
-        let (arg_types, arg_modes, result_ty) = find_call_metadata(&state, name);
-        let args = values_for(&arg_types);
-        assert_eq!(
-            interp
-                .classify_unsupported_runtime_call(name, &args, &arg_types, &arg_modes, result_ty,),
-            UnsupportedKind::SemanticGap(Semantic::RuntimeCall(runtime_call)),
-            "{name}"
-        );
-    }
-    for name in [
-        "__rue_str_eq",
-        "__rue_fn_user_function",
-        "__rue_new_runtime_helper",
-    ] {
-        assert_eq!(
-            interp.classify_unsupported_runtime_call(name, &[], &[], &[], Type::UNIT),
-            UnsupportedKind::ContractViolation(ContractViolationKind::MissingFunctionBody),
-            "{name}"
-        );
-    }
-    let (concat_types, concat_modes, concat_result) =
-        find_call_metadata(&state, "__rue_String_concat");
-    let concat_values = values_for(&concat_types);
-    assert_eq!(
-        interp.classify_unsupported_runtime_call(
-            "__rue_String_concat",
-            &concat_values[..1],
-            &concat_types[..1],
-            &concat_modes[..1],
-            concat_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity)
-    );
-
-    assert!(interp.is_str_like_type(view));
-    assert!(!interp.is_owned_string_type(view));
-    assert_eq!(
-        interp.classify_unsupported_runtime_call(
-            "__rue_String_concat",
-            &concat_values,
-            &[view, concat_types[1]],
-            &concat_modes,
-            concat_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
-    );
-    assert_eq!(
-        interp.classify_unsupported_runtime_call(
-            "__rue_String_concat",
-            &concat_values,
-            &concat_types,
-            &concat_modes[..1],
-            concat_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity),
-        "argument-mode metadata length is independently checked"
-    );
-    for (name, wrong_result) in [
-        ("__rue_String_concat", Type::UNIT),
-        ("__rue_String_contains", Type::UNIT),
-        ("__rue_String_substring", Type::UNIT),
-        ("__rue_str_print", Type::BOOL),
-    ] {
-        let (arg_types, arg_modes, result_ty) = find_call_metadata(&state, name);
-        let args = values_for(&arg_types);
-        assert_ne!(
-            wrong_result, result_ty,
-            "{name} negative must change the result"
-        );
-        assert_eq!(
-            interp.classify_unsupported_runtime_call(
-                name,
-                &args,
-                &arg_types,
-                &arg_modes,
-                wrong_result,
-            ),
-            UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
-            "{name} result type is exact"
-        );
-    }
-    let (substring_types, substring_modes, substring_result) =
-        find_call_metadata(&state, "__rue_String_substring");
-    let substring_values = values_for(&substring_types);
-    for index in [1, 2] {
-        let mut wrong_types = substring_types.clone();
-        wrong_types[index] = Type::I32;
-        assert_eq!(
-            interp.classify_unsupported_runtime_call(
-                "__rue_String_substring",
-                &substring_values,
-                &wrong_types,
-                &substring_modes,
-                substring_result,
-            ),
-            UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
-            "substring index {index} is exactly u64, not merely any integer"
-        );
-    }
-    assert_eq!(
-        interp.classify_unsupported_runtime_call(
-            "__rue_String_concat",
-            &concat_values,
-            &concat_types,
-            &[CfgArgMode::Borrow, CfgArgMode::Normal],
-            concat_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
-    );
-    let mut wrong_runtime_shape = concat_values.clone();
-    wrong_runtime_shape[0] = Value::str_view("two-slot view");
-    assert_eq!(
-        interp.classify_unsupported_runtime_call(
-            "__rue_String_concat",
-            &wrong_runtime_shape,
-            &concat_types,
-            &concat_modes,
-            concat_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
-        "an owned-string CFG type requires the owned three-slot runtime shape"
-    );
-
-    // The legacy owned-string print ABI remains a supported, classified gap
-    // while the source-defined StrBuf path uses the new scalar ptr/len ABI.
-    let owned = concat_types[0];
-    for (name, runtime_call) in [
-        ("__rue_print", RuntimeCall::Print),
-        ("__rue_println", RuntimeCall::Println),
-    ] {
-        assert_eq!(
-            interp.classify_unsupported_runtime_call(
-                name,
-                &[Value::string("legacy")],
-                &[owned],
-                &[CfgArgMode::Normal],
-                Type::UNIT,
-            ),
-            UnsupportedKind::SemanticGap(Semantic::RuntimeCall(runtime_call)),
-            "{name}"
-        );
-    }
-
-    let ptr = Type::new_ptr_mut(state.type_pool.intern_ptr_mut_from_type(Type::U8));
-    for (name, runtime_call) in [
-        ("__rue_str_print", RuntimeCall::Print),
-        ("__rue_str_println", RuntimeCall::Println),
-    ] {
-        assert_eq!(
-            interp.classify_unsupported_runtime_call(
-                name,
-                &[Value::str_view("scalar"), Value::Int(6)],
-                &[ptr, Type::U64],
-                &[CfgArgMode::Normal, CfgArgMode::Normal],
-                Type::UNIT,
-            ),
-            UnsupportedKind::SemanticGap(Semantic::RuntimeCall(runtime_call)),
-            "{name} scalar ptr/len ABI"
-        );
-    }
 }
 
 #[test]
@@ -425,168 +293,6 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
 }
 
 #[test]
-fn capacity_and_intrinsic_signature_drift_are_contract_failures() {
-    let capacity_state = query_cfg_state(
-        r#"fn main() -> i32 {
-            @intCast("probe".capacity())
-        }"#,
-    )
-    .expect("probe must compile");
-    let (capacity_types, capacity_modes, capacity_result_ty) =
-        find_call_metadata(&capacity_state, "__rue_String_capacity");
-    let capacity_interp = Interp {
-        state: &capacity_state,
-        stdout: String::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-    };
-    let exact_capacity = expect_flow_unsupported(capacity_interp.string_builtin(
-        "__rue_String_capacity",
-        &[Value::string("probe")],
-        &capacity_types,
-        &capacity_modes,
-        capacity_result_ty,
-    ));
-    assert_eq!(
-        exact_capacity.kind(),
-        UnsupportedKind::ImplementationDefined(ImplementationDefinedKind::StringCapacityValue)
-    );
-    let capacity_arity = expect_flow_unsupported(capacity_interp.string_builtin(
-        "__rue_String_capacity",
-        &[],
-        &[],
-        &[],
-        Type::U64,
-    ));
-    assert_eq!(
-        capacity_arity.kind(),
-        UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArity)
-    );
-    let capacity_type = expect_flow_unsupported(capacity_interp.string_builtin(
-        "__rue_String_capacity",
-        &[Value::string("probe")],
-        &[Type::I32],
-        &capacity_modes,
-        capacity_result_ty,
-    ));
-    assert_eq!(
-        capacity_type.kind(),
-        UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType)
-    );
-    let capacity_value = expect_flow_unsupported(capacity_interp.string_builtin(
-        "__rue_String_capacity",
-        &[Value::Int(0)],
-        &capacity_types,
-        &capacity_modes,
-        capacity_result_ty,
-    ));
-    assert_eq!(
-        capacity_value.kind(),
-        UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType)
-    );
-    let capacity_width = expect_flow_unsupported(capacity_interp.string_builtin(
-        "__rue_String_capacity",
-        &[Value::str_view("probe")],
-        &capacity_types,
-        &capacity_modes,
-        capacity_result_ty,
-    ));
-    assert_eq!(
-        capacity_width.kind(),
-        UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType)
-    );
-    let capacity_mode = expect_flow_unsupported(capacity_interp.string_builtin(
-        "__rue_String_capacity",
-        &[Value::string("probe")],
-        &capacity_types,
-        &[CfgArgMode::Borrow],
-        capacity_result_ty,
-    ));
-    assert_eq!(
-        capacity_mode.kind(),
-        UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentMode)
-    );
-    let capacity_result = expect_flow_unsupported(capacity_interp.string_builtin(
-        "__rue_String_capacity",
-        &[Value::string("probe")],
-        &capacity_types,
-        &capacity_modes,
-        Type::BOOL,
-    ));
-    assert_eq!(
-        capacity_result.kind(),
-        UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinResultType)
-    );
-
-    let random_state = query_cfg_state(
-        "fn main() -> i32 {
-            let n: u32 = @random_u32();
-            if n == 0 { 0 } else { 1 }
-        }",
-    )
-    .expect("probe must compile");
-    let random_cfg = random_state
-        .functions
-        .iter()
-        .map(|function| &function.cfg)
-        .find(|cfg| cfg.fn_name() == "main")
-        .expect("main CFG");
-    let random_inst = random_cfg
-        .blocks()
-        .iter()
-        .flat_map(|block| block.insts.iter().copied())
-        .find(|value| {
-            matches!(
-                random_cfg.get_inst(*value).data,
-                CfgInstData::Intrinsic { .. }
-            )
-        })
-        .expect("random intrinsic");
-    let random_interp = Interp {
-        state: &random_state,
-        stdout: String::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-    };
-    assert_eq!(
-        random_interp.classify_unsupported_intrinsic(
-            random_cfg,
-            random_inst,
-            "random_u32",
-            &[],
-            Type::U32,
-        ),
-        UnsupportedKind::ExternalDependency(ExternalDependencyKind::RandomU32)
-    );
-    assert_eq!(
-        random_interp.classify_unsupported_intrinsic(
-            random_cfg,
-            random_inst,
-            "random_u32",
-            &[random_inst],
-            Type::U32
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity)
-    );
-    assert_eq!(
-        random_interp.classify_unsupported_intrinsic(
-            random_cfg,
-            random_inst,
-            "random_u32",
-            &[],
-            Type::U64,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature)
-    );
-}
-
-#[test]
 fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
     let state = query_cfg_state(
         r#"fn panic_no_message() { @panic() }
@@ -630,102 +336,6 @@ fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
             ),
             _ => panic!("{function_name}: stale unit-typed metadata must be a contract violation"),
         }
-    }
-}
-
-#[test]
-fn malformed_outer_calls_are_rejected_before_unmodeled_operands_run() {
-    let mut preview_features = PreviewFeatures::new();
-    preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
-    let source = r#"fn main() -> i32 {
-        let entropy: u32 = @random_u32();
-        let text = StrBuf.new();
-        @intCast(text.capacity()) + @intCast((text + "suffix").len())
-    }"#;
-
-    for (call_name, expected) in [
-        (
-            "__rue_String_capacity",
-            UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType),
-        ),
-        (
-            "__rue_String_concat",
-            UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
-        ),
-    ] {
-        let mut state = query_cfg_state_with_preview_features(source, &preview_features)
-            .expect("call-preflight probe must compile");
-        let main_index = state
-            .functions
-            .iter()
-            .position(|function| function.cfg.fn_name() == "main")
-            .expect("main CFG");
-        let (random, outer_call) = {
-            let cfg = &state.functions[main_index].cfg;
-            let mut random = None;
-            let mut outer_call = None;
-            for value in cfg
-                .blocks()
-                .iter()
-                .flat_map(|block| block.insts.iter().copied())
-            {
-                match &cfg.get_inst(value).data {
-                    CfgInstData::Intrinsic { name, .. }
-                        if state.interner.resolve(name) == "random_u32" =>
-                    {
-                        random = Some(value);
-                    }
-                    CfgInstData::Call { name, .. } if state.interner.resolve(name) == call_name => {
-                        outer_call = Some(value);
-                    }
-                    _ => {}
-                }
-            }
-            (
-                random.expect("random intrinsic"),
-                outer_call.unwrap_or_else(|| panic!("{call_name} call")),
-            )
-        };
-        let cfg = &mut state.functions[main_index].cfg;
-        let (args_start, args_len) = match cfg.get_inst(outer_call).data {
-            CfgInstData::Call {
-                args_start,
-                args_len,
-                ..
-            } => (args_start, args_len),
-            _ => unreachable!("selected a Call"),
-        };
-        let mut args = cfg.get_call_args(args_start, args_len).to_vec();
-        args[0].value = random;
-        let (args_start, args_len) = cfg.push_call_args(args);
-        let CfgInstData::Call {
-            args_start: stored_start,
-            args_len: stored_len,
-            ..
-        } = &mut cfg.get_inst_mut(outer_call).data
-        else {
-            unreachable!("selected a Call")
-        };
-        *stored_start = args_start;
-        *stored_len = args_len;
-
-        let cfg = &state.functions[main_index].cfg;
-        let mut interp = Interp {
-            state: &state,
-            stdout: String::new(),
-            stdout_bytes: 0,
-            stdout_cap: MAX_STDOUT_BYTES,
-            stderr_cap: MAX_STDERR_BYTES,
-            budget: STEP_BUDGET,
-            depth: 0,
-        };
-        let mut frame = Frame {
-            params: Vec::new(),
-            locals: vec![None; cfg.num_locals() as usize],
-            cache: HashMap::new(),
-        };
-        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, outer_call));
-        assert_eq!(unsupported.kind(), expected, "{call_name}");
     }
 }
 
@@ -973,15 +583,13 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
             cache: HashMap::new(),
         };
         let corrupted = if name == "panic" { args[0] } else { args[1] };
-        frame
-            .cache
-            .insert(corrupted.as_u32(), Value::str_view("not owned"));
+        frame.cache.insert(corrupted.as_u32(), Value::Int(7));
 
         let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, intrinsic));
         assert_eq!(
             unsupported.kind(),
             UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-            "@{name} must reject a value whose runtime shape contradicts its owned-string type"
+            "@{name} must reject a non-text runtime value"
         );
     }
 
@@ -1519,11 +1127,7 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
             let O = Option(i64);
             match @parse_i64("2") { O.Some(n) => @intCast(n), O.None => 0 }
         }
-        fn line() -> i32 {
-            let O = Option(StrBuf);
-            match @read_line() { O.Some(_s) => 1, O.None => 0 }
-        }
-        fn main() -> i32 { parse32() + parse64() + line() }"#,
+        fn main() -> i32 { parse32() + parse64() }"#,
     )
     .expect("Option intrinsic signature probe must compile");
     let interp = Interp {
@@ -1539,8 +1143,6 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
         find_intrinsic_in_function(&state, "parse32", "parse_i32");
     let (parse64_cfg, parse64_inst, parse64_args, parse64_result) =
         find_intrinsic_in_function(&state, "parse64", "parse_i64");
-    let (line_cfg, line_inst, line_args, line_result) =
-        find_intrinsic_in_function(&state, "line", "read_line");
 
     assert_eq!(
         interp.classify_unsupported_intrinsic(
@@ -1568,17 +1170,6 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
     );
     assert_eq!(
         interp.classify_unsupported_intrinsic(
-            line_cfg,
-            line_inst,
-            "read_line",
-            &line_args,
-            line_result,
-        ),
-        UnsupportedKind::ExternalDependency(ExternalDependencyKind::StandardInput)
-    );
-
-    assert_eq!(
-        interp.classify_unsupported_intrinsic(
             parse32_cfg,
             parse32_inst,
             "parse_i32",
@@ -1588,15 +1179,121 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
         UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
         "Option(i64) is not a valid parse_i32 result"
     );
+}
+
+#[test]
+fn read_line_requires_trusted_source_strbuf_payload_metadata() {
+    use rue_compiler::{
+        AcceptedImportSource, CompilerSession, DiscoverySourceAssembler, FileMetadataFingerprint,
+        ImportDiscoveryContext, ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
+    };
+    use std::sync::Arc;
+
+    let root = Arc::new(
+        r#"const strbuf = @import("std/strbuf.rue");
+        const option = @import("std/option.rue");
+        const StrBuf = strbuf.StrBuf;
+        const Option = option.Option;
+        fn line() -> i32 {
+            let O = Option(StrBuf);
+            match @read_line() { O.Some(_line) => 1, O.None => 0 }
+        }
+        fn parse() -> i32 {
+            let O = Option(i32);
+            match @parse_i32("1") { O.Some(value) => value, O.None => 0 }
+        }
+        fn main() -> i32 { line() + parse() }"#
+            .to_owned(),
+    );
+    let strbuf = Arc::new(
+        r#"pub struct StrBuf { buf: ptr mut u8, len: u64, cap: u64 }
+        drop fn StrBuf(self) { }"#
+            .to_owned(),
+    );
+    let option = Arc::new(
+        r#"pub fn Option(comptime T: type) -> type { enum { Some(T), None } }"#.to_owned(),
+    );
+    let context =
+        ImportDiscoveryContext::new(1, "/project", Some("/project/std"), "oracle-call-contract")
+            .expect("valid discovery context");
+    let mut assembler = DiscoverySourceAssembler::new(
+        context.clone(),
+        "/project/main.rue",
+        "/project/main.rue",
+        PhysicalFileIdentity::new(1, 1),
+        FileMetadataFingerprint::new(root.len() as u64, 0, 0),
+        root,
+    )
+    .expect("root source assembler");
+    let standard_sources = [
+        (2, "/project/std/strbuf.rue", strbuf),
+        (3, "/project/std/option.rue", option),
+    ];
+    let mut session = CompilerSession::new();
+    let mut ledger = ImportObservationLedger::default();
+    loop {
+        let snapshot = assembler.snapshot().expect("trusted std snapshot");
+        let plan = session
+            .stage_import_discovery(
+                &snapshot,
+                context.clone(),
+                assembler.accepted_read_manifest(),
+                ledger.clone(),
+            )
+            .expect("valid trusted std discovery plan");
+        for request in plan.pending_requests(&ledger) {
+            let requested = request.requested_path();
+            let (index, canonical, source) = standard_sources
+                .iter()
+                .find(|(_, path, _)| *path == requested)
+                .unwrap_or_else(|| panic!("unexpected import request {requested}"));
+            let accepted = AcceptedImportSource::new(
+                requested,
+                *canonical,
+                PhysicalFileIdentity::new(1, *index),
+                FileMetadataFingerprint::new(source.len() as u64, 0, 0),
+                source.clone(),
+            )
+            .expect("accepted trusted standard-library source");
+            let observation = ImportObservation::accepted(request, accepted)
+                .expect("observation matches discovery request");
+            ledger
+                .record(observation)
+                .expect("unique import observation");
+        }
+        assert!(plan.failures(&ledger).next().is_none());
+        if assembler
+            .add_plan_reads(&plan, &ledger)
+            .expect("assemble accepted std reads")
+            == 0
+        {
+            session
+                .close_import_discovery(ledger)
+                .expect("close valid import discovery revision");
+            break;
+        }
+    }
+    let state = query_cfg_state_from_session(session, &CompileOptions::default())
+        .expect("trusted Option(StrBuf) @read_line probe must compile");
+    let interp = Interp {
+        state: &state,
+        stdout: String::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+    };
+    let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "line", "read_line");
     assert_eq!(
-        interp.classify_unsupported_intrinsic(
-            line_cfg,
-            line_inst,
-            "read_line",
-            &line_args,
-            parse32_result,
-        ),
+        interp.classify_unsupported_intrinsic(cfg, inst, "read_line", &args, result),
+        UnsupportedKind::ExternalDependency(ExternalDependencyKind::StandardInput)
+    );
+
+    let (_, _, _, parse_result) = find_intrinsic_in_function(&state, "parse", "parse_i32");
+    assert_eq!(
+        interp.classify_unsupported_intrinsic(cfg, inst, "read_line", &args, parse_result),
         UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-        "an arbitrary Option is not a valid read_line result"
+        "an arbitrary Option payload must not satisfy @read_line"
     );
 }

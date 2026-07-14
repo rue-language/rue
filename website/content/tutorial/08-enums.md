@@ -30,6 +30,8 @@ Variants are accessed with a `.`: `EnumName.VariantName`.
 Use `match` to handle each variant:
 
 ```rue check
+const std = @import("std");
+
 enum Color {
     Red,
     Green,

@@ -6,9 +6,7 @@ mod tests {
     use crate::sema::{Sema, SemaOutput};
     use crate::types::Type;
     use lasso::ThreadedRodeo;
-    use rue_error::{
-        CompileErrors, CompileResult, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures,
-    };
+    use rue_error::{CompileErrors, CompileResult, ErrorKind, MultiErrorResult, PreviewFeatures};
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::{AstGen, Rir, RirParamMode};
@@ -488,29 +486,23 @@ mod tests {
     }
 
     #[test]
-    fn strbuf_literal_body_uses_explicit_builtin_identity_and_imports_fresh() {
-        let source = "fn make() -> StrBuf { \"hello\" } fn main() { make(); }";
+    fn str_literal_body_imports_fresh() {
+        let source = "fn make() -> str { \"hello\" } fn main() { make(); }";
         let output = compile_to_air(source).unwrap();
         assert_eq!(output.ordinary_body_exports.len(), 2);
+        let make_type = output
+            .functions
+            .iter()
+            .find(|function| function.name == "make")
+            .unwrap()
+            .air
+            .return_type();
         let body = output
             .ordinary_body_exports
             .iter()
             .map(|export| &export.body)
-            .find(|body| {
-                matches!(
-                    &body.return_type,
-                    crate::SemanticImportType::BuiltinNominal { name, kind }
-                        if name.as_ref() == "StrBuf"
-                            && *kind == crate::SemanticImportNominalKind::Struct
-                )
-            })
-            .expect("reachable StrBuf-returning helper export");
-        assert!(matches!(
-            &body.return_type,
-            crate::SemanticImportType::BuiltinNominal { name, kind }
-                if name.as_ref() == "StrBuf"
-                    && *kind == crate::SemanticImportNominalKind::Struct
-        ));
+            .find(|body| body.strings.as_ref() == [std::sync::Arc::from("hello")])
+            .expect("reachable str-returning helper export");
         assert_eq!(body.strings.as_ref(), &[std::sync::Arc::from("hello")]);
         assert!(
             body.instructions
@@ -531,14 +523,11 @@ mod tests {
             .unwrap();
         assert_eq!(imported.strings, vec!["hello"]);
         assert_eq!(
-            imported.air.return_type(),
-            output
-                .functions
-                .iter()
-                .find(|function| function.name == "make")
-                .unwrap()
+            imported
                 .air
                 .return_type()
+                .safe_name_with_pool(Some(epoch.type_pool())),
+            make_type.safe_name_with_pool(Some(&output.type_pool))
         );
     }
 
@@ -834,7 +823,7 @@ mod tests {
         // and CFG (RUE-512). `@assert` returns on the success path, so it stays
         // unit-typed. Both must agree with the inference contract. The message
         // operand's own type never changes the intrinsic's result type
-        // (StrBuf messages, never-typed operands).
+        // (text messages, never-typed operands).
         for (name, body, expected) in [
             ("panic_no_message", "@panic()", Type::NEVER),
             ("panic_with_message", "@panic(\"boom\")", Type::NEVER),
@@ -842,16 +831,6 @@ mod tests {
             (
                 "assertion_with_message",
                 "@assert(true, \"ok\")",
-                Type::UNIT,
-            ),
-            (
-                "panic_with_strbuf",
-                "let message: StrBuf = \"boom\"; @panic(message)",
-                Type::NEVER,
-            ),
-            (
-                "assertion_with_strbuf",
-                "let message: StrBuf = \"ok\"; @assert(true, message)",
                 Type::UNIT,
             ),
             (
@@ -901,7 +880,7 @@ mod tests {
 
     #[test]
     fn panic_and_assert_reject_invalid_operand_types_at_the_operand() {
-        for (name, source, preview_string_trio, intrinsic, expected, found, offending) in [
+        for (name, source, _stable_strings, intrinsic, expected, found, offending) in [
             (
                 "integer assertion condition",
                 "fn main() -> i32 { @assert(1); 0 }",
@@ -913,11 +892,11 @@ mod tests {
             ),
             (
                 "aggregate assertion condition",
-                "fn main() -> i32 { let s: StrBuf = \"truthy\"; @assert(s); 0 }",
+                "struct Fake { value: i32 } fn main() -> i32 { let s = Fake { value: 1 }; @assert(s); 0 }",
                 false,
                 "assert",
                 "bool condition",
-                "StrBuf",
+                "Fake",
                 "s",
             ),
             (
@@ -966,10 +945,7 @@ mod tests {
                 "Fake { a: 0, b: 0, c: 0 }",
             ),
         ] {
-            let mut preview_features = PreviewFeatures::new();
-            if preview_string_trio {
-                preview_features.insert(PreviewFeature::StringTrio);
-            }
+            let preview_features = PreviewFeatures::new();
             let errors =
                 compile_to_air_with_preview_features(source, preview_features).unwrap_err();
             assert_eq!(errors.len(), 1, "{name} should fail once");
@@ -1153,8 +1129,7 @@ mod tests {
                 0
             }
         "#;
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+        let preview = PreviewFeatures::new();
         let errors = compile_to_air_with_preview_features(source, preview).unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(matches!(
@@ -1194,8 +1169,7 @@ mod tests {
                     + Probe.assoc(borrow read, inout edit, borrow item)
             }
         "#;
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+        let preview = PreviewFeatures::new();
         let output = compile_to_air_with_preview_features(source, preview).unwrap();
 
         let main = output
@@ -1272,15 +1246,12 @@ mod tests {
                 )
             }
         "#;
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+        let preview = PreviewFeatures::new();
         compile_to_air_with_preview_features(source, preview).unwrap();
     }
 
     #[test]
-    fn string_literal_default_tracks_preview_and_preserves_buffer_context() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+    fn string_literal_default_is_stable_str() {
         let output = compile_to_air_with_preview_features(
             r#"
                 fn main() -> i32 {
@@ -1290,9 +1261,9 @@ mod tests {
                     @intCast(first.len() + second.len())
                 }
             "#,
-            preview.clone(),
+            PreviewFeatures::new(),
         )
-        .expect("the preview default must be Copy and reusable");
+        .expect("the stable str default must be Copy and reusable");
         let literal = output
             .functions
             .iter()
@@ -1304,44 +1275,11 @@ mod tests {
             "str"
         );
         assert_eq!(output.type_pool.abi_slot_count(literal.ty), 2);
-
-        let explicit = compile_to_air_with_preview_features(
-            "fn main() -> i32 { let value: StrBuf = \"hello\"; @intCast(value.len()) }",
-            preview,
-        )
-        .unwrap();
-        let literal = explicit
-            .functions
-            .iter()
-            .flat_map(|function| function.air.iter())
-            .find_map(|(_, inst)| matches!(inst.data, AirInstData::StringConst(_)).then_some(inst))
-            .unwrap();
-        assert_eq!(
-            literal.ty.safe_name_with_pool(Some(&explicit.type_pool)),
-            "StrBuf"
-        );
-        assert_eq!(explicit.type_pool.abi_slot_count(literal.ty), 3);
-
-        let legacy =
-            compile_to_air("fn main() -> i32 { let value = \"hello\"; @intCast(value.len()) }")
-                .unwrap();
-        let literal = legacy
-            .functions
-            .iter()
-            .flat_map(|function| function.air.iter())
-            .find_map(|(_, inst)| matches!(inst.data, AirInstData::StringConst(_)).then_some(inst))
-            .unwrap();
-        assert_eq!(
-            literal.ty.safe_name_with_pool(Some(&legacy.type_pool)),
-            "StrBuf"
-        );
-        assert_eq!(legacy.type_pool.abi_slot_count(literal.ty), 3);
     }
 
     #[test]
-    fn preview_string_default_survives_control_flow_and_aggregate_joins() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+    fn string_default_survives_control_flow_and_aggregate_joins() {
+        let preview = PreviewFeatures::new();
         let output = compile_to_air_with_preview_features(
             r#"
                 struct Holder { value: str }
@@ -1398,8 +1336,7 @@ mod tests {
 
     #[test]
     fn string_literal_join_cannot_default_through_an_integer_literal() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+        let preview = PreviewFeatures::new();
         let errors = compile_to_air_with_preview_features(
             r#"
                 fn choose(cond: bool) {
@@ -1419,8 +1356,7 @@ mod tests {
 
     #[test]
     fn fixed_string_call_context_stops_at_nested_call_operands() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+        let preview = PreviewFeatures::new();
         let cases = [
             (
                 "conditional result",
@@ -1439,14 +1375,6 @@ mod tests {
                 r#"fn main() -> i32 { @intCast(take(with_assert())) }"#,
             ),
             (
-                "never-returning user call",
-                r#"fn main() -> i32 { @intCast(take(die("boom"))) }"#,
-            ),
-            (
-                "never-returning generic user call",
-                r#"fn main() -> i32 { @intCast(take(generic_die(StrBuf, "boom"))) }"#,
-            ),
-            (
                 "never-returning intrinsic",
                 r#"fn main() -> i32 { @intCast(take(@panic("boom"))) }"#,
             ),
@@ -1458,64 +1386,11 @@ mod tests {
                     fn take(value: Str(8)) -> u64 {{ value.len() }}
                     fn make() -> Str(8) {{ "made" }}
                     fn with_assert() -> Str(8) {{ @assert(true, "message"); "checked" }}
-                    fn die(message: StrBuf) -> ! {{ @panic(message) }}
-                    fn generic_die(comptime T: type, message: T) -> ! {{ @panic("stop") }}
                     {main}
                 "#
             );
-            let output = compile_to_air_with_preview_features(&source, preview.clone())
+            compile_to_air_with_preview_features(&source, preview.clone())
                 .unwrap_or_else(|errors| panic!("{case} must compile independently: {errors}"));
-
-            if matches!(
-                case,
-                "never-returning user call" | "never-returning generic user call"
-            ) {
-                let main = output
-                    .functions
-                    .iter()
-                    .find(|function| function.name == "main")
-                    .unwrap();
-                let mut literal_call_args = Vec::new();
-                for (_, inst) in main.air.iter() {
-                    let (args_start, args_len) = match &inst.data {
-                        AirInstData::Call {
-                            args_start,
-                            args_len,
-                            ..
-                        }
-                        | AirInstData::CallGeneric {
-                            args_start,
-                            args_len,
-                            ..
-                        } => (*args_start, *args_len),
-                        _ => continue,
-                    };
-                    for arg in main.air.get_call_args(args_start, args_len) {
-                        if matches!(main.air.get(arg.value).data, AirInstData::StringConst(_)) {
-                            literal_call_args.push(arg);
-                        }
-                    }
-                }
-
-                assert_eq!(
-                    literal_call_args.len(),
-                    1,
-                    "{case} must have one literal runtime call argument"
-                );
-                let arg = &literal_call_args[0];
-                assert_eq!(arg.mode, AirArgMode::Normal);
-                let arg_ty = main.air.get(arg.value).ty;
-                assert_eq!(
-                    arg_ty.safe_name_with_pool(Some(&output.type_pool)),
-                    "StrBuf",
-                    "{case} must materialize its nested message from the callee contract"
-                );
-                assert_eq!(
-                    output.type_pool.abi_slot_count(arg_ty),
-                    3,
-                    "{case} must pass the three-slot StrBuf representation"
-                );
-            }
         }
     }
 
@@ -1537,8 +1412,7 @@ mod tests {
                 @intCast(choose(true).len() + loop_probe().len())
             }
         "#;
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+        let preview = PreviewFeatures::new();
         let output = compile_to_air_with_preview_features(source, preview).unwrap();
 
         let literal_types: Vec<String> = output
@@ -1550,7 +1424,7 @@ mod tests {
             .collect();
 
         // Comparison operands and a discarded loop-body value have no buffer
-        // context, so under `string_trio` they use the first-class `str`
+        // context, so they use the first-class `str`
         // default. If/match-style branches and block tails remain transparent
         // and materialize as the declared Str(8).
         assert_eq!(literal_types.iter().filter(|ty| *ty == "str").count(), 3);
@@ -1571,8 +1445,7 @@ mod tests {
                 @intCast(value.len())
             }
         "#;
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+        let preview = PreviewFeatures::new();
         compile_to_air_with_preview_features(source, preview).unwrap();
     }
 
@@ -1662,8 +1535,7 @@ mod tests {
 
     #[test]
     fn inout_fixed_string_assignment_materializes_the_destination_type() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::StringTrio);
+        let preview = PreviewFeatures::new();
         let output = compile_to_air_with_preview_features(
             r#"
                 fn replace(inout value: Str(8)) { value = "hi"; }
@@ -1699,7 +1571,7 @@ mod tests {
         );
 
         // Never coercion remains legal. The outer Str(8) expectation belongs
-        // to the assignment result and must not leak into @panic's StrBuf
+        // to the assignment result and must not leak into @panic's text
         // message operand.
         for rhs in ["@panic()", "@panic(\"boom\")"] {
             compile_to_air_with_preview_features(
@@ -1716,24 +1588,8 @@ mod tests {
             .unwrap_or_else(|errors| panic!("{rhs} must coerce from never: {errors}"));
         }
 
-        compile_to_air_with_preview_features(
-            r#"
-                fn die(message: StrBuf) -> ! { @panic(message) }
-                fn replace(inout value: Str(8)) { value = die("boom"); }
-                fn main() -> i32 {
-                    let mut value: Str(8) = "hello";
-                    replace(inout value);
-                    0
-                }
-            "#,
-            preview.clone(),
-        )
-        .unwrap_or_else(|errors| {
-            panic!("a never-returning call must keep its StrBuf argument context: {errors}")
-        });
-
         // The same expected-type boundary applies to @assert: its message is
-        // a StrBuf, and the assignment is rejected for the unit result rather
+        // text, and the assignment is rejected for the unit result rather
         // than misdiagnosing the message as Str(8).
         let assertion = compile_to_air_with_preview_features(
             r#"
@@ -1772,29 +1628,6 @@ mod tests {
             &mismatch.iter().next().unwrap().kind,
             ErrorKind::TypeMismatch { expected, found }
                 if expected == "Str(8)" && found == "Str(16)"
-        ));
-
-        // Different physical widths must be rejected at the sema chokepoint,
-        // even though fixed-string inference deliberately defers string
-        // coercion checks. This is the original 3-word-through-2-word hazard.
-        let width_mismatch = compile_to_air_with_preview_features(
-            r#"
-                fn replace(inout value: Str(8), other: StrBuf) { value = other; }
-                fn main() -> i32 {
-                    let mut value: Str(8) = "small";
-                    let other: StrBuf = "growable";
-                    replace(inout value, other);
-                    0
-                }
-            "#,
-            preview.clone(),
-        )
-        .unwrap_err();
-        assert_eq!(width_mismatch.len(), 1);
-        assert!(matches!(
-            &width_mismatch.iter().next().unwrap().kind,
-            ErrorKind::TypeMismatch { expected, found }
-                if expected == "Str(8)" && found == "StrBuf"
         ));
 
         let too_long = compile_to_air_with_preview_features(
@@ -2205,12 +2038,10 @@ mod tests {
     // =========================================================================
     // Builtin type tests
     // =========================================================================
-    // These tests verify that builtin types (String, etc.) work correctly.
+    // These tests verify the stable core text type.
 
     #[test]
-    fn test_string_type_injected() {
-        // StrBuf type should exist after builtin injection (ADR-0043; the
-        // growable-string type, formerly `String`).
+    fn test_strbuf_is_not_injected() {
         let output = compile_to_air(
             "fn main() -> i32 {
                 let s = \"hello\";
@@ -2219,9 +2050,8 @@ mod tests {
         )
         .unwrap();
 
-        // StrBuf struct should exist in the pool
         assert!(
-            output
+            !output
                 .type_pool
                 .all_struct_ids()
                 .iter()
@@ -2260,7 +2090,7 @@ mod tests {
         let output = compile_to_air(
             "fn empty() -> bool {
                 let s = \"hello\";
-                s.is_empty()
+                s.len() == 0
             }
             fn main() -> i32 { if empty() { 0 } else { 1 } }",
         )
@@ -2285,7 +2115,7 @@ mod tests {
             "fn has_content() -> bool {
                 let s = \"hello\";
                 let t = \"world\";
-                s.is_empty()
+                s.len() != 0
             }
             fn main() -> i32 { if has_content() { 0 } else { 1 } }",
         )
@@ -2621,6 +2451,7 @@ mod tests {
         // for qualified lookup even when the body overlay has that name too.
         let mut sema = gather_declarations_for_testing(
             "struct __anon_struct_0 { source: i32 }
+             struct Overlay { generated: i32 }
              fn main() -> i32 { 0 }",
         );
         let name = sema.interner.get("__anon_struct_0").unwrap();
@@ -2628,7 +2459,11 @@ mod tests {
             .structs_by_file_name
             .get(&(FileId::new(0), name))
             .unwrap();
-        let generated_id = sema.builtin_string_id.unwrap();
+        let overlay_name = sema.interner.get("Overlay").unwrap();
+        let generated_id = *sema
+            .structs_by_file_name
+            .get(&(FileId::new(0), overlay_name))
+            .unwrap();
         assert_ne!(source_id, generated_id);
         sema.generated_structs.insert(name, generated_id);
 
@@ -2741,30 +2576,15 @@ mod tests {
     }
 
     #[test]
-    fn test_type_pool_populated_with_builtin_string() {
-        // The StrBuf type should be in the pool after builtin injection
-        // (ADR-0043; formerly `String`).
+    fn test_type_pool_has_no_implicit_strbuf() {
         let sema = gather_declarations_for_testing("fn main() -> i32 { 0 }");
-
-        let strbuf_name = sema.interner.get("StrBuf").unwrap();
-        let pool_string = sema
-            .type_pool
-            .get_struct_by_file_name(FileId::DEFAULT, strbuf_name);
-
-        assert!(pool_string.is_some(), "StrBuf should be in the type pool");
-
-        // Verify the struct lookup has it
-        let registry_string = sema.builtin_structs.get(&strbuf_name);
+        assert!(sema.interner.get("StrBuf").is_none());
         assert!(
-            registry_string.is_some(),
-            "StrBuf should be in struct registry"
+            sema.type_pool
+                .all_struct_ids()
+                .iter()
+                .all(|id| sema.type_pool.struct_def(*id).name != "StrBuf")
         );
-
-        // Check the pool definition
-        let pool_def = sema.type_pool.get_struct_def(pool_string.unwrap()).unwrap();
-
-        assert_eq!(pool_def.name, "StrBuf");
-        assert!(pool_def.is_builtin, "StrBuf should be marked as builtin");
     }
 
     #[test]
@@ -2863,14 +2683,15 @@ mod tests {
 
         let stats = sema.type_pool.stats();
 
-        // 3 structs: StrBuf (builtin) + A + B
-        assert_eq!(stats.struct_count, 3);
+        // Only source structs are registered; StrBuf comes from an explicit
+        // std import and is absent in this source-only unit fixture.
+        assert_eq!(stats.struct_count, 2);
         // 3 enums: Arch (builtin) + Os (builtin) + E
         assert_eq!(stats.enum_count, 3);
         // No arrays in Phase 1
         assert_eq!(stats.array_count, 0);
-        // Total: 6 composite types
-        assert_eq!(stats.total, 6);
+        // Total: 5 composite types
+        assert_eq!(stats.total, 5);
     }
 
     #[test]

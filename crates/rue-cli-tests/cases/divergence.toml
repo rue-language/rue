@@ -146,8 +146,11 @@ exit_code = 6
 
 [[case]]
 name = "or_rhs_break_exits_loop"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "false || break inside a loop: divergence via break, loop exits."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     loop {
         let c = false || break;
@@ -165,8 +168,11 @@ exit_code = 6
 # The program must run to completion with both strings intact.
 [[case]]
 name = "break_mid_block_no_double_drop"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "Diverged statement mid-block must not re-drop the inner local on the exit path."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.with_capacity(8);
     s.push_str("outer");
@@ -189,8 +195,11 @@ stdout = "outer\n"
 # fall-through path.
 [[case]]
 name = "return_mid_block_in_untaken_branch"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "Mid-block return in an untaken branch: fall-through path must not touch the inner local."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn check(flag: bool) -> i32 {
     if flag {
         let mut t = StrBuf.with_capacity(8);

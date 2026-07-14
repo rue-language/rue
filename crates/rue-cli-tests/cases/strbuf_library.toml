@@ -13,6 +13,8 @@ description = "The StrBuf name (ADR-0043) builds, mutates, concatenates, and pri
 name = "strbuf_new_push_str_len_print"
 description = "StrBuf.new(), push_str, len, and println on the canonical name."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");
@@ -22,6 +24,7 @@ fn main() -> i32 {
     if s == "hello, world" { 0 } else { 1 }
 }
 """ }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
 stdout = "hello, world\nlen is 12\n"
 exit_code = 0
 
@@ -29,6 +32,8 @@ exit_code = 0
 name = "strbuf_with_capacity_concat"
 description = "StrBuf.with_capacity plus @to_string concatenation build a StrBuf value."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let cap: u64 = 8;
     let mut s = StrBuf.with_capacity(cap);
@@ -38,6 +43,7 @@ fn main() -> i32 {
     0
 }
 """ }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
 stdout = "n=42\n"
 exit_code = 0
 
@@ -54,14 +60,13 @@ compile_fail = true
 error_contains = ["E0204", "unknown type 'String'"]
 
 [[case]]
-name = "strbuf_reserved_name"
-description = "StrBuf is a reserved built-in type name: users cannot define their own."
+name = "strbuf_name_is_ordinary"
+description = "StrBuf is not a prelude or reserved type name."
 files = [{ path = "main.rue", source = """
 struct StrBuf { x: i32 }
 
 fn main() -> i32 {
-    0
+    StrBuf { x: 7 }.x
 }
 """ }]
-compile_fail = true
-error_contains = ["E0404", "StrBuf", "reserved"]
+exit_code = 7

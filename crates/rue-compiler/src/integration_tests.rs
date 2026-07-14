@@ -614,11 +614,6 @@ mod integration_tests {
                 fn main() -> i32 { 0 }
             "#;
             let result = test_air(src).unwrap();
-            // type_pool includes builtin types (StrBuf) plus user-defined
-            // structs. There's 1 builtin (StrBuf) + 1 user-defined (Point) = 2
-            // distinct structs.
-            let all_struct_ids = result.type_pool.all_struct_ids();
-            assert_eq!(all_struct_ids.len(), 2);
             // Verify Point is present
             let point_name = result.interner.get_or_intern("Point");
             let point_interned = result
@@ -870,10 +865,7 @@ mod integration_tests {
                 }
             "#;
             let snapshot = SourceSnapshot::single("<test>", src).unwrap();
-            let mut options = CompileOptions::default();
-            options
-                .preview_features
-                .insert("string_trio".parse().unwrap());
+            let options = CompileOptions::default();
 
             assert!(test_frontend_snapshot(&snapshot, &options).is_ok());
         }
