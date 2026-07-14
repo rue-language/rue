@@ -92,8 +92,14 @@ impl<'a> BodySema<'a> {
             .get(&receiver)
             .copied()
             .is_some_and(|ty| self.is_builtin_string(ty));
-        let is_builtin_mutation_method =
-            receiver_is_builtin_string && self.is_builtin_mutation_method(&method_name_str);
+        let source_method_exists = ctx
+            .resolved_types
+            .get(&receiver)
+            .and_then(|ty| ty.as_struct())
+            .is_some_and(|struct_id| self.has_method((struct_id, method)));
+        let is_builtin_mutation_method = receiver_is_builtin_string
+            && !source_method_exists
+            && self.is_builtin_mutation_method(&method_name_str);
 
         // A String mutation method is `inout self` (spec 3.10:15-19): it
         // accesses the receiver by reference and writes the result back in
@@ -176,7 +182,7 @@ impl<'a> BodySema<'a> {
         let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, receiver_byref_root);
         let receiver_result = self.analyze_inst(air, receiver, ctx);
         ctx.byref_arg_root = prev_byref_root;
-        let receiver_result = receiver_result?;
+        let mut receiver_result = receiver_result?;
         let receiver_type = receiver_result.ty;
 
         // The write-back target for a String mutation method is the place the
@@ -373,7 +379,25 @@ impl<'a> BodySema<'a> {
             _ => AirArgMode::Normal,
         };
 
+        let mut receiver_temp_scope = Vec::new();
         if receiver_mode != AirArgMode::Normal {
+            let receiver_is_source_strbuf = receiver_type.as_struct().is_some_and(|struct_id| {
+                self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+            });
+            if receiver_mode == AirArgMode::Borrow
+                && receiver_var.is_none()
+                && receiver_is_source_strbuf
+            {
+                let (borrowed, temp_scope) = self.materialize_borrow_argument(
+                    air,
+                    receiver_result.air_ref,
+                    receiver_result.ty,
+                    self.rir.get(receiver).span,
+                    ctx,
+                )?;
+                receiver_result = AnalysisResult::new(borrowed, receiver_result.ty);
+                receiver_temp_scope = temp_scope;
+            }
             require_air_byref_place(
                 air,
                 receiver_result.air_ref,
@@ -381,10 +405,9 @@ impl<'a> BodySema<'a> {
                 self.rir.get(receiver).span,
             )?;
 
-            // The receiver must be a place (a variable or a field/index chain
-            // rooted at one): codegen forms its address. A temporary (call
-            // result, literal, …) has no caller-visible storage to borrow.
-            let Some(receiver_root) = receiver_var else {
+            if receiver_var.is_none()
+                && (receiver_mode == AirArgMode::Inout || !receiver_is_source_strbuf)
+            {
                 return Err(CompileError::new(
                     if receiver_mode == AirArgMode::Inout {
                         ErrorKind::InoutNonLvalue
@@ -393,67 +416,69 @@ impl<'a> BodySema<'a> {
                     },
                     self.rir.get(receiver).span,
                 ));
-            };
-
-            // Calling an `inout self` method on a collection an enclosing
-            // `for` loop is iterating mutates a shared-borrowed value (spec
-            // 4.8:26, RUE-257) — E0428. A `borrow self` method only reads it,
-            // which coexists with the loop's shared borrow, so it is allowed.
-            if receiver_mode == AirArgMode::Inout {
-                self.reject_mutate_iter_borrowed(receiver_root, span, ctx)?;
             }
 
-            // `inout self` requires a mutable receiver binding (spec 6, reuses
-            // E0203), mirroring Rust. `borrow self` works on any binding.
-            if receiver_mode == AirArgMode::Inout
-                && !self.receiver_root_is_mutable(receiver_root, ctx)
-            {
-                let name = self.interner.resolve(&receiver_root).to_string();
-                return Err(
-                    CompileError::new(ErrorKind::AssignToImmutable(name.clone()), span).with_help(
-                        format!(
-                            "`inout self` needs a mutable receiver; make the binding \
+            if let Some(receiver_root) = receiver_var {
+                // Calling an `inout self` method on a collection an enclosing
+                // `for` loop is iterating mutates a shared-borrowed value (spec
+                // 4.8:26, RUE-257) — E0428. A `borrow self` method only reads it,
+                // which coexists with the loop's shared borrow, so it is allowed.
+                if receiver_mode == AirArgMode::Inout {
+                    self.reject_mutate_iter_borrowed(receiver_root, span, ctx)?;
+                }
+
+                // `inout self` requires a mutable receiver binding (spec 6, reuses
+                // E0203), mirroring Rust. `borrow self` works on any binding.
+                if receiver_mode == AirArgMode::Inout
+                    && !self.receiver_root_is_mutable(receiver_root, ctx)
+                {
+                    let name = self.interner.resolve(&receiver_root).to_string();
+                    return Err(CompileError::new(
+                        ErrorKind::AssignToImmutable(name.clone()),
+                        span,
+                    )
+                    .with_help(format!(
+                        "`inout self` needs a mutable receiver; make the binding \
                      mutable: `let mut {name} = ...`"
-                        ),
-                    ),
-                );
-            }
-
-            // Access-point exclusivity (ADR-0037): the receiver's inout/borrow
-            // access is scoped to this call. Reject genuine overlap — the
-            // receiver root also passed as an inout/borrow argument
-            // (`s.absorb(inout s)`). An argument that merely READS self
-            // (`v.push(v.len())`) is fine: its read completes before the
-            // receiver access begins, and it is not a by-ref argument so it
-            // never enters the exclusivity sets.
-            let mut excl_args: Vec<RirCallArg> = Vec::with_capacity(args.len() + 1);
-            excl_args.push(RirCallArg {
-                value: receiver,
-                mode: if receiver_mode == AirArgMode::Inout {
-                    RirArgMode::Inout
-                } else {
-                    RirArgMode::Borrow
-                },
-            });
-            excl_args.extend(args.iter().cloned());
-            self.check_exclusive_access(&excl_args, span)?;
-
-            // By-ref receivers are borrows, not moves. The receiver was
-            // already analyzed under `byref_arg_root` above (RUE-254), so no
-            // move was recorded and no marker emitted; this restore of the
-            // pre-receiver snapshot and marker cancellation are defensive
-            // no-ops for a well-formed place receiver (and still cover the
-            // now-vestigial path where the receiver root differs from the
-            // byref root). Mirrors the builtin ByRef/ByMutRef handling.
-            match receiver_move_state_before.clone() {
-                Some(state) => {
-                    ctx.moved_vars.insert(receiver_root, state);
+                    )));
                 }
-                None => {
-                    ctx.moved_vars.remove(&receiver_root);
+
+                // Access-point exclusivity (ADR-0037): the receiver's inout/borrow
+                // access is scoped to this call. Reject genuine overlap — the
+                // receiver root also passed as an inout/borrow argument
+                // (`s.absorb(inout s)`). An argument that merely READS self
+                // (`v.push(v.len())`) is fine: its read completes before the
+                // receiver access begins, and it is not a by-ref argument so it
+                // never enters the exclusivity sets.
+                let mut excl_args: Vec<RirCallArg> = Vec::with_capacity(args.len() + 1);
+                excl_args.push(RirCallArg {
+                    value: receiver,
+                    mode: if receiver_mode == AirArgMode::Inout {
+                        RirArgMode::Inout
+                    } else {
+                        RirArgMode::Borrow
+                    },
+                });
+                excl_args.extend(args.iter().cloned());
+                self.check_exclusive_access(&excl_args, span)?;
+
+                // By-ref receivers are borrows, not moves. The receiver was
+                // already analyzed under `byref_arg_root` above (RUE-254), so no
+                // move was recorded and no marker emitted; this restore of the
+                // pre-receiver snapshot and marker cancellation are defensive
+                // no-ops for a well-formed place receiver (and still cover the
+                // now-vestigial path where the receiver root differs from the
+                // byref root). Mirrors the builtin ByRef/ByMutRef handling.
+                match receiver_move_state_before.clone() {
+                    Some(state) => {
+                        ctx.moved_vars.insert(receiver_root, state);
+                    }
+                    None => {
+                        ctx.moved_vars.remove(&receiver_root);
+                    }
                 }
+                air.cancel_move_marker(receiver_result.air_ref);
             }
-            air.cancel_move_marker(receiver_result.air_ref);
         } else {
             // Check for exclusive access violation (by-value receiver)
             self.check_exclusive_access(&args, span)?;
@@ -505,7 +530,7 @@ impl<'a> BodySema<'a> {
         }
         let args_start = air.add_extra(&extra_data);
 
-        let air_ref = air.add_inst(AirInst {
+        let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
                 name: call_name_sym,
                 args_start,
@@ -514,6 +539,8 @@ impl<'a> BodySema<'a> {
             ty: return_type,
             span,
         });
+        let air_ref =
+            self.wrap_value_with_temp_scope(air, call_ref, return_type, span, receiver_temp_scope);
         Ok(AnalysisResult::new(air_ref, return_type))
     }
 

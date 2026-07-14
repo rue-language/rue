@@ -1623,7 +1623,7 @@ impl<'a> CfgLower<'a> {
                     let arg_type = self.ctx.cfg.get_inst(arg_val).ty;
 
                     // Handle String arguments separately
-                    if self.ctx.is_builtin_string(arg_type) {
+                    if self.ctx.is_string_like_for_equality(arg_type) {
                         // String fat pointer (ptr, len, cap) — materialize a String read
                         // from a place (`@dbg(h.s)`) as well as cached sources. (RUE-118)
                         if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {

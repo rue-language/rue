@@ -1993,18 +1993,14 @@ impl<'a> CfgLower<'a> {
                     let arg_type = self.ctx.cfg.get_inst(arg_val).ty;
 
                     // Handle builtin String type specially
-                    if self.ctx.is_builtin_string(arg_type) {
+                    if self.ctx.is_string_like_for_equality(arg_type) {
                         // Get the fat pointer (ptr, len, cap) — materializes a String read
                         // from a place (`@dbg(h.s)`) as well as cached sources. (RUE-118)
                         if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
                             // Correctness guard (must run in release): a wrong
                             // vreg count feeds garbage to @dbg, so plain `assert!`
                             // not `debug_assert!` (RUE-45).
-                            assert_eq!(
-                                field_vregs.len(),
-                                3,
-                                "string should have exactly 3 vregs (ptr, len, cap)"
-                            );
+                            assert!(field_vregs.len() >= 2, "text needs ptr and len slots");
                             let ptr_vreg = field_vregs[0];
                             let len_vreg = field_vregs[1];
 
@@ -2135,11 +2131,7 @@ impl<'a> CfgLower<'a> {
                         // Correctness guard (must run in release): a wrong vreg
                         // count feeds garbage to @parse_*, so plain `assert!`
                         // not `debug_assert!` (RUE-45).
-                        assert_eq!(
-                            field_vregs.len(),
-                            3,
-                            "string should have exactly 3 vregs (ptr, len, cap)"
-                        );
+                        assert!(field_vregs.len() >= 2, "text needs ptr and len slots");
                         let ptr_vreg = field_vregs[0];
                         let len_vreg = field_vregs[1];
 
@@ -3246,11 +3238,7 @@ impl<'a> CfgLower<'a> {
     fn emit_panic_with_msg(&mut self, msg_val: CfgValue) {
         if let Some(field_vregs) = self.get_or_compute_field_vregs(msg_val) {
             // A String is a (ptr, len, cap) fat pointer; pass ptr in RDI, len in RSI.
-            assert_eq!(
-                field_vregs.len(),
-                3,
-                "panic message string should have exactly 3 vregs (ptr, len, cap)"
-            );
+            assert!(field_vregs.len() >= 2, "text needs ptr and len slots");
             let ptr_vreg = field_vregs[0];
             let len_vreg = field_vregs[1];
             self.mir.push(X86Inst::MovRR {

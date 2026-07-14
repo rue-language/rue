@@ -89,6 +89,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     }
 
     pub(crate) fn resolve_builtin_struct_name(&self, name: Spur) -> Option<StructId> {
+        if self.interner.resolve(&name) == "StrBuf"
+            && let Some(ty) = self.type_pool.lang_item_type(crate::LangItem::StrBuf)
+        {
+            return ty.as_struct();
+        }
         self.builtin_structs
             .get(&name)
             .copied()
@@ -158,6 +163,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             if self.type_pool.struct_def(*id).is_builtin {
                 builtin_struct_types.insert(*name, Type::new_struct(*id));
             }
+        }
+        if let Some(strbuf_ty) = self.type_pool.lang_item_type(crate::LangItem::StrBuf)
+            && let Some(strbuf_name) = self.interner.get("StrBuf")
+        {
+            builtin_struct_types.insert(strbuf_name, strbuf_ty);
         }
 
         let mut struct_types_by_file_name: HashMap<(FileId, Spur), Type> = self

@@ -141,11 +141,15 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         }
     }
 
-    /// Get the String struct type.
+    /// Get the canonical StrBuf type visible to this compilation.
     ///
-    /// Returns the Type::Struct for the builtin String type.
-    /// Panics if called before builtin types are injected.
+    /// A trusted `std/strbuf.rue` nominal is authoritative when its module is
+    /// present. The injected nominal remains the no-stdlib compatibility
+    /// fallback until synthetic injection is removed by RUE-876.
     pub(crate) fn builtin_string_type(&self) -> Type {
+        if let Some(ty) = self.type_pool.lang_item_type(crate::LangItem::StrBuf) {
+            return ty;
+        }
         Type::new_struct(
             self.builtin_string_id
                 .expect("builtin types not injected yet"),

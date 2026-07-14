@@ -170,3 +170,239 @@ fn main() -> i32 {
     if score == 5 { 64 } else { @intCast(score) }
 }
 """ }]
+
+[[case]]
+name = "std_strbuf_compiler_cutover"
+description = "Canonical std StrBuf owns operators, searches, indexing, and mutation (RUE-875)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 65
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let a = "hello";
+    let b = "hello";
+    let needle = "ell";
+    let prefix = "he";
+    if a != b { return 1; }
+    if !a.contains(borrow needle) { return 2; }
+    if !a.starts_with(borrow prefix) { return 3; }
+    if needle.len() != 3 || prefix.len() != 2 { return 4; }
+    if a[1] != 101 { return 5; }
+    let joined = a + b;
+    if joined.len() != 10 || a.len() != 5 { return 6; }
+
+    // Compiler-synthesized borrows of owned rvalues keep the owner alive
+    // through the source method call, then tear it down at the block edge.
+    let nested = (@to_string(1) + @to_string(2)) + @to_string(3);
+    if nested != "123" { return 7; }
+    if (@to_string(7) + @to_string(8)) != "78" { return 8; }
+    if (@to_string(12) + @to_string(3))[0] != 49 { return 9; }
+    if @to_string(999).len() != 3 { return 10; }
+
+    let mut built = std.strbuf.StrBuf.new();
+    built.push(120);
+    built.push_str("yz");
+    built.reserve(20);
+    if built.len() != 3 || built.capacity() < 23 { return 11; }
+    let copied = built.clone();
+    let middle = copied.substring(1, 2);
+    if middle != "yz" { return 12; }
+    built.clear();
+    if !built.is_empty() { return 13; }
+    65
+}
+""" }]
+
+[[case]]
+name = "std_strbuf_chars_share_core_decoder"
+description = "Canonical StrBuf strict and lossy character iteration share the core str decoder ABI."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 66
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let valid = "hé";
+    let mut count = 0;
+    let mut sum: u32 = 0;
+    for scalar in valid.chars() {
+        count = count + 1;
+        sum = sum + scalar;
+    }
+    if count != 2 || sum != 337 { return 1; }
+
+    let mut invalid = std.strbuf.StrBuf.new();
+    invalid.push(97);
+    invalid.push(255);
+    invalid.push(98);
+    let mut lossy_count = 0;
+    let mut lossy_sum: u32 = 0;
+    for scalar in invalid.chars_lossy() {
+        lossy_count = lossy_count + 1;
+        lossy_sum = lossy_sum + scalar;
+    }
+    if lossy_count != 3 || lossy_sum != 65728 { return 2; }
+    66
+}
+""" }]
+
+[[case]]
+name = "std_strbuf_formatting_and_text_consumers"
+description = "Owned formatting results and every text rung use the shared ptr/len consumer path."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+stdout = "viewfixedowned42\n7\nfixed\n"
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+struct Holder { text: S }
+struct Outer { holder: Holder }
+
+fn make_outer() -> Outer {
+    Outer { holder: Holder { text: "owned" } }
+}
+
+fn main() -> i32 {
+    let view: str = "view";
+    let fixed: Str(8) = "fixed";
+    print(view);
+    print(fixed);
+    print(make_outer().holder.text);
+    println(@to_string(42));
+    @dbg(std.fmt.int_to_string(i64, 7));
+    @dbg(fixed);
+    @assert(true, view);
+    @assert(true, fixed);
+    @assert(true, @to_string(8));
+    @assert(true, make_outer().holder.text);
+    if false { @panic(fixed); }
+    if false { @panic(@to_string(9)); }
+    if false { @panic(make_outer().holder.text); }
+
+    let Oi = std.option.Option(i32);
+    match @parse_i32(view) { Oi.Some(_) => return 1, Oi.None => {} }
+    match @parse_i32(fixed) { Oi.Some(_) => return 2, Oi.None => {} }
+    match @parse_i32(@to_string(123)) {
+        Oi.Some(value) => if value != 123 { return 4; },
+        Oi.None => return 5,
+    }
+
+    let projected_concat = make_outer().holder.text + "!";
+    if projected_concat != "owned!" { return 6; }
+    if make_outer().holder.text != "owned" { return 7; }
+
+    let decimal = std.fmt.int_to_string(i64, -42);
+    let hex = std.fmt.to_hex(255);
+    let combined = decimal + hex;
+    if combined != "-42ff" { return 3; }
+    0
+}
+""" }]
+
+[[case]]
+name = "std_strbuf_chars_strict_invalid_utf8_traps"
+description = "Canonical StrBuf strict iteration traps when a byte substring cuts a UTF-8 scalar."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["invalid UTF-8"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let text = "é";
+    let invalid = text.substring(0, 1);
+    for _scalar in invalid.chars() {}
+    0
+}
+""" }]
+
+[[case]]
+name = "std_read_line_returns_canonical_strbuf"
+description = "@read_line Option payloads interoperate with the source-defined std StrBuf nominal."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+stdin = "abc\n"
+exit_code = 67
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let OS = std.option.Option(S);
+    let line: OS = @read_line();
+    match line {
+        OS.Some(text) => {
+            let suffix = "!";
+            let result = text + suffix;
+            if result == "abc!" { 67 } else { 1 }
+        },
+        OS.None => 2,
+    }
+}
+""" }]
+
+[[case]]
+name = "std_strbuf_air_omits_migrated_runtime_family"
+description = "AIR calls canonical source StrBuf definitions, not migrated __rue_String helpers."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--emit", "air", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "concat_borrowed",
+    "equals_borrowed",
+    "byte_at_borrowed",
+    "__rue_str_char_scalar",
+    "__rue_str_char_next",
+]
+compile_stdout_not_contains = [
+    "__rue_String_new",
+    "__rue_String_with_capacity",
+    "__rue_String_reserve",
+    "__rue_String_push",
+    "__rue_String_push_str",
+    "__rue_String_clone",
+    "__rue_String_substring",
+    "__rue_String_len",
+    "__rue_String_capacity",
+    "__rue_String_is_empty",
+    "__rue_String_clear",
+    "__rue_String_concat",
+    "__rue_String_byte_at",
+    "__rue_String_contains",
+    "__rue_String_starts_with",
+    "__rue_String_char_scalar",
+    "__rue_String_char_next",
+]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let a = "hello";
+    let b = "world";
+    let n = "ell";
+    let p = "he";
+    let _joined = a + b;
+    let _equal = a == b;
+    let _byte = a[0];
+    let _contains = a.contains(borrow n);
+    let _prefix = a.starts_with(borrow p);
+    let mut value = std.strbuf.StrBuf.with_capacity(1);
+    value.reserve(16);
+    value.push(97);
+    value.push_str("bc");
+    let copied = value.clone();
+    let _part = copied.substring(0, 1);
+    let _len = value.len();
+    let _capacity = value.capacity();
+    let _empty = value.is_empty();
+    for _scalar in value.chars() {}
+    value.clear();
+    let _fresh = std.strbuf.StrBuf.new();
+    0
+}
+""" }]

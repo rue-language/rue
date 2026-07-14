@@ -45,8 +45,7 @@ pub struct StrBuf {
         Self.allocate(requested)
     }
 
-    // Ordinary entry point used to exercise the source implementation until
-    // RUE-875 removes the compiler's special handling of `with_capacity`.
+    // Shared allocator used by constructors and owned algorithms.
     fn allocate(requested: u64) -> Self {
         if requested == 0 {
             return Self.new();
@@ -85,8 +84,7 @@ pub struct StrBuf {
         self.grow(additional);
     }
 
-    // Ordinary entry point for direct source testing before RUE-875 routes the
-    // public `reserve` spelling to the body above.
+    // Direct source entry point retained for low-level std tests.
     fn reserve_source(inout self, additional: u64) {
         self.grow(additional);
     }
@@ -149,8 +147,8 @@ pub struct StrBuf {
         target.len = destination_start + source_len;
     }
 
-    // Directly exercise the alias-sensitive case before RUE-875 routes the
-    // public spelling here. Growth happens first; reads then use the current
+    // Exercise the alias-sensitive self-append case. Growth happens first;
+    // reads then use the current
     // pointer, so reallocating a self append never reads a stale allocation.
     fn duplicate(inout self) {
         let old_len = self.len;
@@ -179,6 +177,50 @@ pub struct StrBuf {
         self.byte_range(start, count)
     }
 
+    fn byte_at_borrowed(borrow value: Self, index: u64) -> u8 {
+        if index >= value.len {
+            @panic("index out of bounds");
+        }
+        read_packed_byte(value.buf, index)
+    }
+
+    fn starts_with(borrow self, borrow prefix: Self) -> bool {
+        if prefix.len > self.len {
+            return false;
+        }
+        let mut i: u64 = 0;
+        while i < prefix.len {
+            if read_packed_byte(self.buf, i) != read_packed_byte(prefix.buf, i) {
+                return false;
+            }
+            i = i + 1;
+        }
+        true
+    }
+
+    fn contains(borrow self, borrow needle: Self) -> bool {
+        if needle.len > self.len {
+            return false;
+        }
+        let limit = self.len - needle.len;
+        let mut start: u64 = 0;
+        while start <= limit {
+            let mut i: u64 = 0;
+            let mut equal = true;
+            while equal && i < needle.len {
+                if read_packed_byte(self.buf, start + i) != read_packed_byte(needle.buf, i) {
+                    equal = false;
+                }
+                i = i + 1;
+            }
+            if equal {
+                return true;
+            }
+            start = start + 1;
+        }
+        false
+    }
+
     fn byte_range(borrow self, start: u64, count: u64) -> Self {
         if start > self.len || count > self.len - start {
             // Preserve the canonical user-visible diagnostic until Rue has a
@@ -198,8 +240,21 @@ pub struct StrBuf {
         Self.concat_borrowed(borrow self, borrow other)
     }
 
-    // Ordinary entry point for the source concatenation algorithm until the
-    // operator's compiler cutover in RUE-875.
+    fn equals_borrowed(borrow first: Self, borrow second: Self) -> bool {
+        if first.len != second.len {
+            return false;
+        }
+        let mut i: u64 = 0;
+        while i < first.len {
+            if read_packed_byte(first.buf, i) != read_packed_byte(second.buf, i) {
+                return false;
+            }
+            i = i + 1;
+        }
+        true
+    }
+
+    // Canonical source entry point for the `+` operator.
     fn concat_borrowed(borrow first: Self, borrow second: Self) -> Self {
         if second.len > 18446744073709551615 - first.len {
             @panic("out of memory");

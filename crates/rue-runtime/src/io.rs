@@ -60,6 +60,16 @@ crate::define_for_all_platforms! {
 }
 
 crate::define_for_all_platforms! {
+    /// Write a shared two-word `str` view to stdout.
+    pub unsafe extern "C" fn __rue_str_print(ptr: *const u8, len: u64) {
+        if len > 0 {
+            let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+            platform::write_stdout(bytes);
+        }
+    }
+}
+
+crate::define_for_all_platforms! {
     /// Write a String's raw bytes to stdout followed by a single newline.
     ///
     /// Called by the `println(s: String)` builtin free function (RUE-1). Writes
@@ -90,6 +100,17 @@ crate::define_for_all_platforms! {
         // with `b"..."` in `__rue_dbg_str`.
         let newline = [b'\n'];
         platform::write_stdout(&newline);
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Write a shared two-word `str` view followed by a newline.
+    pub unsafe extern "C" fn __rue_str_println(ptr: *const u8, len: u64) {
+        if len > 0 {
+            let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+            platform::write_stdout(bytes);
+        }
+        platform::write_stdout(b"\n");
     }
 }
 

@@ -144,6 +144,61 @@ impl PlaceTrace {
 }
 
 impl<'a> BodySema<'a> {
+    /// Peel the synthetic scope produced by [`Self::emit_projected_rvalue_read`].
+    ///
+    /// A projected read from a computed owner must keep that owner alive when
+    /// the read is subsequently borrowed by an outer call. Returning the scope
+    /// separately lets the consumer wrap the *call*, rather than lowering a
+    /// nested block that drops the owner before the call begins.
+    pub(crate) fn peel_projected_rvalue_scope(
+        &self,
+        air: &Air,
+        value: AirRef,
+    ) -> (AirRef, Vec<AirRef>) {
+        let original = value;
+        let mut value = value;
+        while let AirInstData::MarkMoved { value: inner, .. } = air.get(value).data {
+            value = inner;
+        }
+        let AirInstData::Block {
+            stmts_start,
+            stmts_len,
+            value: projected,
+        } = air.get(value).data
+        else {
+            return (original, Vec::new());
+        };
+        if stmts_len < 2 || stmts_len % 2 != 0 {
+            return (original, Vec::new());
+        }
+        let statements = air
+            .get_air_refs(stmts_start, stmts_len)
+            .collect::<Vec<AirRef>>();
+        let mut projected = projected;
+        while let AirInstData::MarkMoved { value: inner, .. } = air.get(projected).data {
+            projected = inner;
+        }
+        let AirInstData::PlaceRead { place } = air.get(projected).data else {
+            return (original, Vec::new());
+        };
+        let AirPlaceBase::Local(owner_slot) = air.get_place(place).base else {
+            return (original, Vec::new());
+        };
+        let owns_projected_place = statements.windows(2).any(|pair| {
+            matches!(
+                air.get(pair[0]).data,
+                AirInstData::StorageLive { slot } if slot == owner_slot
+            ) && matches!(
+                air.get(pair[1]).data,
+                AirInstData::Alloc { slot, .. } if slot == owner_slot
+            )
+        });
+        if !owns_projected_place {
+            return (original, Vec::new());
+        }
+        (projected, statements)
+    }
+
     /// Materialize an rvalue in a temporary and read one projection from it.
     ///
     /// AIR models every projected memory access as a place operation. Values
@@ -159,6 +214,37 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AirRef> {
+        // Nested computed projections must share one enclosing lifetime. If the
+        // computed base is itself a projected-rvalue block, extend its place
+        // path in the original owner. Materializing the intermediate field in a
+        // second owned temporary would duplicate non-Copy bits and drop them
+        // twice.
+        let (base, mut stmts) = self.peel_projected_rvalue_scope(air, base);
+        if !stmts.is_empty()
+            && let AirInstData::PlaceRead { place } = air.get(base).data
+        {
+            let place = *air.get_place(place);
+            let mut projections = air.get_place_projections(&place).to_vec();
+            projections.push(projection);
+            let place = air.make_place(place.base, place.base_type, projections);
+            let value = air.add_inst(AirInst {
+                data: AirInstData::PlaceRead { place },
+                ty: result_type,
+                span,
+            });
+            let stmts_len = stmts.len() as u32;
+            let stmts = stmts.iter().map(|stmt| stmt.as_u32()).collect::<Vec<_>>();
+            let stmts_start = air.add_extra(&stmts);
+            return Ok(air.add_inst(AirInst {
+                data: AirInstData::Block {
+                    stmts_start,
+                    stmts_len,
+                    value,
+                },
+                ty: result_type,
+                span,
+            }));
+        }
         let temp_slot = ctx.next_slot;
         ctx.next_slot += self.require_layout_slots(base_type, span)?;
 
@@ -181,11 +267,14 @@ impl<'a> BodySema<'a> {
             ty: result_type,
             span,
         });
-        let stmts_start = air.add_extra(&[storage_live.as_u32(), alloc.as_u32()]);
+        stmts.extend([storage_live, alloc]);
+        let stmts_len = stmts.len() as u32;
+        let stmts = stmts.iter().map(|stmt| stmt.as_u32()).collect::<Vec<_>>();
+        let stmts_start = air.add_extra(&stmts);
         Ok(air.add_inst(AirInst {
             data: AirInstData::Block {
                 stmts_start,
-                stmts_len: 2,
+                stmts_len,
                 value,
             },
             ty: result_type,
@@ -5423,10 +5512,10 @@ impl<'a> BodySema<'a> {
     /// Analyze a String byte index read: `s[i] -> u8` (RUE-17 Phase 2,
     /// ADR-0035).
     ///
-    /// Indexing a String yields the i-th BYTE (not a char) as `u8`, lowering to
-    /// a checked runtime call `__rue_String_byte_at(ptr, len, cap, index)`. The
-    /// bounds check lives in the runtime: an `index >= len` traps (exit 101),
-    /// mirroring array indexing rather than producing UB.
+    /// Indexing a StrBuf yields the i-th BYTE (not a char) as `u8`, lowering to
+    /// the canonical source algorithm. An `index >= len` traps (exit 101),
+    /// mirroring array indexing rather than producing UB. The runtime call is
+    /// retained only for the transitional no-stdlib nominal.
     ///
     /// The index only *borrows* the String (it is neither consumed nor
     /// mutated), so — like a `ByRef` builtin method — we undo the move the base
@@ -5471,14 +5560,51 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        // Lower to `__rue_String_byte_at(self, index) -> u8`. The String is
-        // passed by value in the AIR (codegen decomposes it into ptr/len/cap
-        // argument registers, as for other builtin String methods); the move
-        // was already cancelled above so this is a non-consuming read.
-        let call_name = self.interner.get_or_intern("__rue_String_byte_at");
+        let source_method = base_result.ty.as_struct().and_then(|struct_id| {
+            (self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf))
+                .then_some(struct_id)
+        });
+        let (call_name, receiver, receiver_mode, temp_scope) =
+            if let Some(struct_id) = source_method {
+                let method = self.interner.get_or_intern("byte_at_borrowed");
+                if self.method_info((struct_id, method)).is_some() {
+                    ctx.referenced_methods.insert((struct_id, method));
+                    let (receiver, temp_scope) = self.materialize_borrow_argument(
+                        air,
+                        base_result.air_ref,
+                        base_result.ty,
+                        span,
+                        ctx,
+                    )?;
+                    (
+                        self.interner.get_or_intern(&self.method_symbol(
+                            struct_id,
+                            "byte_at_borrowed",
+                            false,
+                        )),
+                        receiver,
+                        AirArgMode::Borrow,
+                        temp_scope,
+                    )
+                } else {
+                    (
+                        self.interner.get_or_intern("__rue_String_byte_at"),
+                        base_result.air_ref,
+                        AirArgMode::Normal,
+                        Vec::new(),
+                    )
+                }
+            } else {
+                (
+                    self.interner.get_or_intern("__rue_String_byte_at"),
+                    base_result.air_ref,
+                    AirArgMode::Normal,
+                    Vec::new(),
+                )
+            };
         let extra = [
-            base_result.air_ref.as_u32(),
-            AirArgMode::Normal.as_u32(),
+            receiver.as_u32(),
+            receiver_mode.as_u32(),
             index_result.air_ref.as_u32(),
             AirArgMode::Normal.as_u32(),
         ];
@@ -5492,6 +5618,7 @@ impl<'a> BodySema<'a> {
             ty: Type::U8,
             span,
         });
+        let call_ref = self.wrap_value_with_temp_scope(air, call_ref, Type::U8, span, temp_scope);
         Ok(AnalysisResult::new(call_ref, Type::U8))
     }
 

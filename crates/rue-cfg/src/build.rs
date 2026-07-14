@@ -3122,6 +3122,90 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_computed_projection_drops_its_owner_once_after_the_consumer() {
+        let cases = [
+            (
+                "direct field",
+                "struct Holder { text: StrBuf }\n\
+                 fn make_holder() -> Holder { Holder { text: \"held\" } }\n\
+                 fn consume() -> i32 { print(make_holder().text); 0 }\n\
+                 fn main() -> i32 { consume() }",
+            ),
+            (
+                "nested fields",
+                "struct Holder { text: StrBuf }\n\
+                 struct Outer { holder: Holder }\n\
+                 fn make_outer() -> Outer { Outer { holder: Holder { text: \"held\" } } }\n\
+                 fn consume() -> i32 { print(make_outer().holder.text); 0 }\n\
+                 fn main() -> i32 { consume() }",
+            ),
+            (
+                "computed index and field",
+                "struct Holder { text: StrBuf }\n\
+                 struct Outer { holders: [Holder; 1] }\n\
+                 fn make_outer() -> Outer { Outer { holders: [Holder { text: \"held\" }] } }\n\
+                 fn consume() -> i32 { print(make_outer().holders[0].text); 0 }\n\
+                 fn main() -> i32 { consume() }",
+            ),
+        ];
+
+        for (label, source) in cases {
+            let cfg = build_cfg_named(source, "consume");
+            let instructions = cfg
+                .blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter().copied())
+                .collect::<Vec<_>>();
+            let consumer = instructions
+                .iter()
+                .position(|value| {
+                    matches!(
+                        cfg.get_inst(*value).data,
+                        CfgInstData::Call { args_len: 1, .. }
+                    )
+                })
+                .unwrap_or_else(|| panic!("{label}: print consumer"));
+            let drops = instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, value)| {
+                    matches!(cfg.get_inst(*value).data, CfgInstData::Drop { .. }).then_some(index)
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                drops.len(),
+                1,
+                "{label}: the computed aggregate has one owner"
+            );
+            assert!(
+                drops[0] > consumer,
+                "{label}: the owner must remain live until its projected StrBuf borrow is consumed"
+            );
+            let CfgInstData::Drop { value: dropped } = cfg.get_inst(instructions[drops[0]]).data
+            else {
+                unreachable!("selected a Drop")
+            };
+            let CfgInstData::Load { slot: owner_slot } = cfg.get_inst(dropped).data else {
+                panic!("{label}: owner drop must load its one temporary")
+            };
+            let storage_dead = instructions
+                .iter()
+                .position(|value| {
+                    matches!(
+                        cfg.get_inst(*value).data,
+                        CfgInstData::StorageDead { slot, .. } if slot == owner_slot
+                    )
+                })
+                .unwrap_or_else(|| panic!("{label}: computed owner storage ends"));
+            assert!(
+                storage_dead > drops[0],
+                "{label}: storage ends after its drop"
+            );
+        }
+    }
+
+    #[test]
     fn test_simple_return() {
         let cfg = build_cfg("fn main() -> i32 { 42 }");
 

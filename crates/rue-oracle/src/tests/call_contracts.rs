@@ -10,6 +10,14 @@ fn expect_flow_unsupported<T>(result: Step<T>) -> Unsupported {
     }
 }
 
+fn expect_modeled_value(result: Step<Option<Value>>) -> Option<Value> {
+    match result {
+        Ok(value) => value,
+        Err(Flow::Unsupported(_)) => panic!("expected a modeled value, got Unsupported"),
+        Err(Flow::Panic(_)) => panic!("expected a modeled value, got a panic"),
+    }
+}
+
 fn find_call_metadata(
     state: &CompileState,
     expected_name: &str,
@@ -144,8 +152,8 @@ fn runtime_call_classification_requires_exact_metadata() {
         ("__rue_String_contains", RuntimeCall::StringContains),
         ("__rue_String_starts_with", RuntimeCall::StringStartsWith),
         ("__rue_String_substring", RuntimeCall::StringSubstring),
-        ("__rue_print", RuntimeCall::Print),
-        ("__rue_println", RuntimeCall::Println),
+        ("__rue_str_print", RuntimeCall::Print),
+        ("__rue_str_println", RuntimeCall::Println),
     ];
     let values_for = |types: &[Type]| {
         types
@@ -153,6 +161,15 @@ fn runtime_call_classification_requires_exact_metadata() {
             .map(|ty| {
                 if interp.is_owned_string_type(*ty) {
                     Value::string("probe")
+                } else if interp.is_str_like_type(*ty) {
+                    Value::str_view("probe".to_string())
+                } else if interp
+                    .pointer_pointee(*ty)
+                    .is_some_and(|(pointee, _)| pointee == Type::U8)
+                {
+                    // Raw text pointers retain their bytes as provenance in the
+                    // oracle value model; the following scalar argument is len.
+                    Value::str_view("probe".to_string())
                 } else {
                     Value::Int(0)
                 }
@@ -222,7 +239,7 @@ fn runtime_call_classification_requires_exact_metadata() {
         ("__rue_String_concat", Type::UNIT),
         ("__rue_String_contains", Type::UNIT),
         ("__rue_String_substring", Type::UNIT),
-        ("__rue_print", Type::BOOL),
+        ("__rue_str_print", Type::BOOL),
     ] {
         let (arg_types, arg_modes, result_ty) = find_call_metadata(&state, name);
         let args = values_for(&arg_types);
@@ -282,6 +299,128 @@ fn runtime_call_classification_requires_exact_metadata() {
         ),
         UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
         "an owned-string CFG type requires the owned three-slot runtime shape"
+    );
+
+    // The legacy owned-string print ABI remains a supported, classified gap
+    // while the source-defined StrBuf path uses the new scalar ptr/len ABI.
+    let owned = concat_types[0];
+    for (name, runtime_call) in [
+        ("__rue_print", RuntimeCall::Print),
+        ("__rue_println", RuntimeCall::Println),
+    ] {
+        assert_eq!(
+            interp.classify_unsupported_runtime_call(
+                name,
+                &[Value::string("legacy")],
+                &[owned],
+                &[CfgArgMode::Normal],
+                Type::UNIT,
+            ),
+            UnsupportedKind::SemanticGap(Semantic::RuntimeCall(runtime_call)),
+            "{name}"
+        );
+    }
+
+    let ptr = Type::new_ptr_mut(state.type_pool.intern_ptr_mut_from_type(Type::U8));
+    for (name, runtime_call) in [
+        ("__rue_str_print", RuntimeCall::Print),
+        ("__rue_str_println", RuntimeCall::Println),
+    ] {
+        assert_eq!(
+            interp.classify_unsupported_runtime_call(
+                name,
+                &[Value::str_view("scalar"), Value::Int(6)],
+                &[ptr, Type::U64],
+                &[CfgArgMode::Normal, CfgArgMode::Normal],
+                Type::UNIT,
+            ),
+            UnsupportedKind::SemanticGap(Semantic::RuntimeCall(runtime_call)),
+            "{name} scalar ptr/len ABI"
+        );
+    }
+}
+
+#[test]
+fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
+    let state = query_cfg_state("fn main() -> i32 { 0 }").expect("probe must compile");
+    let interp = Interp {
+        state: &state,
+        stdout: String::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+    };
+    let ptr = Type::new_ptr_mut(state.type_pool.intern_ptr_mut_from_type(Type::U8));
+    let types = [ptr, Type::U64, Type::U64];
+    let modes = [CfgArgMode::Normal; 3];
+    let bytes = Value::str_view("hé");
+    let args = [bytes.clone(), Value::Int(3), Value::Int(1)];
+
+    assert_eq!(
+        expect_modeled_value(interp.string_builtin(
+            "__rue_str_char_scalar",
+            &args,
+            &types,
+            &modes,
+            Type::U32,
+        )),
+        Some(Value::Int('é' as i128))
+    );
+    assert_eq!(
+        expect_modeled_value(interp.string_builtin(
+            "__rue_str_char_next",
+            &args,
+            &types,
+            &modes,
+            Type::U64,
+        )),
+        Some(Value::Int(3))
+    );
+
+    let invalid = [
+        Value::str_view_bytes([b'a', 0xff, b'b']),
+        Value::Int(3),
+        Value::Int(1),
+    ];
+    assert_eq!(
+        expect_modeled_value(interp.string_builtin(
+            "__rue_str_char_scalar_lossy",
+            &invalid,
+            &types,
+            &modes,
+            Type::U32,
+        )),
+        Some(Value::Int('\u{fffd}' as i128))
+    );
+    match interp.string_builtin("__rue_str_char_scalar", &invalid, &types, &modes, Type::U32) {
+        Err(Flow::Panic(panic)) => assert_eq!(panic.kind, TrapKind::InvalidUtf8),
+        _ => panic!("strict invalid UTF-8 must trap"),
+    }
+
+    let arity = expect_flow_unsupported(interp.string_builtin(
+        "__rue_str_char_scalar",
+        &args[..2],
+        &types[..2],
+        &modes[..2],
+        Type::U32,
+    ));
+    assert_eq!(
+        arity.kind(),
+        UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArity)
+    );
+    let wrong_types = [Type::U64, Type::U64, Type::U64];
+    let signature = expect_flow_unsupported(interp.string_builtin(
+        "__rue_str_char_scalar",
+        &args,
+        &wrong_types,
+        &modes,
+        Type::U32,
+    ));
+    assert_eq!(
+        signature.kind(),
+        UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType)
     );
 }
 

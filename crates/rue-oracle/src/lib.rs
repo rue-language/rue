@@ -741,6 +741,8 @@ fn unsupported_runtime_call_kind(name: &str) -> Option<UnsupportedRuntimeCallKin
         "__rue_String_substring" => Some(UnsupportedRuntimeCallKind::StringSubstring),
         "__rue_print" => Some(UnsupportedRuntimeCallKind::Print),
         "__rue_println" => Some(UnsupportedRuntimeCallKind::Println),
+        "__rue_str_print" => Some(UnsupportedRuntimeCallKind::Print),
+        "__rue_str_println" => Some(UnsupportedRuntimeCallKind::Println),
         _ => None,
     }
 }
@@ -875,7 +877,13 @@ impl<'a> Interp<'a> {
             UnsupportedRuntimeCallKind::StringSubstring => 3,
             UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => 1,
         };
-        if arg_types.len() != expected_arity || arg_modes.len() != expected_arity {
+        let shared_print = matches!(name, "__rue_str_print" | "__rue_str_println");
+        let arity_matches = if shared_print {
+            matches!(arg_types.len(), 1 | 2) && arg_modes.len() == arg_types.len()
+        } else {
+            arg_types.len() == expected_arity && arg_modes.len() == expected_arity
+        };
+        if !arity_matches {
             return UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity);
         }
         if !arg_modes.iter().all(|mode| *mode == CfgArgMode::Normal) {
@@ -898,7 +906,15 @@ impl<'a> Interp<'a> {
                     && self.is_owned_string_type(result_ty)
             }
             UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => {
-                self.is_owned_string_type(arg_types[0]) && result_ty == Type::UNIT
+                ((shared_print
+                    && ((arg_types.len() == 1 && self.is_str_like_type(arg_types[0]))
+                        || (arg_types.len() == 2
+                            && self
+                                .pointer_pointee(arg_types[0])
+                                .is_some_and(|(pointee, _)| pointee == Type::U8)
+                            && arg_types[1] == Type::U64)))
+                    || (!shared_print && self.is_owned_string_type(arg_types[0])))
+                    && result_ty == Type::UNIT
             }
         };
         if signature_matches {
@@ -938,7 +954,14 @@ impl<'a> Interp<'a> {
                 is_owned_value(0) && is_int_value(1) && is_int_value(2)
             }
             UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => {
-                is_owned_value(0)
+                if matches!(name, "__rue_str_print" | "__rue_str_println") {
+                    (args.len() == 1 && matches!(args[0], Value::Str { slots: 2, .. }))
+                        || (args.len() == 2
+                            && matches!(args[0], Value::Str { .. })
+                            && is_int_value(1))
+                } else {
+                    is_owned_value(0)
+                }
             }
         };
         if values_match {
@@ -1828,6 +1851,10 @@ impl<'a> Interp<'a> {
             | "__rue_String_char_scalar_lossy"
             | "__rue_String_char_next"
             | "__rue_String_char_next_lossy" => Some(2),
+            "__rue_str_char_scalar"
+            | "__rue_str_char_scalar_lossy"
+            | "__rue_str_char_next"
+            | "__rue_str_char_next_lossy" => Some(3),
             _ => None,
         }
     }
@@ -1888,6 +1915,15 @@ impl<'a> Interp<'a> {
             | "__rue_String_char_scalar_lossy"
             | "__rue_String_char_next"
             | "__rue_String_char_next_lossy" => owned(0) && arg_types[1] == Type::U64,
+            "__rue_str_char_scalar"
+            | "__rue_str_char_scalar_lossy"
+            | "__rue_str_char_next"
+            | "__rue_str_char_next_lossy" => {
+                self.pointer_pointee(arg_types[0])
+                    .is_some_and(|(pointee, _)| pointee == Type::U8)
+                    && arg_types[1] == Type::U64
+                    && arg_types[2] == Type::U64
+            }
             _ => unreachable!("arity table and signature table must stay exhaustive"),
         };
         if !argument_types_match {
@@ -1901,8 +1937,14 @@ impl<'a> Interp<'a> {
             "__rue_String_len" | "__rue_String_capacity" => result_ty == Type::U64,
             "__rue_String_is_empty" => result_ty == Type::BOOL,
             "__rue_String_byte_at" | "__rue_str_byte_at" => result_ty == Type::U8,
-            "__rue_String_char_scalar" | "__rue_String_char_scalar_lossy" => result_ty == Type::U32,
-            "__rue_String_char_next" | "__rue_String_char_next_lossy" => result_ty == Type::U64,
+            "__rue_String_char_scalar"
+            | "__rue_String_char_scalar_lossy"
+            | "__rue_str_char_scalar"
+            | "__rue_str_char_scalar_lossy" => result_ty == Type::U32,
+            "__rue_String_char_next"
+            | "__rue_String_char_next_lossy"
+            | "__rue_str_char_next"
+            | "__rue_str_char_next_lossy" => result_ty == Type::U64,
             _ => self.is_owned_string_type(result_ty),
         };
         if !result_type_matches {
@@ -1962,6 +2004,17 @@ impl<'a> Interp<'a> {
             "__rue_str_byte_at" => {
                 matches!(args[0], Value::Str { slots: 2, .. }) && matches!(args[1], Value::Int(_))
             }
+            "__rue_str_char_scalar"
+            | "__rue_str_char_scalar_lossy"
+            | "__rue_str_char_next"
+            | "__rue_str_char_next_lossy" => {
+                // A `Value::Str` is the oracle's provenance-carrying abstraction
+                // for the raw byte pointer; the following scalar values are the
+                // exact runtime ABI's explicit length and offset.
+                matches!(args[0], Value::Str { .. })
+                    && matches!(args[1], Value::Int(_))
+                    && matches!(args[2], Value::Int(_))
+            }
             _ => unreachable!("preflight recognized this builtin"),
         };
         if !value_shapes_match {
@@ -1980,6 +2033,17 @@ impl<'a> Interp<'a> {
                     format!("builtin '{name}' received a non-string argument (signature drift?)"),
                 )),
             }
+        };
+        let str_bytes = |ptr: &Value, len: &Value| -> Result<Vec<u8>, Flow> {
+            let bytes = s(ptr)?;
+            let len = len.as_int();
+            if len < 0 || len as u128 > bytes.len() as u128 {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType),
+                    format!("builtin '{name}' received an invalid str pointer/length pair"),
+                ));
+            }
+            Ok(bytes[..len as usize].to_vec())
         };
         let out = match name {
             // `@to_string(n)` (RUE-314). The argument is already widened to a
@@ -2063,6 +2127,32 @@ impl<'a> Interp<'a> {
             "__rue_String_char_next_lossy" => {
                 let bytes = s(&args[0])?;
                 let offset = args[1].as_int();
+                let (_, width) = char_at_lossy(&bytes, offset);
+                Value::Int(offset + width as i128)
+            }
+            "__rue_str_char_scalar" => {
+                let bytes = str_bytes(&args[0], &args[1])?;
+                match char_at(&bytes, args[2].as_int()) {
+                    Some((scalar, _)) => Value::Int(scalar as i128),
+                    None => return Err(Flow::Panic(Panic::runtime(TrapKind::InvalidUtf8))),
+                }
+            }
+            "__rue_str_char_next" => {
+                let bytes = str_bytes(&args[0], &args[1])?;
+                let offset = args[2].as_int();
+                match char_at(&bytes, offset) {
+                    Some((_, width)) => Value::Int(offset + width as i128),
+                    None => return Err(Flow::Panic(Panic::runtime(TrapKind::InvalidUtf8))),
+                }
+            }
+            "__rue_str_char_scalar_lossy" => {
+                let bytes = str_bytes(&args[0], &args[1])?;
+                let (scalar, _) = char_at_lossy(&bytes, args[2].as_int());
+                Value::Int(scalar as i128)
+            }
+            "__rue_str_char_next_lossy" => {
+                let bytes = str_bytes(&args[0], &args[1])?;
+                let offset = args[2].as_int();
                 let (_, width) = char_at_lossy(&bytes, offset);
                 Value::Int(offset + width as i128)
             }

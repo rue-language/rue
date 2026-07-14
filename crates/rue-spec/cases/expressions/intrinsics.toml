@@ -1217,8 +1217,8 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-# ADR-0043: the growable-string type is now named `StrBuf` in diagnostics.
-error_contains = "StrBuf"
+# Text consumers accept every text rung and diagnose that shared contract.
+error_contains = "expects text"
 
 [[case]]
 name = "parse_empty_string_yields_none"
