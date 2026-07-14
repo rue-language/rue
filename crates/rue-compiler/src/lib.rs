@@ -127,7 +127,10 @@ pub use bound_definitions::{
 };
 pub use canonical_lower::{CanonicalRirOutput, CanonicalRirWork};
 pub use canonical_merge::{CanonicalMergeWork, CanonicalMergedAst, CanonicalMergedProgram};
-pub use canonical_semantic::{CanonicalSemanticOutput, CanonicalSemanticWork};
+pub use canonical_semantic::{
+    CanonicalSemanticFailurePhase, CanonicalSemanticFailureWork, CanonicalSemanticOutput,
+    CanonicalSemanticWork,
+};
 pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
     DefinitionRecord, DefinitionShard, DefinitionShardWork, DefinitionSnapshot, ModuleDefinition,

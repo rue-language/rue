@@ -537,12 +537,14 @@ pub(crate) fn compare_canonical_durable_declaration_install(
                 ordinary,
                 crate::OptLevel::default(),
                 rir.semantic_symbols().interner(),
-            )?;
+            )
+            .map_err(|failure| failure.errors)?;
             let installed = crate::build_functions_and_cfgs(
                 installed,
                 crate::OptLevel::default(),
                 rir.semantic_symbols().interner(),
-            )?;
+            )
+            .map_err(|failure| failure.errors)?;
             if format!("{:?}", ordinary.functions) != format!("{:?}", installed.functions)
                 || format!("{:?}", ordinary.warnings) != format!("{:?}", installed.warnings)
                 || ordinary.strings != installed.strings

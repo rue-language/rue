@@ -1013,6 +1013,7 @@ impl CanonicalImportGraphOutput {
 pub struct SemanticQueryRecord {
     pub input: CodegenInputDescriptor,
     pub work: CanonicalSemanticWork,
+    pub failure: Option<crate::CanonicalSemanticFailureWork>,
     pub failed: bool,
 }
 
@@ -2149,7 +2150,7 @@ impl CompilerSession {
         }
 
         self.work.semantic.executions += 1;
-        let prepared = prepare_canonical_declarations(&merged, &rir, options, &imports);
+        let mut prepared = prepare_canonical_declarations(&merged, &rir, options, &imports);
         let current_fingerprints: Result<Vec<StableDefinitionInputFingerprint>, CompileErrors> =
             match &prepared {
                 Ok(definitions) => definitions
@@ -2163,9 +2164,11 @@ impl CompilerSession {
                         )
                     })
                     .collect(),
-                Err(errors) => Err(errors.clone()),
+                Err(failure) => Err(failure.errors.clone()),
             };
+        let mut reuse_plan = crate::canonical_semantic::CanonicalDeclarationReuseWork::default();
         let reusable = self.durable_declaration_cache.as_ref().and_then(|cache| {
+            reuse_plan.plan_executions = 1;
             self.work.declaration_reuse_plans += 1;
             if cache.root != *merged.ast().root()
                 || cache.target != options.target
@@ -2175,40 +2178,49 @@ impl CompilerSession {
             }
             let fingerprints = current_fingerprints.as_ref().ok()?;
             let (matches, compared) = declaration_surfaces_match(&cache.fingerprints, fingerprints);
+            reuse_plan.durable_records_compared = compared;
             self.work.durable_records_compared += compared;
             matches.then(|| cache.semantics.clone())
         });
+        if let Err(failure) = &mut prepared {
+            failure.failure.work.declaration_reuse.plan_executions += reuse_plan.plan_executions;
+            failure
+                .failure
+                .work
+                .declaration_reuse
+                .durable_records_compared += reuse_plan.durable_records_compared;
+        }
         let mut cold_durable = None;
-        let result = prepared
-            .and_then(|prepared| {
-                if let Some(durable) = reusable {
-                    let definitions = prepared.definitions().clone();
-                    analyze_prepared_canonical_program_reusing_declarations(
-                        &merged,
-                        &rir,
-                        options,
-                        &imports,
-                        prepared,
-                        &definitions,
-                        &durable,
-                    )
-                } else {
-                    analyze_prepared_canonical_program_with_durable_export(
-                        &merged, &rir, options, prepared,
-                    )
-                    .map(|analysis| {
-                        cold_durable = analysis
-                            .durable_declarations
-                            .map(|semantics| (analysis.definitions, semantics));
-                        analysis.output
-                    })
-                }
-            })
-            .map(Arc::new);
-        let semantic_work = result
+        let analysis = prepared.and_then(|prepared| {
+            if let Some(durable) = reusable {
+                let definitions = prepared.definitions().clone();
+                analyze_prepared_canonical_program_reusing_declarations(
+                    &merged,
+                    &rir,
+                    options,
+                    &imports,
+                    prepared,
+                    &definitions,
+                    &durable,
+                )
+            } else {
+                analyze_prepared_canonical_program_with_durable_export(
+                    &merged, &rir, options, prepared, reuse_plan,
+                )
+                .map(|analysis| {
+                    cold_durable = analysis
+                        .durable_declarations
+                        .map(|semantics| (analysis.definitions, semantics));
+                    analysis.output
+                })
+            }
+        });
+        let failure = analysis.as_ref().err().map(|failure| failure.failure);
+        let semantic_work = analysis
             .as_ref()
             .map(|output| output.work())
-            .unwrap_or_default();
+            .unwrap_or_else(|failure| failure.failure.work);
+        let result = analysis.map(Arc::new).map_err(|failure| failure.errors);
         if let Ok(output) = &result {
             debug_assert_eq!(output.input(), &input);
             debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
@@ -2262,6 +2274,7 @@ impl CompilerSession {
         self.work.semantic_records.push(SemanticQueryRecord {
             input: input.clone(),
             work: semantic_work,
+            failure,
             failed: result.is_err(),
         });
         let source = self
@@ -3964,8 +3977,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        LinkerMode, ModuleId, OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata,
-        SourceSnapshot, Target,
+        CanonicalSemanticFailurePhase, LinkerMode, ModuleId, OptLevel, PreviewFeature,
+        PreviewFeatures, SourceMetadata, SourceSnapshot, Target,
     };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -4768,6 +4781,219 @@ mod tests {
         assert_eq!(session.work().semantic.executions, 2);
         assert_eq!(session.work().semantic_entries, 1);
         assert_eq!(session.work().semantic_entries_invalidated, 1);
+    }
+
+    #[test]
+    fn failed_body_work_is_retained_without_replacing_the_last_good_baseline() {
+        let valid = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let invalid = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn main() -> i32 { missing_name }",
+            )],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&valid).into_result().unwrap();
+        session.semantic(&options).unwrap();
+
+        session.update(&invalid).into_result().unwrap();
+        let first = session.semantic(&options).unwrap_err();
+        let second = session.semantic(&options).unwrap_err();
+        assert_eq!(format!("{first:?}"), format!("{second:?}"));
+        let record = session.work().semantic_records.last().unwrap();
+        assert_eq!(
+            record.failure.unwrap().phase,
+            CanonicalSemanticFailurePhase::BodyAnalysis
+        );
+        assert_eq!(record.work.body_analysis.bodies_attempted, 1);
+        assert_eq!(record.work.body_analysis.bodies_succeeded, 0);
+        assert_eq!(record.work.body_analysis.bodies_failed, 1);
+        assert_eq!(record.work.cfg.cfg_builds_attempted, 0);
+
+        session.update(&valid).into_result().unwrap();
+        session.semantic(&options).unwrap();
+        let recovered = session.work().semantic_records.last().unwrap();
+        assert!(recovered.failure.is_none());
+        assert_eq!(
+            recovered
+                .work
+                .declaration_reuse
+                .ordinary_declaration_resolutions_skipped,
+            1,
+            "the failed request must not replace the last-good durable baseline"
+        );
+    }
+
+    #[test]
+    fn specialization_failure_work_is_retained() {
+        let invalid = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn runaway(comptime n: i32) -> i32 { runaway(n + 1) }\nfn main() -> i32 { runaway(0) }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&invalid).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap_err();
+        let record = session.work().semantic_records.last().unwrap();
+        assert_eq!(
+            record.failure.unwrap().phase,
+            CanonicalSemanticFailurePhase::BodyAnalysis
+        );
+        assert_eq!(record.work.body_analysis.specialization_driver_failures, 1);
+        assert_eq!(record.work.body_analysis.specialized_bodies_attempted, 64);
+        assert_eq!(record.work.body_analysis.specialized_bodies_succeeded, 64);
+        assert_eq!(record.work.body_analysis.specialized_bodies_failed, 0);
+        assert_eq!(record.work.body_analysis.specialization_rounds, 65);
+    }
+
+    #[test]
+    fn declaration_failure_retains_completed_declaration_work() {
+        let valid = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let changed = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&valid).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        session.update(&changed).into_result().unwrap();
+        crate::canonical_semantic::with_test_declaration_failure_injection(|| {
+            session.semantic(&CompileOptions::default()).unwrap_err();
+        });
+
+        let record = session.work().semantic_records.last().unwrap();
+        assert_eq!(
+            record.failure.unwrap().phase,
+            CanonicalSemanticFailurePhase::Declaration
+        );
+        assert_eq!(record.work.declaration_index.build_invocations, 1);
+        assert_eq!(record.work.binding.bind_invocations, 1);
+        assert_eq!(record.work.manifest.build_invocations, 1);
+        assert_eq!(record.work.body_analysis.bodies_attempted, 1);
+        assert_eq!(record.work.body_analysis.bodies_succeeded, 1);
+        assert_eq!(record.work.declaration_reuse.plan_executions, 1);
+        assert_eq!(record.work.declaration_reuse.durable_records_compared, 1);
+        assert_eq!(record.work.declaration_reuse.semantic_epochs_started, 1);
+    }
+
+    #[test]
+    fn declaration_resolution_failure_retains_exact_attempt_work() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Recursive { next: Recursive } fn main() -> i32 { 0 }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap_err();
+
+        let record = session.work().semantic_records.last().unwrap();
+        assert_eq!(
+            record.failure.unwrap().phase,
+            CanonicalSemanticFailurePhase::Declaration
+        );
+        assert_eq!(record.work.declaration_index.build_invocations, 1);
+        assert_eq!(record.work.binding.bind_invocations, 1);
+        assert_eq!(record.work.binding.namespace_setup_invocations, 1);
+        assert_eq!(record.work.binding.declaration_resolution_invocations, 1);
+        assert_eq!(record.work.binding.declaration_resolution_failures, 1);
+        assert_eq!(
+            record.work.binding.body_readiness_finalization_invocations,
+            0
+        );
+        assert_eq!(record.work.manifest.build_invocations, 0);
+        assert_eq!(record.work.body_analysis.bodies_attempted, 0);
+    }
+
+    #[test]
+    fn authoritative_key_mismatch_retains_failed_token_validation_work() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 0 } fn main() -> i32 { helper() }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        crate::canonical_semantic::with_test_authoritative_key_mismatch(|| {
+            session.semantic(&CompileOptions::default()).unwrap_err();
+        });
+
+        let record = session.work().semantic_records.last().unwrap();
+        assert_eq!(
+            record.failure.unwrap().phase,
+            CanonicalSemanticFailurePhase::Declaration
+        );
+        assert_eq!(record.work.body_owner_tokens.provisional_slots, 2);
+        assert_eq!(record.work.body_owner_tokens.authoritative_slots, 1);
+        assert_eq!(record.work.body_owner_tokens.slots_validated, 1);
+        assert_eq!(record.work.body_owner_tokens.tokens_installed, 0);
+        assert_eq!(record.work.body_owner_tokens.validation_failures, 1);
+    }
+
+    #[test]
+    fn cfg_failure_retains_work_without_replacing_the_last_good_baseline() {
+        let valid = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let changed = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&valid).into_result().unwrap();
+        session.semantic(&options).unwrap();
+
+        session.update(&changed).into_result().unwrap();
+        crate::canonical_semantic::with_test_cfg_failure_injection(|| {
+            session.semantic(&options).unwrap_err();
+        });
+        let failed = session.work().semantic_records.last().unwrap();
+        assert_eq!(
+            failed.failure.unwrap().phase,
+            CanonicalSemanticFailurePhase::CfgConstruction
+        );
+        assert_eq!(failed.work.body_analysis.bodies_succeeded, 1);
+        assert_eq!(failed.work.cfg.functions_considered, 1);
+        assert_eq!(failed.work.cfg.cfg_builds_attempted, 1);
+        assert_eq!(failed.work.cfg.cfg_builds_failed, 1);
+        assert_eq!(failed.work.cfg.optimization_attempts, 0);
+
+        session.update(&valid).into_result().unwrap();
+        session.semantic(&options).unwrap();
+        let recovered = session.work().semantic_records.last().unwrap();
+        assert!(recovered.failure.is_none());
+        assert_eq!(
+            recovered
+                .work
+                .declaration_reuse
+                .ordinary_declaration_resolutions_skipped,
+            1,
+            "the CFG failure must not replace the last-good durable baseline"
+        );
     }
 
     #[test]

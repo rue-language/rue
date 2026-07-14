@@ -46,12 +46,12 @@ mod visibility;
 
 // Public re-exports
 pub use binding_manifest::{
-    BoundSema, DeclarationBindingWork, DeclarationInstallFailure, DeclarationShells,
-    SemanticBinding, SemanticBindingKind, SemanticBindingManifest, SemanticBindingManifestWork,
-    SemanticBindingNamespace, SemanticDeclarationExport, SemanticDeclarationExportWork,
-    SemanticDeclarationPayload, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
-    SemanticExportConstValue, SemanticExportFailure, SemanticExportParameter, SemanticExportType,
-    SemanticNominalIdentity, SemanticParameterMode,
+    BoundSema, DeclarationBindingWork, DeclarationInstallFailure, DeclarationResolutionFailure,
+    DeclarationShells, SemanticBinding, SemanticBindingKind, SemanticBindingManifest,
+    SemanticBindingManifestWork, SemanticBindingNamespace, SemanticDeclarationExport,
+    SemanticDeclarationExportWork, SemanticDeclarationPayload, SemanticDeclarationShell,
+    SemanticDeclarationShellIdentity, SemanticExportConstValue, SemanticExportFailure,
+    SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
@@ -59,16 +59,16 @@ pub use inference_ctx::InferenceContext;
 pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub use output::{
-    AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, BodyNamedDependencyEvent,
-    BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken, BuiltinTypeCallHead,
-    DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
-    DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
-    DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind,
-    ImplicitDropDependencySourceEvent, ImplicitNamedDestructorDependencyEvent,
-    NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent,
-    NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
-    OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, SemaOutput,
-    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
+    AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisFailure, BodyAnalysisWork,
+    BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,
+    BuiltinTypeCallHead, DeclarationBuiltinTypeCallHeadDependencyEvent,
+    DeclarationTypeCallHeadDependencyEvent, DeclarationTypeDependencyEvent,
+    DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
+    DeclarationTypeDependencyTargetKind, ImplicitDropDependencySourceEvent,
+    ImplicitNamedDestructorDependencyEvent, NamedConstDependencyEvent,
+    NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
+    NamedMethodDependencyTargetEvent, OrdinaryFreeFunctionDependencyEvent, ParamSlotModes,
+    SemaOutput, SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -830,6 +830,10 @@ impl BodySema<'_> {
     /// Analyze all function bodies using a structurally frozen source namespace.
     fn analyze_all_bodies(self) -> MultiErrorResult<SemaOutput> {
         analysis::analyze_all_function_bodies(self)
+    }
+
+    fn analyze_all_bodies_with_work(self) -> Result<SemaOutput, BodyAnalysisFailure> {
+        analysis::analyze_all_function_bodies_with_work(self)
     }
 }
 
