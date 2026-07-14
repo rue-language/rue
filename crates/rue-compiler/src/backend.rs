@@ -145,17 +145,17 @@ fn collect_codegen_results(
     function_count: usize,
 ) -> MultiErrorResult<Vec<Vec<u8>>> {
     let mut object_files = Vec::with_capacity(results.len());
-    let mut total_code_bytes = 0usize;
+    let mut total_object_bytes = 0usize;
 
     for result in results {
         let obj = result.map_err(CompileErrors::from)?;
-        total_code_bytes += obj.len();
+        total_object_bytes += obj.len();
         object_files.push(obj);
     }
 
     info!(
         function_count,
-        code_bytes = total_code_bytes,
+        object_bytes = total_object_bytes,
         "codegen complete"
     );
     Ok(object_files)
@@ -399,3 +399,93 @@ use tracing::{info, info_span};
 
 use crate::linking::{link_internal_with_warnings, link_system_with_warnings};
 use crate::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FIRST_LITERAL: &[u8] = b"RUE784_FIRST_LITERAL";
+    const SECOND_LITERAL: &[u8] = b"RUE784_SECOND_LITERAL";
+    const SOURCE: &str = r#"
+fn first() -> i32 {
+    println("RUE784_FIRST_LITERAL");
+    0
+}
+
+fn second() -> i32 {
+    println("RUE784_SECOND_LITERAL");
+    0
+}
+
+fn main() -> i32 {
+    first() + second()
+}
+"#;
+
+    fn count(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .filter(|window| *window == needle)
+            .count()
+    }
+
+    fn frontend() -> (
+        std::sync::Arc<CanonicalRirOutput>,
+        std::sync::Arc<CanonicalSemanticOutput>,
+    ) {
+        let snapshot = SourceSnapshot::single("<rue-784>", SOURCE).unwrap();
+        let (rir, semantic, _) =
+            crate::test_support::test_frontend_snapshot(&snapshot, &CompileOptions::default())
+                .unwrap();
+        (rir, semantic)
+    }
+
+    #[test]
+    fn function_objects_only_contain_their_referenced_strings() {
+        let (rir, semantic) = frontend();
+        let interner = rir.semantic_symbols().interner();
+
+        for target in [
+            Target::X86_64Linux,
+            Target::Aarch64Linux,
+            Target::Aarch64Macos,
+        ] {
+            let options = CompileOptions {
+                target,
+                ..CompileOptions::default()
+            };
+            let objects = match target.arch() {
+                Arch::X86_64 => generate_x86_64_objects(
+                    semantic.functions(),
+                    semantic.type_pool(),
+                    semantic.strings(),
+                    interner,
+                    &options,
+                ),
+                Arch::Aarch64 => generate_aarch64_objects(
+                    semantic.functions(),
+                    semantic.type_pool(),
+                    semantic.strings(),
+                    interner,
+                    &options,
+                ),
+            }
+            .unwrap();
+
+            let all_object_bytes: Vec<_> = objects.into_iter().flatten().collect();
+            assert_eq!(count(&all_object_bytes, FIRST_LITERAL), 1, "{target}");
+            assert_eq!(count(&all_object_bytes, SECOND_LITERAL), 1, "{target}");
+        }
+    }
+
+    #[test]
+    fn final_binary_contains_each_function_literal_once() {
+        let snapshot = SourceSnapshot::single("<rue-784>", SOURCE).unwrap();
+        let output = compile_snapshot(&snapshot, &CompileOptions::default()).unwrap();
+        assert_eq!(count(&output.elf, FIRST_LITERAL), 1);
+        assert_eq!(count(&output.elf, SECOND_LITERAL), 1);
+
+        let repeated = compile_snapshot(&snapshot, &CompileOptions::default()).unwrap();
+        assert_eq!(output.elf, repeated.elf);
+    }
+}
