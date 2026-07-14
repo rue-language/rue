@@ -34,6 +34,7 @@ mod canonical_lower;
 mod canonical_merge;
 mod canonical_semantic;
 mod definition_snapshot;
+mod dependency_envelope;
 mod diagnostic;
 mod drop_glue;
 mod durable_body;
@@ -64,6 +65,11 @@ mod api_inventory;
 mod integration_tests;
 
 // Supported source, identity, option, session, and diagnostic surface.
+pub use dependency_envelope::{
+    DependencyAcceptedRead, DependencyContext, DependencyEnvelope, DependencyEnvelopeStatus,
+    DependencyObservation, DependencyObservationOutcome, DependencyRequest,
+    DependencyResolutionOutcome, DependencyTopology, DependencyTopologyRecord,
+};
 pub use diagnostic::{
     ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
     JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,

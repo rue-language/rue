@@ -187,7 +187,7 @@ error_contains = ["undefined function", "helper"]
 
 [[case]]
 name = "emit_deps_reports_root_and_import_graph"
-description = "RUE-446: --emit deps reports the observed root/import source graph as machine-readable JSON."
+description = "RUE-810: --emit deps reports the canonical topology, complete observations, and accepted reads as a versioned envelope."
 files = [
     { path = "main.rue", source = """
 const utils = @import("utils");
@@ -218,16 +218,22 @@ args = ["--emit", "deps", "main.rue"]
 compile_only = true
 compile_stdout_contains = [
     "\"version\": 1",
-    "\"root\":",
-    "\"path\":",
+    "\"status\": \"complete\"",
+    "\"revision\": \"rue-dependency-revision-v1-sha256:",
+    "\"topology\":",
+    "\"root\": \"main.rue\"",
+    "\"records\":",
     "main.rue",
-    "\"kind\": \"root\"",
     "utils.rue",
-    "\"kind\": \"import\"",
     "leaf.rue",
     "\"specifier\": \"utils\"",
     "\"specifier\": \"leaf\"",
-    "\"resolved\":",
+    "\"status\": \"resolved\"",
+    "\"observations\":",
+    "\"status\": \"present_readable\"",
+    "\"accepted_reads\":",
+    "\"physical_identity\":",
+    "\"content_fingerprint\":",
 ]
 compile_stdout_not_contains = ["unused.rue"]
 
@@ -252,6 +258,7 @@ args = ["--emit", "deps", "main.rue"]
 compile_only = true
 compile_stdout_contains = [
     "\"version\": 1",
+    "\"status\": \"complete\"",
     "main.rue",
     "utils.rue",
     "\"specifier\": \"utils\"",
@@ -260,7 +267,7 @@ compile_stderr_not_contains = ["undefined variable", "nope", "E0201"]
 
 [[case]]
 name = "emit_deps_rejects_unresolved_import"
-description = "RUE-450: --emit deps validates the loaded root import graph before printing dependency JSON."
+description = "RUE-810: --emit deps preserves a closed unresolved graph in an incomplete envelope and exits unsuccessfully."
 files = [
     { path = "main.rue", source = """
 const missing = @import("missing");
@@ -273,7 +280,114 @@ fn main() -> i32 {
 args = ["--emit", "deps", "main.rue"]
 compile_fail = true
 error_contains = ["E0704", "missing"]
-compile_stdout_not_contains = ["\"version\": 1"]
+compile_stdout_contains = [
+    "\"version\": 1",
+    "\"status\": \"incomplete\"",
+    "\"revision\": \"rue-dependency-revision-v1-sha256:",
+    "\"specifier\": \"missing\"",
+    "\"status\": \"missing\"",
+    "\"status\": \"absent\"",
+    "\"accepted_reads\":",
+    "\"module\": \"main.rue\"",
+]
+
+[[case]]
+name = "emit_deps_reports_ambiguous_staging_reads"
+description = "RUE-810: an ambiguous closed graph emits both canonical targets and both accepted staging reads before failing."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper");
+fn main() -> i32 { 0 }
+""" },
+    { path = "helper.rue", source = """
+pub fn file_value() -> i32 { 1 }
+""" },
+    { path = "helper/_helper.rue", source = """
+pub fn directory_value() -> i32 { 2 }
+""" },
+]
+args = ["--emit", "deps", "main.rue"]
+compile_fail = true
+error_contains = ["E0708", "ambiguous", "helper.rue", "helper/_helper.rue"]
+compile_stdout_contains = [
+    "\"status\": \"incomplete\"",
+    "\"status\": \"ambiguous\"",
+    "\"file_module\": \"helper.rue\"",
+    "\"directory_module\": \"helper/_helper.rue\"",
+    "\"module\": \"helper.rue\"",
+    "\"module\": \"helper/_helper.rue\"",
+]
+
+[[case]]
+name = "emit_deps_malformed_import_has_no_envelope"
+description = "RUE-810: malformed import shape has no canonical unresolved topology and emits diagnostics without JSON."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    @import();
+    0
+}
+""" },
+]
+args = ["--emit", "deps", "main.rue"]
+compile_fail = true
+error_contains = ["E0701", "expects 1 argument, found 0"]
+compile_stdout_not_contains = ["\"version\": 1", "\"status\":"]
+
+[[case]]
+name = "emit_deps_mixed_positional_with_missing_prefers_incomplete_graph"
+description = "RUE-810: canonical unresolved topology and diagnostics precede mixed positional/import validation."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper");
+const missing = @import("missing");
+fn main() -> i32 { 0 }
+""" },
+    { path = "helper.rue", source = """
+pub fn value() -> i32 { 42 }
+""" },
+]
+args = ["--emit", "deps", "main.rue", "helper.rue"]
+compile_fail = true
+error_contains = ["E0704", "missing"]
+compile_stderr_not_contains = ["must not also be loaded through @import"]
+compile_stdout_contains = [
+    "\"status\": \"incomplete\"",
+    "\"specifier\": \"missing\"",
+    "\"status\": \"missing\"",
+]
+
+[[case]]
+name = "mixed_positional_with_missing_prefers_canonical_diagnostic"
+description = "RUE-810: non-dependency compilation also reports the canonical unresolved import before mixed-source validation."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper");
+const missing = @import("missing");
+fn main() -> i32 { 0 }
+""" },
+    { path = "helper.rue", source = """
+pub fn value() -> i32 { 42 }
+""" },
+]
+args = ["main.rue", "helper.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0704", "missing"]
+compile_stderr_not_contains = ["must not also be loaded through @import"]
+
+[[case]]
+name = "missing_import_precedes_output_clobber_validation"
+description = "RUE-810: a closed attempted import revision renders its canonical diagnostic before output-path validation."
+files = [
+    { path = "main.rue", source = """
+const missing = @import("missing");
+fn main() -> i32 { 0 }
+""" },
+]
+args = ["main.rue", "-o", "main.rue"]
+compile_fail = true
+error_contains = ["E0704", "missing"]
+compile_stderr_not_contains = ["also an input source file"]
 
 [[case]]
 name = "emit_deps_rejects_mixed_emit_stages"

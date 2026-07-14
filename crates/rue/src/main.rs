@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -19,18 +19,18 @@ mod timing;
 use rue_compiler::CompilerSessionWork;
 use rue_compiler::{
     AcceptedImportSource, Ast, CanonicalRirOutput, CanonicalSemanticOutput, CompileError,
-    CompileErrors, CompileOptions, CompileWarning, CompilerSession, DiscoverySourceAssembler,
-    ErrorKind, FileId, FileMetadataFingerprint, ImportDiscoveryContext,
-    ImportDiscoveryRevisionArtifact, ImportObservation, ImportObservationLedger,
-    ImportObservationStatus, Lexer, LinkerMode, MultiFileFormatter, MultiFileJsonFormatter,
-    OptLevel, PhysicalFileIdentity, PipelineWork, PreviewFeature, PreviewFeatures, SourceInfo,
-    SourceMetadata, SourceSnapshot, Token, TypeInternPool, configure_thread_pool,
-    generate_emitted_asm, generate_liveness_info, generate_lowering_info, generate_mir,
-    generate_regalloc_info, generate_stack_frame_info, parse_source_snapshot_for_ast_presentation,
+    CompileErrors, CompileOptions, CompileWarning, CompilerSession, DependencyEnvelope,
+    DependencyEnvelopeStatus, DiscoverySourceAssembler, ErrorKind, FileId, FileMetadataFingerprint,
+    ImportDiscoveryContext, ImportDiscoveryRevisionArtifact, ImportDiscoveryRevisionStatus,
+    ImportObservation, ImportObservationLedger, ImportObservationStatus, Lexer, LinkerMode,
+    MultiFileFormatter, MultiFileJsonFormatter, OptLevel, PhysicalFileIdentity, PipelineWork,
+    PreviewFeature, PreviewFeatures, SourceInfo, SourceMetadata, SourceSnapshot, Token,
+    TypeInternPool, configure_thread_pool, generate_emitted_asm, generate_liveness_info,
+    generate_lowering_info, generate_mir, generate_regalloc_info, generate_stack_frame_info,
+    parse_source_snapshot_for_ast_presentation,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
-use serde::Serialize;
 
 /// Compilation stages that can be emitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -815,21 +815,6 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         if explicit_output {
             eprintln!("Warning: -o is ignored with --emit; IR goes to stdout");
         }
-    } else {
-        // In every executable-producing mode: the output must not clobber an
-        // input. Compare RESOLVED filesystem paths, not raw strings, so
-        // different spellings of the same file are all caught — `rue a.rue -o
-        // a.rue`, `rue ./prog -o prog`, or an extensionless source `rue prog
-        // -o prog`. The earlier guard keyed off a `.rue` suffix, so
-        // extensionless sources slipped through and the compiled output
-        // silently overwrote the source (RUE-351). Hard links are caught by
-        // inode, and the guard re-runs after @import discovery for sources
-        // that are not known yet at parse time (RUE-527).
-        if check_output_clobbers_source(&final_output_path, source_paths.iter().map(|s| s.as_str()))
-            .is_err()
-        {
-            return ParseResult::Error;
-        }
     }
 
     if log_format.is_some() && log_level.is_none() {
@@ -1501,99 +1486,12 @@ fn validate_manifest_allows_source(
     Err(())
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct DependencySource {
-    path: String,
-    kind: &'static str,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct DependencyImport {
-    from: String,
-    specifier: String,
-    resolved: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct DependencyOutput {
-    version: u32,
-    root: String,
-    sources: Vec<DependencySource>,
-    imports: Vec<DependencyImport>,
-}
-
 #[derive(Debug)]
 struct ImportDiscoveryResult {
     mixed_imports: Vec<PathBuf>,
     source_snapshot: SourceSnapshot,
     revision: Arc<ImportDiscoveryRevisionArtifact>,
     session: CompilerSession,
-}
-
-fn dependency_output_from_canonical_graph(
-    snapshot: &SourceSnapshot,
-    graph: &rue_compiler::CanonicalImportGraph,
-    positional_sources: &HashSet<PathBuf>,
-) -> DependencyOutput {
-    let physical_for = |module: &rue_compiler::ModuleId| {
-        snapshot
-            .metadata()
-            .logical_paths()
-            .find_map(|(file_id, logical)| {
-                (logical == module.as_str())
-                    .then(|| snapshot.metadata().physical_path(file_id))
-                    .flatten()
-            })
-            .and_then(|path| fs::canonicalize(path).ok())
-    };
-    let root = physical_for(graph.root()).unwrap_or_default();
-    let sources = snapshot
-        .files()
-        .filter_map(|source| {
-            fs::canonicalize(source.path).ok().map(|path| {
-                let kind = if source.file_id == snapshot.metadata().root_file_id() {
-                    "root"
-                } else if positional_sources.contains(&path) {
-                    "positional"
-                } else {
-                    "import"
-                };
-                DependencySource {
-                    path: path.display().to_string(),
-                    kind,
-                }
-            })
-        })
-        .collect();
-    let mut imports = Vec::new();
-    for record in graph.records() {
-        let Some(from) = physical_for(record.importer()) else {
-            continue;
-        };
-        let targets: Vec<_> = match record.resolution() {
-            rue_compiler::CanonicalImportResolution::Resolved(target) => vec![target],
-            rue_compiler::CanonicalImportResolution::Ambiguous {
-                file_module,
-                directory_module,
-            } => vec![file_module, directory_module],
-            rue_compiler::CanonicalImportResolution::Missing => Vec::new(),
-        };
-        for target in targets {
-            if let Some(resolved) = physical_for(target) {
-                imports.push(DependencyImport {
-                    from: from.display().to_string(),
-                    specifier: record.normalized_specifier().to_owned(),
-                    resolved: resolved.display().to_string(),
-                });
-            }
-        }
-    }
-    DependencyOutput {
-        version: 1,
-        root: root.display().to_string(),
-        sources,
-        imports,
-    }
 }
 
 /// Reject a source before discovery lexing if Rue's span representation cannot
@@ -1851,17 +1749,33 @@ fn discover_and_load_imports(
         eprintln!("Error: {error}");
     })?;
     debug_assert_eq!(final_plan.source_revision(), snapshot.source_revision());
-    let closed = staging.close_import_discovery(ledger).map_err(|_| {
-        let diagnostics = staging
-            .import_diagnostics()
-            .expect("failed closure publishes canonical import diagnostics");
-        let errors = CompileErrors::from(diagnostics.errors().to_vec());
-        let infos = snapshot
-            .files()
-            .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
-            .collect();
-        DiagnosticOutput::new(error_format, infos).print_errors(&errors);
-    })?;
+    let closed = match staging.close_import_discovery(ledger) {
+        Ok(closed) => closed,
+        Err(_) => {
+            let attempted = staging
+                .discovery_attempt()
+                .expect("failed closure publishes an attempted import revision")
+                .clone();
+            if DependencyEnvelope::from_closed_revision(&attempted).is_some() {
+                // Missing and ambiguous resolution are structurally closed and
+                // therefore have canonical topology for `--emit deps`. The
+                // caller owns their one diagnostic rendering so the envelope
+                // can be written first. All other failures have no topology.
+                attempted
+            } else {
+                let diagnostics = staging
+                    .import_diagnostics()
+                    .expect("failed closure publishes canonical import diagnostics");
+                let errors = CompileErrors::from(diagnostics.errors().to_vec());
+                let infos = snapshot
+                    .files()
+                    .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
+                    .collect();
+                DiagnosticOutput::new(error_format, infos).print_errors(&errors);
+                return Err(());
+            }
+        }
+    };
     Ok(ImportDiscoveryResult {
         mixed_imports,
         source_snapshot: snapshot,
@@ -1958,7 +1872,9 @@ fn main() {
         Ok(result) => result,
         Err(()) => std::process::exit(1),
     };
-    if !import_discovery.mixed_imports.is_empty() {
+    if import_discovery.revision.status() == ImportDiscoveryRevisionStatus::ClosedValid
+        && !import_discovery.mixed_imports.is_empty()
+    {
         eprintln!(
             "Error: source files listed after the root must not also be loaded through @import"
         );
@@ -1974,21 +1890,6 @@ fn main() {
         std::process::exit(1);
     }
     let source_snapshot = import_discovery.source_snapshot.clone();
-
-    // Re-run the output-clobber guard now that @import discovery has appended
-    // the full source set: the parse-time guard only saw positional paths, so
-    // `rue main.rue -o helper.rue` (helper loaded via @import) silently
-    // replaced helper.rue with the executable (RUE-527). --emit never writes
-    // the output path, so it is exempt, matching the parse-time guard.
-    if options.emit_stages.is_empty()
-        && check_output_clobbers_source(
-            &options.output_path,
-            source_snapshot.files().map(|source| source.path),
-        )
-        .is_err()
-    {
-        std::process::exit(1);
-    }
 
     // Create multi-file diagnostic formatters from the snapshot's borrowed
     // views so diagnostics and compilation necessarily observe the same input.
@@ -2009,27 +1910,20 @@ fn main() {
             );
             std::process::exit(1);
         }
-        let positional_sources = options
-            .source_paths
-            .iter()
-            .skip(1)
-            .filter_map(|path| fs::canonicalize(path).ok())
-            .collect();
-        let dependency_output = dependency_output_from_canonical_graph(
-            &source_snapshot,
-            import_discovery
-                .revision
-                .graph()
-                .expect("closed valid discovery has graph")
-                .graph(),
-            &positional_sources,
-        );
-        match serde_json::to_string_pretty(&dependency_output) {
+        let dependency_envelope =
+            DependencyEnvelope::from_closed_revision(&import_discovery.revision)
+                .expect("closed valid or resolution-incomplete discovery has dependency topology");
+        let incomplete = dependency_envelope.status == DependencyEnvelopeStatus::Incomplete;
+        match serde_json::to_string_pretty(&dependency_envelope) {
             Ok(json) => println!("{json}"),
             Err(e) => {
-                eprintln!("Error emitting dependency graph: {e}");
+                eprintln!("Error emitting dependency envelope: {e}");
                 std::process::exit(1);
             }
+        }
+        if incomplete {
+            diagnostics.print_errors(import_discovery.revision.diagnostics());
+            std::process::exit(1);
         }
         print_timing_output(
             &timing_data,
@@ -2039,6 +1933,26 @@ fn main() {
             None,
         );
         return;
+    }
+
+    if import_discovery.revision.status() != ImportDiscoveryRevisionStatus::ClosedValid {
+        diagnostics.print_errors(import_discovery.revision.diagnostics());
+        std::process::exit(1);
+    }
+
+    // Only a closed-valid revision may reach output validation. Canonical
+    // attempted-revision diagnostics take precedence over an output-path
+    // conflict, matching discovery failure ordering. Run the guard only now,
+    // once @import discovery has appended the full source set. --emit never
+    // writes the output path.
+    if options.emit_stages.is_empty()
+        && check_output_clobbers_source(
+            &options.output_path,
+            source_snapshot.files().map(|source| source.path),
+        )
+        .is_err()
+    {
+        std::process::exit(1);
     }
 
     // --emit and --benchmark-json both own stdout, so combining them would
@@ -2794,18 +2708,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_output_equals_extensionless_input_error() {
-        // RUE-351: `-o` targeting an extensionless input source is refused.
-        // Resolved-path identity, rather than a `.rue` suffix, protects the
-        // input; neither file needs to exist for the keys to match.
-        assert!(is_error(&parse_args_from(&["prog", "-o", "prog"])));
+    fn parse_defers_extensionless_output_identity_check() {
+        // RUE-351 remains enforced after closed discovery, when canonical
+        // import diagnostics have already received precedence.
+        assert!(matches!(
+            parse_args_from(&["prog", "-o", "prog"]),
+            ParseResult::Options(_)
+        ));
     }
 
     #[test]
-    fn parse_output_equals_input_different_spelling_error() {
-        // RUE-351: resolved-path comparison catches `./prog` vs `prog` — the
-        // same file spelled two ways — not just a byte-for-byte string match.
-        assert!(is_error(&parse_args_from(&["./prog", "-o", "prog"])));
+    fn parse_defers_different_spelling_output_identity_check() {
+        // The post-discovery guard still compares resolved path spellings.
+        assert!(matches!(
+            parse_args_from(&["./prog", "-o", "prog"]),
+            ParseResult::Options(_)
+        ));
     }
 
     #[test]
@@ -3004,10 +2922,13 @@ mod tests {
     fn emit_mode_skips_output_clobber_guard() {
         // --emit writes nothing to the output path, so -o naming a source
         // file is NOT a clobber (it is merely ignored, with a warning); the
-        // same spelling without --emit is still refused.
+        // executable mode defers the guard until import discovery has closed.
         let opts = unwrap_options(parse_args_from(&["--emit", "ast", "x.rue", "-o", "x.rue"]));
         assert_eq!(opts.emit_stages, vec![EmitStage::Ast]);
-        assert!(is_error(&parse_args_from(&["x.rue", "-o", "x.rue"])));
+        assert!(matches!(
+            parse_args_from(&["x.rue", "-o", "x.rue"]),
+            ParseResult::Options(_)
+        ));
     }
 
     #[test]
