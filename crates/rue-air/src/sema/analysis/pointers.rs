@@ -592,6 +592,265 @@ impl<'a> BodySema<'a> {
         Ok(AnalysisResult::new(air_ref, ptr_type))
     }
 
+    /// Analyze the preview raw-byte intrinsic family (RUE-879). Unlike typed
+    /// pointer operations, byte counts and offsets here are physical bytes and
+    /// access operations transfer exactly one byte.
+    pub(super) fn analyze_alloc_bytes_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        inst_ref: InstRef,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(PreviewFeature::RawBytes, "@alloc_bytes intrinsic", span)?;
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "alloc_bytes".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let size = self.analyze_inst(air, args[0].value, ctx)?;
+        self.require_intrinsic_type("alloc_bytes", size.ty, Type::U64, span)?;
+        let result_ty = Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
+        if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
+            && expected != result_ty
+            && !expected.is_error()
+            && !expected.is_never()
+        {
+            return Err(self.type_mismatch_error(expected, result_ty, span));
+        }
+        let args_start = air.add_extra(&[size.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: result_ty,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_ty))
+    }
+
+    pub(super) fn analyze_realloc_bytes_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(PreviewFeature::RawBytes, "@realloc_bytes intrinsic", span)?;
+        if args.len() != 3 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "realloc_bytes".to_string(),
+                    expected: 3,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let ptr = self.analyze_inst(air, args[0].value, ctx)?;
+        self.require_mut_u8_pointer("realloc_bytes", ptr.ty, span)?;
+        let old_size = self.analyze_inst(air, args[1].value, ctx)?;
+        let new_size = self.analyze_inst(air, args[2].value, ctx)?;
+        self.require_intrinsic_type("realloc_bytes", old_size.ty, Type::U64, span)?;
+        self.require_intrinsic_type("realloc_bytes", new_size.ty, Type::U64, span)?;
+        let args_start = air.add_extra(&[
+            ptr.air_ref.as_u32(),
+            old_size.air_ref.as_u32(),
+            new_size.air_ref.as_u32(),
+        ]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 3,
+            },
+            ty: ptr.ty,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, ptr.ty))
+    }
+
+    pub(super) fn analyze_free_bytes_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(PreviewFeature::RawBytes, "@free_bytes intrinsic", span)?;
+        if args.len() != 2 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "free_bytes".to_string(),
+                    expected: 2,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let ptr = self.analyze_inst(air, args[0].value, ctx)?;
+        self.require_mut_u8_pointer("free_bytes", ptr.ty, span)?;
+        let size = self.analyze_inst(air, args[1].value, ctx)?;
+        self.require_intrinsic_type("free_bytes", size.ty, Type::U64, span)?;
+        let args_start = air.add_extra(&[ptr.air_ref.as_u32(), size.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 2,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    pub(super) fn analyze_byte_read_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(PreviewFeature::RawBytes, "@byte_read intrinsic", span)?;
+        if args.len() != 2 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "byte_read".to_string(),
+                    expected: 2,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let ptr = self.analyze_inst(air, args[0].value, ctx)?;
+        self.require_u8_pointer("byte_read", ptr.ty, span)?;
+        let offset = self.analyze_inst(air, args[1].value, ctx)?;
+        self.require_intrinsic_type("byte_read", offset.ty, Type::U64, span)?;
+        let args_start = air.add_extra(&[ptr.air_ref.as_u32(), offset.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 2,
+            },
+            ty: Type::U8,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U8))
+    }
+
+    pub(super) fn analyze_byte_write_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(PreviewFeature::RawBytes, "@byte_write intrinsic", span)?;
+        if args.len() != 3 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "byte_write".to_string(),
+                    expected: 3,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let ptr = self.analyze_inst(air, args[0].value, ctx)?;
+        self.require_mut_u8_pointer("byte_write", ptr.ty, span)?;
+        let offset = self.analyze_inst(air, args[1].value, ctx)?;
+        let value = self.analyze_inst(air, args[2].value, ctx)?;
+        self.require_intrinsic_type("byte_write", offset.ty, Type::U64, span)?;
+        self.require_intrinsic_type("byte_write", value.ty, Type::U8, span)?;
+        let args_start = air.add_extra(&[
+            ptr.air_ref.as_u32(),
+            offset.air_ref.as_u32(),
+            value.air_ref.as_u32(),
+        ]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 3,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    fn require_intrinsic_type(
+        &self,
+        name: &str,
+        found: Type,
+        expected: Type,
+        span: Span,
+    ) -> CompileResult<()> {
+        if found == expected || found.is_error() || found.is_never() {
+            return Ok(());
+        }
+        Err(CompileError::new(
+            ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                name: name.to_string(),
+                expected: self.format_type_name(expected),
+                found: self.format_type_name(found),
+            })),
+            span,
+        ))
+    }
+
+    fn require_u8_pointer(&self, name: &str, ty: Type, span: Span) -> CompileResult<()> {
+        let is_u8 = match ty.kind() {
+            TypeKind::PtrConst(id) => self.type_pool.ptr_const_def(id) == Type::U8,
+            TypeKind::PtrMut(id) => self.type_pool.ptr_mut_def(id) == Type::U8,
+            _ => false,
+        };
+        if is_u8 || ty.is_error() || ty.is_never() {
+            return Ok(());
+        }
+        Err(CompileError::new(
+            ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                name: name.to_string(),
+                expected: "ptr const u8 or ptr mut u8".to_string(),
+                found: self.format_type_name(ty),
+            })),
+            span,
+        ))
+    }
+
+    fn require_mut_u8_pointer(&self, name: &str, ty: Type, span: Span) -> CompileResult<()> {
+        let is_mut_u8 = match ty.kind() {
+            TypeKind::PtrMut(id) => self.type_pool.ptr_mut_def(id) == Type::U8,
+            _ => false,
+        };
+        if is_mut_u8 || ty.is_error() || ty.is_never() {
+            return Ok(());
+        }
+        Err(CompileError::new(
+            ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                name: name.to_string(),
+                expected: "ptr mut u8".to_string(),
+                found: self.format_type_name(ty),
+            })),
+            span,
+        ))
+    }
+
     /// Analyze @raw / @field_ptr address-of intrinsics: forms a raw pointer to
     /// an addressable place without taking a reference.
     ///

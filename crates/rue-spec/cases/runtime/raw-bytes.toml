@@ -1,0 +1,261 @@
+# Preview raw physical-byte allocation and access intrinsics (RUE-879).
+
+[section]
+id = "runtime.raw_bytes"
+spec_chapter = "9.2"
+name = "Raw Byte Intrinsics"
+description = "Packed physical-byte allocation, access, and preview gating"
+
+[[case]]
+name = "packed_offsets_read_write_exactly_one_byte"
+spec = ["9.2:14a", "9.2:14b", "9.2:14d"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(3);
+        @byte_write(p, 0, 11);
+        @byte_write(p, 1, 22);
+        @byte_write(p, 2, 33);
+        let result: i32 = @intCast(@byte_read(p, 0))
+            + @intCast(@byte_read(p, 1))
+            + @intCast(@byte_read(p, 2));
+        @free_bytes(p, 3);
+        result
+    }
+}
+"""
+exit_code = 66
+
+[[case]]
+name = "byte_write_preserves_adjacent_bytes"
+spec = ["9.2:14d"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p = @alloc_bytes(3);
+        @byte_write(p, 0, 17);
+        @byte_write(p, 1, 34);
+        @byte_write(p, 2, 51);
+        @byte_write(p, 1, 68);
+        let result: i32 = @intCast(@byte_read(p, 0))
+            + @intCast(@byte_read(p, 1))
+            + @intCast(@byte_read(p, 2));
+        @free_bytes(p, 3);
+        result
+    }
+}
+"""
+exit_code = 136
+
+[[case]]
+name = "byte_read_accepts_const_u8_pointer"
+spec = ["9.2:14d", "9.2:14e"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let value: u8 = 79;
+    checked {
+        let p: ptr const u8 = @raw(value);
+        @intCast(@byte_read(p, 0))
+    }
+}
+"""
+exit_code = 79
+
+[[case]]
+name = "alloc_bytes_result_type_is_inferred"
+spec = ["9.2:14b", "9.2:14f"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p = @alloc_bytes(1);
+        @byte_write(p, 0, 71);
+        let result: i32 = @intCast(@byte_read(p, 0));
+        @free_bytes(p, 1);
+        result
+    }
+}
+"""
+exit_code = 71
+
+[[case]]
+name = "realloc_bytes_preserves_packed_prefix"
+spec = ["9.2:14b", "9.2:14c", "9.2:14f"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(2);
+        @byte_write(p, 0, 40);
+        @byte_write(p, 1, 2);
+        let q = @realloc_bytes(p, 2, 4);
+        @byte_write(q, 2, 3);
+        let result: i32 = @intCast(@byte_read(q, 0))
+            + @intCast(@byte_read(q, 1))
+            + @intCast(@byte_read(q, 2));
+        @free_bytes(q, 4);
+        result
+    }
+}
+"""
+exit_code = 45
+
+[[case]]
+name = "raw_byte_allocation_failure_returns_null"
+spec = ["9.2:14b", "8.6:4"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(18446744073709551615);
+        if @ptr_to_int(p) == 0 { 0 } else { @free_bytes(p, 18446744073709551615); 1 }
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "failed_realloc_bytes_preserves_original"
+spec = ["9.2:14c", "8.6:4"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p = @alloc_bytes(3);
+        @byte_write(p, 0, 11);
+        @byte_write(p, 1, 22);
+        @byte_write(p, 2, 33);
+        let q = @realloc_bytes(p, 3, 18446744073709551615);
+        if @ptr_to_int(q) == 0 {
+            let result: i32 = @intCast(@byte_read(p, 0))
+                + @intCast(@byte_read(p, 1))
+                + @intCast(@byte_read(p, 2));
+            @free_bytes(p, 3);
+            result
+        } else {
+            @free_bytes(q, 18446744073709551615);
+            1
+        }
+    }
+}
+"""
+exit_code = 66
+
+[[case]]
+name = "alloc_bytes_zero_returns_null"
+spec = ["9.2:14b"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p = @alloc_bytes(0);
+        if @ptr_to_int(p) == 0 { 0 } else { 1 }
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "free_bytes_null_zero_is_permitted"
+spec = ["9.2:14b"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p = @alloc_bytes(0);
+        @free_bytes(p, 0);
+        0
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "realloc_bytes_zero_frees_and_returns_null"
+spec = ["9.2:14c"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p = @alloc_bytes(1);
+        @byte_write(p, 0, 42);
+        let q = @realloc_bytes(p, 1, 0);
+        if @ptr_to_int(q) == 0 { 0 } else { 1 }
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "raw_bytes_require_preview"
+spec = ["9.2:14a", "9.2:14e", "8.4:1"]
+source = """
+fn main() -> i32 {
+    checked { let p: ptr mut u8 = @alloc_bytes(1); @free_bytes(p, 1); };
+    0
+}
+"""
+compile_fail = true
+error_contains = "--preview raw_bytes"
+
+[[case]]
+name = "raw_bytes_require_checked"
+spec = ["9.2:14a", "9.2:14e"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let p: ptr mut u8 = @alloc_bytes(1);
+    0
+}
+"""
+compile_fail = true
+error_contains = "[E1300]"
+
+[[case]]
+name = "byte_write_requires_u8_value"
+spec = ["9.2:14e"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(1);
+        let value: u64 = 1;
+        @byte_write(p, 0, value);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "expected u8"
+
+[[case]]
+name = "alloc_bytes_result_is_ptr_mut_u8"
+spec = ["9.2:14b", "9.2:14e"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i32 = @alloc_bytes(1);
+        @free_bytes(p, 1);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "ptr mut u8"

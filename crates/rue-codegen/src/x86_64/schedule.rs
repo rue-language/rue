@@ -81,10 +81,18 @@ fn get_latency(inst: &X86Inst) -> u32 {
         X86Inst::MovRI32 { .. } | X86Inst::MovRI64 { .. } => 1,
 
         // Memory loads: ~4 cycles (L1 cache hit)
-        X86Inst::MovRM { .. } | X86Inst::MovRMIndexed { .. } | X86Inst::MovRMSib { .. } => 4,
+        X86Inst::MovRM { .. }
+        | X86Inst::MovRMIndexed { .. }
+        | X86Inst::MovRMSib { .. }
+        | X86Inst::Movzx8RM { .. }
+        | X86Inst::Movzx8RMIndexed { .. } => 4,
 
         // Memory stores: 1 cycle to retire (store buffer)
-        X86Inst::MovMR { .. } | X86Inst::MovMRIndexed { .. } | X86Inst::MovMRSib { .. } => 1,
+        X86Inst::MovMR { .. }
+        | X86Inst::MovMRIndexed { .. }
+        | X86Inst::MovMRSib { .. }
+        | X86Inst::MovMR8 { .. }
+        | X86Inst::MovMR8Indexed { .. } => 1,
 
         // Simple arithmetic: 1 cycle
         X86Inst::AddRR { .. }
@@ -235,6 +243,10 @@ fn accesses_memory(inst: &X86Inst) -> bool {
             | X86Inst::MovMRIndexed { .. }
             | X86Inst::MovRMSib { .. }
             | X86Inst::MovMRSib { .. }
+            | X86Inst::Movzx8RM { .. }
+            | X86Inst::MovMR8 { .. }
+            | X86Inst::Movzx8RMIndexed { .. }
+            | X86Inst::MovMR8Indexed { .. }
             | X86Inst::Push { .. }
             | X86Inst::Pop { .. }
     )
@@ -253,8 +265,8 @@ fn regs_read(inst: &X86Inst) -> Vec<Reg> {
     match inst {
         X86Inst::MovRI32 { .. } | X86Inst::MovRI64 { .. } => {}
         X86Inst::MovRR { src, .. } => add_if_phys(src, &mut result),
-        X86Inst::MovRM { base, .. } => result.push(*base),
-        X86Inst::MovMR { base, src, .. } => {
+        X86Inst::MovRM { base, .. } | X86Inst::Movzx8RM { base, .. } => result.push(*base),
+        X86Inst::MovMR { base, src, .. } | X86Inst::MovMR8 { base, src, .. } => {
             result.push(*base);
             add_if_phys(src, &mut result);
         }
@@ -355,12 +367,12 @@ fn regs_read(inst: &X86Inst) -> Vec<Reg> {
             add_if_phys(dst, &mut result);
             add_if_phys(count, &mut result);
         }
-        X86Inst::MovRMIndexed { .. } => {
+        X86Inst::MovRMIndexed { .. } | X86Inst::Movzx8RMIndexed { .. } => {
             // Pre-regalloc indexed load. The scheduler runs after regalloc,
             // which rewrites this variant; the virtual base has no physical
             // register to record here.
         }
-        X86Inst::MovMRIndexed { src, .. } => {
+        X86Inst::MovMRIndexed { src, .. } | X86Inst::MovMR8Indexed { src, .. } => {
             // Pre-regalloc indexed store. The scheduler runs after regalloc,
             // which rewrites this variant; the virtual base has no physical
             // register to record here.
@@ -414,10 +426,11 @@ fn regs_written(inst: &X86Inst) -> Vec<Reg> {
         X86Inst::MovRI32 { dst, .. }
         | X86Inst::MovRI64 { dst, .. }
         | X86Inst::MovRR { dst, .. }
-        | X86Inst::MovRM { dst, .. } => {
+        | X86Inst::MovRM { dst, .. }
+        | X86Inst::Movzx8RM { dst, .. } => {
             add_if_phys(dst, &mut result);
         }
-        X86Inst::MovMR { .. } => {}
+        X86Inst::MovMR { .. } | X86Inst::MovMR8 { .. } => {}
         X86Inst::AddRR { dst, .. }
         | X86Inst::AddRR64 { dst, .. }
         | X86Inst::AddRI { dst, .. }
@@ -491,8 +504,10 @@ fn regs_written(inst: &X86Inst) -> Vec<Reg> {
         }
         X86Inst::Lea { dst, .. } => add_if_phys(dst, &mut result),
         X86Inst::Shl { dst, .. } => add_if_phys(dst, &mut result),
-        X86Inst::MovRMIndexed { dst, .. } => add_if_phys(dst, &mut result),
-        X86Inst::MovMRIndexed { .. } => {}
+        X86Inst::MovRMIndexed { dst, .. } | X86Inst::Movzx8RMIndexed { dst, .. } => {
+            add_if_phys(dst, &mut result)
+        }
+        X86Inst::MovMRIndexed { .. } | X86Inst::MovMR8Indexed { .. } => {}
         X86Inst::MovRMSib { dst, .. } => add_if_phys(dst, &mut result),
         X86Inst::MovMRSib { .. } => {} // Store doesn't write to register (only memory)
         X86Inst::CallRel { .. } | X86Inst::Syscall => {

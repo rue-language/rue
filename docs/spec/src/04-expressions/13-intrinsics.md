@@ -85,6 +85,11 @@ full semantics):
 | `@alloc` | Allocate a heap block | 1 expression (`u64` count) | inferred `ptr mut T` |
 | `@free` | Free a heap block | 2 expressions (`ptr mut T`, `u64` count) | `()` |
 | `@realloc` | Resize a heap block | 3 expressions (`ptr mut T`, `u64`, `u64`) | `ptr mut T` |
+| `@alloc_bytes` | Allocate physical bytes (preview `raw_bytes`) | 1 expression (`u64`) | `ptr mut u8` |
+| `@free_bytes` | Free physical bytes (preview `raw_bytes`) | 2 expressions (`ptr mut u8`, `u64`) | `()` |
+| `@realloc_bytes` | Resize physical bytes (preview `raw_bytes`) | 3 expressions (`ptr mut u8`, `u64`, `u64`) | `ptr mut u8` |
+| `@byte_read` | Read one physical byte (preview `raw_bytes`) | 2 expressions (`ptr const u8`/`ptr mut u8`, `u64`) | `u8` |
+| `@byte_write` | Write one physical byte (preview `raw_bytes`) | 3 expressions (`ptr mut u8`, `u64`, `u8`) | `()` |
 
 {{ rule(id="4.13:5b", cat="informative") }}
 

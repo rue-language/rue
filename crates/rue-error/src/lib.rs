@@ -529,6 +529,10 @@ pub enum PreviewFeature {
     /// in-scope binding of the same name. Mixed forms (`P { x, y: 2 }`) and
     /// `Self { a, b }` in methods are supported.
     FieldInitShorthand,
+    /// Raw physical-byte heap and memory access intrinsics (RUE-879). These
+    /// operations intentionally bypass Rue's slot-sized typed-pointer model so
+    /// source-defined packed representations can use the runtime byte ABI.
+    RawBytes,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -553,6 +557,7 @@ impl PreviewFeature {
             PreviewFeature::StringTrio => "string_trio",
             PreviewFeature::InlineTypeCtorPath => "inline_type_ctor_paths",
             PreviewFeature::FieldInitShorthand => "field_init_shorthand",
+            PreviewFeature::RawBytes => "raw_bytes",
         }
     }
 
@@ -565,6 +570,7 @@ impl PreviewFeature {
             PreviewFeature::StringTrio => "ADR-0043",
             PreviewFeature::InlineTypeCtorPath => "ADR-0025",
             PreviewFeature::FieldInitShorthand => "RUE-613",
+            PreviewFeature::RawBytes => "RUE-879",
         }
     }
 
@@ -576,6 +582,7 @@ impl PreviewFeature {
             PreviewFeature::StringTrio,
             PreviewFeature::InlineTypeCtorPath,
             PreviewFeature::FieldInitShorthand,
+            PreviewFeature::RawBytes,
         ]
     }
 
@@ -603,6 +610,7 @@ impl std::str::FromStr for PreviewFeature {
             "string_trio" => Ok(PreviewFeature::StringTrio),
             "inline_type_ctor_paths" => Ok(PreviewFeature::InlineTypeCtorPath),
             "field_init_shorthand" => Ok(PreviewFeature::FieldInitShorthand),
+            "raw_bytes" => Ok(PreviewFeature::RawBytes),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -2584,7 +2592,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, slices, string_trio, inline_type_ctor_paths, field_init_shorthand"
+            "test_infra, slices, string_trio, inline_type_ctor_paths, field_init_shorthand, raw_bytes"
         );
     }
 

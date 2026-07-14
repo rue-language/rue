@@ -280,6 +280,30 @@ impl RegAlloc {
                 });
             }
 
+            Aarch64Inst::Ldrb { dst, base, offset } => {
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::Ldrb { dst: dst_op, base, offset });
+                    },
+                    store |spill_offset| {
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset: spill_offset,
+                        });
+                    },
+                );
+            }
+
+            Aarch64Inst::Strb { src, base, offset } => {
+                let src_op = self.load_operand(mir, src, Reg::X9)?;
+                mir.push(Aarch64Inst::Strb {
+                    src: src_op,
+                    base,
+                    offset,
+                });
+            }
+
             Aarch64Inst::AddRR { dst, src1, src2 } => {
                 self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::AddRR {
                     dst: d,
@@ -782,6 +806,48 @@ impl RegAlloc {
                 mir.push(Aarch64Inst::Str {
                     src: src_op,
                     base: base_phys,
+                    offset: 0,
+                });
+            }
+
+            Aarch64Inst::LdrbIndexed { dst, base } => {
+                let base_reg = self.load_operand(mir, Operand::Virtual(base), Reg::X9)?;
+                let base_phys = base_reg.as_physical();
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => mir.push(Aarch64Inst::Ldrb {
+                        dst: Operand::Physical(reg),
+                        base: base_phys,
+                        offset: 0,
+                    }),
+                    Some(Allocation::Spill(offset)) => {
+                        mir.push(Aarch64Inst::Ldrb {
+                            dst: Operand::Physical(Reg::X10),
+                            base: base_phys,
+                            offset: 0,
+                        });
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X10),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
+                    }
+                    None => mir.push(Aarch64Inst::Ldrb {
+                        dst,
+                        base: base_phys,
+                        offset: 0,
+                    }),
+                }
+            }
+
+            Aarch64Inst::StrbIndexed { src, base } => {
+                let src_op = self.load_operand(mir, src, Reg::X9)?;
+                let base_reg = self.load_operand(mir, Operand::Virtual(base), Reg::X10)?;
+                mir.push(Aarch64Inst::Strb {
+                    src: src_op,
+                    base: base_reg.as_physical(),
                     offset: 0,
                 });
             }

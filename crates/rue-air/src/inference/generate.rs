@@ -1490,6 +1490,19 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
+                } else if intrinsic_name == "alloc_bytes" {
+                    // @alloc_bytes(size: u64) -> ptr mut u8.
+                    for arg_ref in args.iter() {
+                        let info = self.generate(*arg_ref, ctx);
+                        self.add_constraint(Constraint::equal(
+                            info.ty,
+                            InferType::Concrete(Type::U64),
+                            info.span,
+                        ));
+                    }
+                    InferType::Concrete(Type::new_ptr_mut(
+                        self.type_pool.intern_ptr_mut_from_type(Type::U8),
+                    ))
                 } else if intrinsic_name == "realloc" {
                     // @realloc(ptr: ptr mut T, old_count: u64, new_count: u64)
                     // -> ptr mut T. The result type is the same pointer type as
@@ -1514,6 +1527,20 @@ impl<'a> ConstraintGenerator<'a> {
                         self.add_constraint(Constraint::equal(result_ty.clone(), arg0_ty, span));
                     }
                     result_ty
+                } else if intrinsic_name == "realloc_bytes" {
+                    // @realloc_bytes(ptr mut u8, u64, u64) -> ptr mut u8.
+                    let ptr_ty =
+                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
+                    for (i, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        let expected = if i == 0 { ptr_ty } else { Type::U64 };
+                        self.add_constraint(Constraint::equal(
+                            info.ty,
+                            InferType::Concrete(expected),
+                            info.span,
+                        ));
+                    }
+                    InferType::Concrete(ptr_ty)
                 } else if intrinsic_name == "free" {
                     // @free(ptr: ptr mut T, count: u64) -> (). Constrain the
                     // `count` (second) argument to u64.
@@ -1523,6 +1550,51 @@ impl<'a> ConstraintGenerator<'a> {
                             self.add_constraint(Constraint::equal(
                                 info.ty,
                                 InferType::Concrete(Type::U64),
+                                info.span,
+                            ));
+                        }
+                    }
+                    InferType::Concrete(Type::UNIT)
+                } else if intrinsic_name == "free_bytes" {
+                    let ptr_ty =
+                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
+                    for (i, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        let expected = if i == 0 { ptr_ty } else { Type::U64 };
+                        self.add_constraint(Constraint::equal(
+                            info.ty,
+                            InferType::Concrete(expected),
+                            info.span,
+                        ));
+                    }
+                    InferType::Concrete(Type::UNIT)
+                } else if intrinsic_name == "byte_read" {
+                    for (i, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        if i == 1 {
+                            self.add_constraint(Constraint::equal(
+                                info.ty,
+                                InferType::Concrete(Type::U64),
+                                info.span,
+                            ));
+                        }
+                    }
+                    InferType::Concrete(Type::U8)
+                } else if intrinsic_name == "byte_write" {
+                    let ptr_ty =
+                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
+                    for (i, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        let expected = match i {
+                            0 => Some(ptr_ty),
+                            1 => Some(Type::U64),
+                            2 => Some(Type::U8),
+                            _ => None,
+                        };
+                        if let Some(expected) = expected {
+                            self.add_constraint(Constraint::equal(
+                                info.ty,
+                                InferType::Concrete(expected),
                                 info.span,
                             ));
                         }
