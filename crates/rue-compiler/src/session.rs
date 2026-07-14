@@ -819,8 +819,9 @@ impl SemanticDependencyInputManifest {
     pub fn body_dependencies(&self) -> &[StableBodyDependencyInputRecord] {
         &self.body_dependencies
     }
-    /// Observation-only durable candidates. No production body query consumes
-    /// these records in this slice.
+    /// Durable candidates published by this successful dependency manifest.
+    /// Production reuse consumes the session's last-successful canonical body
+    /// baseline; this accessor exposes the same stable artifacts to planners.
     pub fn durable_ordinary_bodies(&self) -> &[crate::DurableOrdinaryBody] {
         &self.durable_ordinary_bodies
     }
@@ -1139,6 +1140,7 @@ pub struct CompilerSession {
     dependency_manifest_cache: Vec<Arc<SemanticDependencyInputManifest>>,
     invalidation_plan_cache: VecDeque<InvalidationPlanCacheEntry>,
     durable_declaration_cache: Option<DurableDeclarationCache>,
+    last_successful_body_cache: Option<DurableOrdinaryBodyCache>,
 }
 
 #[derive(Debug)]
@@ -1148,6 +1150,12 @@ struct DurableDeclarationCache {
     preview_features: crate::PreviewFeatures,
     fingerprints: Arc<[StableDefinitionInputFingerprint]>,
     semantics: Arc<[DurableDeclarationSemantic]>,
+}
+
+#[derive(Debug, Clone)]
+struct DurableOrdinaryBodyCache {
+    manifest: Arc<SemanticDependencyInputManifest>,
+    bodies: Arc<[crate::DurableOrdinaryBody]>,
 }
 
 #[derive(Debug)]
@@ -1162,6 +1170,7 @@ struct SemanticCacheEntry {
     input: CodegenInputDescriptor,
     imports: CanonicalImportGraph,
     result: Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
+    successful_body_cache: Option<DurableOrdinaryBodyCache>,
 }
 
 #[derive(Debug)]
@@ -2132,6 +2141,9 @@ impl CompilerSession {
             .find(|entry| entry.input == input && entry.imports == imports)
         {
             self.work.semantic.reuses += 1;
+            if entry.result.is_ok() {
+                self.last_successful_body_cache = entry.successful_body_cache.clone();
+            }
             let result = entry.result.clone();
             let source = self
                 .published_snapshot
@@ -2166,6 +2178,64 @@ impl CompilerSession {
                     .collect(),
                 Err(failure) => Err(failure.errors.clone()),
             };
+        let mut durable_body_work = crate::DurableBodyWork::default();
+        let mut durable_body_candidates = Vec::new();
+        if let (Some(previous), Ok(fingerprints), Ok(prepared_definitions)) = (
+            self.last_successful_body_cache.as_ref(),
+            current_fingerprints.as_ref(),
+            prepared.as_ref(),
+        ) {
+            let current = fingerprints
+                .iter()
+                .map(|fingerprint| (fingerprint.key.clone(), fingerprint))
+                .collect::<BTreeMap<_, _>>();
+            let preflight = preflight_body_invalidation_manifest(
+                &previous.manifest,
+                input.semantic.clone(),
+                imports.clone(),
+                fingerprints,
+            );
+            let invalidation = plan_semantic_invalidation(&previous.manifest, &preflight);
+            for candidate in previous.bodies.iter() {
+                durable_body_work.candidate_comparisons += 1;
+                let inputs = candidate.inputs();
+                let exact = inputs.reusable_boundary_supported()
+                    && invalidation
+                        .reusable()
+                        .binary_search(candidate.owner())
+                        .is_ok()
+                    && current
+                        .get(candidate.owner())
+                        .is_some_and(|value| *value == inputs.fingerprint())
+                    && inputs.direct_dependency_inputs().iter().all(|dependency| {
+                        current
+                            .get(&dependency.key)
+                            .is_some_and(|value| *value == dependency)
+                    });
+                let Some(record) = prepared_definitions
+                    .definitions()
+                    .definition_by_key(candidate.owner())
+                    .filter(|_| exact)
+                else {
+                    durable_body_work.candidate_fallbacks += 1;
+                    continue;
+                };
+                let Some(body_span) = record.body_span() else {
+                    durable_body_work.candidate_fallbacks += 1;
+                    continue;
+                };
+                match candidate.project_semantic_body(&mut durable_body_work) {
+                    Ok(body) => durable_body_candidates.push(
+                        crate::canonical_semantic::PreparedDurableBodyCandidate {
+                            owner: candidate.owner().clone(),
+                            body_span,
+                            body,
+                        },
+                    ),
+                    Err(_) => durable_body_work.candidate_fallbacks += 1,
+                }
+            }
+        }
         let mut reuse_plan = crate::canonical_semantic::CanonicalDeclarationReuseWork::default();
         let reusable = self.durable_declaration_cache.as_ref().and_then(|cache| {
             reuse_plan.plan_executions = 1;
@@ -2202,10 +2272,18 @@ impl CompilerSession {
                     prepared,
                     &definitions,
                     &durable,
+                    durable_body_candidates,
+                    durable_body_work,
                 )
             } else {
                 analyze_prepared_canonical_program_with_durable_export(
-                    &merged, &rir, options, prepared, reuse_plan,
+                    &merged,
+                    &rir,
+                    options,
+                    prepared,
+                    reuse_plan,
+                    durable_body_candidates,
+                    durable_body_work,
                 )
                 .map(|analysis| {
                     cold_durable = analysis
@@ -2264,11 +2342,33 @@ impl CompilerSession {
             ) {
                 cache.fingerprints = fingerprints.into();
             }
+            let bodies = build_supported_ordinary_body_cache(
+                output,
+                merged.definitions().source_snapshot(),
+                options.target,
+                &options.preview_features,
+            )
+            .unwrap_or_else(|_| Arc::from([]));
+            let manifest = body_invalidation_manifest(
+                input.semantic.clone(),
+                imports.clone(),
+                output.body_owner_issuer(),
+                merged.definitions().source_snapshot(),
+                bodies.clone(),
+            );
+            self.last_successful_body_cache = Some(DurableOrdinaryBodyCache {
+                manifest: Arc::new(manifest),
+                bodies,
+            });
         }
         self.semantic_cache.push(SemanticCacheEntry {
             input: input.clone(),
             imports,
             result: result.clone(),
+            successful_body_cache: result
+                .is_ok()
+                .then(|| self.last_successful_body_cache.clone())
+                .flatten(),
         });
         self.work.semantic_entries = self.semantic_cache.len();
         self.work.semantic_records.push(SemanticQueryRecord {
@@ -3595,6 +3695,211 @@ fn stable_kind_tag(kind: StableDefinitionKind) -> u8 {
         StableDefinitionKind::Method => 6,
         StableDefinitionKind::AssociatedFunction => 7,
     }
+}
+
+/// Build the supported ordinary-body baseline directly from the successful
+/// canonical semantic artifact. This closes the publication circularity: no
+/// current dependency manifest (and therefore no second analysis or bind) is
+/// needed before the next request can authorize reuse.
+fn build_supported_ordinary_body_cache(
+    semantic: &CanonicalSemanticOutput,
+    snapshot: &SourceSnapshot,
+    target: crate::Target,
+    preview_features: &crate::PreviewFeatures,
+) -> Result<Arc<[crate::DurableOrdinaryBody]>, CompileErrors> {
+    let definitions = semantic.body_owner_issuer();
+    // RUE-883 supports ordinary free-function call topology only. Other body
+    // dependency families are retained for their dedicated follow-up slices
+    // and fail closed here so a reuse hit never drops dependency evidence.
+    let supported = semantic.ordinary_free_function_dependencies_complete()
+        && semantic.specialized_free_function_dependencies_complete()
+        && semantic.non_generic_named_method_dependencies_complete()
+        && semantic.generic_named_method_dependencies_complete()
+        && semantic.named_destructor_dependencies_complete()
+        && semantic.implicit_named_destructor_dependencies_complete()
+        && semantic.declaration_type_dependencies_complete()
+        && semantic.declaration_type_call_head_dependencies_complete()
+        && semantic.supported_type_call_heads_complete()
+        && semantic.named_value_const_dependencies_complete()
+        && semantic.specialized_free_function_origins().is_empty()
+        && semantic.specialized_free_function_dependencies().is_empty()
+        && semantic.named_method_dependencies().is_empty()
+        && semantic.named_destructor_dependencies().is_empty()
+        && semantic.implicit_named_destructor_dependencies().is_empty()
+        && semantic.declaration_type_dependencies().is_empty()
+        && semantic
+            .declaration_type_call_head_dependencies()
+            .is_empty()
+        && semantic
+            .declaration_builtin_type_call_head_dependencies()
+            .is_empty()
+        && semantic.named_const_dependencies().is_empty()
+        && semantic.body_named_dependencies().is_empty();
+    if !supported {
+        return Ok(Arc::from([]));
+    }
+    let fingerprints = definitions
+        .definitions()
+        .iter()
+        .map(|record| {
+            stable_definition_input_fingerprint(snapshot, record)
+                .map(|fingerprint| (record.stable_key().clone(), fingerprint))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let mut records = Vec::with_capacity(semantic.durable_ordinary_body_payloads().len());
+    for payload in semantic.durable_ordinary_body_payloads() {
+        let fingerprint = fingerprints
+            .get(&payload.owner)
+            .cloned()
+            .ok_or_else(|| invalid_dependency_manifest("durable body owner is absent"))?;
+        let mut dependency_keys = Vec::new();
+        for event in semantic.ordinary_free_function_dependencies() {
+            let caller =
+                stable_free_function_endpoint(definitions, event.caller_file, &event.caller_name)?;
+            let caller = stable_token_endpoint(semantic, event.caller_token, &caller)?;
+            if caller == payload.owner {
+                dependency_keys.push(stable_free_function_endpoint(
+                    definitions,
+                    event.callee_file,
+                    &event.callee_name,
+                )?);
+            }
+        }
+        dependency_keys.sort();
+        dependency_keys.dedup();
+        let direct_dependency_inputs = dependency_keys
+            .iter()
+            .map(|key| {
+                fingerprints
+                    .get(key)
+                    .cloned()
+                    .ok_or_else(|| invalid_dependency_manifest("durable body dependency is absent"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        records.push(StableBodyDependencyInputRecord {
+            owner: payload.owner.clone(),
+            fingerprint,
+            target,
+            preview_features: StablePreviewFeatures::new(preview_features),
+            direct_dependency_inputs: direct_dependency_inputs.into(),
+            builtin_type_call_heads: Arc::from([]),
+            blockers: Arc::from([]),
+        });
+    }
+    let mut work = crate::DurableBodyWork::default();
+    crate::finalize_durable_ordinary_bodies(
+        semantic.durable_ordinary_body_payloads(),
+        &records,
+        &mut work,
+    )
+    .map_err(|_| invalid_dependency_manifest("durable body finalization failed"))
+}
+
+fn stable_module_imports(imports: &CanonicalImportGraph) -> Arc<[StableModuleImportDependency]> {
+    imports
+        .records()
+        .iter()
+        .map(|record| match record.resolution() {
+            CanonicalImportResolution::Resolved(target) => StableModuleImportDependency::Resolved {
+                importer: record.importer().clone(),
+                normalized_specifier: Arc::from(record.normalized_specifier()),
+                target: target.clone(),
+            },
+            CanonicalImportResolution::Missing => StableModuleImportDependency::Missing {
+                importer: record.importer().clone(),
+                normalized_specifier: Arc::from(record.normalized_specifier()),
+            },
+            CanonicalImportResolution::Ambiguous {
+                file_module,
+                directory_module,
+            } => StableModuleImportDependency::Ambiguous {
+                importer: record.importer().clone(),
+                normalized_specifier: Arc::from(record.normalized_specifier()),
+                file_module: file_module.clone(),
+                directory_module: directory_module.clone(),
+            },
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+fn body_invalidation_manifest(
+    input: SemanticInputDescriptor,
+    imports: CanonicalImportGraph,
+    definitions: &BoundDefinitionSet,
+    snapshot: &SourceSnapshot,
+    bodies: Arc<[crate::DurableOrdinaryBody]>,
+) -> SemanticDependencyInputManifest {
+    let definition_fingerprints = definitions
+        .definitions()
+        .iter()
+        .map(|record| stable_definition_input_fingerprint(snapshot, record))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+    let mut free_function_dependencies = bodies
+        .iter()
+        .flat_map(|body| {
+            body.inputs()
+                .direct_dependency_inputs()
+                .iter()
+                .map(|dependency| StableFreeFunctionDependency {
+                    caller: body.owner().clone(),
+                    callee: dependency.key.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    free_function_dependencies.sort();
+    free_function_dependencies.dedup();
+    let body_dependencies = bodies
+        .iter()
+        .map(|body| body.inputs.clone())
+        .collect::<Vec<_>>();
+    let definition_keys = definitions
+        .definitions()
+        .iter()
+        .map(|record| record.stable_key().clone())
+        .collect::<Vec<_>>();
+    let module_imports = stable_module_imports(&imports);
+    SemanticDependencyInputManifest {
+        input,
+        imports,
+        definitions: definition_keys.into(),
+        definition_fingerprints: definition_fingerprints.into(),
+        module_imports,
+        free_function_dependencies: free_function_dependencies.into(),
+        named_method_dependencies: Arc::from([]),
+        named_destructor_dependencies: Arc::from([]),
+        implicit_named_destructor_dependencies: Arc::from([]),
+        declaration_type_dependencies: Arc::from([]),
+        declaration_type_call_head_dependencies: Arc::from([]),
+        builtin_type_call_head_inputs: Arc::from([]),
+        named_const_dependencies: Arc::from([]),
+        body_dependencies: body_dependencies.into(),
+        durable_ordinary_bodies: bodies,
+        body_dependency_blockers: Arc::from([]),
+        dependency_blockers: Arc::from([]),
+        definition_universe_complete: true,
+        work: SemanticDependencyManifestWork::default(),
+    }
+}
+
+fn preflight_body_invalidation_manifest(
+    previous: &SemanticDependencyInputManifest,
+    input: SemanticInputDescriptor,
+    imports: CanonicalImportGraph,
+    fingerprints: &[StableDefinitionInputFingerprint],
+) -> SemanticDependencyInputManifest {
+    let mut current = previous.clone();
+    current.input = input;
+    current.imports = imports.clone();
+    current.module_imports = stable_module_imports(&imports);
+    current.definitions = fingerprints
+        .iter()
+        .map(|value| value.key.clone())
+        .collect::<Vec<_>>()
+        .into();
+    current.definition_fingerprints = fingerprints.to_vec().into();
+    current
 }
 
 fn stable_free_function_endpoint(
@@ -5198,6 +5503,7 @@ mod tests {
                         "synthetic prior failed opt variant".to_string(),
                     ),
                 ))),
+                successful_body_cache: None,
             },
         );
 
@@ -6468,6 +6774,21 @@ mod tests {
             SemanticDependencyIncompleteReason::AnonymousDropOwnerUnavailable
         );
         assert!(!manifest.implicit_named_destructor_dependencies_complete());
+        assert!(manifest.durable_ordinary_bodies().is_empty());
+        assert!(
+            session
+                .last_successful_body_cache
+                .as_ref()
+                .is_some_and(|cache| cache.bodies.is_empty())
+        );
+        let warm = session
+            .semantic(&CompileOptions {
+                opt_level: OptLevel::O1,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(warm.work().durable_bodies.import_attempts, 0);
+        assert_eq!(warm.work().durable_bodies.reused_bodies, 0);
         assert!(manifest.body_dependency_blockers().iter().any(|blocker| {
             blocker.owner().is_none()
                 && blocker.surface() == SemanticDependencySurface::BodyOwner
@@ -7369,7 +7690,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_ordinary_body_candidates_are_observational_and_round_trip_fresh_epoch() {
+    fn durable_ordinary_bodies_reuse_in_the_canonical_worklist_and_match_fresh_output() {
         let source = snapshot(
             &[(
                 41,
@@ -7396,7 +7717,7 @@ mod tests {
         assert_eq!(work.import_failures, 0);
         assert_eq!(work.atomic_discards, 0);
         assert!(work.installed_instructions > 0);
-        // This boundary validates candidates but never skips ordinary work.
+        // The cold request analyzes and publishes each reachable body once.
         let semantic_work = session.work().semantic_records.last().unwrap().work;
         assert_eq!(semantic_work.body_analysis.bodies_attempted, 2);
         assert_eq!(semantic_work.body_analysis.bodies_succeeded, 2);
@@ -7406,5 +7727,294 @@ mod tests {
         assert_eq!(semantic_work.durable_bodies.conversion_completions, 2);
         assert_eq!(semantic_work.durable_bodies.reused_bodies, 0);
         assert_eq!(semantic_work.durable_bodies.skipped_body_analyses, 0);
+
+        let optimized_options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let reused = session.semantic(&optimized_options).unwrap();
+        let reused_work = reused.work();
+        assert_eq!(reused_work.body_analysis.bodies_attempted, 0);
+        assert_eq!(reused_work.body_analysis.bodies_succeeded, 0);
+        assert_eq!(reused_work.durable_bodies.candidate_comparisons, 2);
+        assert_eq!(reused_work.durable_bodies.import_attempts, 2);
+        assert_eq!(reused_work.durable_bodies.import_successes, 2);
+        assert_eq!(reused_work.durable_bodies.reused_bodies, 2);
+        assert_eq!(reused_work.durable_bodies.skipped_body_analyses, 2);
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&source).into_result().unwrap();
+        let fresh = fresh.semantic(&optimized_options).unwrap();
+        assert_eq!(
+            format!("{:?}", reused.functions()),
+            format!("{:?}", fresh.functions())
+        );
+        assert_eq!(reused.strings(), fresh.strings());
+        assert_eq!(
+            format!("{:?}", reused.warnings()),
+            format!("{:?}", fresh.warnings())
+        );
+        assert_eq!(
+            format!("{:?}", reused.ordinary_free_function_dependencies()),
+            format!("{:?}", fresh.ordinary_free_function_dependencies())
+        );
+        assert_eq!(
+            format!("{:?}", reused.analyzed_body_owners()),
+            format!("{:?}", fresh.analyzed_body_owners())
+        );
+    }
+
+    #[test]
+    fn durable_ordinary_body_edit_reuses_unaffected_reachable_body_and_failure_keeps_baseline() {
+        let original = snapshot(
+            &[(
+                51,
+                "/p/main.rue",
+                "main.rue",
+                "fn a() -> i32 { 1 }\nfn b() -> i32 { 2 }\nfn main() -> i32 { a() + b() }",
+            )],
+            51,
+        );
+        let edited = snapshot(
+            &[(
+                51,
+                "/p/main.rue",
+                "main.rue",
+                "fn a() -> i32 { 3 }\nfn b() -> i32 { 2 }\nfn main() -> i32 { a() + b() }",
+            )],
+            51,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&original).into_result().unwrap();
+        session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+
+        session.update(&edited).into_result().unwrap();
+        let edited_output = session.semantic(&CompileOptions::default()).unwrap();
+        let work = edited_output.work();
+        assert_eq!(work.durable_bodies.candidate_comparisons, 3);
+        assert_eq!(work.durable_bodies.reused_bodies, 1);
+        assert_eq!(work.durable_bodies.skipped_body_analyses, 1);
+        assert_eq!(work.body_analysis.bodies_attempted, 2);
+        assert_eq!(work.body_analysis.bodies_succeeded, 2);
+        session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+
+        let invalid = snapshot(
+            &[(
+                51,
+                "/p/main.rue",
+                "main.rue",
+                "fn a() -> i32 { false }\nfn b() -> i32 { 2 }\nfn main() -> i32 { a() + b() }",
+            )],
+            51,
+        );
+        session.update(&invalid).into_result().unwrap();
+        assert!(session.semantic(&CompileOptions::default()).is_err());
+
+        session.update(&edited).into_result().unwrap();
+        let recovered_options = CompileOptions {
+            opt_level: OptLevel::O2,
+            ..CompileOptions::default()
+        };
+        let recovered = session.semantic(&recovered_options).unwrap();
+        assert_eq!(recovered.work().durable_bodies.reused_bodies, 3);
+        assert_eq!(recovered.work().body_analysis.bodies_attempted, 0);
+    }
+
+    #[test]
+    fn durable_ordinary_body_import_rejection_falls_back_atomically() {
+        let source = snapshot(
+            &[(
+                61,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }",
+            )],
+            61,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        let cache = session.last_successful_body_cache.as_mut().unwrap();
+        let mut bodies = cache.bodies.to_vec();
+        let mut instructions = bodies[0].payload.instructions.to_vec();
+        instructions[0].anchor.end = u32::MAX;
+        bodies[0].payload.instructions = instructions.into();
+        cache.bodies = bodies.into();
+
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let output = session.semantic(&options).unwrap();
+        let work = output.work();
+        assert_eq!(work.durable_bodies.candidate_comparisons, 2);
+        assert_eq!(work.durable_bodies.projection_completions, 2);
+        assert_eq!(work.durable_bodies.import_attempts, 2);
+        assert_eq!(work.durable_bodies.import_successes, 1);
+        assert_eq!(work.durable_bodies.import_failures, 1);
+        assert_eq!(work.durable_bodies.atomic_discards, 1);
+        assert_eq!(work.durable_bodies.candidate_fallbacks, 1);
+        assert_eq!(work.durable_bodies.reused_bodies, 1);
+        assert_eq!(work.body_analysis.bodies_attempted, 1);
+        assert_eq!(work.body_analysis.bodies_succeeded, 1);
+    }
+
+    #[test]
+    fn warning_producing_ordinary_body_is_not_reused_and_warning_is_recomputed() {
+        let source = snapshot(
+            &[(
+                62,
+                "/p/main.rue",
+                "main.rue",
+                "fn main() -> i32 { let unused = 1; 0 }",
+            )],
+            62,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert!(!cold.warnings().is_empty());
+        assert!(
+            session
+                .last_successful_body_cache
+                .as_ref()
+                .is_some_and(|cache| cache.bodies.is_empty())
+        );
+
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let warm = session.semantic(&options).unwrap();
+        assert_eq!(warm.work().durable_bodies.reused_bodies, 0);
+        assert_eq!(warm.work().body_analysis.bodies_attempted, 1);
+        assert_eq!(
+            format!("{:?}", warm.warnings()),
+            format!("{:?}", cold.warnings())
+        );
+    }
+
+    #[test]
+    fn unreachable_composite_body_candidate_is_never_imported() {
+        let original = snapshot(
+            &[(
+                71,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> [i32; 2] { [1, 2] }\nfn main() -> i32 { helper()[0] }",
+            )],
+            71,
+        );
+        let edited = snapshot(
+            &[(
+                71,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> [i32; 2] { [1, 2] }\nfn main() -> i32 { 0 }",
+            )],
+            71,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&original).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        session.update(&edited).into_result().unwrap();
+        let reused = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(reused.work().durable_bodies.candidate_comparisons, 2);
+        assert_eq!(reused.work().durable_bodies.import_attempts, 0);
+        assert_eq!(reused.work().durable_bodies.reused_bodies, 0);
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&edited).into_result().unwrap();
+        let fresh = fresh.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(
+            format!("{:?}", reused.functions()),
+            format!("{:?}", fresh.functions())
+        );
+        assert_eq!(reused.type_pool().stats(), fresh.type_pool().stats());
+    }
+
+    #[test]
+    fn rejected_composite_import_does_not_mutate_the_live_type_epoch() {
+        let source = snapshot(
+            &[(72, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
+            72,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        let cache = session.last_successful_body_cache.as_mut().unwrap();
+        let mut bodies = cache.bodies.to_vec();
+        bodies[0].payload.return_type =
+            crate::DurableType::PtrConst(Box::new(crate::DurableType::Array {
+                element: Box::new(crate::DurableType::I32),
+                len: 3,
+            }));
+        let mut instructions = bodies[0].payload.instructions.to_vec();
+        instructions[0].anchor.end = u32::MAX;
+        bodies[0].payload.instructions = instructions.into();
+        cache.bodies = bodies.into();
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let reused = session.semantic(&options).unwrap();
+        assert_eq!(reused.work().durable_bodies.import_attempts, 1);
+        assert_eq!(reused.work().durable_bodies.import_failures, 1);
+        assert_eq!(reused.work().durable_bodies.atomic_discards, 1);
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&source).into_result().unwrap();
+        let fresh = fresh.semantic(&options).unwrap();
+        assert_eq!(
+            format!("{:?}", reused.functions()),
+            format!("{:?}", fresh.functions())
+        );
+        assert_eq!(reused.type_pool().stats(), fresh.type_pool().stats());
+    }
+
+    #[test]
+    fn exact_semantic_cache_hit_restores_its_successful_body_baseline() {
+        let a = snapshot(
+            &[(
+                73,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }",
+            )],
+            73,
+        );
+        let b = snapshot(
+            &[(
+                73,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 2 }\nfn main() -> i32 { helper() }",
+            )],
+            73,
+        );
+        let a_prime = snapshot(
+            &[(
+                73,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() + 1 }",
+            )],
+            73,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&a).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        session.update(&b).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        session.update(&a).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        session.update(&a_prime).into_result().unwrap();
+        let output = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(output.work().durable_bodies.reused_bodies, 1);
+        assert_eq!(output.work().durable_bodies.import_successes, 1);
     }
 }

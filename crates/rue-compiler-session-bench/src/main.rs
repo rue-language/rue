@@ -1009,7 +1009,7 @@ fn assert_body_cfg_work_equal(left: &Value, right: &Value) {
     ] {
         assert_eq!(
             left["semantic_work"][field], right["semantic_work"][field],
-            "body work field {field} differs before body reuse exists"
+            "body work field {field} differs in scenarios expected to take the same body path"
         );
     }
     assert_eq!(
@@ -1018,7 +1018,7 @@ fn assert_body_cfg_work_equal(left: &Value, right: &Value) {
     );
     assert_eq!(
         left["semantic_work"]["durable_bodies"], right["semantic_work"]["durable_bodies"],
-        "durable body observation work differs before body reuse exists"
+        "durable body work differs in scenarios expected to take the same body path"
     );
 }
 

@@ -219,6 +219,13 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) body_analysis_work: BodyAnalysisWork,
     pub(crate) analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
     pub(crate) ordinary_body_exports: Vec<crate::SemanticBodyExport>,
+    pub(crate) reusable_ordinary_bodies: HashMap<
+        BodyOwnerToken,
+        crate::SemanticBodyCandidate<
+            crate::SemanticBodyDefinitionIdentity,
+            crate::SemanticBodyModuleIdentity,
+        >,
+    >,
     pub(crate) body_dependency_observer: Option<AnalyzedBodyOwnerEvent>,
     pub(crate) body_owner_tokens:
         HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>,
@@ -356,6 +363,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_analysis_work,
             analyzed_body_owners,
             ordinary_body_exports,
+            reusable_ordinary_bodies,
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
@@ -407,6 +415,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_analysis_work,
             analyzed_body_owners,
             ordinary_body_exports,
+            reusable_ordinary_bodies,
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
@@ -724,6 +733,7 @@ impl<'a> Sema<'a> {
             body_analysis_work: BodyAnalysisWork::default(),
             analyzed_body_owners: Vec::new(),
             ordinary_body_exports: Vec::new(),
+            reusable_ordinary_bodies: HashMap::new(),
             body_dependency_observer: None,
             body_owner_tokens: HashMap::new(),
             body_named_dependencies: Vec::new(),

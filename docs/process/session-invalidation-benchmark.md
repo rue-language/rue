@@ -100,7 +100,14 @@ export attempts, successful publications and fail-closed rejections; emitted
 instructions, places and strings; compiler-owned durable conversions and
 stable-key joins; projections into AIR's neutral import DTO; atomic fresh-epoch
 imports and installed contents. `reused_bodies` and `skipped_body_analyses` are
-explicitly zero in this observational slice.
+zero on a cold request. Supported warning-free, non-generic ordinary free
+functions are retained only from the last fully successful semantic request.
+A later request uses the canonical stable-key invalidation plan plus exact
+owner and dependency fingerprints to project and atomically import candidates
+into the live AIR epoch. The counters record only bodies actually consumed by
+the existing reachability worklist; rejected or unreachable imports never
+claim avoided analysis. Warning-producing bodies and dependency surfaces owned
+by later incremental slices remain fail-closed ordinary fallbacks.
 
 Schema version 8 adds a `retention` object to every scenario. It reports current
 session-owned diagnostic entries, distinct diagnostic source attempts and

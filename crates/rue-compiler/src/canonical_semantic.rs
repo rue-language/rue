@@ -12,6 +12,23 @@ use rue_air::{
 };
 use tracing::info_span;
 
+pub(crate) struct PreparedDurableBodyCandidate {
+    pub owner: crate::StableDefinitionKey,
+    pub body_span: rue_span::Span,
+    pub body: rue_air::SemanticBody<crate::StableDefinitionKey, Arc<str>>,
+}
+
+fn fold_body_import_work(durable: &mut crate::DurableBodyWork, body: BodyAnalysisWork) {
+    durable.import_attempts += body.ordinary_body_import_attempts;
+    durable.import_successes += body.ordinary_body_import_successes;
+    durable.import_failures += body.ordinary_body_import_failures;
+    durable.atomic_discards += body.ordinary_body_import_atomic_discards;
+    durable.candidate_fallbacks += body.ordinary_body_import_failures;
+    durable.installed_instructions += body.ordinary_body_import_instructions_installed;
+    durable.installed_places += body.ordinary_body_import_places_installed;
+    durable.installed_strings += body.ordinary_body_import_strings_installed;
+}
+
 #[cfg(test)]
 use std::cell::Cell;
 
@@ -544,6 +561,8 @@ pub(crate) fn analyze_canonical_program(
         bound,
         definitions,
         CanonicalDeclarationReuseWork::default(),
+        Vec::new(),
+        crate::DurableBodyWork::default(),
         info_span!("sema").entered(),
     )
     .map_err(|failure| failure.errors)
@@ -559,6 +578,8 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
     options: &CompileOptions,
     prepared: CanonicalPreparedDeclarations<'_>,
     reuse_plan: CanonicalDeclarationReuseWork,
+    body_candidates: Vec<PreparedDurableBodyCandidate>,
+    body_work: crate::DurableBodyWork,
 ) -> Result<CanonicalOrdinaryAnalysis, CanonicalSemanticFailure> {
     let input = CodegenInputDescriptor {
         semantic: SemanticInputDescriptor::new(
@@ -605,6 +626,8 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
             durable_cache_population_exports: usize::from(durable_declarations.is_some()),
             ..declaration_reuse
         },
+        body_candidates,
+        body_work,
         sema_span,
     )?;
     Ok(CanonicalOrdinaryAnalysis {
@@ -626,6 +649,8 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     prepared: CanonicalPreparedDeclarations<'_>,
     definitions: &BoundDefinitionSet,
     durable: &[DurableDeclarationSemantic],
+    body_candidates: Vec<PreparedDurableBodyCandidate>,
+    body_work: crate::DurableBodyWork,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
     let input = CodegenInputDescriptor {
         semantic: SemanticInputDescriptor::new(
@@ -752,6 +777,8 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         bound,
         selected_definitions,
         reuse,
+        body_candidates,
+        body_work,
         sema_span,
     )
 }
@@ -787,6 +814,8 @@ fn finish_canonical_analysis(
     bound: rue_air::BoundSema<'_>,
     provisional_definitions: BoundDefinitionSet,
     declaration_reuse: CanonicalDeclarationReuseWork,
+    durable_body_candidates: Vec<PreparedDurableBodyCandidate>,
+    mut durable_body_reuse_work: crate::DurableBodyWork,
     sema_span: tracing::span::EnteredSpan,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
     let binding = bound.binding_work();
@@ -918,10 +947,58 @@ fn finish_canonical_analysis(
             ),
         )
     })?;
-
+    let token_by_key = authoritative_definitions
+        .body_owner_endpoints()
+        .into_iter()
+        .zip(authoritative_keys.iter())
+        .map(|(endpoint, key)| ((*key).clone(), endpoint.token))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let air_candidates = durable_body_candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let owner = token_by_key.get(&candidate.owner).copied()?;
+            Some(rue_air::SemanticBodyCandidate {
+                owner,
+                body_span: candidate.body_span,
+                body: candidate.body,
+            })
+        })
+        .collect();
+    let modules = merged
+        .ast()
+        .modules()
+        .iter()
+        .map(|module| (module.module_id().as_str().to_owned(), module.file_id()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let bound = bound.install_ordinary_body_candidates(
+        air_candidates,
+        |key: &crate::StableDefinitionKey| {
+            let record = authoritative_definitions.definition_by_key(key)?;
+            let kind = match key.kind() {
+                crate::StableDefinitionKind::Function => {
+                    rue_air::SemanticBodyDefinitionKind::FreeFunction
+                }
+                crate::StableDefinitionKind::Struct => rue_air::SemanticBodyDefinitionKind::Struct,
+                crate::StableDefinitionKind::Enum => rue_air::SemanticBodyDefinitionKind::Enum,
+                _ => return None,
+            };
+            Some(rue_air::SemanticBodyDefinitionIdentity {
+                file_id: record.declaration_span().file_id.index(),
+                name: std::sync::Arc::from(key.name()),
+                kind,
+                owner: None,
+            })
+        },
+        |module: &std::sync::Arc<str>| modules.get(module.as_ref()).copied(),
+    );
     let sema_output = match bound.analyze_all_bodies_with_work() {
         Ok(output) => output,
         Err(failure) => {
+            let mut failed_durable_body_work = durable_body_reuse_work;
+            failed_durable_body_work.reused_bodies += failure.work().ordinary_bodies_reused;
+            failed_durable_body_work.skipped_body_analyses +=
+                failure.work().ordinary_body_analyses_skipped;
+            fold_body_import_work(&mut failed_durable_body_work, failure.work());
             let work = CanonicalSemanticWork {
                 declaration_index,
                 binding,
@@ -929,7 +1006,7 @@ fn finish_canonical_analysis(
                 bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
                 body_owner_tokens,
                 body_analysis: failure.work(),
-                durable_bodies: crate::DurableBodyWork::default(),
+                durable_bodies: failed_durable_body_work,
                 cfg: CfgConstructionWork::default(),
                 stable_ids_requested: request_stable_ids,
                 declaration_reuse,
@@ -946,6 +1023,9 @@ fn finish_canonical_analysis(
     #[cfg(test)]
     inject_cfg_failure(&mut sema_output, rir.semantic_symbols().interner());
     let body_analysis = sema_output.body_analysis_work;
+    durable_body_reuse_work.reused_bodies += body_analysis.ordinary_bodies_reused;
+    durable_body_reuse_work.skipped_body_analyses += body_analysis.ordinary_body_analyses_skipped;
+    fold_body_import_work(&mut durable_body_reuse_work, body_analysis);
     let mut durable_body_work = crate::DurableBodyWork {
         export_attempts: body_analysis.ordinary_body_exports_attempted,
         export_successes: body_analysis.ordinary_body_exports_succeeded,
@@ -953,7 +1033,7 @@ fn finish_canonical_analysis(
         instructions_exported: body_analysis.ordinary_body_export_instructions_emitted,
         places_exported: body_analysis.ordinary_body_export_places_emitted,
         strings_exported: body_analysis.ordinary_body_export_strings_emitted,
-        ..crate::DurableBodyWork::default()
+        ..durable_body_reuse_work
     };
     let durable_ordinary_body_payloads = crate::convert_semantic_body_exports(
         &sema_output.ordinary_body_exports,

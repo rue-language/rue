@@ -393,6 +393,17 @@ pub struct SemaOutput {
 /// These counters deliberately expose no request-local RIR instruction handles.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BodyAnalysisWork {
+    pub ordinary_body_import_attempts: usize,
+    pub ordinary_body_import_successes: usize,
+    pub ordinary_body_import_failures: usize,
+    pub ordinary_body_import_instructions_installed: usize,
+    pub ordinary_body_import_places_installed: usize,
+    pub ordinary_body_import_strings_installed: usize,
+    pub ordinary_body_import_atomic_discards: usize,
+    /// Durable ordinary bodies actually consumed from the canonical worklist.
+    pub ordinary_bodies_reused: usize,
+    /// Ordinary source analyses avoided by those consumed reuse hits.
+    pub ordinary_body_analyses_skipped: usize,
     pub bodies_attempted: usize,
     pub bodies_succeeded: usize,
     pub bodies_failed: usize,
