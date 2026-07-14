@@ -22,6 +22,11 @@
 #     bundled standard-library path, so a top-level example using @import("std")
 #     failed before Valgrind ever ran.
 #
+#   * RUE-799: the Valgrind driver only discovered top-level examples and
+#     discarded execution status. Nested roots, helper-module boundaries,
+#     timeouts, signals, and failing curated self-checks therefore escaped its
+#     contract.
+#
 # Each test runs a COPY of the real script in a throwaway sandbox with a fake
 # `./buck2` (and, for scripts/rue, a fake scripts/rue-bin + fake compiler), so
 # no real build runs. The fakes log their cwd/argv; we assert on exit status,
@@ -296,10 +301,13 @@ test_testsh_cli_examples_survive_case_chdir() {
 # every compiler invocation without needing a real compiler or Valgrind.
 test_sanitizer_defaults_std_path() {
   local sb; sb="$(mktemp -d)"
-  mkdir -p "$sb/scripts" "$sb/examples" "$sb/std" "$sb/fakebin" "$sb/tmp"
+  mkdir -p "$sb/scripts" "$sb/examples/calculator" "$sb/examples/std" \
+    "$sb/std" "$sb/fakebin" "$sb/tmp"
   cp "$SRC_ROOT/scripts/run-sanitizer.sh" "$sb/scripts/run-sanitizer.sh"
   chmod +x "$sb/scripts/run-sanitizer.sh"
   printf 'const std = @import("std");\nfn main() -> i32 { 0 }\n' >"$sb/examples/std_probe.rue"
+  printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/calculator/main.rue"
+  printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/std/arraybuf_demo.rue"
   echo '// fake bundled standard library' >"$sb/std/_std.rue"
 
   cat >"$sb/compiler" <<'EOF'
@@ -373,6 +381,155 @@ EOF
   rm -rf "$sb"
 }
 
+# Build a representative sanitizer sandbox. Its nested calculator directory
+# has a root plus a helper that must never be compiled independently, while the
+# std directory supplies the required nested ordinary-file sentinel.
+make_sanitizer_sandbox() {
+  local sb; sb="$(mktemp -d)"
+  mkdir -p "$sb/scripts" "$sb/examples/calculator/lib" "$sb/examples/std" \
+    "$sb/std" "$sb/fakebin" "$sb/tmp"
+  cp "$SRC_ROOT/scripts/run-sanitizer.sh" "$sb/scripts/run-sanitizer.sh"
+  chmod +x "$sb/scripts/run-sanitizer.sh"
+  printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/top.rue"
+  printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/calculator/main.rue"
+  printf 'pub fn helper() -> i32 { 0 }\n' >"$sb/examples/calculator/lib/helper.rue"
+  printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/std/arraybuf_demo.rue"
+  echo '// fake bundled standard library' >"$sb/std/_std.rue"
+
+  cat >"$sb/compiler" <<'EOF'
+#!/usr/bin/env bash
+src="$1"
+printf '%s\n' "$src" >>"$COMPILE_LOG"
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    out="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[ -n "$out" ] || exit 89
+case "$src" in
+  */san_*.rue) status="${FAKE_CURATED_EXIT:-0}" ;;
+  *) status="${FAKE_EXAMPLE_EXIT:-0}" ;;
+esac
+printf '#!/bin/sh\nexit %s\n' "$status" >"$out"
+chmod +x "$out"
+EOF
+  chmod +x "$sb/compiler"
+
+  cat >"$sb/fakebin/valgrind" <<'EOF'
+#!/usr/bin/env bash
+log=""
+for arg in "$@"; do
+  case "$arg" in
+    --log-file=*) log="${arg#--log-file=}" ;;
+  esac
+done
+[ -n "$log" ] || exit 90
+case "${FAKE_VG_MODE:-clean}" in
+  clean)
+    printf 'ERROR SUMMARY: 0 errors\n' >"$log"
+    "${!#}"
+    ;;
+  error)
+    printf 'Invalid write of size 8\nERROR SUMMARY: 1 errors\n' >"$log"
+    exit 125
+    ;;
+  signal)
+    printf 'Process terminating with default action of signal 11 (SIGSEGV)\nERROR SUMMARY: 0 errors\n' >"$log"
+    exit 139
+    ;;
+  *) exit 91 ;;
+esac
+EOF
+  chmod +x "$sb/fakebin/valgrind"
+
+  cat >"$sb/fakebin/timeout" <<'EOF'
+#!/usr/bin/env bash
+if [ "${FAKE_TIMEOUT:-0}" -ne 0 ]; then
+  exit 124
+fi
+shift
+exec "$@"
+EOF
+  chmod +x "$sb/fakebin/timeout"
+  printf '%s\n' "$sb"
+}
+
+run_sanitizer_sandbox() {
+  local sb="$1"
+  PATH="$sb/fakebin:$PATH" \
+    RUE_BINARY="$sb/compiler" \
+    COMPILE_LOG="$sb/compile.log" \
+    TMPDIR="$sb/tmp" \
+    "$sb/scripts/run-sanitizer.sh"
+}
+
+test_sanitizer_recursive_discovery_contract() {
+  local sb; sb="$(make_sanitizer_sandbox)"
+  local rc=0
+  run_sanitizer_sandbox "$sb" >/dev/null 2>&1 || rc=$?
+  check "run-sanitizer: recursive representative corpus succeeds" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "run-sanitizer: discovers a nested root module" \
+    "$(grep -Fxq "$sb/examples/calculator/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+  check "run-sanitizer: discovers the nested std/ArrayBuf example" \
+    "$(grep -Fxq "$sb/examples/std/arraybuf_demo.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+  check "run-sanitizer: does not compile a root's helper module independently" \
+    "$(! grep -Fxq "$sb/examples/calculator/lib/helper.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+test_sanitizer_status_contracts() {
+  local sb rc out
+
+  sb="$(make_sanitizer_sandbox)"; rc=0
+  FAKE_EXAMPLE_EXIT=124 run_sanitizer_sandbox "$sb" >/dev/null 2>&1 || rc=$?
+  check "run-sanitizer: completed ordinary exit 124 is not mistaken for timeout" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+
+  sb="$(make_sanitizer_sandbox)"; rc=0
+  out="$(FAKE_CURATED_EXIT=7 run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
+  check "run-sanitizer: clean Memcheck plus nonzero curated self-check fails" \
+    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'FAIL(program)' && echo 0 || echo 1)"
+  rm -rf "$sb"
+
+  sb="$(make_sanitizer_sandbox)"; rc=0
+  out="$(FAKE_TIMEOUT=1 run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
+  check "run-sanitizer: timeout status fails" \
+    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'FAIL(timeout)' && echo 0 || echo 1)"
+  rm -rf "$sb"
+
+  sb="$(make_sanitizer_sandbox)"; rc=0
+  out="$(FAKE_VG_MODE=signal run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
+  check "run-sanitizer: fatal signal with a clean Memcheck summary fails" \
+    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'FAIL(signal)' && echo 0 || echo 1)"
+  rm -rf "$sb"
+
+  sb="$(make_sanitizer_sandbox)"; rc=0
+  out="$(FAKE_VG_MODE=error run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
+  check "run-sanitizer: real Memcheck error fails" \
+    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'FAIL(memcheck).*Valgrind status 125' && echo 0 || echo 1)"
+  rm -rf "$sb"
+
+  sb="$(make_sanitizer_sandbox)"
+  rm -f "$sb/examples/calculator/main.rue"
+  rc=0; out="$(run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
+  check "run-sanitizer: missing nested root sentinel fails" \
+    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'calculator/main.rue' && echo 0 || echo 1)"
+  rm -rf "$sb"
+
+  sb="$(make_sanitizer_sandbox)"
+  rm -rf "$sb/examples"; mkdir "$sb/examples"
+  rc=0; out="$(run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
+  check "run-sanitizer: empty example corpus fails loudly" \
+    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'no .rue examples discovered' && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # --- run everything ---------------------------------------------------------
 
 test_ruebin_build_failure_is_loud
@@ -384,6 +541,8 @@ test_rue_run_resolves_relative_output
 test_rue_cli_examples_survive_case_chdir
 test_testsh_cli_examples_survive_case_chdir
 test_sanitizer_defaults_std_path
+test_sanitizer_recursive_discovery_contract
+test_sanitizer_status_contracts
 
 echo "--------------------------------------------------"
 if [ "$FAILURES" -eq 0 ]; then
