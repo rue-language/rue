@@ -327,26 +327,31 @@ where
             // catch-all "expected something else". (RUE-19)
             .labelled("array length")
         });
-        let array_type = just(TokenKind::LBracket)
+        // Array and slice types share their recursive element prefix. Parse it
+        // once, then dispatch on the token after the element: `;` introduces
+        // an array length while `]` completes a slice. Keeping this prefix
+        // canonical is important for nested slices: separate full alternatives
+        // would reparse the element at every level when no `;` is present.
+        let bracketed_type = just(TokenKind::LBracket)
             .ignore_then(ty.clone())
-            .then_ignore(just(TokenKind::Semi))
-            .then(array_length)
+            .then(choice((
+                just(TokenKind::Semi).ignore_then(array_length).map(Some),
+                just(TokenKind::RBracket).rewind().to(None),
+            )))
             .then_ignore(just(TokenKind::RBracket))
-            .map_with(|(element, length), e| TypeExpr::Array {
-                element: Box::new(element),
-                length,
-                span: span_from_extra(e),
-            });
-
-        // Slice type: `[T]` (no length) — a second-class fat-pointer view
-        // (ADR-0043, RUE-322). Tried after `array_type` so `[T; N]` is not
-        // mis-parsed; the two diverge on whether a `;` follows the element.
-        let slice_type = just(TokenKind::LBracket)
-            .ignore_then(ty.clone())
-            .then_ignore(just(TokenKind::RBracket))
-            .map_with(|element, e| TypeExpr::Slice {
-                element: Box::new(element),
-                span: span_from_extra(e),
+            .map_with(|(element, length), e| {
+                let span = span_from_extra(e);
+                match length {
+                    Some(length) => TypeExpr::Array {
+                        element: Box::new(element),
+                        length,
+                        span,
+                    },
+                    None => TypeExpr::Slice {
+                        element: Box::new(element),
+                        span,
+                    },
+                }
             });
 
         // Anonymous struct type: struct { field: Type, ... }
@@ -511,8 +516,7 @@ where
         choice((
             unit_type,
             never_type,
-            array_type,
-            slice_type,
+            bracketed_type,
             anon_struct_type,
             ptr_const_type,
             ptr_mut_type,
@@ -2742,7 +2746,11 @@ where
 /// It is `recursive` because the block bodies it contains hold block-items that
 /// again prefer this parser; the recursion knot lets those bodies reference the
 /// same parser lazily instead of triggering an infinite eager construction
-/// cycle. The `try_map` declines `break`/`return`/`continue`, so those fall
+/// cycle. The parser inside that recursion knot is memoized so a failed
+/// statement-boundary check is remembered when the Pratt fallback reaches the
+/// same nested block. This is deliberately narrower than memoizing the full
+/// expression grammar: only the speculative block-like candidate can be
+/// revisited. The `try_map` declines `break`/`return`/`continue`, so those fall
 /// through to the general Pratt expression and keep their optional operand.
 fn block_like_head_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
@@ -2751,7 +2759,7 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     recursive(|block_like| {
-        choice((
+        let candidate = choice((
             control_flow_parser(expr.clone(), block_like.clone()),
             block_parser(expr.clone(), block_like.clone()).map(Expr::Block),
         ))
@@ -2777,6 +2785,25 @@ where
             ))
             .rewind(),
         )
+        // Keep memoization inside `recursive`: recursive calls then reach the
+        // same stored parser identity, which is required by chumsky's memo key.
+        // Memoizing a wrapper outside the recursion would give nested calls a
+        // different path and leave the continued-block garden path exponential.
+        .memoized();
+
+        // Keep the first-token guard outside memoization. Caching a guard
+        // failure would promote its generic error when an unrelated expression
+        // is retried at the same block-item position, masking targeted errors.
+        one_of([
+            TokenKind::If,
+            TokenKind::Match,
+            TokenKind::While,
+            TokenKind::Loop,
+            TokenKind::For,
+            TokenKind::LBrace,
+        ])
+        .rewind()
+        .ignore_then(candidate)
         .boxed()
     })
 }
@@ -3749,6 +3776,86 @@ mod tests {
         assert!(matches!(expr, Expr::Int(_)), "innermost value is `0`");
     }
 
+    /// Continued nested blocks take the Pratt fallback at every level. The
+    /// failed standalone-block candidate is memoized so that fallback does not
+    /// parse each nested prefix again (RUE-891).
+    #[test]
+    fn test_deeply_nested_continued_blocks_parse_linearly() {
+        const DEPTH: usize = 60;
+        let nested = format!("{}0{}", "{ ".repeat(DEPTH), " } + 0".repeat(DEPTH),);
+        let result = parse_expr(&nested).expect("continued nested blocks should parse");
+
+        let mut expr = &result.expr;
+        for level in 0..DEPTH {
+            let Expr::Binary(binary) = expr else {
+                panic!("expected addition at level {level}, got {expr:?}");
+            };
+            assert_eq!(binary.op, BinaryOp::Add);
+            assert!(matches!(binary.right.as_ref(), Expr::Int(_)));
+            let Expr::Block(block) = binary.left.as_ref() else {
+                panic!("expected block on the left at level {level}");
+            };
+            expr = &block.expr;
+        }
+        assert!(matches!(expr, Expr::Int(_)), "innermost value is `0`");
+    }
+
+    /// A failed parse follows the same speculative path as a continued block.
+    /// Memoization must also keep malformed, unterminated nesting bounded while
+    /// retaining a concrete syntax diagnostic (RUE-891).
+    #[test]
+    fn test_deeply_nested_unterminated_blocks_fail_linearly() {
+        const DEPTH: usize = 60;
+        // No nested block closes, so every speculative block-like candidate
+        // fails after descending to EOF before the Pratt fallback retries it.
+        // Without the narrow memo this doubles the work at every level.
+        let source = format!("fn main() -> i32 {{ {}0", "{ ".repeat(DEPTH));
+        let errors = error_lines(&source);
+        assert!(!errors.is_empty(), "expected an unterminated-block error");
+        assert!(
+            errors.iter().all(|error| error.starts_with("expected ")),
+            "expected a concrete syntax diagnostic, got {errors:?}"
+        );
+    }
+
+    /// The memoized fallback must not change the statement boundary special
+    /// case: `-` starts a new statement after a block-like expression, while
+    /// unambiguous binary operators and postfixes continue that expression.
+    #[test]
+    fn test_block_like_minus_boundary_and_continuations() {
+        let minus = parse("fn main() -> i32 { { 1 } - 2 }").unwrap();
+        let Item::Function(function) = &minus.ast.items[0] else {
+            panic!("expected function");
+        };
+        let Expr::Block(body) = &function.body else {
+            panic!("expected function body");
+        };
+        assert_eq!(body.statements.len(), 1);
+        assert!(matches!(
+            &body.statements[0],
+            Statement::Expr(Expr::Block(_))
+        ));
+        assert!(matches!(
+            body.expr.as_ref(),
+            Expr::Unary(UnaryExpr {
+                op: UnaryOp::Neg,
+                ..
+            })
+        ));
+
+        let plus = parse_expr("{ 1 } + 2").unwrap();
+        assert!(matches!(
+            plus.expr,
+            Expr::Binary(BinaryExpr {
+                op: BinaryOp::Add,
+                ..
+            })
+        ));
+
+        let postfix = parse_expr("{ 1 }.method()").unwrap();
+        assert!(matches!(postfix.expr, Expr::MethodCall(_)));
+    }
+
     /// Regression: nested array-list literals must parse in linear time.
     ///
     /// RUE-374: array literals used to be parsed as `[expr ; count]` OR
@@ -4638,6 +4745,32 @@ mod tests {
             }
             _ => panic!("expected Function"),
         }
+    }
+
+    /// Array and slice types share the recursive element parse, so a slice
+    /// spine remains linear instead of retrying a full array at every level
+    /// when the `;` discriminator is absent (RUE-891).
+    #[test]
+    fn test_deeply_nested_slice_type_parses_linearly() {
+        const DEPTH: usize = 60;
+        let source = format!(
+            "fn f(value: {}i32{}) -> i32 {{ 0 }}",
+            "[".repeat(DEPTH),
+            "]".repeat(DEPTH),
+        );
+        let result = parse(&source).expect("deeply nested slice type should parse");
+        let Item::Function(function) = &result.ast.items[0] else {
+            panic!("expected function");
+        };
+
+        let mut ty = &function.params[0].ty;
+        for level in 0..DEPTH {
+            let TypeExpr::Slice { element, .. } = ty else {
+                panic!("expected slice at level {level}, got {ty:?}");
+            };
+            ty = element;
+        }
+        assert!(matches!(ty, TypeExpr::Named(_)));
     }
 
     #[test]
