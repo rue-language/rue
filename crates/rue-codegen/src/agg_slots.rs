@@ -132,7 +132,7 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
         }
         CfgInstData::Param { index } => {
             let slot_count = b.ctx().type_slot_count(ty);
-            if b.ctx().cfg.is_param_inout(index) {
+            if b.ctx().cfg.is_param_by_ref(index) {
                 // By-ref (inout/borrow) param: the frame slot holds a POINTER
                 // to the caller's storage, not the value — load the slots
                 // through it (emit_place_addr fetches the received pointer).
@@ -155,7 +155,7 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
                 .any(|p| matches!(p, Projection::Index { .. }));
             let is_by_ref_base = matches!(
                 place.base,
-                PlaceBase::Param(param_slot) if b.ctx().cfg.is_param_inout(param_slot)
+                PlaceBase::Param(param_slot) if b.ctx().cfg.is_param_by_ref(param_slot)
             );
             let slot_count = b.ctx().type_slot_count(ty);
 

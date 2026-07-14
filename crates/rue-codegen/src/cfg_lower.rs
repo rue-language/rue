@@ -553,11 +553,11 @@ impl<'a> CfgLowerContext<'a> {
         -((slot as i32 + 1) * 8)
     }
 
-    /// Check if a slot corresponds to an inout parameter.
+    /// Check if a slot corresponds to a parameter ABI slot.
     ///
-    /// Returns `Some(param_index)` if it's an inout param slot, `None` otherwise.
-    /// Inout parameter slots are stored after local variable slots.
-    pub fn slot_to_inout_param_index(&self, slot: u32) -> Option<u32> {
+    /// Returns `Some(param_index)` if it is a parameter slot, `None` otherwise.
+    /// Parameter ABI slots are stored after local variable slots.
+    pub fn slot_to_param_index(&self, slot: u32) -> Option<u32> {
         if slot >= self.num_locals && slot < self.num_locals + self.num_params {
             Some(slot - self.num_locals)
         } else {

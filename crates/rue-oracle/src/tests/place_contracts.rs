@@ -214,7 +214,7 @@ fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
     };
 
     let (borrow_cfg, borrow_value) = place_read("borrowed");
-    assert!(borrow_cfg.is_param_inout(0), "borrow uses the by-ref ABI");
+    assert!(borrow_cfg.is_param_by_ref(0), "borrow uses the by-ref ABI");
     assert!(
         !borrow_cfg.is_param_writable(0),
         "borrow is not logically writable"
@@ -226,7 +226,7 @@ fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
     );
 
     let (inout_cfg, inout_value) = place_read("writable");
-    assert!(inout_cfg.is_param_inout(0), "inout uses the by-ref ABI");
+    assert!(inout_cfg.is_param_by_ref(0), "inout uses the by-ref ABI");
     assert!(
         inout_cfg.is_param_writable(0),
         "inout is logically writable"

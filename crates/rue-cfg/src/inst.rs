@@ -672,11 +672,11 @@ impl Cfg {
 
     /// Get whether a parameter slot uses the physical by-reference ABI.
     ///
-    /// This legacy name is retained for codegen callers. It is true for both
-    /// logical `borrow` and logical `inout`; use [`Cfg::is_param_writable`] for
-    /// mutation permission.
+    /// This is true for both logical `borrow` and logical `inout`. Physical
+    /// transport is independent of mutation permission; use
+    /// [`Cfg::is_param_writable`] to ask whether the callee may mutate it.
     #[inline]
-    pub fn is_param_inout(&self, slot: u32) -> bool {
+    pub fn is_param_by_ref(&self, slot: u32) -> bool {
         self.param_modes
             .by_ref()
             .get(slot as usize)

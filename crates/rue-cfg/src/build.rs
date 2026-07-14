@@ -3474,14 +3474,14 @@ mod tests {
              }";
 
         let borrow_cfg = build_cfg_named(source, "borrowed");
-        assert!(borrow_cfg.is_param_inout(0), "borrow uses the by-ref ABI");
+        assert!(borrow_cfg.is_param_by_ref(0), "borrow uses the by-ref ABI");
         assert!(
             !borrow_cfg.is_param_writable(0),
             "borrow must not carry logical write permission"
         );
 
         let inout_cfg = build_cfg_named(source, "writable");
-        assert!(inout_cfg.is_param_inout(0), "inout uses the by-ref ABI");
+        assert!(inout_cfg.is_param_by_ref(0), "inout uses the by-ref ABI");
         assert!(
             inout_cfg.is_param_writable(0),
             "inout must preserve logical write permission"

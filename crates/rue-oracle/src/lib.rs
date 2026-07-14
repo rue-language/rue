@@ -1097,7 +1097,7 @@ impl<'a> Interp<'a> {
                 // A by-reference borrow/inout parameter occupies one physical
                 // ABI slot regardless of the logical pointee width. Slices are
                 // passed by value and therefore have no by-ref bit here.
-                let width = if cfg.is_param_inout(slot) {
+                let width = if cfg.is_param_by_ref(slot) {
                     1
                 } else {
                     self.state.type_pool.abi_slot_count(place.base_type)
@@ -1546,15 +1546,17 @@ impl<'a> Interp<'a> {
 
             let mode_matches = match mode {
                 CfgArgMode::Normal => (base..end).all(|slot| {
-                    !cfg.is_param_inout(u32::try_from(slot).expect("slot is within u32 CFG bounds"))
+                    !cfg.is_param_by_ref(
+                        u32::try_from(slot).expect("slot is within u32 CFG bounds"),
+                    )
                 }),
                 CfgArgMode::Borrow => {
                     let slot = u32::try_from(base).expect("slot is within u32 CFG bounds");
-                    cfg.is_param_inout(slot) && !cfg.is_param_writable(slot)
+                    cfg.is_param_by_ref(slot) && !cfg.is_param_writable(slot)
                 }
                 CfgArgMode::Inout => {
                     let slot = u32::try_from(base).expect("slot is within u32 CFG bounds");
-                    cfg.is_param_inout(slot) && cfg.is_param_writable(slot)
+                    cfg.is_param_by_ref(slot) && cfg.is_param_writable(slot)
                 }
             };
             if !mode_matches {
