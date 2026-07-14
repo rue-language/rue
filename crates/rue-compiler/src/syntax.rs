@@ -84,8 +84,6 @@ pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> Fil
         }
     };
 
-    info!(item_count = ast.items.len(), "parsing complete");
-
     FileParseOutcome {
         result: Ok(std::sync::Arc::new(ast)),
         interner,

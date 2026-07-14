@@ -18,20 +18,17 @@ human-readable, self-contained snapshot with no history/network side effects.
 The compiler wraps each pass in a tracing span. Some spans are *nested*, so
 the raw JSON contains both leaf passes and their aggregate parents:
 
-    compile                         <- top-level compiler pipeline wall clock
-    |- parse                        <- aggregate
-    |  |- parse_file                <- aggregate, repeated for every file
-    |  |  |- lexer                  <- leaf
-    |  |  `- parser                 <- leaf
-    |  |- definition_snapshot       <- leaf
-    |  `- historical symbol merge  <- leaf
-    |- astgen                       <- leaf
-    |- semantic_astgen              <- leaf
-    |- rir_declaration_index        <- leaf
-    |- sema                         <- leaf
-    |- cfg_construction             <- leaf
-    |- codegen                      <- leaf
-    |- linker                       <- leaf
+    compile                         <- canonical discovery + compiler work
+    |- parse_file                   <- aggregate, repeated for every file
+    |  |- lexer                     <- leaf
+    |  `- parser                    <- aggregate
+    |     |- parser setup leaves
+    |     |- parser_worker          <- aggregate
+    |     |  |- graph construction  <- leaf
+    |     |  `- grammar execution   <- leaf
+    |     `- directive validation   <- leaf
+    `- compile_pipeline             <- post-discovery aggregate
+       `- semantic/codegen leaves
 
 Schema v2 marks root and leaf invocations explicitly. `total_ms` is the
 inclusive duration of root compiler spans; nested pass rows are also inclusive
@@ -85,7 +82,14 @@ WALL_CLOCK_PASS = "compile"
 CANONICAL_LEAF_ORDER = [
     "parse_file",  # schema-v1 combined lexer/parser leaf
     "lexer",
-    "parser",
+    "parser",  # pre-RUE-892 parser leaf
+    "parser_token_adaptation",
+    "parser_nesting_scan",
+    "parser_state_setup",
+    "parser_graph_construction",
+    "parser_grammar_execution",
+    "parser_error_conversion",
+    "parser_directive_validation",
     "definition_snapshot",
     "merge_" + "symbols",  # historical schema-v1 name
     "astgen",
@@ -136,9 +140,9 @@ MULTI_MAIN = """\
 const a = @import("a.rue");
 const b = @import("b.rue");
 
-fn main() -> i64 {
-    let mut total: i64 = 0;
-    let mut i: i64 = 0;
+fn main() -> i32 {
+    let mut total: i32 = 0;
+    let mut i: i32 = 0;
     while i < 100 {
         total = total + a.square(i) + b.cube(i);
         i = i + 1;
@@ -148,13 +152,13 @@ fn main() -> i64 {
 """
 
 MULTI_A = """\
-pub fn square(x: i64) -> i64 {
+pub fn square(x: i32) -> i32 {
     x * x
 }
 """
 
 MULTI_B = """\
-pub fn cube(x: i64) -> i64 {
+pub fn cube(x: i32) -> i32 {
     x * x * x
 }
 """

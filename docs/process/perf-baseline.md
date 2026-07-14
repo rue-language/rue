@@ -40,17 +40,26 @@ The compiler wraps each pass in a tracing span, and some spans are **nested**,
 so the raw timing JSON contains both leaf passes and their aggregate parents:
 
 ```
-compile                 <- compiler pipeline; excludes discovery/driver startup
+compile                 <- canonical discovery parsing + compiler work
 ├─ parse_file           <- aggregate, repeated for each canonical module
 │  ├─ lexer             <- leaf
-│  └─ parser            <- leaf
-├─ semantic_astgen      <- leaf: canonical semantic AST -> RIR
-│  └─ definition_snapshot_modules <- durable module/name-candidate index
-├─ rir_declaration_index <- leaf: snapshot-local RIR declaration candidates
-├─ sema                 <- leaf: type checking / AIR
-├─ cfg_construction     <- leaf
-├─ codegen              <- leaf: MIR lower + regalloc + emit
-└─ linker               <- leaf: built-in ELF link in these baseline runs
+│  └─ parser            <- aggregate
+│     ├─ parser_token_adaptation   <- leaf
+│     ├─ parser_nesting_scan       <- leaf
+│     ├─ parser_state_setup        <- leaf
+│     ├─ parser_worker             <- thread-lifecycle aggregate
+│     │  ├─ parser_graph_construction <- leaf
+│     │  └─ parser_grammar_execution   <- leaf
+│     │     (parser_error_conversion is a failure-only sibling leaf)
+│     └─ parser_directive_validation <- leaf after grammar success
+└─ compile_pipeline     <- post-discovery query/backend aggregate
+   ├─ semantic_astgen   <- aggregate: canonical semantic AST -> RIR
+   │  └─ definition_snapshot_modules <- durable module/name-candidate index
+   ├─ rir_declaration_index <- leaf: snapshot-local RIR declaration candidates
+   ├─ sema              <- leaf: type checking / AIR
+   ├─ cfg_construction  <- leaf
+   ├─ codegen           <- leaf: MIR lower + regalloc + emit
+   └─ linker            <- leaf: built-in ELF link in these baseline runs
 ```
 
 Since RUE-642, timing JSON schema v2 labels the model as `inclusive_spans`.
@@ -76,8 +85,11 @@ overlap or residual time that occurred in no real run. Rue's current
 coordinator-level leaves are sequential, so overlapping leaf work should be
 zero today; if future parallel leaf spans overlap, their sum is work time and
 may legitimately exceed root wall time.
-`process_ms` additionally covers process startup, source loading/import
-discovery, output handling, and other driver work outside `compile`.
+`process_ms` additionally covers process startup, output handling, and other
+driver work outside `compile`. For the filesystem CLI, `compile` includes the
+stable reads, import resolution, and canonical parsing that produce the closed
+discovery revision, as well as the later query/backend interval. Output-path
+validation and output-file I/O remain outside it.
 The corpus-wide hot-pass table is likewise a descriptive ratio of summed
 per-workload medians, not the accounting for a single run.
 
@@ -88,6 +100,13 @@ per-workload medians, not the accounting for a single run.
 > workaround and can still read schema-v1 samples. Any other comparison across
 > the schema boundary must likewise use the old `compile` row rather than old
 > `total_ms`.
+
+> **Discovery-boundary discontinuity.** RUE-890 made the parser result produced
+> during import discovery the exact canonical frontend artifact. RUE-892 moves
+> that now-once-only parse under the `compile` root and introduces the
+> `compile_pipeline` post-discovery aggregate. Comparisons from before this
+> boundary omitted discovery parsing from the `compile` row even though they
+> subsequently consumed its artifact.
 
 ## Baseline (measured 2026-07-03)
 

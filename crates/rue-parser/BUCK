@@ -9,5 +9,6 @@ rue_crate(
         "//third-party:chumsky",
         "//third-party:lasso",
         "//third-party:smallvec",
+        "//third-party:tracing",
     ],
 )

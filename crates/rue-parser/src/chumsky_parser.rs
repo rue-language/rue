@@ -23,6 +23,7 @@ use rue_error::{CompileError, CompileErrors, ErrorKind, MAX_NESTING_DEPTH, Multi
 use rue_lexer::TokenKind;
 use rue_span::{FileId, Span};
 use std::borrow::Cow;
+use tracing::{info, info_span};
 
 use chumsky::extra::SimpleState;
 
@@ -3536,6 +3537,7 @@ fn check_nesting_depth(
 /// Chumsky-based parser that converts tokens into an AST.
 pub struct ChumskyParser {
     tokens: Vec<(TokenKind, SimpleSpan)>,
+    input_token_count: usize,
     source_len: usize,
     interner: ThreadedRodeo,
     /// File ID for spans in this file.
@@ -3545,6 +3547,8 @@ pub struct ChumskyParser {
 impl ChumskyParser {
     /// Create a new parser from tokens and an interner produced by the lexer.
     pub fn new(tokens: Vec<rue_lexer::Token>, interner: ThreadedRodeo) -> Self {
+        let _span = info_span!("parser_token_adaptation").entered();
+        let input_token_count = tokens.len();
         let source_len = tokens.last().map(|t| t.span.end as usize).unwrap_or(0);
         // Extract file_id from the first token (all tokens in a file have the same file_id)
         let file_id = tokens
@@ -3564,6 +3568,7 @@ impl ChumskyParser {
             .collect();
         Self {
             tokens: spanned_tokens,
+            input_token_count,
             source_len,
             interner,
             file_id,
@@ -3591,13 +3596,30 @@ impl ChumskyParser {
         // parser recursion depth; rejecting deep input here means chumsky (and
         // every later pass, plus the recursive `Drop` of the AST) never sees a
         // tree deep enough to overflow the stack (RUE-42).
-        if let Some(err) = check_nesting_depth(&self.tokens, self.file_id) {
+        let nesting_error = {
+            let _span = info_span!("parser_nesting_scan").entered();
+            check_nesting_depth(&self.tokens, self.file_id)
+        };
+        if let Some(err) = nesting_error {
+            info!(
+                outcome = "nesting_error",
+                input_token_count = self.input_token_count,
+                parser_token_count = self.tokens.len(),
+                ast_item_count = 0,
+                raw_parse_error_count = 0,
+                parse_error_count = 0,
+                validation_error_count = 0,
+                "parser complete"
+            );
             return Err((CompileErrors::from(vec![err]), self.interner));
         }
 
         // Pre-intern primitive type symbols and create parser state with file ID
-        let syms = PrimitiveTypeSpurs::new(&mut self.interner);
-        let parser_state = ParserState::new(syms, self.file_id);
+        let parser_state = {
+            let _span = info_span!("parser_state_setup").entered();
+            let syms = PrimitiveTypeSpurs::new(&mut self.interner);
+            ParserState::new(syms, self.file_id)
+        };
 
         // Run chumsky on a dedicated thread with a large stack. Even at the
         // bounded `MAX_NESTING_DEPTH`, chumsky's combinator frames are heavy
@@ -3605,51 +3627,118 @@ impl ChumskyParser {
         // default thread stack. The nesting pre-scan above caps the depth; the
         // roomy stack here ensures the capped depth parses cleanly.
         let tokens = std::mem::take(&mut self.tokens);
+        let parser_token_count = tokens.len();
         let source_len = self.source_len;
         let file_id = self.file_id;
-        let result = std::thread::Builder::new()
-            .name("rue-parse".to_string())
-            .stack_size(256 * 1024 * 1024)
-            .spawn(move || {
-                let mut state = SimpleState(parser_state);
+        let worker_span = info_span!("parser_worker", parser_token_count);
+        let worker_context = worker_span.clone();
+        let dispatch = tracing::dispatcher::get_default(Clone::clone);
+        let result = {
+            // This aggregate intentionally covers spawn through join. Its
+            // worker-thread children describe the additive work, so join wait
+            // is never exposed as an overlapping leaf.
+            let _span = worker_span.enter();
+            std::thread::Builder::new()
+                .name("rue-parse".to_string())
+                .stack_size(256 * 1024 * 1024)
+                .spawn(move || {
+                    tracing::dispatcher::with_default(&dispatch, || {
+                        let _span = worker_context.enter();
+                        let mut state = SimpleState(parser_state);
 
-                // Create a stream from the token iterator
-                let token_iter = tokens.iter().cloned();
-                let stream = Stream::from_iter(token_iter);
+                        // Create a stream from the token iterator
+                        let token_iter = tokens.iter().cloned();
+                        let stream = Stream::from_iter(token_iter);
 
-                // Map the stream to split (Token, Span) tuples
-                let eoi: SimpleSpan = (source_len..source_len).into();
-                let mapped = stream.map(eoi, |(tok, span)| (tok, span));
+                        // Map the stream to split (Token, Span) tuples
+                        let eoi: SimpleSpan = (source_len..source_len).into();
+                        let mapped = stream.map(eoi, |(tok, span)| (tok, span));
 
-                ast_parser()
-                    .parse_with_state(mapped, &mut state)
-                    .into_result()
-                    .map_err(|errs| {
-                        let mut errors: Vec<CompileError> = errs
-                            .into_iter()
-                            .map(|err| convert_error(err, file_id))
-                            .collect();
-                        dedupe_parse_errors(&mut errors);
-                        CompileErrors::from(errors)
+                        let parser = {
+                            let _span = info_span!("parser_graph_construction").entered();
+                            ast_parser()
+                        };
+                        let parsed = {
+                            let _span = info_span!("parser_grammar_execution").entered();
+                            parser.parse_with_state(mapped, &mut state).into_result()
+                        };
+                        match parsed {
+                            Ok(ast) => (Ok(ast), 0, 0),
+                            Err(errs) => {
+                                let raw_error_count = errs.len();
+                                let errors = {
+                                    let _span = info_span!("parser_error_conversion").entered();
+                                    let mut errors: Vec<CompileError> = errs
+                                        .into_iter()
+                                        .map(|err| convert_error(err, file_id))
+                                        .collect();
+                                    dedupe_parse_errors(&mut errors);
+                                    errors
+                                };
+                                let error_count = errors.len();
+                                (
+                                    Err(CompileErrors::from(errors)),
+                                    raw_error_count,
+                                    error_count,
+                                )
+                            }
+                        }
                     })
-            })
-            .expect("failed to spawn parser thread")
-            .join()
-            .expect("parser thread panicked");
+                })
+                .expect("failed to spawn parser thread")
+                .join()
+                .expect("parser thread panicked")
+        };
 
+        let (result, raw_parse_error_count, parse_error_count) = result;
         let ast = match result {
             Ok(ast) => ast,
-            Err(errors) => return Err((errors, self.interner)),
+            Err(errors) => {
+                info!(
+                    outcome = "parse_error",
+                    input_token_count = self.input_token_count,
+                    parser_token_count,
+                    ast_item_count = 0,
+                    raw_parse_error_count,
+                    parse_error_count,
+                    validation_error_count = 0,
+                    "parser complete"
+                );
+                return Err((errors, self.interner));
+            }
         };
 
         // Post-parse validation that needs the interner (e.g. resolving
         // directive names so the diagnostic can say which directive is
         // unknown). See the `validate` module.
-        let validation_errors = crate::validate::check_directives(&ast, &self.interner);
+        let validation_errors = {
+            let _span = info_span!("parser_directive_validation").entered();
+            crate::validate::check_directives(&ast, &self.interner)
+        };
         if !validation_errors.is_empty() {
+            info!(
+                outcome = "validation_error",
+                input_token_count = self.input_token_count,
+                parser_token_count,
+                ast_item_count = ast.items.len(),
+                raw_parse_error_count,
+                parse_error_count,
+                validation_error_count = validation_errors.len(),
+                "parser complete"
+            );
             return Err((CompileErrors::from(validation_errors), self.interner));
         }
 
+        info!(
+            outcome = "success",
+            input_token_count = self.input_token_count,
+            parser_token_count,
+            ast_item_count = ast.items.len(),
+            raw_parse_error_count,
+            parse_error_count,
+            validation_error_count = 0,
+            "parser complete"
+        );
         Ok((ast, self.interner))
     }
 }

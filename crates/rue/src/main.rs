@@ -1862,15 +1862,23 @@ fn main() {
     // Capture environment-derived resolution context exactly once for this
     // discovery epoch. Every compiler plan and identity decision receives this
     // immutable value; no discovery iteration rereads the environment.
+    // One root spans the disjoint intervals that perform canonical compiler
+    // work. RUE-890 made discovery's exact parse publishable, so leaving this
+    // boundary inside `CompilerSession::executable` would incorrectly report
+    // the discovery parse as a second timing root.
+    let compile_span = tracing::info_span!("compile", target = %options.target);
     let captured_std_root = env::var_os("RUE_STD_PATH").map(PathBuf::from);
-    let mut import_discovery = match discover_and_load_imports(
-        &sources,
-        source_manifest.as_ref(),
-        captured_std_root.as_deref(),
-        options.error_format,
-    ) {
-        Ok(result) => result,
-        Err(()) => std::process::exit(1),
+    let mut import_discovery = {
+        let _compile = compile_span.enter();
+        match discover_and_load_imports(
+            &sources,
+            source_manifest.as_ref(),
+            captured_std_root.as_deref(),
+            options.error_format,
+        ) {
+            Ok(result) => result,
+            Err(()) => std::process::exit(1),
+        }
     };
     if import_discovery.revision.status() == ImportDiscoveryRevisionStatus::ClosedValid
         && !import_discovery.mixed_imports.is_empty()
@@ -1925,6 +1933,7 @@ fn main() {
             diagnostics.print_errors(import_discovery.revision.diagnostics());
             std::process::exit(1);
         }
+        drop(compile_span);
         print_timing_output(
             &timing_data,
             options.time_passes,
@@ -1964,14 +1973,18 @@ fn main() {
 
     // Handle emit modes with multi-file support
     if !options.emit_stages.is_empty() {
-        if let Err(()) = handle_emit_multi_file(
-            &source_snapshot,
-            &mut import_discovery.session,
-            &options,
-            &diagnostics,
-        ) {
-            std::process::exit(1);
+        {
+            let _compile = compile_span.enter();
+            if let Err(()) = handle_emit_multi_file(
+                &source_snapshot,
+                &mut import_discovery.session,
+                &options,
+                &diagnostics,
+            ) {
+                std::process::exit(1);
+            }
         }
+        drop(compile_span);
         print_timing_output(
             &timing_data,
             options.time_passes,
@@ -1989,7 +2002,13 @@ fn main() {
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
     };
-    let compile_result = import_discovery.session.executable(&compile_options);
+    let compile_result = {
+        let _compile = compile_span.enter();
+        import_discovery
+            .session
+            .executable_in_compile_scope(&compile_options)
+    };
+    drop(compile_span);
     match compile_result {
         Ok(output) => {
             // Print warnings using the diagnostic formatter
@@ -2437,6 +2456,7 @@ fn handle_emit_multi_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     fn test_snapshot(root: FileId, sources: &[(FileId, &str, &str, &str)]) -> SourceSnapshot {
         let physical_paths = sources
@@ -2478,6 +2498,56 @@ mod tests {
             }
             fs::write(&path, content).unwrap();
             path
+        }
+    }
+
+    #[test]
+    fn discovery_parse_and_pipeline_share_the_cli_compile_root() {
+        let dir = TestDir::new("timed-discovery-root");
+        let main = dir.write(
+            "main.rue",
+            "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.value() }\n",
+        );
+        dir.write("helper.rue", "pub fn value() -> i32 { 0 }\n");
+        let sources = vec![(main.to_string_lossy().into_owned(), String::new())];
+        let data = timing::TimingData::new();
+        let subscriber =
+            tracing_subscriber::registry().with(timing::TimingLayer::new(data.clone()));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let compile_span = tracing::info_span!("compile", target = "test");
+            let mut discovery = {
+                let _compile = compile_span.enter();
+                discover_and_load_imports(&sources, None, None, ErrorFormat::Text).unwrap()
+            };
+            {
+                let _compile = compile_span.enter();
+                discovery
+                    .session
+                    .executable_in_compile_scope(&CompileOptions::default())
+                    .unwrap();
+            }
+            drop(compile_span);
+        });
+
+        let edges = data.parent_edges();
+        assert!(
+            edges.contains(&("compile".to_owned(), "parse_file".to_owned())),
+            "discovery parse escaped the compile root: {edges:?}"
+        );
+        assert!(
+            edges.contains(&("compile".to_owned(), "compile_pipeline".to_owned())),
+            "post-discovery pipeline escaped the compile root: {edges:?}"
+        );
+        let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None);
+        for pass in &timing.passes {
+            if pass.name == "compile" {
+                assert_eq!(pass.invocations, 1);
+                assert_eq!(pass.root_invocations, 1);
+                assert_eq!(pass.leaf_invocations, 0);
+            } else {
+                assert_eq!(pass.root_invocations, 0, "{}", pass.name);
+            }
         }
     }
 

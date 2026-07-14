@@ -36,6 +36,15 @@ rows. Distinct parallel leaf spans may overlap and should be interpreted as
 summed work rather than wall time. Logging filters such as `RUST_LOG=error`
 affect log output only; they do not disable timing collection.
 
+Parser timing keeps `parse_file -> parser` as the canonical aggregate and
+reports stable setup leaves plus a `parser_worker` lifecycle aggregate. The
+worker owns graph-construction and grammar-execution children; parse-error
+conversion appears only on grammar failure, while directive validation appears
+only after grammar success. The parser explicitly propagates both tracing
+dispatch and span context to its dedicated large-stack thread, so worker spans
+never become independent roots. Join wait is intentionally not an additive
+leaf because it overlaps the worker work it waits for.
+
 ### Adding Instrumentation
 
 Each compilation pass should have a tracing span wrapping the work:
