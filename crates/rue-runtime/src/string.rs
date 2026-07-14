@@ -715,6 +715,30 @@ crate::define_for_all_platforms! {
     }
 }
 
+crate::define_for_all_platforms! {
+    /// Decode one scalar through the shared two-word `str` view ABI.
+    pub unsafe extern "C" fn __rue_str_char_scalar(
+        ptr: *const u8,
+        len: u64,
+        offset: u64,
+    ) -> u64 {
+        let (scalar, _width) = unsafe { __rue_decode_utf8_at(ptr, len, offset) };
+        scalar as u64
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Advance one scalar through the shared two-word `str` view ABI.
+    pub unsafe extern "C" fn __rue_str_char_next(
+        ptr: *const u8,
+        len: u64,
+        offset: u64,
+    ) -> u64 {
+        let (_scalar, width) = unsafe { __rue_decode_utf8_at(ptr, len, offset) };
+        offset + width
+    }
+}
+
 /// Leniently decode one UTF-8 scalar starting at byte `offset` in the `len`-byte
 /// buffer at `ptr`, returning `(scalar, width_in_bytes)`.
 ///
@@ -857,6 +881,30 @@ crate::define_for_all_platforms! {
         offset: u64,
     ) -> u64 {
         // SAFETY: the for-loop desugaring passes the String's own (ptr, len).
+        let (_scalar, width) = unsafe { __rue_decode_utf8_lossy_at(ptr, len, offset) };
+        offset + width
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Decode one scalar lossily through the shared two-word `str` view ABI.
+    pub unsafe extern "C" fn __rue_str_char_scalar_lossy(
+        ptr: *const u8,
+        len: u64,
+        offset: u64,
+    ) -> u64 {
+        let (scalar, _width) = unsafe { __rue_decode_utf8_lossy_at(ptr, len, offset) };
+        scalar as u64
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Advance one scalar lossily through the shared two-word `str` view ABI.
+    pub unsafe extern "C" fn __rue_str_char_next_lossy(
+        ptr: *const u8,
+        len: u64,
+        offset: u64,
+    ) -> u64 {
         let (_scalar, width) = unsafe { __rue_decode_utf8_lossy_at(ptr, len, offset) };
         offset + width
     }

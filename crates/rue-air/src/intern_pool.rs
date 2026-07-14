@@ -273,6 +273,9 @@ struct TypeInternPoolInner {
     /// durable semantic import boundary.
     struct_lang_items: HashMap<StructId, LangItem>,
 
+    /// Reverse index enforcing one canonical nominal for each language item.
+    lang_item_structs: HashMap<LangItem, StructId>,
+
     /// Transitional compiler-injected StrBuf identity, recorded when its
     /// runtime-backed nominal is registered rather than rediscovered by name.
     builtin_strbuf: Option<StructId>,
@@ -291,6 +294,7 @@ impl TypeInternPool {
                 enum_by_file_name: HashMap::new(),
                 symbol_paths: HashMap::new(),
                 struct_lang_items: HashMap::new(),
+                lang_item_structs: HashMap::new(),
                 builtin_strbuf: None,
             }),
         }
@@ -752,6 +756,16 @@ impl TypeInternPool {
         inner.struct_lang_items.get(&struct_id).copied()
     }
 
+    /// Return the nominal type carrying a stable standard-library identity.
+    pub fn lang_item_type(&self, lang_item: LangItem) -> Option<Type> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner
+            .lang_item_structs
+            .get(&lang_item)
+            .copied()
+            .map(Type::new_struct)
+    }
+
     /// Assign an explicitly authorized language item to a registered nominal.
     pub fn set_struct_lang_item(&self, struct_id: StructId, lang_item: LangItem) {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
@@ -762,7 +776,20 @@ impl TypeInternPool {
             ),
             "language items can only be assigned to registered structs"
         );
+        if let Some(existing) = inner.lang_item_structs.get(&lang_item) {
+            assert_eq!(
+                *existing, struct_id,
+                "a language item can only identify one canonical struct"
+            );
+        }
+        if let Some(existing) = inner.struct_lang_items.get(&struct_id) {
+            assert_eq!(
+                *existing, lang_item,
+                "a struct can only carry one language item"
+            );
+        }
         inner.struct_lang_items.insert(struct_id, lang_item);
+        inner.lang_item_structs.insert(lang_item, struct_id);
     }
 
     /// Whether a nominal is the canonical source StrBuf or the transitional
@@ -1300,6 +1327,7 @@ impl Clone for TypeInternPool {
                 enum_by_file_name: inner.enum_by_file_name.clone(),
                 symbol_paths: inner.symbol_paths.clone(),
                 struct_lang_items: inner.struct_lang_items.clone(),
+                lang_item_structs: inner.lang_item_structs.clone(),
                 builtin_strbuf: inner.builtin_strbuf,
             }),
         }
@@ -1420,6 +1448,60 @@ mod tests {
         assert!(!is_new2);
         assert_eq!(struct_id, struct_id2);
         assert_eq!(pool.len(), 1); // No new type added
+    }
+
+    #[test]
+    fn language_item_reverse_index_is_unique_and_deterministic() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let make_def = |name: &str, file_id| StructDef {
+            name: name.to_string(),
+            fields: vec![],
+            is_copy: false,
+            is_linear: false,
+            destructor: None,
+            is_builtin: false,
+            is_pub: true,
+            file_id,
+        };
+        let (canonical, _) = pool.register_struct(
+            interner.get_or_intern("CanonicalStrBuf"),
+            make_def("CanonicalStrBuf", FileId::DEFAULT),
+        );
+        pool.set_struct_lang_item(canonical, LangItem::StrBuf);
+        pool.set_struct_lang_item(canonical, LangItem::StrBuf);
+        assert_eq!(
+            pool.lang_item_type(LangItem::StrBuf),
+            Some(Type::new_struct(canonical))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a language item can only identify one canonical struct")]
+    fn duplicate_language_item_assignment_is_rejected() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let make_def = |name: &str, file_id| StructDef {
+            name: name.to_string(),
+            fields: vec![],
+            is_copy: false,
+            is_linear: false,
+            destructor: None,
+            is_builtin: false,
+            is_pub: true,
+            file_id,
+        };
+        let (canonical, _) = pool.register_struct(
+            interner.get_or_intern("CanonicalStrBuf"),
+            make_def("CanonicalStrBuf", FileId::DEFAULT),
+        );
+        pool.set_struct_lang_item(canonical, LangItem::StrBuf);
+        let other_file = FileId::new(1);
+        let (duplicate, _) = pool.register_struct(
+            interner.get_or_intern("OtherStrBuf"),
+            make_def("OtherStrBuf", other_file),
+        );
+        pool.set_struct_lang_item(duplicate, LangItem::StrBuf);
     }
 
     #[test]

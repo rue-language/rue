@@ -114,10 +114,7 @@ impl<'a> BodySema<'a> {
             &self.type_pool,
             type_subst,
         );
-        let strbuf_ty = self
-            .builtin_string_id
-            .map(Type::new_struct)
-            .expect("transitional StrBuf was registered before inference");
+        let strbuf_ty = self.builtin_string_type();
         cgen = cgen.with_strbuf_type(strbuf_ty);
         if self.preview_features.contains(&PreviewFeature::StringTrio) {
             let str_name = self

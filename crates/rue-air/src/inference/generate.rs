@@ -1136,20 +1136,17 @@ impl<'a> ConstraintGenerator<'a> {
                 });
                 let args = self.rir.get_call_args(*args_start, *args_len);
                 // `print(s)` / `println(s)` builtin free functions (RUE-1):
-                // constrain the single argument to String and yield unit, so a
-                // literal argument resolves to String and the call type-checks.
+                // generate the argument and yield unit. Semantic analysis
+                // validates the shared text family (`StrBuf`, `str`, `Str(N)`),
+                // while an unconstrained literal follows the normal edition /
+                // preview default.
                 // Only when the program hasn't shadowed the name with its own
                 // `fn print`/`fn println` (a user definition wins).
                 let is_print_builtin = function_key.is_none()
                     && matches!(self.interner.resolve(name), "print" | "println");
                 if is_print_builtin {
                     for arg in args.iter() {
-                        let arg_info = self.generate(arg.value, ctx);
-                        self.add_constraint(Constraint::equal(
-                            arg_info.ty,
-                            self.string_infer_type(),
-                            arg_info.span,
-                        ));
+                        self.generate(arg.value, ctx);
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if let Some(func) = function_key.and_then(|key| self.functions.get(&key)) {

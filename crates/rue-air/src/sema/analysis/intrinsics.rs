@@ -190,8 +190,8 @@ impl<'a> BodySema<'a> {
 
     /// `@__rue_iter_len(coll)` → the loop bound (`usize`), dispatching the
     /// iterable kind by the collection's type: an array's length `N` (a
-    /// compile-time constant), or a String's byte length (a `__rue_String_len`
-    /// call). This is where the whole `for` loop is preview-gated (RUE-220):
+    /// compile-time constant), or a StrBuf's source-defined byte length. This
+    /// is where the whole `for` loop is preview-gated (RUE-220):
     /// every for-loop emits exactly one `@__rue_iter_len`.
     pub(super) fn analyze_iter_len_intrinsic(
         &mut self,
@@ -217,8 +217,38 @@ impl<'a> BodySema<'a> {
 
         // String byte view: the bound is the byte length `s.len()`.
         if self.is_builtin_string(coll_type) {
-            let call_name = self.interner.get_or_intern("__rue_String_len");
-            let extra = [coll_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()];
+            let source_method = coll_type.as_struct().and_then(|struct_id| {
+                let method = self.interner.get_or_intern("len");
+                (self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+                    && self.method_info((struct_id, method)).is_some())
+                .then_some((struct_id, method))
+            });
+            let (call_name, receiver, mode, temp_scope) =
+                if let Some((struct_id, method)) = source_method {
+                    ctx.referenced_methods.insert((struct_id, method));
+                    let (receiver, temp_scope) = self.materialize_borrow_argument(
+                        air,
+                        coll_result.air_ref,
+                        coll_result.ty,
+                        span,
+                        ctx,
+                    )?;
+                    (
+                        self.interner
+                            .get_or_intern(&self.method_symbol(struct_id, "len", true)),
+                        receiver,
+                        AirArgMode::Borrow,
+                        temp_scope,
+                    )
+                } else {
+                    (
+                        self.interner.get_or_intern("__rue_String_len"),
+                        coll_result.air_ref,
+                        AirArgMode::Normal,
+                        Vec::new(),
+                    )
+                };
+            let extra = [receiver.as_u32(), mode.as_u32()];
             let args_start = air.add_extra(&extra);
             let call_ref = air.add_inst(AirInst {
                 data: AirInstData::Call {
@@ -229,6 +259,8 @@ impl<'a> BodySema<'a> {
                 ty: Type::U64,
                 span,
             });
+            let call_ref =
+                self.wrap_value_with_temp_scope(air, call_ref, Type::U64, span, temp_scope);
             return Ok(AnalysisResult::new(call_ref, Type::U64));
         }
 
@@ -281,29 +313,62 @@ impl<'a> BodySema<'a> {
 
         let pos_result = self.analyze_inst(air, pos, ctx)?;
 
-        let (fn_name, ret_ty) = match (is_next, lossy) {
-            (true, false) => ("__rue_String_char_next", Type::U64),
-            (true, true) => ("__rue_String_char_next_lossy", Type::U64),
-            (false, false) => ("__rue_String_char_scalar", Type::U32),
-            (false, true) => ("__rue_String_char_scalar_lossy", Type::U32),
+        let source_strbuf = coll_result.ty.as_struct().is_some_and(|struct_id| {
+            self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+        });
+        let (fn_name, ret_ty) = match (source_strbuf, is_next, lossy) {
+            (true, true, false) => ("__rue_str_char_next", Type::U64),
+            (true, true, true) => ("__rue_str_char_next_lossy", Type::U64),
+            (true, false, false) => ("__rue_str_char_scalar", Type::U32),
+            (true, false, true) => ("__rue_str_char_scalar_lossy", Type::U32),
+            (false, true, false) => ("__rue_String_char_next", Type::U64),
+            (false, true, true) => ("__rue_String_char_next_lossy", Type::U64),
+            (false, false, false) => ("__rue_String_char_scalar", Type::U32),
+            (false, false, true) => ("__rue_String_char_scalar_lossy", Type::U32),
         };
         let call_name = self.interner.get_or_intern(fn_name);
-        let extra = [
-            coll_result.air_ref.as_u32(),
-            AirArgMode::Normal.as_u32(),
-            pos_result.air_ref.as_u32(),
-            AirArgMode::Normal.as_u32(),
-        ];
+        let extra = if source_strbuf {
+            let (ptr, len, temp_scope) = self.project_strbuf_text_fields(
+                air,
+                coll_result.air_ref,
+                coll_result.ty,
+                span,
+                ctx,
+            )?;
+            (
+                vec![
+                    ptr.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                    len.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                    pos_result.air_ref.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                ],
+                temp_scope,
+            )
+        } else {
+            (
+                vec![
+                    coll_result.air_ref.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                    pos_result.air_ref.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                ],
+                Vec::new(),
+            )
+        };
+        let (extra, temp_scope) = extra;
         let args_start = air.add_extra(&extra);
         let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
                 name: call_name,
                 args_start,
-                args_len: 2,
+                args_len: if source_strbuf { 3 } else { 2 },
             },
             ty: ret_ty,
             span,
         });
+        let call_ref = self.wrap_value_with_temp_scope(air, call_ref, ret_ty, span, temp_scope);
         Ok(AnalysisResult::new(call_ref, ret_ty))
     }
 
@@ -390,6 +455,7 @@ impl<'a> BodySema<'a> {
         if !arg_type.is_integer()
             && arg_type != Type::BOOL
             && !self.is_builtin_string(arg_type)
+            && !self.is_str_like(arg_type)
             && !arg_type.is_never()
         {
             return Err(CompileError::new(
@@ -402,8 +468,16 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
+        let source_strbuf = arg_type.as_struct().is_some_and(|struct_id| {
+            self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+        });
+        let (arg_ref, temp_scope) = if source_strbuf {
+            self.materialize_borrow_argument(air, arg_result.air_ref, arg_type, span, ctx)?
+        } else {
+            (arg_result.air_ref, Vec::new())
+        };
+        let args_start = air.add_extra(&[arg_ref.as_u32()]);
+        let intrinsic_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
                 name: self.known.dbg,
                 args_start,
@@ -412,6 +486,8 @@ impl<'a> BodySema<'a> {
             ty: Type::UNIT,
             span,
         });
+        let air_ref =
+            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::UNIT, span, temp_scope);
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
@@ -549,12 +625,21 @@ impl<'a> BodySema<'a> {
             return Ok(AnalysisResult::new(air_ref, Type::NEVER));
         }
 
-        // Analyze the message argument
-        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
+        // Panic borrows its message until the runtime call. Give a canonical
+        // source StrBuf rvalue an addressable owner for that whole call.
+        let arg_result = self.analyze_inst_for_projection(air, args[0].value, ctx)?;
         self.validate_abort_message_type("panic", arg_result.ty, self.rir.get(args[0].value).span)?;
 
-        let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
+        let source_strbuf = arg_result.ty.as_struct().is_some_and(|struct_id| {
+            self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+        });
+        let (arg_ref, temp_scope) = if source_strbuf {
+            self.materialize_borrow_argument(air, arg_result.air_ref, arg_result.ty, span, ctx)?
+        } else {
+            (arg_result.air_ref, Vec::new())
+        };
+        let args_start = air.add_extra(&[arg_ref.as_u32()]);
+        let intrinsic_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
                 name: self.known.panic,
                 args_start,
@@ -563,6 +648,8 @@ impl<'a> BodySema<'a> {
             ty: Type::NEVER,
             span,
         });
+        let air_ref =
+            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::NEVER, span, temp_scope);
         Ok(AnalysisResult::new(air_ref, Type::NEVER))
     }
 
@@ -600,19 +687,42 @@ impl<'a> BodySema<'a> {
 
         // Build args for AIR
         let mut extra_data = vec![cond_result.air_ref.as_u32()];
+        let mut temp_scope = Vec::new();
         if args.len() > 1 {
-            let msg_result = self.analyze_inst(air, args[1].value, ctx)?;
+            let msg_result = self.analyze_inst_for_projection(air, args[1].value, ctx)?;
             self.validate_abort_message_type(
                 "assert",
                 msg_result.ty,
                 self.rir.get(args[1].value).span,
             )?;
-            extra_data.push(msg_result.air_ref.as_u32());
+            let source_strbuf = msg_result.ty.as_struct().is_some_and(|struct_id| {
+                self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+            });
+            let msg_ref = if source_strbuf {
+                let (msg_ref, scope) = self.materialize_borrow_argument(
+                    air,
+                    msg_result.air_ref,
+                    msg_result.ty,
+                    span,
+                    ctx,
+                )?;
+                temp_scope = scope;
+                msg_ref
+            } else {
+                msg_result.air_ref
+            };
+            extra_data.push(msg_ref.as_u32());
+            if !temp_scope.is_empty() {
+                // The message's hoisted owner scope must not jump ahead of the
+                // condition. Lower it first; the intrinsic reuses the cached
+                // value after the message has been evaluated.
+                temp_scope.insert(0, cond_result.air_ref);
+            }
         }
 
         let args_len = extra_data.len() as u32;
         let args_start = air.add_extra(&extra_data);
-        let air_ref = air.add_inst(AirInst {
+        let intrinsic_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
                 name: self.known.assert,
                 args_start,
@@ -621,6 +731,8 @@ impl<'a> BodySema<'a> {
             ty: Type::UNIT,
             span,
         });
+        let air_ref =
+            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::UNIT, span, temp_scope);
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
@@ -637,11 +749,14 @@ impl<'a> BodySema<'a> {
         message_ty: Type,
         message_span: Span,
     ) -> CompileResult<()> {
-        if !self.is_builtin_string(message_ty) && !message_ty.is_never() {
+        if !self.is_builtin_string(message_ty)
+            && !self.is_str_like(message_ty)
+            && !message_ty.is_never()
+        {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_name.to_string(),
-                    expected: "StrBuf message".to_string(),
+                    expected: "text message".to_string(),
                     found: message_ty.safe_name_with_pool(Some(&self.type_pool)),
                 })),
                 message_span,
@@ -1030,12 +1145,12 @@ impl<'a> BodySema<'a> {
         let arg_result = self.analyze_inst_for_projection(air, args[0].value, ctx)?;
         let arg_type = arg_result.ty;
 
-        // Argument must be a StrBuf
-        if !self.is_builtin_string(arg_type) {
+        // Every text rung is consumed through its shared `{ptr, len}` view.
+        if !self.is_builtin_string(arg_type) && !self.is_str_like(arg_type) {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: format!("@{}", intrinsic_name_str),
-                    expected: "StrBuf".to_string(),
+                    expected: "text".to_string(),
                     found: arg_type.safe_name_with_pool(Some(&self.type_pool)),
                 })),
                 span,
@@ -1065,8 +1180,16 @@ impl<'a> BodySema<'a> {
         )?;
 
         // Encode args into extra array
-        let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
+        let source_strbuf = arg_type.as_struct().is_some_and(|struct_id| {
+            self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+        });
+        let (arg_ref, temp_scope) = if source_strbuf {
+            self.materialize_borrow_argument(air, arg_result.air_ref, arg_type, span, ctx)?
+        } else {
+            (arg_result.air_ref, Vec::new())
+        };
+        let args_start = air.add_extra(&[arg_ref.as_u32()]);
+        let intrinsic_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
                 name,
                 args_start,
@@ -1075,6 +1198,8 @@ impl<'a> BodySema<'a> {
             ty: option_ty,
             span,
         });
+        let air_ref =
+            self.wrap_value_with_temp_scope(air, intrinsic_ref, option_ty, span, temp_scope);
         Ok(AnalysisResult::new(air_ref, option_ty))
     }
 

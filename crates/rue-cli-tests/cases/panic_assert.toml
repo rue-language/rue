@@ -220,7 +220,7 @@ error_contains = ["E0702", "bool condition", "found i32"]
 # were reinterpreted as the panic runtime's pointer and length.
 [[case]]
 name = "panic_struct_message_impostor_is_rejected"
-description = "@panic accepts only the builtin StrBuf message type."
+description = "@panic accepts only text message types."
 files = [{ path = "main.rue", source = """
 struct Fake { a: u64, b: u64, c: u64 }
 fn main() -> i32 {
@@ -229,7 +229,7 @@ fn main() -> i32 {
 }
 """ }]
 compile_fail = true
-error_contains = ["E0702", "StrBuf message", "found Fake"]
+error_contains = ["E0702", "text message", "found Fake"]
 
 # ── @cast rejection ──────────────────────────────────────────────────────────
 

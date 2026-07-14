@@ -1623,7 +1623,7 @@ impl<'a> CfgLower<'a> {
                     let arg_type = self.ctx.cfg.get_inst(arg_val).ty;
 
                     // Handle String arguments separately
-                    if self.ctx.is_builtin_string(arg_type) {
+                    if self.ctx.is_string_like_for_equality(arg_type) {
                         // String fat pointer (ptr, len, cap) — materialize a String read
                         // from a place (`@dbg(h.s)`) as well as cached sources. (RUE-118)
                         if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
@@ -4208,6 +4208,57 @@ mod tests {
 
     fn lower_to_mir(source: &str) -> Aarch64Mir {
         lower_function_to_mir(source, "main")
+    }
+
+    #[test]
+    fn aggregate_block_result_slots_cross_cleanup_before_destructor_calls() {
+        let mir = lower_function_to_mir(
+            "fn preserve() -> Triple { { let guard = Guard { v: 0 }; make() } }\n\
+             struct Triple { a: u64, b: u64, c: u64 }\n\
+             struct Guard { v: i32 }\n\
+             drop fn Guard(self) { }\n\
+             fn make() -> Triple { Triple { a: 11, b: 22, c: 33 } }\n\
+             fn main() -> i32 { let triple = preserve(); @intCast(triple.b) }",
+            "preserve",
+        );
+
+        let make = runtime_call_index(&mir, "make");
+        let cleanup = mir.instructions()[make + 1..]
+            .iter()
+            .position(|inst| matches!(inst, Aarch64Inst::Bl { .. }))
+            .map(|offset| make + 1 + offset)
+            .expect("scope cleanup must call Guard.__drop");
+
+        let returned_slots = mir.instructions()[make + 1..cleanup]
+            .iter()
+            .filter_map(|inst| match inst {
+                Aarch64Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Physical(src),
+                } if RET_REGS[..3].contains(src) => Some(*dst),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            returned_slots.len(),
+            3,
+            "make returns all three Triple slots"
+        );
+
+        for slot in returned_slots {
+            assert!(
+                mir.instructions()[make + 1..cleanup].iter().any(|inst| {
+                    matches!(
+                        inst,
+                        Aarch64Inst::MovRR {
+                            dst: Operand::Virtual(_),
+                            src: Operand::Virtual(src),
+                        } if *src == slot
+                    )
+                }),
+                "every aggregate result slot must cross the block-parameter boundary before cleanup"
+            );
+        }
     }
 
     #[test]

@@ -1091,7 +1091,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 // Lower the final value
-                let result = self.lower_inst(*value);
+                let mut result = self.lower_inst(*value);
 
                 // Pop scope and emit StorageDead (with Drop if needed) in reverse order.
                 // BUT: if the value diverged (break/continue/return), the diverging
@@ -1101,6 +1101,39 @@ impl<'a> CfgBuilder<'a> {
                     if let Some(scope_slots) = self.scope_stack.pop() {
                         // Only emit scope cleanup if the value didn't diverge
                         if !matches!(result.continuation, Continuation::Diverged) {
+                            // A block's result must cross scope cleanup as an
+                            // explicit CFG value. This is especially important
+                            // for multi-slot aggregates returned by calls: the
+                            // backend materializes every slot while copying a
+                            // goto argument to its block parameter, before any
+                            // destructor calls in the cleanup block can clobber
+                            // the result registers.
+                            //
+                            // Keep the boundary for scalar values too. Besides
+                            // expressing the block/cleanup ordering directly in
+                            // the CFG, that avoids encoding backend ABI details
+                            // in scope lowering.
+                            if !scope_slots.is_empty()
+                                && let Some(value) = result.value
+                                && ty != Type::UNIT
+                                && ty != Type::NEVER
+                            {
+                                let cleanup_block = self.cfg.new_block();
+                                let cleanup_result = self.cfg.add_block_param(cleanup_block, ty);
+                                let (args_start, args_len) =
+                                    self.cfg.push_extra(std::iter::once(value));
+                                self.cfg.set_terminator(
+                                    self.current_block,
+                                    Terminator::Goto {
+                                        target: cleanup_block,
+                                        args_start,
+                                        args_len,
+                                    },
+                                );
+                                self.current_block = cleanup_block;
+                                result.value = Some(cleanup_result);
+                            }
+
                             for live_slot in scope_slots.into_iter().rev() {
                                 let slot_span = live_slot.span;
                                 self.emit_drop_for_slot(&live_slot, slot_span);
@@ -3122,6 +3155,90 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_computed_projection_drops_its_owner_once_after_the_consumer() {
+        let cases = [
+            (
+                "direct field",
+                "struct Holder { text: StrBuf }\n\
+                 fn make_holder() -> Holder { Holder { text: \"held\" } }\n\
+                 fn consume() -> i32 { print(make_holder().text); 0 }\n\
+                 fn main() -> i32 { consume() }",
+            ),
+            (
+                "nested fields",
+                "struct Holder { text: StrBuf }\n\
+                 struct Outer { holder: Holder }\n\
+                 fn make_outer() -> Outer { Outer { holder: Holder { text: \"held\" } } }\n\
+                 fn consume() -> i32 { print(make_outer().holder.text); 0 }\n\
+                 fn main() -> i32 { consume() }",
+            ),
+            (
+                "computed index and field",
+                "struct Holder { text: StrBuf }\n\
+                 struct Outer { holders: [Holder; 1] }\n\
+                 fn make_outer() -> Outer { Outer { holders: [Holder { text: \"held\" }] } }\n\
+                 fn consume() -> i32 { print(make_outer().holders[0].text); 0 }\n\
+                 fn main() -> i32 { consume() }",
+            ),
+        ];
+
+        for (label, source) in cases {
+            let cfg = build_cfg_named(source, "consume");
+            let instructions = cfg
+                .blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter().copied())
+                .collect::<Vec<_>>();
+            let consumer = instructions
+                .iter()
+                .position(|value| {
+                    matches!(
+                        cfg.get_inst(*value).data,
+                        CfgInstData::Call { args_len: 1, .. }
+                    )
+                })
+                .unwrap_or_else(|| panic!("{label}: print consumer"));
+            let drops = instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, value)| {
+                    matches!(cfg.get_inst(*value).data, CfgInstData::Drop { .. }).then_some(index)
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                drops.len(),
+                1,
+                "{label}: the computed aggregate has one owner"
+            );
+            assert!(
+                drops[0] > consumer,
+                "{label}: the owner must remain live until its projected StrBuf borrow is consumed"
+            );
+            let CfgInstData::Drop { value: dropped } = cfg.get_inst(instructions[drops[0]]).data
+            else {
+                unreachable!("selected a Drop")
+            };
+            let CfgInstData::Load { slot: owner_slot } = cfg.get_inst(dropped).data else {
+                panic!("{label}: owner drop must load its one temporary")
+            };
+            let storage_dead = instructions
+                .iter()
+                .position(|value| {
+                    matches!(
+                        cfg.get_inst(*value).data,
+                        CfgInstData::StorageDead { slot, .. } if slot == owner_slot
+                    )
+                })
+                .unwrap_or_else(|| panic!("{label}: computed owner storage ends"));
+            assert!(
+                storage_dead > drops[0],
+                "{label}: storage ends after its drop"
+            );
+        }
+    }
+
+    #[test]
     fn test_simple_return() {
         let cfg = build_cfg("fn main() -> i32 { 42 }");
 
@@ -3204,6 +3321,50 @@ mod tests {
         // RUE-128: `false || return 7` — same shape as the && case above.
         let cfg = build_cfg("fn main() -> i32 { let c = false || return 7; 3 }");
         assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn aggregate_block_result_crosses_a_cfg_boundary_before_scope_cleanup() {
+        let cfg = build_cfg_named(
+            "fn preserve() -> Triple { { let guard = Guard { v: 0 }; make() } }\n\
+             struct Triple { a: u64, b: u64, c: u64 }\n\
+             struct Guard { v: i32 }\n\
+             drop fn Guard(self) { }\n\
+             fn make() -> Triple { Triple { a: 11, b: 22, c: 33 } }\n\
+             fn main() -> i32 { let triple = preserve(); @intCast(triple.b) }",
+            "preserve",
+        );
+
+        let result_block = cfg
+            .blocks()
+            .iter()
+            .find(|block| {
+                block.insts.iter().any(|value| {
+                    matches!(cfg.get_inst(*value).data, CfgInstData::Call { .. })
+                        && cfg.get_inst(*value).ty != Type::UNIT
+                })
+            })
+            .expect("block containing make result");
+        let Terminator::Goto {
+            target,
+            args_start,
+            args_len,
+        } = result_block.terminator
+        else {
+            panic!("aggregate-producing block must forward its result before cleanup")
+        };
+        assert_eq!(args_len, 1);
+        let result = cfg.get_extra(args_start, args_len)[0];
+        let cleanup_block = cfg.get_block(target);
+        assert_eq!(cleanup_block.params.len(), 1);
+        assert_eq!(cleanup_block.params[0].1, cfg.get_inst(result).ty);
+        assert!(
+            cleanup_block
+                .insts
+                .iter()
+                .any(|value| matches!(cfg.get_inst(*value).data, CfgInstData::Drop { .. })),
+            "the owner cleanup must run after the aggregate crossed the CFG edge"
+        );
     }
 
     #[test]

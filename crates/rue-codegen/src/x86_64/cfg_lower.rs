@@ -1993,18 +1993,14 @@ impl<'a> CfgLower<'a> {
                     let arg_type = self.ctx.cfg.get_inst(arg_val).ty;
 
                     // Handle builtin String type specially
-                    if self.ctx.is_builtin_string(arg_type) {
+                    if self.ctx.is_string_like_for_equality(arg_type) {
                         // Get the fat pointer (ptr, len, cap) — materializes a String read
                         // from a place (`@dbg(h.s)`) as well as cached sources. (RUE-118)
                         if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
                             // Correctness guard (must run in release): a wrong
                             // vreg count feeds garbage to @dbg, so plain `assert!`
                             // not `debug_assert!` (RUE-45).
-                            assert_eq!(
-                                field_vregs.len(),
-                                3,
-                                "string should have exactly 3 vregs (ptr, len, cap)"
-                            );
+                            assert!(field_vregs.len() >= 2, "text needs ptr and len slots");
                             let ptr_vreg = field_vregs[0];
                             let len_vreg = field_vregs[1];
 
@@ -2135,11 +2131,7 @@ impl<'a> CfgLower<'a> {
                         // Correctness guard (must run in release): a wrong vreg
                         // count feeds garbage to @parse_*, so plain `assert!`
                         // not `debug_assert!` (RUE-45).
-                        assert_eq!(
-                            field_vregs.len(),
-                            3,
-                            "string should have exactly 3 vregs (ptr, len, cap)"
-                        );
+                        assert!(field_vregs.len() >= 2, "text needs ptr and len slots");
                         let ptr_vreg = field_vregs[0];
                         let len_vreg = field_vregs[1];
 
@@ -3246,11 +3238,7 @@ impl<'a> CfgLower<'a> {
     fn emit_panic_with_msg(&mut self, msg_val: CfgValue) {
         if let Some(field_vregs) = self.get_or_compute_field_vregs(msg_val) {
             // A String is a (ptr, len, cap) fat pointer; pass ptr in RDI, len in RSI.
-            assert_eq!(
-                field_vregs.len(),
-                3,
-                "panic message string should have exactly 3 vregs (ptr, len, cap)"
-            );
+            assert!(field_vregs.len() >= 2, "text needs ptr and len slots");
             let ptr_vreg = field_vregs[0];
             let len_vreg = field_vregs[1];
             self.mir.push(X86Inst::MovRR {
@@ -4094,10 +4082,18 @@ mod tests {
     use rue_rir::AstGen;
 
     fn lower_to_mir(source: &str) -> X86Mir {
-        lower_to_mir_with_preview(source, PreviewFeatures::new())
+        lower_function_to_mir_with_preview(source, "main", PreviewFeatures::new())
     }
 
     fn lower_to_mir_with_preview(source: &str, preview: PreviewFeatures) -> X86Mir {
+        lower_function_to_mir_with_preview(source, "main", preview)
+    }
+
+    fn lower_function_to_mir_with_preview(
+        source: &str,
+        function_name: &str,
+        preview: PreviewFeatures,
+    ) -> X86Mir {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
@@ -4110,7 +4106,11 @@ mod tests {
         let sema = Sema::new(&rir, &mut interner, preview);
         let output = sema.analyze_all().unwrap();
 
-        let func = &output.functions[0];
+        let func = output
+            .functions
+            .iter()
+            .find(|func| func.name == function_name)
+            .expect("requested test function should exist");
         let type_pool = &output.type_pool;
         let cfg_output = CfgBuilder::build(
             &func.air,
@@ -4174,6 +4174,58 @@ mod tests {
                 matches!(inst, X86Inst::CallRel { symbol_id } if mir.get_symbol(*symbol_id) == symbol)
             })
             .unwrap_or_else(|| panic!("missing call to {symbol}"))
+    }
+
+    #[test]
+    fn aggregate_block_result_slots_cross_cleanup_before_destructor_calls() {
+        let mir = lower_function_to_mir_with_preview(
+            "fn preserve() -> Triple { { let guard = Guard { v: 0 }; make() } }\n\
+             struct Triple { a: u64, b: u64, c: u64 }\n\
+             struct Guard { v: i32 }\n\
+             drop fn Guard(self) { }\n\
+             fn make() -> Triple { Triple { a: 11, b: 22, c: 33 } }\n\
+             fn main() -> i32 { let triple = preserve(); @intCast(triple.b) }",
+            "preserve",
+            PreviewFeatures::new(),
+        );
+
+        let make = runtime_call_index(&mir, "make");
+        let cleanup = mir.instructions()[make + 1..]
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::CallRel { .. }))
+            .map(|offset| make + 1 + offset)
+            .expect("scope cleanup must call Guard.__drop");
+
+        let returned_slots = mir.instructions()[make + 1..cleanup]
+            .iter()
+            .filter_map(|inst| match inst {
+                X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Physical(src),
+                } if RET_REGS[..3].contains(src) => Some(*dst),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            returned_slots.len(),
+            3,
+            "make returns all three Triple slots"
+        );
+
+        for slot in returned_slots {
+            assert!(
+                mir.instructions()[make + 1..cleanup].iter().any(|inst| {
+                    matches!(
+                        inst,
+                        X86Inst::MovRR {
+                            dst: Operand::Virtual(_),
+                            src: Operand::Virtual(src),
+                        } if *src == slot
+                    )
+                }),
+                "every aggregate result slot must cross the block-parameter boundary before cleanup"
+            );
+        }
     }
 
     #[test]

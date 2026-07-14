@@ -6,6 +6,128 @@
 use super::*;
 
 impl<'a> BodySema<'a> {
+    /// Give an internally synthesized borrow argument an addressable home.
+    /// Source calls normally get this from argument analysis; compiler-owned
+    /// operators also accept rvalues, so they must perform the same spill.
+    pub(crate) fn materialize_borrow_argument(
+        &mut self,
+        air: &mut Air,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<(AirRef, Vec<AirRef>)> {
+        let (value, mut prefix) = self.peel_projected_rvalue_scope(air, value);
+        if matches!(
+            air.get(value).data,
+            AirInstData::Load { .. } | AirInstData::Param { .. } | AirInstData::PlaceRead { .. }
+        ) {
+            return Ok((value, prefix));
+        }
+
+        let slot = ctx.next_slot;
+        ctx.next_slot += self.require_layout_slots(ty, span)?;
+        let live = air.add_inst(AirInst {
+            data: AirInstData::StorageLive { slot },
+            ty,
+            span,
+        });
+        let alloc = air.add_inst(AirInst {
+            data: AirInstData::Alloc { slot, init: value },
+            ty: Type::UNIT,
+            span,
+        });
+        let load = air.add_inst(AirInst {
+            data: AirInstData::Load { slot },
+            ty,
+            span,
+        });
+        prefix.extend([live, alloc]);
+        Ok((load, prefix))
+    }
+
+    pub(crate) fn wrap_value_with_temp_scope(
+        &mut self,
+        air: &mut Air,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+        prefix: Vec<AirRef>,
+    ) -> AirRef {
+        if prefix.is_empty() {
+            return value;
+        }
+        let stmts = prefix.iter().map(|r| r.as_u32()).collect::<Vec<_>>();
+        let stmts_start = air.add_extra(&stmts);
+        air.add_inst(AirInst {
+            data: AirInstData::Block {
+                stmts_start,
+                stmts_len: prefix.len() as u32,
+                value,
+            },
+            ty,
+            span,
+        })
+    }
+
+    /// Project the shared `{ptr, len}` text prefix from a StrBuf value.
+    ///
+    /// Runtime text consumers use this two-word ABI for every text rung. An
+    /// rvalue is spilled exactly once so both field reads share one owner.
+    pub(crate) fn project_strbuf_text_fields(
+        &mut self,
+        air: &mut Air,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<(AirRef, AirRef, Vec<AirRef>)> {
+        let struct_id = ty.as_struct().expect("StrBuf is a struct");
+        let (value, mut prefix) = self.peel_projected_rvalue_scope(air, value);
+        let (base, base_type, projections) = match air.get(value).data {
+            AirInstData::Load { slot } => (AirPlaceBase::Local(slot), ty, Vec::new()),
+            AirInstData::Param { index } => (AirPlaceBase::Param(index), ty, Vec::new()),
+            AirInstData::PlaceRead { place } => {
+                let place = *air.get_place(place);
+                let projections = air.get_place_projections(&place).to_vec();
+                (place.base, place.base_type, projections)
+            }
+            _ => {
+                let slot = ctx.next_slot;
+                ctx.next_slot += self.require_layout_slots(ty, span)?;
+                let live = air.add_inst(AirInst {
+                    data: AirInstData::StorageLive { slot },
+                    ty,
+                    span,
+                });
+                let alloc = air.add_inst(AirInst {
+                    data: AirInstData::Alloc { slot, init: value },
+                    ty: Type::UNIT,
+                    span,
+                });
+                prefix.extend([live, alloc]);
+                (AirPlaceBase::Local(slot), ty, Vec::new())
+            }
+        };
+
+        let fields = self.type_pool.struct_def(struct_id).fields;
+        let mut reads = Vec::with_capacity(2);
+        for field_index in 0..2u32 {
+            let mut field_projections = projections.clone();
+            field_projections.push(AirProjection::Field {
+                struct_id,
+                field_index,
+            });
+            let place = air.make_place(base, base_type, field_projections);
+            reads.push(air.add_inst(AirInst {
+                data: AirInstData::PlaceRead { place },
+                ty: fields[field_index as usize].ty,
+                span,
+            }));
+        }
+        Ok((reads[0], reads[1], prefix))
+    }
+
     /// Convert RIR argument mode to AIR argument mode.
     pub(super) fn convert_arg_mode(mode: RirArgMode) -> AirArgMode {
         match mode {
@@ -48,9 +170,9 @@ impl<'a> BodySema<'a> {
     /// Both operands are *borrowed* (read, not consumed) — like the operands of
     /// `==` — so a named operand remains usable afterwards and a temporary is
     /// dropped by its owner at statement end; neither is leaked. The operation
-    /// lowers to an `extern "C"` sret call to `__rue_String_concat(out, ptr1,
-    /// len1, cap1, ptr2, len2, cap2)`, reusing the ordinary aggregate-return and
-    /// String-flattening call paths (no codegen change).
+    /// For the canonical std nominal this calls the source-defined
+    /// `concat_borrowed`; the runtime family remains only for the transitional
+    /// no-stdlib nominal.
     pub(super) fn analyze_string_concat(
         &mut self,
         air: &mut Air,
@@ -86,21 +208,51 @@ impl<'a> BodySema<'a> {
         }
 
         let string_type = self.builtin_string_type();
-        let call_name = self
-            .interner
-            .get_or_intern(rue_builtins::STRING_CONCAT_RUNTIME_FN);
+        let source_concat = string_type.as_struct().and_then(|struct_id| {
+            let method = self.interner.get_or_intern("concat_borrowed");
+            self.method_info((struct_id, method))?;
+            Some((struct_id, method))
+        });
+        let (call_name, arg_mode) = if let Some((struct_id, method)) = source_concat {
+            ctx.referenced_methods.insert((struct_id, method));
+            (
+                self.interner.get_or_intern(&self.method_symbol(
+                    struct_id,
+                    "concat_borrowed",
+                    false,
+                )),
+                AirArgMode::Borrow,
+            )
+        } else {
+            (
+                self.interner
+                    .get_or_intern(rue_builtins::STRING_CONCAT_RUNTIME_FN),
+                AirArgMode::Normal,
+            )
+        };
 
-        // Both String operands are flattened into (ptr, len, cap) by codegen;
-        // Normal mode with the move cancelled gives flatten-without-consume.
+        // Source operands use real borrow arguments. The compatibility path
+        // keeps its historical flattened-by-value ABI.
+        let (lhs_arg, mut temp_scope) = if arg_mode == AirArgMode::Borrow {
+            self.materialize_borrow_argument(air, lhs_result.air_ref, lhs_result.ty, span, ctx)?
+        } else {
+            (lhs_result.air_ref, Vec::new())
+        };
+        let (rhs_arg, rhs_scope) = if arg_mode == AirArgMode::Borrow {
+            self.materialize_borrow_argument(air, rhs_result.air_ref, rhs_result.ty, span, ctx)?
+        } else {
+            (rhs_result.air_ref, Vec::new())
+        };
+        temp_scope.extend(rhs_scope);
         let extra_data = [
-            lhs_result.air_ref.as_u32(),
-            AirArgMode::Normal.as_u32(),
-            rhs_result.air_ref.as_u32(),
-            AirArgMode::Normal.as_u32(),
+            lhs_arg.as_u32(),
+            arg_mode.as_u32(),
+            rhs_arg.as_u32(),
+            arg_mode.as_u32(),
         ];
         let args_start = air.add_extra(&extra_data);
 
-        let air_ref = air.add_inst(AirInst {
+        let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
                 name: call_name,
                 args_start,
@@ -109,6 +261,7 @@ impl<'a> BodySema<'a> {
             ty: string_type,
             span,
         });
+        let air_ref = self.wrap_value_with_temp_scope(air, call_ref, string_type, span, temp_scope);
         Ok(AnalysisResult::new(air_ref, string_type))
     }
 
@@ -161,41 +314,73 @@ impl<'a> BodySema<'a> {
         let arg_result = self.analyze_inst_for_projection(air, arg_value, ctx)?;
         air.cancel_move_marker(arg_result.air_ref);
 
-        if !self.is_builtin_string(arg_result.ty) && !arg_result.ty.is_error() {
+        if !self.is_builtin_string(arg_result.ty)
+            && !self.is_str_like(arg_result.ty)
+            && !arg_result.ty.is_error()
+        {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
-                    expected: "StrBuf".to_string(),
+                    expected: "text".to_string(),
                     found: arg_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                 },
                 self.rir.get(arg_value).span,
             )
-            .with_help(format!(
-                "`{fn_name}` takes a StrBuf; build one with `@to_string`, `+`, or StrBuf methods"
-            )));
+            .with_help(format!("`{fn_name}` takes StrBuf, str, or Str(N) text")));
         }
 
-        let runtime_fn = if name == self.known.println {
+        let source_strbuf = arg_result.ty.as_struct().is_some_and(|struct_id| {
+            self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+        });
+        let shared_text = source_strbuf || self.is_str_like(arg_result.ty);
+        let runtime_fn = if name == self.known.println && shared_text {
+            "__rue_str_println"
+        } else if name == self.known.println {
             rue_builtins::PRINTLN_RUNTIME_FN
+        } else if shared_text {
+            "__rue_str_print"
         } else {
             rue_builtins::PRINT_RUNTIME_FN
         };
         let call_name = self.interner.get_or_intern(runtime_fn);
 
-        // The String is flattened into (ptr, len, cap) by codegen; Normal mode
-        // with the move cancelled gives flatten-without-consume (same as the
-        // operands of `__rue_String_concat`).
-        let extra_data = [arg_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()];
+        let extra_data = if source_strbuf {
+            let (ptr, len, temp_scope) =
+                self.project_strbuf_text_fields(air, arg_result.air_ref, arg_result.ty, span, ctx)?;
+            let args = vec![
+                ptr.as_u32(),
+                AirArgMode::Normal.as_u32(),
+                len.as_u32(),
+                AirArgMode::Normal.as_u32(),
+            ];
+            (args, temp_scope)
+        } else if self.is_builtin_string(arg_result.ty) {
+            let (arg, temp_scope) = self.materialize_borrow_argument(
+                air,
+                arg_result.air_ref,
+                arg_result.ty,
+                span,
+                ctx,
+            )?;
+            (vec![arg.as_u32(), AirArgMode::Normal.as_u32()], temp_scope)
+        } else {
+            (
+                vec![arg_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()],
+                Vec::new(),
+            )
+        };
+        let (extra_data, temp_scope) = extra_data;
         let args_start = air.add_extra(&extra_data);
 
-        let air_ref = air.add_inst(AirInst {
+        let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
                 name: call_name,
                 args_start,
-                args_len: 1,
+                args_len: if source_strbuf { 2 } else { 1 },
             },
             ty: Type::UNIT,
             span,
         });
+        let air_ref = self.wrap_value_with_temp_scope(air, call_ref, Type::UNIT, span, temp_scope);
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
@@ -228,7 +413,6 @@ impl<'a> BodySema<'a> {
                 span,
             ));
         }
-
         let air_ref = air.add_inst(AirInst {
             data: make_data(lhs_result.air_ref, rhs_result.air_ref),
             ty: lhs_result.ty,
@@ -328,8 +512,68 @@ impl<'a> BodySema<'a> {
             ));
         }
 
+        let comparison = make_data(lhs_result.air_ref, rhs_result.air_ref);
+        let source_equality = matches!(comparison, AirInstData::Eq(..) | AirInstData::Ne(..))
+            && lhs_type.as_struct().is_some_and(|struct_id| {
+                self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+            });
+        if source_equality {
+            let struct_id = lhs_type.as_struct().expect("source StrBuf is a struct");
+            let method = self.interner.get_or_intern("equals_borrowed");
+            if self.method_info((struct_id, method)).is_some() {
+                ctx.referenced_methods.insert((struct_id, method));
+                let (lhs_arg, mut temp_scope) = self.materialize_borrow_argument(
+                    air,
+                    lhs_result.air_ref,
+                    lhs_result.ty,
+                    span,
+                    ctx,
+                )?;
+                let (rhs_arg, rhs_scope) = self.materialize_borrow_argument(
+                    air,
+                    rhs_result.air_ref,
+                    rhs_result.ty,
+                    span,
+                    ctx,
+                )?;
+                temp_scope.extend(rhs_scope);
+                let args_start = air.add_extra(&[
+                    lhs_arg.as_u32(),
+                    AirArgMode::Borrow.as_u32(),
+                    rhs_arg.as_u32(),
+                    AirArgMode::Borrow.as_u32(),
+                ]);
+                let call_name = self.interner.get_or_intern(&self.method_symbol(
+                    struct_id,
+                    "equals_borrowed",
+                    false,
+                ));
+                let equal = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: call_name,
+                        args_start,
+                        args_len: 2,
+                    },
+                    ty: Type::BOOL,
+                    span,
+                });
+                let equal =
+                    self.wrap_value_with_temp_scope(air, equal, Type::BOOL, span, temp_scope);
+                let value = if matches!(comparison, AirInstData::Ne(..)) {
+                    air.add_inst(AirInst {
+                        data: AirInstData::Not(equal),
+                        ty: Type::BOOL,
+                        span,
+                    })
+                } else {
+                    equal
+                };
+                return Ok(AnalysisResult::new(value, Type::BOOL));
+            }
+        }
+
         let air_ref = air.add_inst(AirInst {
-            data: make_data(lhs_result.air_ref, rhs_result.air_ref),
+            data: comparison,
             ty: Type::BOOL,
             span,
         });

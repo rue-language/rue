@@ -459,6 +459,8 @@ fn every_known_missing_runtime_call_has_a_closed_kind() {
         ("__rue_String_substring", RuntimeCall::StringSubstring),
         ("__rue_print", RuntimeCall::Print),
         ("__rue_println", RuntimeCall::Println),
+        ("__rue_str_print", RuntimeCall::Print),
+        ("__rue_str_println", RuntimeCall::Println),
     ] {
         assert_eq!(
             unsupported_runtime_call_kind(name),
