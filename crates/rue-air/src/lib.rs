@@ -10,6 +10,7 @@
 //!
 //! Inspired by Zig's AIR (Analyzed Intermediate Representation).
 
+mod canonical_imports;
 mod inference;
 mod inst;
 mod intern_pool;
@@ -23,6 +24,7 @@ mod semantic_import;
 pub mod specialize;
 mod types;
 
+pub use canonical_imports::{SemanticModuleIdentity, SemanticResolvedImport};
 pub use inference::{
     Constraint, ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, InferType,
     LocalVarInfo, MethodSig, ParamVarInfo, Substitution, TypeVarAllocator, TypeVarId,

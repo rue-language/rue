@@ -1090,7 +1090,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 self.export_type(self.type_pool.ptr_mut_def(id), stack)?,
             ))),
             TypeKind::Module(id) => Ok(SemanticExportType::Module(Arc::from(
-                self.module_registry.get_def(id).file_path,
+                self.module_registry.get_def(id).durable_id,
             ))),
             _ => unreachable!(),
         };
@@ -1706,12 +1706,38 @@ mod tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
+        let import_offset = rir
+            .iter()
+            .find_map(|(_, inst)| {
+                matches!(inst.data, InstData::Intrinsic { .. }).then_some(inst.span.start)
+            })
+            .unwrap_or_default();
         let mut sema = Sema::new(&rir, &interner, PreviewFeatures::new());
         sema.set_root_file_id(FileId::DEFAULT);
         sema.set_file_paths(HashMap::from([
             (FileId::DEFAULT, "/main.rue".to_owned()),
             (FileId::new(1), "/other.rue".to_owned()),
         ]));
+        sema.set_canonical_imports(
+            vec![
+                crate::SemanticModuleIdentity {
+                    durable_id: "main.rue".to_owned(),
+                    file_id: FileId::DEFAULT,
+                    file_path: "/main.rue".to_owned(),
+                },
+                crate::SemanticModuleIdentity {
+                    durable_id: "other.rue".to_owned(),
+                    file_id: FileId::new(1),
+                    file_path: "/other.rue".to_owned(),
+                },
+            ],
+            vec![crate::SemanticResolvedImport {
+                importer: "main.rue".to_owned(),
+                source_offset: import_offset,
+                specifier: "other.rue".to_owned(),
+                target: "other.rue".to_owned(),
+            }],
+        )?;
         let bound = sema.bind_declarations()?;
         Ok(bound.binding_manifest().clone())
     }

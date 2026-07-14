@@ -178,7 +178,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         }?;
         let module_id = module_ty.as_module()?;
         let module_def = self.module_registry.get_def(module_id);
-        self.canonical_file_id(&module_def.file_path)
+        Some(module_def.file_id)
     }
 }
 

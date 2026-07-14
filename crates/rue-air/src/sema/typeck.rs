@@ -1238,7 +1238,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 
         for segment in rest {
             let module_def = self.module_registry.get_def(module_id);
-            let module_file_id = self.canonical_file_id(&module_def.file_path);
+            let module_file_id = Some(module_def.file_id);
             let segment_sym = self.interner.get_or_intern(segment);
             let Some(module_file_id) = module_file_id else {
                 return Err(CompileError::new(
@@ -1273,7 +1273,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         }
 
         let module_def = self.module_registry.get_def(module_id);
-        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let module_file_id = Some(module_def.file_id);
         let module_file_path = module_file_id
             .and_then(|id| self.get_file_path(id))
             .map(str::to_string)

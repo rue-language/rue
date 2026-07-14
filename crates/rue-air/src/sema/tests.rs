@@ -682,9 +682,47 @@ mod tests {
         for index in 0..IMPORT_COUNT {
             paths.insert(FileId::new((index + 1) as u32), format!("/dep{index}.rue"));
         }
+        let modules = (0..=IMPORT_COUNT)
+            .map(|index| crate::SemanticModuleIdentity {
+                durable_id: if index == 0 {
+                    "main.rue".to_owned()
+                } else {
+                    format!("dep{}.rue", index - 1)
+                },
+                file_id: FileId::new(index as u32),
+                file_path: paths[&FileId::new(index as u32)].clone(),
+            })
+            .collect();
+        let imports = rir
+            .iter()
+            .filter_map(|(_, inst)| {
+                let rue_rir::InstData::Intrinsic {
+                    name,
+                    args_start,
+                    args_len: 1,
+                } = inst.data
+                else {
+                    return None;
+                };
+                (interner.resolve(&name) == "import").then(|| {
+                    let argument = rir.get_inst_refs(args_start, 1)[0];
+                    let rue_rir::InstData::StringConst(specifier) = rir.get(argument).data else {
+                        unreachable!()
+                    };
+                    let specifier = interner.resolve(&specifier).to_owned();
+                    crate::SemanticResolvedImport {
+                        importer: "main.rue".to_owned(),
+                        source_offset: inst.span.start,
+                        target: specifier.clone(),
+                        specifier,
+                    }
+                })
+            })
+            .collect();
         let mut sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
         sema.set_root_file_id(FileId::DEFAULT);
         sema.set_file_paths(paths);
+        sema.set_canonical_imports(modules, imports).unwrap();
 
         let bound = sema.bind_declarations().unwrap();
         let binding_work = bound.binding_work();

@@ -323,8 +323,30 @@ pub(crate) fn bind_canonical_definitions(
     preview_features: PreviewFeatures,
     target: Target,
 ) -> MultiErrorResult<BoundDefinitionSet> {
-    bind_canonical_definitions_with_work(merged, rir, preview_features, target)
+    let imports = test_canonical_import_graph(merged)?;
+    bind_canonical_definitions_with_work(merged, rir, preview_features, target, &imports)
         .map(|(definitions, _)| definitions)
+}
+
+#[cfg(test)]
+pub(crate) fn test_canonical_import_graph(
+    merged: &CanonicalMergedProgram,
+) -> MultiErrorResult<crate::CanonicalImportGraph> {
+    let inputs = crate::ModuleResolutionInputs::new(
+        merged.ast().root().clone(),
+        merged
+            .ast()
+            .modules()
+            .iter()
+            .map(|module| crate::ModuleResolutionInput {
+                module: module.module_id().clone(),
+                physical_path: Arc::from(module.physical_path()),
+            })
+            .collect(),
+    )
+    .map_err(CompileErrors::from)?;
+    crate::resolve_canonical_import_graph(merged.ast().import_directives(), &inputs, None)
+        .map_err(CompileErrors::from)
 }
 
 /// Bind once and export stable, request-independent declaration semantics
@@ -341,7 +363,8 @@ pub(crate) fn bind_canonical_declaration_semantics(
     Arc<[crate::DurableDeclarationSemantic]>,
     rue_air::SemanticDeclarationExportWork,
 )> {
-    let sema = configure_canonical_sema(merged, rir, preview_features, target)?;
+    let imports = test_canonical_import_graph(merged)?;
+    let sema = configure_canonical_sema(merged, rir, preview_features, target, &imports)?;
     let bound = sema.bind_declarations()?;
     let manifest = bound.binding_manifest();
     let definitions = issue_bound_definitions(
@@ -389,8 +412,10 @@ pub(crate) fn compare_canonical_durable_declaration_install(
     preview_features: PreviewFeatures,
     target: Target,
 ) -> MultiErrorResult<(crate::DurableSemanticProjectionWork, DeclarationBindingWork)> {
-    let ordinary = configure_canonical_sema(merged, rir, preview_features.clone(), target)?
-        .bind_declarations()?;
+    let imports = test_canonical_import_graph(merged)?;
+    let ordinary =
+        configure_canonical_sema(merged, rir, preview_features.clone(), target, &imports)?
+            .bind_declarations()?;
     let manifest = ordinary.binding_manifest();
     let definitions = issue_bound_definitions(
         merged,
@@ -413,7 +438,7 @@ pub(crate) fn compare_canonical_durable_declaration_install(
                 "ordinary durable semantic conversion failed: {failure:?}"
             )))
         })?;
-    let shells = configure_canonical_sema(merged, rir, preview_features, target)?
+    let shells = configure_canonical_sema(merged, rir, preview_features, target, &imports)?
         .predeclare_declaration_shells()?;
     let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
     let (projected, projection_work) = crate::project_durable_declaration_semantics(
@@ -492,8 +517,9 @@ pub(crate) fn bind_canonical_definitions_with_work(
     rir: &CanonicalRirOutput,
     preview_features: PreviewFeatures,
     target: Target,
+    imports: &crate::CanonicalImportGraph,
 ) -> MultiErrorResult<(BoundDefinitionSet, DeclarationBindingWork)> {
-    let sema = configure_canonical_sema(merged, rir, preview_features, target)?;
+    let sema = configure_canonical_sema(merged, rir, preview_features, target, imports)?;
     let bound = sema.bind_declarations()?;
     let binding_work = bound.binding_work();
     let manifest = bound.binding_manifest();
@@ -512,6 +538,7 @@ pub(crate) fn configure_canonical_sema<'a>(
     rir: &'a CanonicalRirOutput,
     preview_features: PreviewFeatures,
     target: Target,
+    graph: &crate::CanonicalImportGraph,
 ) -> MultiErrorResult<Sema<'a>> {
     if merged.ast().source_revision() != rir.source_revision() {
         return Err(CompileErrors::from(invalid(
@@ -556,6 +583,48 @@ pub(crate) fn configure_canonical_sema<'a>(
             .map(|module| (module.file_id(), module.module_id().as_str().to_owned()))
             .collect(),
     );
+    if graph.root() != merged.ast().root() {
+        return Err(CompileErrors::from(invalid(
+            "canonical semantic import graph has a foreign root",
+        )));
+    }
+    let modules = merged
+        .ast()
+        .modules()
+        .iter()
+        .map(|module| rue_air::SemanticModuleIdentity {
+            durable_id: module.module_id().as_str().to_owned(),
+            file_id: module.file_id(),
+            file_path: module.physical_path().to_owned(),
+        })
+        .collect();
+    let imports = merged
+        .ast()
+        .import_directives()
+        .iter()
+        .filter_map(|directive| {
+            let normalized = rue_air::normalize_module_path(directive.specifier());
+            let record = graph
+                .records()
+                .iter()
+                .find(|record| {
+                    record.importer() == directive.importer()
+                        && record.normalized_specifier() == normalized
+                })
+                .expect("validated canonical graph covers every parsed import directive");
+            let crate::CanonicalImportResolution::Resolved(target) = record.resolution() else {
+                return None;
+            };
+            Some(rue_air::SemanticResolvedImport {
+                importer: directive.importer().as_str().to_owned(),
+                source_offset: directive.source_offset(),
+                specifier: directive.specifier().to_owned(),
+                target: target.as_str().to_owned(),
+            })
+        })
+        .collect();
+    sema.set_canonical_imports(modules, imports)
+        .map_err(CompileErrors::from)?;
     Ok(sema)
 }
 
@@ -1033,11 +1102,17 @@ mod tests {
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
         let current_definitions = bind(&relocated);
-        let shells =
-            configure_canonical_sema(&merged, &rir, PreviewFeatures::new(), Target::default())
-                .unwrap()
-                .predeclare_declaration_shells()
-                .unwrap();
+        let imports = test_canonical_import_graph(&merged).unwrap();
+        let shells = configure_canonical_sema(
+            &merged,
+            &rir,
+            PreviewFeatures::new(),
+            Target::default(),
+            &imports,
+        )
+        .unwrap()
+        .predeclare_declaration_shells()
+        .unwrap();
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let (projected, work) = crate::project_durable_declaration_semantics(
             &merged,
@@ -1077,11 +1152,17 @@ mod tests {
         let parsed = parse_source_snapshot_modules(&input).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
-        let shells =
-            configure_canonical_sema(&merged, &rir, PreviewFeatures::new(), Target::default())
-                .unwrap()
-                .predeclare_declaration_shells()
-                .unwrap();
+        let imports = test_canonical_import_graph(&merged).unwrap();
+        let shells = configure_canonical_sema(
+            &merged,
+            &rir,
+            PreviewFeatures::new(),
+            Target::default(),
+            &imports,
+        )
+        .unwrap()
+        .predeclare_declaration_shells()
+        .unwrap();
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let (projected, projection) = crate::project_durable_declaration_semantics(
             &merged,
@@ -1106,11 +1187,17 @@ mod tests {
         let parsed = parse_source_snapshot_modules(&input).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
-        let shells =
-            configure_canonical_sema(&merged, &rir, PreviewFeatures::new(), Target::default())
-                .unwrap()
-                .predeclare_declaration_shells()
-                .unwrap();
+        let imports = test_canonical_import_graph(&merged).unwrap();
+        let shells = configure_canonical_sema(
+            &merged,
+            &rir,
+            PreviewFeatures::new(),
+            Target::default(),
+            &imports,
+        )
+        .unwrap()
+        .predeclare_declaration_shells()
+        .unwrap();
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let duplicated = durable
             .iter()
@@ -1165,12 +1252,19 @@ mod tests {
             "{error:?}"
         );
         // The failed candidate was consumed; a fresh ordinary epoch remains valid.
-        configure_canonical_sema(&merged, &rir, PreviewFeatures::new(), Target::default())
-            .unwrap()
-            .bind_declarations()
-            .unwrap()
-            .analyze_all_bodies()
-            .unwrap();
+        let imports = test_canonical_import_graph(&merged).unwrap();
+        configure_canonical_sema(
+            &merged,
+            &rir,
+            PreviewFeatures::new(),
+            Target::default(),
+            &imports,
+        )
+        .unwrap()
+        .bind_declarations()
+        .unwrap()
+        .analyze_all_bodies()
+        .unwrap();
     }
 
     const PROGRAM: &str = r#"

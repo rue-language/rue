@@ -448,7 +448,7 @@ fn durable_type(
                 .ast()
                 .modules()
                 .iter()
-                .find(|module| module.physical_path() == path.as_ref())
+                .find(|module| module.module_id().as_str() == path.as_ref())
                 .map(|module| module.module_id().clone())
                 .ok_or(DurableBodyConversionFailure::UnresolvedModule)?,
         ),

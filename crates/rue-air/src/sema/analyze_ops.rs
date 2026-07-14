@@ -3545,7 +3545,7 @@ impl<'a> BodySema<'a> {
                 ));
             };
             let module_def = self.module_registry.get_def(module_id);
-            let module_file_id = self.canonical_file_id(&module_def.file_path);
+            let module_file_id = Some(module_def.file_id);
             let struct_id = module_file_id
                 .and_then(|file_id| {
                     self.structs_by_file_name
@@ -4360,7 +4360,7 @@ impl<'a> BodySema<'a> {
         // `module_file_path` is then that file's stored path, used for the
         // directory-based visibility checks below.
         let module_def = self.module_registry.get_def(module_id);
-        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let module_file_id = Some(module_def.file_id);
         let module_file_path = module_file_id
             .and_then(|id| self.get_file_path(id))
             .map(str::to_string)
@@ -4651,7 +4651,7 @@ impl<'a> BodySema<'a> {
             InstData::FieldGet { base, field } => {
                 let parent_id = self.try_module_id_of(base, span, ctx)?;
                 let parent_def = self.module_registry.get_def(parent_id);
-                let parent_file = self.canonical_file_id(&parent_def.file_path)?;
+                let parent_file = parent_def.file_id;
                 self.module_bindings
                     .get(&(parent_file, field))
                     .and_then(|binding| binding.ty.as_module())
@@ -4685,9 +4685,7 @@ impl<'a> BodySema<'a> {
             return Ok(None);
         };
         let module_def = self.module_registry.get_def(module_id);
-        let Some(file_id) = self.canonical_file_id(&module_def.file_path) else {
-            return Ok(None);
-        };
+        let file_id = module_def.file_id;
 
         // Enum member: `module.Enum.Variant(payload)` is tuple-variant
         // construction. Resolve the enum in the receiver module's defining
@@ -4786,7 +4784,7 @@ impl<'a> BodySema<'a> {
             return Ok(None);
         };
         let module_def = self.module_registry.get_def(module_id);
-        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let module_file_id = Some(module_def.file_id);
         let Some(enum_id) = module_file_id
             .and_then(|file_id| self.enums_by_file_name.get(&(file_id, type_name)).copied())
         else {

@@ -267,9 +267,11 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) known: KnownSymbols,
     /// Type intern pool for unified type representation (ADR-0024 Phase 1).
     pub(crate) type_pool: TypeInternPool,
-    /// Module registry for tracking imported modules (Phase 1 modules).
+    /// Canonically prepopulated module registry for the current semantic epoch.
     pub(crate) module_registry: crate::module_registry::ModuleRegistry,
-    /// Maps FileId to source file paths (for module resolution).
+    /// Accepted canonical import-site identities for this semantic epoch.
+    pub(crate) canonical_imports: Option<crate::canonical_imports::CanonicalImportContext>,
+    /// Maps FileId to request-local source paths used for presentation.
     pub(crate) file_paths: HashMap<FileId, String>,
     /// Maps FileId to relocation-stable paths used in generated symbols.
     pub(crate) symbol_paths: HashMap<FileId, String>,
@@ -378,6 +380,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             known,
             type_pool,
             module_registry,
+            canonical_imports,
             file_paths,
             symbol_paths,
             root_file_id,
@@ -427,6 +430,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             known,
             type_pool,
             module_registry,
+            canonical_imports,
             file_paths,
             symbol_paths,
             root_file_id,
@@ -735,6 +739,7 @@ impl<'a> Sema<'a> {
             known: KnownSymbols::new(interner),
             type_pool: TypeInternPool::new(),
             module_registry: crate::module_registry::ModuleRegistry::new(),
+            canonical_imports: None,
             file_paths: HashMap::new(),
             symbol_paths: HashMap::new(),
             root_file_id: None,

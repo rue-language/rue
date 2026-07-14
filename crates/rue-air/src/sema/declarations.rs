@@ -279,11 +279,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 
         let module_file_ids: HashMap<crate::types::ModuleId, FileId> =
             (0..self.module_registry.len())
-                .filter_map(|index| {
+                .map(|index| {
                     let module_id = crate::types::ModuleId::new(index as u32);
                     let module_def = self.module_registry.get_def(module_id);
-                    self.canonical_file_id(&module_def.file_path)
-                        .map(|file_id| (module_id, file_id))
+                    (module_id, module_def.file_id)
                 })
                 .collect();
 
@@ -1872,13 +1871,7 @@ impl<'a> Sema<'a> {
                         }
                     };
 
-                    // Resolve the import path to an absolute file path
-                    let resolved_path = self.resolve_import_path(&import_path, span)?;
-
-                    // Register the module in the registry
-                    let (module_id, _is_new) = self
-                        .module_registry
-                        .get_or_create(import_path, resolved_path);
+                    let module_id = self.resolve_canonical_import(&import_path, span)?;
 
                     Ok(ConstInit::Module(Type::new_module(module_id)))
                 } else {
@@ -2119,10 +2112,7 @@ impl<'a> Sema<'a> {
                     self.module_bindings
                         .get(&(file_id, *name))
                         .and_then(|info| info.ty.as_module())
-                        .and_then(|module_id| {
-                            let path = self.module_registry.get_def(module_id).file_path.clone();
-                            self.canonical_file_id(&path)
-                        })
+                        .map(|module_id| self.module_registry.get_def(module_id).file_id)
                         .and_then(|module_file| {
                             self.constants_by_file_name
                                 .get(&(module_file, field))
@@ -2443,11 +2433,9 @@ impl<'a> Sema<'a> {
         let import_path = module_def.import_path.clone();
         let member_str = self.interner.resolve(&member).to_string();
 
-        // Resolve the module's file by canonical FileId so equivalent path
-        // spellings (`helper.rue` vs `./helper.rue`) refer to the same module
-        // (spec 10.2:4, RUE-240), then use that file's stored path for
-        // downstream directory-based visibility checks.
-        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        // The compiler bridge joins each durable module identity to this
+        // request's FileId before semantic analysis begins.
+        let module_file_id = Some(module_def.file_id);
         let module_file_path = module_file_id
             .and_then(|id| self.get_file_path(id))
             .map(str::to_string)
@@ -2599,7 +2587,7 @@ impl<'a> Sema<'a> {
         let module_def = self.module_registry.get_def(module_id);
         let import_path = module_def.import_path.clone();
         let member_str = self.interner.resolve(&member).to_string();
-        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let module_file_id = Some(module_def.file_id);
         let module_file_path = module_file_id
             .and_then(|id| self.get_file_path(id))
             .map(str::to_string)
