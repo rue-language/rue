@@ -600,6 +600,7 @@ cargo.rust_library(
     },
     features = [
         "default",
+        "memoization",
         "pratt",
         "stacker",
         "std",
