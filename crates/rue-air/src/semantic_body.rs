@@ -309,21 +309,6 @@ impl<K, M> SemanticBody<K, M> {
                 T::PtrMut(value) => T::PtrMut(Box::new(ty(value, key, module)?)),
                 T::Module(value) => T::Module(module(value)?),
                 T::GenericParameter(index) => T::GenericParameter(*index),
-                T::Tuple(values) => T::Tuple(
-                    values
-                        .iter()
-                        .map(|value| ty(value, key, module))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into(),
-                ),
-                T::Function { parameters, result } => T::Function {
-                    parameters: parameters
-                        .iter()
-                        .map(|value| ty(value, key, module))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into(),
-                    result: Box::new(ty(result, key, module)?),
-                },
             })
         }
 

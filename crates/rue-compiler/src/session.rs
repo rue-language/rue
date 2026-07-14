@@ -4695,7 +4695,142 @@ mod tests {
     }
 
     #[test]
-    fn generic_named_method_reuse_fails_closed_without_poisoning_recovery() {
+    fn generic_callable_signature_round_trips_through_durable_declaration_reuse() {
+        let source = |value| {
+            snapshot(
+                &[(
+                    1,
+                    "/p/main.rue",
+                    "main.rue",
+                    &format!(
+                        "fn id(comptime T: type, value: T) -> T {{ value }} fn main() -> i32 {{ {value} }}"
+                    ),
+                )],
+                1,
+            )
+        };
+        let first = source(1);
+        let edited = source(2);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.semantic(&options).unwrap();
+
+        session.update(&edited).into_result().unwrap();
+        let reused = session.semantic(&options).unwrap();
+        assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(reused.work().binding.durable_payloads_installed, 2);
+        assert_eq!(reused.work().declaration_reuse.durable_records_reused, 2);
+        assert_eq!(reused.work().declaration_reuse.fallback_epochs_started, 0);
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&edited).into_result().unwrap();
+        let ordinary = fresh.semantic(&options).unwrap();
+        assert_semantic_artifact_parity(&session, &reused, &ordinary);
+        assert_diagnostic_parity(&session, &fresh);
+    }
+
+    #[test]
+    fn composite_generic_signature_reuses_across_relocation_and_specialization_edit() {
+        let source = |file, physical: &str, value| {
+            snapshot(
+                &[(
+                    file,
+                    physical,
+                    "main.rue",
+                    &format!(
+                        "fn first(comptime T: type, values: [[T; 2]; 2]) -> T {{ values[0][0] }} fn main() -> i32 {{ first(i32, [[1, 2], [3, {value}]]) }}"
+                    ),
+                )],
+                file,
+            )
+        };
+        let first = source(1, "/old/main.rue", 4);
+        let relocated_edit = source(99, "/new/main.rue", 5);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.semantic(&options).unwrap();
+
+        session.update(&relocated_edit).into_result().unwrap();
+        let reused = session.semantic(&options).unwrap();
+        assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(reused.work().binding.durable_payloads_installed, 2);
+        assert_eq!(reused.work().declaration_reuse.durable_records_reused, 2);
+        assert_eq!(reused.work().declaration_reuse.fallback_epochs_started, 0);
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&relocated_edit).into_result().unwrap();
+        let ordinary = fresh.semantic(&options).unwrap();
+        assert_semantic_artifact_parity(&session, &reused, &ordinary);
+        assert_diagnostic_parity(&session, &fresh);
+    }
+
+    #[test]
+    fn nested_generic_index_corruption_falls_back_without_partial_install() {
+        let source = |value| {
+            snapshot(
+                &[(
+                    1,
+                    "/p/main.rue",
+                    "main.rue",
+                    &format!(
+                        "fn first(comptime T: type, values: [[T; 2]; 2]) -> T {{ values[0][0] }} fn main() -> i32 {{ first(i32, [[1, 2], [3, {value}]]) }}"
+                    ),
+                )],
+                1,
+            )
+        };
+        let first = source(4);
+        let edited = source(5);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.semantic(&options).unwrap();
+
+        let cache = session.durable_declaration_cache.as_mut().unwrap();
+        let mut declarations = cache.semantics.to_vec();
+        let declaration = declarations
+            .iter_mut()
+            .find(|declaration| declaration.key.name() == "first")
+            .unwrap();
+        let crate::DurableDeclarationPayload::Callable { parameters, .. } =
+            &mut declaration.payload
+        else {
+            unreachable!();
+        };
+        let mut corrupted = parameters.to_vec();
+        corrupted[1].ty = crate::DurableType::Array {
+            element: Box::new(crate::DurableType::PtrConst(Box::new(
+                crate::DurableType::GenericParameter(9),
+            ))),
+            len: 2,
+        };
+        *parameters = corrupted.into();
+        cache.semantics = declarations.into();
+
+        session.update(&edited).into_result().unwrap();
+        let fallback = session.semantic(&options).unwrap();
+        assert_eq!(
+            fallback.work().binding.declaration_resolution_invocations,
+            1
+        );
+        assert_eq!(fallback.work().declaration_reuse.install_invocations, 1);
+        assert_eq!(fallback.work().declaration_reuse.durable_records_reused, 0);
+        assert_eq!(fallback.work().declaration_reuse.fallbacks, 1);
+        assert_eq!(fallback.work().declaration_reuse.fallback_epochs_started, 1);
+        assert_eq!(fallback.work().declaration_reuse.semantic_epochs_started, 2);
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&edited).into_result().unwrap();
+        let ordinary = fresh.semantic(&options).unwrap();
+        assert_semantic_artifact_parity(&session, &fallback, &ordinary);
+        assert_eq!(fallback.type_pool().stats(), ordinary.type_pool().stats());
+        assert_diagnostic_parity(&session, &fresh);
+    }
+
+    #[test]
+    fn comptime_named_method_reuses_declarations_while_body_reuse_fails_closed() {
         let source = |body: &str| snapshot(&[(1, "/p/main.rue", "main.rue", body)], 1);
         let first = source(
             "struct Value { fn choose(borrow self, comptime n: i32) -> i32 { n } } fn main() -> i32 { let value = Value {}; value.choose(1) }",
@@ -4716,17 +4851,19 @@ mod tests {
         let ordinary = session.semantic(&options).unwrap();
         assert_eq!(
             ordinary.work().binding.declaration_resolution_invocations,
-            1
+            0
         );
-        assert_eq!(ordinary.work().binding.durable_install_invocations, 0);
-        assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 0);
+        assert_eq!(ordinary.work().binding.durable_install_invocations, 1);
+        assert_eq!(ordinary.work().binding.durable_payloads_installed, 3);
+        assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 3);
+        assert_eq!(ordinary.work().declaration_reuse.fallback_epochs_started, 0);
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
         let expected = fresh.semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &ordinary, &expected);
 
-        // Unsupported revisions did not leave a partial baseline: a supported
-        // revision seeds normally, and its next body edit can reuse normally.
+        // Moving to a different declaration universe seeds a new baseline, and
+        // its next body edit can reuse normally.
         session.update(&supported).into_result().unwrap();
         let seeded = session.semantic(&options).unwrap();
         assert_eq!(seeded.work().binding.declaration_resolution_invocations, 1);
@@ -4741,7 +4878,7 @@ mod tests {
     }
 
     #[test]
-    fn anonymous_structural_reuse_fails_closed_without_partial_install() {
+    fn anonymous_structural_body_reuse_fails_closed_after_declaration_reuse() {
         let first = snapshot(
             &[(
                 1,
@@ -4771,10 +4908,12 @@ mod tests {
         let ordinary = session.semantic(&options).unwrap();
         assert_eq!(
             ordinary.work().binding.declaration_resolution_invocations,
-            1
+            0
         );
-        assert_eq!(ordinary.work().binding.durable_install_invocations, 0);
-        assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 0);
+        assert_eq!(ordinary.work().binding.durable_install_invocations, 1);
+        assert_eq!(ordinary.work().binding.durable_payloads_installed, 2);
+        assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 2);
+        assert_eq!(ordinary.work().declaration_reuse.fallback_epochs_started, 0);
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
         let expected = fresh.semantic(&options).unwrap();

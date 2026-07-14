@@ -63,11 +63,6 @@ pub enum SemanticImportType<K, M> {
     PtrMut(Box<Self>),
     Module(M),
     GenericParameter(u32),
-    Tuple(Arc<[Self]>),
-    Function {
-        parameters: Arc<[Self]>,
-        result: Box<Self>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -93,8 +88,7 @@ pub enum SemanticImportFailure {
     UnknownBuiltinNominal,
     BuiltinNominalKindMismatch,
     GenericParameterNeedsDeclarationContext,
-    UnsupportedTuple,
-    UnsupportedFunctionType,
+    GenericParameterOutOfRange,
     ForeignLocalType,
     ForeignLocalValue,
 }
@@ -753,6 +747,15 @@ where
         &self,
         value: &SemanticImportType<K, M>,
     ) -> Result<Type, SemanticImportFailure> {
+        self.import_type_local_with(value, &self.type_pool, None)
+    }
+
+    fn import_type_local_with(
+        &self,
+        value: &SemanticImportType<K, M>,
+        type_pool: &TypeInternPool,
+        generic_parameters: Option<&[Type]>,
+    ) -> Result<Type, SemanticImportFailure> {
         Ok(match value {
             SemanticImportType::I8 => Type::I8,
             SemanticImportType::I16 => Type::I16,
@@ -788,17 +791,23 @@ where
                 Some(LocalNominal::Enum(id)) => Type::new_enum(*id),
                 None => return Err(SemanticImportFailure::MissingNominal),
             },
-            SemanticImportType::Array { element, len } => Type::new_array(
-                self.type_pool
-                    .intern_array_from_type(self.import_type_local(element)?, *len),
-            ),
-            SemanticImportType::PtrConst(value) => Type::new_ptr_const(
-                self.type_pool
-                    .intern_ptr_const_from_type(self.import_type_local(value)?),
-            ),
+            SemanticImportType::Array { element, len } => {
+                Type::new_array(type_pool.intern_array_from_type(
+                    self.import_type_local_with(element, type_pool, generic_parameters)?,
+                    *len,
+                ))
+            }
+            SemanticImportType::PtrConst(value) => {
+                Type::new_ptr_const(type_pool.intern_ptr_const_from_type(
+                    self.import_type_local_with(value, type_pool, generic_parameters)?,
+                ))
+            }
             SemanticImportType::PtrMut(value) => Type::new_ptr_mut(
-                self.type_pool
-                    .intern_ptr_mut_from_type(self.import_type_local(value)?),
+                type_pool.intern_ptr_mut_from_type(self.import_type_local_with(
+                    value,
+                    type_pool,
+                    generic_parameters,
+                )?),
             ),
             SemanticImportType::Module(key) => Type::new_module(
                 *self
@@ -806,14 +815,37 @@ where
                     .get(key)
                     .ok_or(SemanticImportFailure::MissingModule)?,
             ),
-            SemanticImportType::GenericParameter(_) => {
-                return Err(SemanticImportFailure::GenericParameterNeedsDeclarationContext);
-            }
-            SemanticImportType::Tuple(_) => return Err(SemanticImportFailure::UnsupportedTuple),
-            SemanticImportType::Function { .. } => {
-                return Err(SemanticImportFailure::UnsupportedFunctionType);
-            }
+            SemanticImportType::GenericParameter(index) => *generic_parameters
+                .ok_or(SemanticImportFailure::GenericParameterNeedsDeclarationContext)?
+                .get(*index as usize)
+                .ok_or(SemanticImportFailure::GenericParameterOutOfRange)?,
         })
+    }
+
+    /// Validate one callable signature in an isolated type epoch.
+    ///
+    /// The ordered generic environment is derived only from comptime `type`
+    /// parameters. A generic reference outside that environment is rejected,
+    /// and structural types interned before a later failure remain confined to
+    /// the scratch pool.
+    pub fn validate_callable_signature(
+        &self,
+        parameters: &[(SemanticImportType<K, M>, bool)],
+        result: &SemanticImportType<K, M>,
+    ) -> Result<(), SemanticImportFailure> {
+        let type_pool = self.type_pool.clone();
+        let generic_parameters = parameters
+            .iter()
+            .filter(|(ty, is_comptime)| {
+                *is_comptime && matches!(ty, SemanticImportType::ComptimeType)
+            })
+            .map(|_| Type::COMPTIME_TYPE)
+            .collect::<Vec<_>>();
+        for (ty, _) in parameters {
+            self.import_type_local_with(ty, &type_pool, Some(&generic_parameters))?;
+        }
+        self.import_type_local_with(result, &type_pool, Some(&generic_parameters))?;
+        Ok(())
     }
 
     /// Import an ordered declaration parameter or payload sequence.
@@ -1170,7 +1202,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_and_foreign_values_fail_closed() {
+    fn missing_context_and_foreign_values_fail_closed() {
         let epoch = Epoch::new(vec![], vec![], vec![]).unwrap();
         assert_eq!(
             epoch.import_type(&ImportType::Nominal("missing")),
@@ -1185,13 +1217,47 @@ mod tests {
             Err(SemanticImportFailure::GenericParameterNeedsDeclarationContext)
         );
         assert_eq!(
-            epoch.import_type(&ImportType::Tuple(Arc::from([]))),
-            Err(SemanticImportFailure::UnsupportedTuple)
-        );
-        assert_eq!(
             epoch.import_const_value(&SemanticImportConstValue::Function("missing")),
             Err(SemanticImportFailure::MissingFunction)
         );
+    }
+
+    #[test]
+    fn callable_generic_environment_is_ordered_bounded_and_atomic() {
+        let epoch = Epoch::new(vec![], vec![], vec![]).unwrap();
+        let valid = [
+            (ImportType::ComptimeType, true),
+            (ImportType::GenericParameter(0), false),
+        ];
+        epoch
+            .validate_callable_signature(&valid, &ImportType::GenericParameter(0))
+            .unwrap();
+
+        let before = epoch.type_pool().stats();
+        let invalid = [
+            (ImportType::ComptimeType, true),
+            (
+                ImportType::Array {
+                    element: Box::new(ImportType::U8),
+                    len: 4,
+                },
+                false,
+            ),
+            (
+                ImportType::Array {
+                    element: Box::new(ImportType::PtrConst(Box::new(
+                        ImportType::GenericParameter(1),
+                    ))),
+                    len: 2,
+                },
+                false,
+            ),
+        ];
+        assert_eq!(
+            epoch.validate_callable_signature(&invalid, &ImportType::GenericParameter(0)),
+            Err(SemanticImportFailure::GenericParameterOutOfRange)
+        );
+        assert_eq!(epoch.type_pool().stats(), before);
     }
 
     #[test]

@@ -20,7 +20,7 @@ use crate::{
     StableDefinitionKey, StableDefinitionKind,
 };
 
-pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 2;
+pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 3;
 
 pub type DurableAirRef = u32;
 pub type DurablePlaceRef = u32;
@@ -458,21 +458,6 @@ fn durable_type(
                 .ok_or(DurableBodyConversionFailure::UnresolvedModule)?,
         ),
         SemanticImportType::GenericParameter(index) => DurableType::GenericParameter(*index),
-        SemanticImportType::Tuple(elements) => DurableType::Tuple(
-            elements
-                .iter()
-                .map(|element| durable_type(element, merged, index, work))
-                .collect::<Result<Vec<_>, _>>()?
-                .into(),
-        ),
-        SemanticImportType::Function { parameters, result } => DurableType::Function {
-            parameters: parameters
-                .iter()
-                .map(|parameter| durable_type(parameter, merged, index, work))
-                .collect::<Result<Vec<_>, _>>()?
-                .into(),
-            result: Box::new(durable_type(result, merged, index, work)?),
-        },
     })
 }
 
@@ -898,17 +883,6 @@ impl DurableOrdinaryBodyPayload {
                 DurableType::Array { element, .. }
                 | DurableType::PtrConst(element)
                 | DurableType::PtrMut(element) => visit_type(element, keys),
-                DurableType::Tuple(values) => {
-                    for value in values.iter() {
-                        visit_type(value, keys);
-                    }
-                }
-                DurableType::Function { parameters, result } => {
-                    for value in parameters.iter() {
-                        visit_type(value, keys);
-                    }
-                    visit_type(result, keys);
-                }
                 _ => {}
             }
         }
