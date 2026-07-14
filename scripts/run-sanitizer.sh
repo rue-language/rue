@@ -139,6 +139,27 @@ fn main() -> i32 {
 }
 RUE
 
+cat > "$work/san_fallible_initializer.rue" <<'RUE'
+// EOF returns from the initializer before `line` owns a StrBuf. Cleanup must
+// end its storage without reading or dropping the uninitialized slot.
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+
+fn read_num() -> Option(i64) {
+    let line = @read_line()?;
+    @parse_i64(line)
+}
+
+fn main() -> i32 {
+    let O = Option(i64);
+    match read_num() {
+        O.Some(_) => 1,
+        O.None => 0,
+    }
+}
+RUE
+
 # --- Assemble the program list. Match the CLI smoke-test's root-module rule:
 #     a directory containing main.rue contributes that root and is not searched
 #     further; elsewhere, every .rue file is a standalone example. This keeps
