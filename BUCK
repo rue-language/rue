@@ -102,6 +102,7 @@ filegroup(
     srcs = [
         "benchmarks/manifest.toml",
         "scripts/append-benchmark.py",
+        "scripts/benchmark_collection.py",
         "scripts/benchmark_validation.py",
         "scripts/generate-charts.py",
         "scripts/perf-baseline.py",
