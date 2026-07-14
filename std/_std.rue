@@ -11,6 +11,7 @@
 // - std.fmt: scalar-to-string formatting (int/bool, hex/binary)
 // - std.option.Option: Optional values
 // - std.result.Result: Fallible values (Ok/Err), propagated with `?`
+// - std.strbuf.StrBuf: Source-defined growable string buffer header
 // - std.arraybuf.ArrayBuf: Growable heap-backed collections
 
 // Re-export library modules.
@@ -21,6 +22,7 @@ pub const tuple = @import("tuple.rue");
 pub const fmt = @import("fmt.rue");
 pub const option = @import("option.rue");
 pub const result = @import("result.rue");
+pub const strbuf = @import("strbuf.rue");
 pub const arraybuf = @import("arraybuf.rue");
 
 // Collections (Standard library v1, M2).

@@ -384,8 +384,14 @@ impl<'a> Sema<'a> {
                 } => {
                     let enum_name = self.interner.resolve(&*name).to_string();
 
-                    // Check for collision with built-in type names
-                    if is_reserved_type_name(&enum_name) {
+                    // Builtins occupy the root source namespace. An imported
+                    // module has its own nominal namespace, so the same short
+                    // name there does not collide with the builtin.
+                    if is_reserved_type_name(&enum_name)
+                        && self
+                            .root_file_id
+                            .is_none_or(|root| root == inst.span.file_id)
+                    {
                         return Err(CompileError::new(
                             ErrorKind::ReservedTypeName {
                                 type_name: enum_name,
@@ -447,8 +453,14 @@ impl<'a> Sema<'a> {
                 } => {
                     let struct_name = self.interner.resolve(&*name).to_string();
 
-                    // Check for collision with built-in type names
-                    if is_reserved_type_name(&struct_name) {
+                    // Builtins occupy the root source namespace. An imported
+                    // module has its own nominal namespace, so the same short
+                    // name there does not collide with the builtin.
+                    if is_reserved_type_name(&struct_name)
+                        && self
+                            .root_file_id
+                            .is_none_or(|root| root == inst.span.file_id)
+                    {
                         return Err(CompileError::new(
                             ErrorKind::ReservedTypeName {
                                 type_name: struct_name,

@@ -1,0 +1,95 @@
+# Source-defined std.strbuf.StrBuf (RUE-871), exercised through the real std
+# bundle. These cases intentionally use only the qualified or aliased library
+# type so the synthetic builtin `StrBuf` cannot satisfy the coverage.
+
+[section]
+id = "cli.std_strbuf"
+name = "Source-defined std.strbuf.StrBuf"
+description = "The named std.strbuf.StrBuf header has its source-defined methods, layout, and drop behavior."
+
+[[case]]
+name = "qualified_nonallocating_surface"
+description = "Qualified construction and nonallocating methods operate on the source-defined type."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut s = std.strbuf.StrBuf.new();
+    if s.len() != 0 { return 1; }
+    if s.capacity() != 0 { return 2; }
+    if !s.is_empty() { return 3; }
+    s.clear();
+    if !s.is_empty() { return 4; }
+    s.free();
+    if s.capacity() != 0 { return 5; }
+    0
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "owned_allocation_drop_and_early_free"
+description = "cap > 0 owns an allocation; moved scope-drop and explicit early free each leave one teardown path."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn owned(byte: u8) -> S {
+    let p: ptr mut u8 = checked { @alloc(4) };
+    checked { @ptr_write(p, byte); };
+    std.strbuf.StrBuf { buf: p, len: 1, cap: 4 }
+}
+
+fn consume(s: S) -> i32 {
+    // The moved parameter is the sole owner and is dropped on return.
+    if s.len() == 1 && s.capacity() == 4 { 0 } else { 1 }
+}
+
+fn main() -> i32 {
+    let automatic = owned(65);
+    if consume(automatic) != 0 { return 1; }
+
+    let mut early = owned(66);
+    early.clear();
+    if !early.is_empty() { return 2; }
+    if early.capacity() != 4 { return 3; }
+    early.free();
+    // The later source-defined destructor observes cap == 0 and is a no-op.
+    if early.capacity() != 0 { return 4; }
+    0
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "aliased_three_word_layout_and_scope_drop"
+description = "An alias preserves the ptr/len/cap three-word layout and source-defined scope-exit destructor."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn make() -> S {
+    S.new()
+}
+
+fn main() -> i32 {
+    let size = @size_of(S);
+    let buf_offset: u64 = @offset_of(S, buf);
+    let len_offset: u64 = @offset_of(S, len);
+    let cap_offset: u64 = @offset_of(S, cap);
+    if size != 24 { return 1; }
+    if buf_offset != 0 { return 2; }
+    if len_offset != 8 { return 3; }
+    if cap_offset != 16 { return 4; }
+
+    // Moving the value returned by make leaves one final owner. Its named,
+    // source-defined destructor runs exactly once at this scope exit; cap == 0
+    // ensures that teardown does not call @free.
+    let s = make();
+    if s.is_empty() { 0 } else { 5 }
+}
+""" }]
+exit_code = 0
