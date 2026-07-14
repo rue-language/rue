@@ -60,8 +60,9 @@ Do not call ordinary compilation time a stall without evidence.
 - Do not stop at "PR open," "auto-merge enabled," or "checks green" when the
   requested outcome includes shepherding. Verify the merge itself.
 - Unless the user narrows the terminal condition, an end-to-end Rue issue ends
-  with the PR merged, Linear closed, the source branch deleted, `jj git fetch`
-  completed, and a clean `jj new 'trunk()'` working copy.
+  with the PR merged, Linear closed, the source branch deleted, upstream fetched
+  with the checkout's native VCS, and a clean working copy based on the updated
+  upstream `trunk`.
 
 ## Quickstart
 
@@ -220,12 +221,15 @@ implementation unless a separate platform bug is explicitly tracked.
 ## Version control and GitHub
 
 The canonical maintainer checkout uses Jujutsu. Never use Git commands to mutate
-it. Use `jj status`, `jj diff`, `jj log`, `jj describe`, `jj new`, and
-`jj commit`.
+that checkout. Use `jj status`, `jj diff`, `jj log`, `jj describe`, `jj new`,
+and `jj commit` there.
 
-If a Codex-managed checkout is not a Jujutsu workspace, do not silently infer
-that the maintainer workflow changed. Editing and testing may occur there, but
-do not substitute Git publication for an explicitly requested `jj` workflow.
+A Codex-managed Git worktree may use Git natively for the entire workflow,
+including branching, committing, pushing, and opening a PR. Do not recreate its
+work in a Jujutsu workspace merely to follow the maintainer workflow. Respect
+the same fork topology and publication rules below regardless of which VCS
+front end the checkout uses. If the user explicitly requests a particular VCS
+workflow, follow that request.
 
 The maintainer fork topology is fixed:
 
@@ -233,7 +237,7 @@ The maintainer fork topology is fixed:
 - `origin` = `steveklabnik/rue` — push feature bookmarks here.
 - PR base = `rue-language/rue:trunk`.
 
-Typical flow:
+Typical maintainer-checkout flow:
 
 ```bash
 jj git fetch
@@ -249,8 +253,9 @@ jj git fetch
 jj new 'trunk()'
 ```
 
-After merge, verify that GitHub deleted the feature branch and that `jj` sees
-the deletion. Do not push or synchronize `origin/trunk`. See
+After merge, verify that GitHub deleted the feature branch and fetch with the
+checkout's native VCS so it sees the deletion and updated upstream `trunk`. Do
+not push or synchronize `origin/trunk`. See
 `docs/process/fork-workflow.md` for machine-local configuration details.
 
 Commit and PR text should be tool-neutral. Do not add agent attribution,
