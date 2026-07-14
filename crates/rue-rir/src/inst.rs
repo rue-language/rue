@@ -40,6 +40,7 @@ pub struct RirDirective {
 }
 
 /// Parameter passing mode in RIR.
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RirParamMode {
     /// Normal pass-by-value parameter
@@ -49,13 +50,27 @@ pub enum RirParamMode {
     Inout,
     /// Borrow parameter - immutable borrow without ownership transfer
     Borrow,
-    /// Comptime parameter - evaluated at compile time (used for type parameters).
+}
+
+impl RirParamMode {
+    /// Convert the serialized parameter mode from the RIR extra array.
     ///
-    /// NOTE: astgen never constructs this variant — a `comptime` parameter
-    /// lowers to `mode: Normal, is_comptime: true` on [`RirParam`] (that is
-    /// the shape sema consumes). The variant is kept for the stability of
-    /// the packed encode/decode in `add_params`/`get_params`.
-    Comptime,
+    /// Invalid values indicate corrupted RIR or a producer/consumer mismatch.
+    /// They must not silently recover as normal by-value parameters, because
+    /// that changes ownership and aliasing semantics.
+    pub fn from_u32(v: u32) -> Self {
+        match v {
+            0 => RirParamMode::Normal,
+            1 => RirParamMode::Inout,
+            2 => RirParamMode::Borrow,
+            _ => panic!("invalid RirParamMode value: {}", v),
+        }
+    }
+
+    /// Serialize this mode into the RIR extra array.
+    pub fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 
 /// A parameter in a function declaration.
@@ -401,7 +416,7 @@ impl Rir {
         for param in params {
             data.push(param.name.into_usize() as u32);
             data.push(param.ty.into_usize() as u32);
-            data.push(param.mode as u32);
+            data.push(param.mode.as_u32());
             data.push(param.is_comptime as u32);
             data.push(param.span.file_id.index());
             data.push(param.span.start);
@@ -418,13 +433,7 @@ impl Rir {
         for chunk in data.chunks(PARAM_SIZE as usize) {
             let name = Spur::try_from_usize(chunk[0] as usize).unwrap();
             let ty = Spur::try_from_usize(chunk[1] as usize).unwrap();
-            let mode = match chunk[2] {
-                0 => RirParamMode::Normal,
-                1 => RirParamMode::Inout,
-                2 => RirParamMode::Borrow,
-                3 => RirParamMode::Comptime,
-                _ => RirParamMode::Normal, // Fallback
-            };
+            let mode = RirParamMode::from_u32(chunk[2]);
             let is_comptime = chunk[3] != 0;
             let span = Span::with_file(FileId::new(chunk[4]), chunk[5], chunk[6]);
             params.push(RirParam {
@@ -1640,7 +1649,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         match self_mode {
                             RirParamMode::Inout => "inout self, ",
                             RirParamMode::Borrow => "borrow self, ",
-                            _ => "self, ",
+                            RirParamMode::Normal => "self, ",
                         }
                     } else {
                         ""
@@ -1649,14 +1658,15 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let params_str: Vec<String> = params
                         .iter()
                         .map(|p| {
+                            let comptime_prefix = if p.is_comptime { "comptime " } else { "" };
                             let mode_prefix = match p.mode {
                                 RirParamMode::Inout => "inout ",
                                 RirParamMode::Borrow => "borrow ",
-                                RirParamMode::Comptime => "comptime ",
                                 RirParamMode::Normal => "",
                             };
                             format!(
-                                "{}{}: {}",
+                                "{}{}{}: {}",
+                                comptime_prefix,
                                 mode_prefix,
                                 self.interner.resolve(&p.name),
                                 self.interner.resolve(&p.ty)
@@ -2308,6 +2318,58 @@ mod tests {
         let _ = rir.get_call_args(args_start, 1);
     }
 
+    #[test]
+    fn test_rir_param_modes_round_trip() {
+        let mut rir = Rir::new();
+        let interner = ThreadedRodeo::new();
+        let name = interner.get_or_intern("value");
+        let ty = interner.get_or_intern("i32");
+        let span = Span::new(3, 8);
+        let modes = [
+            RirParamMode::Normal,
+            RirParamMode::Inout,
+            RirParamMode::Borrow,
+        ];
+        let params: Vec<_> = modes
+            .iter()
+            .map(|&mode| RirParam {
+                name,
+                ty,
+                mode,
+                is_comptime: false,
+                span,
+            })
+            .collect();
+
+        let (params_start, params_len) = rir.add_params(&params);
+        let decoded = rir.get_params(params_start, params_len);
+
+        assert_eq!(decoded.len(), modes.len());
+        assert_eq!(
+            decoded.iter().map(|param| param.mode).collect::<Vec<_>>(),
+            modes
+        );
+        assert_eq!(modes.map(RirParamMode::as_u32), [0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid RirParamMode value: 3")]
+    fn test_rir_param_old_comptime_mode_panics() {
+        let mut rir = Rir::new();
+        let params_start = rir.add_extra(&[0, 0, 3, 0, 0, 0, 0]);
+
+        let _ = rir.get_params(params_start, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid RirParamMode value: 99")]
+    fn test_rir_param_invalid_mode_panics() {
+        let mut rir = Rir::new();
+        let params_start = rir.add_extra(&[0, 0, 99, 0, 0, 0, 0]);
+
+        let _ = rir.get_params(params_start, 1);
+    }
+
     // RirPrinter tests
     fn create_printer_test_rir() -> (Rir, ThreadedRodeo) {
         let rir = Rir::new();
@@ -2748,6 +2810,47 @@ mod tests {
         assert!(output.contains("a: i32"));
         assert!(output.contains("inout b: i32"));
         assert!(output.contains("borrow c: i32"));
+    }
+
+    #[test]
+    fn test_printer_fn_decl_comptime_param() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let body = rir.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 2),
+        });
+        let name = interner.get_or_intern("identity");
+        let return_type = interner.get_or_intern("type");
+        let param_name = interner.get_or_intern("T");
+        let param_type = interner.get_or_intern("type");
+        let (directives_start, directives_len) = rir.add_directives(&[]);
+        let (params_start, params_len) = rir.add_params(&[RirParam {
+            name: param_name,
+            ty: param_type,
+            mode: RirParamMode::Normal,
+            is_comptime: true,
+            span: Span::default(),
+        }]);
+
+        rir.add_inst(Inst {
+            data: InstData::FnDecl {
+                directives_start,
+                directives_len,
+                is_pub: false,
+                is_unchecked: false,
+                name,
+                params_start,
+                params_len,
+                return_type,
+                body,
+                has_self: false,
+                self_mode: RirParamMode::Normal,
+            },
+            span: Span::new(0, 40),
+        });
+
+        let output = RirPrinter::new(&rir, &interner).to_string();
+        assert!(output.contains("fn identity(comptime T: type) -> type"));
     }
 
     #[test]

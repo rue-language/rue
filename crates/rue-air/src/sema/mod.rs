@@ -546,7 +546,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             match (expected_mode, arg.mode) {
                 (RirParamMode::Inout, RirArgMode::Inout)
                 | (RirParamMode::Borrow, RirArgMode::Borrow)
-                | (RirParamMode::Normal | RirParamMode::Comptime, RirArgMode::Normal) => {}
+                | (RirParamMode::Normal, RirArgMode::Normal) => {}
                 (RirParamMode::Inout, _) => {
                     return Err(rue_error::CompileError::new(
                         rue_error::ErrorKind::InoutKeywordMissing,
@@ -559,7 +559,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                         self.rir.get(arg.value).span,
                     ));
                 }
-                (RirParamMode::Normal | RirParamMode::Comptime, actual) => {
+                (RirParamMode::Normal, actual) => {
                     let mode = match actual {
                         RirArgMode::Inout => "inout",
                         RirArgMode::Borrow => "borrow",

@@ -713,7 +713,7 @@ impl<'a> BodySema<'a> {
                     },
                     span,
                 )),
-                RirParamMode::Normal | RirParamMode::Comptime => Err(CompileError::new(
+                RirParamMode::Normal => Err(CompileError::new(
                     ErrorKind::AssignToImmutable(self.interner.resolve(&root).to_string()),
                     span,
                 )),

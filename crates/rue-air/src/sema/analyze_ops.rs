@@ -2896,18 +2896,14 @@ impl<'a> BodySema<'a> {
                 let mut moves_out = false;
                 if !self.is_type_copy(ty) {
                     match param_info.mode {
-                        // Normal and comptime parameters behave similarly for moves
-                        // (comptime params are substituted at compile time)
-                        RirParamMode::Normal | RirParamMode::Comptime => {
+                        RirParamMode::Normal => {
                             if !is_byref_arg_use {
                                 self.reject_move_of_call_loaned_root(name, span, ctx)?;
                                 ctx.moved_vars
                                     .entry(name)
                                     .or_default()
                                     .mark_path_moved(&[], span);
-                                // Only Normal params occupy a real ABI slot that
-                                // drop elaboration would otherwise drop at exit.
-                                moves_out = param_info.mode == RirParamMode::Normal;
+                                moves_out = true;
                             }
                         }
                         RirParamMode::Inout => {
@@ -3224,8 +3220,7 @@ impl<'a> BodySema<'a> {
             if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
                 // Check parameter mode - only inout can be assigned to
                 match param_info.mode {
-                    // Normal and comptime parameters are immutable
-                    RirParamMode::Normal | RirParamMode::Comptime => {
+                    RirParamMode::Normal => {
                         return Err(CompileError::new(
                             ErrorKind::AssignToImmutable(name_str.to_string()),
                             span,
@@ -3820,7 +3815,7 @@ impl<'a> BodySema<'a> {
                         span,
                     ));
                 }
-                RirParamMode::Normal | RirParamMode::Comptime => {}
+                RirParamMode::Normal => {}
             }
         }
         Ok(())

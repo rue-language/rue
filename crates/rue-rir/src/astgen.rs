@@ -494,15 +494,13 @@ impl<'a> AstGen<'a> {
 
     /// Convert AST ParamMode to RIR RirParamMode.
     ///
-    /// The AST has a single `ParamMode` (RUE-133 collapsed the old
-    /// `is_comptime` flag into it), but the RIR keeps `mode` and
-    /// `is_comptime` as separate fields. A comptime parameter lowers to
-    /// `mode: Normal, is_comptime: true` — exactly the RIR shape sema has
-    /// always consumed — so `RirParamMode::Comptime` is never constructed
-    /// here.
+    /// Comptime is orthogonal to the RIR passing mode and is represented by
+    /// `RirParam::is_comptime`, so comptime parameters use the normal passing
+    /// mode here.
     fn convert_param_mode(&self, mode: ParamMode) -> RirParamMode {
         match mode {
-            ParamMode::Normal | ParamMode::Comptime => RirParamMode::Normal,
+            ParamMode::Normal => RirParamMode::Normal,
+            ParamMode::Comptime => RirParamMode::Normal,
             ParamMode::Inout => RirParamMode::Inout,
             ParamMode::Borrow => RirParamMode::Borrow,
         }
