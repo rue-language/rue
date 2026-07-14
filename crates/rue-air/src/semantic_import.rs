@@ -183,6 +183,7 @@ where
                         SemanticImportFailure::MissingFunction,
                     ))
             },
+            |_| Err(SemanticBodyImportFailure::UnsupportedGenericCall),
             |name| self.interner.get_or_intern(name),
         )
     }
@@ -194,6 +195,12 @@ where
         struct_id: impl Fn(&K) -> Result<StructId, SemanticBodyImportFailure>,
         enum_id: impl Fn(&K) -> Result<EnumId, SemanticBodyImportFailure>,
         resolve_function: impl Fn(&K) -> Result<Spur, SemanticBodyImportFailure>,
+        resolve_specialization: impl Fn(
+            &crate::SemanticSpecializationIdentity<K, M>,
+        ) -> Result<
+            (Spur, Vec<Type>, Vec<crate::sema::ConstValue>),
+            SemanticBodyImportFailure,
+        >,
         intern: impl Fn(&str) -> Spur,
     ) -> Result<SemanticImportedBody, SemanticBodyImportFailure> {
         use SemanticBodyImportFailure as F;
@@ -403,6 +410,25 @@ where
                         name,
                         args_start: s,
                         args_len: l,
+                    }
+                }
+                SemanticBodyInstData::CallSpecialized { identity, args } => {
+                    let (name, type_args, value_args) = resolve_specialization(identity)?;
+                    let type_args = type_args.iter().map(|ty| ty.as_u32()).collect::<Vec<_>>();
+                    let type_args_start = air.add_extra(&type_args);
+                    let type_args_len = type_args.len() as u32;
+                    let value_args = crate::specialize::encode_const_values(&value_args);
+                    let value_args_start = air.add_extra(&value_args);
+                    let value_args_len = value_args.len() as u32;
+                    let (args_start, args_len) = call_args(&mut air, args, current)?;
+                    AirInstData::CallGeneric {
+                        name,
+                        type_args_start,
+                        type_args_len,
+                        value_args_start,
+                        value_args_len,
+                        args_start,
+                        args_len,
                     }
                 }
                 SemanticBodyInstData::CallGeneric => return Err(F::UnsupportedGenericCall),

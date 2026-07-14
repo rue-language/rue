@@ -5,6 +5,161 @@ use std::sync::Arc;
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn execute_compiled_output(output: &CompileOutput, label: &str) -> std::process::Output {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_EXECUTABLE: AtomicU64 = AtomicU64::new(0);
+        let unique = NEXT_EXECUTABLE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "rue-compiler-specialization-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::write(&path, &output.elf).expect("write linked Rue executable");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("read linked Rue executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).expect("make linked Rue executable runnable");
+        #[cfg(target_os = "macos")]
+        {
+            let signing = std::process::Command::new("codesign")
+                .args([
+                    "-f",
+                    "-s",
+                    "-",
+                    "--identifier",
+                    "dev.rue-lang.compiler-test",
+                    "--timestamp=none",
+                ])
+                .arg(&path)
+                .output()
+                .expect("run ad-hoc codesign for linked Rue executable");
+            assert!(
+                signing.status.success(),
+                "codesign linked Rue executable: {}",
+                String::from_utf8_lossy(&signing.stderr)
+            );
+        }
+        let result = std::process::Command::new(&path).output();
+        let cleanup = std::fs::remove_file(&path);
+        cleanup.expect("remove linked Rue executable after execution");
+        result.expect("execute linked Rue program")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn warm_specialization_with_strings_matches_fresh_link_and_execution() {
+        let snapshot = SourceSnapshot::single(
+            "<specialization-strings>",
+            r#"
+                fn choose(comptime result: i32) -> i32 {
+                    let message: str = "hello";
+                    @dbg(message);
+                    result
+                }
+
+                fn main() -> i32 { choose(42) }
+            "#,
+        )
+        .unwrap();
+        let cold_options = CompileOptions::default();
+        let optimized = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+
+        let mut warm_session = CompilerSession::new();
+        warm_session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let cold = warm_session.semantic(&cold_options).unwrap();
+        assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 1);
+        assert_eq!(
+            cold.work().body_analysis.specialized_body_exports_succeeded,
+            1,
+            "specialized body work: {:?}",
+            cold.work().body_analysis
+        );
+        assert_eq!(cold.durable_specialized_body_payloads().len(), 1);
+        assert_eq!(
+            cold.durable_specialized_body_payloads()[0]
+                .body
+                .strings
+                .len(),
+            1
+        );
+        assert!(cold.durable_specialized_body_payloads()[0].dependency_boundary_complete);
+        let warm = warm_session.semantic(&optimized).unwrap();
+        assert_eq!(warm.work().body_analysis.specialized_bodies_reused, 1);
+        assert_eq!(warm.work().body_analysis.specialized_bodies_attempted, 0);
+        assert_eq!(
+            warm.work()
+                .body_analysis
+                .specialized_body_import_strings_installed,
+            1
+        );
+        assert!(!warm.strings().is_empty());
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let fresh = fresh_session.semantic(&optimized).unwrap();
+        assert_eq!(
+            format!("{:?}", warm.functions()),
+            format!("{:?}", fresh.functions())
+        );
+        assert_eq!(warm.type_pool().stats(), fresh.type_pool().stats());
+        let named_types = |pool: &TypeInternPool| {
+            (
+                pool.all_struct_ids()
+                    .into_iter()
+                    .map(|id| format!("{:?}", pool.struct_def(id)))
+                    .collect::<Vec<_>>(),
+                pool.all_enum_ids()
+                    .into_iter()
+                    .map(|id| format!("{:?}", pool.enum_def(id)))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            named_types(warm.type_pool()),
+            named_types(fresh.type_pool())
+        );
+        assert_eq!(warm.strings(), fresh.strings());
+        assert_eq!(
+            format!("{:?}", warm.warnings()),
+            format!("{:?}", fresh.warnings())
+        );
+
+        let warm_output =
+            crate::queries::compile_with_session(&mut warm_session, &snapshot, &optimized).unwrap();
+        let fresh_output =
+            crate::queries::compile_with_session(&mut fresh_session, &snapshot, &optimized)
+                .unwrap();
+        assert_eq!(
+            format!("{:?}", warm_output.warnings),
+            format!("{:?}", fresh_output.warnings)
+        );
+
+        let warm_execution = execute_compiled_output(&warm_output, "warm");
+        let fresh_execution = execute_compiled_output(&fresh_output, "fresh");
+        assert_eq!(
+            warm_execution.status.code(),
+            Some(42),
+            "warm execution failed: {warm_execution:?}"
+        );
+        assert_eq!(warm_execution.stdout, b"hello\n");
+        assert!(warm_execution.stderr.is_empty());
+        assert_eq!(warm_execution.status.code(), fresh_execution.status.code());
+        assert_eq!(warm_execution.stdout, fresh_execution.stdout);
+        assert_eq!(warm_execution.stderr, fresh_execution.stderr);
+    }
+
     #[test]
     fn source_token_volume_survives_an_exact_zero_parse_update() {
         let snapshot =

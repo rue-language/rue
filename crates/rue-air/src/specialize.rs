@@ -172,6 +172,17 @@ pub(crate) struct Specializer {
     seen_warnings: HashSet<(std::mem::Discriminant<WarningKind>, Span)>,
     /// Expansion waves consumed across the entire joint sema fixed point.
     rounds: usize,
+    completed_exports: Vec<CompletedExport>,
+    next_unexported: usize,
+}
+
+struct CompletedExport {
+    key: SpecializationKey,
+    base_info: FunctionInfo,
+    function_index: usize,
+    warning_free: bool,
+    dependencies: Vec<crate::SemanticBodyDefinitionIdentity>,
+    dependency_boundary_complete: bool,
 }
 
 struct SpecializedBody {
@@ -180,6 +191,8 @@ struct SpecializedBody {
     local_strings: Vec<String>,
     referenced_functions: HashSet<Spur>,
     referenced_methods: HashSet<(StructId, Spur)>,
+    dependencies: Vec<crate::SemanticBodyDefinitionIdentity>,
+    dependency_boundary_complete: bool,
 }
 
 /// Maximum number of specialization rounds before giving up.
@@ -200,6 +213,65 @@ struct SpecializedBody {
 pub(crate) const MAX_SPECIALIZATION_ROUNDS: usize = 64;
 
 impl Specializer {
+    fn stable_identity(
+        key: &SpecializationKey,
+        sema: &crate::sema::BodySema<'_>,
+    ) -> Result<
+        crate::SemanticSpecializationIdentity<
+            crate::SemanticBodyDefinitionIdentity,
+            std::sync::Arc<str>,
+        >,
+        crate::SemanticBodyExportFailure,
+    > {
+        let base = sema.function_identity(key.base_name)?;
+        let type_arguments = key
+            .type_args
+            .iter()
+            .map(|value| sema.export_body_type(*value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let value_arguments = key
+            .value_args
+            .iter()
+            .map(|value| {
+                Ok(match value {
+                    ConstValue::Integer(value) => crate::SemanticImportConstValue::Integer(*value),
+                    ConstValue::Bool(value) => crate::SemanticImportConstValue::Bool(*value),
+                    ConstValue::Type(value) => {
+                        crate::SemanticImportConstValue::Type(sema.export_body_type(*value)?)
+                    }
+                    ConstValue::Function(value) => {
+                        crate::SemanticImportConstValue::Function(sema.function_identity(*value)?)
+                    }
+                    ConstValue::Unit => crate::SemanticImportConstValue::Unit,
+                })
+            })
+            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+        Ok(crate::SemanticSpecializationIdentity {
+            base,
+            type_arguments: type_arguments.into(),
+            value_arguments: value_arguments.into(),
+        })
+    }
+
+    fn take_reusable_body(
+        &self,
+        key: &SpecializationKey,
+        sema: &mut crate::sema::BodySema<'_>,
+    ) -> Option<
+        crate::SemanticSpecializedBodyCandidate<
+            crate::SemanticBodyDefinitionIdentity,
+            std::sync::Arc<str>,
+            crate::SemanticBodyModuleIdentity,
+        >,
+    > {
+        let identity = Self::stable_identity(key, sema).ok()?;
+        let index = sema
+            .reusable_specialized_bodies
+            .iter()
+            .position(|candidate| candidate.identity == identity)?;
+        Some(sema.reusable_specialized_bodies.remove(index))
+    }
+
     /// Analyze and rewrite every specialization reachable from newly appended
     /// bodies, returning ordinary references that must re-enter sema's worklist.
     ///
@@ -243,14 +315,66 @@ impl Specializer {
             self.next_unscanned = scan_end;
 
             if pending.is_empty() {
+                let specialized_calls = self
+                    .specializations
+                    .iter()
+                    .filter_map(|(key, info)| {
+                        Self::stable_identity(key, sema)
+                            .ok()
+                            .map(|identity| (info.mangled_name, identity))
+                    })
+                    .collect::<HashMap<_, _>>();
+                for candidate in &self.completed_exports[self.next_unexported..] {
+                    sema.body_analysis_work.specialized_body_exports_attempted += 1;
+                    let (function, strings) = &functions_with_strings[candidate.function_index];
+                    let warnings = if candidate.warning_free {
+                        &[][..]
+                    } else {
+                        // The durable warning algebra is intentionally lossless;
+                        // passing a marker preserves fail-closed behavior.
+                        sema.body_analysis_work.specialized_body_exports_rejected += 1;
+                        continue;
+                    };
+                    match sema.export_specialized_body(
+                        candidate.key.base_name,
+                        &candidate.base_info,
+                        &candidate.key.type_args,
+                        &candidate.key.value_args,
+                        function,
+                        strings,
+                        warnings,
+                        &specialized_calls,
+                        &candidate.dependencies,
+                        candidate.dependency_boundary_complete,
+                    ) {
+                        Ok(export) => {
+                            sema.body_analysis_work.specialized_body_exports_succeeded += 1;
+                            sema.body_analysis_work
+                                .specialized_body_export_instructions_emitted +=
+                                export.body.instructions.len();
+                            sema.body_analysis_work
+                                .specialized_body_export_places_emitted += export.body.places.len();
+                            sema.body_analysis_work
+                                .specialized_body_export_strings_emitted +=
+                                export.body.strings.len();
+                            sema.specialized_body_exports.push(export);
+                        }
+                        Err(_) => {
+                            sema.body_analysis_work.specialized_body_exports_rejected += 1;
+                        }
+                    }
+                }
+                self.next_unexported = self.completed_exports.len();
                 return Ok(discovered);
             }
 
+            // Every non-empty expansion wave consumes the persistent
+            // fixed-point budget. Reuse skips analysis, not expansion depth.
             self.rounds += 1;
             sema.body_analysis_work.specialization_rounds += 1;
             if self.rounds > MAX_SPECIALIZATION_ROUNDS {
-                let key = &pending[0];
                 sema.body_analysis_work.specialization_driver_failures += 1;
+                let key = &pending[0];
                 return Err(CompileError::new(
                     ErrorKind::ComptimeEvaluationFailed {
                         reason: format!(
@@ -269,7 +393,6 @@ impl Specializer {
             // Create specialized function bodies by re-analyzing with type
             // substitution. Newly created bodies are scanned next round.
             for key in &pending {
-                sema.body_analysis_work.specialized_bodies_attempted += 1;
                 let info = &self.specializations[key];
                 let base_info = match sema.function_info(key.base_name) {
                     Some(info) => info.clone(),
@@ -281,21 +404,78 @@ impl Specializer {
                         ));
                     }
                 };
-                let specialized = match create_specialized_function(
-                    sema,
-                    infer_ctx,
-                    key,
-                    info.mangled_name,
-                    &base_info,
-                    interner,
-                ) {
+                let reusable = self.take_reusable_body(key, sema).and_then(|candidate| {
+                    sema.body_analysis_work.specialized_body_import_attempts += 1;
+                    match crate::sema::analysis::import_staged_body(
+                        sema,
+                        &candidate.body,
+                        candidate.body_span,
+                    ) {
+                        Ok(imported) if imported.warnings.is_empty() => {
+                            sema.body_analysis_work.specialized_body_import_successes += 1;
+                            sema.body_analysis_work.specialized_body_import_instructions_installed +=
+                                imported.air.len();
+                            sema.body_analysis_work.specialized_body_import_places_installed +=
+                                imported.air.places().len();
+                            sema.body_analysis_work.specialized_body_import_strings_installed +=
+                                imported.strings.len();
+                            sema.body_analysis_work.specialized_bodies_reused += 1;
+                            sema.body_analysis_work.specialized_body_analyses_skipped += 1;
+                            let (referenced_functions, referenced_methods) =
+                                crate::sema::analysis::imported_body_references(sema, &imported.air);
+                            Some(SpecializedBody {
+                                function: AnalyzedFunction {
+                                    ordinary_owner: None,
+                                    name: interner.resolve(&info.mangled_name).to_string(),
+                                    implicit_drop_source: Some(
+                                        crate::sema::ImplicitDropDependencySourceEvent::Specialization {
+                                            identity: candidate.identity.clone(),
+                                        },
+                                    ),
+                                    air: imported.air,
+                                    num_locals: imported.num_locals,
+                                    num_param_slots: imported.num_param_slots,
+                                    param_modes: imported.param_modes,
+                                    allow_unreachable_code: imported.allow_unreachable_code,
+                                },
+                                warnings: Vec::new(),
+                                local_strings: imported.strings,
+                                referenced_functions,
+                                referenced_methods,
+                                dependencies: candidate.dependencies.to_vec(),
+                                dependency_boundary_complete: candidate
+                                    .dependency_boundary_complete,
+                            })
+                        }
+                        _ => {
+                            sema.body_analysis_work.specialized_body_import_failures += 1;
+                            None
+                        }
+                    }
+                });
+                let was_reused = reusable.is_some();
+                if !was_reused {
+                    sema.body_analysis_work.specialized_bodies_attempted += 1;
+                }
+                let specialized = match reusable.map(Ok).unwrap_or_else(|| {
+                    create_specialized_function(
+                        sema,
+                        infer_ctx,
+                        key,
+                        info.mangled_name,
+                        &base_info,
+                        interner,
+                    )
+                }) {
                     Ok(body) => body,
                     Err(error) => {
                         sema.body_analysis_work.specialized_bodies_failed += 1;
                         return Err(error);
                     }
                 };
-                sema.body_analysis_work.specialized_bodies_succeeded += 1;
+                if !was_reused {
+                    sema.body_analysis_work.specialized_bodies_succeeded += 1;
+                }
                 sema.body_analysis_work.air_instructions_produced +=
                     specialized.function.air.instructions().len();
                 sema.body_analysis_work.local_strings_produced += specialized.local_strings.len();
@@ -346,6 +526,20 @@ impl Specializer {
                         .specialized_free_function_dependency_events += 1;
                 }
 
+                let mut dependencies = specialized.dependencies;
+                let mut dependency_boundary_complete = specialized.dependency_boundary_complete;
+                for function in &specialized.referenced_functions {
+                    match sema.function_identity(*function) {
+                        Ok(identity) => dependencies.push(identity),
+                        Err(_) => dependency_boundary_complete = false,
+                    }
+                }
+                if !specialized.referenced_methods.is_empty() {
+                    dependency_boundary_complete = false;
+                }
+                dependencies.sort();
+                dependencies.dedup();
+
                 discovered
                     .functions
                     .extend(specialized.referenced_functions);
@@ -358,6 +552,7 @@ impl Specializer {
                 // function was non-generic). A warning that fires in ANY
                 // specialization is surfaced: with comptime-pruned branches
                 // the body that triggers it is really compiled.
+                let warning_free = specialized.warnings.is_empty();
                 for warning in specialized.warnings {
                     if let Some(span) = warning.span()
                         && self
@@ -367,7 +562,16 @@ impl Specializer {
                         all_warnings.push(warning);
                     }
                 }
+                let function_index = functions_with_strings.len();
                 functions_with_strings.push((specialized.function, specialized.local_strings));
+                self.completed_exports.push(CompletedExport {
+                    key: key.clone(),
+                    base_info,
+                    function_index,
+                    warning_free,
+                    dependencies,
+                    dependency_boundary_complete,
+                });
             }
         }
     }
@@ -656,6 +860,41 @@ fn create_specialized_function(
         specialized_params.push((name, concrete_ty, mode, is_comptime));
     }
 
+    let source_name = sema.source_function_name(key.base_name);
+    let source_name_text = sema.interner.resolve(&source_name).to_string();
+    let owner = crate::sema::AnalyzedBodyOwnerEvent::FreeFunction {
+        token: sema.body_owner_token(
+            base_info.file_id,
+            &source_name_text,
+            None,
+            crate::sema::BodyOwnerKind::FreeFunction,
+        ),
+        file: base_info.file_id.index(),
+        name: source_name_text.clone(),
+    };
+    let body_dependency_start = sema.body_named_dependencies.len();
+    let type_dependency_start = sema.declaration_type_dependencies.len();
+    let type_call_head_start = sema.declaration_type_call_head_dependencies.len();
+    let builtin_call_head_start = sema.declaration_builtin_type_call_head_dependencies.len();
+    let previous_body_observer = sema.body_dependency_observer.replace(owner);
+    let previous_type_observer = sema.declaration_type_observer.replace((
+        base_info.file_id,
+        source_name_text.clone(),
+        None,
+        crate::sema::DeclarationTypeDependencySourceKind::Function,
+        crate::sema::DeclarationTypeDependencyKind::Body,
+    ));
+
+    let analysis = sema.analyze_specialized_function(
+        infer_ctx,
+        return_type,
+        &specialized_params,
+        base_info.body,
+        &type_subst,
+        &value_subst,
+    );
+    sema.body_dependency_observer = previous_body_observer;
+    sema.declaration_type_observer = previous_type_observer;
     let (
         air,
         num_locals,
@@ -665,35 +904,99 @@ fn create_specialized_function(
         local_strings,
         referenced_functions,
         referenced_methods,
-    ) = sema.analyze_specialized_function(
-        infer_ctx,
-        return_type,
-        &specialized_params,
-        base_info.body,
-        &type_subst,
-        &value_subst,
-    )?;
+    ) = analysis?;
+
+    let mut dependencies = Vec::new();
+    for event in &sema.body_named_dependencies[body_dependency_start..] {
+        let (file_id, name, kind) = match &event.target {
+            crate::sema::NamedConstDependencyTargetEvent::ValueConst { file, name } => (
+                *file,
+                name.as_str(),
+                crate::SemanticBodyDefinitionKind::ValueConst,
+            ),
+            crate::sema::NamedConstDependencyTargetEvent::FreeFunction { file, name } => (
+                *file,
+                name.as_str(),
+                crate::SemanticBodyDefinitionKind::FreeFunction,
+            ),
+            crate::sema::NamedConstDependencyTargetEvent::NamedType { file, name, kind } => (
+                *file,
+                name.as_str(),
+                match kind {
+                    crate::sema::DeclarationTypeDependencyTargetKind::Struct => {
+                        crate::SemanticBodyDefinitionKind::Struct
+                    }
+                    crate::sema::DeclarationTypeDependencyTargetKind::Enum => {
+                        crate::SemanticBodyDefinitionKind::Enum
+                    }
+                    crate::sema::DeclarationTypeDependencyTargetKind::ValueConst => {
+                        crate::SemanticBodyDefinitionKind::ValueConst
+                    }
+                },
+            ),
+            crate::sema::NamedConstDependencyTargetEvent::ModuleBinding { file, name } => (
+                *file,
+                name.as_str(),
+                crate::SemanticBodyDefinitionKind::ModuleBinding,
+            ),
+        };
+        dependencies.push(crate::SemanticBodyDefinitionIdentity {
+            file_id,
+            name: std::sync::Arc::from(name),
+            kind,
+            owner: None,
+        });
+    }
+    for event in &sema.declaration_type_dependencies[type_dependency_start..] {
+        dependencies.push(crate::SemanticBodyDefinitionIdentity {
+            file_id: event.target_file,
+            name: std::sync::Arc::from(event.target_name.as_str()),
+            kind: match event.target_kind {
+                crate::sema::DeclarationTypeDependencyTargetKind::Struct => {
+                    crate::SemanticBodyDefinitionKind::Struct
+                }
+                crate::sema::DeclarationTypeDependencyTargetKind::Enum => {
+                    crate::SemanticBodyDefinitionKind::Enum
+                }
+                crate::sema::DeclarationTypeDependencyTargetKind::ValueConst => {
+                    crate::SemanticBodyDefinitionKind::ValueConst
+                }
+            },
+            owner: None,
+        });
+    }
+    for event in &sema.declaration_type_call_head_dependencies[type_call_head_start..] {
+        dependencies.push(crate::SemanticBodyDefinitionIdentity {
+            file_id: event.callable_file,
+            name: std::sync::Arc::from(event.callable_name.as_str()),
+            kind: crate::SemanticBodyDefinitionKind::FreeFunction,
+            owner: None,
+        });
+    }
+    // Builtin type call heads are compiler-schema inputs rather than source
+    // definitions; their meaning is covered by the durable schema version.
+    let dependency_boundary_complete = sema.declaration_builtin_type_call_head_dependencies
+        [builtin_call_head_start..]
+        .iter()
+        .all(|event| {
+            matches!(
+                event.builtin,
+                crate::sema::BuiltinTypeCallHead::FixedCapacityString
+            )
+        });
+    dependencies.sort();
+    dependencies.dedup();
 
     Ok(SpecializedBody {
         function: AnalyzedFunction {
             ordinary_owner: None,
             name: specialized_name_str,
-            implicit_drop_source: Some(
-                crate::sema::ImplicitDropDependencySourceEvent::FreeFunction {
-                    token: sema.body_owner_token(
-                        base_info.file_id,
-                        sema.interner
-                            .resolve(&sema.source_function_name(key.base_name)),
-                        None,
-                        crate::sema::BodyOwnerKind::FreeFunction,
-                    ),
-                    file: base_info.file_id.index(),
-                    name: sema
-                        .interner
-                        .resolve(&sema.source_function_name(key.base_name))
-                        .to_string(),
+            implicit_drop_source: Some(Specializer::stable_identity(key, sema).map_or(
+                crate::sema::ImplicitDropDependencySourceEvent::Anonymous,
+                |identity| crate::sema::ImplicitDropDependencySourceEvent::Specialization {
+                    identity,
                 },
-            ),
+            )),
             air,
             num_locals,
             num_param_slots,
@@ -704,5 +1007,7 @@ fn create_specialized_function(
         local_strings,
         referenced_functions,
         referenced_methods,
+        dependencies,
+        dependency_boundary_complete,
     })
 }

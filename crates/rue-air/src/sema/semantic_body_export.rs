@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use lasso::Spur;
 use rue_error::CompileWarning;
@@ -9,11 +9,78 @@ use crate::{
     AirInstData, AirPattern, AirProjection, SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg,
     SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind, SemanticBodyExport,
     SemanticBodyExportFailure as F, SemanticBodyInst, SemanticBodyInstData, SemanticBodyMatchArm,
-    SemanticBodyPattern, SemanticBodyPlace, SemanticBodyProjection, SemanticImportType, Type,
+    SemanticBodyPattern, SemanticBodyPlace, SemanticBodyProjection, SemanticImportConstValue,
+    SemanticImportType, SemanticSpecializationIdentity, SemanticSpecializedBodyExport, Type,
     TypeKind,
 };
 
 impl BodySema<'_> {
+    pub(crate) fn export_specialized_body(
+        &self,
+        base_name: Spur,
+        base_info: &super::FunctionInfo,
+        type_arguments: &[Type],
+        value_arguments: &[super::ConstValue],
+        analyzed: &AnalyzedFunction,
+        strings: &[String],
+        warnings: &[CompileWarning],
+        specialized_calls: &HashMap<
+            Spur,
+            SemanticSpecializationIdentity<SemanticBodyDefinitionIdentity, Arc<str>>,
+        >,
+        dependencies: &[SemanticBodyDefinitionIdentity],
+        dependency_boundary_complete: bool,
+    ) -> Result<SemanticSpecializedBodyExport, F> {
+        let source_name = self.source_function_name(base_name);
+        let source_name_str = self.interner.resolve(&source_name);
+        let owner = self.body_owner_token(
+            base_info.file_id,
+            source_name_str,
+            None,
+            super::BodyOwnerKind::FreeFunction,
+        );
+        let body = self
+            .export_body(
+                owner,
+                base_info.span,
+                analyzed,
+                strings,
+                warnings,
+                Some(specialized_calls),
+            )?
+            .body;
+        let type_arguments = type_arguments
+            .iter()
+            .map(|value| self.export_body_type(*value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let value_arguments = value_arguments
+            .iter()
+            .map(|value| {
+                Ok(match value {
+                    super::ConstValue::Integer(value) => SemanticImportConstValue::Integer(*value),
+                    super::ConstValue::Bool(value) => SemanticImportConstValue::Bool(*value),
+                    super::ConstValue::Type(value) => {
+                        SemanticImportConstValue::Type(self.export_body_type(*value)?)
+                    }
+                    super::ConstValue::Function(value) => {
+                        SemanticImportConstValue::Function(self.function_identity(*value)?)
+                    }
+                    super::ConstValue::Unit => SemanticImportConstValue::Unit,
+                })
+            })
+            .collect::<Result<Vec<_>, F>>()?;
+        Ok(SemanticSpecializedBodyExport {
+            identity: SemanticSpecializationIdentity {
+                base: self.function_identity(base_name)?,
+                type_arguments: type_arguments.into(),
+                value_arguments: value_arguments.into(),
+            },
+            body,
+            dependencies: dependencies.into(),
+            dependency_boundary_complete,
+        })
+    }
+
     pub(crate) fn export_ordinary_body(
         &self,
         owner: BodyOwnerToken,
@@ -21,6 +88,23 @@ impl BodySema<'_> {
         analyzed: &AnalyzedFunction,
         strings: &[String],
         warnings: &[CompileWarning],
+    ) -> Result<SemanticBodyExport, F> {
+        self.export_body(owner, body_span, analyzed, strings, warnings, None)
+    }
+
+    fn export_body(
+        &self,
+        owner: BodyOwnerToken,
+        body_span: Span,
+        analyzed: &AnalyzedFunction,
+        strings: &[String],
+        warnings: &[CompileWarning],
+        specialized_calls: Option<
+            &HashMap<
+                Spur,
+                SemanticSpecializationIdentity<SemanticBodyDefinitionIdentity, Arc<str>>,
+            >,
+        >,
     ) -> Result<SemanticBodyExport, F> {
         // CompileWarning carries structured labels, notes, help, and suggestions
         // which the first durable DTO intentionally does not model. Publishing a
@@ -271,9 +355,15 @@ impl BodySema<'_> {
                     name,
                     args_start,
                     args_len,
-                } => SemanticBodyInstData::Call {
-                    function: self.function_identity(*name)?,
-                    args: call_args(*args_start, *args_len)?,
+                } => match specialized_calls.and_then(|calls| calls.get(name)) {
+                    Some(identity) => SemanticBodyInstData::CallSpecialized {
+                        identity: identity.clone(),
+                        args: call_args(*args_start, *args_len)?,
+                    },
+                    None => SemanticBodyInstData::Call {
+                        function: self.function_identity(*name)?,
+                        args: call_args(*args_start, *args_len)?,
+                    },
                 },
                 AirInstData::CallGeneric { .. } => return Err(F::UnsupportedGenericCall),
                 AirInstData::Intrinsic {
@@ -412,7 +502,10 @@ impl BodySema<'_> {
         })
     }
 
-    fn function_identity(&self, symbol: Spur) -> Result<SemanticBodyDefinitionIdentity, F> {
+    pub(crate) fn function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<SemanticBodyDefinitionIdentity, F> {
         if let Some(info) = self.functions.get(&symbol) {
             return Ok(SemanticBodyDefinitionIdentity {
                 file_id: info.file_id.index(),
@@ -473,7 +566,7 @@ impl BodySema<'_> {
         })
     }
 
-    fn export_body_type(
+    pub(crate) fn export_body_type(
         &self,
         ty: Type,
     ) -> Result<SemanticImportType<SemanticBodyDefinitionIdentity, Arc<str>>, F> {

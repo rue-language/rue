@@ -67,7 +67,9 @@ pub use semantic_body::{
     SemanticBodyExport, SemanticBodyExportFailure, SemanticBodyImportFailure, SemanticBodyInst,
     SemanticBodyInstData, SemanticBodyMatchArm, SemanticBodyModuleIdentity, SemanticBodyPattern,
     SemanticBodyPlace, SemanticBodyPlaceRef, SemanticBodyProjection, SemanticBodyRef,
-    SemanticBodyWarning, SemanticImportedBody,
+    SemanticBodyWarning, SemanticImportedBody, SemanticSpecializationIdentity,
+    SemanticSpecializedBodyCandidate, SemanticSpecializedBodyExport,
+    SemanticSpecializedCandidateInstallWork,
 };
 pub use semantic_import::{
     SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,

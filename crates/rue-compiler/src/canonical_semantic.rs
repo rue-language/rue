@@ -18,6 +18,14 @@ pub(crate) struct PreparedDurableBodyCandidate {
     pub body: rue_air::SemanticBody<crate::StableDefinitionKey, Arc<str>>,
 }
 
+pub(crate) struct PreparedDurableSpecializedBodyCandidate {
+    pub identity: rue_air::SemanticSpecializationIdentity<crate::StableDefinitionKey, Arc<str>>,
+    pub body_span: rue_span::Span,
+    pub body: rue_air::SemanticBody<crate::StableDefinitionKey, Arc<str>>,
+    pub dependencies: Arc<[crate::StableDefinitionKey]>,
+    pub dependency_boundary_complete: bool,
+}
+
 fn fold_body_import_work(durable: &mut crate::DurableBodyWork, body: BodyAnalysisWork) {
     durable.import_attempts += body.ordinary_body_import_attempts;
     durable.import_successes += body.ordinary_body_import_successes;
@@ -376,6 +384,7 @@ pub struct CanonicalSemanticOutput {
     bound_definitions: Option<BoundDefinitionSet>,
     body_owner_issuer: BoundDefinitionSet,
     durable_ordinary_body_payloads: Arc<[crate::DurableOrdinaryBodyPayload]>,
+    durable_specialized_body_payloads: Arc<[crate::DurableSpecializedBodyPayload]>,
     work: CanonicalSemanticWork,
     analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
     body_named_dependencies: Vec<BodyNamedDependencyEvent>,
@@ -518,6 +527,10 @@ impl CanonicalSemanticOutput {
     pub(crate) fn durable_ordinary_body_payloads(&self) -> &[crate::DurableOrdinaryBodyPayload] {
         &self.durable_ordinary_body_payloads
     }
+
+    pub fn durable_specialized_body_payloads(&self) -> &[crate::DurableSpecializedBodyPayload] {
+        &self.durable_specialized_body_payloads
+    }
     /// Structural work performed by this request.
     pub fn work(&self) -> CanonicalSemanticWork {
         self.work
@@ -562,6 +575,7 @@ pub(crate) fn analyze_canonical_program(
         definitions,
         CanonicalDeclarationReuseWork::default(),
         Vec::new(),
+        Vec::new(),
         crate::DurableBodyWork::default(),
         info_span!("sema").entered(),
     )
@@ -579,6 +593,7 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
     prepared: CanonicalPreparedDeclarations<'_>,
     reuse_plan: CanonicalDeclarationReuseWork,
     body_candidates: Vec<PreparedDurableBodyCandidate>,
+    specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     body_work: crate::DurableBodyWork,
 ) -> Result<CanonicalOrdinaryAnalysis, CanonicalSemanticFailure> {
     let input = CodegenInputDescriptor {
@@ -627,6 +642,7 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
             ..declaration_reuse
         },
         body_candidates,
+        specialized_body_candidates,
         body_work,
         sema_span,
     )?;
@@ -650,6 +666,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     definitions: &BoundDefinitionSet,
     durable: &[DurableDeclarationSemantic],
     body_candidates: Vec<PreparedDurableBodyCandidate>,
+    specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     body_work: crate::DurableBodyWork,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
     let input = CodegenInputDescriptor {
@@ -778,6 +795,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         selected_definitions,
         reuse,
         body_candidates,
+        specialized_body_candidates,
         body_work,
         sema_span,
     )
@@ -815,6 +833,7 @@ fn finish_canonical_analysis(
     provisional_definitions: BoundDefinitionSet,
     declaration_reuse: CanonicalDeclarationReuseWork,
     durable_body_candidates: Vec<PreparedDurableBodyCandidate>,
+    durable_specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     mut durable_body_reuse_work: crate::DurableBodyWork,
     sema_span: tracing::span::EnteredSpan,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
@@ -998,6 +1017,54 @@ fn finish_canonical_analysis(
         },
         |module: &std::sync::Arc<str>| modules.get(module.as_ref()).copied(),
     );
+    let specialized_air_candidates = durable_specialized_body_candidates
+        .into_iter()
+        .map(|candidate| rue_air::SemanticSpecializedBodyCandidate {
+            identity: candidate.identity,
+            body_span: candidate.body_span,
+            body: candidate.body,
+            dependencies: candidate.dependencies,
+            dependency_boundary_complete: candidate.dependency_boundary_complete,
+        })
+        .collect();
+    let (bound, specialized_install_work) = bound.install_specialized_body_candidates(
+        specialized_air_candidates,
+        |key: &crate::StableDefinitionKey| {
+            let record = authoritative_definitions.definition_by_key(key)?;
+            let kind = match key.kind() {
+                crate::StableDefinitionKind::Function => {
+                    rue_air::SemanticBodyDefinitionKind::FreeFunction
+                }
+                crate::StableDefinitionKind::Method => rue_air::SemanticBodyDefinitionKind::Method,
+                crate::StableDefinitionKind::AssociatedFunction => {
+                    rue_air::SemanticBodyDefinitionKind::AssociatedFunction
+                }
+                crate::StableDefinitionKind::Destructor => {
+                    rue_air::SemanticBodyDefinitionKind::Destructor
+                }
+                crate::StableDefinitionKind::Struct => rue_air::SemanticBodyDefinitionKind::Struct,
+                crate::StableDefinitionKind::Enum => rue_air::SemanticBodyDefinitionKind::Enum,
+                crate::StableDefinitionKind::ValueConst => {
+                    rue_air::SemanticBodyDefinitionKind::ValueConst
+                }
+                crate::StableDefinitionKind::ModuleBinding => {
+                    rue_air::SemanticBodyDefinitionKind::ModuleBinding
+                }
+            };
+            Some(rue_air::SemanticBodyDefinitionIdentity {
+                file_id: record.declaration_span().file_id.index(),
+                name: Arc::from(key.name()),
+                kind,
+                owner: key.owner().map(|owner| Arc::from(owner.name())),
+            })
+        },
+        |module: &Arc<str>| modules.get(module.as_ref()).copied(),
+    );
+    durable_body_reuse_work.specialized_mapping_attempts += specialized_install_work.attempts;
+    durable_body_reuse_work.specialized_mapping_successes += specialized_install_work.successes;
+    durable_body_reuse_work.specialized_mapping_failures +=
+        specialized_install_work.mapping_failures;
+    durable_body_reuse_work.candidate_fallbacks += specialized_install_work.mapping_failures;
     let sema_output = match bound.analyze_all_bodies_with_work() {
         Ok(output) => output,
         Err(failure) => {
@@ -1044,6 +1111,13 @@ fn finish_canonical_analysis(
     };
     let durable_ordinary_body_payloads = crate::convert_semantic_body_exports(
         &sema_output.ordinary_body_exports,
+        merged,
+        &authoritative_definitions,
+        &mut durable_body_work,
+    )
+    .unwrap_or_else(|_| Arc::from([]));
+    let durable_specialized_body_payloads = crate::convert_semantic_specialized_body_exports(
+        &sema_output.specialized_body_exports,
         merged,
         &authoritative_definitions,
         &mut durable_body_work,
@@ -1105,6 +1179,15 @@ fn finish_canonical_analysis(
             work,
         )
     })?;
+    let durable_specialized_body_payloads =
+        crate::durable_body::attach_specialized_implicit_drop_dependencies(
+            durable_specialized_body_payloads,
+            &cfg.implicit_named_destructor_dependencies,
+            merged,
+            &authoritative_definitions,
+            &mut durable_body_work,
+        )
+        .unwrap_or_else(|_| Arc::from([]));
     let mut warnings = cfg.warnings;
     warnings.sort_by(|left, right| {
         let key = |warning: &CompileWarning| {
@@ -1150,6 +1233,7 @@ fn finish_canonical_analysis(
         bound_definitions,
         body_owner_issuer: authoritative_definitions,
         durable_ordinary_body_payloads,
+        durable_specialized_body_payloads,
         work,
         analyzed_body_owners,
         body_named_dependencies,

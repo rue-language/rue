@@ -548,6 +548,40 @@ mod tests {
         assert_eq!(work.specialized_bodies_failed, 0);
     }
 
+    #[test]
+    fn completed_specializations_export_stable_identity_and_exact_work() {
+        let output = compile_to_air(
+            "fn id(comptime T: type, value: T) -> T { value }\nfn main() -> i32 { id(i32, 1) + id(i32, 2) }",
+        )
+        .unwrap();
+        let work = output.body_analysis_work;
+        assert_eq!(work.specialized_body_exports_attempted, 1);
+        assert_eq!(work.specialized_body_exports_succeeded, 1);
+        assert_eq!(work.specialized_body_exports_rejected, 0);
+        let [export] = output.specialized_body_exports.as_slice() else {
+            panic!("one deduplicated specialization export expected");
+        };
+        assert_eq!(export.identity.base.name.as_ref(), "id");
+        assert_eq!(export.identity.type_arguments.len(), 1);
+        assert!(export.identity.value_arguments.is_empty());
+        assert_eq!(
+            work.specialized_body_export_instructions_emitted,
+            export.body.instructions.len()
+        );
+        assert_eq!(
+            work.specialized_body_export_places_emitted,
+            export.body.places.len()
+        );
+        assert_eq!(
+            work.specialized_body_export_strings_emitted,
+            export.body.strings.len()
+        );
+        assert!(export.body.instructions.iter().all(|instruction| !matches!(
+            instruction.data,
+            crate::SemanticBodyInstData::CallGeneric
+        )));
+    }
+
     fn named_method_lookup_work(irrelevant: usize) -> crate::BodyAnalysisWork {
         let mut source = String::from(
             "struct Target { fn answer() -> i32 { 42 } }\n\
