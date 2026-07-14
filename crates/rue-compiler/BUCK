@@ -22,6 +22,7 @@ rue_crate(
         "//third-party:lasso",
         "//third-party:rayon",
         "//third-party:sha2",
+        "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:tracing",
     ],

@@ -56,10 +56,24 @@ discovering the root import graph:
 "$RUE" --emit deps main.rue
 ```
 
-This prints JSON containing the canonical root source, all observed
-root/positional/imported source files, and resolved `@import` edges. It is the
-observed dependency graph; a source manifest is still the declared allowed-read
-set.
+This prints a deterministic version-1 JSON envelope with a revision label and
+three separately ordered components:
+
+- `topology`: the compiler's canonical root and import outcomes (`resolved`,
+  `missing`, or `ambiguous`), plus legal import cycles;
+- `observations`: every compiler-generated candidate request and its physical or
+  policy outcome; and
+- `accepted_reads`: only regular source contents actually read and accepted,
+  with their logical module, physical identity, metadata fingerprint, and
+  content fingerprint.
+
+The top-level `status` is `complete` for a closed valid graph. A structurally
+closed graph containing a missing or ambiguous import is still emitted with
+`status: "incomplete"`; Rue also renders the canonical diagnostics and exits
+unsuccessfully. Parse, discovery-I/O, identity, and non-closure failures have no
+canonical topology and therefore emit no dependency envelope. A denied request
+is not an executed probe, an absent probe is not an accepted read, and the
+source manifest remains the separately declared allowed-read set.
 
 Run `"$RUE" --help` for targets, preview features, optimization levels,
 logging, timing, manifests, and all emit stages.
