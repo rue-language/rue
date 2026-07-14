@@ -100,32 +100,31 @@ pub(crate) extern "C" fn __rue_stack_overflow_handler(_sig: i32) -> ! {
     platform::exit(101)
 }
 
-/// Program entry point for Linux x86-64.
+/// Raw program entry point for Linux x86-64.
 ///
-/// The Linux kernel starts execution here with RSP 16-byte aligned.
-/// The System V AMD64 ABI expects RSP to be 8-byte aligned at function entry
-/// (i.e., 16-byte aligned before `call` pushes the return address).
-///
-/// `_start` bridges this gap by:
-/// 1. Aligning the stack for function calls (sub $8, %rsp)
-/// 2. Calling `main` (the user's entry point)
-/// 3. Passing the return value to `__rue_exit`
-///
-/// # ABI
-///
-/// ```text
-/// _start:
-///     sub $8, %rsp      ; align stack (kernel gives 16-byte, we need 8-byte before call)
-///     call main         ; call user's main function
-///     mov %eax, %edi    ; pass return value as exit code
-///     call __rue_exit   ; exit (never returns)
-/// ```
+/// `_start` is reached directly from the kernel, so it must not have a
+/// compiler-generated function prologue. The kernel supplies a 16-byte-aligned
+/// stack; the shim re-establishes that invariant explicitly, then `call` gives
+/// the ordinary Rust helper the SysV-required `rsp % 16 == 8` function-entry
+/// alignment. All further calls are made by normal Rust code.
+#[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
+core::arch::global_asm!(
+    ".pushsection .text._start,\"ax\",@progbits",
+    ".global _start",
+    ".type _start,@function",
+    "_start:",
+    "and rsp, -16",
+    "call __rue_x86_64_linux_start",
+    // The helper is non-returning. Trap if that contract is ever violated.
+    "ud2",
+    ".size _start, .-_start",
+    ".popsection",
+);
+
+/// Normal SysV function called by the prologue-free x86-64 Linux entry shim.
 #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start() -> ! {
-    use core::arch::asm;
-
-    // main is defined by the user's code
+extern "C" fn __rue_x86_64_linux_start() -> ! {
     unsafe extern "C" {
         fn main() -> i32;
     }
@@ -136,34 +135,8 @@ pub unsafe extern "C" fn _start() -> ! {
     // keeps the default SIGSEGV disposition.
     platform::install_stack_overflow_handler(__rue_stack_overflow_handler);
 
-    let exit_code: i32;
-    // SAFETY: This is the program entry point called by the kernel.
-    // - The kernel starts execution with RSP 16-byte aligned
-    // - We adjust the stack to maintain proper alignment for the call
-    // - `main` is an extern "C" function defined by user code and linked in
-    // - The assembly uses the System V AMD64 calling convention
-    // - After `main` returns, we pass its return value to exit()
-    // - This function never returns (we call exit() which is noreturn)
-    unsafe {
-        asm!(
-            // Stack alignment: kernel starts us with 16-byte aligned RSP.
-            // The `call main` will push 8 bytes (return address), making RSP
-            // 8-byte aligned when main starts - exactly what the ABI expects.
-            // But first we need to align to 16 bytes before call, so subtract 8.
-            "sub rsp, 8",
-            "call {main}",
-            // Restore RSP to its entry value: the asm block does not use
-            // `options(noreturn)` and control falls through to
-            // `platform::exit` below, so the inline-asm contract requires RSP
-            // to be left unchanged on exit from the block.
-            "add rsp, 8",
-            // Return value is in eax
-            "mov edi, eax",
-            main = sym main,
-            out("edi") exit_code,
-            clobber_abi("C"),
-        );
-    }
+    // SAFETY: `main` is the linked Rue entry function and uses the C ABI.
+    let exit_code = unsafe { main() };
     platform::exit(exit_code)
 }
 

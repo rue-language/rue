@@ -35,3 +35,16 @@ rust_test(
     srcs = glob(["src/**/*.rs"]),
     crate = "rue_runtime",
 )
+
+# The x86-64 Linux entry point is raw process-entry code and cannot be exercised
+# by libtest. Inspect the optimized staticlib and link a real Rue program through
+# a register probe at the kernel, helper, and generated-main boundaries.
+sh_test(
+    name = "x86-64-linux-entry-test",
+    test = "tests/test-x86-64-linux-entry.sh",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_RUNTIME": "$(location :rue-runtime[staticlib])",
+    },
+    resources = glob(["tests/**"]),
+)
