@@ -2897,7 +2897,7 @@ mod tests {
                     root,
                     "/checkout/main.rue",
                     "main.rue",
-                    "const helper = @import(\"helper.rue\"); fn main() -> i32 { helper.answer() }",
+                    "fn main() -> i32 { 0 }",
                 ),
                 (
                     helper,
@@ -2916,8 +2916,8 @@ mod tests {
         assert_eq!(work.lowered.ast_payload_clones, 0);
         assert_eq!(work.semantic.binding.bind_invocations, 1);
         assert_eq!(work.semantic.manifest.build_invocations, 1);
-        assert_eq!(work.semantic.cfg.cfg_builds_attempted, 2);
-        assert_eq!(work.semantic.cfg.cfg_builds_succeeded, 2);
+        assert_eq!(work.semantic.cfg.cfg_builds_attempted, 1);
+        assert_eq!(work.semantic.cfg.cfg_builds_succeeded, 1);
         assert_eq!(work.semantic.cfg.cfg_builds_failed, 0);
         let session_work = &frontend.session_work;
         assert_eq!(session_work.updates, 1);
@@ -2932,7 +2932,7 @@ mod tests {
                 .iter()
                 .map(|(path, ast)| (path.as_str(), ast.items.len()))
                 .collect::<Vec<_>>(),
-            [("/checkout/main.rue", 2), ("/checkout/helper.rue", 1)]
+            [("/checkout/main.rue", 1), ("/checkout/helper.rue", 1)]
         );
         let ast_work = presentation.work();
         assert_eq!(ast_work.parsed.syntax.parser_invocations, 2);

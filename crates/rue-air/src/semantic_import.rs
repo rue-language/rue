@@ -613,7 +613,12 @@ where
         let mut modules = BTreeMap::new();
         for key in module_keys {
             let path = key.as_ref().to_owned();
-            let (id, _) = module_registry.get_or_create(path.clone(), path);
+            let id = module_registry.push_canonical(crate::ModuleDef::new(
+                path.clone(),
+                path.clone(),
+                path,
+                FileId::DEFAULT,
+            ));
             modules.insert(key, id);
         }
 

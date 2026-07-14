@@ -1416,7 +1416,7 @@ mod tests {
                     1,
                     "/project/main.rue",
                     "main.rue",
-                    "const a = @import(\"a\"); fn main() -> i32 { 0 }",
+                    "const a = @import(\"a\"); fn main() -> i32 { a.value() }",
                 ),
                 (2, "/project/a.rue", "a.rue", "pub fn value() -> i32 { 1 }"),
             ],
@@ -1467,6 +1467,8 @@ mod tests {
             closed.graph().unwrap().graph().records()[0].resolution(),
             crate::CanonicalImportResolution::Resolved(module) if module.as_str() == "a.rue"
         ));
+        let semantic = session.semantic(&crate::CompileOptions::default()).unwrap();
+        assert_eq!(semantic.functions().len(), 2);
     }
 
     #[test]

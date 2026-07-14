@@ -1371,9 +1371,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 return Ok(None);
             };
             let module_def = self.module_registry.get_def(module_id);
-            let Some(module_file_id) = self.canonical_file_id(&module_def.file_path) else {
-                return Ok(None);
-            };
+            let module_file_id = module_def.file_id;
             module_file_id
         } else {
             let mut segments: Vec<&str> = vec![self.interner.resolve(&recv_name)];

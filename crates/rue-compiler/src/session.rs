@@ -260,7 +260,11 @@ mod durable_body_integration_tests {
 
     fn durable_candidates(source: &SourceSnapshot) -> Arc<[crate::DurableOrdinaryBody]> {
         let mut session = CompilerSession::new();
-        session.update(source).into_result().unwrap();
+        let program = session.update(source).into_result().unwrap();
+        if !program.import_directives().is_empty() {
+            let graph = session.import_graph(None).unwrap().graph().clone();
+            session.adopt_test_import_graph(graph);
+        }
         let semantic = session.semantic(&CompileOptions::default()).unwrap();
         assert!(
             semantic.work().durable_bodies.conversion_completions > 0,
@@ -1078,6 +1082,8 @@ pub struct CompilerSession {
     discovery_staging_active: bool,
     discovery_attempt: Option<Arc<ImportDiscoveryRevisionArtifact>>,
     committed_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
+    #[cfg(test)]
+    supplied_test_import_graph: Option<CanonicalImportGraph>,
     published: Option<Arc<ParsedProgram>>,
     published_snapshot: Option<SourceSnapshot>,
     batch_diagnostic_order: Option<Vec<crate::ModuleId>>,
@@ -1122,12 +1128,14 @@ struct ImportCacheEntry {
 #[derive(Debug)]
 struct SemanticCacheEntry {
     input: CodegenInputDescriptor,
+    imports: CanonicalImportGraph,
     result: Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
 }
 
 #[derive(Debug)]
 struct DefinitionCacheEntry {
     input: SemanticInputDescriptor,
+    imports: CanonicalImportGraph,
     result: Result<Arc<BoundDefinitionSet>, CompileErrors>,
 }
 
@@ -1135,8 +1143,61 @@ impl CompilerSession {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Select the accepted import topology for semantic construction.
+    ///
+    /// Import-bearing revisions must come from the atomically adopted
+    /// discovery artifact. A direct session remains usable for an import-free
+    /// snapshot by supplying the uniquely valid empty graph; it may never
+    /// reconstruct resolved imports from paths or environment state.
+    fn accepted_semantic_import_graph(&self) -> Result<CanonicalImportGraph, CompileErrors> {
+        let program = self.published.as_ref().ok_or_else(no_published_program)?;
+        if !program.import_directives().is_empty() {
+            #[cfg(test)]
+            if let Some(graph) = &self.supplied_test_import_graph {
+                return Ok(graph.clone());
+            }
+            let committed = self.committed_import_graph()?;
+            if &committed.input().sources != program.source_revision() {
+                return Err(CompileErrors::from(CompileError::without_span(
+                    ErrorKind::InvalidCompilerInput(
+                        "committed import graph belongs to a foreign source revision".into(),
+                    ),
+                )));
+            }
+            return Ok(committed.graph().clone());
+        }
+
+        let inputs = ModuleResolutionInputs::new(
+            program.root().clone(),
+            program
+                .modules()
+                .iter()
+                .map(|module| crate::ModuleResolutionInput {
+                    module: module.module_id().clone(),
+                    physical_path: Arc::from(module.physical_path()),
+                })
+                .collect(),
+        )
+        .map_err(CompileErrors::from)?;
+        CanonicalImportGraph::from_supplied(program.root().clone(), Vec::new(), &inputs).map_err(
+            |validation| {
+                CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                    format!("invalid import-free semantic graph: {validation:?}"),
+                )))
+            },
+        )
+    }
     pub fn published(&self) -> Option<&Arc<ParsedProgram>> {
         self.published.as_ref()
+    }
+
+    /// Explicitly supply accepted canonical records to lower-layer unit tests.
+    /// Production import-bearing sessions can only consume the atomically
+    /// committed discovery artifact.
+    #[cfg(test)]
+    pub(crate) fn adopt_test_import_graph(&mut self, graph: CanonicalImportGraph) {
+        self.supplied_test_import_graph = Some(graph);
     }
     /// Derive the pre-closure import plan for the session's current parsed
     /// revision. Hosts may execute only the requests carried by this query.
@@ -1512,6 +1573,10 @@ impl CompilerSession {
     }
 
     pub fn update(&mut self, snapshot: &SourceSnapshot) -> CompilerSessionUpdate {
+        #[cfg(test)]
+        {
+            self.supplied_test_import_graph = None;
+        }
         self.batch_diagnostic_order = None;
         let update = self.parse.update(snapshot);
         self.finish_update(snapshot, update)
@@ -1523,6 +1588,10 @@ impl CompilerSession {
     /// diagnostic ordering follows [`SourceSnapshot::files`], which is useful
     /// for command-line and other presentation-oriented consumers.
     pub fn update_for_presentation(&mut self, snapshot: &SourceSnapshot) -> CompilerSessionUpdate {
+        #[cfg(test)]
+        {
+            self.supplied_test_import_graph = None;
+        }
         self.batch_diagnostic_order = Some(
             snapshot
                 .files()
@@ -1749,6 +1818,7 @@ impl CompilerSession {
         options: &CompileOptions,
     ) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
         self.work.semantic.calls += 1;
+        let imports = self.accepted_semantic_import_graph()?;
         let rir = self.rir()?;
         let merged = match self.merge_cache.as_ref() {
             Some(Ok(merged)) => merged.clone(),
@@ -1766,7 +1836,7 @@ impl CompilerSession {
         if let Some(entry) = self
             .semantic_cache
             .iter()
-            .find(|entry| entry.input == input)
+            .find(|entry| entry.input == input && entry.imports == imports)
         {
             self.work.semantic.reuses += 1;
             let result = entry.result.clone();
@@ -1787,7 +1857,7 @@ impl CompilerSession {
         }
 
         self.work.semantic.executions += 1;
-        let prepared = prepare_canonical_declarations(&merged, &rir, options);
+        let prepared = prepare_canonical_declarations(&merged, &rir, options, &imports);
         let current_fingerprints: Result<Vec<StableDefinitionInputFingerprint>, CompileErrors> =
             match &prepared {
                 Ok(definitions) => definitions
@@ -1825,6 +1895,7 @@ impl CompilerSession {
                         &merged,
                         &rir,
                         options,
+                        &imports,
                         prepared,
                         &definitions,
                         &durable,
@@ -1892,6 +1963,7 @@ impl CompilerSession {
         }
         self.semantic_cache.push(SemanticCacheEntry {
             input: input.clone(),
+            imports,
             result: result.clone(),
         });
         self.work.semantic_entries = self.semantic_cache.len();
@@ -1927,6 +1999,7 @@ impl CompilerSession {
         options: &CompileOptions,
     ) -> Result<Arc<BoundDefinitionSet>, CompileErrors> {
         self.work.definitions.calls += 1;
+        let imports = self.accepted_semantic_import_graph()?;
         let rir = self.rir()?;
         let merged = match self.merge_cache.as_ref() {
             Some(Ok(merged)) => merged.clone(),
@@ -1944,7 +2017,9 @@ impl CompilerSession {
         if let Some(validation) = self
             .semantic_cache
             .iter()
-            .find(|entry| entry.input.semantic == input && entry.result.is_ok())
+            .find(|entry| {
+                entry.input.semantic == input && entry.imports == imports && entry.result.is_ok()
+            })
             .map(|entry| entry.result.clone())
         {
             validation?;
@@ -1955,7 +2030,7 @@ impl CompilerSession {
         if let Some(entry) = self
             .definition_cache
             .iter()
-            .find(|entry| entry.input == input)
+            .find(|entry| entry.input == input && entry.imports == imports)
         {
             self.work.definitions.reuses += 1;
             return entry.result.clone();
@@ -1966,6 +2041,7 @@ impl CompilerSession {
             &rir,
             options.preview_features.clone(),
             options.target,
+            &imports,
         );
         let (result, binding, manifest, issuance) = match query {
             Ok((definitions, binding)) => {
@@ -1982,6 +2058,7 @@ impl CompilerSession {
         };
         self.definition_cache.push(DefinitionCacheEntry {
             input: input.clone(),
+            imports,
             result: result.clone(),
         });
         self.work.definition_entries = self.definition_cache.len();
@@ -3628,6 +3705,20 @@ mod tests {
         )
     }
 
+    fn publish_with_test_imports(
+        session: &mut CompilerSession,
+        source: &SourceSnapshot,
+    ) -> ParsedModulesWork {
+        let update = session.update(source);
+        let work = update.work();
+        let program = update.into_result().unwrap();
+        if !program.import_directives().is_empty() {
+            let graph = session.import_graph(None).unwrap().graph().clone();
+            session.adopt_test_import_graph(graph);
+        }
+        work
+    }
+
     fn function_modules(count: usize, edited: Option<usize>) -> SourceSnapshot {
         let owned = (0..count)
             .map(|index| {
@@ -4642,10 +4733,12 @@ mod tests {
 
         let mut failed_input = session.semantic_cache[0].input.clone();
         failed_input.opt_level = crate::StableOptLevel::O1;
+        let failed_imports = session.semantic_cache[0].imports.clone();
         session.semantic_cache.insert(
             0,
             SemanticCacheEntry {
                 input: failed_input,
+                imports: failed_imports,
                 result: Err(CompileErrors::from(CompileError::without_span(
                     ErrorKind::InvalidCompilerInput(
                         "synthetic prior failed opt variant".to_string(),
@@ -4972,7 +5065,7 @@ mod tests {
         );
         let build = |source: &SourceSnapshot| {
             let mut session = CompilerSession::new();
-            session.update(source).into_result().unwrap();
+            publish_with_test_imports(&mut session, source);
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
                 .unwrap()
@@ -5031,7 +5124,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let source = snapshot(&entries, main_id);
             let mut session = CompilerSession::new();
-            session.update(&source).into_result().unwrap();
+            publish_with_test_imports(&mut session, &source);
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
                 .unwrap()
@@ -5214,7 +5307,7 @@ mod tests {
             1,
         );
         let mut session = CompilerSession::new();
-        session.update(&original).into_result().unwrap();
+        publish_with_test_imports(&mut session, &original);
         let resolved = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
@@ -5225,9 +5318,8 @@ mod tests {
                 if importer.as_str() == "app/main.rue" && target.as_str() == "app/helper.rue"
         ));
 
-        let update = session.update(&moved);
-        assert_eq!(update.work().syntax.lexer_invocations, 0);
-        update.into_result().unwrap();
+        let work = publish_with_test_imports(&mut session, &moved);
+        assert_eq!(work.syntax.lexer_invocations, 0);
         let missing = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
@@ -5303,7 +5395,7 @@ mod tests {
         );
         let build = |source: &SourceSnapshot| {
             let mut session = CompilerSession::new();
-            session.update(source).into_result().unwrap();
+            publish_with_test_imports(&mut session, source);
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
                 .unwrap()
@@ -5357,7 +5449,7 @@ mod tests {
             1,
         );
         let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
+        publish_with_test_imports(&mut session, &source);
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
@@ -5494,7 +5586,7 @@ mod tests {
             1,
         );
         let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
+        publish_with_test_imports(&mut session, &source);
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
@@ -5583,7 +5675,7 @@ mod tests {
         let moved_source = snapshot(&[(41, "/else/main.rue", "main.rue", program)], 41);
         let build = |source: &SourceSnapshot| {
             let mut session = CompilerSession::new();
-            session.update(source).into_result().unwrap();
+            publish_with_test_imports(&mut session, source);
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
                 .unwrap()
@@ -5778,7 +5870,7 @@ mod tests {
         );
         let build = |source: &SourceSnapshot| {
             let mut session = CompilerSession::new();
-            session.update(source).into_result().unwrap();
+            publish_with_test_imports(&mut session, source);
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
                 .unwrap()
@@ -6081,7 +6173,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let source = snapshot(&entries, main_id);
             let mut session = CompilerSession::new();
-            session.update(&source).into_result().unwrap();
+            publish_with_test_imports(&mut session, &source);
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
                 .unwrap()
@@ -6138,7 +6230,7 @@ mod tests {
             3,
         );
         let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
+        publish_with_test_imports(&mut session, &source);
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
@@ -6205,7 +6297,7 @@ mod tests {
             6,
         );
         let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
+        publish_with_test_imports(&mut session, &source);
         assert!(
             session.semantic(&CompileOptions::default()).is_err(),
             "dotted type-call heads are module-qualified free functions, not associated functions"
@@ -6304,7 +6396,7 @@ mod tests {
             1,
         );
         let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
+        publish_with_test_imports(&mut session, &source);
         assert!(session.semantic(&CompileOptions::default()).is_err());
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
@@ -6340,7 +6432,7 @@ mod tests {
             3,
         );
         let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
+        publish_with_test_imports(&mut session, &source);
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();

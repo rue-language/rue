@@ -7,7 +7,7 @@ use rue_error::{CompileError, CompileErrors, ErrorKind};
 use rue_span::Span;
 
 use crate::parsed_modules::{ParsedAstView, ParsedItemView, ParsedModule, ParsedProgram};
-use crate::{DefinitionKind, DefinitionSnapshot, ModuleId, SourceRevision};
+use crate::{DefinitionKind, DefinitionSnapshot, ImportDirectives, ModuleId, SourceRevision};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CanonicalMergeWork {
@@ -29,6 +29,7 @@ pub struct CanonicalMergeWork {
 pub struct CanonicalMergedAst {
     source_revision: SourceRevision,
     modules: Arc<[Arc<ParsedModule>]>,
+    imports: ImportDirectives,
 }
 
 impl CanonicalMergedAst {
@@ -36,6 +37,7 @@ impl CanonicalMergedAst {
         Self {
             source_revision: program.source_revision().clone(),
             modules: program.modules().to_vec().into(),
+            imports: program.import_directives().clone(),
         }
     }
 
@@ -47,6 +49,9 @@ impl CanonicalMergedAst {
     }
     pub fn modules(&self) -> &[Arc<ParsedModule>] {
         &self.modules
+    }
+    pub fn import_directives(&self) -> &ImportDirectives {
+        &self.imports
     }
     pub fn ast_views(&self) -> impl ExactSizeIterator<Item = ParsedAstView> + '_ {
         self.modules.iter().cloned().map(ParsedAstView::from_module)

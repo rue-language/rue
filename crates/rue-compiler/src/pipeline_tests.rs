@@ -126,7 +126,7 @@ mod tests {
         let borrowed =
             test_compile_sources_with_metadata(&sources, &metadata, &CompileOptions::default())
                 .unwrap();
-        let owned = compile_snapshot(&snapshot, &CompileOptions::default()).unwrap();
+        let owned = test_compile_snapshot(&snapshot, &CompileOptions::default()).unwrap();
 
         assert_eq!(borrowed.elf, owned.elf);
         assert_eq!(borrowed.source_stats, owned.source_stats);
@@ -172,7 +172,7 @@ mod tests {
         .unwrap();
         let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
 
-        let output = compile_snapshot(&snapshot, &CompileOptions::default()).unwrap();
+        let output = test_compile_snapshot(&snapshot, &CompileOptions::default()).unwrap();
         let stats = output.source_stats;
         let work = output.work;
 
@@ -301,7 +301,7 @@ mod tests {
             };
             let mut expected = None;
             for snapshot in &snapshots {
-                let canonical = compile_snapshot(snapshot, &options).unwrap();
+                let canonical = test_compile_snapshot(snapshot, &options).unwrap();
                 let warnings = canonical
                     .warnings
                     .iter()

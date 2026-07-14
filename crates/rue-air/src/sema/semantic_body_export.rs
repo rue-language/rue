@@ -529,7 +529,7 @@ impl BodySema<'_> {
                 self.export_body_type(self.type_pool.ptr_mut_def(id))?,
             )),
             TypeKind::Module(id) => SemanticImportType::Module(Arc::from(
-                self.module_registry.get_def(id).file_path.as_str(),
+                self.module_registry.get_def(id).durable_id.as_str(),
             )),
             TypeKind::Error => return Err(F::UnsupportedType),
         })

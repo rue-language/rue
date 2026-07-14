@@ -463,23 +463,35 @@ impl EnumDef {
 
 /// Definition of a module (imported file).
 ///
-/// A module records the import spelling and resolved file identity. Member
-/// lookup uses this file identity to select the defining-file declaration
-/// tables and apply visibility; declarations are not duplicated here.
+/// A module records its durable compiler identity and current request's source
+/// handle. Member lookup uses that handle to select the defining-file
+/// declaration tables and apply visibility; declarations are not duplicated
+/// here.
 #[derive(Debug, Clone)]
 pub struct ModuleDef {
-    /// The path used in @import (e.g., "math.rue")
+    /// Stable display identity for diagnostics that refer to the module.
     pub import_path: String,
-    /// The resolved absolute file path
+    /// Current request's source path, retained only for presentation.
     pub file_path: String,
+    /// Durable compiler module identity for the current semantic epoch.
+    pub durable_id: String,
+    /// Current request's diagnostic/source handle for this module.
+    pub file_id: rue_span::FileId,
 }
 
 impl ModuleDef {
     /// Create a new module definition.
-    pub fn new(import_path: String, file_path: String) -> Self {
+    pub fn new(
+        import_path: String,
+        file_path: String,
+        durable_id: String,
+        file_id: rue_span::FileId,
+    ) -> Self {
         Self {
             import_path,
             file_path,
+            durable_id,
+            file_id,
         }
     }
 }

@@ -391,7 +391,7 @@ fn compile_snapshot_impl(
     compile_with_session(&mut session, snapshot, options)
 }
 
-fn compile_with_session(
+pub(crate) fn compile_with_session(
     session: &mut CompilerSession,
     snapshot: &SourceSnapshot,
     options: &CompileOptions,

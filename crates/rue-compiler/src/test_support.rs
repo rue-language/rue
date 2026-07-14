@@ -59,7 +59,7 @@ pub(crate) fn test_frontend_snapshot(
     CompilerSessionWork,
 )> {
     let mut session = CompilerSession::new();
-    session.update_for_presentation(snapshot).into_result()?;
+    publish_test_snapshot(&mut session, snapshot)?;
     let rir = session.rir()?;
     let semantic = session.semantic(options)?;
     let work = session.work().clone();
@@ -69,7 +69,16 @@ pub(crate) fn test_frontend_snapshot(
 
 pub(crate) fn test_compile_source(source: &str) -> MultiErrorResult<CompileOutput> {
     let snapshot = SourceSnapshot::single("<test>", source).map_err(CompileErrors::from)?;
-    compile_snapshot(&snapshot, &CompileOptions::default())
+    test_compile_snapshot(&snapshot, &CompileOptions::default())
+}
+
+pub(crate) fn test_compile_snapshot(
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+) -> MultiErrorResult<CompileOutput> {
+    let mut session = CompilerSession::new();
+    publish_test_snapshot(&mut session, snapshot)?;
+    crate::queries::compile_with_session(&mut session, snapshot, options)
 }
 
 pub(crate) fn test_compile_sources(
@@ -92,5 +101,17 @@ pub(crate) fn test_compile_sources_with_metadata(
 ) -> MultiErrorResult<CompileOutput> {
     let snapshot =
         SourceSnapshot::from_sources(sources, metadata.clone()).map_err(CompileErrors::from)?;
-    compile_snapshot(&snapshot, options)
+    test_compile_snapshot(&snapshot, options)
+}
+
+fn publish_test_snapshot(
+    session: &mut CompilerSession,
+    snapshot: &SourceSnapshot,
+) -> MultiErrorResult<()> {
+    let program = session.update_for_presentation(snapshot).into_result()?;
+    if !program.import_directives().is_empty() {
+        let graph = session.import_graph(None)?.graph().clone();
+        session.adopt_test_import_graph(graph);
+    }
+    Ok(())
 }

@@ -531,7 +531,7 @@ impl<'a> BodySema<'a> {
     ) -> CompileResult<AnalysisResult> {
         let fn_name_str = self.interner.resolve(&function_name).to_string();
         let module_def = self.module_registry.get_def(module_id);
-        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let module_file_id = Some(module_def.file_id);
         let mut function_key = module_file_id
             .and_then(|file_id| self.resolve_function_name_local(function_name, file_id));
 

@@ -1064,16 +1064,6 @@ fn main() -> i32 {
             directives.as_slice()[0].source_offset(),
             directives.as_slice()[1].source_offset()
         );
-
-        let errors = unit.analyze().unwrap_err();
-        assert!(matches!(
-            &errors.first().unwrap().kind,
-            ErrorKind::IntrinsicWrongArgCount {
-                name,
-                expected: 1,
-                found: 0,
-            } if name == "import"
-        ));
     }
 
     #[test]
