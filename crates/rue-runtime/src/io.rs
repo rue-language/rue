@@ -42,15 +42,20 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// The caller must ensure `ptr` points to `len` valid, initialized bytes
-    /// that remain valid for the duration of the call. The borrow ABI
-    /// guarantees this: the String is not consumed and outlives the call.
+    /// When `len > 0`, `ptr` must be non-null and point to `len` valid,
+    /// initialized bytes that remain valid for the duration of the call. It
+    /// may be null when `len == 0`. The borrow ABI guarantees the live-buffer
+    /// requirement: the String is not consumed and outlives the call.
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_print(ptr: *const u8, len: u64, _cap: u64) {
+    pub unsafe extern "C" fn __rue_print(ptr: *const u8, len: u64, _cap: u64) {
         // SAFETY: `ptr` points to `len` valid bytes owned by the caller's
         // String (borrowed, not consumed), and we only read from the slice.
-        let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-        platform::write_stdout(bytes);
+        if len > 0 {
+            // SAFETY: the caller guarantees a non-null pointer valid for `len`
+            // initialized bytes when the length is positive.
+            let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+            platform::write_stdout(bytes);
+        }
     }
 }
 
@@ -74,10 +79,13 @@ crate::define_for_all_platforms! {
     ///
     /// See [`__rue_print`].
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_println(ptr: *const u8, len: u64, _cap: u64) {
+    pub unsafe extern "C" fn __rue_println(ptr: *const u8, len: u64, _cap: u64) {
         // SAFETY: see `__rue_print` — `ptr` is valid for `len` borrowed bytes.
-        let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-        platform::write_stdout(bytes);
+        if len > 0 {
+            // SAFETY: see `__rue_print`.
+            let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+            platform::write_stdout(bytes);
+        }
         // Byte-array literal (not `b"\n"`) to avoid a macOS linker quirk seen
         // with `b"..."` in `__rue_dbg_str`.
         let newline = [b'\n'];
@@ -137,24 +145,49 @@ pub struct OptionStringResult {
 /// ```
 ///
 /// Caller allocates space for the return value and passes pointer.
+///
+/// # Safety
+///
+/// `out` must be valid, aligned, writable storage for one
+/// [`OptionStringResult`] and must remain exclusively accessible for the call.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_read_line(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) {
+pub unsafe extern "C" fn __rue_read_line(
+    out: *mut OptionStringResult,
+    some_disc: u64,
+    none_disc: u64,
+) {
     read_line_impl(out, some_disc, none_disc);
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_read_line(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) {
+/// # Safety
+///
+/// `out` must be valid, aligned, writable storage for one
+/// [`OptionStringResult`] and must remain exclusively accessible for the call.
+pub unsafe extern "C" fn __rue_read_line(
+    out: *mut OptionStringResult,
+    some_disc: u64,
+    none_disc: u64,
+) {
     read_line_impl(out, some_disc, none_disc);
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_read_line(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) {
+/// # Safety
+///
+/// `out` must be valid, aligned, writable storage for one
+/// [`OptionStringResult`] and must remain exclusively accessible for the call.
+pub unsafe extern "C" fn __rue_read_line(
+    out: *mut OptionStringResult,
+    some_disc: u64,
+    none_disc: u64,
+) {
     read_line_impl(out, some_disc, none_disc);
 }
 

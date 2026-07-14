@@ -304,9 +304,10 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// The caller (Rue-generated code) guarantees `ptr` points to `len` valid,
-    /// initialized, byte-aligned bytes that stay valid for the call.
-    pub extern "C" fn __rue_panic(ptr: *const u8, len: u64) -> ! {
+    /// When `len > 0`, `ptr` must be non-null and point to `len` valid,
+    /// initialized bytes that stay valid for the call. `ptr` may be null when
+    /// `len == 0`.
+    pub unsafe extern "C" fn __rue_panic(ptr: *const u8, len: u64) -> ! {
         // "panic: " built byte-by-byte to avoid the macOS byte-string linker bug.
         let mut prefix = [0u8; 7];
         prefix[0] = b'p';
@@ -318,8 +319,12 @@ crate::define_for_all_platforms! {
         prefix[6] = b' ';
         platform::write_stderr(&prefix);
         // SAFETY: the caller guarantees `ptr`/`len` describe a valid byte range.
-        let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-        platform::write_stderr(bytes);
+        if len > 0 {
+            // SAFETY: the caller guarantees a non-null pointer valid for `len`
+            // initialized bytes when the length is positive.
+            let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+            platform::write_stderr(bytes);
+        }
         let newline = [b'\n'];
         platform::write_stderr(&newline);
         platform::exit(101)

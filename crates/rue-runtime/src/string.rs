@@ -66,10 +66,12 @@ crate::define_for_all_platforms! {
     /// # Safety
     ///
     /// The caller must ensure that:
-    /// - `ptr1` points to a valid buffer of at least `len1` bytes
-    /// - `ptr2` points to a valid buffer of at least `len2` bytes
+    /// - When `len1 > 0`, `ptr1` is non-null and points to a valid buffer of at
+    ///   least `len1` bytes; it may be null when `len1 == 0`
+    /// - When `len2 > 0`, `ptr2` is non-null and points to a valid buffer of at
+    ///   least `len2` bytes; it may be null when `len2 == 0`
     /// - Both pointers remain valid for the duration of the call
-    pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u64 {
+    pub unsafe extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u64 {
         // Fast path 1: different lengths means not equal
         if len1 != len2 {
             return 0;
@@ -186,7 +188,13 @@ crate::define_for_all_platforms! {
     /// ```text
     /// extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8
     /// ```
-    pub extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
+    ///
+    /// # Safety
+    ///
+    /// If `ptr` is non-null and `new_size > old_size`, it must be valid for
+    /// reads of `old_size` bytes. It must be either null or a pointer returned
+    /// by this runtime allocator with the supplied allocation layout.
+    pub unsafe extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
         heap::realloc(ptr, old_size, new_size, align)
     }
 }
@@ -236,10 +244,15 @@ crate::define_for_all_platforms! {
 ///
 /// Caller allocates space for the return value and passes pointer.
 /// Callee writes (ptr=0, len=0, cap=0) to that pointer.
+///
+/// # Safety
+///
+/// `out` must be valid, aligned, writable storage for one [`StringResult`]
+/// and must remain exclusively accessible for the call.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_new(out: *mut StringResult) {
+pub unsafe extern "C" fn __rue_String_new(out: *mut StringResult) {
     // SAFETY: Writing to `out` is safe because:
     // - Caller (Rue-generated code) allocates stack space and passes a valid pointer
     // - The sret convention guarantees `out` points to properly sized/aligned memory
@@ -254,7 +267,10 @@ pub extern "C" fn __rue_String_new(out: *mut StringResult) {
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_new(out: *mut StringResult) {
+/// # Safety
+///
+/// `out` must be valid, aligned, exclusively writable [`StringResult`] storage.
+pub unsafe extern "C" fn __rue_String_new(out: *mut StringResult) {
     unsafe {
         (*out).ptr = core::ptr::null_mut();
         (*out).len = 0;
@@ -265,7 +281,10 @@ pub extern "C" fn __rue_String_new(out: *mut StringResult) {
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_new(out: *mut StringResult) {
+/// # Safety
+///
+/// `out` must be valid, aligned, exclusively writable [`StringResult`] storage.
+pub unsafe extern "C" fn __rue_String_new(out: *mut StringResult) {
     unsafe {
         (*out).ptr = core::ptr::null_mut();
         (*out).len = 0;
@@ -283,10 +302,15 @@ pub extern "C" fn __rue_String_new(out: *mut StringResult) {
 /// ```text
 /// extern "C" fn __rue_String_with_capacity(out: *mut StringResult, cap: u64)
 /// ```
+///
+/// # Safety
+///
+/// `out` must be valid, aligned, writable storage for one [`StringResult`]
+/// and must remain exclusively accessible for the call.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
+pub unsafe extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
@@ -313,7 +337,10 @@ pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_c
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
+/// # Safety
+///
+/// `out` must be valid, aligned, exclusively writable [`StringResult`] storage.
+pub unsafe extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
@@ -340,7 +367,10 @@ pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_c
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
+/// # Safety
+///
+/// `out` must be valid, aligned, exclusively writable [`StringResult`] storage.
+pub unsafe extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
@@ -508,11 +538,11 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// The caller must ensure `ptr` points to a valid buffer of at least `len`
-    /// bytes. The in-range read below is then sound because the bounds check
-    /// guarantees `index < len`.
+    /// When `len > 0`, `ptr` must be non-null and point to a valid buffer of at
+    /// least `len` bytes; it may be null when `len == 0`. The in-range read
+    /// below is then sound because the bounds check guarantees `index < len`.
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_String_byte_at(ptr: *const u8, len: u64, _cap: u64, index: u64) -> u64 {
+    pub unsafe extern "C" fn __rue_String_byte_at(ptr: *const u8, len: u64, _cap: u64, index: u64) -> u64 {
         if index >= len {
             // Never returns: prints "error: index out of bounds" and exits 101.
             crate::error::__rue_bounds_check();
@@ -548,11 +578,11 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// The caller must ensure `ptr` points to a valid buffer of at least `len`
-    /// bytes. The in-range read below is then sound because the bounds check
-    /// guarantees `index < len`.
+    /// When `len > 0`, `ptr` must be non-null and point to a valid buffer of at
+    /// least `len` bytes; it may be null when `len == 0`. The in-range read
+    /// below is then sound because the bounds check guarantees `index < len`.
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_str_byte_at(ptr: *const u8, len: u64, index: u64) -> u64 {
+    pub unsafe extern "C" fn __rue_str_byte_at(ptr: *const u8, len: u64, index: u64) -> u64 {
         if index >= len {
             // Never returns: prints "error: index out of bounds" and exits 101.
             crate::error::__rue_bounds_check();
@@ -578,7 +608,8 @@ crate::define_for_all_platforms! {
 ///
 /// # Safety
 ///
-/// `ptr` must point to a valid buffer of at least `len` bytes.
+/// When `len > 0`, `ptr` must be non-null and valid for `len` bytes; it may be
+/// null when `len == 0`.
 unsafe fn __rue_decode_utf8_at(ptr: *const u8, len: u64, offset: u64) -> (u32, u64) {
     let len = len as usize;
     let i = offset as usize;
@@ -649,9 +680,10 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// `ptr` must point to a valid buffer of at least `len` bytes.
+    /// When `len > 0`, `ptr` must be non-null and valid for `len` bytes; it may
+    /// be null when `len == 0`.
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_String_char_scalar(
+    pub unsafe extern "C" fn __rue_String_char_scalar(
         ptr: *const u8,
         len: u64,
         _cap: u64,
@@ -677,9 +709,10 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// `ptr` must point to a valid buffer of at least `len` bytes.
+    /// When `len > 0`, `ptr` must be non-null and valid for `len` bytes; it may
+    /// be null when `len == 0`.
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_String_char_next(
+    pub unsafe extern "C" fn __rue_String_char_next(
         ptr: *const u8,
         len: u64,
         _cap: u64,
@@ -707,7 +740,8 @@ crate::define_for_all_platforms! {
 ///
 /// # Safety
 ///
-/// `ptr` must point to a valid buffer of at least `len` bytes.
+/// When `len > 0`, `ptr` must be non-null and valid for `len` bytes; it may be
+/// null when `len == 0`.
 unsafe fn __rue_decode_utf8_lossy_at(ptr: *const u8, len: u64, offset: u64) -> (u32, u64) {
     const FFFD: u32 = 0xFFFD;
     let len = len as usize;
@@ -790,9 +824,10 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// `ptr` must point to a valid buffer of at least `len` bytes.
+    /// When `len > 0`, `ptr` must be non-null and valid for `len` bytes; it may
+    /// be null when `len == 0`.
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_String_char_scalar_lossy(
+    pub unsafe extern "C" fn __rue_String_char_scalar_lossy(
         ptr: *const u8,
         len: u64,
         _cap: u64,
@@ -821,9 +856,10 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// `ptr` must point to a valid buffer of at least `len` bytes.
+    /// When `len > 0`, `ptr` must be non-null and valid for `len` bytes; it may
+    /// be null when `len == 0`.
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_String_char_next_lossy(
+    pub unsafe extern "C" fn __rue_String_char_next_lossy(
         ptr: *const u8,
         len: u64,
         _cap: u64,
@@ -855,8 +891,15 @@ crate::define_for_all_platforms! {
     ///
     /// `out` (the sret pointer) comes first, then the source String's fields
     /// (`cap` unused), then the range arguments.
+    ///
+    /// # Safety
+    ///
+    /// `out` must be valid, aligned, exclusively writable storage for one
+    /// [`StringResult`]. When `len > 0`, `ptr` must be non-null and valid for
+    /// reads of `len` bytes; it may be null when `len == 0`. It must not overlap
+    /// `out`.
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_String_substring(
+    pub unsafe extern "C" fn __rue_String_substring(
         out: *mut StringResult,
         ptr: *const u8,
         len: u64,
@@ -933,10 +976,11 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// `ptr` must be valid for `len` bytes and `needle_ptr` for `needle_len`
-    /// bytes; every read below is bounded by those lengths.
+    /// Each pointer must be non-null and valid for its associated length when
+    /// that length is positive; either pointer may be null when its length is
+    /// zero. Every read below is bounded by those lengths.
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_String_contains(
+    pub unsafe extern "C" fn __rue_String_contains(
         ptr: *const u8,
         len: u64,
         _cap: u64,
@@ -983,10 +1027,11 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// `ptr` must be valid for `len` bytes and `prefix_ptr` for `prefix_len`
-    /// bytes; every read below is bounded by those lengths.
+    /// Each pointer must be non-null and valid for its associated length when
+    /// that length is positive; either pointer may be null when its length is
+    /// zero. Every read below is bounded by those lengths.
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_String_starts_with(
+    pub unsafe extern "C" fn __rue_String_starts_with(
         ptr: *const u8,
         len: u64,
         _cap: u64,
@@ -1041,7 +1086,7 @@ crate::define_for_all_platforms! {
     /// # Safety
     ///
     /// `out` must be a valid sret pointer — see `__rue_String_new`.
-    pub extern "C" fn __rue_to_string(out: *mut StringResult, n: i64) {
+    pub unsafe extern "C" fn __rue_to_string(out: *mut StringResult, n: i64) {
         // "-9223372036854775808" (i64::MIN) is the longest result: 20 bytes.
         let mut buf = [0u8; 20];
         let negative = n < 0;
@@ -1125,7 +1170,7 @@ crate::define_for_all_platforms! {
     /// # Safety
     ///
     /// `out` must be a valid sret pointer — see `__rue_String_new`.
-    pub extern "C" fn __rue_to_string_unsigned(out: *mut StringResult, n: u64) {
+    pub unsafe extern "C" fn __rue_to_string_unsigned(out: *mut StringResult, n: u64) {
         // "18446744073709551615" (u64::MAX) is the longest result: 20 bytes.
         let mut buf = [0u8; 20];
         let mut mag = n;
@@ -1194,10 +1239,11 @@ crate::define_for_all_platforms! {
     ///
     /// # Safety
     ///
-    /// `ptr1`/`ptr2` must be valid for `len1`/`len2` bytes respectively, and
+    /// Each input pointer must be non-null and valid for its associated length
+    /// when that length is positive; it may be null when its length is zero.
     /// `out` must be a valid sret pointer (see `__rue_String_new`).
     #[allow(non_snake_case)]
-    pub extern "C" fn __rue_String_concat(
+    pub unsafe extern "C" fn __rue_String_concat(
         out: *mut StringResult,
         ptr1: *const u8,
         len1: u64,
@@ -1279,10 +1325,21 @@ crate::define_for_all_platforms! {
 ///
 /// Always allocates a new heap buffer, even for literals (cap == 0).
 /// The clone is always heap-allocated so it can be mutated.
+///
+/// # Safety
+///
+/// `out` must be valid, aligned, exclusively writable storage for one
+/// [`StringResult`]. When `len > 0`, `ptr` must be non-null and valid for reads
+/// of `len` bytes; it may be null when `len == 0`. It must not overlap `out`.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
+pub unsafe extern "C" fn __rue_String_clone(
+    out: *mut StringResult,
+    ptr: *const u8,
+    len: u64,
+    _cap: u64,
+) {
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
@@ -1318,7 +1375,17 @@ pub extern "C" fn __rue_String_clone(out: *mut StringResult, ptr: *const u8, len
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
+/// # Safety
+///
+/// `out` must be valid result storage. When `len > 0`, `ptr` must be non-null
+/// and readable for `len` bytes; it may be null when `len == 0`. Their storage
+/// must not overlap.
+pub unsafe extern "C" fn __rue_String_clone(
+    out: *mut StringResult,
+    ptr: *const u8,
+    len: u64,
+    _cap: u64,
+) {
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
@@ -1354,7 +1421,17 @@ pub extern "C" fn __rue_String_clone(out: *mut StringResult, ptr: *const u8, len
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
+/// # Safety
+///
+/// `out` must be valid result storage. When `len > 0`, `ptr` must be non-null
+/// and readable for `len` bytes; it may be null when `len == 0`. Their storage
+/// must not overlap.
+pub unsafe extern "C" fn __rue_String_clone(
+    out: *mut StringResult,
+    ptr: *const u8,
+    len: u64,
+    _cap: u64,
+) {
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
@@ -1411,10 +1488,17 @@ pub extern "C" fn __rue_String_clone(out: *mut StringResult, ptr: *const u8, len
 /// * `other_ptr` - Pointer to the other string's data
 /// * `other_len` - Length of the other string
 /// * `_other_cap` - Capacity of the other string (unused, but part of ABI)
+///
+/// # Safety
+///
+/// `out` must be valid, aligned, exclusively writable storage for one
+/// [`StringResult`]. The receiver fields must describe a live String allocation
+/// (or a `cap == 0` literal), and `other_ptr` must be readable for `other_len`
+/// bytes. The source ranges and `out` must not overlap writes performed here.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_push_str(
+pub unsafe extern "C" fn __rue_String_push_str(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -1466,7 +1550,12 @@ pub extern "C" fn __rue_String_push_str(
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_push_str(
+/// # Safety
+///
+/// `out` must be valid result storage; both String field triples must describe
+/// live storage for their lengths/capacities and must not overlap writes. A
+/// pointer may be null only for the canonical empty `(null, 0, 0)` String.
+pub unsafe extern "C" fn __rue_String_push_str(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -1518,7 +1607,12 @@ pub extern "C" fn __rue_String_push_str(
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_push_str(
+/// # Safety
+///
+/// `out` must be valid result storage; both String field triples must describe
+/// live storage for their lengths/capacities and must not overlap writes. A
+/// pointer may be null only for the canonical empty `(null, 0, 0)` String.
+pub unsafe extern "C" fn __rue_String_push_str(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -1576,10 +1670,16 @@ pub extern "C" fn __rue_String_push_str(
 /// * `len` - Current length in bytes
 /// * `cap` - Current capacity (0 for literals)
 /// * `byte` - The byte to append
+///
+/// # Safety
+///
+/// `out` must be valid, aligned, exclusively writable storage for one
+/// [`StringResult`]. The receiver fields must describe a live String allocation
+/// (or a `cap == 0` literal), and `out` must not overlap that allocation.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_push(
+pub unsafe extern "C" fn __rue_String_push(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -1620,7 +1720,12 @@ pub extern "C" fn __rue_String_push(
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_push(
+/// # Safety
+///
+/// `out` must be valid result storage; `ptr`/`len`/`cap` must describe a live
+/// String and must not overlap `out`. `ptr` may be null only for the canonical
+/// empty `(null, 0, 0)` String.
+pub unsafe extern "C" fn __rue_String_push(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -1661,7 +1766,12 @@ pub extern "C" fn __rue_String_push(
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_push(
+/// # Safety
+///
+/// `out` must be valid result storage; `ptr`/`len`/`cap` must describe a live
+/// String and must not overlap `out`. `ptr` may be null only for the canonical
+/// empty `(null, 0, 0)` String.
+pub unsafe extern "C" fn __rue_String_push(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -1707,10 +1817,21 @@ pub extern "C" fn __rue_String_push(
 /// * `ptr` - Pointer to the string data
 /// * `_len` - Current length in bytes (unused)
 /// * `cap` - Current capacity
+///
+/// # Safety
+///
+/// `out` must be valid, aligned, exclusively writable storage for one
+/// [`StringResult`] and must not overlap the live String described by
+/// `ptr`/`cap`.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
+pub unsafe extern "C" fn __rue_String_clear(
+    out: *mut StringResult,
+    ptr: *mut u8,
+    _len: u64,
+    cap: u64,
+) {
     // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = ptr;
@@ -1722,7 +1843,17 @@ pub extern "C" fn __rue_String_clear(out: *mut StringResult, ptr: *mut u8, _len:
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
+/// # Safety
+///
+/// `out` must be valid result storage and must not overlap the live String
+/// described by `ptr`/`cap`. `ptr` may be null for the canonical empty
+/// `(null, 0, 0)` String.
+pub unsafe extern "C" fn __rue_String_clear(
+    out: *mut StringResult,
+    ptr: *mut u8,
+    _len: u64,
+    cap: u64,
+) {
     // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = ptr;
@@ -1734,7 +1865,17 @@ pub extern "C" fn __rue_String_clear(out: *mut StringResult, ptr: *mut u8, _len:
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
+/// # Safety
+///
+/// `out` must be valid result storage and must not overlap the live String
+/// described by `ptr`/`cap`. `ptr` may be null for the canonical empty
+/// `(null, 0, 0)` String.
+pub unsafe extern "C" fn __rue_String_clear(
+    out: *mut StringResult,
+    ptr: *mut u8,
+    _len: u64,
+    cap: u64,
+) {
     // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = ptr;
@@ -1752,10 +1893,16 @@ pub extern "C" fn __rue_String_clear(out: *mut StringResult, ptr: *mut u8, _len:
 /// * `len` - Current length in bytes
 /// * `cap` - Current capacity (0 for literals)
 /// * `additional` - Number of additional bytes to reserve
+///
+/// # Safety
+///
+/// `out` must be valid, aligned, exclusively writable storage for one
+/// [`StringResult`]. The receiver fields must describe a live String allocation
+/// (or a `cap == 0` literal), and `out` must not overlap that allocation.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_reserve(
+pub unsafe extern "C" fn __rue_String_reserve(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -1775,7 +1922,12 @@ pub extern "C" fn __rue_String_reserve(
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_reserve(
+/// # Safety
+///
+/// `out` must be valid result storage; `ptr`/`len`/`cap` must describe a live
+/// String and must not overlap `out`. `ptr` may be null only for the canonical
+/// empty `(null, 0, 0)` String.
+pub unsafe extern "C" fn __rue_String_reserve(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -1795,7 +1947,12 @@ pub extern "C" fn __rue_String_reserve(
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_reserve(
+/// # Safety
+///
+/// `out` must be valid result storage; `ptr`/`len`/`cap` must describe a live
+/// String and must not overlap `out`. `ptr` may be null only for the canonical
+/// empty `(null, 0, 0)` String.
+pub unsafe extern "C" fn __rue_String_reserve(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -1905,31 +2062,36 @@ mod tests {
 
     #[test]
     fn test_str_eq_compares_content_and_length() {
-        let a = b"same";
-        let b = b"same";
-        let c = b"same!";
-        let d = b"diff";
+        // SAFETY: every pointer/length pair below comes from the live byte
+        // arrays declared in this scope.
+        unsafe {
+            let a = b"same";
+            let b = b"same";
+            let c = b"same!";
+            let d = b"diff";
 
-        assert_eq!(
-            __rue_str_eq(a.as_ptr(), a.len() as u64, b.as_ptr(), b.len() as u64),
-            1
-        );
-        assert_eq!(
-            __rue_str_eq(a.as_ptr(), a.len() as u64, c.as_ptr(), c.len() as u64),
-            0
-        );
-        assert_eq!(
-            __rue_str_eq(a.as_ptr(), a.len() as u64, d.as_ptr(), d.len() as u64),
-            0
-        );
-        assert_eq!(__rue_str_eq(a.as_ptr(), 0, d.as_ptr(), 0), 1);
+            assert_eq!(
+                __rue_str_eq(a.as_ptr(), a.len() as u64, b.as_ptr(), b.len() as u64),
+                1
+            );
+            assert_eq!(
+                __rue_str_eq(a.as_ptr(), a.len() as u64, c.as_ptr(), c.len() as u64),
+                0
+            );
+            assert_eq!(
+                __rue_str_eq(a.as_ptr(), a.len() as u64, d.as_ptr(), d.len() as u64),
+                0
+            );
+            assert_eq!(__rue_str_eq(a.as_ptr(), 0, d.as_ptr(), 0), 1);
+        }
     }
 
     #[test]
     fn test_string_new_and_query_methods() {
         let mut out = blank_result();
 
-        __rue_String_new(&mut out);
+        // SAFETY: `out` is valid, aligned, exclusively borrowed result storage.
+        unsafe { __rue_String_new(&mut out) };
 
         assert!(out.ptr.is_null());
         assert_eq!(out.len, 0);
@@ -1954,7 +2116,8 @@ mod tests {
     fn test_string_with_capacity_allocates_at_least_minimum() {
         let mut out = blank_result();
 
-        __rue_String_with_capacity(&mut out, 3);
+        // SAFETY: `out` is valid, aligned, exclusively borrowed result storage.
+        unsafe { __rue_String_with_capacity(&mut out, 3) };
 
         assert!(!out.ptr.is_null());
         assert_eq!(out.len, 0);
@@ -2007,48 +2170,54 @@ mod tests {
     fn test_byte_access_returns_zero_extended_bytes() {
         let bytes = [0x00, 0x7f, 0x80, 0xff];
 
-        assert_eq!(
-            __rue_String_byte_at(bytes.as_ptr(), bytes.len() as u64, 0, 0),
-            0
-        );
-        assert_eq!(
-            __rue_String_byte_at(bytes.as_ptr(), bytes.len() as u64, 0, 2),
-            0x80
-        );
-        assert_eq!(
-            __rue_str_byte_at(bytes.as_ptr(), bytes.len() as u64, 3),
-            0xff
-        );
+        // SAFETY: all accesses are within the live `bytes` array.
+        unsafe {
+            assert_eq!(
+                __rue_String_byte_at(bytes.as_ptr(), bytes.len() as u64, 0, 0),
+                0
+            );
+            assert_eq!(
+                __rue_String_byte_at(bytes.as_ptr(), bytes.len() as u64, 0, 2),
+                0x80
+            );
+            assert_eq!(
+                __rue_str_byte_at(bytes.as_ptr(), bytes.len() as u64, 3),
+                0xff
+            );
+        }
     }
 
     #[test]
     fn test_utf8_char_scalar_and_next_decode_multibyte_scalars() {
         let bytes = "aé🙂".as_bytes();
 
-        assert_eq!(
-            __rue_String_char_scalar(bytes.as_ptr(), bytes.len() as u64, 0, 0),
-            'a' as u64
-        );
-        assert_eq!(
-            __rue_String_char_next(bytes.as_ptr(), bytes.len() as u64, 0, 0),
-            1
-        );
-        assert_eq!(
-            __rue_String_char_scalar(bytes.as_ptr(), bytes.len() as u64, 0, 1),
-            'é' as u64
-        );
-        assert_eq!(
-            __rue_String_char_next(bytes.as_ptr(), bytes.len() as u64, 0, 1),
-            3
-        );
-        assert_eq!(
-            __rue_String_char_scalar(bytes.as_ptr(), bytes.len() as u64, 0, 3),
-            '🙂' as u64
-        );
-        assert_eq!(
-            __rue_String_char_next(bytes.as_ptr(), bytes.len() as u64, 0, 3),
-            bytes.len() as u64
-        );
+        // SAFETY: all offsets are scalar boundaries within the live UTF-8 buffer.
+        unsafe {
+            assert_eq!(
+                __rue_String_char_scalar(bytes.as_ptr(), bytes.len() as u64, 0, 0),
+                'a' as u64
+            );
+            assert_eq!(
+                __rue_String_char_next(bytes.as_ptr(), bytes.len() as u64, 0, 0),
+                1
+            );
+            assert_eq!(
+                __rue_String_char_scalar(bytes.as_ptr(), bytes.len() as u64, 0, 1),
+                'é' as u64
+            );
+            assert_eq!(
+                __rue_String_char_next(bytes.as_ptr(), bytes.len() as u64, 0, 1),
+                3
+            );
+            assert_eq!(
+                __rue_String_char_scalar(bytes.as_ptr(), bytes.len() as u64, 0, 3),
+                '🙂' as u64
+            );
+            assert_eq!(
+                __rue_String_char_next(bytes.as_ptr(), bytes.len() as u64, 0, 3),
+                bytes.len() as u64
+            );
+        }
     }
 
     #[test]
@@ -2056,30 +2225,34 @@ mod tests {
         const FFFD: u64 = 0xfffd;
         let bytes = [b'a', 0xf0, 0x9f, b'!', 0xff, b'z'];
 
-        assert_eq!(
-            __rue_String_char_scalar_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 0),
-            b'a' as u64
-        );
-        assert_eq!(
-            __rue_String_char_next_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 0),
-            1
-        );
-        assert_eq!(
-            __rue_String_char_scalar_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 1),
-            FFFD
-        );
-        assert_eq!(
-            __rue_String_char_next_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 1),
-            3
-        );
-        assert_eq!(
-            __rue_String_char_scalar_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 4),
-            FFFD
-        );
-        assert_eq!(
-            __rue_String_char_next_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 4),
-            5
-        );
+        // SAFETY: all offsets are within the live `bytes` array; the lossy
+        // functions do not require valid UTF-8.
+        unsafe {
+            assert_eq!(
+                __rue_String_char_scalar_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 0),
+                b'a' as u64
+            );
+            assert_eq!(
+                __rue_String_char_next_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 0),
+                1
+            );
+            assert_eq!(
+                __rue_String_char_scalar_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 1),
+                FFFD
+            );
+            assert_eq!(
+                __rue_String_char_next_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 1),
+                3
+            );
+            assert_eq!(
+                __rue_String_char_scalar_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 4),
+                FFFD
+            );
+            assert_eq!(
+                __rue_String_char_next_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 4),
+                5
+            );
+        }
     }
 
     #[test]
@@ -2087,7 +2260,9 @@ mod tests {
         let bytes = b"abcdef";
         let mut out = blank_result();
 
-        __rue_String_substring(&mut out, bytes.as_ptr(), bytes.len() as u64, 0, 2, 3);
+        // SAFETY: `out` is valid result storage and `bytes` is live for its
+        // reported length; the requested range is in bounds.
+        unsafe { __rue_String_substring(&mut out, bytes.as_ptr(), bytes.len() as u64, 0, 2, 3) };
 
         assert_string_result(&out, b"cde");
         assert_ne!(out.ptr as *const u8, bytes.as_ptr());
@@ -2098,7 +2273,9 @@ mod tests {
         let bytes = b"abcdef";
         let mut out = blank_result();
 
-        __rue_String_substring(&mut out, bytes.as_ptr(), bytes.len() as u64, 0, 3, 0);
+        // SAFETY: `out` is valid result storage and the empty range is within
+        // the live `bytes` buffer.
+        unsafe { __rue_String_substring(&mut out, bytes.as_ptr(), bytes.len() as u64, 0, 3, 0) };
 
         assert!(out.ptr.is_null());
         assert_eq!(out.len, 0);
@@ -2109,85 +2286,89 @@ mod tests {
     fn test_contains_and_starts_with_are_byte_based() {
         let haystack = b"bananas";
 
-        assert_eq!(
-            __rue_String_contains(
-                haystack.as_ptr(),
-                haystack.len() as u64,
-                0,
-                b"nan".as_ptr(),
-                3,
-                0,
-            ),
-            1
-        );
-        assert_eq!(
-            __rue_String_contains(
-                haystack.as_ptr(),
-                haystack.len() as u64,
-                0,
-                b"nab".as_ptr(),
-                3,
-                0,
-            ),
-            0
-        );
-        assert_eq!(
-            __rue_String_starts_with(
-                haystack.as_ptr(),
-                haystack.len() as u64,
-                0,
-                b"ban".as_ptr(),
-                3,
-                0,
-            ),
-            1
-        );
-        assert_eq!(
-            __rue_String_starts_with(
-                haystack.as_ptr(),
-                haystack.len() as u64,
-                0,
-                b"nan".as_ptr(),
-                3,
-                0,
-            ),
-            0
-        );
-        assert_eq!(
-            __rue_String_contains(
-                haystack.as_ptr(),
-                haystack.len() as u64,
-                0,
-                b"".as_ptr(),
-                0,
+        // SAFETY: every pointer/length pair below names a live byte array.
+        unsafe {
+            assert_eq!(
+                __rue_String_contains(
+                    haystack.as_ptr(),
+                    haystack.len() as u64,
+                    0,
+                    b"nan".as_ptr(),
+                    3,
+                    0,
+                ),
+                1
+            );
+            assert_eq!(
+                __rue_String_contains(
+                    haystack.as_ptr(),
+                    haystack.len() as u64,
+                    0,
+                    b"nab".as_ptr(),
+                    3,
+                    0,
+                ),
                 0
-            ),
-            1
-        );
-        assert_eq!(
-            __rue_String_starts_with(
-                haystack.as_ptr(),
-                haystack.len() as u64,
-                0,
-                b"".as_ptr(),
-                0,
-                0,
-            ),
-            1
-        );
+            );
+            assert_eq!(
+                __rue_String_starts_with(
+                    haystack.as_ptr(),
+                    haystack.len() as u64,
+                    0,
+                    b"ban".as_ptr(),
+                    3,
+                    0,
+                ),
+                1
+            );
+            assert_eq!(
+                __rue_String_starts_with(
+                    haystack.as_ptr(),
+                    haystack.len() as u64,
+                    0,
+                    b"nan".as_ptr(),
+                    3,
+                    0,
+                ),
+                0
+            );
+            assert_eq!(
+                __rue_String_contains(
+                    haystack.as_ptr(),
+                    haystack.len() as u64,
+                    0,
+                    b"".as_ptr(),
+                    0,
+                    0
+                ),
+                1
+            );
+            assert_eq!(
+                __rue_String_starts_with(
+                    haystack.as_ptr(),
+                    haystack.len() as u64,
+                    0,
+                    b"".as_ptr(),
+                    0,
+                    0,
+                ),
+                1
+            );
+        }
     }
 
     #[test]
     fn test_to_string_formats_signed_extremes() {
         let mut out = blank_result();
 
-        __rue_to_string(&mut out, 0);
+        // SAFETY: `out` is valid, aligned, exclusively borrowed result storage.
+        unsafe { __rue_to_string(&mut out, 0) };
         assert_string_result(&out, b"0");
 
-        __rue_to_string(&mut out, -42);
+        unsafe { __rue_to_string(&mut out, -42) };
         assert_string_result(&out, b"-42");
 
-        __rue_to_string(&mut out, i64::MIN);
+        unsafe { __rue_to_string(&mut out, i64::MIN) };
         assert_string_result(&out, b"-9223372036854775808");
     }
 
@@ -2195,10 +2376,11 @@ mod tests {
     fn test_to_string_unsigned_formats_full_u64_range() {
         let mut out = blank_result();
 
-        __rue_to_string_unsigned(&mut out, 0);
+        // SAFETY: `out` is valid, aligned, exclusively borrowed result storage.
+        unsafe { __rue_to_string_unsigned(&mut out, 0) };
         assert_string_result(&out, b"0");
 
-        __rue_to_string_unsigned(&mut out, u64::MAX);
+        unsafe { __rue_to_string_unsigned(&mut out, u64::MAX) };
         assert_string_result(&out, b"18446744073709551615");
     }
 
@@ -2208,15 +2390,19 @@ mod tests {
         let right = b"world";
         let mut out = blank_result();
 
-        __rue_String_concat(
-            &mut out,
-            left.as_ptr(),
-            left.len() as u64,
-            0,
-            right.as_ptr(),
-            right.len() as u64,
-            0,
-        );
+        // SAFETY: `out` is valid result storage and both input buffers are
+        // live for their reported lengths.
+        unsafe {
+            __rue_String_concat(
+                &mut out,
+                left.as_ptr(),
+                left.len() as u64,
+                0,
+                right.as_ptr(),
+                right.len() as u64,
+                0,
+            )
+        };
 
         assert_string_result(&out, b"hello, world");
     }
@@ -2226,7 +2412,9 @@ mod tests {
         let source = b"literal";
         let mut out = blank_result();
 
-        __rue_String_clone(&mut out, source.as_ptr(), source.len() as u64, 0);
+        // SAFETY: `out` is valid result storage and `source` is live for its
+        // reported length.
+        unsafe { __rue_String_clone(&mut out, source.as_ptr(), source.len() as u64, 0) };
 
         assert_string_result(&out, source);
         assert_ne!(out.ptr as *const u8, source.as_ptr());
@@ -2237,13 +2425,17 @@ mod tests {
         let source = b"abc";
         let mut out = blank_result();
 
-        __rue_String_push(
-            &mut out,
-            source.as_ptr() as *mut u8,
-            source.len() as u64,
-            0,
-            b'd',
-        );
+        // SAFETY: `out` is valid result storage and `source` is live for its
+        // reported length. `cap == 0` identifies borrowed literal storage.
+        unsafe {
+            __rue_String_push(
+                &mut out,
+                source.as_ptr() as *mut u8,
+                source.len() as u64,
+                0,
+                b'd',
+            )
+        };
 
         assert_string_result(&out, b"abcd");
         assert_ne!(out.ptr as *const u8, source.as_ptr());
@@ -2252,7 +2444,8 @@ mod tests {
     #[test]
     fn test_push_str_appends_without_reallocation_when_capacity_suffices() {
         let mut base = blank_result();
-        __rue_String_with_capacity(&mut base, STRING_MIN_CAPACITY);
+        // SAFETY: `base` is valid, aligned, exclusively borrowed result storage.
+        unsafe { __rue_String_with_capacity(&mut base, STRING_MIN_CAPACITY) };
         let start = base.ptr;
         unsafe {
             *base.ptr.add(0) = b'a';
@@ -2261,7 +2454,11 @@ mod tests {
         base.len = 2;
 
         let mut out = blank_result();
-        __rue_String_push_str(&mut out, base.ptr, base.len, base.cap, b"cd".as_ptr(), 2, 0);
+        // SAFETY: `out` is valid result storage; both input buffers are live
+        // for their reported lengths and the mutable buffer matches its cap.
+        unsafe {
+            __rue_String_push_str(&mut out, base.ptr, base.len, base.cap, b"cd".as_ptr(), 2, 0)
+        };
 
         assert_eq!(out.ptr, start);
         assert_string_result(&out, b"abcd");
@@ -2270,16 +2467,18 @@ mod tests {
     #[test]
     fn test_clear_preserves_capacity_and_reserve_grows() {
         let mut base = blank_result();
-        __rue_String_with_capacity(&mut base, 2);
+        // SAFETY: each out-pointer is valid result storage; the carried String
+        // pointer, length, and capacity come from the preceding runtime call.
+        unsafe { __rue_String_with_capacity(&mut base, 2) };
         let original_cap = base.cap;
 
         let mut reserved = blank_result();
-        __rue_String_reserve(&mut reserved, base.ptr, 0, base.cap, original_cap + 1);
+        unsafe { __rue_String_reserve(&mut reserved, base.ptr, 0, base.cap, original_cap + 1) };
         assert_eq!(reserved.len, 0);
         assert!(reserved.cap > original_cap);
 
         let mut cleared = blank_result();
-        __rue_String_clear(&mut cleared, reserved.ptr, 7, reserved.cap);
+        unsafe { __rue_String_clear(&mut cleared, reserved.ptr, 7, reserved.cap) };
         assert_eq!(cleared.ptr, reserved.ptr);
         assert_eq!(cleared.len, 0);
         assert_eq!(cleared.cap, reserved.cap);

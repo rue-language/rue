@@ -80,9 +80,10 @@ crate::define_for_all_platforms! {
     /// # Safety
     ///
     /// The caller must ensure:
-    /// - `ptr` points to a valid UTF-8 string of `len` bytes
+    /// - `ptr` is non-null and points to a valid UTF-8 string of `len` bytes
+    ///   when `len > 0`; it may be null when `len == 0`
     /// - The memory region remains valid for the duration of the call
-    pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
+    pub unsafe extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
         // SAFETY: Creating a slice from the raw pointer is safe because:
         // - The caller (Rue-generated code) guarantees `ptr` points to valid UTF-8
         //   string data of exactly `len` bytes
@@ -91,8 +92,12 @@ crate::define_for_all_platforms! {
         // - `ptr` is properly aligned (u8 requires only byte alignment)
         // - The pointed-to memory is initialized (Rue initializes all memory)
         // - We only read from the slice, never write
-        let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-        platform::write_stdout(bytes);
+        if len > 0 {
+            // SAFETY: the caller guarantees a non-null pointer valid for `len`
+            // initialized bytes when the length is positive.
+            let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+            platform::write_stdout(bytes);
+        }
         // Write newline using byte char literal (b"..." has issues with macOS linker)
         let newline = [b'\n'];
         platform::write_stdout(&newline);
