@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -15,6 +15,8 @@ use tracing_subscriber::{EnvFilter, Layer as _, fmt};
 
 mod timing;
 
+#[cfg(test)]
+use rue_compiler::CompilerSessionWork;
 use rue_compiler::{
     AcceptedImportSource, Ast, CanonicalRirOutput, CanonicalSemanticOutput, CompileError,
     CompileErrors, CompileOptions, CompileWarning, CompilerSession, DiscoverySourceAssembler,
@@ -22,12 +24,10 @@ use rue_compiler::{
     ImportDiscoveryRevisionArtifact, ImportObservation, ImportObservationLedger,
     ImportObservationStatus, Lexer, LinkerMode, MultiFileFormatter, MultiFileJsonFormatter,
     OptLevel, PhysicalFileIdentity, PipelineWork, PreviewFeature, PreviewFeatures, SourceInfo,
-    SourceSnapshot, Token, TypeInternPool, configure_thread_pool, generate_emitted_asm,
-    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
-    generate_stack_frame_info, parse_source_snapshot_for_ast_presentation,
+    SourceMetadata, SourceSnapshot, Token, TypeInternPool, configure_thread_pool,
+    generate_emitted_asm, generate_liveness_info, generate_lowering_info, generate_mir,
+    generate_regalloc_info, generate_stack_frame_info, parse_source_snapshot_for_ast_presentation,
 };
-#[cfg(test)]
-use rue_compiler::{CompilerSessionWork, SourceMetadata};
 use rue_rir::RirPrinter;
 use rue_target::Target;
 use serde::Serialize;
@@ -1601,6 +1601,30 @@ fn discover_and_load_imports(
     error_format: ErrorFormat,
 ) -> Result<ImportDiscoveryResult, ()> {
     use std::collections::HashSet;
+
+    // Preserve the compiler API boundary's positional-source validation before
+    // discovery aliases physical identities. In particular, `main.rue` and
+    // `./main.rue` are duplicate CLI inputs even though discovery would
+    // correctly recognize them as the same physical source.
+    let physical_paths: HashMap<_, _> = sources
+        .iter()
+        .enumerate()
+        .map(|(index, (path, _))| (FileId::new((index + 1) as u32), path.clone()))
+        .collect();
+    let logical_paths: HashMap<_, _> = sources
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            (
+                FileId::new((index + 1) as u32),
+                format!("positional-{}", index + 1),
+            )
+        })
+        .collect();
+    if let Err(error) = SourceMetadata::new(FileId::new(1), physical_paths, logical_paths) {
+        DiagnosticOutput::new(error_format, Vec::new()).print_errors(&CompileErrors::from(error));
+        return Err(());
+    }
 
     let root_path = normalize_lexical_path(Path::new(&sources[0].0));
     let root_dir = root_path
