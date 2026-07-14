@@ -1203,6 +1203,79 @@ mod tests {
     }
 
     #[test]
+    fn zst_drop_glue_lowers_on_every_backend_with_canonical_aggregate_widths() {
+        let state = test_cfg(
+            r#"
+            struct D { value: i32 }
+            drop fn D(self) { @dbg(self.value); }
+            struct Inner { leading: (), item: D, interior: (), text: StrBuf }
+            enum E { Full((), Inner, (), StrBuf), Empty }
+            fn main() -> i32 {
+                let values = [
+                    E.Full((), Inner { leading: (), item: D { value: 1 }, interior: (), text: "one" }, (), "a"),
+                    E.Full((), Inner { leading: (), item: D { value: 2 }, interior: (), text: "two" }, (), "b"),
+                ];
+                0
+            }
+            "#,
+        )
+        .expect("ZST-interleaved drop aggregates should reach CFG lowering");
+
+        let inner_id = state
+            .type_pool
+            .all_struct_ids()
+            .into_iter()
+            .find(|&id| state.type_pool.struct_def(id).name == "Inner")
+            .expect("Inner should be interned");
+        let enum_id = state
+            .type_pool
+            .all_enum_ids()
+            .into_iter()
+            .find(|&id| state.type_pool.enum_def(id).name == "E")
+            .expect("E should be interned");
+        let array_id = state
+            .type_pool
+            .all_array_ids()
+            .into_iter()
+            .find(|&id| state.type_pool.array_def(id).0 == Type::new_enum(enum_id))
+            .expect("[E; 2] should be interned");
+        let expected_widths = [
+            (
+                "__rue_drop_Inner".to_string(),
+                state.type_pool.abi_slot_count(Type::new_struct(inner_id)),
+            ),
+            (
+                "__rue_drop_E".to_string(),
+                state.type_pool.abi_slot_count(Type::new_enum(enum_id)),
+            ),
+            (
+                crate::drop_glue::array_drop_glue_name(array_id, &state.type_pool),
+                state.type_pool.abi_slot_count(Type::new_array(array_id)),
+            ),
+        ];
+        for (name, expected_width) in expected_widths {
+            let function = state
+                .functions
+                .iter()
+                .find(|function| function.analyzed.name == name)
+                .unwrap_or_else(|| panic!("missing synthesized function {name}"));
+            assert_eq!(function.analyzed.num_param_slots, expected_width, "{name}");
+        }
+
+        for &target in Target::all() {
+            for function in &state.functions {
+                generate_mir(&function.cfg, &state.type_pool, &state.interner, target)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{} should lower for {target}: {error}",
+                            function.analyzed.name
+                        )
+                    });
+            }
+        }
+    }
+
+    #[test]
     fn test_imported_private_helper_called_by_public_api_is_not_unused() {
         let sources = vec![
             SourceView::new(

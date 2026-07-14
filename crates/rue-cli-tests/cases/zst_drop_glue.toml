@@ -1,0 +1,113 @@
+# RUE-789: synthesized drop glue must use the canonical ABI width for
+# zero-sized fields. The former local width helper counted () as one slot, so
+# leading/interior unit fields shifted later destructor and StrBuf arguments.
+
+[section]
+id = "cli.zst_drop_glue"
+name = "Zero-sized fields in drop glue"
+description = "Leading and interior ZSTs do not shift aggregate drop-glue parameters (RUE-789)."
+
+[[case]]
+name = "struct_fields_keep_drop_offsets"
+description = "Leading/interior unit fields before custom-destructor and StrBuf fields occupy no drop-glue slots."
+differential_opt = true
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) { @dbg(self.value); }
+
+struct Mixed {
+    leading: (),
+    first: D,
+    interior: (),
+    text: StrBuf,
+    before_last: (),
+    last: D,
+}
+
+fn main() -> i32 {
+    let mut text = StrBuf.new();
+    text.push_str("owned");
+    let value = Mixed {
+        leading: (),
+        first: D { value: 11 },
+        interior: (),
+        text: text,
+        before_last: (),
+        last: D { value: 22 },
+    };
+    @dbg(-1);
+    0
+}
+""" }]
+stdout = "-1\n11\n22\n"
+exit_code = 0
+
+[[case]]
+name = "enum_payload_fields_keep_drop_offsets"
+description = "Unit fields interleaved through an enum payload do not shift its custom-destructor or StrBuf drops."
+differential_opt = true
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) { @dbg(self.value); }
+
+enum E {
+    Full((), D, (), StrBuf, (), D),
+    Empty,
+}
+
+fn main() -> i32 {
+    let mut text = StrBuf.new();
+    text.push_str("payload");
+    let value = E.Full((), D { value: 31 }, (), text, (), D { value: 32 });
+    @dbg(-1);
+    0
+}
+""" }]
+stdout = "-1\n31\n32\n"
+exit_code = 0
+
+[[case]]
+name = "nested_struct_array_keeps_drop_offsets_and_stride"
+description = "Nested aggregates and arrays retain canonical element strides when their droppable fields follow ZSTs."
+differential_opt = true
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) { @dbg(self.value); }
+
+struct Inner {
+    leading: (),
+    item: D,
+    interior: (),
+    text: StrBuf,
+}
+
+struct Outer {
+    leading: (),
+    items: [Inner; 2],
+    interior: (),
+    tail: D,
+}
+
+fn main() -> i32 {
+    let mut text1 = StrBuf.new();
+    text1.push_str("one");
+    let mut text2 = StrBuf.new();
+    text2.push_str("two");
+    let value = Outer {
+        leading: (),
+        items: [
+            Inner { leading: (), item: D { value: 41 }, interior: (), text: text1 },
+            Inner { leading: (), item: D { value: 42 }, interior: (), text: text2 },
+        ],
+        interior: (),
+        tail: D { value: 43 },
+    };
+    @dbg(-1);
+    0
+}
+""" }]
+stdout = "-1\n41\n42\n43\n"
+exit_code = 0

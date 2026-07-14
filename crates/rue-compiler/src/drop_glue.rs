@@ -88,68 +88,6 @@ fn type_needs_drop(ty: Type, type_pool: &TypeInternPool) -> bool {
     }
 }
 
-/// Count the number of ABI slots a type uses (flattened).
-fn type_slot_count(ty: Type, type_pool: &TypeInternPool) -> u32 {
-    match ty.kind() {
-        // Primitives use 1 slot
-        // ComptimeType uses 0 slots (comptime-only, no runtime representation)
-        TypeKind::I8
-        | TypeKind::I16
-        | TypeKind::I32
-        | TypeKind::I64
-        | TypeKind::U8
-        | TypeKind::U16
-        | TypeKind::U32
-        | TypeKind::U64
-        | TypeKind::Bool
-        | TypeKind::Unit
-        | TypeKind::Never
-        | TypeKind::Error => 1,
-        TypeKind::ComptimeType => 0,
-
-        // Tagged union: 1 discriminant slot + payload area sized to the
-        // largest variant (RUE-221). Mirrors `types::type_slot_count` in
-        // rue-codegen. A discriminant-only enum has no payload → 1 slot.
-        TypeKind::Enum(enum_id) => {
-            let enum_def = type_pool.enum_def(enum_id);
-            let mut max_payload = 0u32;
-            for i in 0..enum_def.variant_count() {
-                let variant_slots: u32 = enum_def
-                    .variant_payload(i)
-                    .iter()
-                    .map(|&ty| type_slot_count(ty, type_pool))
-                    .sum();
-                max_payload = max_payload.max(variant_slots);
-            }
-            1 + max_payload
-        }
-
-        // Struct uses sum of all field slots (including builtin String with 3 fields)
-        TypeKind::Struct(struct_id) => {
-            let struct_def = type_pool.struct_def(struct_id);
-            struct_def
-                .fields
-                .iter()
-                .map(|f| type_slot_count(f.ty, type_pool))
-                .sum()
-        }
-
-        // Note: String is now Type::Struct with is_builtin=true, handled above
-
-        // Array uses element slots * length
-        TypeKind::Array(array_id) => {
-            let (element_type, length) = type_pool.array_def(array_id);
-            type_slot_count(element_type, type_pool) * length as u32
-        }
-
-        // Pointer types use 1 slot (they're 64-bit addresses)
-        TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => 1,
-
-        // Module types don't take ABI slots (compile-time only)
-        TypeKind::Module(_) => 0,
-    }
-}
-
 /// Synthesize drop glue functions for all structs and arrays that need them.
 ///
 /// Returns a list of synthesized functions that should be added to the compilation.
@@ -219,11 +157,8 @@ fn create_struct_drop_glue_function(
     // Create AIR for the drop glue function
     let mut air = Air::new(Type::UNIT);
 
-    // Calculate total parameter slots
-    let mut num_param_slots = 0u32;
-    for field in &struct_def.fields {
-        num_param_slots += type_slot_count(field.ty, type_pool);
-    }
+    // Use the canonical aggregate layout query for the complete flattened ABI.
+    let num_param_slots = type_pool.abi_slot_count(Type::new_struct(struct_id));
 
     // Collect drop statements - these are side-effects that must be executed
     let mut drop_statements = Vec::new();
@@ -233,7 +168,7 @@ fn create_struct_drop_glue_function(
     let mut current_param_slot = 0u32;
 
     for field in &struct_def.fields {
-        let field_slot_count = type_slot_count(field.ty, type_pool);
+        let field_slot_count = type_pool.abi_slot_count(field.ty);
 
         if type_needs_drop(field.ty, type_pool) {
             // Emit Drop for this field.
@@ -372,9 +307,10 @@ fn create_array_drop_glue_function(
     // Create AIR for the drop glue function
     let mut air = Air::new(Type::UNIT);
 
-    // Calculate total parameter slots (element slots * length)
-    let element_slot_count = type_slot_count(element_type, type_pool);
-    let num_param_slots = element_slot_count * length as u32;
+    // Use the canonical aggregate layout query for both the element stride and
+    // the complete flattened ABI.
+    let element_slot_count = type_pool.abi_slot_count(element_type);
+    let num_param_slots = type_pool.abi_slot_count(Type::new_array(array_id));
 
     // Collect drop statements for each element
     let mut drop_statements = Vec::new();
@@ -506,7 +442,7 @@ fn create_enum_drop_glue_function(enum_id: EnumId, type_pool: &TypeInternPool) -
     let mut air = Air::new(Type::UNIT);
 
     // Total ABI slots: discriminant (slot 0) + payload area (largest variant).
-    let num_param_slots = type_slot_count(Type::new_enum(enum_id), type_pool);
+    let num_param_slots = type_pool.abi_slot_count(Type::new_enum(enum_id));
 
     // The discriminant lives in param slot 0; the match switches on it.
     let disc_ty = enum_def.discriminant_type();
@@ -538,7 +474,7 @@ fn create_enum_drop_glue_function(enum_id: EnumId, type_pool: &TypeInternPool) -
         let mut drop_stmts: Vec<AirRef> = Vec::new();
         let mut field_slot = 1u32; // slot 0 is the discriminant
         for &field_ty in payload {
-            let field_slots = type_slot_count(field_ty, type_pool);
+            let field_slots = type_pool.abi_slot_count(field_ty);
             if type_needs_drop(field_ty, type_pool) {
                 let param_ref = air.add_inst(AirInst {
                     data: AirInstData::Param { index: field_slot },
@@ -681,5 +617,227 @@ fn type_name(ty: Type, type_pool: &TypeInternPool) -> String {
             let pointee = type_pool.ptr_mut_def(ptr_id);
             format!("ptr_mut_{}", type_name(pointee, type_pool))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lasso::ThreadedRodeo;
+    use rue_air::{EnumDef, ModuleId, StructField};
+
+    use super::*;
+
+    fn register_struct(
+        type_pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+        fields: Vec<StructField>,
+        destructor: Option<&str>,
+    ) -> rue_air::StructId {
+        let symbol = interner.get_or_intern(name);
+        type_pool
+            .register_struct(
+                symbol,
+                StructDef {
+                    name: name.to_string(),
+                    fields,
+                    is_copy: false,
+                    is_linear: false,
+                    destructor: destructor.map(str::to_string),
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0
+    }
+
+    fn register_enum(
+        type_pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+        payloads: Vec<Vec<Type>>,
+    ) -> EnumId {
+        let symbol = interner.get_or_intern(name);
+        let variants = (0..payloads.len()).map(|i| format!("V{i}")).collect();
+        type_pool
+            .register_enum(
+                symbol,
+                EnumDef {
+                    name: name.to_string(),
+                    variants,
+                    variant_payloads: payloads,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0
+    }
+
+    fn param_indices(function: &AnalyzedFunction) -> Vec<u32> {
+        function
+            .air
+            .instructions()
+            .iter()
+            .filter_map(|inst| match inst.data {
+                AirInstData::Param { index } => Some(index),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn synthesized_drop_glue_uses_canonical_abi_widths_for_totals_and_offsets() {
+        let type_pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+
+        let drop_id = register_struct(
+            &type_pool,
+            &interner,
+            "DropOne",
+            vec![StructField {
+                name: "value".into(),
+                ty: Type::I32,
+            }],
+            Some("DropOne.__drop"),
+        );
+        let drop_ty = Type::new_struct(drop_id);
+
+        let zst_mixed_id = register_struct(
+            &type_pool,
+            &interner,
+            "ZstMixed",
+            vec![
+                StructField {
+                    name: "leading".into(),
+                    ty: Type::UNIT,
+                },
+                StructField {
+                    name: "value".into(),
+                    ty: Type::I64,
+                },
+                StructField {
+                    name: "interior".into(),
+                    ty: Type::NEVER,
+                },
+                StructField {
+                    name: "tail".into(),
+                    ty: Type::BOOL,
+                },
+            ],
+            None,
+        );
+        let zst_mixed_ty = Type::new_struct(zst_mixed_id);
+        let plain_enum_id = register_enum(
+            &type_pool,
+            &interner,
+            "Plain",
+            vec![vec![Type::UNIT], vec![Type::I32, Type::UNIT]],
+        );
+        let plain_enum_ty = Type::new_enum(plain_enum_id);
+        let trivial_array_id = type_pool.intern_array_from_type(zst_mixed_ty, 2);
+        let trivial_array_ty = Type::new_array(trivial_array_id);
+        let const_ptr = Type::new_ptr_const(type_pool.intern_ptr_const_from_type(Type::UNIT));
+        let mut_ptr = Type::new_ptr_mut(type_pool.intern_ptr_mut_from_type(Type::NEVER));
+
+        let nested_id = register_struct(
+            &type_pool,
+            &interner,
+            "NestedDrop",
+            vec![
+                StructField {
+                    name: "leading".into(),
+                    ty: Type::UNIT,
+                },
+                StructField {
+                    name: "drop".into(),
+                    ty: drop_ty,
+                },
+                StructField {
+                    name: "interior".into(),
+                    ty: Type::UNIT,
+                },
+                StructField {
+                    name: "tail".into(),
+                    ty: Type::I32,
+                },
+            ],
+            None,
+        );
+        let nested_ty = Type::new_struct(nested_id);
+        let drop_array_id = type_pool.intern_array_from_type(drop_ty, 2);
+        let drop_array_ty = Type::new_array(drop_array_id);
+        let drop_enum_id = register_enum(
+            &type_pool,
+            &interner,
+            "DropEnum",
+            vec![
+                vec![Type::UNIT, drop_ty, Type::UNIT, drop_ty],
+                vec![Type::I32, drop_ty],
+            ],
+        );
+        let drop_enum_ty = Type::new_enum(drop_enum_id);
+
+        // Every TypeKind occurs either directly or through one of the aggregate
+        // shapes below. Keeping the droppable fields last makes their Param
+        // indices a compact assertion over every preceding canonical width.
+        let outer_id = register_struct(
+            &type_pool,
+            &interner,
+            "AllKinds",
+            vec![
+                Type::I8,
+                Type::I16,
+                Type::I32,
+                Type::I64,
+                Type::U8,
+                Type::U16,
+                Type::U32,
+                Type::U64,
+                Type::BOOL,
+                Type::ERROR,
+                Type::UNIT,
+                Type::NEVER,
+                Type::COMPTIME_TYPE,
+                Type::new_module(ModuleId(0)),
+                const_ptr,
+                mut_ptr,
+                zst_mixed_ty,
+                plain_enum_ty,
+                trivial_array_ty,
+                drop_ty,
+                nested_ty,
+                drop_array_ty,
+                drop_enum_ty,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, ty)| StructField {
+                name: format!("field{i}"),
+                ty,
+            })
+            .collect(),
+            None,
+        );
+        let outer_ty = Type::new_struct(outer_id);
+        let outer =
+            create_struct_drop_glue_function(&type_pool.struct_def(outer_id), outer_id, &type_pool);
+        assert_eq!(outer.num_param_slots, type_pool.abi_slot_count(outer_ty));
+        assert_eq!(outer.num_param_slots, 28);
+        assert_eq!(param_indices(&outer), [20, 21, 23, 25]);
+
+        let array = create_array_drop_glue_function(drop_array_id, &type_pool);
+        assert_eq!(
+            array.num_param_slots,
+            type_pool.abi_slot_count(drop_array_ty)
+        );
+        assert_eq!(param_indices(&array), [0, 1]);
+
+        let enum_glue = create_enum_drop_glue_function(drop_enum_id, &type_pool);
+        assert_eq!(
+            enum_glue.num_param_slots,
+            type_pool.abi_slot_count(drop_enum_ty)
+        );
+        assert_eq!(param_indices(&enum_glue), [0, 1, 2, 2]);
     }
 }
