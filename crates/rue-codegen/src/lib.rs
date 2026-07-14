@@ -190,6 +190,32 @@ pub struct MachineCode {
     pub strings: Vec<String>,
 }
 
+/// Build a function-local string table and remap MIR string IDs to it.
+///
+/// Semantic analysis assigns IDs in the program-wide string table. Object files
+/// are emitted per function, so retaining that whole table in every object is
+/// both unnecessary and quadratic in programs with many functions. Ordering
+/// local strings by their global ID keeps the object bytes deterministic.
+fn compact_string_table(
+    strings: &[String],
+    referenced_ids: impl IntoIterator<Item = u32>,
+) -> (Vec<String>, std::collections::BTreeMap<u32, u32>) {
+    let referenced_ids: std::collections::BTreeSet<_> = referenced_ids.into_iter().collect();
+    let mut remap = std::collections::BTreeMap::new();
+    let mut local_strings = Vec::with_capacity(referenced_ids.len());
+
+    for global_id in referenced_ids {
+        let local_id = local_strings.len() as u32;
+        let string = strings
+            .get(global_id as usize)
+            .unwrap_or_else(|| panic!("string ID {global_id} is absent from the global table"));
+        local_strings.push(string.clone());
+        remap.insert(global_id, local_id);
+    }
+
+    (local_strings, remap)
+}
+
 /// A single emitted machine instruction.
 ///
 /// This captures both the machine code bytes and the human-readable assembly text

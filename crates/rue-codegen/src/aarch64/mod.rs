@@ -65,21 +65,42 @@ fn generate_inner<T, Emit>(
     interner: &ThreadedRodeo,
     target: Target,
     emit: Emit,
-) -> CompileResult<T>
+) -> CompileResult<(T, Vec<String>)>
 where
     Emit: for<'a> FnOnce(Emitter<'a>) -> CompileResult<T>,
 {
-    let prepared = prepare_backend(cfg, type_pool, interner, target)?;
+    let mut prepared = prepare_backend(cfg, type_pool, interner, target)?;
+    let referenced_strings = prepared
+        .mir
+        .instructions()
+        .iter()
+        .filter_map(|inst| match inst {
+            Aarch64Inst::StringConstPtr { string_id, .. }
+            | Aarch64Inst::StringConstLen { string_id, .. }
+            | Aarch64Inst::StringConstCap { string_id, .. } => Some(*string_id),
+            _ => None,
+        });
+    let (local_strings, string_id_remap) = crate::compact_string_table(strings, referenced_strings);
+    for inst in prepared.mir.instructions_vec_mut() {
+        let string_id = match inst {
+            Aarch64Inst::StringConstPtr { string_id, .. }
+            | Aarch64Inst::StringConstLen { string_id, .. }
+            | Aarch64Inst::StringConstCap { string_id, .. } => string_id,
+            _ => continue,
+        };
+        *string_id = string_id_remap[string_id];
+    }
     let emitter = Emitter::new(
         &prepared.mir,
         prepared.total_locals,
         prepared.num_locals_original,
         prepared.num_params,
         &prepared.used_callee_saved,
-        strings,
+        &local_strings,
     )
     .with_sret(prepared.has_sret);
-    emit(emitter)
+    let emitted = emit(emitter)?;
+    Ok((emitted, local_strings))
 }
 
 /// Generate machine code from CFG.
@@ -92,14 +113,15 @@ pub fn generate(
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<MachineCode> {
-    generate_inner(cfg, type_pool, strings, interner, target, |emitter| {
-        // Keep the normal path allocation-free with respect to assembly text.
-        let (code, relocations) = emitter.emit()?;
-        Ok(MachineCode {
-            code,
-            relocations,
-            strings: strings.to_vec(),
-        })
+    let ((code, relocations), strings) =
+        generate_inner(cfg, type_pool, strings, interner, target, |emitter| {
+            // Keep the normal path allocation-free with respect to assembly text.
+            emitter.emit()
+        })?;
+    Ok(MachineCode {
+        code,
+        relocations,
+        strings,
     })
 }
 
@@ -114,16 +136,17 @@ pub fn generate_with_asm(
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<(MachineCode, String)> {
-    generate_inner(cfg, type_pool, strings, interner, target, |emitter| {
-        let emitted = emitter.emit_all()?;
-        let asm = emitted.to_asm();
-        let machine_code = MachineCode {
-            code: emitted.to_bytes(),
-            relocations: emitted.relocations,
-            strings: strings.to_vec(),
-        };
-        Ok((machine_code, asm))
-    })
+    let (emitted, strings) =
+        generate_inner(cfg, type_pool, strings, interner, target, |emitter| {
+            emitter.emit_all()
+        })?;
+    let asm = emitted.to_asm();
+    let machine_code = MachineCode {
+        code: emitted.to_bytes(),
+        relocations: emitted.relocations,
+        strings,
+    };
+    Ok((machine_code, asm))
 }
 
 /// Generate register allocation debug info from CFG.
