@@ -349,6 +349,27 @@ impl Type {
     }
 }
 
+/// Compiler-recognized identity of a canonical standard-library nominal type.
+///
+/// This is derived from the nominal's relocation-stable module identity, not
+/// its unqualified spelling, so imports and aliases preserve it while an
+/// unrelated user declaration with the same name never acquires it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LangItem {
+    /// `std.strbuf.StrBuf`.
+    StrBuf,
+}
+
+impl LangItem {
+    /// Classify a nominal only after its module has crossed a trusted
+    /// standard-library provenance boundary.
+    pub fn from_standard_library_nominal(module_path: &str, name: &str) -> Option<Self> {
+        (name == "StrBuf"
+            && crate::path_norm::normalize_module_path(module_path) == "\0rue-std/strbuf.rue")
+            .then_some(Self::StrBuf)
+    }
+}
+
 /// Definition of a struct type.
 #[derive(Debug, Clone)]
 pub struct StructDef {

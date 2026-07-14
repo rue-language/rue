@@ -202,6 +202,9 @@ pub struct ConstraintGenerator<'a> {
     string_literal_vars: Vec<TypeVarId>,
     /// Concrete default for an otherwise-unconstrained string literal.
     string_literal_default: Type,
+    /// Explicit compiler-provided identity for the transitional growable
+    /// string type used by intrinsic signatures and StrBuf-only contexts.
+    strbuf_type: Type,
     /// Type substitutions for Self and type parameters (used in method bodies).
     /// Maps type names (like "Self") to their concrete types.
     type_subst: Option<&'a HashMap<Spur, Type>>,
@@ -334,10 +337,8 @@ impl<'a> ConstraintGenerator<'a> {
         type_pool: &'a TypeInternPool,
         type_subst: Option<&'a HashMap<Spur, Type>>,
     ) -> Self {
-        let string_literal_default = interner
-            .get("StrBuf")
-            .and_then(|name| builtin_structs.get(&name).copied())
-            .unwrap_or(Type::ERROR);
+        let strbuf_type = type_pool.builtin_strbuf_type().unwrap_or(Type::ERROR);
+        let string_literal_default = strbuf_type;
         Self {
             rir,
             interner,
@@ -353,6 +354,7 @@ impl<'a> ConstraintGenerator<'a> {
             int_literal_vars: Vec::new(),
             string_literal_vars: Vec::new(),
             string_literal_default,
+            strbuf_type,
             type_subst,
             const_types: None,
             const_type_aliases: None,
@@ -377,6 +379,13 @@ impl<'a> ConstraintGenerator<'a> {
     /// registered the canonical synthetic `str` type in the shared type pool.
     pub fn with_string_literal_default(mut self, ty: Type) -> Self {
         self.string_literal_default = ty;
+        self
+    }
+
+    /// Supply the transitional StrBuf nominal through an already-resolved
+    /// semantic identity instead of rediscovering it from a source spelling.
+    pub fn with_strbuf_type(mut self, ty: Type) -> Self {
+        self.strbuf_type = ty;
         self
     }
 
@@ -2738,7 +2747,11 @@ impl<'a> ConstraintGenerator<'a> {
             || self.is_string_literal_candidate(&lhs_info.ty)
             || self.is_string_literal_candidate(&rhs_info.ty)
         {
-            let string_ty = self.string_infer_type();
+            let string_ty = [&lhs_info.ty, &rhs_info.ty]
+                .into_iter()
+                .find(|ty| self.is_string_concrete(ty))
+                .cloned()
+                .unwrap_or_else(|| self.string_infer_type());
             self.add_constraint(Constraint::equal(
                 lhs_info.ty,
                 string_ty.clone(),
@@ -2773,25 +2786,12 @@ impl<'a> ConstraintGenerator<'a> {
     /// as an [`InferType::Concrete`], or `Concrete(ERROR)` if it hasn't been
     /// injected (should not happen once builtin types are registered).
     fn string_infer_type(&self) -> InferType {
-        if let Some(string_spur) = self.interner.get("StrBuf") {
-            if let Some(&string_ty) = self.builtin_structs.get(&string_spur) {
-                return InferType::Concrete(string_ty);
-            }
-        }
-        InferType::Concrete(Type::ERROR)
+        InferType::Concrete(self.strbuf_type)
     }
 
-    /// Whether `ty` is *concretely* the builtin `StrBuf` struct (not a type
-    /// variable that might later resolve to it).
+    /// Whether `ty` is concretely either canonical or transitional StrBuf.
     fn is_string_concrete(&self, ty: &InferType) -> bool {
-        if let InferType::Concrete(t) = ty {
-            if let Some(string_spur) = self.interner.get("StrBuf") {
-                if let Some(&string_ty) = self.builtin_structs.get(&string_spur) {
-                    return *t == string_ty;
-                }
-            }
-        }
-        false
+        matches!(ty, InferType::Concrete(t) if t.as_struct().is_some_and(|id| self.type_pool.is_strbuf(id)))
     }
 
     /// Whether an inference type is the still-contextual type variable rooted

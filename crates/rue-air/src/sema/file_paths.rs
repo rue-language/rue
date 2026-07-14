@@ -4,7 +4,7 @@
 //! relocation-stable identities used in generated symbols. Import resolution
 //! is supplied separately as canonical compiler records.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::{FileId, Span};
@@ -64,6 +64,12 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     pub fn set_symbol_paths(&mut self, symbol_paths: HashMap<FileId, String>) {
         self.symbol_paths = symbol_paths;
         self.refresh_type_symbol_paths();
+    }
+
+    /// Install standard-library provenance established by import discovery.
+    /// Path spelling alone never grants this authority.
+    pub fn set_trusted_standard_library_files(&mut self, file_ids: HashSet<FileId>) {
+        self.trusted_standard_library_files = file_ids;
     }
 
     fn refresh_type_symbol_paths(&self) {

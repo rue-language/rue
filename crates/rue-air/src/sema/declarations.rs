@@ -495,6 +495,17 @@ impl<'a> Sema<'a> {
 
                     // Register in type pool and get pool-based StructId
                     let (struct_id, _) = self.type_pool.register_struct(*name, struct_def);
+                    if self
+                        .trusted_standard_library_files
+                        .contains(&inst.span.file_id)
+                        && let Some(module_path) = self.symbol_paths.get(&inst.span.file_id)
+                        && let Some(lang_item) = crate::LangItem::from_standard_library_nominal(
+                            module_path,
+                            &self.type_pool.struct_def(struct_id).name,
+                        )
+                    {
+                        self.type_pool.set_struct_lang_item(struct_id, lang_item);
+                    }
 
                     // Source declarations are always keyed by their defining file.
                     self.structs_by_file_name.insert(key, struct_id);

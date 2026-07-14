@@ -63,7 +63,7 @@ impl<'a> Sema<'a> {
                 .insert((file_id, name_spur), struct_id);
 
             // Store special IDs for quick access
-            if builtin.name == "StrBuf" {
+            if builtin.drop_fn == Some("__rue_drop_String") {
                 self.builtin_string_id = Some(struct_id);
             }
 
@@ -114,12 +114,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     // Builtin type helper methods
     // ========================================================================
 
-    /// Check if a type is the builtin String type.
-    ///
-    /// Uses the stored `builtin_string_id` for fast comparison.
+    /// Check if a type is either the canonical source StrBuf or its
+    /// transitional synthetic predecessor.
     pub(crate) fn is_builtin_string(&self, ty: Type) -> bool {
         match ty.kind() {
-            TypeKind::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
+            TypeKind::Struct(struct_id) => self.type_pool.is_strbuf(struct_id),
             _ => false,
         }
     }
@@ -133,7 +132,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         struct_id: StructId,
     ) -> Option<&'static BuiltinTypeDef> {
         let struct_def = self.type_pool.struct_def(struct_id);
-        if struct_def.is_builtin {
+        if self.type_pool.is_strbuf(struct_id) {
+            Some(&rue_builtins::STRING_TYPE)
+        } else if struct_def.is_builtin {
             rue_builtins::get_builtin_type(&struct_def.name)
         } else {
             None

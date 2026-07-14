@@ -364,8 +364,7 @@ pub fn format_terminator(cfg: &rue_cfg::Cfg, terminator: &rue_cfg::Terminator) -
 pub fn type_uses_sret_return(type_pool: &TypeInternPool, ty: Type, ret_reg_budget: u32) -> bool {
     match ty.kind() {
         TypeKind::Struct(struct_id) => {
-            let struct_def = type_pool.struct_def(struct_id);
-            if struct_def.is_builtin && struct_def.name == "StrBuf" {
+            if type_pool.is_strbuf(struct_id) {
                 return true;
             }
             types::type_slot_count(type_pool, ty) > ret_reg_budget
@@ -469,18 +468,20 @@ impl<'a> CfgLowerContext<'a> {
     // Builtin type helpers
     // ========================================================================
 
-    /// Check if a type is the builtin growable-string struct (`StrBuf`).
-    ///
-    /// Returns true if the type is a struct marked as builtin with name
-    /// "StrBuf" (ADR-0043; formerly "String").
+    /// Check if a type is the canonical or transitional growable-string struct.
     pub fn is_builtin_string(&self, ty: Type) -> bool {
         match ty.kind() {
-            TypeKind::Struct(struct_id) => {
-                let struct_def = self.type_pool.struct_def(struct_id);
-                struct_def.is_builtin && struct_def.name == "StrBuf"
-            }
+            TypeKind::Struct(struct_id) => self.type_pool.is_strbuf(struct_id),
             _ => false,
         }
+    }
+
+    /// Whether `ty` is the transitional compiler-injected StrBuf whose drop
+    /// implementation is supplied directly by the runtime.
+    pub fn is_legacy_builtin_string(&self, ty: Type) -> bool {
+        ty.as_struct().is_some_and(|id| {
+            self.type_pool.struct_def(id).is_builtin && self.type_pool.is_strbuf(id)
+        })
     }
 
     /// Check if a type has string byte-content equality semantics.

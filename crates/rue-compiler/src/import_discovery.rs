@@ -1003,7 +1003,21 @@ impl DiscoverySourceAssembler {
                 (FileId::new((index + 1) as u32), module.as_str().to_owned())
             })
             .collect();
-        let metadata = SourceMetadata::new(FileId::new(1), physical_paths, logical_paths)?;
+        let trusted_standard_library_files = ordered
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (module, _))| {
+                module
+                    .is_trusted_standard_library()
+                    .then_some(FileId::new((index + 1) as u32))
+            })
+            .collect();
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            FileId::new(1),
+            physical_paths,
+            logical_paths,
+            trusted_standard_library_files,
+        )?;
         let contents = ordered
             .into_iter()
             .enumerate()
@@ -1116,7 +1130,7 @@ fn classify_module(
                     requested, std_root
                 )));
             }
-            return ModuleId::from_logical_path(
+            return ModuleId::from_trusted_standard_library_path(
                 Path::new("\0rue-std").join(relative).to_string_lossy(),
             );
         }

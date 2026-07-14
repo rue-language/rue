@@ -6,9 +6,7 @@
 //! of the checkout location. Keeping both maps together with an explicit root
 //! makes it impossible for those coupled inputs to drift after construction.
 
-use std::collections::HashMap;
-#[cfg(test)]
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rue_air::normalize_module_path;
 use rue_error::{CompileError, CompileResult, ErrorKind};
@@ -29,6 +27,7 @@ pub struct SourceMetadata {
     sorted_ids: Vec<FileId>,
     physical_paths: HashMap<FileId, String>,
     logical_paths: HashMap<FileId, String>,
+    trusted_standard_library_files: HashSet<FileId>,
 }
 
 impl SourceMetadata {
@@ -96,7 +95,31 @@ impl SourceMetadata {
             sorted_ids: file_ids,
             physical_paths,
             logical_paths,
+            trusted_standard_library_files: HashSet::new(),
         })
+    }
+
+    pub(crate) fn new_with_trusted_standard_library(
+        root_file_id: FileId,
+        physical_paths: HashMap<FileId, String>,
+        logical_paths: HashMap<FileId, String>,
+        trusted_standard_library_files: HashSet<FileId>,
+    ) -> CompileResult<Self> {
+        let mut metadata = Self::new(root_file_id, physical_paths, logical_paths)?;
+        for file_id in &trusted_standard_library_files {
+            let Some(path) = metadata.logical_path(*file_id) else {
+                return Err(invalid_input(
+                    "trusted standard-library file is absent from metadata",
+                ));
+            };
+            if !path.starts_with("\0rue-std/") {
+                return Err(invalid_input(
+                    "trusted standard-library file has a non-standard logical path",
+                ));
+            }
+        }
+        metadata.trusted_standard_library_files = trusted_standard_library_files;
+        Ok(metadata)
     }
 
     #[cfg(test)]
@@ -206,8 +229,12 @@ impl SourceMetadata {
 
     /// Canonical logical module identity for a request-local file ID.
     pub fn module_id(&self, file_id: FileId) -> Option<ModuleId> {
-        self.logical_path(file_id)
-            .map(ModuleId::from_validated_canonical)
+        let path = self.logical_path(file_id)?;
+        Some(if self.trusted_standard_library_files.contains(&file_id) {
+            ModuleId::from_trusted_validated_canonical(path)
+        } else {
+            ModuleId::from_validated_canonical(path)
+        })
     }
 
     /// Canonical logical identity of the explicitly designated root module.

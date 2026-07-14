@@ -6,6 +6,188 @@ mod tests {
     use super::*;
 
     #[test]
+    fn canonical_std_strbuf_identity_survives_qualified_and_aliased_lookup() {
+        let context = ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "test")
+            .expect("discovery context should be valid");
+        let mut assembler = DiscoverySourceAssembler::new(
+            context,
+            "/project/main.rue",
+            "/project/main.rue",
+            PhysicalFileIdentity::new(1, 1),
+            FileMetadataFingerprint::new(1, 1, 1),
+            Arc::new(
+                r#"
+                    const std = @import("/sdk/_std.rue");
+                    const other = @import("other.rue");
+                    const Qualified = std.strbuf.StrBuf;
+                    const Alias = Qualified;
+                    fn qualified(value: std.strbuf.StrBuf) -> std.strbuf.StrBuf { value }
+                    fn aliased(value: Alias) -> Alias { value }
+                    fn ordinary(value: other.StrBuf) -> i32 { value.value }
+                    fn main() -> i32 {
+                        let qualified_value: Qualified = "q";
+                        let _qualified_result = qualified(qualified_value);
+                        let aliased_value: Alias = "a";
+                        let _aliased_result = aliased(aliased_value);
+                        0
+                    }
+                "#
+                .to_owned(),
+            ),
+        )
+        .unwrap();
+        assembler
+            .add_explicit(
+                "/sdk/_std.rue",
+                "/sdk/_std.rue",
+                PhysicalFileIdentity::new(2, 2),
+                FileMetadataFingerprint::new(2, 2, 2),
+                Arc::new("pub const strbuf = @import(\"strbuf.rue\");".to_owned()),
+            )
+            .unwrap();
+        assembler
+            .add_explicit(
+                "/sdk/strbuf.rue",
+                "/sdk/strbuf.rue",
+                PhysicalFileIdentity::new(3, 3),
+                FileMetadataFingerprint::new(3, 3, 3),
+                Arc::new(
+                    r#"
+                    pub struct StrBuf {
+                        buf: ptr mut u8,
+                        len: u64,
+                        cap: u64,
+                        fn len(borrow self) -> u64 { self.len }
+                    }
+                    drop fn StrBuf(self) {}
+                "#
+                    .to_owned(),
+                ),
+            )
+            .unwrap();
+        assembler
+            .add_explicit(
+                "/project/other.rue",
+                "/project/other.rue",
+                PhysicalFileIdentity::new(4, 4),
+                FileMetadataFingerprint::new(4, 4, 4),
+                Arc::new("pub struct StrBuf { value: i32 }".to_owned()),
+            )
+            .unwrap();
+        let snapshot = assembler.snapshot().unwrap();
+
+        let mut options = CompileOptions::default();
+        options
+            .preview_features
+            .insert("string_trio".parse().unwrap());
+        let (rir, semantic, _) = test_frontend_snapshot(&snapshot, &options)
+            .expect("qualified and aliased canonical StrBuf references should compile");
+        let pool = semantic.type_pool();
+        let named_strbufs = pool
+            .all_struct_ids()
+            .into_iter()
+            .filter(|id| pool.struct_def(*id).name == "StrBuf")
+            .collect::<Vec<_>>();
+        let canonical = named_strbufs
+            .iter()
+            .copied()
+            .filter(|id| pool.struct_lang_item(*id) == Some(rue_air::LangItem::StrBuf))
+            .collect::<Vec<_>>();
+        assert_eq!(canonical.len(), 1, "std StrBuf has one canonical identity");
+        let canonical_id = canonical[0];
+        assert_eq!(
+            named_strbufs
+                .iter()
+                .filter(|id| { **id != canonical_id && !pool.struct_def(**id).is_builtin })
+                .count(),
+            1,
+            "the same spelling in user source remains an ordinary nominal"
+        );
+        assert!(
+            named_strbufs
+                .iter()
+                .find(|id| { **id != canonical_id && !pool.struct_def(**id).is_builtin })
+                .is_some_and(|id| pool.struct_lang_item(*id).is_none())
+        );
+
+        let parameter_type = |name: &str| {
+            semantic
+                .functions()
+                .iter()
+                .find(|function| {
+                    function.analyzed.name == name
+                        || function.analyzed.name.ends_with(&format!("__{name}"))
+                })
+                .map(|function| function.analyzed.air.return_type())
+                .expect("function should retain its source parameter type")
+        };
+        assert_eq!(parameter_type("qualified"), Type::new_struct(canonical_id));
+        assert_eq!(parameter_type("aliased"), Type::new_struct(canonical_id));
+
+        for &target in Target::all() {
+            for function in semantic.functions() {
+                generate_mir(
+                    &function.cfg,
+                    pool,
+                    rir.semantic_symbols().interner(),
+                    target,
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "canonical source StrBuf function {} should lower for {target}: {error}",
+                        function.analyzed.name
+                    )
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn caller_logical_std_spelling_cannot_spoof_strbuf_language_item() {
+        let root = FileId::new(1);
+        let spoof_file = FileId::new(2);
+        let metadata = SourceMetadata::new(
+            root,
+            [
+                (root, "main.rue".to_owned()),
+                (spoof_file, "spoof.rue".to_owned()),
+            ]
+            .into(),
+            [
+                (root, "main.rue".to_owned()),
+                (spoof_file, "\0rue-std/strbuf.rue".to_owned()),
+            ]
+            .into(),
+        )
+        .unwrap();
+        let snapshot = SourceSnapshot::from_sources(
+            &[
+                SourceView::new(
+                    "main.rue",
+                    "const spoof = @import(\"spoof.rue\"); fn main() -> i32 { 0 }",
+                    root,
+                ),
+                SourceView::new("spoof.rue", "pub struct StrBuf { value: i32 }", spoof_file),
+            ],
+            metadata,
+        )
+        .unwrap();
+        let (_, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())
+            .expect("caller-authored sentinel spelling remains an ordinary module");
+        let spoof = semantic
+            .type_pool()
+            .all_struct_ids()
+            .into_iter()
+            .find(|id| {
+                let def = semantic.type_pool().struct_def(*id);
+                def.name == "StrBuf" && def.file_id == spoof_file
+            })
+            .unwrap();
+        assert_eq!(semantic.type_pool().struct_lang_item(spoof), None);
+        assert!(!semantic.type_pool().is_strbuf(spoof));
+    }
+
+    #[test]
     fn canonical_single_source_adapter_executes_each_frontend_phase_once() {
         let snapshot = SourceSnapshot::single("<test>", "fn main() -> i32 { 42 }").unwrap();
         let (_rir, semantic, session) =
