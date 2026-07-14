@@ -4487,6 +4487,47 @@ mod tests {
         );
     }
 
+    fn assert_body_artifact_parity(
+        actual: &CanonicalSemanticOutput,
+        fresh: &CanonicalSemanticOutput,
+    ) {
+        assert_eq!(
+            format!("{:?}", actual.functions()),
+            format!("{:?}", fresh.functions())
+        );
+        assert_eq!(actual.strings(), fresh.strings());
+        assert_eq!(
+            format!("{:?}", actual.warnings()),
+            format!("{:?}", fresh.warnings())
+        );
+        assert_eq!(
+            format!("{:?}", actual.analyzed_body_owners()),
+            format!("{:?}", fresh.analyzed_body_owners())
+        );
+        assert_eq!(
+            format!("{:?}", actual.ordinary_free_function_dependencies()),
+            format!("{:?}", fresh.ordinary_free_function_dependencies())
+        );
+        assert_eq!(actual.type_pool().stats(), fresh.type_pool().stats());
+    }
+
+    fn assert_diagnostic_parity(actual: &CompilerSession, fresh: &CompilerSession) {
+        let actual = actual.latest_diagnostics().unwrap();
+        let fresh = fresh.latest_diagnostics().unwrap();
+        assert_eq!(
+            format!("{:?}", actual.stage()),
+            format!("{:?}", fresh.stage())
+        );
+        assert_eq!(
+            format!("{:?}", actual.errors()),
+            format!("{:?}", fresh.errors())
+        );
+        assert_eq!(
+            format!("{:?}", actual.warnings()),
+            format!("{:?}", fresh.warnings())
+        );
+    }
+
     #[test]
     fn generic_named_method_reuse_fails_closed_without_poisoning_recovery() {
         let source = |body: &str| snapshot(&[(1, "/p/main.rue", "main.rue", body)], 1);
@@ -7861,6 +7902,11 @@ mod tests {
         assert_eq!(work.durable_bodies.reused_bodies, 1);
         assert_eq!(work.body_analysis.bodies_attempted, 1);
         assert_eq!(work.body_analysis.bodies_succeeded, 1);
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&source).into_result().unwrap();
+        let fresh = fresh_session.semantic(&options).unwrap();
+        assert_body_artifact_parity(&output, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
     }
 
     #[test]
@@ -8016,5 +8062,446 @@ mod tests {
         let output = session.semantic(&CompileOptions::default()).unwrap();
         assert_eq!(output.work().durable_bodies.reused_bodies, 1);
         assert_eq!(output.work().durable_bodies.import_successes, 1);
+    }
+
+    #[test]
+    fn body_edit_invalidates_deterministic_transitive_reverse_closure() {
+        let original = snapshot(
+            &[(
+                81,
+                "/p/main.rue",
+                "main.rue",
+                r#"
+            fn leaf() -> i32 { 1 }
+            fn middle() -> i32 { leaf() }
+            fn top() -> i32 { middle() }
+            fn spare() -> i32 { 9 }
+            fn main() -> i32 { top() + spare() }
+        "#,
+            )],
+            81,
+        );
+        let edited = snapshot(
+            &[(
+                81,
+                "/p/main.rue",
+                "main.rue",
+                r#"
+            fn leaf() -> i32 { 2 }
+            fn middle() -> i32 { leaf() }
+            fn top() -> i32 { middle() }
+            fn spare() -> i32 { 9 }
+            fn main() -> i32 { top() + spare() }
+        "#,
+            )],
+            81,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&original).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        session.update(&edited).into_result().unwrap();
+        let actual = session.semantic(&CompileOptions::default()).unwrap();
+        let work = actual.work();
+        assert_eq!(work.durable_bodies.candidate_comparisons, 5);
+        assert_eq!(work.durable_bodies.import_attempts, 1);
+        assert_eq!(work.durable_bodies.import_successes, 1);
+        assert_eq!(work.durable_bodies.reused_bodies, 1);
+        assert_eq!(work.durable_bodies.candidate_fallbacks, 4);
+        assert_eq!(work.body_analysis.bodies_attempted, 4);
+        assert_eq!(work.body_analysis.bodies_succeeded, 4);
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&edited).into_result().unwrap();
+        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        assert_body_artifact_parity(&actual, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
+    }
+
+    #[test]
+    fn mutual_recursion_edit_rebuilds_the_cycle_and_callers_only() {
+        let original = snapshot(
+            &[(
+                82,
+                "/p/main.rue",
+                "main.rue",
+                r#"
+            fn a(n: i32) -> i32 { if n == 0 { 0 } else { b(n - 1) } }
+            fn b(n: i32) -> i32 { if n == 0 { 0 } else { a(n - 1) } }
+            fn spare() -> i32 { 7 }
+            fn main() -> i32 { a(2) + spare() }
+        "#,
+            )],
+            82,
+        );
+        let edited = snapshot(
+            &[(
+                82,
+                "/p/main.rue",
+                "main.rue",
+                r#"
+            fn a(n: i32) -> i32 { if n == 0 { 1 } else { b(n - 1) } }
+            fn b(n: i32) -> i32 { if n == 0 { 0 } else { a(n - 1) } }
+            fn spare() -> i32 { 7 }
+            fn main() -> i32 { a(2) + spare() }
+        "#,
+            )],
+            82,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&original).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        session.update(&edited).into_result().unwrap();
+        let actual = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 4);
+        assert_eq!(actual.work().durable_bodies.reused_bodies, 1);
+        assert_eq!(actual.work().durable_bodies.candidate_fallbacks, 3);
+        assert_eq!(actual.work().body_analysis.bodies_attempted, 3);
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&edited).into_result().unwrap();
+        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        assert_body_artifact_parity(&actual, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
+    }
+
+    #[test]
+    fn recursive_body_edit_rebuilds_self_and_transitive_caller_only() {
+        let original = snapshot(
+            &[(
+                83,
+                "/p/main.rue",
+                "main.rue",
+                "fn recurse(n: i32) -> i32 { if n == 0 { 0 } else { recurse(n - 1) } } fn spare() -> i32 { 3 } fn main() -> i32 { recurse(2) + spare() }",
+            )],
+            83,
+        );
+        let edited = snapshot(
+            &[(
+                83,
+                "/p/main.rue",
+                "main.rue",
+                "fn recurse(n: i32) -> i32 { if n == 0 { 1 } else { recurse(n - 1) } } fn spare() -> i32 { 3 } fn main() -> i32 { recurse(2) + spare() }",
+            )],
+            83,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&original).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        session.update(&edited).into_result().unwrap();
+        let actual = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 3);
+        assert_eq!(actual.work().durable_bodies.reused_bodies, 1);
+        assert_eq!(actual.work().durable_bodies.candidate_fallbacks, 2);
+        assert_eq!(actual.work().body_analysis.bodies_attempted, 2);
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&edited).into_result().unwrap();
+        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        assert_body_artifact_parity(&actual, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
+    }
+
+    #[test]
+    fn body_reuse_survives_relocation_file_ids_and_input_permutation() {
+        let original = snapshot(
+            &[
+                (
+                    91,
+                    "/one/main.rue",
+                    "main.rue",
+                    "fn helper() -> i32 { 1 } fn main() -> i32 { helper() }",
+                ),
+                (92, "/one/dead.rue", "dead.rue", "fn dead() -> i32 { 2 }"),
+            ],
+            91,
+        );
+        let relocated = snapshot(
+            &[
+                (4, "/else/dead.rue", "dead.rue", "fn dead() -> i32 { 2 }"),
+                (
+                    7,
+                    "/else/main.rue",
+                    "main.rue",
+                    "fn helper() -> i32 { 1 } fn main() -> i32 { helper() }",
+                ),
+            ],
+            7,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&original).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        session.update(&relocated).into_result().unwrap();
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let actual = session.semantic(&options).unwrap();
+        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 2);
+        assert_eq!(actual.work().durable_bodies.import_attempts, 2);
+        assert_eq!(actual.work().durable_bodies.reused_bodies, 2);
+        assert_eq!(actual.work().durable_bodies.candidate_fallbacks, 0);
+        assert_eq!(actual.work().body_analysis.bodies_attempted, 0);
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&relocated).into_result().unwrap();
+        let fresh = fresh_session.semantic(&options).unwrap();
+        assert_body_artifact_parity(&actual, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
+    }
+
+    #[test]
+    fn target_preview_root_and_signature_changes_reject_body_artifacts() {
+        let source = snapshot(
+            &[(
+                101,
+                "/p/main.rue",
+                "main.rue",
+                "fn value() -> i32 { 1 } fn main() -> i32 { value(); 0 }",
+            )],
+            101,
+        );
+        let signature = snapshot(
+            &[(
+                101,
+                "/p/main.rue",
+                "main.rue",
+                "fn value() -> i64 { 1 } fn main() -> i32 { value(); 0 }",
+            )],
+            101,
+        );
+        let run = |options: CompileOptions, next: &SourceSnapshot| {
+            let mut session = CompilerSession::new();
+            session.update(&source).into_result().unwrap();
+            session.semantic(&CompileOptions::default()).unwrap();
+            session.update(next).into_result().unwrap();
+            session.semantic(&options).unwrap()
+        };
+        let other_target = *Target::all()
+            .iter()
+            .find(|target| **target != CompileOptions::default().target)
+            .unwrap();
+        let target = run(
+            CompileOptions {
+                target: other_target,
+                ..CompileOptions::default()
+            },
+            &source,
+        );
+        assert_eq!(target.work().durable_bodies.reused_bodies, 0);
+        assert_eq!(target.work().durable_bodies.import_attempts, 0);
+        assert_eq!(target.work().durable_bodies.candidate_fallbacks, 2);
+        let preview = run(
+            CompileOptions {
+                preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
+                ..CompileOptions::default()
+            },
+            &source,
+        );
+        assert_eq!(preview.work().durable_bodies.reused_bodies, 0);
+        assert_eq!(preview.work().durable_bodies.import_attempts, 0);
+        assert_eq!(preview.work().durable_bodies.candidate_fallbacks, 2);
+        let signature = run(CompileOptions::default(), &signature);
+        assert_eq!(signature.work().durable_bodies.reused_bodies, 0);
+        assert_eq!(signature.work().durable_bodies.candidate_fallbacks, 2);
+        assert_eq!(signature.work().body_analysis.bodies_attempted, 2);
+
+        let both_roots = snapshot(
+            &[
+                (101, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }"),
+                (102, "/p/other.rue", "other.rue", "fn other() -> i32 { 2 }"),
+            ],
+            101,
+        );
+        let other_root = snapshot(
+            &[
+                (101, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }"),
+                (102, "/p/other.rue", "other.rue", "fn other() -> i32 { 2 }"),
+            ],
+            102,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&both_roots).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        session.update(&other_root).into_result().unwrap();
+        let root = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(root.work().durable_bodies.reused_bodies, 0);
+        assert_eq!(root.work().durable_bodies.import_attempts, 0);
+        assert_eq!(root.work().durable_bodies.candidate_fallbacks, 1);
+    }
+
+    #[test]
+    fn projection_failure_and_body_failure_are_atomic_and_preserve_last_good() {
+        let valid = snapshot(
+            &[(
+                111,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 1 } fn main() -> i32 { helper() }",
+            )],
+            111,
+        );
+        let broken = snapshot(
+            &[(
+                111,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 1 } fn main() -> i32 { missing }",
+            )],
+            111,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&valid).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        let cache = session.last_successful_body_cache.as_mut().unwrap();
+        let mut bodies = cache.bodies.to_vec();
+        bodies[0].payload.schema_version = u32::MAX;
+        cache.bodies = bodies.into();
+        let projected = session
+            .semantic(&CompileOptions {
+                opt_level: OptLevel::O1,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(projected.work().durable_bodies.projection_failures, 1);
+        assert_eq!(projected.work().durable_bodies.projection_attempts, 2);
+        assert_eq!(projected.work().durable_bodies.projection_completions, 1);
+        assert_eq!(projected.work().durable_bodies.import_attempts, 1);
+        assert_eq!(projected.work().durable_bodies.candidate_fallbacks, 1);
+        assert_eq!(projected.work().durable_bodies.atomic_discards, 0);
+        assert_eq!(projected.work().body_analysis.bodies_attempted, 1);
+        let projected_options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&valid).into_result().unwrap();
+        let fresh = fresh_session.semantic(&projected_options).unwrap();
+        assert_body_artifact_parity(&projected, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
+
+        session.update(&broken).into_result().unwrap();
+        assert!(session.semantic(&CompileOptions::default()).is_err());
+        let failure = session.work().semantic_records.last().unwrap();
+        assert_eq!(
+            failure.failure.unwrap().phase,
+            CanonicalSemanticFailurePhase::BodyAnalysis
+        );
+        assert_eq!(failure.work.body_analysis.bodies_attempted, 1);
+        assert_eq!(failure.work.body_analysis.bodies_failed, 1);
+        assert_eq!(failure.work.body_analysis.bodies_succeeded, 0);
+        assert_eq!(failure.work.durable_bodies.import_attempts, 0);
+        assert_eq!(failure.work.durable_bodies.import_successes, 0);
+        assert_eq!(failure.work.durable_bodies.reused_bodies, 0);
+
+        session.update(&valid).into_result().unwrap();
+        let recovered = session
+            .semantic(&CompileOptions {
+                opt_level: OptLevel::O2,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(recovered.work().durable_bodies.reused_bodies, 2);
+        assert_eq!(recovered.work().durable_bodies.import_attempts, 2);
+        assert_eq!(recovered.work().body_analysis.bodies_attempted, 0);
+    }
+
+    #[test]
+    fn unsupported_constant_nominal_and_destructor_provenance_fails_closed() {
+        let cases = [
+            "const n: i32 = 1; fn main() -> i32 { n }",
+            "struct Point { x: i32 } fn make() -> Point { Point { x: 1 } } fn main() -> i32 { make().x }",
+            "struct Loud { x: i32 } drop fn Loud(self) {} fn main() -> i32 { let value = Loud { x: 1 }; value.x }",
+        ];
+        for (index, program) in cases.into_iter().enumerate() {
+            let id = u32::try_from(120 + index).unwrap();
+            let source = snapshot(&[(id, "/p/main.rue", "main.rue", program)], id);
+            let mut session = CompilerSession::new();
+            session.update(&source).into_result().unwrap();
+            session.semantic(&CompileOptions::default()).unwrap();
+            assert!(
+                session
+                    .last_successful_body_cache
+                    .as_ref()
+                    .unwrap()
+                    .bodies
+                    .is_empty()
+            );
+            let options = CompileOptions {
+                opt_level: OptLevel::O1,
+                ..CompileOptions::default()
+            };
+            let actual = session.semantic(&options).unwrap();
+            assert_eq!(actual.work().durable_bodies.import_attempts, 0);
+            assert_eq!(actual.work().durable_bodies.reused_bodies, 0);
+            assert_eq!(actual.work().durable_bodies.candidate_comparisons, 0);
+            let mut fresh_session = CompilerSession::new();
+            fresh_session.update(&source).into_result().unwrap();
+            let fresh = fresh_session.semantic(&options).unwrap();
+            assert_body_artifact_parity(&actual, &fresh);
+            assert_diagnostic_parity(&session, &fresh_session);
+        }
+    }
+
+    #[test]
+    fn canonical_import_graph_change_rejects_prior_body_artifacts() {
+        let original = snapshot(
+            &[
+                (
+                    131,
+                    "/p/main.rue",
+                    "main.rue",
+                    "const imported = @import(\"lib.rue\"); fn main() -> i32 { 0 }",
+                ),
+                (132, "/p/lib.rue", "lib.rue", "pub fn value() -> i32 { 1 }"),
+                (
+                    133,
+                    "/p/other.rue",
+                    "other.rue",
+                    "pub fn value() -> i32 { 2 }",
+                ),
+            ],
+            131,
+        );
+        let changed = snapshot(
+            &[
+                (
+                    131,
+                    "/p/main.rue",
+                    "main.rue",
+                    "const imported = @import(\"other.rue\"); fn main() -> i32 { 0 }",
+                ),
+                (132, "/p/lib.rue", "lib.rue", "pub fn value() -> i32 { 1 }"),
+                (
+                    133,
+                    "/p/other.rue",
+                    "other.rue",
+                    "pub fn value() -> i32 { 2 }",
+                ),
+            ],
+            131,
+        );
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &original);
+        session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(
+            session
+                .last_successful_body_cache
+                .as_ref()
+                .unwrap()
+                .bodies
+                .len(),
+            1
+        );
+        publish_with_test_imports(&mut session, &changed);
+        let actual = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(actual.work().durable_bodies.import_attempts, 0);
+        assert_eq!(actual.work().durable_bodies.reused_bodies, 0);
+        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 1);
+        assert_eq!(actual.work().durable_bodies.candidate_fallbacks, 1);
+
+        let mut fresh_session = CompilerSession::new();
+        publish_with_test_imports(&mut fresh_session, &changed);
+        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        assert_body_artifact_parity(&actual, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
     }
 }
