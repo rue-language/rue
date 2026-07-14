@@ -28,14 +28,21 @@ use crate::{
 pub struct ImportDirective {
     importer: ModuleId,
     source_offset: u32,
+    source_end: u32,
     specifier: Arc<str>,
 }
 
 impl ImportDirective {
-    pub(crate) fn new(importer: ModuleId, source_offset: u32, specifier: Arc<str>) -> Self {
+    pub(crate) fn new(
+        importer: ModuleId,
+        source_offset: u32,
+        source_end: u32,
+        specifier: Arc<str>,
+    ) -> Self {
         Self {
             importer,
             source_offset,
+            source_end,
             specifier,
         }
     }
@@ -47,6 +54,9 @@ impl ImportDirective {
     /// Byte offset of the `@import` call in its source module.
     pub fn source_offset(&self) -> u32 {
         self.source_offset
+    }
+    pub fn source_end(&self) -> u32 {
+        self.source_end
     }
 
     /// Exact decoded string-literal value passed to `@import`.
@@ -177,6 +187,18 @@ pub struct CanonicalImportGraph {
 }
 
 impl CanonicalImportGraph {
+    pub(crate) fn from_discovery_records(
+        root: ModuleId,
+        mut records: Vec<CanonicalImportRecord>,
+    ) -> Self {
+        records.sort();
+        records.dedup();
+        Self {
+            root,
+            records: records.into(),
+        }
+    }
+
     pub fn root(&self) -> &ModuleId {
         &self.root
     }
@@ -446,6 +468,7 @@ pub(crate) fn extract_import_directives(
         directives.push(ImportDirective {
             importer,
             source_offset: inst.span.start,
+            source_end: inst.span.end,
             specifier: Arc::from(interner.resolve(specifier)),
         });
     }

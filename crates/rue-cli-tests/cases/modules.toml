@@ -75,6 +75,7 @@ files = [
     { path = "sources.manifest", source = """
 main.rue
 with\\#hash.rue # comment after an escaped path character
+with\\#hash/_with\\#hash.rue # declared absent ambiguity arm
 """ },
     { path = "main.rue", source = """
 const helper = @import("with#hash");
@@ -101,6 +102,7 @@ files = [
 # One source path per line, relative to this manifest file.
 main.rue
 utils.rue
+utils/_utils.rue # declared absent ambiguity arm
 """ },
     { path = "main.rue", source = """
 const utils = @import("utils");

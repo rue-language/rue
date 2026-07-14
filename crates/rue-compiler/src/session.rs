@@ -995,6 +995,57 @@ pub struct CompilerSessionUpdate {
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportDiscoveryRevisionStatus {
+    Open,
+    ClosedAttempted,
+    ClosedValid,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportDiscoveryRevisionArtifact {
+    status: ImportDiscoveryRevisionStatus,
+    source_revision: SourceRevision,
+    context: crate::ImportDiscoveryContext,
+    snapshot: SourceSnapshot,
+    program: Option<Arc<ParsedProgram>>,
+    plan: Option<crate::ImportDiscoveryPlan>,
+    ledger: crate::ImportObservationLedger,
+    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    graph: Option<Arc<CanonicalImportGraphOutput>>,
+    diagnostics: CompileErrors,
+}
+
+impl ImportDiscoveryRevisionArtifact {
+    pub fn status(&self) -> ImportDiscoveryRevisionStatus {
+        self.status
+    }
+    pub fn source_revision(&self) -> &SourceRevision {
+        &self.source_revision
+    }
+    pub fn context(&self) -> &crate::ImportDiscoveryContext {
+        &self.context
+    }
+    pub fn snapshot(&self) -> &SourceSnapshot {
+        &self.snapshot
+    }
+    pub fn plan(&self) -> Option<&crate::ImportDiscoveryPlan> {
+        self.plan.as_ref()
+    }
+    pub fn ledger(&self) -> &crate::ImportObservationLedger {
+        &self.ledger
+    }
+    pub fn accepted_read_manifest(&self) -> &[crate::AcceptedReadManifestEntry] {
+        &self.accepted_reads
+    }
+    pub fn graph(&self) -> Option<&Arc<CanonicalImportGraphOutput>> {
+        self.graph.as_ref()
+    }
+    pub fn diagnostics(&self) -> &CompileErrors {
+        &self.diagnostics
+    }
+}
+
 impl CompilerSessionUpdate {
     pub fn result(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
         self.result.as_ref()
@@ -1019,6 +1070,10 @@ impl CompilerSessionUpdate {
 #[derive(Debug, Default)]
 pub struct CompilerSession {
     parse: CanonicalParseSession,
+    discovery_parse: CanonicalParseSession,
+    discovery_staging_active: bool,
+    discovery_attempt: Option<Arc<ImportDiscoveryRevisionArtifact>>,
+    committed_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
     published: Option<Arc<ParsedProgram>>,
     published_snapshot: Option<SourceSnapshot>,
     batch_diagnostic_order: Option<Vec<crate::ModuleId>>,
@@ -1078,6 +1133,234 @@ impl CompilerSession {
     }
     pub fn published(&self) -> Option<&Arc<ParsedProgram>> {
         self.published.as_ref()
+    }
+    /// Derive the pre-closure import plan for the session's current parsed
+    /// revision. Hosts may execute only the requests carried by this query.
+    pub fn import_discovery_plan(
+        &self,
+        context: crate::ImportDiscoveryContext,
+    ) -> crate::CompileResult<crate::ImportDiscoveryPlan> {
+        let program = self.published.as_ref().ok_or_else(|| {
+            CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "import discovery requires a successfully parsed staging revision".into(),
+            ))
+        })?;
+        crate::ImportDiscoveryPlan::new(program, context)
+    }
+    pub fn discovery_attempt(&self) -> Option<&Arc<ImportDiscoveryRevisionArtifact>> {
+        self.discovery_attempt.as_ref()
+    }
+    pub fn last_good_discovery(&self) -> Option<&Arc<ImportDiscoveryRevisionArtifact>> {
+        self.committed_import_discovery()
+    }
+
+    /// The exact closed-valid discovery revision adopted by this session.
+    ///
+    /// Downstream compilation must consume this artifact (or queries that
+    /// delegate to it), rather than reconstructing import or standard-library
+    /// resolution from the source snapshot alone.
+    pub fn committed_import_discovery(&self) -> Option<&Arc<ImportDiscoveryRevisionArtifact>> {
+        self.committed_discovery.as_ref()
+    }
+
+    /// Return the canonical graph and captured resolution context adopted for
+    /// the current compiler revision.
+    pub fn committed_import_graph(&self) -> Result<Arc<CanonicalImportGraphOutput>, CompileErrors> {
+        let committed = self.committed_discovery.as_ref().ok_or_else(|| {
+            CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "no closed-valid import discovery revision is committed".into(),
+            )))
+        })?;
+        Ok(committed
+            .graph()
+            .expect("closed-valid discovery revisions retain their canonical graph")
+            .clone())
+    }
+
+    /// Parse an immutable staging snapshot without publishing it to semantic
+    /// or dependency queries.
+    pub fn stage_import_discovery(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        context: crate::ImportDiscoveryContext,
+        accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+        carried_ledger: crate::ImportObservationLedger,
+    ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
+        self.discovery_staging_active = true;
+        let source_revision = snapshot.source_revision().clone();
+        let publish_failed_attempt = |errors: CompileErrors| ImportDiscoveryRevisionArtifact {
+            status: ImportDiscoveryRevisionStatus::ClosedAttempted,
+            source_revision: source_revision.clone(),
+            context: context.clone(),
+            snapshot: snapshot.clone(),
+            program: None,
+            plan: None,
+            ledger: carried_ledger.clone(),
+            accepted_reads: accepted_reads.clone(),
+            graph: None,
+            diagnostics: errors,
+        };
+        if let Err(errors) = validate_accepted_read_manifest(snapshot, &accepted_reads) {
+            self.discovery_attempt = Some(Arc::new(publish_failed_attempt(errors.clone())));
+            return Err(errors);
+        }
+        let program = match self.discovery_parse.update(snapshot).into_result() {
+            Ok(program) => program,
+            Err(errors) => {
+                self.discovery_attempt = Some(Arc::new(publish_failed_attempt(errors.clone())));
+                return Err(errors);
+            }
+        };
+        let plan = match crate::ImportDiscoveryPlan::new(&program, context.clone()) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let errors = CompileErrors::from(error);
+                self.discovery_attempt = Some(Arc::new(publish_failed_attempt(errors.clone())));
+                return Err(errors);
+            }
+        };
+        self.discovery_attempt = Some(Arc::new(ImportDiscoveryRevisionArtifact {
+            status: ImportDiscoveryRevisionStatus::Open,
+            source_revision: program.source_revision().clone(),
+            context,
+            snapshot: snapshot.clone(),
+            program: Some(program),
+            plan: Some(plan.clone()),
+            ledger: carried_ledger,
+            accepted_reads,
+            graph: None,
+            diagnostics: CompileErrors::new(),
+        }));
+        Ok(plan)
+    }
+
+    /// Close the current staging revision. Missing, ambiguous, and malformed
+    /// imports retain a closed attempted artifact; only a diagnostic-free graph
+    /// is atomically adopted as the committed compiler revision.
+    pub fn close_import_discovery(
+        &mut self,
+        ledger: crate::ImportObservationLedger,
+    ) -> Result<Arc<ImportDiscoveryRevisionArtifact>, CompileErrors> {
+        let open = self
+            .discovery_attempt
+            .as_deref()
+            .filter(|artifact| artifact.status == ImportDiscoveryRevisionStatus::Open)
+            .ok_or_else(|| CompileErrors::from(no_published_program()))?
+            .clone();
+        let plan = open
+            .plan
+            .as_ref()
+            .expect("open discovery attempt retains its plan")
+            .clone();
+        let program = open
+            .program
+            .as_ref()
+            .expect("open discovery attempt retains its program")
+            .clone();
+        plan.validate_ledger(&ledger).map_err(CompileErrors::from)?;
+        if !plan.pending_requests(&ledger).is_empty() {
+            let errors =
+                CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                    "import discovery ledger is incomplete; the revision remains open".into(),
+                )));
+            let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
+                ledger,
+                diagnostics: errors.clone(),
+                ..open
+            });
+            self.discovery_attempt = Some(artifact);
+            return Err(errors);
+        }
+        let diagnostics = plan.diagnostics(&program, &ledger);
+        if plan.failures(&ledger).next().is_some() {
+            let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
+                ledger,
+                diagnostics: diagnostics.clone(),
+                ..open
+            });
+            self.discovery_attempt = Some(artifact);
+            return Err(diagnostics);
+        }
+
+        let resolution = ModuleResolutionInputs::new(
+            program.root().clone(),
+            program
+                .modules()
+                .iter()
+                .map(|module| crate::ModuleResolutionInput {
+                    module: module.module_id().clone(),
+                    physical_path: Arc::from(module.physical_path()),
+                })
+                .collect(),
+        )?;
+        let input = ImportGraphInputDescriptor {
+            sources: program.source_revision().clone(),
+            resolution,
+            std_dir: open.context.std_root().map(Arc::from),
+        };
+        let graph = plan.reduce_graph(program.root().clone(), &ledger, &open.accepted_reads)?;
+        let validation = validate_canonical_import_graph(&graph, &input.resolution);
+        let graph = Arc::new(CanonicalImportGraphOutput {
+            input,
+            graph,
+            validation,
+        });
+        let resolution_only = graph.validation().problems().iter().all(|problem| {
+            matches!(
+                problem,
+                crate::CanonicalImportGraphProblem::MissingResolution { .. }
+                    | crate::CanonicalImportGraphProblem::AmbiguousResolution { .. }
+            )
+        });
+        if !resolution_only {
+            let mut errors = diagnostics;
+            errors.push(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "import discovery produced a structurally invalid canonical graph".into(),
+            )));
+            let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
+                ledger,
+                diagnostics: errors.clone(),
+                ..open
+            });
+            self.discovery_attempt = Some(artifact);
+            return Err(errors);
+        }
+        if !graph.validation().is_valid() || !diagnostics.is_empty() {
+            let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
+                status: ImportDiscoveryRevisionStatus::ClosedAttempted,
+                ledger,
+                graph: Some(graph),
+                diagnostics: diagnostics.clone(),
+                ..open
+            });
+            self.discovery_attempt = Some(artifact);
+            return Err(diagnostics);
+        }
+
+        self.update_for_presentation(&open.snapshot).into_result()?;
+        let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
+            status: ImportDiscoveryRevisionStatus::ClosedValid,
+            ledger,
+            graph: Some(graph),
+            diagnostics,
+            ..open
+        });
+        self.discovery_attempt = Some(artifact.clone());
+        self.committed_discovery = Some(artifact.clone());
+        self.discovery_staging_active = false;
+        Ok(artifact)
+    }
+
+    fn require_closed_discovery(&self) -> Result<(), CompileErrors> {
+        if self.discovery_staging_active {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InvalidCompilerInput(
+                    "semantic and dependency queries require a closed valid discovery revision"
+                        .into(),
+                ),
+            )));
+        }
+        Ok(())
     }
     pub fn work(&self) -> &CompilerSessionWork {
         &self.work
@@ -1265,6 +1548,16 @@ impl CompilerSession {
         );
         match result {
             Ok(candidate) => {
+                if self.discovery_attempt.as_deref().is_some_and(|artifact| {
+                    artifact.source_revision != *candidate.source_revision()
+                }) {
+                    self.discovery_attempt = None;
+                }
+                if self.committed_discovery.as_deref().is_some_and(|artifact| {
+                    artifact.source_revision != *candidate.source_revision()
+                }) {
+                    self.committed_discovery = None;
+                }
                 let exact = self.published.as_deref().is_some_and(|published| {
                     programs_are_pointer_equivalent(published, &candidate)
                 });
@@ -1324,7 +1617,23 @@ impl CompilerSession {
         &mut self,
         std_dir: Option<&str>,
     ) -> Result<Arc<CanonicalImportGraphOutput>, CompileErrors> {
+        self.require_closed_discovery()?;
         self.work.imports.calls += 1;
+        if let Some(committed) = self.committed_discovery.as_ref() {
+            let graph = committed
+                .graph()
+                .expect("closed-valid discovery revisions retain their canonical graph");
+            if graph.input().std_dir.as_deref() != std_dir {
+                return Err(CompileErrors::from(CompileError::without_span(
+                    ErrorKind::InvalidCompilerInput(
+                        "the requested standard-library context differs from the committed import discovery revision"
+                            .into(),
+                    ),
+                )));
+            }
+            self.work.imports.reuses += 1;
+            return Ok(graph.clone());
+        }
         let parsed = self.published.as_deref().ok_or_else(no_published_program)?;
         let resolution = ModuleResolutionInputs::new(
             parsed.root().clone(),
@@ -1368,6 +1677,7 @@ impl CompilerSession {
     }
 
     pub fn merge(&mut self) -> Result<Arc<CanonicalMergedProgram>, CompileErrors> {
+        self.require_closed_discovery()?;
         self.work.merge.calls += 1;
         if let Some(cached) = &self.merge_cache {
             self.work.merge.reuses += 1;
@@ -3219,6 +3529,51 @@ fn programs_are_pointer_equivalent(left: &ParsedProgram, right: &ParsedProgram) 
             .iter()
             .zip(right.modules())
             .all(|(left, right)| Arc::ptr_eq(left, right))
+}
+
+fn validate_accepted_read_manifest(
+    snapshot: &SourceSnapshot,
+    accepted_reads: &[crate::AcceptedReadManifestEntry],
+) -> Result<(), CompileErrors> {
+    if accepted_reads.len() != snapshot.len() {
+        return Err(CompileErrors::from(CompileError::without_span(
+            ErrorKind::InvalidCompilerInput(
+                "accepted read manifest does not cover the staging source snapshot".into(),
+            ),
+        )));
+    }
+    let entries = accepted_reads
+        .iter()
+        .map(|entry| (entry.module(), entry))
+        .collect::<BTreeMap<_, _>>();
+    if entries.len() != accepted_reads.len() {
+        return Err(CompileErrors::from(CompileError::without_span(
+            ErrorKind::InvalidCompilerInput(
+                "accepted read manifest contains duplicate logical modules".into(),
+            ),
+        )));
+    }
+    for source in snapshot.files() {
+        let module = snapshot
+            .module_id(source.file_id)
+            .expect("snapshot files have logical module IDs");
+        let Some(entry) = entries.get(module) else {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InvalidCompilerInput(format!(
+                    "accepted read manifest is missing logical module {module}"
+                )),
+            )));
+        };
+        if entry.content_fingerprint() != crate::import_discovery::source_fingerprint(source.source)
+        {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InvalidCompilerInput(format!(
+                    "accepted read manifest content does not match logical module {module}"
+                )),
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn no_published_program() -> CompileErrors {
