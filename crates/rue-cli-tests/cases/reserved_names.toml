@@ -7,7 +7,7 @@
 # at declaration time with a clear E0435 diagnostic.
 #
 # The reserved set is exactly `__rue_*` and `_start` (RUE-125): every
-# compiler/runtime symbol, including built-in methods (`__rue_String_len`),
+# compiler/runtime symbol, including text helpers (`__rue_str_eq`),
 # lives under `__rue_`, so a `Type__method` spelling like `String__len` is an
 # ordinary user identifier — see builtin_method_name_allowed below.
 
@@ -17,7 +17,7 @@ name = "Reserved runtime-helper function names"
 description = "User functions may not shadow runtime/codegen helper symbols; the error is reported at compile time."
 
 # A `Type__method` name is legal and links distinctly from the built-in method
-# (whose runtime symbol is `__rue_String_len`). Built-in `s.len()` returns 5;
+# (whose source-defined method returns 5). Built-in `s.len()` returns 5;
 # the user's `String__len()` returns 7 -> 5*10 + 7 = 57.
 [[case]]
 name = "builtin_method_name_allowed"

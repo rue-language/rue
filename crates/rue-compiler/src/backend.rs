@@ -407,6 +407,7 @@ mod tests {
 
     use rue_codegen::aarch64::{Aarch64Inst, Reg as Aarch64Reg};
     use rue_codegen::x86_64::{Reg as X86Reg, X86Inst};
+    use rue_linker::ObjectFile;
 
     use super::*;
 
@@ -677,6 +678,85 @@ drop fn StrBuf(self) { }
             assert_eq!(count(&all_object_bytes, FIRST_LITERAL), 1, "{target}");
             assert_eq!(count(&all_object_bytes, SECOND_LITERAL), 1, "{target}");
         }
+    }
+
+    #[test]
+    fn text_objects_and_runtime_archive_have_no_obsolete_string_symbols() {
+        let (rir, semantic) = strbuf_concat_frontend();
+        let interner = rir.semantic_symbols().interner();
+        let obsolete =
+            |name: &str| name.starts_with("__rue_String_") || name == "__rue_drop_String";
+
+        for target in [
+            Target::X86_64Linux,
+            Target::Aarch64Linux,
+            Target::Aarch64Macos,
+        ] {
+            let options = CompileOptions {
+                target,
+                ..CompileOptions::default()
+            };
+            let objects = match target.arch() {
+                Arch::X86_64 => generate_x86_64_objects(
+                    semantic.functions(),
+                    semantic.type_pool(),
+                    semantic.strings(),
+                    interner,
+                    &options,
+                ),
+                Arch::Aarch64 => generate_aarch64_objects(
+                    semantic.functions(),
+                    semantic.type_pool(),
+                    semantic.strings(),
+                    interner,
+                    &options,
+                ),
+            }
+            .unwrap();
+
+            let mut undefined = HashSet::new();
+            for bytes in objects {
+                let object = ObjectFile::parse(&bytes).unwrap();
+                undefined.extend(
+                    object
+                        .symbols
+                        .iter()
+                        .filter(|symbol| symbol.section_index.is_none())
+                        .map(|symbol| symbol.name.clone()),
+                );
+            }
+            assert!(undefined.contains("__rue_to_string"), "{target}");
+            assert!(undefined.contains("__rue_str_println"), "{target}");
+            assert!(
+                undefined.iter().all(|name| !obsolete(name)),
+                "{target}: obsolete undefined symbols: {undefined:?}"
+            );
+        }
+
+        let options = CompileOptions::default();
+        let runtime_bytes = crate::linking::runtime_for_target(options.target).unwrap();
+        let runtime = crate::linking::parse_runtime_archive(runtime_bytes).unwrap();
+        let obsolete_exports: Vec<_> = runtime
+            .objects
+            .iter()
+            .flat_map(|object| &object.symbols)
+            .filter(|symbol| symbol.section_index.is_some() && obsolete(&symbol.name))
+            .map(|symbol| symbol.name.as_str())
+            .collect();
+        assert!(
+            obsolete_exports.is_empty(),
+            "runtime archive still contains obsolete exports: {obsolete_exports:?}"
+        );
+
+        compile_backend(
+            semantic.functions(),
+            semantic.type_pool(),
+            semantic.strings(),
+            interner,
+            &options,
+            &[],
+        )
+        .expect("ordinary source-defined StrBuf program must link without obsolete members");
     }
 
     #[test]

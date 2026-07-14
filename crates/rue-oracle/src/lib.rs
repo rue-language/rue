@@ -26,11 +26,9 @@
 //! by-reference under the law of exclusivity); and drop/destructors, executed in
 //! spec-3.9 order (user destructor, then fields in declaration order / elements
 //! ascending) so the oracle validates drop *order* and drop-exactly-once, not
-//! just final values; and `String` — content modeled directly, covering `new`,
-//! `push`, `push_str`, `len`, `is_empty`, `clear`, `clone`, `@to_string`, byte
-//! indexing `s[i]` (`__rue_String_byte_at`), and the `.chars()` /
-//! `.chars_lossy()` scalar view (`__rue_String_char_scalar`/`_char_next`). String
-//! content is modeled as raw bytes, matching the runtime's byte-string buffer:
+//! just final values; and text values — source-defined `StrBuf` algorithms,
+//! `@to_string`, core `str` byte indexing, and strict/lossy scalar iteration.
+//! Text content is modeled as raw bytes, matching the runtime's packed view:
 //! strict `.chars()` traps on invalid UTF-8, while `.chars_lossy()` substitutes
 //! U+FFFD.
 //!
@@ -253,10 +251,6 @@ pub enum UnsupportedIntrinsicKind {
 /// modeled yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UnsupportedRuntimeCallKind {
-    StringConcat,
-    StringContains,
-    StringStartsWith,
-    StringSubstring,
     Print,
     Println,
 }
@@ -767,10 +761,6 @@ fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
 
 fn unsupported_runtime_call_kind(name: &str) -> Option<UnsupportedRuntimeCallKind> {
     match name {
-        "__rue_String_concat" => Some(UnsupportedRuntimeCallKind::StringConcat),
-        "__rue_String_contains" => Some(UnsupportedRuntimeCallKind::StringContains),
-        "__rue_String_starts_with" => Some(UnsupportedRuntimeCallKind::StringStartsWith),
-        "__rue_String_substring" => Some(UnsupportedRuntimeCallKind::StringSubstring),
         "__rue_print" => Some(UnsupportedRuntimeCallKind::Print),
         "__rue_println" => Some(UnsupportedRuntimeCallKind::Println),
         "__rue_str_print" => Some(UnsupportedRuntimeCallKind::Print),
@@ -936,13 +926,7 @@ impl<'a> Interp<'a> {
         let Some(runtime_call) = unsupported_runtime_call_kind(name) else {
             return UnsupportedKind::ContractViolation(ContractViolationKind::MissingFunctionBody);
         };
-        let expected_arity = match runtime_call {
-            UnsupportedRuntimeCallKind::StringConcat
-            | UnsupportedRuntimeCallKind::StringContains
-            | UnsupportedRuntimeCallKind::StringStartsWith => 2,
-            UnsupportedRuntimeCallKind::StringSubstring => 3,
-            UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => 1,
-        };
+        let expected_arity = 1;
         let shared_print = matches!(name, "__rue_str_print" | "__rue_str_println");
         let arity_matches = if shared_print {
             matches!(arg_types.len(), 1 | 2) && arg_modes.len() == arg_types.len()
@@ -957,20 +941,6 @@ impl<'a> Interp<'a> {
         }
 
         let signature_matches = match runtime_call {
-            UnsupportedRuntimeCallKind::StringConcat => {
-                arg_types.iter().all(|ty| self.is_owned_string_type(*ty))
-                    && self.is_owned_string_type(result_ty)
-            }
-            UnsupportedRuntimeCallKind::StringContains
-            | UnsupportedRuntimeCallKind::StringStartsWith => {
-                arg_types.iter().all(|ty| self.is_owned_string_type(*ty)) && result_ty == Type::BOOL
-            }
-            UnsupportedRuntimeCallKind::StringSubstring => {
-                self.is_owned_string_type(arg_types[0])
-                    && arg_types[1] == Type::U64
-                    && arg_types[2] == Type::U64
-                    && self.is_owned_string_type(result_ty)
-            }
             UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => {
                 ((shared_print
                     && ((arg_types.len() == 1 && self.is_str_like_type(arg_types[0]))
@@ -1008,17 +978,8 @@ impl<'a> Interp<'a> {
             return UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity);
         }
 
-        let is_owned_value = |index: usize| matches!(args[index], Value::Str { slots: 3, .. });
         let is_int_value = |index: usize| matches!(args[index], Value::Int(_));
         let values_match = match runtime_call {
-            UnsupportedRuntimeCallKind::StringConcat
-            | UnsupportedRuntimeCallKind::StringContains
-            | UnsupportedRuntimeCallKind::StringStartsWith => {
-                is_owned_value(0) && is_owned_value(1)
-            }
-            UnsupportedRuntimeCallKind::StringSubstring => {
-                is_owned_value(0) && is_int_value(1) && is_int_value(2)
-            }
             UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => {
                 if matches!(name, "__rue_str_print" | "__rue_str_println") {
                     (args.len() == 1 && matches!(args[0], Value::Str { slots: 2, .. }))
@@ -1026,7 +987,7 @@ impl<'a> Interp<'a> {
                             && matches!(args[0], Value::Str { .. })
                             && is_int_value(1))
                 } else {
-                    is_owned_value(0)
+                    matches!(args[0], Value::Str { slots: 3, .. })
                 }
             }
         };
@@ -1913,24 +1874,8 @@ impl<'a> Interp<'a> {
 
     fn string_builtin_arity(name: &str) -> Option<usize> {
         match name {
-            "__rue_String_new" => Some(0),
-            "__rue_to_string"
-            | "__rue_to_string_unsigned"
-            | "__rue_String_with_capacity"
-            | "__rue_String_len"
-            | "__rue_String_capacity"
-            | "__rue_String_is_empty"
-            | "__rue_String_clear"
-            | "__rue_String_clone" => Some(1),
-            "__rue_String_push_str"
-            | "__rue_String_push"
-            | "__rue_String_reserve"
-            | "__rue_String_byte_at"
-            | "__rue_str_byte_at"
-            | "__rue_String_char_scalar"
-            | "__rue_String_char_scalar_lossy"
-            | "__rue_String_char_next"
-            | "__rue_String_char_next_lossy" => Some(2),
+            "__rue_to_string" | "__rue_to_string_unsigned" => Some(1),
+            "__rue_str_byte_at" => Some(2),
             "__rue_str_char_scalar"
             | "__rue_str_char_scalar_lossy"
             | "__rue_str_char_next"
@@ -1975,26 +1920,10 @@ impl<'a> Interp<'a> {
                 format!("builtin '{name}' argument mode drift"),
             ));
         }
-
-        let owned = |index: usize| self.is_owned_string_type(arg_types[index]);
         let argument_types_match = match name {
-            "__rue_String_new" => true,
             "__rue_to_string" => arg_types[0] == Type::I64,
-            "__rue_to_string_unsigned" | "__rue_String_with_capacity" => arg_types[0] == Type::U64,
-            "__rue_String_len"
-            | "__rue_String_capacity"
-            | "__rue_String_is_empty"
-            | "__rue_String_clear"
-            | "__rue_String_clone" => owned(0),
-            "__rue_String_push_str" => owned(0) && owned(1),
-            "__rue_String_push" => owned(0) && arg_types[1] == Type::U8,
-            "__rue_String_reserve" => owned(0) && arg_types[1] == Type::U64,
-            "__rue_String_byte_at" => owned(0) && arg_types[1].is_integer(),
+            "__rue_to_string_unsigned" => arg_types[0] == Type::U64,
             "__rue_str_byte_at" => self.is_str_view_type(arg_types[0]) && arg_types[1].is_integer(),
-            "__rue_String_char_scalar"
-            | "__rue_String_char_scalar_lossy"
-            | "__rue_String_char_next"
-            | "__rue_String_char_next_lossy" => owned(0) && arg_types[1] == Type::U64,
             "__rue_str_char_scalar"
             | "__rue_str_char_scalar_lossy"
             | "__rue_str_char_next"
@@ -2004,7 +1933,7 @@ impl<'a> Interp<'a> {
                     && arg_types[1] == Type::U64
                     && arg_types[2] == Type::U64
             }
-            _ => unreachable!("arity table and signature table must stay exhaustive"),
+            _ => unreachable!("arity and signature tables must stay exhaustive"),
         };
         if !argument_types_match {
             return Err(unsupported(
@@ -2012,20 +1941,12 @@ impl<'a> Interp<'a> {
                 format!("builtin '{name}' argument type drift"),
             ));
         }
-
         let result_type_matches = match name {
-            "__rue_String_len" | "__rue_String_capacity" => result_ty == Type::U64,
-            "__rue_String_is_empty" => result_ty == Type::BOOL,
-            "__rue_String_byte_at" | "__rue_str_byte_at" => result_ty == Type::U8,
-            "__rue_String_char_scalar"
-            | "__rue_String_char_scalar_lossy"
-            | "__rue_str_char_scalar"
-            | "__rue_str_char_scalar_lossy" => result_ty == Type::U32,
-            "__rue_String_char_next"
-            | "__rue_String_char_next_lossy"
-            | "__rue_str_char_next"
-            | "__rue_str_char_next_lossy" => result_ty == Type::U64,
-            _ => self.is_owned_string_type(result_ty),
+            "__rue_to_string" | "__rue_to_string_unsigned" => self.is_owned_string_type(result_ty),
+            "__rue_str_byte_at" => result_ty == Type::U8,
+            "__rue_str_char_scalar" | "__rue_str_char_scalar_lossy" => result_ty == Type::U32,
+            "__rue_str_char_next" | "__rue_str_char_next_lossy" => result_ty == Type::U64,
+            _ => unreachable!("arity and result tables must stay exhaustive"),
         };
         if !result_type_matches {
             return Err(unsupported(
@@ -2033,14 +1954,11 @@ impl<'a> Interp<'a> {
                 format!("builtin '{name}' result type drift"),
             ));
         }
-
         Ok(true)
     }
 
-    /// Dispatch a builtin `String` method (these have no CFG body). Returns
-    /// `Ok(None)` if `name` is not a String builtin (so the caller falls back to
-    /// the ordinary CFG call). `capacity`/`reserve`/`with_capacity` capacity
-    /// behavior is implementation-defined and deliberately not modeled.
+    /// Dispatch a runtime text builtin. Returns `Ok(None)` when `name` is an
+    /// ordinary source-defined function with a CFG body.
     fn string_builtin(
         &self,
         name: &str,
@@ -2058,29 +1976,8 @@ impl<'a> Interp<'a> {
                 format!("builtin '{name}' runtime argument count drift"),
             ));
         }
-        let value_shapes_match = match name {
-            "__rue_String_new" => true,
-            "__rue_to_string" | "__rue_to_string_unsigned" | "__rue_String_with_capacity" => {
-                matches!(args[0], Value::Int(_))
-            }
-            "__rue_String_len"
-            | "__rue_String_capacity"
-            | "__rue_String_is_empty"
-            | "__rue_String_clear"
-            | "__rue_String_clone" => matches!(args[0], Value::Str { slots: 3, .. }),
-            "__rue_String_push_str" => {
-                matches!(args[0], Value::Str { slots: 3, .. })
-                    && matches!(args[1], Value::Str { slots: 3, .. })
-            }
-            "__rue_String_push"
-            | "__rue_String_reserve"
-            | "__rue_String_byte_at"
-            | "__rue_String_char_scalar"
-            | "__rue_String_char_scalar_lossy"
-            | "__rue_String_char_next"
-            | "__rue_String_char_next_lossy" => {
-                matches!(args[0], Value::Str { slots: 3, .. }) && matches!(args[1], Value::Int(_))
-            }
+        let shapes_match = match name {
+            "__rue_to_string" | "__rue_to_string_unsigned" => matches!(args[0], Value::Int(_)),
             "__rue_str_byte_at" => {
                 matches!(args[0], Value::Str { slots: 2, .. }) && matches!(args[1], Value::Int(_))
             }
@@ -2088,34 +1985,29 @@ impl<'a> Interp<'a> {
             | "__rue_str_char_scalar_lossy"
             | "__rue_str_char_next"
             | "__rue_str_char_next_lossy" => {
-                // A `Value::Str` is the oracle's provenance-carrying abstraction
-                // for the raw byte pointer; the following scalar values are the
-                // exact runtime ABI's explicit length and offset.
                 matches!(args[0], Value::Str { .. })
                     && matches!(args[1], Value::Int(_))
                     && matches!(args[2], Value::Int(_))
             }
             _ => unreachable!("preflight recognized this builtin"),
         };
-        if !value_shapes_match {
+        if !shapes_match {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType),
                 format!("builtin '{name}' runtime argument shape drift"),
             ));
         }
-        // Same honesty rule for argument TYPES: a non-string where the modeled
-        // signature has a string is drift, not an empty string.
-        let s = |v: &Value| -> Result<Vec<u8>, Flow> {
-            match v {
+        let string_bytes = |value: &Value| -> Result<Vec<u8>, Flow> {
+            match value {
                 Value::Str { bytes, .. } => Ok(bytes.clone()),
                 _ => Err(unsupported(
                     UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType),
-                    format!("builtin '{name}' received a non-string argument (signature drift?)"),
+                    format!("builtin '{name}' received a non-string argument"),
                 )),
             }
         };
         let str_bytes = |ptr: &Value, len: &Value| -> Result<Vec<u8>, Flow> {
-            let bytes = s(ptr)?;
+            let bytes = string_bytes(ptr)?;
             let len = len.as_int();
             if len < 0 || len as u128 > bytes.len() as u128 {
                 return Err(unsupported(
@@ -2126,89 +2018,15 @@ impl<'a> Interp<'a> {
             Ok(bytes[..len as usize].to_vec())
         };
         let out = match name {
-            // `@to_string(n)` (RUE-314). The argument is already widened to a
-            // 64-bit value by sema (sign-extended to i64 for signed types,
-            // zero-extended to u64 for unsigned); format it with the matching
-            // signedness so a high-bit-set unsigned value prints unsigned.
             "__rue_to_string" => Value::string((args[0].as_int() as i64).to_string()),
             "__rue_to_string_unsigned" => Value::string((args[0].as_int() as u64).to_string()),
-            "__rue_String_new" => Value::string(String::new()),
-            "__rue_String_with_capacity" => Value::string(String::new()),
-            "__rue_String_push_str" => {
-                let mut base = s(&args[0])?;
-                base.extend_from_slice(&s(&args[1])?);
-                Value::string_bytes(base)
-            }
-            "__rue_String_push" => {
-                let mut base = s(&args[0])?;
-                let byte = args[1].as_int() as u8;
-                // `String::push` appends exactly one raw byte. A byte >= 0x80
-                // may make the buffer invalid UTF-8; that is permitted for the
-                // byte-string `String` model, and only strict UTF-8 operations
-                // such as `.chars()` trap later.
-                base.push(byte);
-                Value::string_bytes(base)
-            }
-            "__rue_String_len" => Value::Int(s(&args[0])?.len() as i128),
-            "__rue_String_is_empty" => Value::Bool(s(&args[0])?.is_empty()),
-            "__rue_String_clear" => Value::string(String::new()),
-            "__rue_String_clone" => Value::string_bytes(s(&args[0])?),
-            "__rue_String_reserve" => Value::string_bytes(s(&args[0])?),
-            // `s[i]` byte indexing (ADR-0035): the runtime `__rue_String_byte_at`
-            // bounds-checks `index >= len` — trapping like array indexing — and
-            // returns the raw byte zero-extended. Model it over the byte content
-            // directly. A negative index is passed to the runtime as a huge u64,
-            // so it is likewise out of bounds and traps.
-            "__rue_String_byte_at" => {
-                let bytes = s(&args[0])?;
-                let idx = args[1].as_int();
-                if idx < 0 || idx as u128 >= bytes.len() as u128 {
-                    return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
-                }
-                Value::Int(bytes[idx as usize] as i128)
-            }
-            // `str` byte indexing `s[i]` (ADR-0043 Phase 3, RUE-324): the runtime
-            // `__rue_str_byte_at(ptr, len, index)` is the 2-word analog of
-            // `__rue_String_byte_at`, reading the i-th PACKED byte with the same
-            // bounds-check-and-trap discipline. Modeled identically over the byte
-            // content (the `str` receiver is `arg[0]`, the index `arg[1]`).
             "__rue_str_byte_at" => {
-                let bytes = s(&args[0])?;
-                let idx = args[1].as_int();
-                if idx < 0 || idx as u128 >= bytes.len() as u128 {
+                let bytes = string_bytes(&args[0])?;
+                let index = args[1].as_int();
+                if index < 0 || index as u128 >= bytes.len() as u128 {
                     return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
                 }
-                Value::Int(bytes[idx as usize] as i128)
-            }
-            // `for c in s.chars()` scalar view (RUE-220): strict decoding traps
-            // on invalid UTF-8, matching `__rue_String_char_scalar`.
-            "__rue_String_char_scalar" => {
-                let bytes = s(&args[0])?;
-                match char_at(&bytes, args[1].as_int()) {
-                    Some((scalar, _)) => Value::Int(scalar as i128),
-                    None => return Err(Flow::Panic(Panic::runtime(TrapKind::InvalidUtf8))),
-                }
-            }
-            "__rue_String_char_next" => {
-                let bytes = s(&args[0])?;
-                let offset = args[1].as_int();
-                match char_at(&bytes, offset) {
-                    Some((_, width)) => Value::Int(offset + width as i128),
-                    None => return Err(Flow::Panic(Panic::runtime(TrapKind::InvalidUtf8))),
-                }
-            }
-            // The lossy character view never traps: invalid UTF-8 becomes U+FFFD
-            // and advances by the same maximal-subpart width as the runtime.
-            "__rue_String_char_scalar_lossy" => {
-                let bytes = s(&args[0])?;
-                let (scalar, _) = char_at_lossy(&bytes, args[1].as_int());
-                Value::Int(scalar as i128)
-            }
-            "__rue_String_char_next_lossy" => {
-                let bytes = s(&args[0])?;
-                let offset = args[1].as_int();
-                let (_, width) = char_at_lossy(&bytes, offset);
-                Value::Int(offset + width as i128)
+                Value::Int(bytes[index as usize] as i128)
             }
             "__rue_str_char_scalar" => {
                 let bytes = str_bytes(&args[0], &args[1])?;
@@ -2227,22 +2045,12 @@ impl<'a> Interp<'a> {
             }
             "__rue_str_char_scalar_lossy" => {
                 let bytes = str_bytes(&args[0], &args[1])?;
-                let (scalar, _) = char_at_lossy(&bytes, args[2].as_int());
-                Value::Int(scalar as i128)
+                Value::Int(char_at_lossy(&bytes, args[2].as_int()).0 as i128)
             }
             "__rue_str_char_next_lossy" => {
                 let bytes = str_bytes(&args[0], &args[1])?;
                 let offset = args[2].as_int();
-                let (_, width) = char_at_lossy(&bytes, offset);
-                Value::Int(offset + width as i128)
-            }
-            "__rue_String_capacity" => {
-                return Err(unsupported(
-                    UnsupportedKind::ImplementationDefined(
-                        ImplementationDefinedKind::StringCapacityValue,
-                    ),
-                    "String::capacity is implementation-defined",
-                ));
+                Value::Int(offset + char_at_lossy(&bytes, offset).1 as i128)
             }
             _ => return Ok(None),
         };
@@ -2259,8 +2067,8 @@ impl<'a> Interp<'a> {
         match ty.kind() {
             TypeKind::Struct(sid) => {
                 let sd = self.state.type_pool.struct_def(sid);
-                // A builtin type's drop (e.g. String freeing its heap buffer) has
-                // no observable effect and no CFG body; skip it.
+                // Synthetic builtin types have no observable destructor and no
+                // CFG body; skip them.
                 if sd.is_builtin {
                     return Ok(());
                 }
@@ -3050,7 +2858,7 @@ impl<'a> Interp<'a> {
 
 /// Strictly decode the UTF-8 scalar starting at byte `offset`, returning
 /// `(scalar, utf8_width)`. Backs the oracle's model of the
-/// `__rue_String_char_scalar`/`__rue_String_char_next` runtime primitives.
+/// `__rue_str_char_scalar`/`__rue_str_char_next` runtime primitives.
 /// Returns `None` when `offset` is out of range or the byte sequence at that
 /// offset is invalid UTF-8; callers translate that to the runtime's
 /// `invalid UTF-8` trap.

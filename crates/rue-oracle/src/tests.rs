@@ -469,10 +469,6 @@ fn every_known_missing_runtime_call_has_a_closed_kind() {
     use UnsupportedRuntimeCallKind as RuntimeCall;
 
     for (name, expected) in [
-        ("__rue_String_concat", RuntimeCall::StringConcat),
-        ("__rue_String_contains", RuntimeCall::StringContains),
-        ("__rue_String_starts_with", RuntimeCall::StringStartsWith),
-        ("__rue_String_substring", RuntimeCall::StringSubstring),
         ("__rue_print", RuntimeCall::Print),
         ("__rue_println", RuntimeCall::Println),
         ("__rue_str_print", RuntimeCall::Print),
@@ -906,9 +902,9 @@ fn target_arch_and_os_fold_to_host() {
 
 #[test]
 fn string_byte_indexing() {
-    // `s[i]` lowers to `__rue_String_byte_at`. "café" is c=99, a=97, f=102, then
-    // the two UTF-8 bytes of é: 0xC3=195, 0xA9=169 (matches the spec corpus case
-    // `string_index_utf8_bytes`).
+    // Core `str` indexing reads packed UTF-8 bytes. "café" is c=99, a=97,
+    // f=102, then the two UTF-8 bytes of é: 0xC3=195, 0xA9=169 (matches the spec
+    // corpus case `string_index_utf8_bytes`).
     let src = "fn main() -> i32 {
         let s = \"café\";
         @dbg(s[0]);

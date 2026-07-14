@@ -4,37 +4,26 @@
 //! this crate does not inject or describe nominal struct types.
 
 // ============================================================================
-// Free-standing String runtime operations (RUE-17 Phase 1, ADR-0035)
+// Runtime operations that return or consume text values
 // ============================================================================
 
-// These constants document retained runtime ABI spellings. Canonical StrBuf
-// operations are source-defined standard-library methods selected through
-// trusted language-item identity; the historical `__rue_String_*` exports stay
-// stable for ABI compatibility and are not a semantic method registry.
-
 /// Runtime symbol for `@to_string(n)` on a signed integer: formats an `i64` as
-/// its decimal representation into a freshly heap-allocated `String` (full range
+/// its decimal representation into a freshly heap-allocated `StrBuf` (full range
 /// including `i64::MIN`; negatives are prefixed with `-`). Narrower signed
 /// operands (`i8`/`i16`/`i32`) are sign-extended to `i64` before the call. sret
-/// ABI: `extern "C" fn __rue_to_string(out: *mut StringResult, n: i64)`.
+/// ABI: `extern "C" fn __rue_to_string(out: *mut StrBufResult, n: i64)`.
 pub const TO_STRING_RUNTIME_FN: &str = "__rue_to_string";
 
 /// Runtime symbol for `@to_string(n)` on an unsigned integer: formats a `u64` as
-/// its decimal representation into a freshly heap-allocated `String` (full
+/// its decimal representation into a freshly heap-allocated `StrBuf` (full
 /// range, so a value with the high bit set prints as its unsigned magnitude, not
 /// a negative number). Narrower unsigned operands (`u8`/`u16`/`u32`) are
 /// zero-extended to `u64` before the call. sret ABI:
-/// `extern "C" fn __rue_to_string_unsigned(out: *mut StringResult, n: u64)`.
+/// `extern "C" fn __rue_to_string_unsigned(out: *mut StrBufResult, n: u64)`.
 pub const TO_STRING_UNSIGNED_RUNTIME_FN: &str = "__rue_to_string_unsigned";
 
-/// Runtime symbol for `s1 + s2` on two `String`s: returns a NEW `String` whose
-/// bytes are the concatenation of `s1` and `s2`. Both operands are borrowed
-/// (neither is consumed). sret ABI: `extern "C" fn __rue_String_concat(out:
-/// *mut StringResult, ptr1, len1, cap1, ptr2, len2, cap2)`.
-pub const STRING_CONCAT_RUNTIME_FN: &str = "__rue_String_concat";
-
 /// Runtime symbol for `print(s)`: writes the raw bytes of `s` to stdout with no
-/// added newline. The `String` is passed by borrow (not consumed), flattened
+/// added newline. The `StrBuf` is passed by borrow (not consumed), flattened
 /// into three ABI slots: `extern "C" fn __rue_print(ptr, len, cap)` (`cap`
 /// unused). Returns unit (RUE-1).
 pub const PRINT_RUNTIME_FN: &str = "__rue_print";
@@ -123,10 +112,9 @@ const RUNTIME_EXPORTED_NAMES: &[&str] = &[
 ///
 /// A user function with one of these names would collide with a symbol emitted
 /// by the runtime or codegen. Almost every such symbol lives under the reserved
-/// `__rue_` prefix — built-in type methods and associated functions
-/// (`__rue_String_len`, `__rue_String_new`), allocation/exit/drop glue
-/// (`__rue_alloc`, `__rue_exit`, `__rue_drop_String`), and operator helpers
-/// (`__rue_str_eq`) — but the runtime also exports a handful of unmangled
+/// `__rue_` prefix — allocation, exit, and operator helpers such as
+/// `__rue_alloc`, `__rue_exit`, and `__rue_str_eq` — but the runtime also
+/// exports a handful of unmangled
 /// names whose spellings are fixed by the platform or by rustc/LLVM lowering:
 /// see [`RUNTIME_EXPORTED_NAMES`]. Reserving exactly `__rue_*` plus that short
 /// fixed list (rather than growing the set for every new builtin) means
@@ -152,13 +140,9 @@ mod tests {
 
     #[test]
     fn test_is_reserved_function_name() {
-        // Runtime helper prefix — allocation, exit, drop glue, and the renamed
-        // built-in methods/associated functions all live under `__rue_`.
+        // Runtime helper prefix.
         assert!(is_reserved_function_name("__rue_alloc"));
         assert!(is_reserved_function_name("__rue_exit"));
-        assert!(is_reserved_function_name("__rue_drop_String"));
-        assert!(is_reserved_function_name("__rue_String_len"));
-        assert!(is_reserved_function_name("__rue_String_new"));
         assert!(is_reserved_function_name("__rue_str_eq"));
         // Entry point.
         assert!(is_reserved_function_name("_start"));

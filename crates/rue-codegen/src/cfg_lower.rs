@@ -348,11 +348,10 @@ pub fn format_terminator(cfg: &rue_cfg::Cfg, terminator: &rue_cfg::Terminator) -
 /// - Aggregates whose flattened slot count fits in the backend's return
 ///   registers (`ret_reg_budget`: 6 on x86-64, 8 on aarch64) are returned
 ///   with one slot per return register.
-/// - Builtin `String` *always* returns via sret, regardless of fitting in
-///   registers: the runtime implementations (`__rue_String_clone`,
-///   `__rue_read_line`, ...) are `extern "C"` functions taking an
-///   `out: *mut StringResult` first parameter, so the convention is fixed
-///   by the runtime ABI. (RUE-92)
+/// - Canonical `StrBuf` always returns via sret, regardless of fitting in
+///   registers. Runtime producers such as `__rue_read_line` and
+///   `__rue_to_string` take an out-pointer first, and source-defined `StrBuf`
+///   functions use the same type-wide convention. (RUE-92)
 /// - Any other aggregate with more slots than `ret_reg_budget` also returns
 ///   via sret: the caller allocates `slot_count * 8` bytes (16-aligned) on
 ///   its stack and passes the buffer address as a hidden first argument

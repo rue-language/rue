@@ -19,8 +19,9 @@ amends: [0020, 0035, 0041, 0042]
 Implemented and stabilized on 2026-07-14 by RUE-876. The core `str` and
 `Str(N)` types and static-backed literal default are stable. The growable
 `StrBuf` nominal is defined only by the trusted `std/strbuf.rue` module; it is
-not injected into roots that do not import the standard library. Runtime ABI
-symbols retain their historical `__rue_String_*` spellings pending RUE-877.
+not injected into roots that do not import the standard library. RUE-877
+removed the obsolete growable-string runtime exports after emitted-object
+auditing proved the source-defined implementation was the only live path.
 
 ## Summary
 
