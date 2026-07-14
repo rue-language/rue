@@ -420,6 +420,23 @@ env = { RUE_STD_PATH = "" }
 compile_fail = true
 error_contains = ["E0705", "standard library not found"]
 
+[[case]]
+name = "missing_std_blocks_secondary_type_error"
+description = "RUE-724: import discovery diagnostics stop semantic analysis before an unresolved std member can emit a secondary error."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+struct Holder {
+    value: std.Missing,
+}
+
+fn main() {}
+""" }]
+env = { RUE_STD_PATH = "" }
+compile_fail = true
+error_contains = ["E0705", "standard library not found"]
+compile_stderr_not_contains = ["E0204", "unknown type"]
+
 # A genuinely missing module should be a clean error (works today).
 [[case]]
 name = "import_missing_module_is_clean_error"

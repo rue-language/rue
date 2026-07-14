@@ -1133,30 +1133,18 @@ impl<'a> BodySema<'a> {
         args: &[RirCallArg],
         span: Span,
     ) -> CompileResult<AnalysisResult> {
-        // @import takes exactly one argument
-        if args.len() != 1 {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicWrongArgCount {
-                    name: "import".to_string(),
-                    expected: 1,
-                    found: args.len(),
-                },
-                span,
-            ));
-        }
+        let [arg] = args else {
+            unreachable!("compiler import preflight rejects malformed @import calls")
+        };
 
-        // Get the argument instruction - it must be a string literal
-        let arg_inst = self.rir.get(args[0].value);
+        // Compiler preflight guarantees a string literal and owns its
+        // diagnostic. AIR only binds the already-resolved canonical record.
+        let arg_inst = self.rir.get(arg.value);
         let import_path = match &arg_inst.data {
             rue_rir::InstData::StringConst(path_spur) => {
                 self.interner.resolve(path_spur).to_string()
             }
-            _ => {
-                return Err(CompileError::new(
-                    ErrorKind::ImportRequiresStringLiteral,
-                    arg_inst.span,
-                ));
-            }
+            _ => unreachable!("compiler import preflight requires a string literal"),
         };
 
         // Resolve the import path relative to the current source file

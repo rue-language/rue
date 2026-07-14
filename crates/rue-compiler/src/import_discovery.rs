@@ -225,7 +225,7 @@ impl ImportObservationStatus {
 }
 
 /// Accepted source bytes paired with their transaction observation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AcceptedImportSource {
     requested_path: Arc<str>,
     canonical_path: Arc<str>,
@@ -275,7 +275,7 @@ impl AcceptedImportSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ImportObservation {
     request: ImportDiscoveryRequest,
     status: ImportObservationStatus,
@@ -340,7 +340,7 @@ impl ImportObservation {
 }
 
 /// Deterministically ordered observations from one immutable epoch.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ImportObservationLedger(BTreeMap<ImportDiscoveryRequest, ImportObservation>);
 
 impl ImportObservationLedger {
@@ -379,6 +379,26 @@ pub struct ImportDiscoveryPlan {
 }
 
 impl ImportDiscoveryPlan {
+    pub(crate) fn shape_diagnostics(program: &ParsedProgram) -> CompileErrors {
+        let mut errors = CompileErrors::new();
+        for invalid in program.invalid_imports() {
+            let kind = match invalid.shape() {
+                crate::InvalidImportShape::WrongArity { actual } => {
+                    ErrorKind::IntrinsicWrongArgCount {
+                        name: "import".into(),
+                        expected: 1,
+                        found: *actual as usize,
+                    }
+                }
+                crate::InvalidImportShape::NonStringArgument => {
+                    ErrorKind::ImportRequiresStringLiteral
+                }
+            };
+            errors.push(CompileError::new(kind, invalid.span()));
+        }
+        errors
+    }
+
     pub(crate) fn new(
         program: &ParsedProgram,
         context: ImportDiscoveryContext,
@@ -624,27 +644,18 @@ impl ImportDiscoveryPlan {
         accepted
     }
 
+    /// Project this plan's parser-owned occurrences and physical observations
+    /// into the sole import diagnostic batch for a closed attempt.
+    ///
+    /// Shape errors precede discovery failures, which precede graph outcomes.
+    /// The ordered occurrence key keeps repeated source sites distinct even
+    /// though the durable graph deliberately collapses equivalent records.
     pub(crate) fn diagnostics(
         &self,
         program: &ParsedProgram,
         ledger: &ImportObservationLedger,
     ) -> CompileErrors {
-        let mut errors = CompileErrors::new();
-        for invalid in program.invalid_imports() {
-            let kind = match invalid.shape() {
-                crate::InvalidImportShape::WrongArity { actual } => {
-                    ErrorKind::IntrinsicWrongArgCount {
-                        name: "import".into(),
-                        expected: 1,
-                        found: *actual as usize,
-                    }
-                }
-                crate::InvalidImportShape::NonStringArgument => {
-                    ErrorKind::ImportRequiresStringLiteral
-                }
-            };
-            errors.push(CompileError::new(kind, invalid.span()));
-        }
+        let mut errors = Self::shape_diagnostics(program);
 
         let mut groups_by_site: BTreeMap<
             &ImportOccurrenceKey,
@@ -656,7 +667,8 @@ impl ImportDiscoveryPlan {
                 .or_default()
                 .push(group);
         }
-        for (site, groups) in groups_by_site {
+        let mut failed_sites = BTreeSet::new();
+        for (site, groups) in &groups_by_site {
             let file_id = program
                 .module(site.importer())
                 .expect("plan importer belongs to parsed program")
@@ -697,9 +709,19 @@ impl ImportDiscoveryPlan {
                     ErrorKind::InvalidCompilerInput(message),
                     span,
                 ));
+                failed_sites.insert((*site).clone());
+            }
+        }
+
+        for (site, groups) in groups_by_site {
+            if failed_sites.contains(site) {
                 continue;
             }
-
+            let file_id = program
+                .module(site.importer())
+                .expect("plan importer belongs to parsed program")
+                .file_id();
+            let span = rue_span::Span::with_file(file_id, site.source_offset(), site.source_end());
             let winning = groups.iter().find_map(|group| {
                 let present = group
                     .iter()
@@ -763,7 +785,7 @@ struct AssembledSource {
     source: Arc<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AcceptedReadManifestEntry {
     module: ModuleId,
     requested_path: Arc<str>,
@@ -1691,6 +1713,11 @@ mod tests {
         assert!(attempted.plan().is_none());
         assert!(attempted.graph().is_none());
         assert!(!attempted.diagnostics().is_empty());
+        let parse_diagnostics = session.import_diagnostics().unwrap();
+        assert!(Arc::ptr_eq(
+            &parse_diagnostics,
+            &session.import_diagnostics().unwrap()
+        ));
         assert_eq!(
             session.last_good_discovery().unwrap().source_revision(),
             &last_good
@@ -1759,8 +1786,16 @@ mod tests {
             .unwrap();
         session.close_import_discovery(cancelled).unwrap_err();
         let attempt = session.discovery_attempt().unwrap();
-        assert_eq!(attempt.status(), crate::ImportDiscoveryRevisionStatus::Open);
+        assert_eq!(
+            attempt.status(),
+            crate::ImportDiscoveryRevisionStatus::ClosedAttempted
+        );
         assert!(attempt.graph().is_none());
+        let diagnostics = session.import_diagnostics().unwrap();
+        assert!(Arc::ptr_eq(
+            &diagnostics,
+            &session.import_diagnostics().unwrap()
+        ));
         assert_eq!(
             session.last_good_discovery().unwrap().source_revision(),
             &last_good
@@ -1768,7 +1803,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_plain_ledger_stays_open_without_resolution_diagnostics() {
+    fn incomplete_plain_ledger_closes_attempt_without_resolution_diagnostics() {
         let source = snapshot(
             &[(
                 1,
@@ -1795,12 +1830,20 @@ mod tests {
             ErrorKind::InvalidCompilerInput(_)
         ));
         let attempt = session.discovery_attempt().unwrap();
-        assert_eq!(attempt.status(), crate::ImportDiscoveryRevisionStatus::Open);
+        assert_eq!(
+            attempt.status(),
+            crate::ImportDiscoveryRevisionStatus::ClosedAttempted
+        );
         assert!(attempt.graph().is_none());
         assert!(!attempt.diagnostics().iter().any(|error| matches!(
             error.kind,
             ErrorKind::ModuleNotFound { .. } | ErrorKind::StdLibNotFound
         )));
+        let diagnostics = session.import_diagnostics().unwrap();
+        assert!(Arc::ptr_eq(
+            &diagnostics,
+            &session.import_diagnostics().unwrap()
+        ));
     }
 
     #[test]
@@ -1844,6 +1887,522 @@ mod tests {
             session.discovery_attempt().unwrap().status(),
             crate::ImportDiscoveryRevisionStatus::ClosedAttempted
         );
+    }
+
+    #[test]
+    fn discovery_failures_globally_precede_outcomes_and_suppress_missing() {
+        let source = snapshot(
+            &[(
+                1,
+                "/project/main.rue",
+                "main.rue",
+                "fn main() { @import(\"missing\"); @import(\"denied\"); }",
+            )],
+            1,
+        );
+        let mut session = crate::CompilerSession::new();
+        let plan = session
+            .stage_import_discovery(
+                &source,
+                context(90),
+                accepted_reads(&source),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let mut ledger = ImportObservationLedger::default();
+        loop {
+            let pending = plan.pending_requests(&ledger);
+            if pending.is_empty() {
+                break;
+            }
+            for request in pending {
+                let observation = if request.exact_specifier() == "denied" {
+                    ImportObservation::failure(request, ImportObservationStatus::DeniedLexical)
+                        .unwrap()
+                } else {
+                    ImportObservation::absent(request)
+                };
+                ledger.record(observation).unwrap();
+            }
+        }
+        let errors = session.close_import_discovery(ledger).unwrap_err();
+        let kinds = errors.iter().map(|error| &error.kind).collect::<Vec<_>>();
+        assert_eq!(kinds.len(), 2, "the denied site must not also be Missing");
+        assert!(matches!(kinds[0], ErrorKind::InvalidCompilerInput(_)));
+        assert!(matches!(kinds[1], ErrorKind::ModuleNotFound { path, .. } if path == "missing"));
+    }
+
+    #[test]
+    fn completed_io_and_policy_failures_close_with_one_memoized_batch() {
+        let failures = [
+            ImportObservationStatus::PresentUnreadable(Arc::from("permission denied")),
+            ImportObservationStatus::DeniedLexical,
+            ImportObservationStatus::DeniedCanonical {
+                canonical_path: Arc::from("/outside/project/helper.rue"),
+            },
+            ImportObservationStatus::InvalidPhysicalType {
+                canonical_path: Arc::from("/project/helper.rue"),
+            },
+            ImportObservationStatus::UnstableRead(Arc::from("metadata changed")),
+        ];
+        for (index, failure) in failures.into_iter().enumerate() {
+            let source = snapshot(
+                &[(
+                    1,
+                    "/project/main.rue",
+                    "main.rue",
+                    "fn main() { @import(\"helper\"); }",
+                )],
+                1,
+            );
+            let mut session = crate::CompilerSession::new();
+            let plan = session
+                .stage_import_discovery(
+                    &source,
+                    context(120 + index as u64),
+                    accepted_reads(&source),
+                    ImportObservationLedger::default(),
+                )
+                .unwrap();
+            let mut ledger = ImportObservationLedger::default();
+            let pending = plan.pending_requests(&ledger);
+            for (request_index, request) in pending.into_iter().enumerate() {
+                let observation = if request_index == 0 {
+                    ImportObservation::failure(request, failure.clone()).unwrap()
+                } else {
+                    ImportObservation::absent(request)
+                };
+                ledger.record(observation).unwrap();
+            }
+            assert!(plan.pending_requests(&ledger).is_empty());
+            session.close_import_discovery(ledger).unwrap_err();
+            let attempt = session.discovery_attempt().unwrap();
+            assert_eq!(
+                attempt.status(),
+                crate::ImportDiscoveryRevisionStatus::ClosedAttempted
+            );
+            assert!(attempt.graph().is_none());
+            let diagnostics = session.import_diagnostics().unwrap();
+            assert_eq!(diagnostics.errors().len(), 1);
+            assert!(!diagnostics.errors()[0].to_string().contains("not found"));
+            assert!(Arc::ptr_eq(
+                &diagnostics,
+                &session.import_diagnostics().unwrap()
+            ));
+        }
+    }
+
+    #[test]
+    fn legal_import_cycle_closes_valid_without_diagnostics() {
+        let source = snapshot(
+            &[
+                (
+                    1,
+                    "/project/main.rue",
+                    "main.rue",
+                    "const a = @import(\"a\"); fn main() -> i32 { 0 }",
+                ),
+                (
+                    2,
+                    "/project/a.rue",
+                    "a.rue",
+                    "const root = @import(\"main\"); pub fn answer() -> i32 { 42 }",
+                ),
+            ],
+            1,
+        );
+        let manifest = accepted_reads(&source);
+        let mut session = crate::CompilerSession::new();
+        let plan = session
+            .stage_import_discovery(
+                &source,
+                context(130),
+                manifest.clone(),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let mut ledger = ImportObservationLedger::default();
+        loop {
+            let pending = plan.pending_requests(&ledger);
+            if pending.is_empty() {
+                break;
+            }
+            for request in pending {
+                let observation = if let Some(entry) = manifest
+                    .iter()
+                    .find(|entry| entry.requested_path() == request.requested_path())
+                {
+                    let text = if entry.module().as_str() == "a.rue" {
+                        "const root = @import(\"main\"); pub fn answer() -> i32 { 42 }"
+                    } else {
+                        "const a = @import(\"a\"); fn main() -> i32 { 0 }"
+                    };
+                    ImportObservation::accepted(
+                        request,
+                        AcceptedImportSource::new(
+                            entry.requested_path(),
+                            entry.canonical_path(),
+                            entry.metadata_identity(),
+                            entry.metadata_fingerprint(),
+                            Arc::new(text.into()),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                } else {
+                    ImportObservation::absent(request)
+                };
+                ledger.record(observation).unwrap();
+            }
+        }
+        let closed = session.close_import_discovery(ledger).unwrap();
+        assert_eq!(
+            closed.status(),
+            crate::ImportDiscoveryRevisionStatus::ClosedValid
+        );
+        assert!(closed.diagnostics().is_empty());
+        assert!(session.import_diagnostics().unwrap().errors().is_empty());
+    }
+
+    #[test]
+    fn repeated_missing_occurrences_each_receive_one_ordered_diagnostic() {
+        let source = snapshot(
+            &[(
+                1,
+                "/project/main.rue",
+                "main.rue",
+                "fn main() { @import(\"same\"); @import(\"same\"); }",
+            )],
+            1,
+        );
+        let mut session = crate::CompilerSession::new();
+        let plan = session
+            .stage_import_discovery(
+                &source,
+                context(91),
+                accepted_reads(&source),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let mut ledger = ImportObservationLedger::default();
+        let first_offset = plan.groups()[0][0].occurrence().source_offset();
+        let expected_candidates = plan
+            .groups()
+            .iter()
+            .filter(|group| group[0].occurrence().source_offset() == first_offset)
+            .flat_map(|group| group.iter())
+            .map(|request| request.requested_path().to_owned())
+            .collect::<Vec<_>>();
+        loop {
+            let pending = plan.pending_requests(&ledger);
+            if pending.is_empty() {
+                break;
+            }
+            for request in pending {
+                ledger.record(ImportObservation::absent(request)).unwrap();
+            }
+        }
+        let errors = session.close_import_discovery(ledger).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().all(|error| matches!(
+            &error.kind,
+            ErrorKind::ModuleNotFound { path, candidates }
+                if path == "same" && candidates == &expected_candidates
+        )));
+        assert!(
+            errors.as_slice()[0].span().unwrap().start < errors.as_slice()[1].span().unwrap().start
+        );
+    }
+
+    #[test]
+    fn canonical_import_batch_is_reused_and_manifest_provenance_prevents_stale_reuse() {
+        let source = snapshot(
+            &[(1, "/project/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let mut session = crate::CompilerSession::new();
+        let mut first_manifest = accepted_reads(&source).to_vec();
+        first_manifest[0].content_fingerprint ^= 1;
+        session
+            .stage_import_discovery(
+                &source,
+                context(92),
+                first_manifest.into(),
+                ImportObservationLedger::default(),
+            )
+            .unwrap_err();
+        let first = session.import_diagnostics().unwrap();
+        assert!(Arc::ptr_eq(&first, &session.import_diagnostics().unwrap()));
+
+        let mut second_manifest = accepted_reads(&source).to_vec();
+        second_manifest[0].content_fingerprint ^= 2;
+        session
+            .stage_import_discovery(
+                &source,
+                context(92),
+                second_manifest.into(),
+                ImportObservationLedger::default(),
+            )
+            .unwrap_err();
+        let second = session.import_diagnostics().unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        let crate::FrontendDiagnosticStage::Import(input) = second.stage() else {
+            panic!("failed discovery must publish the import diagnostic stage")
+        };
+        assert_eq!(input.source_revision(), source.source_revision());
+    }
+
+    #[test]
+    fn context_plan_and_ledger_are_independent_diagnostic_cache_provenance() {
+        let source = snapshot(
+            &[(
+                1,
+                "/project/main.rue",
+                "main.rue",
+                "fn main() { @import(\"missing\"); }",
+            )],
+            1,
+        );
+        let manifest = accepted_reads(&source);
+        let mut session = crate::CompilerSession::new();
+
+        session
+            .stage_import_discovery(
+                &source,
+                context(140),
+                manifest.clone(),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        session
+            .close_import_discovery(ImportObservationLedger::default())
+            .unwrap_err();
+        let first = session.import_diagnostics().unwrap();
+
+        let second_plan = session
+            .stage_import_discovery(
+                &source,
+                context(141),
+                manifest.clone(),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        session
+            .close_import_discovery(ImportObservationLedger::default())
+            .unwrap_err();
+        let second = session.import_diagnostics().unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        let crate::FrontendDiagnosticStage::Import(first_input) = first.stage() else {
+            unreachable!()
+        };
+        let crate::FrontendDiagnosticStage::Import(second_input) = second.stage() else {
+            unreachable!()
+        };
+        assert_ne!(first_input.context(), second_input.context());
+        assert_ne!(first_input.plan(), second_input.plan());
+        assert_eq!(first_input.ledger(), second_input.ledger());
+        assert_eq!(
+            first_input.accepted_read_manifest(),
+            second_input.accepted_read_manifest()
+        );
+
+        let mut partial = ImportObservationLedger::default();
+        partial
+            .record(ImportObservation::absent(
+                second_plan.pending_requests(&partial)[0].clone(),
+            ))
+            .unwrap();
+        session
+            .stage_import_discovery(
+                &source,
+                context(141),
+                manifest.clone(),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        session.close_import_discovery(partial.clone()).unwrap_err();
+        let third = session.import_diagnostics().unwrap();
+        assert!(!Arc::ptr_eq(&second, &third));
+        let crate::FrontendDiagnosticStage::Import(third_input) = third.stage() else {
+            unreachable!()
+        };
+        assert_eq!(second_input.context(), third_input.context());
+        assert_eq!(second_input.plan(), third_input.plan());
+        assert_ne!(second_input.ledger(), third_input.ledger());
+        assert_eq!(
+            second_input.accepted_read_manifest(),
+            third_input.accepted_read_manifest()
+        );
+
+        session
+            .stage_import_discovery(
+                &source,
+                context(141),
+                manifest,
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        session.close_import_discovery(partial).unwrap_err();
+        assert!(Arc::ptr_eq(&third, &session.import_diagnostics().unwrap()));
+    }
+
+    #[test]
+    fn accepted_observation_without_manifest_provenance_closes_with_memoized_diagnostics() {
+        let source = snapshot(
+            &[(
+                1,
+                "/project/main.rue",
+                "main.rue",
+                "const helper = @import(\"helper\"); fn main() -> i32 { 0 }",
+            )],
+            1,
+        );
+        let mut session = crate::CompilerSession::new();
+        let plan = session
+            .stage_import_discovery(
+                &source,
+                context(94),
+                accepted_reads(&source),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let request = plan.pending_requests(&ImportObservationLedger::default())[0].clone();
+        let accepted = AcceptedImportSource::new(
+            request.requested_path(),
+            request.requested_path(),
+            PhysicalFileIdentity::new(9, 9),
+            metadata_fingerprint(),
+            Arc::new("pub fn answer() -> i32 { 42 }".into()),
+        )
+        .unwrap();
+        let mut ledger = ImportObservationLedger::default();
+        for pending in plan.pending_requests(&ledger) {
+            let observation = if pending == request {
+                ImportObservation::accepted(pending, accepted.clone()).unwrap()
+            } else {
+                ImportObservation::absent(pending)
+            };
+            ledger.record(observation).unwrap();
+        }
+        assert!(plan.pending_requests(&ledger).is_empty());
+
+        let errors = session.close_import_discovery(ledger).unwrap_err();
+        assert!(matches!(
+            errors.first().unwrap().kind,
+            ErrorKind::InvalidCompilerInput(_)
+        ));
+        let attempt = session.discovery_attempt().unwrap();
+        assert_eq!(
+            attempt.status(),
+            crate::ImportDiscoveryRevisionStatus::ClosedAttempted
+        );
+        assert!(attempt.graph().is_none());
+        let diagnostics = session.import_diagnostics().unwrap();
+        assert!(Arc::ptr_eq(
+            &diagnostics,
+            &session.import_diagnostics().unwrap()
+        ));
+    }
+
+    #[test]
+    fn failed_std_import_blocks_air_before_secondary_unknown_type_errors() {
+        let source = snapshot(
+            &[(
+                1,
+                "/project/main.rue",
+                "main.rue",
+                "const std = @import(\"std\"); struct Holder { value: std.Missing } fn main() {}",
+            )],
+            1,
+        );
+        let mut session = crate::CompilerSession::new();
+        let plan = session
+            .stage_import_discovery(
+                &source,
+                context(93),
+                accepted_reads(&source),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let mut ledger = ImportObservationLedger::default();
+        loop {
+            let pending = plan.pending_requests(&ledger);
+            if pending.is_empty() {
+                break;
+            }
+            for request in pending {
+                ledger.record(ImportObservation::absent(request)).unwrap();
+            }
+        }
+        session.close_import_discovery(ledger).unwrap_err();
+        let errors = session
+            .semantic(&crate::CompileOptions::default())
+            .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors.first().unwrap().kind,
+            ErrorKind::StdLibNotFound
+        ));
+        assert_eq!(session.work().semantic.executions, 0);
+    }
+
+    #[test]
+    fn direct_batch_session_uses_compiler_shape_preflight_before_air() {
+        let source = SourceSnapshot::single(
+            "/project/main.rue",
+            "fn main() -> i32 { let bad = @import(1); 0 }",
+        )
+        .unwrap();
+        let mut session = crate::CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let errors = session.rir().unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors.first().unwrap().kind,
+            ErrorKind::ImportRequiresStringLiteral
+        ));
+        let first = session.import_diagnostics().unwrap();
+        let second = session.import_diagnostics().unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(session.work().import_diagnostics.executions, 1);
+        assert_eq!(session.work().import_diagnostics.reuses, 2);
+        let crate::FrontendDiagnosticStage::Import(input) = first.stage() else {
+            panic!("direct batch import preflight must use the import diagnostic stage")
+        };
+        assert!(input.context().is_none());
+        assert_eq!(session.work().rir.executions, 0);
+        assert_eq!(session.work().last_rir, crate::CanonicalRirWork::default());
+        assert!(session.semantic(&crate::CompileOptions::default()).is_err());
+        assert_eq!(session.work().semantic.executions, 0);
+        let one_shot =
+            crate::compile_snapshot(&source, &crate::CompileOptions::default()).unwrap_err();
+        assert!(matches!(
+            one_shot.first().unwrap().kind,
+            ErrorKind::ImportRequiresStringLiteral
+        ));
+    }
+
+    #[test]
+    fn malformed_import_shape_diagnostics_preserve_preflight_spans() {
+        for (call, expected) in [
+            ("@import()", "@import()"),
+            ("@import(1)", "1"),
+            ("@import(\"a\", \"b\")", "@import(\"a\", \"b\")"),
+        ] {
+            let source_text = format!("fn main() {{ let bad = {call}; }}");
+            let source = SourceSnapshot::single("/project/main.rue", &source_text).unwrap();
+            let mut session = crate::CompilerSession::new();
+            session.update(&source).into_result().unwrap();
+            let diagnostics = session.import_diagnostics().unwrap();
+            let span = diagnostics.errors()[0].span().unwrap();
+            let expected_start = source_text.find(expected).unwrap() as u32;
+            assert_eq!(span.start, expected_start, "wrong start for {call}");
+            assert_eq!(
+                span.end,
+                expected_start + expected.len() as u32,
+                "wrong end for {call}"
+            );
+        }
     }
 
     #[test]
@@ -1983,6 +2542,16 @@ mod tests {
         assert!(matches!(
             &errors.first().unwrap().kind,
             ErrorKind::InvalidCompilerInput(_)
+        ));
+        assert_eq!(
+            current.discovery_attempt().unwrap().status(),
+            crate::ImportDiscoveryRevisionStatus::ClosedAttempted
+        );
+        assert!(current.discovery_attempt().unwrap().graph().is_none());
+        let diagnostics = current.import_diagnostics().unwrap();
+        assert!(Arc::ptr_eq(
+            &diagnostics,
+            &current.import_diagnostics().unwrap()
         ));
         assert!(current.merge().is_err());
     }

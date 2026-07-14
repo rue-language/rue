@@ -1736,7 +1736,11 @@ fn discover_and_load_imports(
             ledger.clone(),
         ) {
             Ok(plan) => plan,
-            Err(errors) => {
+            Err(_) => {
+                let diagnostics = staging
+                    .import_diagnostics()
+                    .expect("failed staging publishes canonical import diagnostics");
+                let errors = CompileErrors::from(diagnostics.errors().to_vec());
                 let infos = snapshot
                     .files()
                     .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
@@ -1847,7 +1851,11 @@ fn discover_and_load_imports(
         eprintln!("Error: {error}");
     })?;
     debug_assert_eq!(final_plan.source_revision(), snapshot.source_revision());
-    let closed = staging.close_import_discovery(ledger).map_err(|errors| {
+    let closed = staging.close_import_discovery(ledger).map_err(|_| {
+        let diagnostics = staging
+            .import_diagnostics()
+            .expect("failed closure publishes canonical import diagnostics");
+        let errors = CompileErrors::from(diagnostics.errors().to_vec());
         let infos = snapshot
             .files()
             .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))

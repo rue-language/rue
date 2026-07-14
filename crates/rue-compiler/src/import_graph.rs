@@ -918,7 +918,6 @@ mod tests {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    use rue_error::ErrorKind;
     use rue_span::FileId;
 
     use super::*;
@@ -1052,14 +1051,27 @@ fn main() -> i32 {
 }
 "#;
         let id = FileId::new(8);
-        let unit = lower(
-            vec![SourceView::new("main.rue", source, id)],
-            id,
-            HashMap::new(),
-        );
-        let directives = unit.import_directives().unwrap();
+        let snapshot = SourceSnapshot::from_sources(
+            &[SourceView::new("main.rue", source, id)],
+            SourceMetadata::from_sources(
+                &[SourceView::new("main.rue", source, id)],
+                id,
+                HashMap::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        let program = session.update(&snapshot).into_result().unwrap();
+        let directives = program.import_directives();
         assert_eq!(directives.len(), 2);
-        assert_eq!(specifiers(&unit), vec!["same", "same"]);
+        assert_eq!(
+            directives
+                .iter()
+                .map(ImportDirective::specifier)
+                .collect::<Vec<_>>(),
+            vec!["same", "same"]
+        );
         assert_ne!(
             directives.as_slice()[0].source_offset(),
             directives.as_slice()[1].source_offset()
@@ -1067,44 +1079,24 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn malformed_only_imports_keep_existing_semantic_error_precedence() {
-        let cases = [
-            ("@import()", "zero"),
-            ("@import(1)", "non_string"),
-            ("@import(\"a\", \"b\")", "two"),
-        ];
-        for (call, expected) in cases {
+    fn malformed_imports_never_reach_air_resolution() {
+        for call in ["@import()", "@import(1)", "@import(\"a\", \"b\")"] {
             let source = format!("fn main() -> i32 {{ let value = {call}; 0 }}");
             let id = FileId::new(1);
-            let unit = lower(
-                vec![SourceView::new("main.rue", &source, id)],
-                id,
-                HashMap::new(),
-            );
-            assert!(unit.import_directives().unwrap().is_empty());
-            let errors = unit.analyze().unwrap_err();
-            assert_eq!(errors.len(), 1);
-            let kind = &errors.first().unwrap().kind;
-            match expected {
-                "zero" => assert!(matches!(
-                    kind,
-                    ErrorKind::IntrinsicWrongArgCount {
-                        name,
-                        expected: 1,
-                        found: 0,
-                    } if name == "import"
-                )),
-                "non_string" => assert!(matches!(kind, ErrorKind::ImportRequiresStringLiteral)),
-                "two" => assert!(matches!(
-                    kind,
-                    ErrorKind::IntrinsicWrongArgCount {
-                        name,
-                        expected: 1,
-                        found: 2,
-                    } if name == "import"
-                )),
-                _ => unreachable!(),
-            }
+            let views = [SourceView::new("main.rue", &source, id)];
+            let metadata = SourceMetadata::from_sources(&views, id, HashMap::new()).unwrap();
+            let snapshot = SourceSnapshot::from_sources(&views, metadata).unwrap();
+            let mut session = CompilerSession::new();
+            let program = session.update(&snapshot).into_result().unwrap();
+            assert!(program.import_directives().is_empty());
+            let diagnostics = session.import_diagnostics().unwrap();
+            assert!(session.rir().is_err());
+            assert!(Arc::ptr_eq(
+                &diagnostics,
+                &session.import_diagnostics().unwrap()
+            ));
+            assert_eq!(session.work().rir.executions, 0);
+            assert_eq!(session.work().last_rir, crate::CanonicalRirWork::default());
         }
     }
 
