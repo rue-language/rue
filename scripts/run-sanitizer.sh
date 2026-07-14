@@ -7,7 +7,7 @@
 # This is the local driver for the `sanitizer.yml` CI job (RUE-49). Run it from
 # anywhere in the repo:
 #
-#   scripts/run-sanitizer.sh                 # examples/*.rue + curated corpus
+#   scripts/run-sanitizer.sh                 # recursive examples + curated corpus
 #   scripts/run-sanitizer.sh path/to/x.rue   # ...plus extra programs
 #
 # Requirements: `valgrind` on PATH (CI installs it via apt-get). The rue
@@ -135,67 +135,170 @@ fn main() -> i32 {
         sum = sum + p.x + p.y;
         i = i + 1;
     }
-    sum % 256
+    if sum == 10000 { 0 } else { 1 }
 }
 RUE
 
-# --- Assemble the program list: examples/ + curated + any CLI args.
+# --- Assemble the program list. Match the CLI smoke-test's root-module rule:
+#     a directory containing main.rue contributes that root and is not searched
+#     further; elsewhere, every .rue file is a standalone example. This keeps
+#     helper modules from being compiled as programs while still finding nested
+#     root-module and ordinary examples.
 programs=()
-for f in "$repo_root"/examples/*.rue; do
-    [[ -e "$f" ]] && programs+=("$f")
-done
-for f in "$work"/san_*.rue; do
-    programs+=("$f")
-done
-for f in "$@"; do
-    programs+=("$f")
+contracts=()
+labels=()
+
+add_program() {
+    programs+=("$1")
+    contracts+=("$2")
+    labels+=("$3")
+}
+
+discover_examples() {
+    local dir="$1"
+    local entry
+    if [[ -f "$dir/main.rue" ]]; then
+        add_program "$dir/main.rue" "memory-only" "${dir#"$repo_root/"}/main.rue"
+        return
+    fi
+
+    # Include hidden entries just as std::fs::read_dir does in the CLI harness.
+    # nullglob keeps unmatched patterns from becoming literal path strings.
+    for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+        if [[ -d "$entry" ]]; then
+            discover_examples "$entry"
+        elif [[ -f "$entry" && "$entry" == *.rue ]]; then
+            add_program "$entry" "memory-only" "${entry#"$repo_root/"}"
+        fi
+    done
+}
+
+shopt -s nullglob
+if [[ ! -d "$repo_root/examples" ]]; then
+    echo "run-sanitizer: examples directory is missing: $repo_root/examples" >&2
+    exit 1
+fi
+discover_examples "$repo_root/examples"
+example_count=${#programs[@]}
+if [[ "$example_count" -eq 0 ]]; then
+    echo "run-sanitizer: no .rue examples discovered under $repo_root/examples" >&2
+    exit 1
+fi
+
+# These nested examples are coverage canaries for both discovery branches: a
+# dogfood root-module tree and an ordinary source under the std examples tree.
+required_examples=(
+    "$repo_root/examples/calculator/main.rue"
+    "$repo_root/examples/std/arraybuf_demo.rue"
+)
+for required in "${required_examples[@]}"; do
+    found=0
+    for src in "${programs[@]}"; do
+        if [[ "$src" == "$required" ]]; then
+            found=1
+            break
+        fi
+    done
+    if [[ "$found" -eq 0 ]]; then
+        echo "run-sanitizer: required example sentinel was not discovered: ${required#"$repo_root/"}" >&2
+        exit 1
+    fi
 done
 
-# --- Verdict from a valgrind log (NOT from the program's own exit code: Rue
-#     programs legitimately exit with codes up to 255, e.g. examples/arrays.rue
-#     exits 157). A fatal signal under valgrind still prints
-#     "ERROR SUMMARY: 0 errors", so we must check for it separately.
-verdict_ok() {
-    local log="$1"
-    if grep -q "Process terminating with default action of signal" "$log"; then
-        return 1
-    fi
-    if grep -qE "ERROR SUMMARY: [1-9][0-9]* errors" "$log"; then
-        return 1
-    fi
-    grep -q "ERROR SUMMARY: 0 errors" "$log"
-}
+# Curated self-checks must return zero. Repository examples and caller-supplied
+# programs use the memory-only contract: any normal exit code is accepted once
+# Memcheck reports clean, because many examples intentionally return nonzero.
+for f in "$work"/san_*.rue; do
+    add_program "$f" "exit:0" "curated/$(basename "$f")"
+done
+for f in "$@"; do
+    add_program "$f" "memory-only" "$f"
+done
+
+# GNU timeout's status 124 is also a valid program exit. Run Valgrind through a
+# tiny completion recorder so an actual timeout (no marker) is distinguishable
+# from a child that completed normally with status 124 (marker contains 124).
+cat > "$work/run-and-record-status.sh" <<'SH'
+#!/usr/bin/env bash
+status_file="$1"
+shift
+set +e
+"$@"
+status=$?
+printf '%s\n' "$status" > "$status_file"
+exit "$status"
+SH
+chmod +x "$work/run-and-record-status.sh"
 
 failures=0
 checked=0
-for src in "${programs[@]}"; do
-    name="$(basename "$src" .rue)"
-    bin="$work/$name.bin"
-    log="$work/$name.vglog"
+for ((i = 0; i < ${#programs[@]}; i++)); do
+    src="${programs[$i]}"
+    contract="${contracts[$i]}"
+    label="${labels[$i]}"
+    artifact="$(printf '%04d' "$i")"
+    bin="$work/$artifact.bin"
+    log="$work/$artifact.vglog"
+    compile_log="$work/$artifact.compile"
+    status_file="$work/$artifact.status"
 
-    if ! "$rue" "$src" -o "$bin" > "$work/$name.compile" 2>&1; then
-        echo "FAIL(compile) $name"
-        sed 's/^/    /' "$work/$name.compile"
+    if ! "$rue" "$src" -o "$bin" > "$compile_log" 2>&1; then
+        echo "FAIL(compile) $label"
+        sed 's/^/    /' "$compile_log"
         failures=$((failures + 1))
         continue
     fi
 
     # Cap runtime: valgrind adds heavy slowdown and a codegen bug could loop.
-    timeout 120 valgrind \
-        --error-exitcode=1 \
+    # Capture timeout/Valgrind's status explicitly; `set -e` is suspended only
+    # around this expected-to-be-nonzero probe.
+    set +e
+    timeout 120 "$work/run-and-record-status.sh" "$status_file" valgrind \
+        --error-exitcode=125 \
         --leak-check=full \
         --show-leak-kinds=all \
         --track-origins=yes \
         --log-file="$log" \
-        "$bin" > /dev/null 2>&1 || true
+        "$bin" > /dev/null 2>&1
+    timeout_status=$?
+    set -e
 
     checked=$((checked + 1))
-    if verdict_ok "$log"; then
-        echo "PASS $name"
-    else
-        echo "FAIL(memcheck) $name"
+
+    if [[ ! -f "$status_file" && "$timeout_status" -eq 124 ]]; then
+        echo "FAIL(timeout) $label (status $timeout_status; no completion marker)"
+        failures=$((failures + 1))
+        continue
+    elif [[ ! -f "$status_file" ]]; then
+        echo "FAIL(valgrind) $label (wrapper status $timeout_status; no completion marker)"
+        failures=$((failures + 1))
+        continue
+    fi
+
+    status="$(sed -n '1p' "$status_file")"
+    if [[ ! "$status" =~ ^[0-9]+$ ]]; then
+        echo "FAIL(valgrind) $label (invalid recorded status: $status)"
+        failures=$((failures + 1))
+    elif [[ ! -f "$log" ]]; then
+        echo "FAIL(valgrind) $label (status $status; no Memcheck log)"
+        failures=$((failures + 1))
+    elif grep -q "Process terminating with default action of signal" "$log"; then
+        echo "FAIL(signal) $label (status $status)"
         sed 's/^/    /' "$log"
         failures=$((failures + 1))
+    elif grep -qE "ERROR SUMMARY: [1-9][0-9]* errors" "$log"; then
+        echo "FAIL(memcheck) $label (Valgrind status $status)"
+        sed 's/^/    /' "$log"
+        failures=$((failures + 1))
+    elif ! grep -q "ERROR SUMMARY: 0 errors" "$log"; then
+        echo "FAIL(valgrind) $label (status $status; missing clean summary)"
+        sed 's/^/    /' "$log"
+        failures=$((failures + 1))
+    elif [[ "$contract" == exit:* && "$status" -ne "${contract#exit:}" ]]; then
+        echo "FAIL(program) $label (expected exit ${contract#exit:}, got $status)"
+        failures=$((failures + 1))
+    else
+        echo "PASS $label (program status $status; contract $contract)"
     fi
 done
 
