@@ -1118,8 +1118,7 @@ fn classify_module(
             }
             return ModuleId::from_logical_path(
                 Path::new("\0rue-std").join(relative).to_string_lossy(),
-            )
-            .map_err(|e| e);
+            );
         }
     }
     let project_root = Path::new(context.project_root());
@@ -1921,7 +1920,7 @@ mod tests {
         let errors = session.close_import_discovery(ledger).unwrap_err();
         assert!(matches!(
             &errors.first().unwrap().kind,
-            ErrorKind::StdLibNotFound { .. }
+            ErrorKind::StdLibNotFound
         ));
         assert_eq!(
             session.discovery_attempt().unwrap().status(),
