@@ -31,11 +31,23 @@ find "$root_a/project" -type f -name '*.rue' -exec touch -t 200001010000 {} +
 find "$root_b/project" -type f -name '*.rue' -exec touch -t 203001010000 {} +
 (
     cd "$root_a/project"
-    find . -type f -name '*.rue' -print | sed 's#^\./##' | LC_ALL=C sort > sources.manifest
+    {
+        find . -type f -name '*.rue' -print | sed 's#^\./##'
+        # ADR-0051 read policy: resolution observes these absent
+        # importer-relative arms before the root-relative shared module.
+        printf '%s\n' \
+            semantic-order/left/shared.rue \
+            semantic-order/right/shared.rue
+    } | LC_ALL=C sort > sources.manifest
 )
 (
     cd "$root_b/project"
-    find . -type f -name '*.rue' -print | sed 's#^\./##' | LC_ALL=C sort -r > sources.manifest
+    {
+        find . -type f -name '*.rue' -print | sed 's#^\./##'
+        printf '%s\n' \
+            semantic-order/left/shared.rue \
+            semantic-order/right/shared.rue
+    } | LC_ALL=C sort -r > sources.manifest
 )
 
 sha256() {

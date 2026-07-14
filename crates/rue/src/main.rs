@@ -1149,6 +1149,19 @@ impl SourceManifest {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
+        let base_dir = if base_dir.is_absolute() {
+            normalize_lexical_path(base_dir)
+        } else {
+            normalize_lexical_path(
+                &env::current_dir().map_err(|error| {
+                    format!(
+                        "Error reading source manifest '{}': cannot resolve current directory: {}",
+                        path, error
+                    )
+                })?
+                .join(base_dir),
+            )
+        };
 
         let mut allowed = std::collections::HashSet::new();
         let mut declared_paths = std::collections::HashSet::new();
