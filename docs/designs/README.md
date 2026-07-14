@@ -213,4 +213,5 @@ The table is generated from ADR frontmatter. Run
 | [0048](0048-shared-codegen-middle-layer.md) | Shared codegen middle layer (reduce x86-64/aarch64 backend duplication) | Proposal | codegen, architecture, backends, refactor, maintainability |
 | [0050](0050-semantic-dependency-manifest.md) | Stable semantic dependency manifests | Accepted | compiler, incremental, tooling |
 | [0051](0051-canonical-import-resolution-authority.md) | CanonicalImportGraph as the sole import-resolution authority | Accepted | architecture, compiler, modules, incremental, tooling |
+| [0052](0052-canonical-physical-type-layout.md) | Canonical Physical Type Layout | Proposal | types, semantics, compiler, codegen, abi, memory |
 <!-- ADR-INDEX:END -->
