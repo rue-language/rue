@@ -500,19 +500,11 @@ mod tests {
         .expect("AArch64 ZST fixture should lower");
         assert!(matches!(
             unit_x86.instructions(),
-            [
-                X86Inst::MovRI64 { imm: 0, .. },
-                X86Inst::MovRR { .. },
-                X86Inst::Ret
-            ]
+            [X86Inst::MovRI64 { imm: 0, .. }, X86Inst::Ret]
         ));
         assert!(matches!(
             unit_arm.instructions(),
-            [
-                Aarch64Inst::MovImm { imm: 0, .. },
-                Aarch64Inst::MovRR { .. },
-                Aarch64Inst::Ret
-            ]
+            [Aarch64Inst::MovImm { imm: 0, .. }, Aarch64Inst::Ret]
         ));
     }
 }

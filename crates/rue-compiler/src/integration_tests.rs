@@ -858,6 +858,25 @@ mod integration_tests {
             let src = r#"fn main() -> i32 { let _s = "hello\\world"; 0 }"#;
             assert!(test_air(src).is_ok());
         }
+
+        #[test]
+        fn projected_fixed_string_borrow_coerces_to_str_view() {
+            let src = r#"
+                struct Holder { s: Str(8) }
+                fn take(borrow s: str) -> u64 { s.len() }
+                fn main() -> i32 {
+                    let h = Holder { s: "hi" };
+                    @intCast(take(borrow h.s))
+                }
+            "#;
+            let snapshot = SourceSnapshot::single("<test>", src).unwrap();
+            let mut options = CompileOptions::default();
+            options
+                .preview_features
+                .insert("string_trio".parse().unwrap());
+
+            assert!(test_frontend_snapshot(&snapshot, &options).is_ok());
+        }
     }
 
     // ========================================================================
@@ -1036,12 +1055,9 @@ mod integration_tests {
                     })
                     .collect();
                 assert_eq!(return_values.len(), 1, "{name} must have one return");
-                let return_value = return_values[0].expect("unit return must use a dummy value");
-                let return_inst = cfg.get_inst(return_value);
-                assert_eq!(return_inst.ty, Type::UNIT, "{name} return value type");
                 assert!(
-                    matches!(return_inst.data, rue_cfg::CfgInstData::Const(0)),
-                    "{name} must return the established dummy unit value, not a side-effect-only intrinsic"
+                    return_values[0].is_none(),
+                    "{name} must use the canonical valueless unit return"
                 );
 
                 for &target in Target::all() {

@@ -243,8 +243,8 @@ fn format_cfg_inst_data_impl(
             format!("int_cast {} : {}", value, from_ty.name())
         }
         CfgInstData::Drop { value } => format!("drop {}", value),
-        CfgInstData::StorageLive { slot } => format!("storage_live ${}", slot),
-        CfgInstData::StorageDead { slot } => format!("storage_dead ${}", slot),
+        CfgInstData::StorageLive { slot, .. } => format!("storage_live ${}", slot),
+        CfgInstData::StorageDead { slot, .. } => format!("storage_dead ${}", slot),
         // Place operations
         CfgInstData::PlaceRead { place } => {
             format!("place_read {}", cfg.place_to_string(place))

@@ -721,6 +721,15 @@ impl TypeInternPool {
         }
     }
 
+    /// Get a struct definition without panicking on an invalid or wrong-kind ID.
+    pub fn try_struct_def(&self, struct_id: StructId) -> Option<StructDef> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        match inner.types.get(struct_id.0 as usize)? {
+            TypeData::Struct(data) => Some(data.def.clone()),
+            _ => None,
+        }
+    }
+
     /// Get an enum definition by EnumId.
     ///
     /// The EnumId contains a pool index. This method looks up the enum
@@ -738,6 +747,15 @@ impl TypeInternPool {
                 "Expected enum at pool index {}, got {:?}",
                 pool_index, other
             ),
+        }
+    }
+
+    /// Get an enum definition without panicking on an invalid or wrong-kind ID.
+    pub fn try_enum_def(&self, enum_id: EnumId) -> Option<EnumDef> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        match inner.types.get(enum_id.0 as usize)? {
+            TypeData::Enum(data) => Some(data.def.clone()),
+            _ => None,
         }
     }
 
@@ -883,6 +901,17 @@ impl TypeInternPool {
                 "Expected array at pool index {}, got {:?}",
                 pool_index, other
             ),
+        }
+    }
+
+    /// Get an array definition without panicking on an invalid or wrong-kind ID.
+    pub fn try_array_def(&self, array_id: ArrayTypeId) -> Option<(Type, u64)> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        match inner.types.get(array_id.0 as usize)? {
+            TypeData::Array { element, len } => {
+                Some((Self::interned_to_type_recursive(*element, &inner), *len))
+            }
+            _ => None,
         }
     }
 

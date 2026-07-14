@@ -1580,6 +1580,15 @@ impl<'a> CfgBuilder<'a> {
                     None => None,
                 };
 
+                // Unit has no runtime value. Keeping a path-local synthetic
+                // unit value on Return makes that operand appear to cross a
+                // join without a block parameter and violates SSA dominance.
+                let val = if self.cfg.return_type() == Type::UNIT {
+                    None
+                } else {
+                    val
+                };
+
                 // Emit drops for all live slots before returning
                 self.emit_drops_for_all_scopes(span);
 
@@ -1861,7 +1870,14 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::StorageLive { slot } => {
                 // Emit StorageLive to CFG
-                self.emit(CfgInstData::StorageLive { slot: *slot }, Type::UNIT, span);
+                self.emit(
+                    CfgInstData::StorageLive {
+                        slot: *slot,
+                        local_ty: ty,
+                    },
+                    Type::UNIT,
+                    span,
+                );
 
                 // Fresh storage holds a fresh (not-moved-out) value.
                 // Slots are not currently reused, so this is a no-op today,
@@ -1886,7 +1902,14 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::StorageDead { slot } => {
                 // StorageDead in AIR is a hint; CFG builder emits these at scope exit
                 // This case handles explicit StorageDead if any (currently unused)
-                self.emit(CfgInstData::StorageDead { slot: *slot }, Type::UNIT, span);
+                self.emit(
+                    CfgInstData::StorageDead {
+                        slot: *slot,
+                        local_ty: ty,
+                    },
+                    Type::UNIT,
+                    span,
+                );
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -2515,6 +2538,7 @@ impl<'a> CfgBuilder<'a> {
         self.emit(
             CfgInstData::StorageDead {
                 slot: live_slot.slot,
+                local_ty: live_slot.ty,
             },
             Type::UNIT,
             span,
