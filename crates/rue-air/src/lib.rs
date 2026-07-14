@@ -62,11 +62,12 @@ pub use sema::{
     SpecializedFreeFunctionOrigin,
 };
 pub use semantic_body::{
-    SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg, SemanticBodyDefinitionIdentity,
-    SemanticBodyDefinitionKind, SemanticBodyExport, SemanticBodyExportFailure,
-    SemanticBodyImportFailure, SemanticBodyInst, SemanticBodyInstData, SemanticBodyMatchArm,
-    SemanticBodyPattern, SemanticBodyPlace, SemanticBodyPlaceRef, SemanticBodyProjection,
-    SemanticBodyRef, SemanticBodyWarning, SemanticImportedBody,
+    SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg, SemanticBodyCandidate,
+    SemanticBodyCandidateInstallWork, SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind,
+    SemanticBodyExport, SemanticBodyExportFailure, SemanticBodyImportFailure, SemanticBodyInst,
+    SemanticBodyInstData, SemanticBodyMatchArm, SemanticBodyModuleIdentity, SemanticBodyPattern,
+    SemanticBodyPlace, SemanticBodyPlaceRef, SemanticBodyProjection, SemanticBodyRef,
+    SemanticBodyWarning, SemanticImportedBody,
 };
 pub use semantic_import::{
     SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,

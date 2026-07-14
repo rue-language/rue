@@ -748,6 +748,44 @@ impl Sema<'_> {
 }
 
 impl<'a> BoundSema<'a> {
+    /// Resolve durable keys into request-independent declaration identities and
+    /// stage candidates for the canonical reachable-body worklist. No AIR type,
+    /// instruction, string, nominal, or function ID is allocated here.
+    pub fn install_ordinary_body_candidates<K, M>(
+        mut self,
+        candidates: Vec<crate::SemanticBodyCandidate<K, M>>,
+        definition: impl Fn(&K) -> Option<crate::SemanticBodyDefinitionIdentity>,
+        module: impl Fn(&M) -> Option<FileId>,
+    ) -> Self
+    where
+        K: Clone + Ord,
+        M: Clone + Ord + AsRef<str>,
+    {
+        for candidate in candidates {
+            let mapped = candidate
+                .body
+                .try_map_keys(&|key| definition(key).ok_or(()), &|key| {
+                    module(key)
+                        .map(|file| crate::SemanticBodyModuleIdentity {
+                            file_id: file.index(),
+                            path: std::sync::Arc::from(key.as_ref()),
+                        })
+                        .ok_or(())
+                });
+            if let Ok(body) = mapped {
+                self.sema.reusable_ordinary_bodies.insert(
+                    candidate.owner,
+                    crate::SemanticBodyCandidate {
+                        owner: candidate.owner,
+                        body_span: candidate.body_span,
+                        body,
+                    },
+                );
+            }
+        }
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn source_free_function_signatures_are_complete(&self) -> bool {
         self.sema.source_free_function_signatures_are_complete()

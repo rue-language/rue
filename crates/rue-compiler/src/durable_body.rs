@@ -233,6 +233,8 @@ pub struct DurableOrdinaryBody {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DurableBodyWork {
+    pub candidate_comparisons: usize,
+    pub candidate_fallbacks: usize,
     pub export_attempts: usize,
     pub export_successes: usize,
     pub export_rejections: usize,

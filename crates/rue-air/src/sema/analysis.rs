@@ -58,6 +58,162 @@ pub(crate) fn analyze_all_function_bodies_with_work(
     result.map_err(|errors| super::BodyAnalysisFailure::new(errors, work))
 }
 
+fn import_staged_ordinary_body(
+    sema: &mut BodySema<'_>,
+    candidate: &crate::SemanticBodyCandidate<
+        crate::SemanticBodyDefinitionIdentity,
+        crate::SemanticBodyModuleIdentity,
+    >,
+    body_span: Span,
+) -> Result<crate::SemanticImportedBody, crate::SemanticBodyImportFailure> {
+    use crate::{SemanticBodyDefinitionKind as DK, SemanticBodyImportFailure as BF};
+    use crate::{
+        SemanticImportFailure as F, SemanticImportNominalKind as NK, SemanticImportType as T,
+    };
+
+    fn import_type(
+        sema: &BodySema<'_>,
+        pool: &crate::TypeInternPool,
+        value: &T<crate::SemanticBodyDefinitionIdentity, crate::SemanticBodyModuleIdentity>,
+    ) -> Result<Type, F> {
+        Ok(match value {
+            T::I8 => Type::I8,
+            T::I16 => Type::I16,
+            T::I32 => Type::I32,
+            T::I64 => Type::I64,
+            T::U8 => Type::U8,
+            T::U16 => Type::U16,
+            T::U32 => Type::U32,
+            T::U64 => Type::U64,
+            T::Bool => Type::BOOL,
+            T::Unit => Type::UNIT,
+            T::Never => Type::NEVER,
+            T::ComptimeType => Type::COMPTIME_TYPE,
+            T::BuiltinNominal { name, kind } => {
+                let symbol = sema
+                    .interner
+                    .get(name.as_ref())
+                    .ok_or(F::UnknownBuiltinNominal)?;
+                match kind {
+                    NK::Struct => Type::new_struct(
+                        *sema
+                            .builtin_structs
+                            .get(&symbol)
+                            .ok_or(F::UnknownBuiltinNominal)?,
+                    ),
+                    NK::Enum => Type::new_enum(
+                        *sema
+                            .builtin_enums
+                            .get(&symbol)
+                            .ok_or(F::UnknownBuiltinNominal)?,
+                    ),
+                }
+            }
+            T::Nominal(identity) => {
+                let symbol = sema
+                    .interner
+                    .get(identity.name.as_ref())
+                    .ok_or(F::MissingNominal)?;
+                match identity.kind {
+                    DK::Struct => Type::new_struct(
+                        *sema
+                            .structs_by_file_name
+                            .get(&(FileId::new(identity.file_id), symbol))
+                            .ok_or(F::MissingNominal)?,
+                    ),
+                    DK::Enum => Type::new_enum(
+                        *sema
+                            .enums_by_file_name
+                            .get(&(FileId::new(identity.file_id), symbol))
+                            .ok_or(F::MissingNominal)?,
+                    ),
+                    _ => return Err(F::NominalKindMismatch),
+                }
+            }
+            T::Array { element, len } => Type::new_array(
+                pool.intern_array_from_type(import_type(sema, pool, element)?, *len),
+            ),
+            T::PtrConst(value) => Type::new_ptr_const(
+                pool.intern_ptr_const_from_type(import_type(sema, pool, value)?),
+            ),
+            T::PtrMut(value) => {
+                Type::new_ptr_mut(pool.intern_ptr_mut_from_type(import_type(sema, pool, value)?))
+            }
+            T::Module(module) => {
+                let id = (0..sema.module_registry.len())
+                    .map(|i| ModuleId::new(i as u32))
+                    .find(|id| {
+                        sema.module_registry.get_def(*id).file_id == FileId::new(module.file_id)
+                    })
+                    .ok_or(F::MissingModule)?;
+                Type::new_module(id)
+            }
+            T::GenericParameter(_) => return Err(F::GenericParameterNeedsDeclarationContext),
+            T::Tuple(_) => return Err(F::UnsupportedTuple),
+            T::Function { .. } => return Err(F::UnsupportedFunctionType),
+        })
+    }
+
+    // Intrinsic symbols are required to pre-exist. This keeps every importer
+    // mutation inside the scratch type pool until the entire body validates.
+    if candidate.body.instructions.iter().any(|inst| matches!(&inst.data,
+        crate::SemanticBodyInstData::Intrinsic { name, .. } if sema.interner.get(name.as_ref()).is_none())) {
+        return Err(BF::Semantic(F::MissingFunction));
+    }
+    let scratch = sema.type_pool.clone();
+    let imported = crate::SemanticImportEpoch::import_body_with(
+        &candidate.body,
+        body_span,
+        |value| import_type(sema, &scratch, value),
+        |identity| {
+            if identity.kind != DK::Struct {
+                return Err(BF::WrongNominalKind);
+            }
+            let name = sema
+                .interner
+                .get(identity.name.as_ref())
+                .ok_or(BF::Semantic(F::MissingNominal))?;
+            sema.structs_by_file_name
+                .get(&(FileId::new(identity.file_id), name))
+                .copied()
+                .ok_or(BF::Semantic(F::MissingNominal))
+        },
+        |identity| {
+            if identity.kind != DK::Enum {
+                return Err(BF::WrongNominalKind);
+            }
+            let name = sema
+                .interner
+                .get(identity.name.as_ref())
+                .ok_or(BF::Semantic(F::MissingNominal))?;
+            sema.enums_by_file_name
+                .get(&(FileId::new(identity.file_id), name))
+                .copied()
+                .ok_or(BF::Semantic(F::MissingNominal))
+        },
+        |identity| {
+            if identity.kind != DK::FreeFunction {
+                return Err(BF::Semantic(F::MissingFunction));
+            }
+            let name = sema
+                .interner
+                .get(identity.name.as_ref())
+                .ok_or(BF::Semantic(F::MissingFunction))?;
+            sema.functions_by_file_name
+                .get(&(FileId::new(identity.file_id), name))
+                .copied()
+                .ok_or(BF::Semantic(F::MissingFunction))
+        },
+        |name| {
+            sema.interner
+                .get(name)
+                .expect("intrinsic symbols prevalidated")
+        },
+    )?;
+    sema.type_pool = scratch;
+    Ok(imported)
+}
+
 #[cfg(test)]
 pub(crate) fn analyze_all_function_bodies_with_namespace_probe(
     mut sema: BodySema<'_>,
@@ -823,6 +979,120 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
             debug_assert_eq!(span.file_id, fn_info.file_id);
 
             let params = sema.rir.get_params(params_start, params_len);
+
+            let ordinary_owner = sema.body_owner_token(
+                fn_info.file_id,
+                sema.interner.resolve(&source_name),
+                None,
+                super::BodyOwnerKind::FreeFunction,
+            );
+            if let Some(candidate) = sema.reusable_ordinary_bodies.remove(&ordinary_owner) {
+                sema.body_analysis_work.ordinary_body_import_attempts += 1;
+                let imported =
+                    import_staged_ordinary_body(sema, &candidate, sema.rir.get(body).span);
+                if let Ok(imported) = imported {
+                    sema.body_analysis_work.ordinary_body_import_successes += 1;
+                    sema.body_analysis_work
+                        .ordinary_body_import_instructions_installed += imported.air.len();
+                    sema.body_analysis_work
+                        .ordinary_body_import_places_installed += imported.air.places().len();
+                    sema.body_analysis_work
+                        .ordinary_body_import_strings_installed += imported.strings.len();
+                    sema.body_analysis_work.ordinary_bodies_reused += 1;
+                    sema.body_analysis_work.ordinary_body_analyses_skipped += 1;
+                    let referenced_fns = imported
+                        .air
+                        .instructions()
+                        .iter()
+                        .filter_map(|inst| match inst.data {
+                            crate::AirInstData::Call { name, .. }
+                                if sema.functions.contains_key(&name) =>
+                            {
+                                Some(name)
+                            }
+                            _ => None,
+                        })
+                        .collect::<HashSet<_>>();
+                    let mut ordered_referenced_fns =
+                        referenced_fns.iter().copied().collect::<Vec<_>>();
+                    ordered_referenced_fns
+                        .sort_by_key(|name| sema.interner.resolve(name).to_owned());
+                    let analyzed = AnalyzedFunction {
+                        name: fn_name_str,
+                        ordinary_owner: Some(ordinary_owner),
+                        implicit_drop_source: Some(
+                            super::ImplicitDropDependencySourceEvent::FreeFunction {
+                                token: ordinary_owner,
+                                file: fn_info.file_id.index(),
+                                name: sema.interner.resolve(&source_name).to_string(),
+                            },
+                        ),
+                        air: imported.air,
+                        num_locals: imported.num_locals,
+                        num_param_slots: imported.num_param_slots,
+                        param_modes: imported.param_modes,
+                        allow_unreachable_code: imported.allow_unreachable_code,
+                    };
+                    sema.analyzed_body_owners
+                        .push(super::AnalyzedBodyOwnerEvent::FreeFunction {
+                            token: ordinary_owner,
+                            file: fn_info.file_id.index(),
+                            name: sema.interner.resolve(&source_name).to_string(),
+                        });
+                    for callee in &ordered_referenced_fns {
+                        let callee_info = sema.functions[callee];
+                        sema.ordinary_free_function_dependencies.push(
+                            super::OrdinaryFreeFunctionDependencyEvent {
+                                caller_token: ordinary_owner,
+                                caller_file: fn_info.file_id.index(),
+                                caller_name: sema.interner.resolve(&source_name).to_string(),
+                                callee_file: callee_info.file_id.index(),
+                                callee_name: sema
+                                    .interner
+                                    .resolve(&sema.source_function_name(*callee))
+                                    .to_string(),
+                            },
+                        );
+                        sema.body_analysis_work
+                            .ordinary_free_function_dependency_events += 1;
+                    }
+                    sema.body_analysis_work.ordinary_body_exports_attempted += 1;
+                    match sema.export_ordinary_body(
+                        ordinary_owner,
+                        sema.rir.get(body).span,
+                        &analyzed,
+                        &imported.strings,
+                        &[],
+                    ) {
+                        Ok(export) => {
+                            sema.body_analysis_work.ordinary_body_exports_succeeded += 1;
+                            sema.body_analysis_work
+                                .ordinary_body_export_instructions_emitted +=
+                                export.body.instructions.len();
+                            sema.body_analysis_work.ordinary_body_export_places_emitted +=
+                                export.body.places.len();
+                            sema.body_analysis_work.ordinary_body_export_strings_emitted +=
+                                export.body.strings.len();
+                            sema.ordinary_body_exports.push(export);
+                        }
+                        Err(_) => sema.body_analysis_work.ordinary_body_exports_rejected += 1,
+                    }
+                    functions_with_strings.push((analyzed, imported.strings));
+                    enqueue_references_sorted(
+                        sema.interner,
+                        referenced_fns,
+                        HashSet::new(),
+                        &analyzed_functions,
+                        &analyzed_methods,
+                        &mut pending_functions,
+                        &mut pending_methods,
+                    );
+                    continue;
+                } else {
+                    sema.body_analysis_work.ordinary_body_import_failures += 1;
+                    sema.body_analysis_work.ordinary_body_import_atomic_discards += 1;
+                }
+            }
 
             sema.body_analysis_work.bodies_attempted += 1;
             let previous_type_observer = sema.declaration_type_observer.replace((

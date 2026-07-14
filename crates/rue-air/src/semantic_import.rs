@@ -163,6 +163,45 @@ where
         body: &SemanticBody<K, M>,
         body_span: Span,
     ) -> Result<SemanticImportedBody, SemanticBodyImportFailure> {
+        Self::import_body_with(
+            body,
+            body_span,
+            |ty| self.import_type_local(ty),
+            |key| match self.nominals.get(key) {
+                Some(LocalNominal::Struct(id)) => Ok(*id),
+                Some(LocalNominal::Enum(_)) => Err(SemanticBodyImportFailure::WrongNominalKind),
+                None => Err(SemanticBodyImportFailure::Semantic(
+                    SemanticImportFailure::MissingNominal,
+                )),
+            },
+            |key| match self.nominals.get(key) {
+                Some(LocalNominal::Enum(id)) => Ok(*id),
+                Some(LocalNominal::Struct(_)) => Err(SemanticBodyImportFailure::WrongNominalKind),
+                None => Err(SemanticBodyImportFailure::Semantic(
+                    SemanticImportFailure::MissingNominal,
+                )),
+            },
+            |key| {
+                self.functions
+                    .get(key)
+                    .copied()
+                    .ok_or(SemanticBodyImportFailure::Semantic(
+                        SemanticImportFailure::MissingFunction,
+                    ))
+            },
+            |name| self.interner.get_or_intern(name),
+        )
+    }
+
+    pub(crate) fn import_body_with(
+        body: &SemanticBody<K, M>,
+        body_span: Span,
+        import_type: impl Fn(&SemanticImportType<K, M>) -> Result<Type, SemanticImportFailure>,
+        struct_id: impl Fn(&K) -> Result<StructId, SemanticBodyImportFailure>,
+        enum_id: impl Fn(&K) -> Result<EnumId, SemanticBodyImportFailure>,
+        resolve_function: impl Fn(&K) -> Result<Spur, SemanticBodyImportFailure>,
+        intern: impl Fn(&str) -> Spur,
+    ) -> Result<SemanticImportedBody, SemanticBodyImportFailure> {
         use SemanticBodyImportFailure as F;
         let body_len = body_span
             .end
@@ -209,7 +248,7 @@ where
         {
             return Err(F::InvalidBorrowSlot);
         }
-        let return_type = self.import_type_local(&body.return_type)?;
+        let return_type = import_type(&body.return_type).map_err(F::Semantic)?;
         let mut air = Air::new(return_type);
         let inst_len = body.instructions.len();
         let place_len = body.places.len();
@@ -223,18 +262,8 @@ where
             }
             Ok(AirRef::from_raw(r))
         };
-        let struct_id = |key: &K| match self.nominals.get(key) {
-            Some(LocalNominal::Struct(id)) => Ok(*id),
-            Some(LocalNominal::Enum(_)) => Err(F::WrongNominalKind),
-            None => Err(F::Semantic(SemanticImportFailure::MissingNominal)),
-        };
-        let enum_id = |key: &K| match self.nominals.get(key) {
-            Some(LocalNominal::Enum(id)) => Ok(*id),
-            Some(LocalNominal::Struct(_)) => Err(F::WrongNominalKind),
-            None => Err(F::Semantic(SemanticImportFailure::MissingNominal)),
-        };
         for place in body.places.iter() {
-            let base_type = self.import_type_local(&place.base_type)?;
+            let base_type = import_type(&place.base_type).map_err(F::Semantic)?;
             let mut projections = Vec::with_capacity(place.projections.len());
             for projection in place.projections.iter() {
                 projections.push(match projection {
@@ -250,7 +279,7 @@ where
                             return Err(F::InvalidInstructionReference);
                         }
                         AirProjection::Index {
-                            array_type: self.import_type_local(array_type)?,
+                            array_type: import_type(array_type).map_err(F::Semantic)?,
                             index: AirRef::from_raw(*index),
                         }
                     }
@@ -294,7 +323,7 @@ where
                 }
                 SemanticBodyInstData::UnitConst => AirInstData::UnitConst,
                 SemanticBodyInstData::TypeConst(v) => {
-                    AirInstData::TypeConst(self.import_type_local(v)?)
+                    AirInstData::TypeConst(import_type(v).map_err(F::Semantic)?)
                 }
                 SemanticBodyInstData::Add(a, b) => binary(*a, *b, AirInstData::Add)?,
                 SemanticBodyInstData::Sub(a, b) => binary(*a, *b, AirInstData::Sub)?,
@@ -374,10 +403,7 @@ where
                 },
                 SemanticBodyInstData::Ret(v) => AirInstData::Ret(v.map(r).transpose()?),
                 SemanticBodyInstData::Call { function, args } => {
-                    let name = *self
-                        .functions
-                        .get(function)
-                        .ok_or(F::Semantic(SemanticImportFailure::MissingFunction))?;
+                    let name = resolve_function(function)?;
                     let (s, l) = call_args(&mut air, args, current)?;
                     AirInstData::Call {
                         name,
@@ -387,7 +413,7 @@ where
                 }
                 SemanticBodyInstData::CallGeneric => return Err(F::UnsupportedGenericCall),
                 SemanticBodyInstData::Intrinsic { name, args } => {
-                    let name = self.interner.get_or_intern(name.as_ref());
+                    let name = intern(name.as_ref());
                     if args.iter().any(|arg| arg.mode != crate::AirArgMode::Normal) {
                         return Err(F::InvalidParameterModes);
                     }
@@ -481,7 +507,7 @@ where
                 },
                 SemanticBodyInstData::IntCast { value, from_ty } => AirInstData::IntCast {
                     value: r(*value)?,
-                    from_ty: self.import_type_local(from_ty)?,
+                    from_ty: import_type(from_ty).map_err(F::Semantic)?,
                 },
                 SemanticBodyInstData::Drop { value } => AirInstData::Drop { value: r(*value)? },
                 SemanticBodyInstData::StorageLive { slot } => {
@@ -509,13 +535,13 @@ where
             };
             air.add_inst(AirInst {
                 data,
-                ty: self.import_type_local(&inst.ty)?,
+                ty: import_type(&inst.ty).map_err(F::Semantic)?,
                 span,
             });
         }
         let mut drops = Vec::with_capacity(body.param_drops.len());
         for (slot, ty) in body.param_drops.iter() {
-            drops.push((*slot, self.import_type_local(ty)?));
+            drops.push((*slot, import_type(ty).map_err(F::Semantic)?));
         }
         air.set_param_drops(drops);
         for slot in body.borrow_slots.iter() {

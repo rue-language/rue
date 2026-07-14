@@ -28,6 +28,18 @@ pub struct SemanticBodyDefinitionIdentity {
     pub owner: Option<Arc<str>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticBodyModuleIdentity {
+    pub file_id: u32,
+    pub path: Arc<str>,
+}
+
+impl AsRef<str> for SemanticBodyModuleIdentity {
+    fn as_ref(&self) -> &str {
+        &self.path
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticBodyExport {
     pub owner: BodyOwnerToken,
@@ -257,6 +269,289 @@ pub struct SemanticBody<K, M> {
     pub warnings: Arc<[SemanticBodyWarning]>,
 }
 
+impl<K, M> SemanticBody<K, M> {
+    /// Replace request-independent definition and module keys without creating
+    /// any epoch-local AIR values.
+    pub fn try_map_keys<K2, M2, E>(
+        &self,
+        key: &impl Fn(&K) -> Result<K2, E>,
+        module: &impl Fn(&M) -> Result<M2, E>,
+    ) -> Result<SemanticBody<K2, M2>, E> {
+        fn ty<K, M, K2, M2, E>(
+            value: &SemanticImportType<K, M>,
+            key: &impl Fn(&K) -> Result<K2, E>,
+            module: &impl Fn(&M) -> Result<M2, E>,
+        ) -> Result<SemanticImportType<K2, M2>, E> {
+            use SemanticImportType as T;
+            Ok(match value {
+                T::I8 => T::I8,
+                T::I16 => T::I16,
+                T::I32 => T::I32,
+                T::I64 => T::I64,
+                T::U8 => T::U8,
+                T::U16 => T::U16,
+                T::U32 => T::U32,
+                T::U64 => T::U64,
+                T::Bool => T::Bool,
+                T::Unit => T::Unit,
+                T::Never => T::Never,
+                T::ComptimeType => T::ComptimeType,
+                T::BuiltinNominal { name, kind } => T::BuiltinNominal {
+                    name: name.clone(),
+                    kind: *kind,
+                },
+                T::Nominal(value) => T::Nominal(key(value)?),
+                T::Array { element, len } => T::Array {
+                    element: Box::new(ty(element, key, module)?),
+                    len: *len,
+                },
+                T::PtrConst(value) => T::PtrConst(Box::new(ty(value, key, module)?)),
+                T::PtrMut(value) => T::PtrMut(Box::new(ty(value, key, module)?)),
+                T::Module(value) => T::Module(module(value)?),
+                T::GenericParameter(index) => T::GenericParameter(*index),
+                T::Tuple(values) => T::Tuple(
+                    values
+                        .iter()
+                        .map(|value| ty(value, key, module))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
+                ),
+                T::Function { parameters, result } => T::Function {
+                    parameters: parameters
+                        .iter()
+                        .map(|value| ty(value, key, module))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
+                    result: Box::new(ty(result, key, module)?),
+                },
+            })
+        }
+
+        fn pattern<K, K2, E>(
+            value: &SemanticBodyPattern<K>,
+            key: &impl Fn(&K) -> Result<K2, E>,
+        ) -> Result<SemanticBodyPattern<K2>, E> {
+            Ok(match value {
+                SemanticBodyPattern::Wildcard => SemanticBodyPattern::Wildcard,
+                SemanticBodyPattern::Int(value) => SemanticBodyPattern::Int(*value),
+                SemanticBodyPattern::Bool(value) => SemanticBodyPattern::Bool(*value),
+                SemanticBodyPattern::EnumVariant {
+                    enum_key,
+                    variant_index,
+                } => SemanticBodyPattern::EnumVariant {
+                    enum_key: key(enum_key)?,
+                    variant_index: *variant_index,
+                },
+            })
+        }
+
+        let places = self
+            .places
+            .iter()
+            .map(|place| {
+                Ok(SemanticBodyPlace {
+                    base: place.base,
+                    base_type: ty(&place.base_type, key, module)?,
+                    projections: place
+                        .projections
+                        .iter()
+                        .map(|projection| {
+                            Ok(match projection {
+                                SemanticBodyProjection::Field {
+                                    struct_key,
+                                    field_index,
+                                } => SemanticBodyProjection::Field {
+                                    struct_key: key(struct_key)?,
+                                    field_index: *field_index,
+                                },
+                                SemanticBodyProjection::Index { array_type, index } => {
+                                    SemanticBodyProjection::Index {
+                                        array_type: ty(array_type, key, module)?,
+                                        index: *index,
+                                    }
+                                }
+                            })
+                        })
+                        .collect::<Result<Vec<_>, E>>()?
+                        .into(),
+                })
+            })
+            .collect::<Result<Vec<_>, E>>()?;
+
+        use SemanticBodyInstData as D;
+        let instructions = self
+            .instructions
+            .iter()
+            .map(|inst| {
+                let data = match &inst.data {
+                    D::Const(v) => D::Const(*v),
+                    D::BoolConst(v) => D::BoolConst(*v),
+                    D::StringConst(v) => D::StringConst(*v),
+                    D::UnitConst => D::UnitConst,
+                    D::TypeConst(v) => D::TypeConst(ty(v, key, module)?),
+                    D::Add(a, b) => D::Add(*a, *b),
+                    D::Sub(a, b) => D::Sub(*a, *b),
+                    D::Mul(a, b) => D::Mul(*a, *b),
+                    D::Div(a, b) => D::Div(*a, *b),
+                    D::Mod(a, b) => D::Mod(*a, *b),
+                    D::Eq(a, b) => D::Eq(*a, *b),
+                    D::Ne(a, b) => D::Ne(*a, *b),
+                    D::Lt(a, b) => D::Lt(*a, *b),
+                    D::Gt(a, b) => D::Gt(*a, *b),
+                    D::Le(a, b) => D::Le(*a, *b),
+                    D::Ge(a, b) => D::Ge(*a, *b),
+                    D::And(a, b) => D::And(*a, *b),
+                    D::Or(a, b) => D::Or(*a, *b),
+                    D::BitAnd(a, b) => D::BitAnd(*a, *b),
+                    D::BitOr(a, b) => D::BitOr(*a, *b),
+                    D::BitXor(a, b) => D::BitXor(*a, *b),
+                    D::Shl(a, b) => D::Shl(*a, *b),
+                    D::Shr(a, b) => D::Shr(*a, *b),
+                    D::Neg(v) => D::Neg(*v),
+                    D::Not(v) => D::Not(*v),
+                    D::BitNot(v) => D::BitNot(*v),
+                    D::Branch {
+                        cond,
+                        then_value,
+                        else_value,
+                    } => D::Branch {
+                        cond: *cond,
+                        then_value: *then_value,
+                        else_value: *else_value,
+                    },
+                    D::Loop { cond, body } => D::Loop {
+                        cond: *cond,
+                        body: *body,
+                    },
+                    D::InfiniteLoop { body } => D::InfiniteLoop { body: *body },
+                    D::Match { scrutinee, arms } => D::Match {
+                        scrutinee: *scrutinee,
+                        arms: arms
+                            .iter()
+                            .map(|arm| {
+                                Ok(SemanticBodyMatchArm {
+                                    pattern: pattern(&arm.pattern, key)?,
+                                    body: arm.body,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, E>>()?
+                            .into(),
+                    },
+                    D::Break => D::Break,
+                    D::Continue => D::Continue,
+                    D::Alloc { slot, init } => D::Alloc {
+                        slot: *slot,
+                        init: *init,
+                    },
+                    D::Load { slot } => D::Load { slot: *slot },
+                    D::Store { slot, value } => D::Store {
+                        slot: *slot,
+                        value: *value,
+                    },
+                    D::ParamStore { param_slot, value } => D::ParamStore {
+                        param_slot: *param_slot,
+                        value: *value,
+                    },
+                    D::Ret(v) => D::Ret(*v),
+                    D::Call { function, args } => D::Call {
+                        function: key(function)?,
+                        args: args.clone(),
+                    },
+                    D::CallGeneric => D::CallGeneric,
+                    D::Intrinsic { name, args } => D::Intrinsic {
+                        name: name.clone(),
+                        args: args.clone(),
+                    },
+                    D::Param { index } => D::Param { index: *index },
+                    D::Block { statements, value } => D::Block {
+                        statements: statements.clone(),
+                        value: *value,
+                    },
+                    D::StructInit {
+                        struct_key,
+                        fields,
+                        source_order,
+                    } => D::StructInit {
+                        struct_key: key(struct_key)?,
+                        fields: fields.clone(),
+                        source_order: source_order.clone(),
+                    },
+                    D::ArrayInit { elements } => D::ArrayInit {
+                        elements: elements.clone(),
+                    },
+                    D::PlaceRead { place } => D::PlaceRead { place: *place },
+                    D::PlaceWrite { place, value } => D::PlaceWrite {
+                        place: *place,
+                        value: *value,
+                    },
+                    D::EnumVariant {
+                        enum_key,
+                        variant_index,
+                        payload,
+                    } => D::EnumVariant {
+                        enum_key: key(enum_key)?,
+                        variant_index: *variant_index,
+                        payload: payload.clone(),
+                    },
+                    D::EnumPayloadGet {
+                        base,
+                        enum_key,
+                        variant_index,
+                        field_index,
+                    } => D::EnumPayloadGet {
+                        base: *base,
+                        enum_key: key(enum_key)?,
+                        variant_index: *variant_index,
+                        field_index: *field_index,
+                    },
+                    D::IntCast { value, from_ty } => D::IntCast {
+                        value: *value,
+                        from_ty: ty(from_ty, key, module)?,
+                    },
+                    D::Drop { value } => D::Drop { value: *value },
+                    D::StorageLive { slot } => D::StorageLive { slot: *slot },
+                    D::StorageDead { slot } => D::StorageDead { slot: *slot },
+                    D::MarkMoved {
+                        value,
+                        slot,
+                        is_param,
+                        place,
+                    } => D::MarkMoved {
+                        value: *value,
+                        slot: *slot,
+                        is_param: *is_param,
+                        place: *place,
+                    },
+                };
+                Ok(SemanticBodyInst {
+                    data,
+                    ty: ty(&inst.ty, key, module)?,
+                    anchor: inst.anchor,
+                })
+            })
+            .collect::<Result<Vec<_>, E>>()?;
+        Ok(SemanticBody {
+            return_type: ty(&self.return_type, key, module)?,
+            instructions: instructions.into(),
+            places: places.into(),
+            strings: self.strings.clone(),
+            param_drops: self
+                .param_drops
+                .iter()
+                .map(|(slot, value)| Ok((*slot, ty(value, key, module)?)))
+                .collect::<Result<Vec<_>, E>>()?
+                .into(),
+            borrow_slots: self.borrow_slots.clone(),
+            num_locals: self.num_locals,
+            num_param_slots: self.num_param_slots,
+            param_by_ref: self.param_by_ref.clone(),
+            param_writable: self.param_writable.clone(),
+            allow_unreachable_code: self.allow_unreachable_code,
+            warnings: self.warnings.clone(),
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct SemanticImportedBody {
     pub air: Air,
@@ -266,6 +561,23 @@ pub struct SemanticImportedBody {
     pub param_modes: ParamSlotModes,
     pub allow_unreachable_code: bool,
     pub warnings: Arc<[SemanticBodyWarning]>,
+}
+
+#[derive(Debug)]
+pub struct SemanticBodyCandidate<K, M> {
+    pub owner: crate::BodyOwnerToken,
+    pub body_span: rue_span::Span,
+    pub body: SemanticBody<K, M>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SemanticBodyCandidateInstallWork {
+    pub attempts: usize,
+    pub successes: usize,
+    pub failures: usize,
+    pub instructions_installed: usize,
+    pub places_installed: usize,
+    pub strings_installed: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
