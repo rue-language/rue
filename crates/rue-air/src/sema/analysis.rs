@@ -691,6 +691,30 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
         }
     };
 
+    // The runtime invokes `main` directly using a fixed zero-argument ABI.
+    // Validate that boundary before body analysis so an invalid declaration
+    // cannot be skipped as a generic specialization or reach codegen.
+    let main_info = sema
+        .functions
+        .get(&main_sym)
+        .expect("main was found in the function table");
+    if !main_info.params.is_empty() {
+        return Err(CompileErrors::from(CompileError::new(
+            ErrorKind::InvalidMainSignature {
+                reason: "`main` must not declare parameters",
+            },
+            main_info.span,
+        )));
+    }
+    if !matches!(main_info.return_type, Type::I32 | Type::UNIT) {
+        return Err(CompileErrors::from(CompileError::new(
+            ErrorKind::InvalidMainSignature {
+                reason: "`main` must return `i32` or `()`",
+            },
+            main_info.span,
+        )));
+    }
+
     // Work queue: functions/methods to analyze
     // Start with main()
     let mut pending_functions: Vec<Spur> = vec![main_sym];

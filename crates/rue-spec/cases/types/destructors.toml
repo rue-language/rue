@@ -628,9 +628,9 @@ cfg main (return_type: i32) {
 name = "cfg_early_return_drops"
 description = "CFG shows StorageDead before early return"
 source = """
-fn main(cond: bool) -> i32 {
+fn main() -> i32 {
     let a = 1;
-    if cond {
+    if true {
         return 42;
     }
     a
@@ -642,7 +642,7 @@ cfg main (return_type: i32) {
     v0 : () = storage_live $0
     v1 : i32 = const 1
     v2 : () = alloc $0 = v1
-    v3 : bool = param 0
+    v3 : bool = const true
     branch v3, bb1, bb2
 
   bb1:

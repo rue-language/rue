@@ -117,6 +117,11 @@ impl ErrorCode {
     /// grants exclusive access to the caller's bytes; it is not a first-class
     /// string header that may be rebound (RUE-641).
     pub const STR_VIEW_REASSIGNMENT: Self = Self(210);
+    /// The executable entry point has parameters or a return type other than
+    /// `i32` or `()` (spec 6.1:8, RUE-778). The runtime calls `main` with no
+    /// arguments and consumes either its status code or the unit value, so a
+    /// different source signature would violate the entry ABI.
+    pub const INVALID_MAIN_SIGNATURE: Self = Self(211);
 
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
@@ -1094,6 +1099,9 @@ pub enum ErrorKind {
     // Semantic errors
     #[error("no main function found")]
     NoMainFunction,
+    /// The `main` declaration does not match the runtime entry ABI (RUE-778).
+    #[error("invalid main function signature: {reason}")]
+    InvalidMainSignature { reason: &'static str },
     #[error("undefined variable '{0}'")]
     UndefinedVariable(String),
     #[error("undefined function '{0}'")]
@@ -1620,6 +1628,7 @@ impl ErrorKind {
 
             // Semantic errors (E0200-E0399)
             ErrorKind::NoMainFunction => ErrorCode::NO_MAIN_FUNCTION,
+            ErrorKind::InvalidMainSignature { .. } => ErrorCode::INVALID_MAIN_SIGNATURE,
             ErrorKind::UndefinedVariable(_) => ErrorCode::UNDEFINED_VARIABLE,
             ErrorKind::UndefinedFunction(_) => ErrorCode::UNDEFINED_FUNCTION,
             ErrorKind::AssignToImmutable(_) => ErrorCode::ASSIGN_TO_IMMUTABLE,

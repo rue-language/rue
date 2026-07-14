@@ -1,0 +1,60 @@
+[section]
+id = "cli.entry_point_contract"
+name = "Executable entry point contract"
+description = "The source main signature must match the fixed zero-argument runtime entry ABI (RUE-778)."
+
+[[case]]
+name = "i32_main_runs"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 42 }" }]
+exit_code = 42
+
+[[case]]
+name = "unit_main_runs"
+files = [{ path = "main.rue", source = "fn main() {}" }]
+exit_code = 0
+
+[[case]]
+name = "runtime_parameter_is_rejected_before_codegen"
+files = [{ path = "main.rue", source = "fn main(value: i32) -> i32 { value }" }]
+compile_fail = true
+error_contains = ["E0211", "main.rue:", "`main` must not declare parameters"]
+
+[[case]]
+name = "comptime_parameter_is_rejected_before_specialization"
+files = [{ path = "main.rue", source = "fn main(comptime T: type) -> i32 { 0 }" }]
+compile_fail = true
+error_contains = ["E0211", "main.rue:", "`main` must not declare parameters"]
+
+[[case]]
+name = "non_abi_return_is_rejected_before_codegen"
+files = [{ path = "main.rue", source = "fn main() -> bool { true }" }]
+compile_fail = true
+error_contains = ["E0211", "main.rue:", "`main` must return `i32` or `()`"]
+
+[[case]]
+name = "unit_main_aarch64_entry_abi"
+files = [{ path = "main.rue", source = "fn main() {}" }]
+args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:", "bl __rue_exit"]
+
+[[case]]
+name = "unit_main_x86_64_entry_abi"
+files = [{ path = "main.rue", source = "fn main() {}" }]
+args = ["--emit", "asm", "--target", "x86-64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (x86-64-linux) ===", "main:", "call __rue_exit"]
+
+[[case]]
+name = "invalid_main_rejected_for_aarch64_target"
+files = [{ path = "main.rue", source = "fn main(value: i32) -> i32 { value }" }]
+args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+compile_fail = true
+error_contains = ["E0211", "`main` must not declare parameters"]
+
+[[case]]
+name = "invalid_main_rejected_for_x86_64_target"
+files = [{ path = "main.rue", source = "fn main(value: i32) -> i32 { value }" }]
+args = ["--emit", "asm", "--target", "x86-64-linux", "main.rue"]
+compile_fail = true
+error_contains = ["E0211", "`main` must not declare parameters"]

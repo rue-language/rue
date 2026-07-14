@@ -257,7 +257,11 @@ A program **MUST** have a function named `main`.
 
 {{ rule(id="6.1:8", cat="legality-rule") }}
 
-The `main` function **MUST** return either `i32` or `()`. When it returns `i32`, that value becomes the program's exit code. When it returns `()`, the exit code is 0.
+The `main` function **MUST** declare no parameters, including `comptime`
+parameters, and **MUST** return either `i32` or `()`. Thus `main` is never a
+generic function and the runtime can invoke it using the executable entry ABI
+without supplying source-level arguments. When it returns `i32`, that value
+becomes the program's exit code. When it returns `()`, the exit code is 0.
 
 Programs can also terminate explicitly through the standard library:
 `std.exit(code)` terminates the process immediately with the provided `u64`

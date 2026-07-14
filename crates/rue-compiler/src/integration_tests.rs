@@ -27,18 +27,18 @@ mod integration_tests {
 
         #[test]
         fn signed_integer_return() {
-            assert!(test_air("fn main() -> i8 { 42 }").is_ok());
-            assert!(test_air("fn main() -> i16 { 42 }").is_ok());
+            assert!(test_air("fn value() -> i8 { 42 } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> i16 { 42 } fn main() { value(); }").is_ok());
             assert!(test_air("fn main() -> i32 { 42 }").is_ok());
-            assert!(test_air("fn main() -> i64 { 42 }").is_ok());
+            assert!(test_air("fn value() -> i64 { 42 } fn main() { value(); }").is_ok());
         }
 
         #[test]
         fn unsigned_integer_return() {
-            assert!(test_air("fn main() -> u8 { 42 }").is_ok());
-            assert!(test_air("fn main() -> u16 { 42 }").is_ok());
-            assert!(test_air("fn main() -> u32 { 42 }").is_ok());
-            assert!(test_air("fn main() -> u64 { 42 }").is_ok());
+            assert!(test_air("fn value() -> u8 { 42 } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> u16 { 42 } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> u32 { 42 } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> u64 { 42 } fn main() { value(); }").is_ok());
         }
 
         #[test]
@@ -52,7 +52,7 @@ mod integration_tests {
         #[test]
         fn integer_literal_type_inference() {
             // Type inferred from return type
-            assert!(test_air("fn main() -> i64 { 100 }").is_ok());
+            assert!(test_air("fn value() -> i64 { 100 } fn main() { value(); }").is_ok());
             // Type inferred from annotation
             assert!(test_air("fn main() -> i32 { let x: i64 = 100; 0 }").is_ok());
         }
@@ -67,8 +67,8 @@ mod integration_tests {
 
         #[test]
         fn boolean_literals() {
-            assert!(test_air("fn main() -> bool { true }").is_ok());
-            assert!(test_air("fn main() -> bool { false }").is_ok());
+            assert!(test_air("fn value() -> bool { true } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> bool { false } fn main() { value(); }").is_ok());
         }
 
         #[test]
@@ -163,9 +163,9 @@ mod integration_tests {
 
         #[test]
         fn unsigned_arithmetic() {
-            assert!(test_air("fn main() -> u32 { 10 + 5 }").is_ok());
-            assert!(test_air("fn main() -> u32 { 10 - 5 }").is_ok());
-            assert!(test_air("fn main() -> u32 { 10 * 5 }").is_ok());
+            assert!(test_air("fn value() -> u32 { 10 + 5 } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> u32 { 10 - 5 } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> u32 { 10 * 5 } fn main() { value(); }").is_ok());
         }
     }
 
@@ -178,22 +178,24 @@ mod integration_tests {
 
         #[test]
         fn equality_comparison() {
-            assert!(test_air("fn main() -> bool { 1 == 1 }").is_ok());
-            assert!(test_air("fn main() -> bool { 1 != 2 }").is_ok());
+            assert!(test_air("fn value() -> bool { 1 == 1 } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> bool { 1 != 2 } fn main() { value(); }").is_ok());
         }
 
         #[test]
         fn ordering_comparison() {
-            assert!(test_air("fn main() -> bool { 1 < 2 }").is_ok());
-            assert!(test_air("fn main() -> bool { 2 > 1 }").is_ok());
-            assert!(test_air("fn main() -> bool { 1 <= 2 }").is_ok());
-            assert!(test_air("fn main() -> bool { 2 >= 1 }").is_ok());
+            assert!(test_air("fn value() -> bool { 1 < 2 } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> bool { 2 > 1 } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> bool { 1 <= 2 } fn main() { value(); }").is_ok());
+            assert!(test_air("fn value() -> bool { 2 >= 1 } fn main() { value(); }").is_ok());
         }
 
         #[test]
         fn boolean_equality() {
-            assert!(test_air("fn main() -> bool { true == true }").is_ok());
-            assert!(test_air("fn main() -> bool { true != false }").is_ok());
+            assert!(test_air("fn value() -> bool { true == true } fn main() { value(); }").is_ok());
+            assert!(
+                test_air("fn value() -> bool { true != false } fn main() { value(); }").is_ok()
+            );
         }
 
         #[test]
@@ -204,7 +206,7 @@ mod integration_tests {
 
         #[test]
         fn mixed_type_comparison_rejected() {
-            let result = test_air("fn main() -> bool { 1 == true }");
+            let result = test_air("fn value() -> bool { 1 == true } fn main() { value(); }");
             assert!(result.is_err());
         }
     }
@@ -218,27 +220,34 @@ mod integration_tests {
 
         #[test]
         fn logical_and() {
-            assert!(test_cfg("fn main() -> bool { true && false }").is_ok());
+            assert!(
+                test_cfg("fn value() -> bool { true && false } fn main() { value(); }").is_ok()
+            );
         }
 
         #[test]
         fn logical_or() {
-            assert!(test_cfg("fn main() -> bool { true || false }").is_ok());
+            assert!(
+                test_cfg("fn value() -> bool { true || false } fn main() { value(); }").is_ok()
+            );
         }
 
         #[test]
         fn logical_not() {
-            assert!(test_air("fn main() -> bool { !true }").is_ok());
+            assert!(test_air("fn value() -> bool { !true } fn main() { value(); }").is_ok());
         }
 
         #[test]
         fn chained_logical() {
-            assert!(test_cfg("fn main() -> bool { true && false || true }").is_ok());
+            assert!(
+                test_cfg("fn value() -> bool { true && false || true } fn main() { value(); }")
+                    .is_ok()
+            );
         }
 
         #[test]
         fn logical_with_non_bool_rejected() {
-            let result = test_air("fn main() -> bool { 1 && true }");
+            let result = test_air("fn value() -> bool { 1 && true } fn main() { value(); }");
             assert!(result.is_err());
         }
     }
@@ -282,7 +291,7 @@ mod integration_tests {
 
         #[test]
         fn bitwise_on_bool_rejected() {
-            let result = test_air("fn main() -> bool { true & false }");
+            let result = test_air("fn value() -> bool { true & false } fn main() { value(); }");
             assert!(result.is_err());
         }
     }
@@ -318,7 +327,8 @@ mod integration_tests {
 
         #[test]
         fn if_result_type_checked() {
-            let result = test_air("fn main() -> bool { if true { 1 } else { 0 } }");
+            let result =
+                test_air("fn value() -> bool { if true { 1 } else { 0 } } fn main() { value(); }");
             assert!(result.is_err());
         }
     }
@@ -496,7 +506,7 @@ mod integration_tests {
 
         #[test]
         fn shadowing_can_change_type() {
-            let src = "fn main() -> bool { let x = 1; let x = true; x }";
+            let src = "fn value() -> bool { let x = 1; let x = true; x } fn main() { value(); }";
             assert!(test_air(src).is_ok());
         }
 
@@ -673,11 +683,12 @@ mod integration_tests {
         fn struct_equality() {
             let src = r#"
                 struct Point { x: i32, y: i32 }
-                fn main() -> bool {
+                fn equal() -> bool {
                     let a = Point { x: 1, y: 2 };
                     let b = Point { x: 1, y: 2 };
                     a == b
                 }
+                fn main() { equal(); }
             "#;
             assert!(test_air(src).is_ok());
         }

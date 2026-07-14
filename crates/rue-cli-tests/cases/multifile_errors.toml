@@ -124,7 +124,7 @@ pub fn helper() -> i64 {
 }
 """ },
     { path = "main.rue", source = """
-fn main() -> i64 {
+fn main() -> i32 {
     if 1 + 2 {
         return 1;
     }
@@ -150,7 +150,7 @@ pub fn helper() -> i64 {
 }
 """ },
     { path = "main.rue", source = """
-fn main() -> i64 {
+fn main() -> i32 {
     if 1 + 2 {
         return 1;
     }
@@ -177,7 +177,7 @@ pub fn helper() -> i64 {
 }
 """ },
     { path = "main.rue", source = """
-fn main() -> i64 {
+fn main() -> i32 {
     if -1 {
         return 1;
     }
@@ -204,10 +204,10 @@ pub fn helper() -> i64 {
 """ },
     { path = "main.rue", source = """
 struct P { x: i64 }
-fn main() -> i64 {
+fn main() -> i32 {
     let mut p = P { x: 1 };
     p.x = true;
-    return p.x;
+    return 0;
 }
 """ },
 ]
@@ -230,7 +230,7 @@ pub fn helper() -> i64 {
 }
 """ },
     { path = "main.rue", source = """
-fn main() -> i64 {
+fn main() -> i32 {
     let mut a = [1, 2, 3];
     let i = a[0] && true;
     return 0;

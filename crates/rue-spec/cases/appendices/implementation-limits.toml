@@ -11,25 +11,25 @@ description = "Tests for implementation-defined limits and boundaries."
 [[case]]
 name = "u64_max_literal"
 spec = ["C.2:1"]
-source = "fn main() -> u64 { 18446744073709551615 }"
+source = "fn value() -> u64 { 18446744073709551615 } fn main() -> i32 { if value() == 18446744073709551615 { 255 } else { 0 } }"
 exit_code = 255
 
 [[case]]
 name = "i8_min"
 spec = ["C.2:2"]
-source = "fn main() -> i8 { -128 }"
+source = "fn value() -> i8 { -128 } fn main() -> i32 { if value() == -128 { 128 } else { 0 } }"
 exit_code = 128
 
 [[case]]
 name = "i8_max"
 spec = ["C.2:2"]
-source = "fn main() -> i8 { 127 }"
+source = "fn value() -> i8 { 127 } fn main() -> i32 { if value() == 127 { 127 } else { 0 } }"
 exit_code = 127
 
 [[case]]
 name = "u8_max"
 spec = ["C.2:2"]
-source = "fn main() -> u8 { 255 }"
+source = "fn value() -> u8 { 255 } fn main() -> i32 { if value() == 255 { 255 } else { 0 } }"
 exit_code = 255
 
 [[case]]
@@ -53,10 +53,11 @@ exit_code = 1
 name = "u32_max"
 spec = ["C.2:2"]
 source = """
-fn main() -> u32 {
+fn value() -> u32 {
     let x: u32 = 4294967295;
     if x > 0 { 1 } else { 0 }
 }
+fn main() -> i32 { if value() == 1 { 1 } else { 0 } }
 """
 exit_code = 1
 
