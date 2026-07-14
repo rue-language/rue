@@ -7,8 +7,9 @@
 ///
 /// # Safety
 ///
-/// - `dst` must be valid for writes of `n` bytes
-/// - `src` must be valid for reads of `n` bytes
+/// - When `n > 0`, `dst` must be non-null and valid for writes of `n` bytes
+/// - When `n > 0`, `src` must be non-null and valid for reads of `n` bytes
+/// - Either pointer may be null when `n == 0`
 /// - The memory regions must not overlap
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
@@ -30,8 +31,9 @@ pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut 
 ///
 /// # Safety
 ///
-/// - `dst` must be valid for writes of `n` bytes
-/// - `src` must be valid for reads of `n` bytes
+/// - When `n > 0`, `dst` must be non-null and valid for writes of `n` bytes
+/// - When `n > 0`, `src` must be non-null and valid for reads of `n` bytes
+/// - Either pointer may be null when `n == 0`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     if (dst as usize) < (src as usize) {
@@ -68,7 +70,8 @@ pub unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut
 ///
 /// # Safety
 ///
-/// - `dst` must be valid for writes of `n` bytes
+/// - When `n > 0`, `dst` must be non-null and valid for writes of `n` bytes
+/// - `dst` may be null when `n == 0`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
     let byte = c as u8;
@@ -90,8 +93,8 @@ pub unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
 ///
 /// # Safety
 ///
-/// - `s1` must be valid for reads of `n` bytes
-/// - `s2` must be valid for reads of `n` bytes
+/// - When `n > 0`, both pointers must be non-null and valid for reads of `n` bytes
+/// - Either pointer may be null when `n == 0`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     let mut i = 0;
@@ -121,8 +124,8 @@ pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 ///
 /// # Safety
 ///
-/// - `s1` must be valid for reads of `n` bytes
-/// - `s2` must be valid for reads of `n` bytes
+/// - When `n > 0`, both pointers must be non-null and valid for reads of `n` bytes
+/// - Either pointer may be null when `n == 0`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     let mut i = 0;

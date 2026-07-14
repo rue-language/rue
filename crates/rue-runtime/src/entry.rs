@@ -145,6 +145,11 @@ extern "C" fn __rue_x86_64_linux_start() -> ! {
 /// On macOS, the entry point is `_main` (or `start` for dyld). The kernel
 /// starts execution with SP 16-byte aligned. The AAPCS64 ABI expects SP
 /// to be 16-byte aligned at function entry.
+///
+/// # Safety
+///
+/// This must only be entered by the macOS process loader with the initial
+/// stack and register state required by AAPCS64.
 #[cfg(all(not(test), target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _main() -> ! {
@@ -185,6 +190,11 @@ pub unsafe extern "C" fn _main() -> ! {
 /// On Linux, the entry point is `_start`. The kernel starts execution
 /// with SP 16-byte aligned. The AAPCS64 ABI expects SP to be 16-byte
 /// aligned at function entry.
+///
+/// # Safety
+///
+/// This must only be entered by the Linux process loader with the initial
+/// stack and register state required by AAPCS64.
 #[cfg(all(not(test), target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
