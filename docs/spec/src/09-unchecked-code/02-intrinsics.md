@@ -119,7 +119,9 @@ pointer is permitted and has no effect.
 to the resized block, which may differ from `p`. The first
 `min(old_count, new_count)` elements are preserved. If `p` is null it behaves
 like `@alloc(new_count)`. `old_count` and `new_count` must have type `u64`. The
-result type is the same pointer type as `p`.
+result type is the same pointer type as `p`. On allocation failure it returns
+null and leaves the original block allocated, with its contents unchanged; the
+caller remains responsible for freeing that original block.
 
 {{ rule(id="9.2:13", cat="legality-rule") }}
 

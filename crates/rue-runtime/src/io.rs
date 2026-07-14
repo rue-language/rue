@@ -204,31 +204,7 @@ fn read_line_impl(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) 
     let mut cap = READ_LINE_INITIAL_CAPACITY;
     let mut ptr = heap::alloc(cap, 1);
     if ptr.is_null() {
-        // Allocation failed - panic
-        let mut msg = [0u8; 21];
-        msg[0] = b'e';
-        msg[1] = b'r';
-        msg[2] = b'r';
-        msg[3] = b'o';
-        msg[4] = b'r';
-        msg[5] = b':';
-        msg[6] = b' ';
-        msg[7] = b'o';
-        msg[8] = b'u';
-        msg[9] = b't';
-        msg[10] = b' ';
-        msg[11] = b'o';
-        msg[12] = b'f';
-        msg[13] = b' ';
-        msg[14] = b'm';
-        msg[15] = b'e';
-        msg[16] = b'm';
-        msg[17] = b'o';
-        msg[18] = b'r';
-        msg[19] = b'y';
-        msg[20] = b'\n';
-        platform::write_stderr(&msg);
-        platform::exit(101);
+        crate::error::allocation_failure();
     }
 
     let mut len: u64 = 0;
@@ -299,13 +275,14 @@ fn read_line_impl(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) 
         // Need to store this byte - ensure we have capacity
         if len >= cap {
             // Grow the buffer (2x strategy)
-            let new_cap = cap.saturating_mul(2).max(STRING_MIN_CAPACITY);
+            let Some(new_cap) = cap.checked_mul(2) else {
+                crate::error::allocation_failure();
+            };
+            let new_cap = new_cap.max(STRING_MIN_CAPACITY);
             let new_ptr = heap::realloc(ptr, cap, new_cap, 1);
             if new_ptr.is_null() {
-                // Realloc failed - free old buffer and panic
-                heap::free(ptr, cap, 1);
-                platform::write_stderr(b"error: out of memory\n");
-                platform::exit(101);
+                // Keep the old allocation intact until the canonical trap.
+                crate::error::allocation_failure();
             }
             ptr = new_ptr;
             cap = new_cap;
@@ -329,5 +306,41 @@ fn read_line_impl(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) 
         (*out).ptr = ptr;
         (*out).len = len;
         (*out).cap = cap;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use self::std::process::Command;
+
+    #[test]
+    fn read_line_allocation_failure_uses_canonical_trap() {
+        const CHILD_ENV: &str = "RUE_READ_LINE_OOM_CHILD";
+        if self::std::env::var_os(CHILD_ENV).is_some() {
+            crate::heap::fail_allocations_after_for_test(0);
+            let mut out = super::OptionStringResult {
+                disc: 0,
+                ptr: core::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            };
+            super::read_line_impl(&mut out, 1, 0);
+            unreachable!();
+        }
+
+        let output = Command::new(self::std::env::current_exe().expect("current test binary"))
+            .args([
+                "--exact",
+                "io::tests::read_line_allocation_failure_uses_canonical_trap",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("spawn allocation-failure child");
+
+        assert_eq!(output.status.code(), Some(101));
+        assert_eq!(output.stderr, b"panic: out of memory\n");
     }
 }

@@ -1,31 +1,40 @@
-# StrBuf.with_capacity allocation-failure safety (RUE-255).
+# Safe allocation failure behavior (RUE-847).
 #
-# A huge requested capacity makes the heap allocation fail and return null.
-# with_capacity used to store ptr=null / cap=<huge> unconditionally, so a
-# later push saw "capacity sufficient" and wrote through the null pointer —
-# SIGSEGV (memory-unsafe). It must instead record cap=0 on failure so a later
-# push grows a fresh buffer (or the program traps cleanly), never a nonzero
-# capacity backed by null.
+# Huge requests are deterministic and bounded on every supported platform:
+# allocator arithmetic rejects them before entering an unbounded allocation
+# loop. Safe owners trap through the same allocation-free `@panic` diagnostic;
+# the raw heap-intrinsic cases remain separately covered as null-returning.
 
 [section]
 id = "cli.string_alloc_failure"
-name = "StrBuf allocation-failure safety"
-description = "StrBuf.with_capacity must not poison capacity when allocation fails."
+name = "Safe allocation failure behavior"
+description = "Safe infallible owners trap canonically on allocation failure and preserve zero-capacity construction."
 
 [[case]]
-name = "with_capacity_huge_no_segfault"
-description = "with_capacity(u64::MAX) fails the alloc: capacity reports 0 and a subsequent push grows fresh instead of writing through null (no SIGSEGV)."
+name = "strbuf_with_capacity_huge_traps"
+description = "StrBuf.with_capacity(u64::MAX) fails fast with the canonical allocation diagnostic."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = StrBuf.with_capacity(18446744073709551615);
+    let s = StrBuf.with_capacity(18446744073709551615);
     @dbg(s.capacity());
-    s.push(65);
-    @dbg(s.len());
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["panic: out of memory"]
+
+[[case]]
+name = "strbuf_zero_capacity_does_not_allocate"
+description = "StrBuf.with_capacity(0) succeeds as the canonical null, zero-capacity value."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = StrBuf.with_capacity(0);
+    @dbg(s.capacity());
     0
 }
 """ }]
 exit_code = 0
-stdout = "0\n1\n"
+stdout = "0\n"
 
 [[case]]
 name = "with_capacity_normal_reserves"
@@ -41,3 +50,73 @@ fn main() -> i32 {
 """ }]
 exit_code = 0
 stdout = "16\n1\n"
+
+[[case]]
+name = "arraybuf_with_capacity_huge_traps"
+description = "Source ArrayBuf rejects an overflowing byte capacity through the same canonical trap."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let V = std.arraybuf.ArrayBuf(u64);
+    let v = V.with_capacity(18446744073709551615);
+    @dbg(v.capacity());
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["panic: out of memory"]
+
+[[case]]
+name = "arraybuf_growth_overflow_traps"
+description = "ArrayBuf doubling overflow fails through the allocation trap instead of wrapping capacity."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let V = std.arraybuf.ArrayBuf(u8);
+    let mut v = V.new();
+    v.len = 9223372036854775808;
+    v.cap = 9223372036854775808;
+    v.push(1);
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["panic: out of memory"]
+
+[[case]]
+name = "grid_capacity_overflow_traps"
+description = "A dependent source collection rejects row-count overflow through the canonical allocation trap."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let G = std.grid.Grid2D(u8);
+    let g = G.new(18446744073709551615, 2, 0);
+    @dbg(g.rows());
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["panic: out of memory"]
+
+[[case]]
+name = "arraybuf_zero_capacity_does_not_allocate"
+description = "Source ArrayBuf.with_capacity(0) succeeds with null storage and zero capacity."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let V = std.arraybuf.ArrayBuf(u64);
+    let v = V.with_capacity(0);
+    @dbg(v.capacity());
+    0
+}
+""" }]
+exit_code = 0
+stdout = "0\n"

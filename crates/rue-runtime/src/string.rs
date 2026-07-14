@@ -311,22 +311,19 @@ pub unsafe extern "C" fn __rue_String_new(out: *mut StringResult) {
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
+    if requested_cap == 0 {
+        unsafe { __rue_String_new(out) };
+        return;
+    }
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
-    // On allocation failure `heap::alloc` returns null. Store cap=0 (not the
-    // requested capacity) so a later `push` sees "no room", grows fresh from
-    // the null buffer (or traps cleanly), rather than believing it may write
-    // `actual_cap` bytes through a null pointer (RUE-255). Mirrors the null
-    // handling in `__rue_String_clone` and `string_ensure_capacity`.
-    let (ptr, actual_cap) = if ptr.is_null() {
-        (core::ptr::null_mut(), 0)
-    } else {
-        (ptr, actual_cap)
-    };
+    if ptr.is_null() {
+        crate::error::allocation_failure();
+    }
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -341,22 +338,19 @@ pub unsafe extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requ
 ///
 /// `out` must be valid, aligned, exclusively writable [`StringResult`] storage.
 pub unsafe extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
+    if requested_cap == 0 {
+        unsafe { __rue_String_new(out) };
+        return;
+    }
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
-    // On allocation failure `heap::alloc` returns null. Store cap=0 (not the
-    // requested capacity) so a later `push` sees "no room", grows fresh from
-    // the null buffer (or traps cleanly), rather than believing it may write
-    // `actual_cap` bytes through a null pointer (RUE-255). Mirrors the null
-    // handling in `__rue_String_clone` and `string_ensure_capacity`.
-    let (ptr, actual_cap) = if ptr.is_null() {
-        (core::ptr::null_mut(), 0)
-    } else {
-        (ptr, actual_cap)
-    };
+    if ptr.is_null() {
+        crate::error::allocation_failure();
+    }
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -371,22 +365,19 @@ pub unsafe extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requ
 ///
 /// `out` must be valid, aligned, exclusively writable [`StringResult`] storage.
 pub unsafe extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
+    if requested_cap == 0 {
+        unsafe { __rue_String_new(out) };
+        return;
+    }
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
-    // On allocation failure `heap::alloc` returns null. Store cap=0 (not the
-    // requested capacity) so a later `push` sees "no room", grows fresh from
-    // the null buffer (or traps cleanly), rather than believing it may write
-    // `actual_cap` bytes through a null pointer (RUE-255). Mirrors the null
-    // handling in `__rue_String_clone` and `string_ensure_capacity`.
-    let (ptr, actual_cap) = if ptr.is_null() {
-        (core::ptr::null_mut(), 0)
-    } else {
-        (ptr, actual_cap)
-    };
+    if ptr.is_null() {
+        crate::error::allocation_failure();
+    }
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -932,16 +923,8 @@ crate::define_for_all_platforms! {
         };
         let new_ptr = heap::alloc(new_cap, 1);
 
-        // Check for allocation failure before the copy to avoid UB (mirrors
-        // __rue_String_clone): on OOM, publish an empty String and return.
         if new_ptr.is_null() {
-            // SAFETY: writing to `out` is valid — see __rue_String_new.
-            unsafe {
-                (*out).ptr = core::ptr::null_mut();
-                (*out).len = 0;
-                (*out).cap = 0;
-            }
-            return;
+            crate::error::allocation_failure();
         }
 
         // SAFETY: `start + sub_len <= len` (checked above) so the source range
@@ -1122,16 +1105,8 @@ crate::define_for_all_platforms! {
         };
         let new_ptr = heap::alloc(new_cap, 1);
 
-        // Check for allocation failure before the copy to avoid UB (mirrors
-        // __rue_String_clone): on OOM, publish an empty String and return.
         if new_ptr.is_null() {
-            // SAFETY: writing to `out` is valid — see __rue_String_new.
-            unsafe {
-                (*out).ptr = core::ptr::null_mut();
-                (*out).len = 0;
-                (*out).cap = 0;
-            }
-            return;
+            crate::error::allocation_failure();
         }
 
         // SAFETY: `new_ptr` was just allocated with `new_cap >= len` bytes; the
@@ -1196,16 +1171,8 @@ crate::define_for_all_platforms! {
         };
         let new_ptr = heap::alloc(new_cap, 1);
 
-        // Check for allocation failure before the copy to avoid UB (mirrors
-        // __rue_String_clone): on OOM, publish an empty String and return.
         if new_ptr.is_null() {
-            // SAFETY: writing to `out` is valid — see __rue_String_new.
-            unsafe {
-                (*out).ptr = core::ptr::null_mut();
-                (*out).len = 0;
-                (*out).cap = 0;
-            }
-            return;
+            crate::error::allocation_failure();
         }
 
         // SAFETY: `new_ptr` was just allocated with `new_cap >= len` bytes; the
@@ -1252,7 +1219,9 @@ crate::define_for_all_platforms! {
         len2: u64,
         _cap2: u64,
     ) {
-        let total = len1 + len2;
+        let Some(total) = len1.checked_add(len2) else {
+            crate::error::allocation_failure();
+        };
 
         if total == 0 {
             // Empty result: a valid literal-like String (cap == 0, ptr null)
@@ -1273,16 +1242,8 @@ crate::define_for_all_platforms! {
         };
         let new_ptr = heap::alloc(new_cap, 1);
 
-        // Check for allocation failure before the copy to avoid UB (mirrors
-        // __rue_String_clone): on OOM, publish an empty String and return.
         if new_ptr.is_null() {
-            // SAFETY: writing to `out` is valid — see __rue_String_new.
-            unsafe {
-                (*out).ptr = core::ptr::null_mut();
-                (*out).len = 0;
-                (*out).cap = 0;
-            }
-            return;
+            crate::error::allocation_failure();
         }
 
         // SAFETY: `new_ptr` has `new_cap >= total = len1 + len2` bytes. The two
@@ -1343,15 +1304,8 @@ pub unsafe extern "C" fn __rue_String_clone(
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
-    // Check for allocation failure before copy to avoid UB
     if new_ptr.is_null() {
-        // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
-        unsafe {
-            (*out).ptr = core::ptr::null_mut();
-            (*out).len = 0;
-            (*out).cap = 0;
-        }
-        return;
+        crate::error::allocation_failure();
     }
 
     if len > 0 && !ptr.is_null() {
@@ -1389,15 +1343,8 @@ pub unsafe extern "C" fn __rue_String_clone(
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
-    // Check for allocation failure before copy to avoid UB
     if new_ptr.is_null() {
-        // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
-        unsafe {
-            (*out).ptr = core::ptr::null_mut();
-            (*out).len = 0;
-            (*out).cap = 0;
-        }
-        return;
+        crate::error::allocation_failure();
     }
 
     if len > 0 && !ptr.is_null() {
@@ -1435,15 +1382,8 @@ pub unsafe extern "C" fn __rue_String_clone(
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
-    // Check for allocation failure before copy to avoid UB
     if new_ptr.is_null() {
-        // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
-        unsafe {
-            (*out).ptr = core::ptr::null_mut();
-            (*out).len = 0;
-            (*out).cap = 0;
-        }
-        return;
+        crate::error::allocation_failure();
     }
 
     if len > 0 && !ptr.is_null() {
@@ -1509,19 +1449,6 @@ pub unsafe extern "C" fn __rue_String_push_str(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
 
-    // On allocation failure `string_ensure_capacity` returns a null pointer;
-    // writing to `new_ptr.add(len)` would be a wild write. Republish the
-    // original string unchanged instead (matching the null-guard every sibling
-    // allocator uses).
-    if new_ptr.is_null() {
-        unsafe {
-            (*out).ptr = ptr;
-            (*out).len = len;
-            (*out).cap = cap;
-        }
-        return;
-    }
-
     if other_len > 0 && !other_ptr.is_null() {
         // SAFETY: Copying is safe because:
         // - Caller guarantees `other_ptr` is valid for reads of `other_len` bytes
@@ -1566,19 +1493,6 @@ pub unsafe extern "C" fn __rue_String_push_str(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
 
-    // On allocation failure `string_ensure_capacity` returns a null pointer;
-    // writing to `new_ptr.add(len)` would be a wild write. Republish the
-    // original string unchanged instead (matching the null-guard every sibling
-    // allocator uses).
-    if new_ptr.is_null() {
-        unsafe {
-            (*out).ptr = ptr;
-            (*out).len = len;
-            (*out).cap = cap;
-        }
-        return;
-    }
-
     if other_len > 0 && !other_ptr.is_null() {
         // SAFETY: Copying is safe because:
         // - Caller guarantees `other_ptr` is valid for reads of `other_len` bytes
@@ -1622,19 +1536,6 @@ pub unsafe extern "C" fn __rue_String_push_str(
     _other_cap: u64,
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
-
-    // On allocation failure `string_ensure_capacity` returns a null pointer;
-    // writing to `new_ptr.add(len)` would be a wild write. Republish the
-    // original string unchanged instead (matching the null-guard every sibling
-    // allocator uses).
-    if new_ptr.is_null() {
-        unsafe {
-            (*out).ptr = ptr;
-            (*out).len = len;
-            (*out).cap = cap;
-        }
-        return;
-    }
 
     if other_len > 0 && !other_ptr.is_null() {
         // SAFETY: Copying is safe because:
@@ -1688,17 +1589,6 @@ pub unsafe extern "C" fn __rue_String_push(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
-    // On allocation failure `new_ptr` is null; republish the original string
-    // unchanged rather than write through null + len.
-    if new_ptr.is_null() {
-        unsafe {
-            (*out).ptr = ptr;
-            (*out).len = len;
-            (*out).cap = cap;
-        }
-        return;
-    }
-
     // SAFETY: Writing the byte is safe because:
     // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + 1` bytes
     // - `new_ptr.add(len)` points to the first unused byte after existing content
@@ -1734,17 +1624,6 @@ pub unsafe extern "C" fn __rue_String_push(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
-    // On allocation failure `new_ptr` is null; republish the original string
-    // unchanged rather than write through null + len.
-    if new_ptr.is_null() {
-        unsafe {
-            (*out).ptr = ptr;
-            (*out).len = len;
-            (*out).cap = cap;
-        }
-        return;
-    }
-
     // SAFETY: Writing the byte is safe because:
     // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + 1` bytes
     // - `new_ptr.add(len)` points to the first unused byte after existing content
@@ -1779,17 +1658,6 @@ pub unsafe extern "C" fn __rue_String_push(
     byte: u8,
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
-
-    // On allocation failure `new_ptr` is null; republish the original string
-    // unchanged rather than write through null + len.
-    if new_ptr.is_null() {
-        unsafe {
-            (*out).ptr = ptr;
-            (*out).len = len;
-            (*out).cap = cap;
-        }
-        return;
-    }
 
     // SAFETY: Writing the byte is safe because:
     // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + 1` bytes
@@ -1983,18 +1851,24 @@ pub unsafe extern "C" fn __rue_String_reserve(
 /// # Returns
 ///
 /// (new_ptr, new_cap) with capacity >= len + additional.
-/// Returns (null, 0) if allocation fails.
+/// Allocation or capacity overflow aborts through the canonical allocation
+/// failure path. A zero-sized request preserves the original empty value.
 #[inline]
 fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> (*mut u8, u64) {
-    let required = len.saturating_add(additional);
+    let Some(required) = len.checked_add(additional) else {
+        crate::error::allocation_failure();
+    };
+
+    if required == 0 {
+        return (ptr, cap);
+    }
 
     if cap == 0 {
         // Heap promotion: allocate new buffer and copy existing content
         let new_cap = required.max(STRING_MIN_CAPACITY);
         let new_ptr = heap::alloc(new_cap, 1);
-        // Check for allocation failure before copy to avoid UB
         if new_ptr.is_null() {
-            return (core::ptr::null_mut(), 0);
+            crate::error::allocation_failure();
         }
         if len > 0 && !ptr.is_null() {
             // SAFETY: Copying is safe because:
@@ -2012,12 +1886,16 @@ fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> 
         // so compute the doubled capacity first and allocate exactly that
         // amount. Otherwise a later append could trust nonexistent capacity
         // and write past the allocation (RUE-34).
-        let grown_cap = cap.saturating_mul(2);
+        let Some(grown_cap) = cap.checked_mul(2) else {
+            crate::error::allocation_failure();
+        };
         let new_cap = required.max(grown_cap).max(STRING_MIN_CAPACITY);
         let new_ptr = heap::realloc(ptr, cap, new_cap, 1);
-        // Check for allocation failure
         if new_ptr.is_null() {
-            return (core::ptr::null_mut(), 0);
+            // `realloc` leaves the old allocation valid on failure. Do not
+            // publish a null replacement or release the original before the
+            // canonical trap.
+            crate::error::allocation_failure();
         }
         (new_ptr, new_cap)
     } else {
@@ -2028,6 +1906,9 @@ fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> 
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
+    use self::std::process::Command;
     use super::*;
 
     fn blank_result() -> StringResult {
@@ -2125,6 +2006,18 @@ mod tests {
     }
 
     #[test]
+    fn test_string_with_zero_capacity_does_not_allocate() {
+        let mut out = blank_result();
+
+        // SAFETY: `out` is valid, aligned, exclusively borrowed result storage.
+        unsafe { __rue_String_with_capacity(&mut out, 0) };
+
+        assert!(out.ptr.is_null());
+        assert_eq!(out.len, 0);
+        assert_eq!(out.cap, 0);
+    }
+
+    #[test]
     fn test_ensure_capacity_promotes_literals_and_preserves_bytes() {
         let source = b"abc";
 
@@ -2159,11 +2052,81 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_capacity_returns_null_on_unrepresentable_growth() {
-        let (ptr, cap) = string_ensure_capacity(core::ptr::null_mut(), 0, 0, u64::MAX);
+    fn safe_allocating_paths_use_canonical_trap() {
+        const CHILD_ENV: &str = "RUE_STRING_OOM_CHILD";
+        if let Some(mode) = self::std::env::var_os(CHILD_ENV) {
+            let mode = mode.to_string_lossy();
+            crate::heap::fail_allocations_after_for_test(0);
+            let mut out = blank_result();
+            let one = b"x";
+            unsafe {
+                match mode.as_ref() {
+                    "with_capacity" => __rue_String_with_capacity(&mut out, 8),
+                    "substring" => __rue_String_substring(&mut out, one.as_ptr(), 1, 0, 0, 1),
+                    "to_string" => __rue_to_string(&mut out, 1),
+                    "to_string_unsigned" => __rue_to_string_unsigned(&mut out, 1),
+                    "concat" => {
+                        __rue_String_concat(&mut out, one.as_ptr(), 1, 0, one.as_ptr(), 1, 0)
+                    }
+                    "clone" => __rue_String_clone(&mut out, one.as_ptr(), 1, 0),
+                    "clone_empty" => __rue_String_clone(&mut out, core::ptr::null(), 0, 0),
+                    "push_str" => __rue_String_push_str(
+                        &mut out,
+                        core::ptr::null_mut(),
+                        0,
+                        0,
+                        one.as_ptr(),
+                        1,
+                        0,
+                    ),
+                    "push" => __rue_String_push(&mut out, core::ptr::null_mut(), 0, 0, b'x'),
+                    "reserve" => __rue_String_reserve(&mut out, core::ptr::null_mut(), 0, 0, 1),
+                    "concat_overflow" => __rue_String_concat(
+                        &mut out,
+                        core::ptr::null(),
+                        u64::MAX,
+                        0,
+                        core::ptr::null(),
+                        1,
+                        0,
+                    ),
+                    "growth_overflow" => {
+                        let cap = (u64::MAX / 2) + 1;
+                        let _ = string_ensure_capacity(core::ptr::null_mut(), cap, cap, 1);
+                    }
+                    other => panic!("unknown allocation failure mode: {other}"),
+                }
+            }
+            unreachable!();
+        }
 
-        assert!(ptr.is_null());
-        assert_eq!(cap, 0);
+        for mode in [
+            "with_capacity",
+            "substring",
+            "to_string",
+            "to_string_unsigned",
+            "concat",
+            "clone",
+            "clone_empty",
+            "push_str",
+            "push",
+            "reserve",
+            "concat_overflow",
+            "growth_overflow",
+        ] {
+            let output = Command::new(self::std::env::current_exe().expect("current test binary"))
+                .args([
+                    "--exact",
+                    "string::tests::safe_allocating_paths_use_canonical_trap",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, mode)
+                .output()
+                .expect("spawn allocation-failure child");
+
+            assert_eq!(output.status.code(), Some(101), "mode {mode}");
+            assert_eq!(output.stderr, b"panic: out of memory\n", "mode {mode}");
+        }
     }
 
     #[test]
@@ -2418,6 +2381,19 @@ mod tests {
 
         assert_string_result(&out, source);
         assert_ne!(out.ptr as *const u8, source.as_ptr());
+    }
+
+    #[test]
+    fn test_clone_empty_allocates_mutable_storage() {
+        let mut out = blank_result();
+
+        // SAFETY: `out` is valid result storage; a null source pointer is
+        // permitted when the source length is zero.
+        unsafe { __rue_String_clone(&mut out, core::ptr::null(), 0, 0) };
+
+        assert!(!out.ptr.is_null());
+        assert_eq!(out.len, 0);
+        assert!(out.cap >= STRING_MIN_CAPACITY);
     }
 
     #[test]

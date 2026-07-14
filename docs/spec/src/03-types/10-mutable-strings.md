@@ -55,7 +55,9 @@ fn main() -> i32 {
 
 {{ rule(id="3.10:8", cat="normative") }}
 
-`StrBuf.with_capacity(cap: u64)` returns an empty string with pre-allocated capacity for `cap` bytes.
+`StrBuf.with_capacity(cap: u64)` returns an empty string with pre-allocated
+capacity for `cap` bytes. When `cap` is zero, it performs no allocation and
+returns a string whose capacity is zero.
 
 {{ rule(id="3.10:9", cat="example") }}
 

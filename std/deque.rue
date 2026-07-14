@@ -66,6 +66,9 @@ pub fn Deque(comptime T: type) -> type {
 
         fn _ensure_room(inout self) {
             if self.count == self.cap {
+                if self.cap > 9223372036854775807 {
+                    @panic("out of memory");
+                }
                 self._grow_to(self.cap * 2);
             }
         }

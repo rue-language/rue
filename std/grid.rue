@@ -22,6 +22,9 @@ pub fn Grid2D(comptime T: type) -> type {
         fn new(rows: u64, cols: u64, fill: T) -> Self {
             let b = arraybuf.ArrayBuf(T);
             let mut cells = b.new();
+            if cols > 0 && rows > 18446744073709551615 / cols {
+                @panic("out of memory");
+            }
             let total = rows * cols;
             let mut i: u64 = 0;
             while i < total {

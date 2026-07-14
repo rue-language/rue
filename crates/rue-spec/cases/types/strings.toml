@@ -656,7 +656,7 @@ source = """
 fn main() -> i32 {
     let cap: u64 = 0;
     let s = StrBuf.with_capacity(cap);
-    0
+    @intCast(s.capacity())
 }
 """
 exit_code = 0

@@ -387,7 +387,11 @@ If end-of-file is reached with no data read, the result is `None` (this is not a
 
 {{ rule(id="4.13:40", cat="informative") }}
 
-If a read error occurs, a runtime panic occurs with the message "input error". (This behavior is documented but not tested, as I/O errors cannot be reliably simulated in portable test environments.)
+If a read error occurs, a runtime panic occurs with the message "input error".
+If allocation or capacity growth fails while constructing the returned
+`StrBuf`, the allocation-failure rules of §8.6 apply. (These behaviors are
+documented but not tested here, as the failures cannot be reliably simulated
+through portable source-level input.)
 
 {{ rule(id="4.13:41") }}
 
