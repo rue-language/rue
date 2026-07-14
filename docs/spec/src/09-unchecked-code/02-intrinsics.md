@@ -149,6 +149,68 @@ fn main() -> i32 {
 }
 ```
 
+## Raw Byte Intrinsics
+
+{{ preview_feature(feature="raw_bytes", adr="RUE-879") }}
+
+{{ rule(id="9.2:14a", cat="normative") }}
+
+The `@alloc_bytes`, `@realloc_bytes`, `@free_bytes`, `@byte_read`, and
+`@byte_write` intrinsics provide raw access to packed physical bytes. They are
+enabled by the `raw_bytes` preview feature and may only appear inside a
+`checked` block. They do not change the element-scaled semantics of `@alloc`,
+`@realloc`, `@free`, `@ptr_offset`, `@ptr_read`, or `@ptr_write`.
+
+{{ rule(id="9.2:14b", cat="dynamic-semantics") }}
+
+`@alloc_bytes(size)` allocates `size` physical bytes of uninitialized storage
+with byte alignment and returns `ptr mut u8`. `@free_bytes(p, size)` releases a
+block returned by `@alloc_bytes` or `@realloc_bytes`; freeing a null pointer is
+permitted. All size arguments have type `u64`. Allocation failure returns null
+and does not trap. `@alloc_bytes(0)` returns null. `@free_bytes(null, 0)` is
+permitted and has no effect.
+
+{{ rule(id="9.2:14c", cat="dynamic-semantics") }}
+
+`@realloc_bytes(p, old_size, new_size)` resizes a raw-byte block. The first
+`min(old_size, new_size)` physical bytes are preserved. A null `p` behaves like
+`@alloc_bytes(new_size)`. On failure it returns null and leaves the original
+block allocated and unchanged.
+
+If `new_size` is zero, `@realloc_bytes(p, old_size, 0)` frees a non-null `p`
+and returns null. If `p` is null, reallocation behaves like
+`@alloc_bytes(new_size)`, including returning null when `new_size` is zero.
+
+{{ rule(id="9.2:14d", cat="dynamic-semantics") }}
+
+`@byte_read(p, offset)` reads and returns exactly one physical byte at address
+`address_of(p) + offset`; `p` may be `ptr const u8` or `ptr mut u8` and `offset`
+has type `u64`. `@byte_write(p, offset, value)` writes exactly the low eight
+bits represented by its `u8` value at that address; `p` must be `ptr mut u8`.
+Offsets are not multiplied by Rue's typed-pointer slot size.
+
+{{ rule(id="9.2:14e", cat="legality-rule") }}
+
+Every raw-byte intrinsic requires both `--preview raw_bytes` and an enclosing
+`checked` block. Allocation and write pointers must be `ptr mut u8`; a byte
+read also accepts `ptr const u8`. Size and offset operands are exactly `u64`,
+and a byte-write value is exactly `u8`.
+
+{{ rule(id="9.2:14f", cat="example") }}
+
+```rue
+fn main() -> i32 {
+    checked {
+        let p = @alloc_bytes(2);
+        @byte_write(p, 0, 65);
+        @byte_write(p, 1, 66);
+        let result: i32 = @intCast(@byte_read(p, 1));
+        @free_bytes(p, 2);
+        result // 66
+    }
+}
+```
+
 ## Field Pointer Intrinsic
 
 {{ rule(id="9.2:15", cat="normative") }}

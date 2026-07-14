@@ -2599,6 +2599,96 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Physical(Reg::Rax),
                     });
                     self.value_map.insert(value, result_vreg);
+                } else if name_str == "alloc_bytes" {
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
+                    let size = self.get_vreg(args[0]);
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rdi),
+                        src: Operand::Virtual(size),
+                    });
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Physical(Reg::Rsi),
+                        imm: 1,
+                    });
+                    let symbol_id = self.intern_symbol("__rue_alloc");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
+                    let result = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(result),
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                    self.value_map.insert(value, result);
+                } else if name_str == "free_bytes" {
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
+                    let ptr = self.get_vreg(args[0]);
+                    let size = self.get_vreg(args[1]);
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rdi),
+                        src: Operand::Virtual(ptr),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rsi),
+                        src: Operand::Virtual(size),
+                    });
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Physical(Reg::Rdx),
+                        imm: 1,
+                    });
+                    let symbol_id = self.intern_symbol("__rue_free");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
+                    self.value_map.insert(value, self.mir.alloc_vreg());
+                } else if name_str == "realloc_bytes" {
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
+                    let abi = [Reg::Rdi, Reg::Rsi, Reg::Rdx];
+                    for (arg, reg) in args.iter().zip(abi) {
+                        let arg_vreg = self.get_vreg(*arg);
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Physical(reg),
+                            src: Operand::Virtual(arg_vreg),
+                        });
+                    }
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Physical(Reg::Rcx),
+                        imm: 1,
+                    });
+                    let symbol_id = self.intern_symbol("__rue_realloc");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
+                    let result = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(result),
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                    self.value_map.insert(value, result);
+                } else if name_str == "byte_read" || name_str == "byte_write" {
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
+                    let ptr = self.get_vreg(args[0]);
+                    let offset = self.get_vreg(args[1]);
+                    let address = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(address),
+                        src: Operand::Virtual(ptr),
+                    });
+                    self.mir.push(X86Inst::AddRR64 {
+                        dst: Operand::Virtual(address),
+                        src: Operand::Virtual(offset),
+                    });
+                    if name_str == "byte_read" {
+                        let result = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::Movzx8RMIndexed {
+                            dst: Operand::Virtual(result),
+                            base: address,
+                            offset: 0,
+                        });
+                        self.value_map.insert(value, result);
+                    } else {
+                        let byte = self.get_vreg(args[2]);
+                        self.mir.push(X86Inst::MovMR8Indexed {
+                            base: address,
+                            offset: 0,
+                            src: Operand::Virtual(byte),
+                        });
+                        self.value_map.insert(value, self.mir.alloc_vreg());
+                    }
                 } else if name_str == "raw" || name_str == "raw_mut" || name_str == "field_ptr" {
                     // Address-taking intrinsics consume the canonical place
                     // representation. `field_ptr` is restricted by sema to a
@@ -4038,6 +4128,54 @@ mod tests {
             .expect("test lowering should succeed")
     }
 
+    fn immediate_for_operand(mir: &X86Mir, operand: Operand) -> Option<i64> {
+        let Operand::Virtual(vreg) = operand else {
+            return None;
+        };
+        mir.instructions().iter().rev().find_map(|inst| match inst {
+            X86Inst::MovRI64 {
+                dst: Operand::Virtual(dst),
+                imm,
+            } if *dst == vreg => Some(*imm),
+            X86Inst::MovRI32 {
+                dst: Operand::Virtual(dst),
+                imm,
+            } if *dst == vreg => Some(i64::from(*imm)),
+            _ => None,
+        })
+    }
+
+    fn immediate_call_arg(mir: &X86Mir, call_index: usize, reg: Reg) -> Option<i64> {
+        mir.instructions()[..call_index]
+            .iter()
+            .rev()
+            .take_while(|inst| !matches!(inst, X86Inst::CallRel { .. }))
+            .find_map(|inst| match inst {
+                X86Inst::MovRI64 {
+                    dst: Operand::Physical(dst),
+                    imm,
+                } if *dst == reg => Some(*imm),
+                X86Inst::MovRI32 {
+                    dst: Operand::Physical(dst),
+                    imm,
+                } if *dst == reg => Some(i64::from(*imm)),
+                X86Inst::MovRR {
+                    dst: Operand::Physical(dst),
+                    src,
+                } if *dst == reg => immediate_for_operand(mir, *src),
+                _ => None,
+            })
+    }
+
+    fn runtime_call_index(mir: &X86Mir, symbol: &str) -> usize {
+        mir.instructions()
+            .iter()
+            .position(|inst| {
+                matches!(inst, X86Inst::CallRel { symbol_id } if mir.get_symbol(*symbol_id) == symbol)
+            })
+            .unwrap_or_else(|| panic!("missing call to {symbol}"))
+    }
+
     #[test]
     fn test_simple_return() {
         let mir = lower_to_mir("fn main() -> i32 { 42 }");
@@ -4096,5 +4234,41 @@ mod tests {
                 .iter()
                 .any(|inst| matches!(inst, X86Inst::StringConstCap { .. }))
         );
+    }
+
+    #[test]
+    fn raw_bytes_preview_lowers_to_true_byte_memory_ops() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::RawBytes);
+        let mir = lower_to_mir_with_preview(
+            "fn main() -> i32 { checked { let p = @alloc_bytes(3); \
+             @byte_write(p, 1, 255); let q = @realloc_bytes(p, 3, 5); \
+             let b = @byte_read(q, 1); @free_bytes(q, 5); \
+             @intCast(b) } }",
+            preview,
+        );
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovMR8Indexed { .. }))
+        );
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::Movzx8RMIndexed { .. }))
+        );
+
+        let alloc = runtime_call_index(&mir, "__rue_alloc");
+        assert_eq!(immediate_call_arg(&mir, alloc, Reg::Rdi), Some(3));
+        assert_eq!(immediate_call_arg(&mir, alloc, Reg::Rsi), Some(1));
+
+        let realloc = runtime_call_index(&mir, "__rue_realloc");
+        assert_eq!(immediate_call_arg(&mir, realloc, Reg::Rsi), Some(3));
+        assert_eq!(immediate_call_arg(&mir, realloc, Reg::Rdx), Some(5));
+        assert_eq!(immediate_call_arg(&mir, realloc, Reg::Rcx), Some(1));
+
+        let free = runtime_call_index(&mir, "__rue_free");
+        assert_eq!(immediate_call_arg(&mir, free, Reg::Rsi), Some(5));
+        assert_eq!(immediate_call_arg(&mir, free, Reg::Rdx), Some(1));
     }
 }

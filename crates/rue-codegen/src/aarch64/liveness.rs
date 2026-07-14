@@ -131,10 +131,10 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         Aarch64Inst::MovRR { src, .. } => {
             add_if_virtual(src, &mut result);
         }
-        Aarch64Inst::Ldr { .. } => {
+        Aarch64Inst::Ldr { .. } | Aarch64Inst::Ldrb { .. } => {
             // Reads from memory via base (physical register)
         }
-        Aarch64Inst::Str { src, .. } => {
+        Aarch64Inst::Str { src, .. } | Aarch64Inst::Strb { src, .. } => {
             add_if_virtual(src, &mut result);
         }
         Aarch64Inst::AddRR { src1, src2, .. }
@@ -220,11 +220,11 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         Aarch64Inst::LdpPost { .. } => {
             // Only defines
         }
-        Aarch64Inst::LdrIndexed { base, .. } => {
+        Aarch64Inst::LdrIndexed { base, .. } | Aarch64Inst::LdrbIndexed { base, .. } => {
             // base is a VReg directly, not an Operand
             result.push(*base);
         }
-        Aarch64Inst::StrIndexed { src, base } => {
+        Aarch64Inst::StrIndexed { src, base } | Aarch64Inst::StrbIndexed { src, base } => {
             add_if_virtual(src, &mut result);
             result.push(*base);
         }
@@ -280,10 +280,10 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         Aarch64Inst::MovRR { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        Aarch64Inst::Ldr { dst, .. } => {
+        Aarch64Inst::Ldr { dst, .. } | Aarch64Inst::Ldrb { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        Aarch64Inst::Str { .. } => {
+        Aarch64Inst::Str { .. } | Aarch64Inst::Strb { .. } => {
             // Writes to memory
         }
         Aarch64Inst::AddRR { dst, .. }
@@ -350,10 +350,10 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
             add_if_virtual(dst1, &mut result);
             add_if_virtual(dst2, &mut result);
         }
-        Aarch64Inst::LdrIndexed { dst, .. } => {
+        Aarch64Inst::LdrIndexed { dst, .. } | Aarch64Inst::LdrbIndexed { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        Aarch64Inst::StrIndexed { .. } => {
+        Aarch64Inst::StrIndexed { .. } | Aarch64Inst::StrbIndexed { .. } => {
             // Writes to memory
         }
         Aarch64Inst::LdrIndexedOffset { dst, .. } => {

@@ -103,6 +103,12 @@ pub struct KnownSymbols {
     pub free: Spur,
     /// The `realloc` intrinsic symbol - grow/shrink an `@alloc`'d block.
     pub realloc: Spur,
+    /// Raw physical-byte allocation and access intrinsics (RUE-879).
+    pub alloc_bytes: Spur,
+    pub realloc_bytes: Spur,
+    pub free_bytes: Spur,
+    pub byte_read: Spur,
+    pub byte_write: Spur,
 
     // Target platform intrinsics
     /// The `target_arch` intrinsic symbol - returns target CPU architecture.
@@ -155,6 +161,11 @@ impl KnownSymbols {
             alloc: interner.get_or_intern_static("alloc"),
             free: interner.get_or_intern_static("free"),
             realloc: interner.get_or_intern_static("realloc"),
+            alloc_bytes: interner.get_or_intern_static("alloc_bytes"),
+            realloc_bytes: interner.get_or_intern_static("realloc_bytes"),
+            free_bytes: interner.get_or_intern_static("free_bytes"),
+            byte_read: interner.get_or_intern_static("byte_read"),
+            byte_write: interner.get_or_intern_static("byte_write"),
 
             // Target platform intrinsics
             target_arch: interner.get_or_intern_static("target_arch"),
@@ -224,6 +235,11 @@ mod tests {
         assert_eq!(interner.resolve(&known.alloc), "alloc");
         assert_eq!(interner.resolve(&known.free), "free");
         assert_eq!(interner.resolve(&known.realloc), "realloc");
+        assert_eq!(interner.resolve(&known.alloc_bytes), "alloc_bytes");
+        assert_eq!(interner.resolve(&known.realloc_bytes), "realloc_bytes");
+        assert_eq!(interner.resolve(&known.free_bytes), "free_bytes");
+        assert_eq!(interner.resolve(&known.byte_read), "byte_read");
+        assert_eq!(interner.resolve(&known.byte_write), "byte_write");
         assert_eq!(interner.resolve(&known.target_arch), "target_arch");
         assert_eq!(interner.resolve(&known.target_os), "target_os");
     }

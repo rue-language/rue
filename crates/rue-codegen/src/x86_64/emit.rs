@@ -370,7 +370,10 @@ impl<'a> Emitter<'a> {
         for (i, inst) in self.mir.iter().enumerate() {
             if matches!(
                 inst,
-                X86Inst::MovRMIndexed { .. } | X86Inst::MovMRIndexed { .. }
+                X86Inst::MovRMIndexed { .. }
+                    | X86Inst::MovMRIndexed { .. }
+                    | X86Inst::Movzx8RMIndexed { .. }
+                    | X86Inst::MovMR8Indexed { .. }
             ) {
                 return Err(ice_error!(
                     "post-regalloc verification failed",
@@ -656,6 +659,30 @@ impl<'a> Emitter<'a> {
                 end_inst!(
                     self,
                     "mov [{}{}], {}",
+                    base,
+                    format_offset(adjusted_offset),
+                    src.as_physical()
+                );
+            }
+            X86Inst::Movzx8RM { dst, base, offset } => {
+                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
+                self.begin_inst();
+                self.emit_movzx8_rm(dst.as_physical(), *base, adjusted_offset);
+                end_inst!(
+                    self,
+                    "movzx {}, byte [{}{}]",
+                    dst.as_physical(),
+                    base,
+                    format_offset(adjusted_offset)
+                );
+            }
+            X86Inst::MovMR8 { base, offset, src } => {
+                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
+                self.begin_inst();
+                self.emit_mov_mr8(*base, adjusted_offset, src.as_physical());
+                end_inst!(
+                    self,
+                    "mov byte [{}{}], {}",
                     base,
                     format_offset(adjusted_offset),
                     src.as_physical()
@@ -1097,11 +1124,14 @@ impl<'a> Emitter<'a> {
                 end_inst!(self, "shl {}, cl", dst_reg);
             }
 
-            X86Inst::MovRMIndexed { .. } | X86Inst::MovMRIndexed { .. } => {
+            X86Inst::MovRMIndexed { .. }
+            | X86Inst::MovMRIndexed { .. }
+            | X86Inst::Movzx8RMIndexed { .. }
+            | X86Inst::MovMR8Indexed { .. } => {
                 // Regalloc lowers these into MovRM/MovMR, and
                 // emit_internal() verifies none survive before this dispatch loop runs,
                 // returning an ICE instead of ever reaching this arm.
-                unreachable!("MovRMIndexed/MovMRIndexed rejected by pre-emission verification")
+                unreachable!("indexed memory pseudo rejected by pre-emission verification")
             }
 
             X86Inst::MovRMSib {
@@ -1377,6 +1407,26 @@ impl<'a> Emitter<'a> {
 
         // ModR/M and optional SIB/displacement
         self.emit_modrm_memory(src_enc, base_enc, offset);
+    }
+
+    /// Emit `movzx r64, byte [base + offset]` (REX.W 0F B6 /r).
+    fn emit_movzx8_rm(&mut self, dst: Reg, base: Reg, offset: i32) {
+        let rex =
+            0x48 | if dst.needs_rex() { 0x04 } else { 0 } | if base.needs_rex() { 0x01 } else { 0 };
+        self.code.push(rex);
+        self.code.extend_from_slice(&[0x0f, 0xb6]);
+        self.emit_modrm_memory(dst.encoding(), base.encoding(), offset);
+    }
+
+    /// Emit `mov byte [base + offset], r8` ([REX] 88 /r).
+    fn emit_mov_mr8(&mut self, base: Reg, offset: i32, src: Reg) {
+        // Always emitting a REX prefix selects SPL/BPL/SIL/DIL for encodings
+        // 4-7 and is harmless for the legacy low-byte registers.
+        let rex =
+            0x40 | if src.needs_rex() { 0x04 } else { 0 } | if base.needs_rex() { 0x01 } else { 0 };
+        self.code.push(rex);
+        self.code.push(0x88);
+        self.emit_modrm_memory(src.encoding(), base.encoding(), offset);
     }
 
     /// Emit `mov dst, [base + index*scale + disp]` - Load with SIB addressing.
@@ -3716,6 +3766,26 @@ mod tests {
         });
         // movzx rax, cl -> 48 0F B6 C1 (REX.W 0F B6 /r)
         assert_eq!(code, vec![0x48, 0x0F, 0xB6, 0xC1]);
+    }
+
+    #[test]
+    fn test_physical_byte_load_and_store_encoding() {
+        assert_eq!(
+            emit_single(X86Inst::Movzx8RM {
+                dst: Operand::Physical(Reg::Rax),
+                base: Reg::Rbx,
+                offset: 0,
+            }),
+            vec![0x48, 0x0f, 0xb6, 0x43, 0x00]
+        );
+        assert_eq!(
+            emit_single(X86Inst::MovMR8 {
+                base: Reg::Rbx,
+                offset: 0,
+                src: Operand::Physical(Reg::Rcx),
+            }),
+            vec![0x40, 0x88, 0x4b, 0x00]
+        );
     }
 
     #[test]

@@ -400,10 +400,16 @@ impl fmt::Display for Cond {
 pub enum Aarch64Inst {
     // === Move instructions ===
     /// `mov dst, #imm` - Move immediate to register (MOVZ/MOVN/MOVK sequence).
-    MovImm { dst: Operand, imm: i64 },
+    MovImm {
+        dst: Operand,
+        imm: i64,
+    },
 
     /// `mov dst, src` - Move register to register.
-    MovRR { dst: Operand, src: Operand },
+    MovRR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `ldr dst, [base, #offset]` - Load from memory.
     Ldr {
@@ -419,11 +425,41 @@ pub enum Aarch64Inst {
         offset: i32,
     },
 
+    /// `ldrb dst, [base, #offset]` - Load one physical byte, zero-extended.
+    Ldrb {
+        dst: Operand,
+        base: Reg,
+        offset: i32,
+    },
+
+    /// `strb src, [base, #offset]` - Store one physical byte.
+    Strb {
+        src: Operand,
+        base: Reg,
+        offset: i32,
+    },
+
     /// `ldr dst, [base]` - Load from memory via register (indexed).
-    LdrIndexed { dst: Operand, base: VReg },
+    LdrIndexed {
+        dst: Operand,
+        base: VReg,
+    },
 
     /// `str src, [base]` - Store to memory via register (indexed).
-    StrIndexed { src: Operand, base: VReg },
+    StrIndexed {
+        src: Operand,
+        base: VReg,
+    },
+
+    /// Pre-register-allocation byte load/store through a virtual address.
+    LdrbIndexed {
+        dst: Operand,
+        base: VReg,
+    },
+    StrbIndexed {
+        src: Operand,
+        base: VReg,
+    },
 
     /// `ldr dst, [base, #offset]` - Load from memory via register with offset.
     LdrIndexedOffset {
@@ -440,16 +476,32 @@ pub enum Aarch64Inst {
     },
 
     /// `lsl dst, src, #imm` - Logical shift left by immediate (64-bit).
-    LslImm { dst: Operand, src: Operand, imm: u8 },
+    LslImm {
+        dst: Operand,
+        src: Operand,
+        imm: u8,
+    },
 
     /// `lsl dst, src, #imm` - Logical shift left by immediate (32-bit).
-    Lsl32Imm { dst: Operand, src: Operand, imm: u8 },
+    Lsl32Imm {
+        dst: Operand,
+        src: Operand,
+        imm: u8,
+    },
 
     /// `lsr dst, src, #imm` - Logical shift right by immediate (32-bit).
-    Lsr32Imm { dst: Operand, src: Operand, imm: u8 },
+    Lsr32Imm {
+        dst: Operand,
+        src: Operand,
+        imm: u8,
+    },
 
     /// `asr dst, src, #imm` - Arithmetic shift right by immediate (32-bit).
-    Asr32Imm { dst: Operand, src: Operand, imm: u8 },
+    Asr32Imm {
+        dst: Operand,
+        src: Operand,
+        imm: u8,
+    },
 
     // === Arithmetic instructions ===
     /// `add dst, src1, src2` - Add two registers.
@@ -544,10 +596,18 @@ pub enum Aarch64Inst {
     },
 
     /// `lsr dst, src, #imm` - Logical shift right by immediate (64-bit).
-    Lsr64Imm { dst: Operand, src: Operand, imm: u8 },
+    Lsr64Imm {
+        dst: Operand,
+        src: Operand,
+        imm: u8,
+    },
 
     /// `asr dst, src, #imm` - Arithmetic shift right by immediate (64-bit).
-    Asr64Imm { dst: Operand, src: Operand, imm: u8 },
+    Asr64Imm {
+        dst: Operand,
+        src: Operand,
+        imm: u8,
+    },
 
     /// `sdiv dst, src1, src2` - Signed divide (32-bit, W registers).
     SdivRR {
@@ -595,13 +655,22 @@ pub enum Aarch64Inst {
     },
 
     /// `neg dst, src` - Negate (sub from zero).
-    Neg { dst: Operand, src: Operand },
+    Neg {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `negs dst, src` - Negate and set flags (64-bit, for i64/u64 overflow detection).
-    Negs { dst: Operand, src: Operand },
+    Negs {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `negs dst, src` - Negate and set flags (32-bit, for i32/u32 overflow detection).
-    Negs32 { dst: Operand, src: Operand },
+    Negs32 {
+        dst: Operand,
+        src: Operand,
+    },
 
     // === Logical instructions ===
     /// `and dst, src1, src2` - Bitwise AND.
@@ -633,14 +702,20 @@ pub enum Aarch64Inst {
     },
 
     /// `mvn dst, src` - Bitwise NOT, 64-bit.
-    MvnRR { dst: Operand, src: Operand },
+    MvnRR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `mvn wd, wm` - Bitwise NOT, 32-bit.
     ///
     /// Used for sub-64-bit BitNot: the w-form zeroes the upper 32 bits,
     /// matching the invariant (shared with the x86-64 backend) that
     /// sub-64-bit results don't leak set bits above their width (RUE-59).
-    Mvn32RR { dst: Operand, src: Operand },
+    Mvn32RR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `lsl dst, src1, src2` - Logical shift left 64-bit by register.
     LslRR {
@@ -686,64 +761,113 @@ pub enum Aarch64Inst {
 
     // === Comparison instructions ===
     /// `cmp src1, src2` - Compare (subtract and set flags, discard result). Uses 32-bit form.
-    CmpRR { src1: Operand, src2: Operand },
+    CmpRR {
+        src1: Operand,
+        src2: Operand,
+    },
 
     /// `cmp src1, src2` - Compare using 64-bit form (for 64-bit values like SMULL result).
-    Cmp64RR { src1: Operand, src2: Operand },
+    Cmp64RR {
+        src1: Operand,
+        src2: Operand,
+    },
 
     /// `cmp src, #imm` - Compare with immediate.
-    CmpImm { src: Operand, imm: i32 },
+    CmpImm {
+        src: Operand,
+        imm: i32,
+    },
 
     /// `cbz src, label` - Compare and branch if zero.
-    Cbz { src: Operand, label: LabelId },
+    Cbz {
+        src: Operand,
+        label: LabelId,
+    },
 
     /// `cbnz src, label` - Compare and branch if not zero.
-    Cbnz { src: Operand, label: LabelId },
+    Cbnz {
+        src: Operand,
+        label: LabelId,
+    },
 
     /// `cset dst, cond` - Conditional set: dst = 1 if cond, else 0.
-    Cset { dst: Operand, cond: Cond },
+    Cset {
+        dst: Operand,
+        cond: Cond,
+    },
 
     /// `tst src1, src2` - Test bits (AND and set flags).
-    TstRR { src1: Operand, src2: Operand },
+    TstRR {
+        src1: Operand,
+        src2: Operand,
+    },
 
     // === Sign/zero extension ===
     /// `sxtb dst, src` - Sign-extend byte to 64-bit.
-    Sxtb { dst: Operand, src: Operand },
+    Sxtb {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `sxth dst, src` - Sign-extend halfword to 64-bit.
-    Sxth { dst: Operand, src: Operand },
+    Sxth {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `sxtw dst, src` - Sign-extend word to 64-bit.
-    Sxtw { dst: Operand, src: Operand },
+    Sxtw {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `uxtb dst, src` - Zero-extend byte to 64-bit.
-    Uxtb { dst: Operand, src: Operand },
+    Uxtb {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `uxth dst, src` - Zero-extend halfword to 64-bit.
-    Uxth { dst: Operand, src: Operand },
+    Uxth {
+        dst: Operand,
+        src: Operand,
+    },
 
     // Note: UXTW is implicit in W-register operations; no separate instruction needed.
 
     // === Control flow ===
     /// `b label` - Unconditional branch.
-    B { label: LabelId },
+    B {
+        label: LabelId,
+    },
 
     /// `b.cond label` - Conditional branch.
-    BCond { cond: Cond, label: LabelId },
+    BCond {
+        cond: Cond,
+        label: LabelId,
+    },
 
     /// `b.vs label` - Branch if overflow set.
-    Bvs { label: LabelId },
+    Bvs {
+        label: LabelId,
+    },
 
     /// `b.vc label` - Branch if overflow clear.
-    Bvc { label: LabelId },
+    Bvc {
+        label: LabelId,
+    },
 
     /// Label marker (not a real instruction).
-    Label { id: LabelId },
+    Label {
+        id: LabelId,
+    },
 
     /// `bl symbol` - Branch with link (call).
     ///
     /// The `symbol_id` is an index into the symbol table stored in `Aarch64Mir`.
-    Bl { symbol_id: u32 },
+    Bl {
+        symbol_id: u32,
+    },
 
     /// `ret` - Return (branch to LR).
     Ret,
@@ -760,7 +884,9 @@ pub enum Aarch64Inst {
     /// On macOS, syscalls use `svc #0x80` with syscall number in X16.
     /// On Linux, syscalls use `svc #0` with syscall number in X8.
     /// This instruction takes an immediate that specifies the system call type.
-    Svc { imm: u16 },
+    Svc {
+        imm: u16,
+    },
 
     // === Stack operations ===
     /// `stp x1, x2, [sp, #offset]!` - Store pair with pre-index (push).
@@ -778,14 +904,23 @@ pub enum Aarch64Inst {
     },
 
     /// Load pointer to string constant (pseudo-instruction resolved during emission)
-    StringConstPtr { dst: Operand, string_id: u32 },
+    StringConstPtr {
+        dst: Operand,
+        string_id: u32,
+    },
 
     /// Load string length (pseudo-instruction resolved during emission)
-    StringConstLen { dst: Operand, string_id: u32 },
+    StringConstLen {
+        dst: Operand,
+        string_id: u32,
+    },
 
     /// Load string capacity (pseudo-instruction resolved during emission)
     /// For string literals, this is always 0 (indicating rodata, not heap)
-    StringConstCap { dst: Operand, string_id: u32 },
+    StringConstCap {
+        dst: Operand,
+        string_id: u32,
+    },
 }
 
 impl Aarch64Inst {
@@ -846,8 +981,16 @@ impl fmt::Display for Aarch64Inst {
                     write!(f, "str {}, [{}, #{}]", src, base, offset)
                 }
             }
+            Aarch64Inst::Ldrb { dst, base, offset } => {
+                write!(f, "ldrb {}, [{}, #{}]", dst, base, offset)
+            }
+            Aarch64Inst::Strb { src, base, offset } => {
+                write!(f, "strb {}, [{}, #{}]", src, base, offset)
+            }
             Aarch64Inst::LdrIndexed { dst, base } => write!(f, "ldr {}, [{}]", dst, base),
             Aarch64Inst::StrIndexed { src, base } => write!(f, "str {}, [{}]", src, base),
+            Aarch64Inst::LdrbIndexed { dst, base } => write!(f, "ldrb {}, [{}]", dst, base),
+            Aarch64Inst::StrbIndexed { src, base } => write!(f, "strb {}, [{}]", src, base),
             Aarch64Inst::LdrIndexedOffset { dst, base, offset } => {
                 if *offset == 0 {
                     write!(f, "ldr {}, [{}]", dst, base)

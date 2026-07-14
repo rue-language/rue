@@ -482,6 +482,8 @@ impl<'a> Emitter<'a> {
                 inst,
                 Aarch64Inst::LdrIndexed { .. }
                     | Aarch64Inst::StrIndexed { .. }
+                    | Aarch64Inst::LdrbIndexed { .. }
+                    | Aarch64Inst::StrbIndexed { .. }
                     | Aarch64Inst::LdrIndexedOffset { .. }
                     | Aarch64Inst::StrIndexedOffset { .. }
             ) {
@@ -660,6 +662,22 @@ impl<'a> Emitter<'a> {
                 self.begin_inst();
                 self.emit_str(rs, *base, adjusted_offset);
                 end_inst!(self, "str {}, [{}, #{}]", rs, base, adjusted_offset);
+            }
+
+            Aarch64Inst::Ldrb { dst, base, offset } => {
+                let rd = dst.as_physical();
+                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
+                self.begin_inst();
+                self.emit_ldrb(rd, *base, adjusted_offset);
+                end_inst!(self, "ldrb {}, [{}, #{}]", rd.as_w(), base, adjusted_offset);
+            }
+
+            Aarch64Inst::Strb { src, base, offset } => {
+                let rs = src.as_physical();
+                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
+                self.begin_inst();
+                self.emit_strb(rs, *base, adjusted_offset);
+                end_inst!(self, "strb {}, [{}, #{}]", rs.as_w(), base, adjusted_offset);
             }
 
             Aarch64Inst::AddRR { dst, src1, src2 } => {
@@ -1188,6 +1206,8 @@ impl<'a> Emitter<'a> {
             // These instructions should be caught by the verification at the start of emit()
             Aarch64Inst::LdrIndexed { .. }
             | Aarch64Inst::StrIndexed { .. }
+            | Aarch64Inst::LdrbIndexed { .. }
+            | Aarch64Inst::StrbIndexed { .. }
             | Aarch64Inst::LdrIndexedOffset { .. }
             | Aarch64Inst::StrIndexedOffset { .. } => {
                 unreachable!(
@@ -1601,6 +1621,24 @@ impl<'a> Emitter<'a> {
             let inst = OPCODE_STR_UOFF | (Reg::X15.encoding() as u32) << 5 | rs.encoding() as u32;
             self.emit_u32(inst);
         }
+    }
+
+    fn emit_ldrb(&mut self, rd: Reg, base: Reg, offset: i32) {
+        assert!((0..=4095).contains(&offset));
+        let inst = 0x3940_0000
+            | ((offset as u32) << 10)
+            | ((base.encoding() as u32) << 5)
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_strb(&mut self, rs: Reg, base: Reg, offset: i32) {
+        assert!((0..=4095).contains(&offset));
+        let inst = 0x3900_0000
+            | ((offset as u32) << 10)
+            | ((base.encoding() as u32) << 5)
+            | rs.encoding() as u32;
+        self.emit_u32(inst);
     }
 
     fn emit_str_pre(&mut self, rs: Reg, offset: i32) {
@@ -2478,6 +2516,26 @@ mod tests {
         assert_eq!(inst & 0x1F, 0, "Rd should be X0");
         assert_eq!((inst >> 5) & 0x1F, 1, "Rn should be X1");
         assert_eq!((inst >> 10) & 0xFFF, 16, "Immediate should be 16");
+    }
+
+    #[test]
+    fn test_physical_byte_load_and_store_encoding() {
+        assert_eq!(
+            emit_single(Aarch64Inst::Ldrb {
+                dst: Operand::Physical(Reg::X0),
+                base: Reg::X1,
+                offset: 0,
+            }),
+            vec![0x20, 0x00, 0x40, 0x39]
+        );
+        assert_eq!(
+            emit_single(Aarch64Inst::Strb {
+                src: Operand::Physical(Reg::X2),
+                base: Reg::X3,
+                offset: 0,
+            }),
+            vec![0x62, 0x00, 0x00, 0x39]
+        );
     }
 
     #[test]

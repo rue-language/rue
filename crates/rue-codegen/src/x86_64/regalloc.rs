@@ -308,6 +308,30 @@ impl RegAlloc {
                 });
             }
 
+            X86Inst::Movzx8RM { dst, base, offset } => {
+                alloc_dst!(self.get_allocation(dst), dst, Reg::Rax =>
+                    emit |dst_op| {
+                        mir.push(X86Inst::Movzx8RM { dst: dst_op, base, offset });
+                    },
+                    store |spill_offset| {
+                        mir.push(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset: spill_offset,
+                            src: Operand::Physical(Reg::Rax),
+                        });
+                    },
+                );
+            }
+
+            X86Inst::MovMR8 { base, offset, src } => {
+                let src_op = self.load_operand(mir, src, Reg::Rdx)?;
+                mir.push(X86Inst::MovMR8 {
+                    base,
+                    offset,
+                    src: src_op,
+                });
+            }
+
             X86Inst::AddRR { dst, src } => {
                 self.emit_binop(mir, dst, src, |d, s| X86Inst::AddRR { dst: d, src: s })?;
             }
@@ -776,6 +800,48 @@ impl RegAlloc {
                 };
                 mir.push(X86Inst::MovMR {
                     base: base_phys,
+                    offset,
+                    src: src_op,
+                });
+            }
+
+            X86Inst::Movzx8RMIndexed { dst, base, offset } => {
+                let base_reg = self.load_operand(mir, Operand::Virtual(base), Reg::Rax)?;
+                let base_phys = base_reg.as_physical();
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => mir.push(X86Inst::Movzx8RM {
+                        dst: Operand::Physical(reg),
+                        base: base_phys,
+                        offset,
+                    }),
+                    Some(Allocation::Spill(spill_off)) => {
+                        mir.push(X86Inst::Movzx8RM {
+                            dst: Operand::Physical(Reg::Rdx),
+                            base: base_phys,
+                            offset,
+                        });
+                        mir.push(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset: spill_off,
+                            src: Operand::Physical(Reg::Rdx),
+                        });
+                    }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
+                    }
+                    None => mir.push(X86Inst::Movzx8RM {
+                        dst,
+                        base: base_phys,
+                        offset,
+                    }),
+                }
+            }
+
+            X86Inst::MovMR8Indexed { base, offset, src } => {
+                let src_op = self.load_operand(mir, src, Reg::Rdx)?;
+                let base_reg = self.load_operand(mir, Operand::Virtual(base), Reg::Rax)?;
+                mir.push(X86Inst::MovMR8 {
+                    base: base_reg.as_physical(),
                     offset,
                     src: src_op,
                 });

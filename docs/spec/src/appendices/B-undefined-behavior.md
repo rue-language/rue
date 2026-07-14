@@ -171,6 +171,8 @@ defines it.
 | Using a pointer obtained from `@raw`/`@raw_mut` after the value it borrowed has been moved, dropped, or otherwise gone out of scope (a dangling pointer). | ADR-0028 |
 | Mutating storage through a `ptr mut T` while another live pointer aliases the same storage in a way the program's reasoning assumes cannot happen (aliasing violation). | ADR-0028 |
 | Accessing storage through a pointer that does not satisfy the pointee type's alignment requirement. | ADR-0028 |
+| Reading or writing with `@byte_read`/`@byte_write` when `address_of(p) + offset` is not a live byte within the referenced storage, including null, out-of-bounds, use-after-free, and overflowed-address access. | §9.2 (9.2:14d) |
+| Passing an incorrect size, a pointer from a different allocation family, or an already-freed pointer to `@free_bytes`/`@realloc_bytes`. | §9.2 (9.2:14b–14c) |
 
 {{ rule(id="B.3:3", cat="informative") }}
 

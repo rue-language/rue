@@ -228,6 +228,11 @@ pub enum UnsupportedIntrinsicKind {
     Allocate,
     Free,
     Reallocate,
+    AllocateBytes,
+    FreeBytes,
+    ReallocateBytes,
+    ByteRead,
+    ByteWrite,
 }
 
 /// A compiler-emitted runtime call whose deterministic semantics are not
@@ -711,6 +716,15 @@ fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
         "alloc" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Allocate)),
         "free" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Free)),
         "realloc" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Reallocate)),
+        "alloc_bytes" => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::AllocateBytes))
+        }
+        "free_bytes" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::FreeBytes)),
+        "realloc_bytes" => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ReallocateBytes))
+        }
+        "byte_read" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteRead)),
+        "byte_write" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteWrite)),
         "read_line" => UnsupportedKind::ExternalDependency(External::StandardInput),
         "random_u32" => UnsupportedKind::ExternalDependency(External::RandomU32),
         "random_u64" => UnsupportedKind::ExternalDependency(External::RandomU64),
@@ -1180,8 +1194,8 @@ impl<'a> Interp<'a> {
 
         let arity_matches = match name {
             "read_line" | "random_u32" | "random_u64" => args.is_empty(),
-            "ptr_write" | "ptr_offset" | "free" => args.len() == 2,
-            "realloc" => args.len() == 3,
+            "ptr_write" | "ptr_offset" | "free" | "free_bytes" | "byte_read" => args.len() == 2,
+            "realloc" | "realloc_bytes" | "byte_write" => args.len() == 3,
             "syscall" => (1..=7).contains(&args.len()),
             _ => args.len() == 1,
         };
@@ -1262,6 +1276,32 @@ impl<'a> Interp<'a> {
                     && ty(1) == Type::U64
                     && ty(2) == Type::U64
                     && result_ty == ty(0)
+            }
+            "alloc_bytes" => {
+                ty(0) == Type::U64 && self.pointer_pointee(result_ty) == Some((Type::U8, true))
+            }
+            "free_bytes" => {
+                self.pointer_pointee(ty(0)) == Some((Type::U8, true))
+                    && ty(1) == Type::U64
+                    && result_ty == Type::UNIT
+            }
+            "realloc_bytes" => {
+                self.pointer_pointee(ty(0)) == Some((Type::U8, true))
+                    && ty(1) == Type::U64
+                    && ty(2) == Type::U64
+                    && result_ty == ty(0)
+            }
+            "byte_read" => {
+                self.pointer_pointee(ty(0))
+                    .is_some_and(|(pointee, _)| pointee == Type::U8)
+                    && ty(1) == Type::U64
+                    && result_ty == Type::U8
+            }
+            "byte_write" => {
+                self.pointer_pointee(ty(0)) == Some((Type::U8, true))
+                    && ty(1) == Type::U64
+                    && ty(2) == Type::U8
+                    && result_ty == Type::UNIT
             }
             "read_line" => self
                 .option_payload(result_ty)

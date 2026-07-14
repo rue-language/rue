@@ -81,13 +81,17 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
 
         // Memory loads: 4 cycles (L1 cache hit)
         Aarch64Inst::Ldr { .. }
+        | Aarch64Inst::Ldrb { .. }
         | Aarch64Inst::LdrIndexed { .. }
+        | Aarch64Inst::LdrbIndexed { .. }
         | Aarch64Inst::LdrIndexedOffset { .. }
         | Aarch64Inst::LdpPost { .. } => 4,
 
         // Memory stores: 1 cycle to retire (store buffer)
         Aarch64Inst::Str { .. }
+        | Aarch64Inst::Strb { .. }
         | Aarch64Inst::StrIndexed { .. }
+        | Aarch64Inst::StrbIndexed { .. }
         | Aarch64Inst::StrIndexedOffset { .. }
         | Aarch64Inst::StpPre { .. } => 1,
 
@@ -223,6 +227,10 @@ fn accesses_memory(inst: &Aarch64Inst) -> bool {
             | Aarch64Inst::StrIndexedOffset { .. }
             | Aarch64Inst::StpPre { .. }
             | Aarch64Inst::LdpPost { .. }
+            | Aarch64Inst::Ldrb { .. }
+            | Aarch64Inst::Strb { .. }
+            | Aarch64Inst::LdrbIndexed { .. }
+            | Aarch64Inst::StrbIndexed { .. }
     )
 }
 
@@ -239,8 +247,8 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
     match inst {
         Aarch64Inst::MovImm { .. } => {}
         Aarch64Inst::MovRR { src, .. } => add_if_phys(src, &mut result),
-        Aarch64Inst::Ldr { base, .. } => result.push(*base),
-        Aarch64Inst::Str { src, base, .. } => {
+        Aarch64Inst::Ldr { base, .. } | Aarch64Inst::Ldrb { base, .. } => result.push(*base),
+        Aarch64Inst::Str { src, base, .. } | Aarch64Inst::Strb { src, base, .. } => {
             add_if_phys(src, &mut result);
             result.push(*base);
         }
@@ -322,12 +330,16 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
         Aarch64Inst::LdpPost { .. } => {
             result.push(Reg::Sp); // Post-indexed LDP reads SP before writing
         }
-        Aarch64Inst::LdrIndexed { .. } | Aarch64Inst::LdrIndexedOffset { .. } => {
+        Aarch64Inst::LdrIndexed { .. }
+        | Aarch64Inst::LdrbIndexed { .. }
+        | Aarch64Inst::LdrIndexedOffset { .. } => {
             // Pre-regalloc indexed load. The scheduler runs after regalloc,
             // which rewrites this variant; the virtual base has no physical
             // register to record here.
         }
-        Aarch64Inst::StrIndexed { src, .. } | Aarch64Inst::StrIndexedOffset { src, .. } => {
+        Aarch64Inst::StrIndexed { src, .. }
+        | Aarch64Inst::StrbIndexed { src, .. }
+        | Aarch64Inst::StrIndexedOffset { src, .. } => {
             // Pre-regalloc indexed store. The scheduler runs after regalloc,
             // which rewrites this variant; the virtual base has no physical
             // register to record here.
@@ -365,6 +377,7 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
         Aarch64Inst::MovImm { dst, .. }
         | Aarch64Inst::MovRR { dst, .. }
         | Aarch64Inst::Ldr { dst, .. }
+        | Aarch64Inst::Ldrb { dst, .. }
         | Aarch64Inst::AddRR { dst, .. }
         | Aarch64Inst::AddsRR { dst, .. }
         | Aarch64Inst::AddsRR64 { dst, .. }
@@ -412,6 +425,7 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
         | Aarch64Inst::Uxtb { dst, .. }
         | Aarch64Inst::Uxth { dst, .. }
         | Aarch64Inst::LdrIndexed { dst, .. }
+        | Aarch64Inst::LdrbIndexed { dst, .. }
         | Aarch64Inst::LdrIndexedOffset { dst, .. }
         | Aarch64Inst::StringConstPtr { dst, .. }
         | Aarch64Inst::StringConstLen { dst, .. }
@@ -424,7 +438,9 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
             result.push(Reg::Sp); // Post-indexed LDP writes SP
         }
         Aarch64Inst::Str { .. }
+        | Aarch64Inst::Strb { .. }
         | Aarch64Inst::StrIndexed { .. }
+        | Aarch64Inst::StrbIndexed { .. }
         | Aarch64Inst::StrIndexedOffset { .. } => {
             // Writes to memory, not registers
         }

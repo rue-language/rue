@@ -47,10 +47,21 @@ impl<'a> BodySema<'a> {
                 || name == known.field_ptr
                 || name == known.alloc
                 || name == known.free
-                || name == known.realloc)
+                || name == known.realloc
+                || name == known.alloc_bytes
+                || name == known.realloc_bytes
+                || name == known.free_bytes
+                || name == known.byte_read
+                || name == known.byte_write)
         {
             let intrinsic_name_str = self.interner.resolve(&name);
-            let kind = if name == known.alloc || name == known.free || name == known.realloc {
+            let kind = if name == known.alloc
+                || name == known.free
+                || name == known.realloc
+                || name == known.alloc_bytes
+                || name == known.realloc_bytes
+                || name == known.free_bytes
+            {
                 "heap"
             } else {
                 "raw-pointer"
@@ -116,6 +127,16 @@ impl<'a> BodySema<'a> {
             self.analyze_free_intrinsic(air, name, &args, span, ctx)
         } else if name == known.realloc {
             self.analyze_realloc_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.alloc_bytes {
+            self.analyze_alloc_bytes_intrinsic(air, name, inst_ref, &args, span, ctx)
+        } else if name == known.realloc_bytes {
+            self.analyze_realloc_bytes_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.free_bytes {
+            self.analyze_free_bytes_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.byte_read {
+            self.analyze_byte_read_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.byte_write {
+            self.analyze_byte_write_intrinsic(air, name, &args, span, ctx)
         } else if name == known.raw {
             let raw = self.known.raw;
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, false, raw, "addr_of")

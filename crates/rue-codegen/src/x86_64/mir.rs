@@ -183,6 +183,20 @@ pub enum X86Inst {
         src: Operand,
     },
 
+    /// `movzx dst, byte [base + offset]` - Load one physical byte.
+    Movzx8RM {
+        dst: Operand,
+        base: Reg,
+        offset: i32,
+    },
+
+    /// `mov byte [base + offset], src` - Store one physical byte.
+    MovMR8 {
+        base: Reg,
+        offset: i32,
+        src: Operand,
+    },
+
     // Arithmetic instructions
     /// `add dst, src` - Add src to dst (dst = dst + src).
     AddRR { dst: Operand, src: Operand },
@@ -471,6 +485,20 @@ pub enum X86Inst {
         src: Operand,
     },
 
+    /// Pre-register-allocation one-byte load through a virtual address.
+    Movzx8RMIndexed {
+        dst: Operand,
+        base: VReg,
+        offset: i32,
+    },
+
+    /// Pre-register-allocation one-byte store through a virtual address.
+    MovMR8Indexed {
+        base: VReg,
+        offset: i32,
+        src: Operand,
+    },
+
     /// `mov dst, [base + index*scale + disp]` - Load from memory with SIB addressing.
     ///
     /// This instruction uses x86-64 SIB (Scale-Index-Base) addressing mode for
@@ -565,6 +593,12 @@ impl fmt::Display for X86Inst {
                 } else {
                     write!(f, "mov [{}-{}], {}", base, -offset, src)
                 }
+            }
+            X86Inst::Movzx8RM { dst, base, offset } => {
+                write!(f, "movzx {}, byte [{}+{}]", dst, base, offset)
+            }
+            X86Inst::MovMR8 { base, offset, src } => {
+                write!(f, "mov byte [{}+{}], {}", base, offset, src)
             }
             X86Inst::AddRR { dst, src } => write!(f, "add {}, {}", dst, src),
             X86Inst::AddRR64 { dst, src } => write!(f, "addq {}, {}", dst, src),
@@ -668,6 +702,12 @@ impl fmt::Display for X86Inst {
                 } else {
                     write!(f, "mov [{}-{}], {}", base, -offset, src)
                 }
+            }
+            X86Inst::Movzx8RMIndexed { dst, base, offset } => {
+                write!(f, "movzx {}, byte [{}+{}]", dst, base, offset)
+            }
+            X86Inst::MovMR8Indexed { base, offset, src } => {
+                write!(f, "mov byte [{}+{}], {}", base, offset, src)
             }
             X86Inst::MovRMSib {
                 dst,
