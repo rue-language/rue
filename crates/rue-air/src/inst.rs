@@ -228,8 +228,7 @@ pub struct AirCallArg {
 }
 
 impl AirCallArg {
-    /// Returns true if this argument is passed as inout.
-    /// This is a convenience method for backwards compatibility.
+    /// Returns true when this argument requests exclusive `inout` access.
     pub fn is_inout(&self) -> bool {
         self.mode == AirArgMode::Inout
     }

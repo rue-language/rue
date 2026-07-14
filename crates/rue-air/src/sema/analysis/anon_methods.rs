@@ -1,7 +1,7 @@
 //! Anonymous-struct method registration and comptime method-signature extraction.
 //!
-//! Split out of `analysis.rs` (RUE-4); methods are part of the same
-//! `impl<'a> Sema<'a>` and behave identically.
+//! These helpers extend the canonical semantic-analysis implementation for
+//! anonymous nominal types.
 
 use super::*;
 

@@ -923,8 +923,8 @@ impl<'a> ConstraintGenerator<'a> {
                     // File-level constant: its type was resolved during
                     // declaration gathering (i32/bool/unit literals, module
                     // types for `const m = @import(...)`). Yielding it here
-                    // anchors expressions like `N + 1` and `m.go() + 1` that
-                    // previously decayed to `<error>` (RUE-142).
+                    // anchors expressions like `N + 1` and `m.go() + 1` to the
+                    // declaration's concrete type (RUE-142).
                     self.type_to_infer(*const_ty)
                 } else {
                     // Unknown variable - will be caught during semantic analysis
@@ -1035,11 +1035,9 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Assign { name, value } => {
                 let value_info = self.generate(*value, ctx);
                 // A local shadows a same-named parameter. Otherwise, constrain
-                // assignment against the declared parameter type too: the
-                // old local-only lookup left every `inout` whole assignment
-                // unconstrained, so an integer literal defaulted to i32 and an
-                // arbitrary differently-shaped value could reach ParamStore
-                // (RUE-641).
+                // assignment against the declared parameter type too. Every
+                // `inout` whole assignment must be constrained before it can
+                // reach `ParamStore` (RUE-641).
                 let target_ty = ctx
                     .locals
                     .get(name)
@@ -2008,13 +2006,12 @@ impl<'a> ConstraintGenerator<'a> {
 
                 let base_info = self.generate(*base, ctx);
                 // When the base's struct type is already concrete, the field's
-                // declared type is known RIGHT NOW — yield it so downstream
+                // declared type is known here — yield it so downstream
                 // constraints see the real type instead of a free variable.
-                // Leaving it free mis-defaulted literals compared against i64
-                // fields to i32 (spurious E0800) and made method calls on a
-                // field receiver unresolvable (the MethodCall arm requires a
-                // Concrete receiver). When the base is still a variable, fall
-                // back to a fresh var; sema resolves and diagnoses later.
+                // This prevents literal defaulting from overriding the field
+                // width and gives method calls the concrete receiver they
+                // require. When the base is still a variable, fall back to a
+                // fresh var; sema resolves and diagnoses later.
                 // (RUE-89, RUE-126)
                 match self.known_field_type(&base_info.ty, *field) {
                     Some(field_ty) => self.type_to_infer(field_ty),
@@ -2077,8 +2074,8 @@ impl<'a> ConstraintGenerator<'a> {
                 let value_info = self.generate(*value, ctx);
                 // Constrain the assigned value against the field's declared
                 // type, so a literal RHS is range-checked at the field's width
-                // instead of silently wrapping (`s.a = 300` with a: u8 used to
-                // truncate to 44). (RUE-104)
+                // instead of wrapping (`s.a = 300` with `a: u8` must be
+                // rejected rather than truncate to 44). (RUE-104)
                 if let Some(field_ty) = self.known_field_type(&base_info.ty, *field) {
                     let expected = self.type_to_infer(field_ty);
                     self.add_constraint(Constraint::equal(value_info.ty, expected, span));
@@ -2293,7 +2290,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let args = self.rir.get_call_args(*args_start, *args_len);
 
                 // Resolve the call's result type from the receiver's type.
-                // When the receiver can't be resolved RIGHT NOW but sema will
+                // When the receiver cannot yet be resolved but sema will
                 // resolve it later, yield a fresh variable rather than ERROR:
                 // a Concrete(ERROR) here flowed into sibling constraints and
                 // produced bogus "literal out of range for '<error>'" failures
@@ -2305,8 +2302,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // (RUE-576): same-named functions across files carry
                     // module-qualified internal keys in `functions`. Yielding
                     // the exact member's return type anchors uses like
-                    // `m.go() + 1` that previously decayed to `<error>`
-                    // (RUE-142).
+                    // `m.go() + 1` to the member declaration (RUE-142).
                     InferType::Concrete(ty) if ty.is_module() => {
                         let function_key = ty
                             .as_module()

@@ -916,10 +916,8 @@ mod tests {
     #[test]
     fn test_logos_at_import_prefixed_ident_splits() {
         // A directive whose name merely starts with "import" (@importx,
-        // @important) is an ordinary @-directive: At + Ident. It used to be a
-        // confusing "unexpected character: @" lex error because the fused
-        // @import token matched and then failed its word-boundary check
-        // without backtracking. (RUE-133)
+        // @important) is an ordinary @-directive: At + Ident. The word-boundary
+        // check must permit fallback to those two tokens (RUE-133).
         let lexer = LogosLexer::new("@importx");
         let (tokens, interner) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[0].kind, TokenKind::At));

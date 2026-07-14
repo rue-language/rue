@@ -782,7 +782,7 @@ impl X86Mir {
 
     /// Take ownership of the symbol table.
     ///
-    /// Used during register allocation to transfer symbols to the new MIR.
+    /// Used during register allocation to transfer symbols to the rewritten MIR.
     pub fn take_symbols(&mut self) -> Vec<String> {
         self.symbol_index.clear();
         std::mem::take(&mut self.symbols)
@@ -790,7 +790,7 @@ impl X86Mir {
 
     /// Set the symbol table.
     ///
-    /// Used during register allocation to restore symbols from the old MIR.
+    /// Used during register allocation to restore symbols from the pre-rewrite MIR.
     pub fn set_symbols(&mut self, symbols: Vec<String>) {
         // Rebuild the index from the symbol table
         self.symbol_index.clear();

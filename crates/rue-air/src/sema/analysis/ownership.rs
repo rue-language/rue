@@ -1,7 +1,7 @@
 //! Linear-type / move / exclusive-access checks and call-argument analysis.
 //!
-//! Split out of `analysis.rs` (RUE-4); methods are part of the same
-//! `impl<'a> Sema<'a>` and behave identically.
+//! This category owns move and loan invariants for the canonical
+//! semantic-analysis implementation.
 
 use super::*;
 

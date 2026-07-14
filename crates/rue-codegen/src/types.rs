@@ -3,8 +3,8 @@
 //! This module provides common functions for calculating type sizes and
 //! field offsets, shared between x86_64 and aarch64 backends.
 //!
-//! As of Phase 3 (ADR-0024), all struct/enum lookups go through `TypeInternPool`
-//! instead of separate `&[StructDef]` slices.
+//! Struct, enum, array, and pointer definitions are resolved through the
+//! canonical `TypeInternPool` (ADR-0024).
 
 use rue_air::{ArrayTypeId, EnumId, StructId, TypeInternPool, TypeKind};
 use rue_cfg::{Cfg, CfgInstData, CfgValue, Type};

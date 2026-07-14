@@ -404,15 +404,15 @@ pub fn munmap(addr: *mut u8, size: usize) -> i64 {
 
 /// Install the stack-overflow SIGSEGV handler.
 ///
-/// # TODO(RUE-645): not yet implemented on macOS
+/// # macOS limitation (RUE-707)
 ///
 /// On Linux this maps an alternate signal stack (`sigaltstack`) and installs a
 /// `SIGSEGV` handler (`rt_sigaction`) with `SA_ONSTACK`, turning a stack
 /// overflow into a clean "stack overflow" abort (exit 101) instead of a raw
 /// SIGSEGV (exit 139).
 ///
-/// Darwin's signal ABI is materially more divergent and cannot be verified on
-/// this (x86-64 Linux) host, so it is intentionally left as a no-op for now:
+/// Darwin's signal ABI requires a platform-specific implementation, so this is
+/// intentionally a no-op:
 ///
 /// - The BSD `sigaction(2)` syscall (SYS_sigaction = 46) takes a
 ///   `struct __sigaction` that, unlike Linux, includes a **caller-supplied
@@ -422,18 +422,18 @@ pub fn munmap(addr: *mut u8, size: usize) -> i64 {
 ///   A freestanding runtime would have to hand-write and correctly align that
 ///   trampoline in assembly.
 /// - The `struct __sigaction` / `stack_t` layouts and flag values differ from
-///   Linux and would need separate, untestable-locally verification.
+///   Linux and require Apple Silicon validation.
 ///
 /// Getting the trampoline subtly wrong re-crashes inside signal delivery, so
-/// shipping it unverified is worse than leaving it off. Until it can be
-/// implemented and exercised on real Apple Silicon (CI `test (macos)`), a stack
-/// overflow on macOS keeps the default SIGSEGV disposition (exit 139). The CLI
-/// regression test is marked `known_bug_on = ["aarch64-macos"]` to track this.
+/// the runtime leaves the default SIGSEGV disposition in place (exit 139).
+/// The CLI regression test is marked `known_bug_on = ["aarch64-macos"]` and
+/// RUE-707 tracks the missing trampoline and handler.
 ///
 /// The `_handler` argument matches the Linux signature so `entry::_main` can
 /// call this unconditionally.
 pub fn install_stack_overflow_handler(_handler: extern "C" fn(i32) -> !) {
-    // Intentionally a no-op on macOS; see the doc comment above (RUE-645 TODO).
+    // Deliberate no-op until the Darwin trampoline contract is implemented
+    // and validated (RUE-707).
 }
 
 /// Exit the process with the given status code.
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn stack_overflow_handler_is_installable() {
         // Reference the installer so the unit-test build type-checks it. On
-        // macOS this is currently a no-op stub (RUE-645 TODO); taking its
+        // macOS this is a deliberate no-op (RUE-707); taking its
         // address keeps the signature in sync with the Linux backends without
         // executing anything.
         let installer: fn(extern "C" fn(i32) -> !) = install_stack_overflow_handler;

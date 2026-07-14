@@ -178,7 +178,7 @@ impl MoveState {
 pub struct CfgBuilder<'a> {
     air: &'a Air,
     cfg: Cfg,
-    /// Type intern pool for struct/enum/array lookups (Phase 2B ADR-0024)
+    /// Canonical pool for struct, enum, array, and pointer definitions.
     type_pool: &'a TypeInternPool,
     /// Interner for resolving symbols to strings
     interner: &'a ThreadedRodeo,
@@ -1846,10 +1846,8 @@ impl<'a> CfgBuilder<'a> {
                 };
                 let val_ty = self.air.get(*value).ty;
 
-                // Only emit a Drop instruction if the type needs drop.
-                // For trivially droppable types, this is a no-op.
-                // We use self.type_needs_drop() which has access to struct/array
-                // definitions to recursively check if fields need drop.
+                // Emit Drop only when recursive type metadata says cleanup is
+                // required; trivially droppable values need no instruction.
                 if self.type_needs_drop(val_ty) {
                     self.emit(CfgInstData::Drop { value: val }, Type::UNIT, span);
                 }
@@ -2160,7 +2158,7 @@ impl<'a> CfgBuilder<'a> {
         }
     }
 
-    /// Check if a type needs to be dropped (has a destructor).
+    /// Check whether dropping a type requires cleanup.
     ///
     /// This method has access to struct and array definitions, allowing it to
     /// recursively check if struct fields or array elements need drop.
@@ -2168,8 +2166,8 @@ impl<'a> CfgBuilder<'a> {
     /// A type needs drop if dropping it requires cleanup actions:
     /// - Primitives, bool, unit, never, error: trivially droppable (no)
     /// - Enum: needs drop if any variant payload needs drop
-    /// - String: will need drop when mutable strings land (currently no)
-    /// - Struct: needs drop if any field needs drop
+    /// - Struct: needs drop when it has a destructor (including builtin
+    ///   `StrBuf`) or any field needs drop
     /// - Array: needs drop if element type needs drop
     fn type_needs_drop(&self, ty: Type) -> bool {
         match ty.kind() {
@@ -2202,19 +2200,18 @@ impl<'a> CfgBuilder<'a> {
                     .any(|&ty| self.type_needs_drop(ty))
             }
 
-            // Struct types need drop if they have a destructor (e.g., builtin String)
+            // Struct types need drop if they have a destructor (e.g. builtin
+            // StrBuf)
             // or if any field needs drop
             TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
-                // Builtins with destructors (like String) need drop
+                // Builtins with destructors (like StrBuf) need drop.
                 if struct_def.destructor.is_some() {
                     return true;
                 }
                 // Otherwise, check if any field needs drop
                 struct_def.fields.iter().any(|f| self.type_needs_drop(f.ty))
             }
-
-            // Note: String is now Type::Struct with is_builtin=true, handled above
 
             // Array types need drop if element type needs drop
             TypeKind::Array(array_id) => {

@@ -1,7 +1,7 @@
 //! Function-level analysis orchestration: single/method/destructor/specialized function entry points and their bodies.
 //!
-//! Split out of `analysis.rs` (RUE-4); methods are part of the same
-//! `impl<'a> Sema<'a>` and behave identically.
+//! This category owns body setup, analysis, and finalization for each kind of
+//! callable.
 
 use super::*;
 

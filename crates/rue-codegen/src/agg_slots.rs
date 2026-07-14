@@ -1,6 +1,6 @@
-//! Shared aggregate-slot materialization (RUE-121, phase 1).
+//! Shared aggregate-slot materialization.
 //!
-//! Multi-slot aggregates (structs, fixed-size arrays, the 3-slot `String` fat
+//! Multi-slot aggregates (structs, fixed-size arrays, the 3-slot `StrBuf` fat
 //! pointer) are tracked during CFG lowering as a list of one vreg per slot in
 //! the lowerer's `struct_slot_vregs` cache. Both backends use this module so
 //! every aggregate consumer observes the same representation.
@@ -11,17 +11,13 @@
 //! [`SlotBackend`]: vreg allocation, value lookup, and the one genuinely
 //! per-architecture instruction (load a frame slot into a vreg).
 //!
-//! Phase 1 covered the slot accessor. Phase 2 moved the StructInit/ArrayInit
-//! flattening (the eager population of the slot cache) here as
-//! [`lower_struct_init`]/[`lower_array_init`]. Phase 3 moved the consumer-side
-//! store loops here as [`store_slots`]/[`store_slots_through_ptr`] — every
-//! site that writes an aggregate's slots (Alloc, Store, PlaceWrite, inout
-//! writeback) iterates via these two primitives. Phase 4 (RUE-106) added the
-//! callee side of the sret return as [`store_slots_to_sret`]; the convention
-//! *decision* (which returns use sret) is shared in
-//! `crate::cfg_lower::type_uses_sret_return`. Remaining per-backend: the
-//! physical-register/stack marshalling of call args and sret readback (truly
-//! arch-specific: push vs str, rsp vs sp) and the scheduler/liveness tables.
+//! [`lower_struct_init`] and [`lower_array_init`] eagerly populate the slot
+//! cache. Every consumer-side aggregate write (Alloc, Store, PlaceWrite, and
+//! `inout` writeback) goes through [`store_slots`] or
+//! [`store_slots_through_ptr`]. [`store_slots_to_sret`] handles callee-side
+//! sret writes; `crate::cfg_lower::type_uses_sret_return` owns the shared
+//! convention decision. Physical-register and stack marshalling, sret
+//! readback, scheduling, and liveness remain architecture-specific.
 
 use std::collections::HashMap;
 

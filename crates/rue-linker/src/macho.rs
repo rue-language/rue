@@ -35,9 +35,8 @@ pub const VM_BASE: u64 = Target::Aarch64Macos.default_base_addr();
 /// Computed file/VM layout for a dynamic executable — produced only by
 /// `compute_dynamic_layout` so relocation pre-pass and the actual build can
 /// never disagree. The linker consumes this (via [`MachOBuilder::dynamic_layout`])
-/// to place symbols *before* the binary is built; previously it hardcoded
-/// `VM_BASE + PAGE_SIZE` for the data segment, which broke as soon as
-/// __TEXT outgrew one page. (RUE-131)
+/// to place symbols before the binary is built, including a data segment whose
+/// address follows the actual extent of __TEXT. (RUE-131)
 pub(crate) struct DynamicLayout {
     pub(crate) text_file_offset: usize,
     pub(crate) text_segment_file_size: usize,
@@ -750,13 +749,9 @@ impl MachOBuilder {
 
     /// The complete dynamic-executable layout, computed in ONE place.
     ///
-    /// `calculate_text_file_offset_for_dynamic` and `build_dynamic` used to
-    /// compute this independently and had drifted: the precompute counted ONE
-    /// data section where the builder counts up to three (__const, __data,
-    /// __bss), so with more than one data section every relocation was
-    /// patched against a text offset the binary didn't actually use.
-    /// (RUE-131; the drift is the same dual-implementation disease tracked
-    /// across the codebase.)
+    /// Relocation placement and `build_dynamic` consume this same computation,
+    /// including all present __const, __data, and __bss section commands, so
+    /// their text and data offsets cannot diverge (RUE-131).
     fn compute_dynamic_layout(&self) -> DynamicLayout {
         let has_data = !self.rodata.is_empty() || !self.data.is_empty() || self.bss_size > 0;
 
@@ -1214,10 +1209,9 @@ mod tests {
         );
     }
 
-    /// RUE-131: the relocation pre-pass and the builder used to compute the
-    /// text offset independently and drifted (the pre-pass counted one data
-    /// section; the builder counts up to three). With rodata + data + bss all
-    /// present, the two must agree exactly.
+    /// The relocation pre-pass and builder share one layout computation; with
+    /// rodata, data, and bss all present their text offsets must agree exactly
+    /// (RUE-131).
     #[test]
     fn test_precompute_matches_layout_with_all_data_sections() {
         let builder = MachOBuilder::new()

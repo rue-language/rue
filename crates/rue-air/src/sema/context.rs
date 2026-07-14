@@ -817,8 +817,6 @@ pub enum ConstValue {
     /// as ordinary runtime values.
     Function(lasso::Spur),
     /// Unit value - the value of `()`.
-    // TODO(rue-c6gi): Remove #[allow] when Unit const evaluation is implemented
-    #[allow(dead_code)]
     Unit,
 }
 
@@ -854,8 +852,6 @@ impl ConstValue {
     }
 
     /// Try to extract a type value.
-    // TODO(rue-c6gi): Remove #[allow] when Unit const evaluation is implemented
-    #[allow(dead_code)]
     pub fn as_type(self) -> Option<Type> {
         match self {
             ConstValue::Type(ty) => Some(ty),
@@ -872,15 +868,11 @@ impl ConstValue {
     }
 
     /// Check if this is a unit value.
-    // TODO(rue-c6gi): Remove #[allow] when Unit const evaluation is implemented
-    #[allow(dead_code)]
     pub fn is_unit(self) -> bool {
         matches!(self, ConstValue::Unit)
     }
 
     /// Get the type of this constant value.
-    // TODO(rue-c6gi): Remove #[allow] when Unit const evaluation is implemented
-    #[allow(dead_code)]
     pub fn get_type(&self) -> Type {
         match self {
             ConstValue::Integer(_) => Type::I64, // Default to i64 for comptime integers

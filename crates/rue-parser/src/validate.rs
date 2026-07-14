@@ -29,9 +29,9 @@ pub const KNOWN_DIRECTIVES: &[&str] = &["allow", "copy"];
 
 /// Warning names accepted by `@allow(...)`.
 ///
-/// This validates spelling at parse time even for warnings whose emission or
-/// suppression is still pending, so typos like `@allow(unused_variabl)` fail
-/// loudly instead of becoming no-op directives (RUE-356).
+/// Parsing validates spelling so typos like `@allow(unused_variabl)` fail
+/// loudly; sema consumes these names when emitting and suppressing warnings
+/// (RUE-356).
 pub const KNOWN_WARNING_NAMES: &[&str] =
     &["unused_variable", "unused_function", "unreachable_code"];
 

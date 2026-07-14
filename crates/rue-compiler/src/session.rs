@@ -1681,11 +1681,13 @@ impl CompilerSession {
         result
     }
 
-    /// Materialize stable semantic inputs for future dependency-edge capture.
+    /// Materialize the stable semantic dependency manifest.
     ///
-    /// This tooling-only query shares the existing import and stable-definition
-    /// queries. It performs no additional RIR traversal; reference edges are not
-    /// yet claimed until every semantic reference surface can be captured.
+    /// The manifest contains the supported call, destructor, declaration-type,
+    /// type-call-head, and named-constant edge families. Per-surface completeness
+    /// flags and stable blockers make incomplete capture fail closed. The query
+    /// shares the import and stable-definition inputs and performs no additional
+    /// RIR traversal.
     pub fn semantic_dependency_inputs(
         &mut self,
         options: &CompileOptions,

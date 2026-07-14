@@ -1,7 +1,7 @@
 //! Compiler intrinsic analysis (dbg/drop/cast/panic/assert/parse/import/... non-pointer intrinsics).
 //!
-//! Split out of `analysis.rs` (RUE-4); methods are part of the same
-//! `impl<'a> Sema<'a>` and behave identically.
+//! This category owns non-pointer intrinsic analysis within the canonical
+//! semantic-analysis implementation.
 
 use super::*;
 
@@ -511,10 +511,9 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // `@cast` never had a working inference rule and is fully redundant with
-        // `@intCast` (RUE-319). Rather than silently accept it and then fail
-        // inference (the old E0206/E0702 confusion), reject it up front with a
-        // clear pointer to the working intrinsic. Inference gives `@cast` a
+        // `@cast` has no inference rule and is redundant with `@intCast`
+        // (RUE-319). Reject it up front with a clear pointer to the working
+        // intrinsic. Inference gives `@cast` a
         // fresh type variable (like `@intCast`) precisely so this diagnostic is
         // what the user sees, in every context, instead of a masking
         // type-mismatch error. Arguments are still analyzed so any error inside
@@ -714,8 +713,8 @@ impl<'a> BodySema<'a> {
                 // The target type variable decayed to `<error>` with no
                 // constraint to fix it (e.g. the result flows only into a
                 // type-polymorphic sink like `@dbg`). Report the actual problem
-                // — the cast target can't be inferred — not the array-specific
-                // "empty array" message this used to borrow (RUE-588).
+                // — the cast target can't be inferred — rather than an
+                // array-specific "empty array" diagnostic (RUE-588).
                 return Err(CompileError::new(
                     ErrorKind::CannotInferCastTarget(intrinsic_name.to_string()),
                     span,
@@ -1308,8 +1307,7 @@ impl<'a> BodySema<'a> {
         }
     }
 
-    // Note: The old analyze_inst body from here onwards is now handled by the
-    // dispatcher above and the category methods in analyze_ops.rs
+    // The dispatcher and category methods own intrinsic analysis.
 
     // ========================================================================
     // Helper methods for analysis

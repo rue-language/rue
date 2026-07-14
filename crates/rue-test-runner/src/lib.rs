@@ -2374,22 +2374,17 @@ pub fn find_dir(env_var: &str, possible_paths: &[&str], fallback: &str) -> PathB
         })
 }
 
-/// Find the rue binary in common locations.
+/// Return the compiler path supplied through `RUE_BINARY`.
 ///
-/// When multiple Buck2 build outputs exist (each in a UUID-named directory),
-/// this function selects the most recently modified binary to avoid using
-/// stale binaries from previous builds.
+/// Test entry points set this explicitly; absence is an error because choosing
+/// among Buck output configurations is not reliable.
 pub fn find_rue_binary() -> PathBuf {
     // Explicit override — what test.sh, Buck targets, and scripts/rue set.
     if let Ok(p) = std::env::var("RUE_BINARY") {
         return PathBuf::from(p);
     }
-    // Refuse to guess. The old fallback globbed every buck-out config-hash
-    // directory and picked the NEWEST binary by mtime — with debug/release/
-    // historical configs side by side, that silently selected the wrong
-    // compiler and produced false test failures (a real incident). A repo-local
-    // bin/rue symlink had the same stale-binary and source-tree-churn risk.
-    // Guessing wrong silently is strictly worse than failing loudly.
+    // Buck output directories may contain multiple configurations, so an
+    // implicit mtime-based choice can run a compiler unrelated to this test.
     panic!(
         "cannot locate the rue compiler: set RUE_BINARY to an explicit path, \
          for example `RUE_BINARY=$(scripts/rue-bin)`"

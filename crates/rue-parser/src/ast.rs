@@ -862,8 +862,7 @@ pub struct CallArg {
 }
 
 impl CallArg {
-    /// Returns true if this argument is passed as inout.
-    /// This is a convenience method for backwards compatibility.
+    /// Returns true when this argument uses `inout` passing mode.
     pub fn is_inout(&self) -> bool {
         self.mode == ArgMode::Inout
     }

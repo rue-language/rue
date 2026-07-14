@@ -177,9 +177,9 @@ impl Unifier {
                     // Ret is (value, return_type), Assign is (value, variable),
                     // Alloc is (init, annotation), calls are (arg, param). So the
                     // RHS is what the context expects and the LHS is what was
-                    // found. This used to report lhs as "expected", which printed
-                    // every mismatch backwards ("expected bool, found i32" for
-                    // `fn main() -> i32 { true }`). (RUE-133)
+                    // found; diagnostics must preserve that direction
+                    // (`fn main() -> i32 { true }` expects i32 and finds bool).
+                    // (RUE-133)
                     UnifyResult::TypeMismatch {
                         expected: rhs_resolved,
                         found: lhs_resolved,

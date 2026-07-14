@@ -9,16 +9,16 @@
 
 /// A unique identifier for a struct definition.
 ///
-/// As of Phase 3 (ADR-0024), the inner value is a pool index into `TypeInternPool`,
-/// not a vector index into a separate struct definitions array.
+/// The inner value is a pool index into [`TypeInternPool`](crate::TypeInternPool),
+/// so the identifier and its definition use one canonical index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructId(pub u32);
 
 impl StructId {
     /// Create a StructId from a pool index.
     ///
-    /// This is the primary way to create StructIds during Phase 3+.
-    /// The pool index is the raw index into `TypeInternPool.types`.
+    /// The pool index is the raw index into `TypeInternPool`'s composite-type
+    /// storage.
     #[inline]
     pub fn from_pool_index(pool_index: u32) -> Self {
         StructId(pool_index)
@@ -35,16 +35,16 @@ impl StructId {
 
 /// A unique identifier for an enum definition.
 ///
-/// As of Phase 3 (ADR-0024), the inner value is a pool index into `TypeInternPool`,
-/// not a vector index into a separate enum definitions array.
+/// The inner value is a pool index into [`TypeInternPool`](crate::TypeInternPool),
+/// so the identifier and its definition use one canonical index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnumId(pub u32);
 
 impl EnumId {
     /// Create an EnumId from a pool index.
     ///
-    /// This is the primary way to create EnumIds during Phase 3+.
-    /// The pool index is the raw index into `TypeInternPool.types`.
+    /// The pool index is the raw index into `TypeInternPool`'s composite-type
+    /// storage.
     #[inline]
     pub fn from_pool_index(pool_index: u32) -> Self {
         EnumId(pool_index)
@@ -67,8 +67,8 @@ pub struct ArrayTypeId(pub u32);
 impl ArrayTypeId {
     /// Create an ArrayTypeId from a pool index.
     ///
-    /// This is used during Phase 2B to create ArrayTypeIds from pool indices.
-    /// The pool index is the raw index into `TypeInternPool.types`.
+    /// The pool index is the raw index into `TypeInternPool`'s composite-type
+    /// storage.
     #[inline]
     pub fn from_pool_index(pool_index: u32) -> Self {
         ArrayTypeId(pool_index)
@@ -156,13 +156,9 @@ impl ModuleId {
 
 /// The kind of a type - used for pattern matching.
 ///
-/// This enum mirrors the structure of the `Type` enum but is designed for
-/// pattern matching. During the migration to `Type(InternedType)`, code that
-/// pattern matches on types will use `ty.kind()` to get a `TypeKind`.
-///
-/// This separation allows incremental migration: all pattern matches can be
-/// updated to use `.kind()` while `Type` is still an enum, then `Type` can be
-/// replaced with `Type(InternedType)` without breaking existing code.
+/// [`Type`] stores a compact encoded index. `TypeKind` is its decoded,
+/// pattern-matchable view; callers obtain it with [`Type::kind`]. Composite
+/// variants carry pool-backed identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeKind {
     /// 8-bit signed integer
@@ -207,7 +203,7 @@ pub enum TypeKind {
 
 /// A type in the Rue type system.
 ///
-/// After Phase 4.1 of ADR-0024, `Type` is a newtype wrapping a u32 index.
+/// Compact encoded type handle (ADR-0024).
 /// This enables O(1) type equality via u32 comparison.
 ///
 /// # Encoding

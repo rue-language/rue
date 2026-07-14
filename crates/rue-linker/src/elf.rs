@@ -718,8 +718,7 @@ impl ObjectFile {
             }
 
             // Mach-O ARM64 relocation_info has no addend field. Addends come
-            // from two places, both of which used to be ignored (the parser
-            // hardcoded addend 0, RUE-131 item 5b):
+            // from two places (RUE-131 item 5b):
             // - an ARM64_RELOC_ADDEND entry immediately PRECEDING the
             //   relocation it modifies (used for BRANCH26/PAGE21/PAGEOFF12),
             // - the bytes at the patch site for ARM64_RELOC_UNSIGNED
@@ -771,8 +770,8 @@ impl ObjectFile {
                     // section. We resolve it to a symbol at the section start
                     // (offset folded into the addend below).
                     // r_symbolnum == 0 is invalid for a non-extern relocation;
-                    // the subtraction used to wrap to usize::MAX and index OOB
-                    // (a panic on malformed input). (RUE-131 item 6)
+                    // checked subtraction prevents malformed input from
+                    // wrapping into an out-of-bounds index. (RUE-131 item 6)
                     let Some(section_number) = r_symbolnum.checked_sub(1) else {
                         return Err(ParseError::InvalidSymbol(format!(
                             "non-extern relocation at 0x{:x} has r_symbolnum 0",
@@ -1535,7 +1534,7 @@ mod tests {
     }
 
     /// RUE-131 item 5b: ARM64_RELOC_UNSIGNED carries its addend in the bytes
-    /// at the patch site; the parser used to hardcode addend 0.
+    /// at the patch site, which the parser must preserve.
     #[test]
     fn test_macho_unsigned_reads_embedded_addend() {
         let mut slot = vec![0u8; 8];

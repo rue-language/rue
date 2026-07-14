@@ -60,8 +60,8 @@ pub enum RunOutcome {
     /// The target panicked; carries the panic message (best-effort).
     Panic(String),
     /// The child was killed by a terminating signal (e.g. SIGSEGV=11,
-    /// SIGABRT=6, SIGFPE=8). This is the case the old in-process harness was
-    /// completely blind to.
+    /// SIGABRT=6, SIGFPE=8). Fork isolation lets the harness observe this
+    /// without dying with the target.
     Signal(i32),
     /// The child exceeded the per-input timeout and was SIGKILLed by the
     /// harness. Carries the budget in seconds. Hangs (infinite loops,
@@ -305,9 +305,9 @@ fn outcome_from_status(status: libc::c_int, panic_msg: Vec<u8>) -> RunOutcome {
     }
 
     if libc::WIFSIGNALED(status) {
-        // Signal death with no panic message: a genuine abort — stack overflow,
-        // segfault, FPE, or a direct abort() — exactly what the old harness
-        // could not see.
+        // Signal death with no panic message is a genuine abort — stack
+        // overflow, segfault, FPE, or a direct abort() — observable because
+        // the target runs in a child process.
         return RunOutcome::Signal(libc::WTERMSIG(status));
     }
     if libc::WIFEXITED(status) {

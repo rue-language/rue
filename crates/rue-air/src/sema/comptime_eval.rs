@@ -918,16 +918,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 // struct (it may have been created earlier without methods).
                 if *methods_len > 0 {
                     // A method that declares its own `comptime T: type`
-                    // parameter would need to be monomorphized per call over
-                    // that parameter — a generics feature not yet supported
-                    // (RUE-284). Merely *defining* such a method used to make
-                    // the enclosing `-> type` constructor non-evaluable
-                    // (registration returned None → the reduction bailed with
-                    // Ok(None)), surfacing as a misleading E1200 mis-located at
-                    // the `let` that instantiates the constructor. Detect it
-                    // here and raise a clear diagnostic pointing *at the
-                    // method* instead, without poisoning the rest of the
-                    // reduction.
+                    // parameter would need per-call monomorphization over that
+                    // parameter, which is unsupported (RUE-284). Reject it at
+                    // the method declaration so the enclosing `-> type`
+                    // reduction cannot degrade into an unrelated E1200 at the
+                    // instantiation site.
                     if let Some((method_span, method_name)) =
                         self.find_method_own_comptime_type_param(*methods_start, *methods_len)
                     {
@@ -1873,12 +1868,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// before HM inference runs (RUE-170, RUE-164).
     ///
     /// A binding like `let P = F();` (where `F` returns `type`) only gets a
-    /// concrete type during sema's analysis pass — but inference runs first,
-    /// so every use of `P` as a type name (`P { ... }`, `let p: P = ...`,
-    /// methods on a `P`-typed receiver) used to fall through to `<error>` or
-    /// an unconstrained variable. This walk finds such bindings and evaluates
-    /// their initializers eagerly so the constraint generator can route them
-    /// through the same paths as named structs.
+    /// concrete type during sema's analysis pass, but inference runs first.
+    /// This walk evaluates those initializers eagerly so uses of `P` as a type
+    /// name (`P { ... }`, `let p: P = ...`, or a method receiver) follow the
+    /// same constraint paths as named structs.
     ///
     /// The walk is opportunistic: initializers that can't be evaluated at
     /// compile time are simply skipped (sema diagnoses them later). The

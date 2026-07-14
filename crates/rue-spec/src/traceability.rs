@@ -515,9 +515,9 @@ impl TraceabilityReport {
 
 /// Extract a quoted shortcode argument (`name = "value"`), tolerating
 /// whitespace around `=`. Zola accepts `id = "x"` and renders it identically
-/// to `id="x"`, so the checker must too: a spaced `cat` used to silently
-/// demote a rule to informative, and a spaced `id` made the rule invisible —
-/// both dropped coverage enforcement without a report.
+/// to `id="x"`, so the checker must too. Otherwise a spaced `cat` can demote a
+/// rule to informative and a spaced `id` can hide it, silently weakening
+/// coverage enforcement.
 fn find_shortcode_arg(line: &str, name: &str) -> Option<String> {
     let mut search_from = 0;
     while let Some(rel) = line[search_from..].find(name) {

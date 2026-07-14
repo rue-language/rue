@@ -198,11 +198,11 @@ impl RegAlloc {
     fn rewrite_instructions(&mut self) -> CompileResult<()> {
         // For spilled vregs, we need to insert load/store operations.
         // This is done by building a new instruction list.
-        // Take symbols from old MIR before taking instructions
+        // Preserve symbols from the pre-rewrite MIR before taking instructions.
         let symbols = self.mir.take_symbols();
         let old_instructions = std::mem::take(&mut self.mir).into_instructions();
         let mut new_mir = X86Mir::new();
-        // Restore symbols to new MIR
+        // Restore symbols to the rewritten MIR.
         new_mir.set_symbols(symbols);
 
         for (idx, inst) in old_instructions.into_iter().enumerate() {

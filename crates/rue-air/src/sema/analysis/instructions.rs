@@ -1,7 +1,7 @@
 //! Core per-instruction analysis dispatch and field/index assignment analysis.
 //!
-//! Split out of `analysis.rs` (RUE-4); methods are part of the same
-//! `impl<'a> Sema<'a>` and behave identically.
+//! This category is the canonical instruction dispatcher and owns assignment
+//! analysis for projected places.
 
 use super::*;
 

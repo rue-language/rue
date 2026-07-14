@@ -1,7 +1,7 @@
 //! Type-inference glue: running inference, projection analysis, and resolved-type lookups.
 //!
-//! Split out of `analysis.rs` (RUE-4); methods are part of the same
-//! `impl<'a> Sema<'a>` and behave identically.
+//! This category connects the inference engine to the canonical semantic
+//! analysis and records resolved expression types.
 
 use super::*;
 
