@@ -6,11 +6,53 @@ mod tests {
     use crate::sema::{Sema, SemaOutput};
     use crate::types::Type;
     use lasso::ThreadedRodeo;
-    use rue_error::{CompileErrors, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures};
+    use rue_error::{
+        CompileErrors, CompileResult, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures,
+    };
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::{AstGen, Rir, RirParamMode};
     use rue_span::FileId;
+
+    struct TestModule {
+        id: String,
+        file_id: FileId,
+        path: String,
+    }
+
+    struct TestSite {
+        importer: String,
+        offset: u32,
+        specifier: String,
+        target: String,
+    }
+
+    struct TestCanonicalImportView {
+        modules: Vec<TestModule>,
+        sites: Vec<TestSite>,
+    }
+
+    impl crate::CanonicalImportView for TestCanonicalImportView {
+        fn visit_modules(
+            &self,
+            visitor: &mut dyn FnMut(&str, FileId, &str) -> CompileResult<()>,
+        ) -> CompileResult<()> {
+            for module in &self.modules {
+                visitor(&module.id, module.file_id, &module.path)?;
+            }
+            Ok(())
+        }
+
+        fn visit_resolved_sites(
+            &self,
+            visitor: &mut dyn FnMut(&str, u32, &str, &str) -> CompileResult<()>,
+        ) -> CompileResult<()> {
+            for site in &self.sites {
+                visitor(&site.importer, site.offset, &site.specifier, &site.target)?;
+            }
+            Ok(())
+        }
+    }
 
     fn compile_to_air(source: &str) -> MultiErrorResult<SemaOutput> {
         compile_to_air_with_preview_features(source, PreviewFeatures::new())
@@ -683,14 +725,14 @@ mod tests {
             paths.insert(FileId::new((index + 1) as u32), format!("/dep{index}.rue"));
         }
         let modules = (0..=IMPORT_COUNT)
-            .map(|index| crate::SemanticModuleIdentity {
-                durable_id: if index == 0 {
+            .map(|index| TestModule {
+                id: if index == 0 {
                     "main.rue".to_owned()
                 } else {
                     format!("dep{}.rue", index - 1)
                 },
                 file_id: FileId::new(index as u32),
-                file_path: paths[&FileId::new(index as u32)].clone(),
+                path: paths[&FileId::new(index as u32)].clone(),
             })
             .collect();
         let imports = rir
@@ -710,19 +752,23 @@ mod tests {
                         unreachable!()
                     };
                     let specifier = interner.resolve(&specifier).to_owned();
-                    crate::SemanticResolvedImport {
+                    TestSite {
                         importer: "main.rue".to_owned(),
-                        source_offset: inst.span.start,
-                        target: specifier.clone(),
-                        specifier,
+                        offset: inst.span.start,
+                        specifier: specifier.clone(),
+                        target: specifier,
                     }
                 })
             })
             .collect();
+        let view = TestCanonicalImportView {
+            modules,
+            sites: imports,
+        };
         let mut sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
         sema.set_root_file_id(FileId::DEFAULT);
         sema.set_file_paths(paths);
-        sema.set_canonical_imports(modules, imports).unwrap();
+        sema.set_canonical_imports(&view).unwrap();
 
         let bound = sema.bind_declarations().unwrap();
         let binding_work = bound.binding_work();

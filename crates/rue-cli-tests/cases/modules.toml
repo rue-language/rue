@@ -1099,7 +1099,7 @@ error_contains = ["E0418", "duplicate constant 'm'"]
 #
 # Regression test: `@import("til.rue")` must NOT silently bind to a
 # pre-loaded `util.rue` via a bare suffix match. Matches must be exact or
-# end at a path separator (ModulePath enforces the boundary check).
+# end at a path separator (the discovery resolver enforces the boundary check).
 # ---------------------------------------------------------------------------
 
 [[case]]

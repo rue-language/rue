@@ -153,15 +153,6 @@ impl ParsedDefinitionIndex {
     }
 }
 
-/// One import occurrence extracted directly into a reusable module artifact.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ParsedImportDirective {
-    importer: ModuleId,
-    source_offset: u32,
-    source_end: u32,
-    specifier: Arc<str>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ParsedInvalidImport {
     importer: ModuleId,
@@ -187,13 +178,6 @@ impl ParsedInvalidImport {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ParsedImportSite {
-    source_offset: u32,
-    source_end: u32,
-    specifier: Arc<str>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedInvalidImportSite {
     span: Span,
@@ -202,7 +186,7 @@ struct ParsedInvalidImportSite {
 
 #[derive(Default)]
 struct ImportSiteCollector {
-    valid: Vec<ParsedImportSite>,
+    valid: Vec<ImportDirective>,
     invalid: Vec<ParsedInvalidImportSite>,
 }
 
@@ -215,20 +199,8 @@ struct ParsedSyntaxPayload {
     ast: ProvenancedAst,
     resolver: FrozenSymbolResolver,
     definitions: ParsedDefinitionIndex,
-    import_sites: Arc<[ParsedImportSite]>,
+    import_sites: Arc<[ImportDirective]>,
     invalid_import_sites: Arc<[ParsedInvalidImportSite]>,
-}
-
-impl ParsedImportDirective {
-    pub fn importer(&self) -> &ModuleId {
-        &self.importer
-    }
-    pub fn source_offset(&self) -> u32 {
-        self.source_offset
-    }
-    pub fn specifier(&self) -> &str {
-        &self.specifier
-    }
 }
 
 /// Immutable, Arc-shareable parsed syntax and exact local provenance.
@@ -237,7 +209,7 @@ pub struct ParsedModule {
     revision: ModuleRevision,
     physical_path: Arc<str>,
     payload: Arc<ParsedSyntaxPayload>,
-    imports: Arc<[ParsedImportDirective]>,
+    imports: Arc<[ImportDirective]>,
     invalid_imports: Arc<[ParsedInvalidImport]>,
 }
 
@@ -349,7 +321,7 @@ impl ParsedModule {
     pub fn definitions(&self) -> &ParsedDefinitionIndex {
         &self.payload.definitions
     }
-    pub fn imports(&self) -> &[ParsedImportDirective] {
+    pub fn imports(&self) -> &[ImportDirective] {
         &self.imports
     }
     pub fn invalid_imports(&self) -> &[ParsedInvalidImport] {
@@ -429,14 +401,7 @@ impl ParsedProgram {
             modules
                 .iter()
                 .flat_map(|module| module.imports().iter())
-                .map(|directive| {
-                    ImportDirective::new(
-                        directive.importer.clone(),
-                        directive.source_offset,
-                        directive.source_end,
-                        directive.specifier.clone(),
-                    )
-                })
+                .cloned()
                 .collect(),
         );
         let mut invalid_imports = modules
@@ -981,11 +946,13 @@ fn bind_payload(
     let imports = payload
         .import_sites
         .iter()
-        .map(|site| ParsedImportDirective {
-            importer: module.clone(),
-            source_offset: site.source_offset,
-            source_end: site.source_end,
-            specifier: site.specifier.clone(),
+        .map(|site| {
+            ImportDirective::new(
+                module.clone(),
+                site.source_offset(),
+                site.source_end(),
+                Arc::from(site.specifier()),
+            )
         })
         .collect::<Vec<_>>();
     let invalid_imports = payload
@@ -1263,11 +1230,12 @@ fn walk_expr(
                     let specifier = resolver.try_resolve(&literal.value).ok_or_else(|| {
                         invalid_input("import literal is absent from the module symbol universe")
                     })?;
-                    imports.valid.push(ParsedImportSite {
-                        source_offset: value.span.start,
-                        source_end: value.span.end,
-                        specifier: Arc::from(specifier),
-                    });
+                    imports.valid.push(ImportDirective::new(
+                        module.clone(),
+                        value.span.start,
+                        value.span.end,
+                        Arc::from(specifier),
+                    ));
                 } else {
                     let (span, shape) = if value.args.len() != 1 {
                         (
@@ -1426,7 +1394,6 @@ mod tests {
     use super::*;
     use crate::{
         ModuleResolutionInput, ModuleResolutionInputs, SemanticInputDescriptor, SourceMetadata,
-        extract_import_directives, lower_canonical_rir, merge_parsed_modules,
     };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -1509,13 +1476,7 @@ mod tests {
         assert_eq!(duplicates.len(), 2);
         assert_ne!(duplicates[0].occurrence(), duplicates[1].occurrence());
         assert_eq!(main.resolve(duplicates[0].symbol()).unwrap(), "same");
-        let graph = crate::resolve_canonical_import_graph(
-            program.import_directives(),
-            &ModuleResolutionInputs::from_metadata(snapshot.metadata()),
-            None,
-        )
-        .unwrap();
-        assert_eq!(graph.records().len(), 1);
+        assert_eq!(program.import_directives().len(), 1);
     }
 
     #[test]
@@ -1844,7 +1805,7 @@ mod tests {
     }
 
     #[test]
-    fn type_position_anonymous_method_imports_match_positional_rir_extraction() {
+    fn parser_owned_import_sites_cover_nested_and_type_positions() {
         let source = r#"
 const top = @import("top");
 fn consume(value: i32) {}
@@ -1874,20 +1835,6 @@ fn main() -> i32 {
             .map(|directive| (directive.source_offset(), directive.specifier()))
             .collect::<Vec<_>>();
 
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let lowered = lower_canonical_rir(&merged).unwrap();
-        let rir = extract_import_directives(
-            lowered.rir(),
-            lowered.semantic_symbols().interner(),
-            snapshot.metadata(),
-        )
-        .unwrap();
-        let rir_values = rir
-            .iter()
-            .map(|directive| (directive.source_offset(), directive.specifier()))
-            .collect::<Vec<_>>();
-
-        assert_eq!(parsed_values, rir_values);
         assert_eq!(parsed_values.len(), 9);
         assert!(
             parsed_values

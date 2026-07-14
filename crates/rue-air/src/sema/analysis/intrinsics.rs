@@ -1168,11 +1168,8 @@ impl<'a> BodySema<'a> {
             _ => unreachable!("compiler import preflight requires a string literal"),
         };
 
-        // Resolve the import path relative to the current source file
-        // Resolution order (per ADR-0026):
-        // 1. foo.rue (simple file module)
-        // 2. _foo.rue with foo/ directory (directory module)
-        // 3. (Future) Dependency from rue.toml
+        // Bind this exact source site through AIR's compact lookup, which was
+        // built from the compiler's accepted canonical discovery graph.
         let module_id = self.resolve_canonical_import(&import_path, span)?;
 
         // Return a module type

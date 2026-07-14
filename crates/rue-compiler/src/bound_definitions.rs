@@ -7,18 +7,68 @@ use std::sync::{
 };
 
 use rue_air::{
-    DeclarationBindingWork, Sema, SemanticBinding, SemanticBindingKind,
+    CanonicalImportView, DeclarationBindingWork, Sema, SemanticBinding, SemanticBindingKind,
     SemanticBindingManifestWork, SemanticBindingNamespace, SemanticDeclarationShell,
 };
-use rue_error::{CompileError, CompileErrors, ErrorKind, MultiErrorResult};
+use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind, MultiErrorResult};
 use rue_parser::ast::{Item, Visibility};
-use rue_span::Span;
+use rue_span::{FileId, Span};
 use rue_target::Target;
 
 use crate::{
     CanonicalMergedProgram, CanonicalRirOutput, DefinitionKind, DefinitionNamespace,
     DefinitionOccurrenceId, ModuleId, PreviewFeatures, SourceRevision,
 };
+
+struct CanonicalSemanticImportView<'a> {
+    merged: &'a CanonicalMergedProgram,
+    graph: &'a crate::CanonicalImportGraph,
+}
+
+impl CanonicalImportView for CanonicalSemanticImportView<'_> {
+    fn visit_modules(
+        &self,
+        visitor: &mut dyn FnMut(&str, FileId, &str) -> CompileResult<()>,
+    ) -> CompileResult<()> {
+        for module in self.merged.ast().modules() {
+            visitor(
+                module.module_id().as_str(),
+                module.file_id(),
+                module.physical_path(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn visit_resolved_sites(
+        &self,
+        visitor: &mut dyn FnMut(&str, u32, &str, &str) -> CompileResult<()>,
+    ) -> CompileResult<()> {
+        for directive in self.merged.ast().import_directives().iter() {
+            let normalized = rue_air::normalize_module_path(directive.specifier());
+            let record = self
+                .graph
+                .records()
+                .iter()
+                .find(|record| {
+                    record.importer() == directive.importer()
+                        && record.normalized_specifier() == normalized
+                })
+                .ok_or_else(|| {
+                    invalid("validated canonical graph does not cover a parsed import directive")
+                })?;
+            if let crate::CanonicalImportResolution::Resolved(target) = record.resolution() {
+                visitor(
+                    directive.importer().as_str(),
+                    directive.source_offset(),
+                    directive.specifier(),
+                    target.as_str(),
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug)]
 struct DefinitionIssuer {
@@ -323,30 +373,30 @@ pub(crate) fn bind_canonical_definitions(
     preview_features: PreviewFeatures,
     target: Target,
 ) -> MultiErrorResult<BoundDefinitionSet> {
-    let imports = test_canonical_import_graph(merged)?;
+    let imports = test_fixture_import_graph(merged)?;
     bind_canonical_definitions_with_work(merged, rir, preview_features, target, &imports)
         .map(|(definitions, _)| definitions)
 }
 
 #[cfg(test)]
-pub(crate) fn test_canonical_import_graph(
+pub(crate) fn test_fixture_import_graph(
     merged: &CanonicalMergedProgram,
 ) -> MultiErrorResult<crate::CanonicalImportGraph> {
-    let inputs = crate::ModuleResolutionInputs::new(
-        merged.ast().root().clone(),
+    crate::test_support::test_fixture_import_graph_parts(
+        merged.ast().root(),
         merged
             .ast()
             .modules()
             .iter()
-            .map(|module| crate::ModuleResolutionInput {
-                module: module.module_id().clone(),
-                physical_path: Arc::from(module.physical_path()),
+            .map(|module| {
+                (
+                    module.module_id().clone(),
+                    Arc::from(module.physical_path()),
+                )
             })
             .collect(),
+        merged.ast().import_directives(),
     )
-    .map_err(CompileErrors::from)?;
-    crate::resolve_canonical_import_graph(merged.ast().import_directives(), &inputs, None)
-        .map_err(CompileErrors::from)
 }
 
 /// Bind once and export stable, request-independent declaration semantics
@@ -363,7 +413,7 @@ pub(crate) fn bind_canonical_declaration_semantics(
     Arc<[crate::DurableDeclarationSemantic]>,
     rue_air::SemanticDeclarationExportWork,
 )> {
-    let imports = test_canonical_import_graph(merged)?;
+    let imports = test_fixture_import_graph(merged)?;
     let sema = configure_canonical_sema(merged, rir, preview_features, target, &imports)?;
     let bound = sema.bind_declarations()?;
     let manifest = bound.binding_manifest();
@@ -412,7 +462,7 @@ pub(crate) fn compare_canonical_durable_declaration_install(
     preview_features: PreviewFeatures,
     target: Target,
 ) -> MultiErrorResult<(crate::DurableSemanticProjectionWork, DeclarationBindingWork)> {
-    let imports = test_canonical_import_graph(merged)?;
+    let imports = test_fixture_import_graph(merged)?;
     let ordinary =
         configure_canonical_sema(merged, rir, preview_features.clone(), target, &imports)?
             .bind_declarations()?;
@@ -588,42 +638,8 @@ pub(crate) fn configure_canonical_sema<'a>(
             "canonical semantic import graph has a foreign root",
         )));
     }
-    let modules = merged
-        .ast()
-        .modules()
-        .iter()
-        .map(|module| rue_air::SemanticModuleIdentity {
-            durable_id: module.module_id().as_str().to_owned(),
-            file_id: module.file_id(),
-            file_path: module.physical_path().to_owned(),
-        })
-        .collect();
-    let imports = merged
-        .ast()
-        .import_directives()
-        .iter()
-        .filter_map(|directive| {
-            let normalized = rue_air::normalize_module_path(directive.specifier());
-            let record = graph
-                .records()
-                .iter()
-                .find(|record| {
-                    record.importer() == directive.importer()
-                        && record.normalized_specifier() == normalized
-                })
-                .expect("validated canonical graph covers every parsed import directive");
-            let crate::CanonicalImportResolution::Resolved(target) = record.resolution() else {
-                return None;
-            };
-            Some(rue_air::SemanticResolvedImport {
-                importer: directive.importer().as_str().to_owned(),
-                source_offset: directive.source_offset(),
-                specifier: directive.specifier().to_owned(),
-                target: target.as_str().to_owned(),
-            })
-        })
-        .collect();
-    sema.set_canonical_imports(modules, imports)
+    let view = CanonicalSemanticImportView { merged, graph };
+    sema.set_canonical_imports(&view)
         .map_err(CompileErrors::from)?;
     sema.set_trusted_standard_library_files(
         merged
@@ -1115,7 +1131,7 @@ mod tests {
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
         let current_definitions = bind(&relocated);
-        let imports = test_canonical_import_graph(&merged).unwrap();
+        let imports = test_fixture_import_graph(&merged).unwrap();
         let shells = configure_canonical_sema(
             &merged,
             &rir,
@@ -1165,7 +1181,7 @@ mod tests {
         let parsed = parse_source_snapshot_modules(&input).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
-        let imports = test_canonical_import_graph(&merged).unwrap();
+        let imports = test_fixture_import_graph(&merged).unwrap();
         let shells = configure_canonical_sema(
             &merged,
             &rir,
@@ -1200,7 +1216,7 @@ mod tests {
         let parsed = parse_source_snapshot_modules(&input).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
-        let imports = test_canonical_import_graph(&merged).unwrap();
+        let imports = test_fixture_import_graph(&merged).unwrap();
         let shells = configure_canonical_sema(
             &merged,
             &rir,
@@ -1265,7 +1281,7 @@ mod tests {
             "{error:?}"
         );
         // The failed candidate was consumed; a fresh ordinary epoch remains valid.
-        let imports = test_canonical_import_graph(&merged).unwrap();
+        let imports = test_fixture_import_graph(&merged).unwrap();
         configure_canonical_sema(
             &merged,
             &rir,
