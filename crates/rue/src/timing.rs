@@ -232,7 +232,7 @@ impl TimingData {
 
     /// Snapshot parent-child relationships captured by the real timing layer.
     #[cfg(test)]
-    fn parent_edges(&self) -> Vec<(String, String)> {
+    pub(crate) fn parent_edges(&self) -> Vec<(String, String)> {
         self.inner
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -746,6 +746,20 @@ mod tests {
             direct_edges.contains(&("parse_file".to_owned(), "parser".to_owned())),
             "direct parse edges: {direct_edges:?}"
         );
+        for expected in [
+            ("parser", "parser_token_adaptation"),
+            ("parser", "parser_nesting_scan"),
+            ("parser", "parser_state_setup"),
+            ("parser", "parser_worker"),
+            ("parser_worker", "parser_graph_construction"),
+            ("parser_worker", "parser_grammar_execution"),
+            ("parser", "parser_directive_validation"),
+        ] {
+            assert!(
+                direct_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+                "missing {expected:?} in direct parse edges: {direct_edges:?}"
+            );
+        }
 
         let direct_timing =
             direct_data.to_benchmark_timing_with_metrics("test", "test", None, None);
@@ -820,10 +834,14 @@ mod tests {
         });
 
         let compile_edges = compile_data.parent_edges();
+        assert!(
+            compile_edges.contains(&("compile".to_owned(), "compile_pipeline".to_owned())),
+            "missing compile -> compile_pipeline in batch edges: {compile_edges:?}"
+        );
         for child in ["rir_declaration_index", "sema"] {
             assert!(
-                compile_edges.contains(&("compile".to_owned(), child.to_owned())),
-                "missing compile -> {child} in batch edges: {compile_edges:?}"
+                compile_edges.contains(&("compile_pipeline".to_owned(), child.to_owned())),
+                "missing compile_pipeline -> {child} in batch edges: {compile_edges:?}"
             );
         }
         assert!(
@@ -841,6 +859,29 @@ mod tests {
         assert_eq!(compile.invocations, 1);
         assert_eq!(compile.root_invocations, 1);
         assert_eq!(compile.leaf_invocations, 0);
+        let parser = compile_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "parser")
+            .unwrap();
+        assert_eq!(parser.root_invocations, 0);
+        assert_eq!(parser.leaf_invocations, 0);
+        for phase in [
+            "parser_token_adaptation",
+            "parser_nesting_scan",
+            "parser_state_setup",
+            "parser_worker",
+            "parser_graph_construction",
+            "parser_grammar_execution",
+            "parser_directive_validation",
+        ] {
+            let timing = compile_timing
+                .passes
+                .iter()
+                .find(|pass| pass.name == phase)
+                .unwrap();
+            assert_eq!(timing.root_invocations, 0, "{phase}");
+        }
         for phase in ["rir_declaration_index", "sema"] {
             let timing = compile_timing
                 .passes
@@ -851,6 +892,49 @@ mod tests {
             assert_eq!(timing.root_invocations, 0, "{phase}");
             assert_eq!(timing.leaf_invocations, 1, "{phase}");
         }
+    }
+
+    #[test]
+    fn parser_failure_subphases_preserve_parentage() {
+        let capture = |source: &str| {
+            let snapshot = SourceSnapshot::single("main.rue", source).unwrap();
+            let data = TimingData::new();
+            let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+            tracing::subscriber::with_default(subscriber, || {
+                parse_source_snapshot_for_ast_presentation(&snapshot).unwrap_err();
+            });
+            data.parent_edges()
+        };
+
+        let parse_error_edges = capture("fn main( {");
+        assert!(
+            parse_error_edges.contains(&(
+                "parser_worker".to_owned(),
+                "parser_error_conversion".to_owned()
+            )),
+            "parse-error edges: {parse_error_edges:?}"
+        );
+        assert!(
+            !parse_error_edges
+                .iter()
+                .any(|(_, child)| child == "parser_directive_validation"),
+            "directive validation must not run after grammar failure: {parse_error_edges:?}"
+        );
+
+        let validation_edges = capture("@important fn main() -> i32 { 0 }");
+        assert!(
+            validation_edges.contains(&(
+                "parser".to_owned(),
+                "parser_directive_validation".to_owned()
+            )),
+            "validation-error edges: {validation_edges:?}"
+        );
+        assert!(
+            !validation_edges
+                .iter()
+                .any(|(_, child)| child == "parser_error_conversion"),
+            "parse-error conversion must not run after grammar success: {validation_edges:?}"
+        );
     }
 
     #[test]

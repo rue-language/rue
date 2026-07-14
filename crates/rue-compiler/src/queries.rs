@@ -369,6 +369,14 @@ pub fn compile_snapshot(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
+    let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
+    let _span = info_span!(
+        "compile",
+        target = %options.target,
+        file_count = snapshot.len(),
+        source_bytes = total_source_bytes
+    )
+    .entered();
     compile_snapshot_impl(snapshot, options)
 }
 
@@ -379,6 +387,33 @@ pub fn compile_snapshot(
 impl CompilerSession {
     /// Produce an executable from this session's closed-valid discovery revision.
     pub fn executable(&mut self, options: &CompileOptions) -> MultiErrorResult<CompileOutput> {
+        let snapshot = self.committed_snapshot_for_executable()?;
+        let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
+        let _span = info_span!(
+            "compile",
+            target = %options.target,
+            file_count = snapshot.len(),
+            source_bytes = total_source_bytes
+        )
+        .entered();
+        compile_with_session(self, &snapshot, options)
+    }
+
+    /// Produce an executable while the caller's canonical `compile` span is
+    /// entered.
+    ///
+    /// The filesystem driver uses this after import discovery so the exact
+    /// discovery parse and the later query pipeline share one timing root.
+    /// Other callers should use [`Self::executable`], which owns that root.
+    pub fn executable_in_compile_scope(
+        &mut self,
+        options: &CompileOptions,
+    ) -> MultiErrorResult<CompileOutput> {
+        let snapshot = self.committed_snapshot_for_executable()?;
+        compile_with_session(self, &snapshot, options)
+    }
+
+    fn committed_snapshot_for_executable(&self) -> MultiErrorResult<SourceSnapshot> {
         let snapshot = self
             .committed_import_discovery()
             .ok_or_else(|| {
@@ -388,7 +423,7 @@ impl CompilerSession {
             })?
             .snapshot()
             .clone();
-        compile_with_session(self, &snapshot, options)
+        Ok(snapshot)
     }
 }
 
@@ -422,13 +457,7 @@ pub(crate) fn compile_with_session(
             )))
         })?;
     let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
-    let _span = info_span!(
-        "compile",
-        target = %options.target,
-        file_count = snapshot.len(),
-        source_bytes = total_source_bytes
-    )
-    .entered();
+    let _span = info_span!("compile_pipeline").entered();
 
     let rir = {
         let _span = info_span!("semantic_astgen").entered();
