@@ -1,0 +1,55 @@
+// std.strbuf — the source-defined growable string buffer header (RUE-871).
+//
+// This module deliberately provides only construction, observation, clearing,
+// and teardown. Allocation and growth remain out of scope: `new()` creates a
+// null, zero-capacity buffer without allocating.
+//
+// The ownership invariant is encoded by `cap`: a value with `cap == 0` owns no
+// allocation and must not call `@free`; a value with `cap > 0` owns its `buf`
+// allocation. `free()` supports early release and resets all three fields, so
+// the ordinary scope-exit destructor is then a safe no-op.
+
+pub struct StrBuf {
+    buf: ptr mut u8,
+    len: u64,
+    cap: u64,
+
+    // Construct an empty buffer without allocating.
+    fn new() -> Self {
+        let zero: u64 = 0;
+        Self {
+            buf: checked { @int_to_ptr(zero) },
+            len: 0,
+            cap: 0,
+        }
+    }
+
+    fn len(borrow self) -> u64 { self.len }
+    fn capacity(borrow self) -> u64 { self.cap }
+    fn is_empty(borrow self) -> bool { self.len == 0 }
+
+    // Remove all bytes while retaining any owned allocation.
+    fn clear(inout self) {
+        self.len = 0;
+    }
+
+    // Release an owned allocation early. Resetting the header transfers this
+    // value to the non-owning empty state before its eventual scope-exit drop.
+    fn free(inout self) {
+        if self.cap > 0 {
+            checked { @free(self.buf, self.cap); };
+        }
+        let zero: u64 = 0;
+        self.buf = checked { @int_to_ptr(zero) };
+        self.len = 0;
+        self.cap = 0;
+    }
+}
+
+// Source-defined drop glue owns teardown for `std.strbuf.StrBuf`. In
+// particular, the null header from `new()` never reaches `@free`.
+drop fn StrBuf(self) {
+    if self.cap > 0 {
+        checked { @free(self.buf, self.cap); };
+    }
+}
