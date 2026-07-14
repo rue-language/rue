@@ -978,6 +978,13 @@ fn finish_canonical_analysis(
                 crate::StableDefinitionKind::Function => {
                     rue_air::SemanticBodyDefinitionKind::FreeFunction
                 }
+                crate::StableDefinitionKind::Method => rue_air::SemanticBodyDefinitionKind::Method,
+                crate::StableDefinitionKind::AssociatedFunction => {
+                    rue_air::SemanticBodyDefinitionKind::AssociatedFunction
+                }
+                crate::StableDefinitionKind::Destructor => {
+                    rue_air::SemanticBodyDefinitionKind::Destructor
+                }
                 crate::StableDefinitionKind::Struct => rue_air::SemanticBodyDefinitionKind::Struct,
                 crate::StableDefinitionKind::Enum => rue_air::SemanticBodyDefinitionKind::Enum,
                 _ => return None,
@@ -986,7 +993,7 @@ fn finish_canonical_analysis(
                 file_id: record.declaration_span().file_id.index(),
                 name: std::sync::Arc::from(key.name()),
                 kind,
-                owner: None,
+                owner: key.owner().map(|owner| std::sync::Arc::from(owner.name())),
             })
         },
         |module: &std::sync::Arc<str>| modules.get(module.as_ref()).copied(),
