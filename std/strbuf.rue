@@ -184,13 +184,13 @@ pub struct StrBuf {
         read_packed_byte(value.buf, index)
     }
 
-    fn starts_with(borrow self, borrow prefix: Self) -> bool {
-        if prefix.len > self.len {
+    fn starts_with(borrow self, borrow prefix: str) -> bool {
+        if prefix.len() > self.len {
             return false;
         }
         let mut i: u64 = 0;
-        while i < prefix.len {
-            if read_packed_byte(self.buf, i) != read_packed_byte(prefix.buf, i) {
+        while i < prefix.len() {
+            if read_packed_byte(self.buf, i) != prefix[i] {
                 return false;
             }
             i = i + 1;
@@ -198,17 +198,17 @@ pub struct StrBuf {
         true
     }
 
-    fn contains(borrow self, borrow needle: Self) -> bool {
-        if needle.len > self.len {
+    fn contains(borrow self, borrow needle: str) -> bool {
+        if needle.len() > self.len {
             return false;
         }
-        let limit = self.len - needle.len;
+        let limit = self.len - needle.len();
         let mut start: u64 = 0;
         while start <= limit {
             let mut i: u64 = 0;
             let mut equal = true;
-            while equal && i < needle.len {
-                if read_packed_byte(self.buf, start + i) != read_packed_byte(needle.buf, i) {
+            while equal && i < needle.len() {
+                if read_packed_byte(self.buf, start + i) != needle[i] {
                     equal = false;
                 }
                 i = i + 1;

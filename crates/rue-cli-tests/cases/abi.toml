@@ -203,7 +203,10 @@ stdout = "8\n"
 
 [[case]]
 name = "bare_array_8_pass_and_return"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn through(a: [i32; 8]) -> [i32; 8] {
     a
 }
@@ -223,7 +226,10 @@ stdout = "8\n"
 # registers and never write the buffer — len/cap arrived as garbage.
 [[case]]
 name = "string_return_by_value"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn make() -> StrBuf {
     "hello"
 }
@@ -244,7 +250,10 @@ hello
 # ABI slot; callee and caller must agree on the shift.
 [[case]]
 name = "string_return_with_args"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn pick(a: StrBuf, b: StrBuf, n: i32) -> StrBuf {
     if n > 0 { a } else { b }
 }

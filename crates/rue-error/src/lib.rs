@@ -510,12 +510,6 @@ pub enum PreviewFeature {
     /// collection/string trio. Gated until the fat-pointer ABI lands on both
     /// backends.
     Slices,
-    /// The `str` string type — a read-only `[u8]` slice carrying the UTF-8
-    /// byte-string convention, plus static-backed first-class string literals
-    /// (ADR-0043 Phase 3, RUE-324). `str` reuses the slice `{ptr, len}`
-    /// representation; string literals live in `.rodata` and produce a 2-word
-    /// `str` value where a `str` is expected.
-    StringTrio,
     /// Inline type-constructor call heads (RUE-596, relaxing spec 4.14:23): a
     /// type-constructor call with explicit comptime args used directly as a
     /// struct-literal head (`Pair(i32) { .. }`), an associated-function / enum-
@@ -554,7 +548,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::Slices => "slices",
-            PreviewFeature::StringTrio => "string_trio",
             PreviewFeature::InlineTypeCtorPath => "inline_type_ctor_paths",
             PreviewFeature::FieldInitShorthand => "field_init_shorthand",
             PreviewFeature::RawBytes => "raw_bytes",
@@ -567,7 +560,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::Slices => "ADR-0043",
-            PreviewFeature::StringTrio => "ADR-0043",
             PreviewFeature::InlineTypeCtorPath => "ADR-0025",
             PreviewFeature::FieldInitShorthand => "RUE-613",
             PreviewFeature::RawBytes => "RUE-879",
@@ -579,7 +571,6 @@ impl PreviewFeature {
         &[
             PreviewFeature::TestInfra,
             PreviewFeature::Slices,
-            PreviewFeature::StringTrio,
             PreviewFeature::InlineTypeCtorPath,
             PreviewFeature::FieldInitShorthand,
             PreviewFeature::RawBytes,
@@ -607,7 +598,6 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "slices" => Ok(PreviewFeature::Slices),
-            "string_trio" => Ok(PreviewFeature::StringTrio),
             "inline_type_ctor_paths" => Ok(PreviewFeature::InlineTypeCtorPath),
             "field_init_shorthand" => Ok(PreviewFeature::FieldInitShorthand),
             "raw_bytes" => Ok(PreviewFeature::RawBytes),
@@ -2592,7 +2582,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, slices, string_trio, inline_type_ctor_paths, field_init_shorthand, raw_bytes"
+            "test_infra, slices, inline_type_ctor_paths, field_init_shorthand, raw_bytes"
         );
     }
 
@@ -2604,16 +2594,6 @@ mod tests {
         assert_eq!(feature.name(), "slices");
         assert_eq!(feature.adr(), "ADR-0043");
         assert!(PreviewFeature::all().contains(&PreviewFeature::Slices));
-    }
-
-    #[test]
-    fn test_preview_feature_string_trio() {
-        // ADR-0043 Phase 3 (RUE-324): the `str` string-type preview feature.
-        let feature: PreviewFeature = "string_trio".parse().unwrap();
-        assert_eq!(feature, PreviewFeature::StringTrio);
-        assert_eq!(feature.name(), "string_trio");
-        assert_eq!(feature.adr(), "ADR-0043");
-        assert!(PreviewFeature::all().contains(&PreviewFeature::StringTrio));
     }
 
     #[test]

@@ -78,43 +78,6 @@ impl<'a> BodySema<'a> {
             );
         }
 
-        // Check if this is a builtin (String) mutation method. Gate the
-        // name-only match on the receiver's resolved type actually being the
-        // builtin: a user struct method that merely shares a name with a String
-        // mutation method (`push`/`push_str`/`clear`/`reserve`) must not be
-        // misclassified as a `ByMutRef` mutation and wrongly demand a `mut`
-        // receiver (RUE-223). The type is read from HM inference without
-        // analyzing the receiver, so ANY place receiver (a local, a struct
-        // field, an array element, an inout parameter, or a chain rooted at
-        // one) is recognized, not just a bare local (RUE-256).
-        let receiver_is_builtin_string = ctx
-            .resolved_types
-            .get(&receiver)
-            .copied()
-            .is_some_and(|ty| self.is_builtin_string(ty));
-        let source_method_exists = ctx
-            .resolved_types
-            .get(&receiver)
-            .and_then(|ty| ty.as_struct())
-            .is_some_and(|struct_id| self.has_method((struct_id, method)));
-        let is_builtin_mutation_method = receiver_is_builtin_string
-            && !source_method_exists
-            && self.is_builtin_mutation_method(&method_name_str);
-
-        // A String mutation method is `inout self` (spec 3.10:15-19): it
-        // accesses the receiver by reference and writes the result back in
-        // place, so the receiver must name a MUTABLE place. Reject an immutable
-        // binding up front (reusing the assignment-target diagnostics), before
-        // the receiver is analyzed as a borrow below.
-        if is_builtin_mutation_method {
-            self.check_string_receiver_mutable(receiver_var, ctx, span)?;
-        }
-
-        // Snapshot the receiver root's move state before analyzing the
-        // receiver expression: builtin ByRef/ByMutRef methods restore it to
-        // undo the move the receiver analysis records (see ReceiverInfo).
-        let receiver_move_state_before = receiver_var.and_then(|v| ctx.moved_vars.get(&v).cloned());
-
         // Decide up front whether this receiver is accessed by reference, so
         // it is analyzed as a BORROW — not a move — in every place position (a
         // field, an array element by const or dynamic index, a field of
@@ -129,9 +92,7 @@ impl<'a> BodySema<'a> {
         // intent is known — and the root is by-ref only when the method takes
         // `self` by reference (RUE-254). Module receivers keep their existing
         // post-analysis handling.
-        let receiver_byref_root = if is_builtin_mutation_method {
-            receiver_var
-        } else {
+        let receiver_byref_root = {
             // A method that exists on NEITHER the user-method table nor the
             // builtin registry is diagnosed here, before the receiver is
             // analyzed: the unknown call would otherwise default to a
@@ -144,10 +105,7 @@ impl<'a> BodySema<'a> {
                     .peek_place_type(receiver, ctx)
                     .and_then(|ty| ty.as_struct())
             {
-                let known = self.has_method((struct_id, method))
-                    || self
-                        .get_builtin_type_def(struct_id)
-                        .is_some_and(|def| def.find_method(&method_name_str).is_some());
+                let known = self.has_method((struct_id, method));
                 if !known {
                     let type_name = self.format_type_name(Type::new_struct(struct_id));
                     return Err(CompileError::new(
@@ -163,18 +121,12 @@ impl<'a> BodySema<'a> {
                 let ty = self.peek_place_type(receiver, ctx)?;
                 let struct_id = ty.as_struct()?;
 
-                let builtin_borrow_receiver = self
-                    .get_builtin_type_def(struct_id)
-                    .and_then(|def| def.find_method(&method_name_str))
-                    .is_some_and(|info| info.receiver_mode == rue_builtins::ReceiverMode::ByRef);
-                if builtin_borrow_receiver {
-                    return Some(root);
-                }
-
                 let info = self.method_info((struct_id, method))?;
                 matches!(info.self_mode, RirParamMode::Inout | RirParamMode::Borrow).then_some(root)
             })
         };
+
+        let receiver_move_state_before = receiver_var.and_then(|v| ctx.moved_vars.get(&v).cloned());
 
         // Analyze the receiver expression. When it is a by-ref receiver,
         // `byref_arg_root` makes the var-ref / field / index reads borrow the
@@ -184,17 +136,6 @@ impl<'a> BodySema<'a> {
         ctx.byref_arg_root = prev_byref_root;
         let mut receiver_result = receiver_result?;
         let receiver_type = receiver_result.ty;
-
-        // The write-back target for a String mutation method is the place the
-        // receiver read just produced (a `PlaceRead` for a field/element, a
-        // `Load` for a local, or a `Param` for an inout parameter). Reusing
-        // that place — rather than re-tracing the receiver — evaluates any
-        // index expression exactly once (RUE-256).
-        let receiver_storage = if is_builtin_mutation_method {
-            Some(self.string_receiver_storage_from_read(air, receiver_result.air_ref, span)?)
-        } else {
-            None
-        };
 
         // Handle module member access: module.function() becomes a direct function call
         if let Some(module_id) = receiver_type.as_module() {
@@ -294,27 +235,6 @@ impl<'a> BodySema<'a> {
                 ));
             }
         };
-
-        // Source-defined methods on a language item are authoritative. The
-        // builtin registry remains a transitional fallback for operations the
-        // source module has not migrated yet.
-        if self.method_info((struct_id, method)).is_none()
-            && let Some(builtin_def) = self.get_builtin_type_def(struct_id)
-        {
-            let method_ctx = BuiltinMethodContext {
-                struct_id,
-                builtin_def,
-                method_name: &method_name_str,
-                span,
-            };
-            let receiver_info = ReceiverInfo {
-                result: receiver_result,
-                var: receiver_var,
-                move_state_before: receiver_move_state_before,
-                storage: receiver_storage,
-            };
-            return self.analyze_builtin_method(air, ctx, &method_ctx, receiver_info, &args);
-        }
 
         // Look up the struct name by its ID (for error messages)
         let struct_def = self.type_pool.struct_def(struct_id);
@@ -803,22 +723,6 @@ impl<'a> BodySema<'a> {
                 struct_def.is_pub,
                 span,
             )?;
-        }
-
-        // Prefer the canonical source implementation, retaining registry
-        // lowering only for associated functions not yet defined in source.
-        if self.method_info((struct_id, function)).is_none()
-            && let Some(builtin_def) = self.get_builtin_type_def(struct_id)
-        {
-            return self.analyze_builtin_assoc_fn(
-                air,
-                ctx,
-                struct_id,
-                builtin_def,
-                &function_name_str,
-                &args,
-                span,
-            );
         }
 
         // Look up the function using StructId

@@ -63,7 +63,10 @@ exit_code = 30
 # ICE ("nested struct field should have slot vregs in cache").
 [[case]]
 name = "struct_init_nested_field_from_place"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Point { x: i32, y: i32 }
 struct A { p: Point }
 struct B { p: Point, tag: i32 }
@@ -79,7 +82,10 @@ exit_code = 30
 # ("string should have fat pointer fields in Store").
 [[case]]
 name = "store_string_from_field"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Holder { s: StrBuf, n: i32 }
 fn main() -> i32 {
     let h = Holder { s: "hello", n: 7 };
@@ -94,7 +100,10 @@ exit_code = 5
 # ("string value should have field vregs for fat pointer"). Prints the string.
 [[case]]
 name = "dbg_string_from_field"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Holder { s: StrBuf, n: i32 }
 fn main() -> i32 {
     let h = Holder { s: "hi", n: 1 };
@@ -413,7 +422,10 @@ stdout = "20\n3\n"
 # the zero-slot aggregate. Now zero-slot aggregates get an EMPTY slot list.
 [[case]]
 name = "empty_array_join"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let _g: [i64; 0] = if true { [] } else { [] };
     0
@@ -428,7 +440,10 @@ exit_code = 0
 # `let s = arr[0]`, and `arr[i].len()` (garbage len).
 [[case]]
 name = "string_array_dbg_element"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let arr: [StrBuf; 1] = ["hi"];
     @dbg(arr[0]);
@@ -439,7 +454,10 @@ stdout = "hi\n"
 
 [[case]]
 name = "string_array_rebind_element"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let arr: [StrBuf; 1] = ["hi"];
     let s = arr[0];
@@ -451,7 +469,10 @@ stdout = "hi\n"
 
 [[case]]
 name = "string_array_pass_by_value"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn takes(s: StrBuf) -> u64 { s.len() }
 fn main() -> i32 {
     let arr: [StrBuf; 1] = ["hello"];
@@ -463,7 +484,10 @@ stdout = "5\n"
 
 [[case]]
 name = "string_array_element_len"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let arr: [StrBuf; 2] = ["hello", "xy"];
     @dbg(arr[0].len()); @dbg(arr[1].len());
@@ -480,7 +504,10 @@ stdout = "5\n2\n"
 # argument registers (RUE-106 #935 pattern).
 [[case]]
 name = "array_drop_multislot_struct"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct D { a: i32, b: i32 }
 drop fn D(self) { @dbg(self.a); @dbg(self.b); }
 fn main() -> i32 {
@@ -494,7 +521,10 @@ stdout = "10\n11\n20\n21\n30\n31\n"
 # the drop-glue call must spill the overflow onto the stack, not panic.
 [[case]]
 name = "array_drop_string_nine_slots"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let _arr: [StrBuf; 3] = ["aa", "bb", "cc"];
     0

@@ -1,16 +1,16 @@
 [section]
 id = "types.strings"
 spec_chapter = "3.7"
-name = "StrBuf Type"
-description = "The StrBuf type represents immutable UTF-8 encoded string literals."
+name = "Text Types"
+description = "Stable core str views and the explicitly imported standard-library StrBuf."
 
 # =============================================================================
-# StrBuf Type Definition
+# Core String Literal Type
 # =============================================================================
 
 [[case]]
 name = "string_literal_basic"
-spec = ["3.7:1", "3.7:2", "3.7:3", "3.7:5", "4.1:10", "2.1:6"]
+spec = ["3.7:1", "3.7:3", "3.7:5", "4.1:10", "2.1:6"]
 source = """
 fn main() -> i32 {
     let s = "hello";
@@ -50,7 +50,10 @@ exit_code = 0
 name = "string_size_is_24"
 spec = ["3.7:2"]
 description = "@size_of(StrBuf) is 24: three machine words (ptr, len, capacity)."
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     @size_of(StrBuf)
 }
@@ -62,9 +65,12 @@ exit_code = 24
 name = "string_is_move_type"
 spec = ["3.7:39"]
 description = "StrBuf is an affine (move) type; use after move is a compile error."
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let a = "hello";
+    let a: StrBuf = "hello";
     let b = a;      // 'a' is moved into 'b'
     @dbg(a);        // ERROR: use of moved value 'a'
     @dbg(b);
@@ -79,7 +85,10 @@ error_contains = "use of moved value"
 name = "string_not_copy_field"
 spec = ["3.7:39"]
 description = "StrBuf is not Copy: a @copy struct with a StrBuf field is rejected."
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 @copy
 struct Bad { s: StrBuf }
 
@@ -95,7 +104,10 @@ error_contains = "non-Copy type 'StrBuf'"
 name = "string_dropped_implicitly"
 spec = ["3.7:39"]
 description = "A StrBuf need not be explicitly consumed; an unused one drops at scope end."
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let _s = "foo" + "bar";   // heap-allocated, never used again
     0
@@ -108,7 +120,10 @@ exit_code = 0
 name = "string_heap_freed_once"
 spec = ["3.7:40"]
 description = "A heap-allocated StrBuf is dropped once (no double free); program runs to completion."
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let a = "foo" + "bar";   // heap-allocated: capacity > 0
     let b = a;               // ownership moves to 'b'
@@ -343,7 +358,10 @@ exit_code = 0
 [[case]]
 name = "string_type_annotation"
 spec = ["3.7:1"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s: StrBuf = "hello";
     0
@@ -354,7 +372,10 @@ exit_code = 0
 [[case]]
 name = "string_type_annotation_empty"
 spec = ["3.7:1"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s: StrBuf = "";
     0
@@ -618,7 +639,10 @@ exit_code = 1
 [[case]]
 name = "string_new_basic"
 spec = ["3.10:7"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.new();
     0
@@ -629,7 +653,10 @@ exit_code = 0
 [[case]]
 name = "string_new_equality_with_empty"
 spec = ["3.10:7", "3.7:9"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.new();
     if s == "" { 1 } else { 0 }
@@ -640,7 +667,10 @@ exit_code = 1
 [[case]]
 name = "string_with_capacity_basic"
 spec = ["3.10:8"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let cap: u64 = 1024;
     let s = StrBuf.with_capacity(cap);
@@ -652,7 +682,10 @@ exit_code = 0
 [[case]]
 name = "string_with_capacity_zero"
 spec = ["3.10:8"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let cap: u64 = 0;
     let s = StrBuf.with_capacity(cap);
@@ -664,7 +697,10 @@ exit_code = 0
 [[case]]
 name = "string_with_capacity_equality_with_empty"
 spec = ["3.10:8", "3.7:9"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let cap: u64 = 64;
     let s = StrBuf.with_capacity(cap);
@@ -676,7 +712,10 @@ exit_code = 1
 [[case]]
 name = "string_new_is_empty"
 spec = ["3.10:7", "3.10:9"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let cap: u64 = 1024;
     let empty = StrBuf.new();
@@ -766,7 +805,10 @@ runtime_error = "index out of bounds"
 [[case]]
 name = "string_substring_len"
 spec = ["3.7:19"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = "café";
     let tail = s.substring(3, 2);
@@ -780,7 +822,10 @@ expected_stdout = "2\n"
 [[case]]
 name = "string_substring_bytes"
 spec = ["3.7:15", "3.7:19"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = "café";
     let tail = s.substring(3, 2);
@@ -795,7 +840,10 @@ expected_stdout = "195\n169\n"
 [[case]]
 name = "string_substring_empty"
 spec = ["3.7:19"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = "café";
     let e = s.substring(2, 0);
@@ -809,7 +857,10 @@ expected_stdout = "0\n"
 [[case]]
 name = "string_substring_does_not_consume"
 spec = ["3.7:19"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = "hello";
     let mid = s.substring(1, 3);
@@ -824,7 +875,10 @@ expected_stdout = "3\n5\n"
 [[case]]
 name = "string_substring_out_of_bounds_traps"
 spec = ["3.7:20"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = "café";
     let bad = s.substring(3, 3);
@@ -841,7 +895,10 @@ exit_code = 101
 [[case]]
 name = "to_string_positive"
 spec = ["3.7:22"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     @dbg(@to_string(42));
     0
@@ -853,7 +910,10 @@ expected_stdout = "42\n"
 [[case]]
 name = "to_string_negative_and_zero"
 spec = ["3.7:23"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     @dbg(@to_string(-5));
     @dbg(@to_string(0));
@@ -866,7 +926,10 @@ expected_stdout = "-5\n0\n"
 [[case]]
 name = "to_string_i64_extremes"
 spec = ["3.7:23"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let lo: i64 = -9223372036854775808;
     let hi: i64 = 9223372036854775807;
@@ -881,7 +944,10 @@ expected_stdout = "-9223372036854775808\n9223372036854775807\n"
 [[case]]
 name = "to_string_signed_widths"
 spec = ["3.7:22", "3.7:23"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let a: i8 = -128;
     let b: i16 = -32768;
@@ -898,7 +964,10 @@ expected_stdout = "-128\n-32768\n-2147483648\n"
 [[case]]
 name = "to_string_unsigned_widths_high_bit"
 spec = ["3.7:22", "3.7:23"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let a: u8 = 255;
     let b: u16 = 65535;
@@ -917,7 +986,10 @@ expected_stdout = "255\n65535\n4294967295\n18446744073709551615\n"
 [[case]]
 name = "to_string_i32_default_literal"
 spec = ["3.7:22"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let n: i32 = 42;
     @dbg(@to_string(n));
@@ -930,7 +1002,10 @@ expected_stdout = "42\n"
 [[case]]
 name = "string_concat_literals"
 spec = ["3.7:25"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let g = "Hello, " + "world!";
     @dbg(g);
@@ -943,7 +1018,10 @@ expected_stdout = "Hello, world!\n"
 [[case]]
 name = "string_concat_borrows_operands"
 spec = ["3.7:25"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let a = "foo";
     let b = "bar";
@@ -960,7 +1038,10 @@ expected_stdout = "foobar\nfoo\nbar\n"
 [[case]]
 name = "string_concat_is_not_integer_add"
 spec = ["3.7:25"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let n = @to_string(7) + @to_string(8);
     @dbg(n);
@@ -987,12 +1068,18 @@ fn main() -> i32 {
 [[case]]
 name = "string_contains_byte_level"
 spec = ["3.7:28"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let h = "hello";
-    @dbg(h.contains("ell"));
-    @dbg(h.contains("xyz"));
-    @dbg(h.contains(""));
+    let h: StrBuf = "hello";
+    let present: StrBuf = "ell";
+    let missing: StrBuf = "xyz";
+    let empty: StrBuf = "";
+    @dbg(h.contains(borrow present));
+    @dbg(h.contains(borrow missing));
+    @dbg(h.contains(borrow empty));
     0
 }
 """
@@ -1002,12 +1089,18 @@ expected_stdout = "true\nfalse\ntrue\n"
 [[case]]
 name = "string_starts_with_byte_level"
 spec = ["3.7:29"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let h = "hello";
-    @dbg(h.starts_with("he"));
-    @dbg(h.starts_with("lo"));
-    @dbg(h.starts_with(""));
+    let h: StrBuf = "hello";
+    let present: StrBuf = "he";
+    let missing: StrBuf = "lo";
+    let empty: StrBuf = "";
+    @dbg(h.starts_with(borrow present));
+    @dbg(h.starts_with(borrow missing));
+    @dbg(h.starts_with(borrow empty));
     0
 }
 """
@@ -1017,11 +1110,16 @@ expected_stdout = "true\nfalse\ntrue\n"
 [[case]]
 name = "string_search_does_not_consume"
 spec = ["3.7:28", "3.7:29"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let h = "hello";
-    @dbg(h.contains("ell"));
-    @dbg(h.starts_with("he"));
+    let h: StrBuf = "hello";
+    let needle: StrBuf = "ell";
+    let prefix: StrBuf = "he";
+    @dbg(h.contains(borrow needle));
+    @dbg(h.starts_with(borrow prefix));
     @dbg(h.len());
     0
 }
@@ -1059,7 +1157,10 @@ expected_stdout = "hi\n"
 [[case]]
 name = "println_composes_with_to_string_and_concat"
 spec = ["3.7:36"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     println("value is " + @to_string(42));
     0

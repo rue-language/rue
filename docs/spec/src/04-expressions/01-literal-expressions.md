@@ -74,7 +74,7 @@ fn main() -> i32 {
 
 {{ rule(id="4.1:10", cat="normative") }}
 
-A string literal is a sequence of characters enclosed in double quotes, of type `StrBuf`.
+A string literal is a sequence of characters enclosed in double quotes. Without a contextual text type, its type is the stable core `str` view; a context may promote it to another text rung such as `Str(N)` or the explicitly imported standard-library `StrBuf`.
 
 {{ rule(id="4.1:11", cat="normative") }}
 

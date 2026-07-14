@@ -1,3 +1,6 @@
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 const shared = @import("shared.rue");
 
 struct Payload {

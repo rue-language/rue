@@ -98,6 +98,7 @@ name = "unmarked_call_surface_rejects_borrow_{surface}"
 spec = ["4.10:3"]
 description = "Every call-like surface rejects an explicit borrow on an unmarked parameter or payload slot."
 source = "{source}"
+real_std = true
 compile_fail = true
 error_contains = "[E0209]"
 params = [
@@ -105,9 +106,9 @@ params = [
   { surface = "generic_runtime_param", source = "fn take(comptime T: type, x: T) -> T { x }\nfn main() -> i32 { let x = 1; take(i32, borrow x) }" },
   { surface = "user_method", source = "struct S {\n    value: i32,\n    fn take(self, x: i32) -> i32 { self.value + x }\n}\nfn main() -> i32 { let s = S { value: 40 }; let x = 2; s.take(borrow x) }" },
   { surface = "user_associated_function", source = "struct S {\n    value: i32,\n    fn take(x: i32) -> i32 { x }\n}\nfn main() -> i32 { let x = 42; S.take(borrow x) }" },
-  { surface = "print_builtin", source = "fn main() { let s: StrBuf = \"x\"; print(borrow s); }" },
-  { surface = "builtin_method", source = "fn main() { let mut s = StrBuf.new(); let byte: u8 = 65; s.push(borrow byte); }" },
-  { surface = "builtin_associated_function", source = "fn main() { let cap: u64 = 8; let _s = StrBuf.with_capacity(borrow cap); }" },
+  { surface = "print_builtin", source = "const std = @import(\"std\");\nconst StrBuf = std.strbuf.StrBuf;\nfn main() { let s: StrBuf = \"x\"; print(borrow s); }" },
+  { surface = "builtin_method", source = "const std = @import(\"std\");\nconst StrBuf = std.strbuf.StrBuf;\nfn main() { let mut s = StrBuf.new(); let byte: u8 = 65; s.push(borrow byte); }" },
+  { surface = "builtin_associated_function", source = "const std = @import(\"std\");\nconst StrBuf = std.strbuf.StrBuf;\nfn main() { let cap: u64 = 8; let _s = StrBuf.with_capacity(borrow cap); }" },
   { surface = "enum_tuple_payload", source = "enum E { V(i32) }\nfn main() -> i32 { let x = 42; let _e = E.V(borrow x); 0 }" },
 ]
 

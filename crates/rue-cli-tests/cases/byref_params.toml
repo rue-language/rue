@@ -588,8 +588,11 @@ exit_code = 42
 
 [[case]]
 name = "inout_whole_string_reassign"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "Whole-value reassignment of a StrBuf (3-slot fat pointer) through inout writes back ptr, len, and cap."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn replace(inout v: StrBuf) {
     v = "hello rue!";
 }

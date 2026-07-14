@@ -594,6 +594,7 @@ env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 const ArrayBuf = std.arraybuf.ArrayBuf;
+const StrBuf = std.strbuf.StrBuf;
 
 fn main() -> i32 {
     let Inner = ArrayBuf(i64);
@@ -743,6 +744,7 @@ env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 const ArrayBuf = std.arraybuf.ArrayBuf;
+const StrBuf = std.strbuf.StrBuf;
 
 fn main() -> i32 {
     let Buf = ArrayBuf(StrBuf);
@@ -786,6 +788,7 @@ compile_fail = true
 error_contains = ["E0711", "by copy", "move it out with `pop`"]
 files = [{ path = "main.rue", source = """
 const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 
 fn main() -> i32 {
     let Buf = std.arraybuf.ArrayBuf(StrBuf);

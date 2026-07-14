@@ -479,9 +479,10 @@ exit_code = 3
 name = "method_and_assoc_string_view_coercions"
 spec = ["3.7:58", "3.7:60", "4.10:4", "6.4:7", "6.4:12", "6.4:25"]
 description = "Method and associated-function parameters apply borrow/inout str view coercions to projected StrBuf places while receiver autoref stays implicit"
-preview = "string_trio"
-preview_should_pass = true
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct BufferBox { value: StrBuf }
 
 struct Probe {
@@ -510,8 +511,6 @@ exit_code = 42
 name = "method_and_assoc_forward_borrow_str_view"
 spec = ["3.7:58", "6.1:23", "6.1:26", "6.4:7", "6.4:12", "6.4:25"]
 description = "An existing borrow str view is forwarded by value through method and associated-function parameters"
-preview = "string_trio"
-preview_should_pass = true
 source = """
 struct Probe {
     bias: i32,
@@ -541,8 +540,6 @@ exit_code = 42
 name = "method_and_assoc_reject_unrelated_string_arg_{surface}"
 spec = ["4.10:4", "6.4:7", "6.4:12"]
 description = "Method and associated-function view inference defers to sema without admitting unrelated source types"
-preview = "string_trio"
-preview_should_pass = true
 source = """
 struct Probe {
     fn method(self, value: str) {}
@@ -564,8 +561,6 @@ params = [
 name = "method_and_assoc_reject_mismatched_fixed_string_{surface}"
 spec = ["3.7:50", "4.10:4", "6.4:7", "6.4:12"]
 description = "Deferring contextual Str(N) inference does not erase exact capacity identity"
-preview = "string_trio"
-preview_should_pass = true
 source = """
 struct Probe {
     fn method(self, value: Str(8)) {}

@@ -11,6 +11,7 @@
 //   primary    = integer | "(" expression ")"
 
 const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 
 enum Token {
     Number(i64, u64),

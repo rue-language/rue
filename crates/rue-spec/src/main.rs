@@ -33,6 +33,9 @@
 //! - `RUE_SPEC_DIR` - Path to specification markdown files (default: `docs/spec/src`)
 //! - `RUE_SPEC_CASES` - Path to test case TOML files (default: `crates/rue-spec/cases`)
 //! - `RUE_BINARY` - Path to the rue compiler binary
+//!
+//! Cases that intentionally exercise the repository standard library opt in
+//! with `real_std = true`. Other cases remain isolated from `RUE_STD_PATH`.
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_test_runner::{

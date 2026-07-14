@@ -909,6 +909,8 @@ name = "move_while_loaned_string_heap"
 spec = ["6.1:36"]
 description = "The heap shape: moving a StrBuf into a call that passes it inout would double-free the buffer"
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn f(inout a: StrBuf, b: StrBuf) -> u64 {
     a.push(120);
     b.len()
@@ -920,6 +922,7 @@ fn main() -> i32 {
     if r == 1 { 0 } else { 1 }
 }
 """
+real_std = true
 compile_fail = true
 error_contains = "into a call that also passes it"
 
@@ -948,7 +951,10 @@ error_contains = "into a call that also passes it"
 name = "move_field_while_root_loaned"
 spec = ["6.1:36"]
 description = "Moving one field by value while loaning the whole variable shares a root and is rejected"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Inner { s: StrBuf }
 struct Outer { inner: Inner, n: i32 }
 fn f(inout a: Outer, b: Inner) -> i32 {

@@ -8,8 +8,11 @@ description = "End-to-end runtime behavior of `?`: unwrap Some, short-circuit No
 # otherwise; `run` uses `?` to propagate.
 [[case]]
 name = "try_unwrap_and_short_circuit"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
@@ -49,8 +52,11 @@ exit_code = 0
 # and is not touched on the None path.
 [[case]]
 name = "try_string_payload"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }

@@ -15,8 +15,11 @@ description = "Integer-to-StrBuf, concatenation, and byte-level search on StrBuf
 
 [[case]]
 name = "to_string_demo"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "@to_string formats an i64 in decimal, including negatives, zero, and the i64 extremes."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     @dbg(@to_string(42));
     @dbg(@to_string(-5));
@@ -33,8 +36,11 @@ stdout = "42\n-5\n0\n-9223372036854775808\n9223372036854775807\n"
 
 [[case]]
 name = "to_string_all_integer_widths"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "@to_string accepts any integer width (RUE-314): each of i8/i16/i32/i64/u8/u16/u32/u64 formats correctly, and an unsigned value with the high bit set prints as its unsigned magnitude, not a negative number."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let a: i8 = -128;
     let b: i16 = -32768;
@@ -60,8 +66,11 @@ stdout = "-128\n-32768\n-2147483648\n-9223372036854775808\n255\n65535\n429496729
 
 [[case]]
 name = "to_string_i32_no_cast_needed"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "@to_string of an i32 value (the default width, and what @parse_i32 returns) compiles without an @intCast (RUE-314 regression)."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let x: i32 = 12345;
     let y: i32 = -6789;
@@ -75,13 +84,16 @@ stdout = "12345\n-6789\n"
 
 [[case]]
 name = "concat_is_concatenation_not_addition"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "@to_string(7) + @to_string(8) concatenates to '78' (not the integer sum 15); operands are borrowed, so named Strings remain usable."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let msg = @to_string(7) + @to_string(8);
     @dbg(msg);
-    let a = "foo";
-    let b = "bar";
+    let a: StrBuf = "foo";
+    let b: StrBuf = "bar";
     let c = a + b;
     @dbg(c);
     @dbg(a);
@@ -94,10 +106,13 @@ stdout = "78\nfoobar\nfoo\nbar\n"
 
 [[case]]
 name = "concat_chained_and_mutable_result"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "Concatenation chains left-to-right and its result owns a heap buffer that can be mutated further."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let m = "a" + "b" + "c";
+    let m: StrBuf = "a" + "b" + "c";
     @dbg(m);
     let mut g = @to_string(1) + @to_string(2);
     g.push_str("Z");
@@ -110,15 +125,23 @@ stdout = "abc\n12Z\n"
 
 [[case]]
 name = "contains_and_starts_with"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "Byte-level contains/starts_with; the empty needle/prefix always matches; the receiver is borrowed (usable after)."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let h = "hello";
-    @dbg(h.contains("ell"));
-    @dbg(h.contains("xyz"));
-    @dbg(h.contains(""));
-    @dbg(h.starts_with("he"));
-    @dbg(h.starts_with("lo"));
+    let h: StrBuf = "hello";
+    let ell: str = "ell";
+    let xyz: str = "xyz";
+    let empty: str = "";
+    let he: str = "he";
+    let lo: str = "lo";
+    @dbg(h.contains(borrow ell));
+    @dbg(h.contains(borrow xyz));
+    @dbg(h.contains(borrow empty));
+    @dbg(h.starts_with(borrow he));
+    @dbg(h.starts_with(borrow lo));
     @dbg(h.len());
     0
 }
@@ -128,10 +151,13 @@ stdout = "true\nfalse\ntrue\ntrue\nfalse\n5\n"
 
 [[case]]
 name = "string_plus_integer_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "StrBuf + int is a type error (E0206); there is no implicit StrBuf/int conversion."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let a = "foo";
+    let a: StrBuf = "foo";
     let c = a + 5;
     @dbg(c);
     0

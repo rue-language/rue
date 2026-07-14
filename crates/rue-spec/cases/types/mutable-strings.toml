@@ -15,9 +15,12 @@ description = "Mutable string capabilities building on the core StrBuf type."
 name = "string_representation_len_cap"
 spec = ["3.10:1", "3.10:2"]
 description = "StrBuf has length and capacity (proving three-field representation)"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "hello";
+    let s: StrBuf = "hello";
     // len and capacity are separately queryable, proving ptr/len/cap structure
     let l = s.len();
     let c = s.capacity();
@@ -33,9 +36,12 @@ exit_code = 0
 name = "string_literal_read_only"
 spec = ["3.10:2"]
 description = "Literal has capacity zero (pointing to read-only memory)"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "hello world";
+    let s: StrBuf = "hello world";
     // capacity == 0 means read-only memory (literal)
     let zero: u64 = 0;
     if s.capacity() == zero { 0 } else { 1 }
@@ -51,13 +57,16 @@ exit_code = 0
 name = "string_affine_move"
 spec = ["3.10:4", "3.10:5", "3.10:6"]
 description = "StrBuf is moved when passed to a function"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn takes_string(s: StrBuf) -> i32 {
     0
 }
 
 fn main() -> i32 {
-    let mut s = "hello";
+    let mut s: StrBuf = "hello";
     takes_string(s)
 }
 """
@@ -67,11 +76,14 @@ exit_code = 0
 name = "string_affine_use_after_move"
 spec = ["3.10:4", "3.10:5"]
 description = "Using a StrBuf after move is an error"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn takes_string(s: StrBuf) -> i32 { 0 }
 
 fn main() -> i32 {
-    let mut s = "hello";
+    let mut s: StrBuf = "hello";
     takes_string(s);
     takes_string(s)
 }
@@ -87,7 +99,10 @@ error_contains = "use of moved value"
 name = "string_new_empty"
 spec = ["3.10:7", "3.10:9"]
 description = "StrBuf.new() creates an empty string"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.new();
     if s.is_empty() { 0 } else { 1 }
@@ -99,7 +114,10 @@ exit_code = 0
 name = "string_with_capacity"
 spec = ["3.10:8", "3.10:9"]
 description = "StrBuf.with_capacity() pre-allocates"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let cap: u64 = 100;
     let s = StrBuf.with_capacity(cap);
@@ -116,9 +134,12 @@ exit_code = 0
 name = "string_len_literal"
 spec = ["3.10:10", "3.10:13", "3.10:14"]
 description = "len() returns byte length of string literal"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "hello";
+    let s: StrBuf = "hello";
     let five: u64 = 5;
     if s.len() == five { 0 } else { 1 }
 }
@@ -129,9 +150,12 @@ exit_code = 0
 name = "string_len_empty"
 spec = ["3.10:10", "3.10:12"]
 description = "len() returns 0 for empty string"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "";
+    let s: StrBuf = "";
     let zero: u64 = 0;
     if s.len() == zero && s.is_empty() { 0 } else { 1 }
 }
@@ -142,9 +166,12 @@ exit_code = 0
 name = "string_capacity_literal"
 spec = ["3.10:11", "3.10:13"]
 description = "capacity() returns 0 for string literal"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "hello";
+    let s: StrBuf = "hello";
     let zero: u64 = 0;
     if s.capacity() == zero { 0 } else { 1 }
 }
@@ -155,9 +182,12 @@ exit_code = 0
 name = "string_is_empty_true"
 spec = ["3.10:12", "3.10:13"]
 description = "is_empty() returns true for empty string"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "";
+    let s: StrBuf = "";
     if s.is_empty() { 0 } else { 1 }
 }
 """
@@ -167,9 +197,12 @@ exit_code = 0
 name = "string_is_empty_false"
 spec = ["3.10:12", "3.10:13"]
 description = "is_empty() returns false for non-empty string"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "hello";
+    let s: StrBuf = "hello";
     if !s.is_empty() { 0 } else { 1 }
 }
 """
@@ -179,9 +212,12 @@ exit_code = 0
 name = "string_query_borrow_valid"
 spec = ["3.10:13"]
 description = "Query methods borrow, string remains valid"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "hello";
+    let s: StrBuf = "hello";
     let len = s.len();
     let empty = s.is_empty();
     let cap = s.capacity();
@@ -196,7 +232,10 @@ exit_code = 0
 name = "string_query_borrows_borrow_and_inout_rooted_places"
 spec = ["3.10:10", "3.10:13", "6.4:25", "6.4:29"]
 description = "A ByRef StrBuf query autoref-borrows borrow/inout-rooted places without consuming them (RUE-584)"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Parser { input: StrBuf }
 
 fn borrowed_length(borrow input: StrBuf) -> u64 {
@@ -208,7 +247,7 @@ fn parser_length(inout parser: Parser) -> u64 {
 }
 
 fn main() -> i32 {
-    let input = "abc";
+    let input: StrBuf = "abc";
     let first = borrowed_length(borrow input);
     let mut parser = Parser { input: input };
     let second = parser_length(inout parser);
@@ -226,7 +265,10 @@ exit_code = 9
 name = "string_push_str_basic"
 spec = ["3.10:15", "3.10:19", "3.10:20"]
 description = "push_str() appends string content"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");
@@ -240,7 +282,10 @@ exit_code = 0
 name = "string_push_str_multiple"
 spec = ["3.10:15", "3.10:20"]
 description = "Multiple push_str() calls accumulate"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");
@@ -255,7 +300,10 @@ exit_code = 0
 name = "string_push_byte"
 spec = ["3.10:16", "3.10:19"]
 description = "push() appends a single byte"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");
@@ -271,7 +319,10 @@ exit_code = 0
 name = "string_clear"
 spec = ["3.10:17", "3.10:19"]
 description = "clear() removes content but retains capacity"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let cap: u64 = 100;
     let mut s = StrBuf.with_capacity(cap);
@@ -287,7 +338,10 @@ exit_code = 0
 name = "string_reserve"
 spec = ["3.10:18", "3.10:19"]
 description = "reserve() ensures additional capacity"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hi");
@@ -303,7 +357,10 @@ exit_code = 0
 name = "string_mutation_requires_let mut"
 spec = ["3.10:19"]
 description = "Mutation methods require let mut binding"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.new();
     s.push_str("hello");
@@ -321,9 +378,12 @@ error_contains = "cannot assign"
 name = "string_heap_promotion"
 spec = ["3.10:21", "3.10:22", "3.10:23"]
 description = "Literal is promoted to heap on mutation"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let mut s = "hello";
+    let mut s: StrBuf = "hello";
     s.push_str("!");
     let zero: u64 = 0;
     let six: u64 = 6;
@@ -336,9 +396,12 @@ exit_code = 0
 name = "string_literal_no_capacity"
 spec = ["3.10:21", "3.10:22"]
 description = "Unmodified literal has zero capacity"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "hello";
+    let s: StrBuf = "hello";
     let zero: u64 = 0;
     if s.capacity() == zero { 0 } else { 1 }
 }
@@ -353,7 +416,10 @@ exit_code = 0
 name = "string_growth_on_append"
 spec = ["3.10:24", "3.10:25"]
 description = "StrBuf grows capacity when needed"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");
@@ -374,9 +440,12 @@ exit_code = 0
 name = "string_clone_basic"
 spec = ["3.10:26", "3.10:27", "3.10:28"]
 description = "clone() creates a deep copy"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let a = "hello";
+    let a: StrBuf = "hello";
     let b = a.clone();
     // Both should be valid and equal
     if a == b { 0 } else { 1 }
@@ -388,9 +457,12 @@ exit_code = 0
 name = "string_clone_independent"
 spec = ["3.10:26", "3.10:27"]
 description = "Cloned strings are independent"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let mut a = "hello";
+    let mut a: StrBuf = "hello";
     let mut b = a.clone();
     b.push_str("!");
     // a should still be "hello", b should be "hello!"
@@ -405,9 +477,12 @@ exit_code = 0
 name = "string_clone_borrow"
 spec = ["3.10:27"]
 description = "Clone borrows, original remains valid"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let a = "hello";
+    let a: StrBuf = "hello";
     let b = a.clone();
     let c = a.clone();  // a still valid after first clone
     let five: u64 = 5;
@@ -427,9 +502,12 @@ exit_code = 0
 name = "string_destructor_heap"
 spec = ["3.10:29", "3.10:30", "3.10:31"]
 description = "Heap-allocated strings are freed when dropped"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn make_string() -> i32 {
-    let mut s = "hello";
+    let mut s: StrBuf = "hello";
     s.push_str(" world");
     // s goes out of scope, destructor should free heap
     42
@@ -446,9 +524,12 @@ exit_code = 0
 name = "string_destructor_literal"
 spec = ["3.10:29", "3.10:30"]
 description = "Literal strings (cap=0) are not freed"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn use_literal() -> u64 {
-    let s = "hello";
+    let s: StrBuf = "hello";
     // s is a literal, no heap to free
     // When s goes out of scope, destructor should be a no-op (cap=0)
     s.len()
@@ -473,7 +554,10 @@ exit_code = 0
 name = "string_byte_semantics"
 spec = ["3.10:32"]
 description = "Strings are byte sequences"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     // Push some bytes
@@ -495,7 +579,10 @@ exit_code = 0
 name = "string_building_message"
 spec = ["3.10:15", "3.10:16", "3.10:20"]
 description = "Build a complete message through appending"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut msg = StrBuf.new();
     msg.push_str("Hello");
@@ -514,7 +601,10 @@ exit_code = 0
 name = "string_equality_after_mutation"
 spec = ["3.10:15", "3.7:9", "3.7:10"]
 description = "Mutated string can be compared"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");

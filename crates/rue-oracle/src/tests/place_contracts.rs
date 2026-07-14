@@ -2,18 +2,6 @@
 
 use super::*;
 
-fn expect_unsupported_with_string_trio(src: &str) -> Unsupported {
-    let mut preview_features = PreviewFeatures::new();
-    preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
-    match run_source_with_preview_features(src, &preview_features) {
-        Err(RunSourceError::Unsupported(unsupported)) => unsupported,
-        Err(RunSourceError::Compile(errors)) => {
-            panic!("expected oracle-unsupported source, but it failed to compile: {errors:#?}")
-        }
-        Ok(outcome) => panic!("expected oracle-unsupported source, got {outcome:?}"),
-    }
-}
-
 fn expect_flow_unsupported<T>(result: Step<T>) -> Unsupported {
     match result {
         Err(Flow::Unsupported(unsupported)) => unsupported,
@@ -60,16 +48,23 @@ fn flattened_parameter_padding_is_a_semantic_gap_but_oob_is_a_contract_failure()
 }
 
 #[test]
-fn text_projection_and_inout_forwarding_are_valid_program_model_gaps() {
-    let text = expect_unsupported_with_string_trio(
+fn core_str_length_is_modeled_but_inout_forwarding_remains_a_program_model_gap() {
+    let text = run_source_with_preview_features(
         r#"fn main() -> i32 {
             let s: str = "hi";
             @intCast(s.len())
         }"#,
-    );
+        &PreviewFeatures::new(),
+    )
+    .expect("canonical core str length must be modeled");
     assert_eq!(
-        text.kind(),
-        UnsupportedKind::SemanticGap(SemanticGapKind::TextProjectionRead)
+        text,
+        Outcome {
+            exit_code: 2,
+            stdout: String::new(),
+            stderr: String::new(),
+            panic: None,
+        }
     );
 
     let forwarding = expect_unsupported(
@@ -177,6 +172,89 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
 }
 
 #[test]
+fn place_contract_requires_the_complete_ordinary_nominal_chain_to_be_well_typed() {
+    let source = r#"struct Pair { value: i32 }
+        struct Header { pointer: u64, length: u64, capacity: u64 }
+        fn read(p: Pair) -> i32 { p.value }
+        fn main() -> i32 {
+            let header = Header { pointer: 0, length: 0, capacity: 0 };
+            read(Pair { value: @intCast(header.length) })
+        }"#;
+
+    for invalid_suffix in [false, true] {
+        let mut state = query_cfg_state(source).expect("projection-metadata probe must compile");
+        let header_struct = state
+            .type_pool
+            .all_struct_ids()
+            .into_iter()
+            .find(|id| state.type_pool.struct_def(*id).name == "Header")
+            .expect("ordinary Header nominal");
+        let header_ty = Type::new_struct(header_struct);
+        assert_eq!(state.type_pool.struct_def(header_struct).fields.len(), 3);
+        let read_index = state
+            .functions
+            .iter()
+            .position(|function| function.cfg.fn_name() == "read")
+            .expect("read CFG");
+        let (place_value, original_place) = {
+            let cfg = &state.functions[read_index].cfg;
+            cfg.blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter().copied())
+                .find_map(|value| {
+                    let CfgInstData::PlaceRead { place } = &cfg.get_inst(value).data else {
+                        return None;
+                    };
+                    Some((value, place.clone()))
+                })
+                .expect("Pair field PlaceRead")
+        };
+        let pair_projection = state.functions[read_index]
+            .cfg
+            .get_place_projections(&original_place)[0];
+        let projections = if invalid_suffix {
+            vec![
+                Projection::Field {
+                    struct_id: header_struct,
+                    field_index: 0,
+                },
+                pair_projection,
+            ]
+        } else {
+            vec![Projection::Field {
+                struct_id: header_struct,
+                field_index: 0,
+            }]
+        };
+        let cfg = &mut state.functions[read_index].cfg;
+        let place = cfg.make_place(original_place.base, header_ty, projections);
+        cfg.get_inst_mut(place_value).data = CfgInstData::PlaceRead { place };
+
+        let cfg = &state.functions[read_index].cfg;
+        let mut interp = Interp {
+            state: &state,
+            stdout: String::new(),
+            stdout_bytes: 0,
+            stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
+            budget: STEP_BUDGET,
+            depth: 0,
+        };
+        let mut frame = Frame {
+            params: vec![Some(Value::string("not a Header"))],
+            locals: vec![None; cfg.num_locals() as usize],
+            cache: HashMap::new(),
+        };
+        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, place_value));
+        assert_eq!(
+            unsupported.kind(),
+            UnsupportedKind::ContractViolation(ContractViolationKind::PlaceProjectionMetadata),
+            "the malformed complete place chain must fail before its injected text runtime shape; invalid_suffix={invalid_suffix}"
+        );
+    }
+}
+
+#[test]
 fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
     let state = query_cfg_state(
         "struct Pair { a: i32, b: i32 }
@@ -236,8 +314,7 @@ fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
 
 #[test]
 fn text_projection_gaps_require_exact_representation_metadata() {
-    let mut preview_features = PreviewFeatures::new();
-    preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
+    let preview_features = PreviewFeatures::new();
     let view_state = query_cfg_state_with_preview_features(
         r#"fn main() -> i32 {
             let view: str = "view";
@@ -368,101 +445,6 @@ fn text_projection_gaps_require_exact_representation_metadata() {
         assert_eq!(
             unsupported.kind(),
             UnsupportedKind::ContractViolation(ContractViolationKind::NonAggregateProjectionRead)
-        );
-    }
-}
-
-#[test]
-fn text_projection_gap_requires_the_complete_place_chain_to_be_well_typed() {
-    let source = r#"struct Pair { value: i32 }
-        fn read(p: Pair) -> i32 { p.value }
-        fn main() -> i32 {
-            let text = StrBuf.new();
-            if text.is_empty() { read(Pair { value: 1 }) } else { 0 }
-        }"#;
-
-    for invalid_suffix in [false, true] {
-        let mut state = query_cfg_state(source).expect("projection-metadata probe must compile");
-        let mut owned_ty = None;
-        for function in &state.functions {
-            for value in function
-                .cfg
-                .blocks()
-                .iter()
-                .flat_map(|block| block.insts.iter().copied())
-            {
-                let inst = function.cfg.get_inst(value);
-                let CfgInstData::Call { name, .. } = &inst.data else {
-                    continue;
-                };
-                if state.interner.resolve(name) == "__rue_String_new" {
-                    owned_ty = Some(inst.ty);
-                }
-            }
-        }
-        let owned_ty = owned_ty.expect("StrBuf.new result type");
-        let TypeKind::Struct(owned_struct) = owned_ty.kind() else {
-            panic!("String must be represented by a struct type")
-        };
-        let read_index = state
-            .functions
-            .iter()
-            .position(|function| function.cfg.fn_name() == "read")
-            .expect("read CFG");
-        let (place_value, original_place) = {
-            let cfg = &state.functions[read_index].cfg;
-            cfg.blocks()
-                .iter()
-                .flat_map(|block| block.insts.iter().copied())
-                .find_map(|value| {
-                    let CfgInstData::PlaceRead { place } = &cfg.get_inst(value).data else {
-                        return None;
-                    };
-                    Some((value, place.clone()))
-                })
-                .expect("Pair field PlaceRead")
-        };
-        let pair_projection = state.functions[read_index]
-            .cfg
-            .get_place_projections(&original_place)[0];
-        let projections = if invalid_suffix {
-            vec![
-                Projection::Field {
-                    struct_id: owned_struct,
-                    field_index: 0,
-                },
-                pair_projection,
-            ]
-        } else {
-            vec![Projection::Field {
-                struct_id: owned_struct,
-                field_index: 0,
-            }]
-        };
-        let cfg = &mut state.functions[read_index].cfg;
-        let place = cfg.make_place(original_place.base, owned_ty, projections);
-        cfg.get_inst_mut(place_value).data = CfgInstData::PlaceRead { place };
-
-        let cfg = &state.functions[read_index].cfg;
-        let mut interp = Interp {
-            state: &state,
-            stdout: String::new(),
-            stdout_bytes: 0,
-            stdout_cap: MAX_STDOUT_BYTES,
-            stderr_cap: MAX_STDERR_BYTES,
-            budget: STEP_BUDGET,
-            depth: 0,
-        };
-        let mut frame = Frame {
-            params: vec![Some(Value::string("not a Pair"))],
-            locals: vec![None; cfg.num_locals() as usize],
-            cache: HashMap::new(),
-        };
-        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, place_value));
-        assert_eq!(
-            unsupported.kind(),
-            UnsupportedKind::ContractViolation(ContractViolationKind::PlaceProjectionMetadata),
-            "invalid_suffix={invalid_suffix}"
         );
     }
 }
@@ -840,8 +822,7 @@ fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
             take(borrow value) + other.len()
         }
         fn main() { probe(); }";
-    let mut preview_features = PreviewFeatures::new();
-    preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
+    let preview_features = PreviewFeatures::new();
     let mut state = query_cfg_state_with_preview_features(SOURCE, &preview_features)
         .expect("whole PlaceRead probe must compile");
     let probe_index = state

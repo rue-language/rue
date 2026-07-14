@@ -222,6 +222,10 @@ pub struct Case {
     /// This provides real test output for implemented portions of preview features.
     #[serde(default)]
     pub preview_should_pass: bool,
+    /// If true, compile this case with the repository's real standard library.
+    /// The default remains an isolated environment with `RUE_STD_PATH` removed.
+    #[serde(default)]
+    pub real_std: bool,
     /// Target architecture (e.g., "x86-64-linux", "aarch64-macos").
     /// When specified, the compiler is invoked with `--target <target>`.
     /// Required for target-specific golden tests; optional for other test types.
@@ -900,6 +904,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 expected_warning_count: case.expected_warning_count,
                 no_warnings: case.no_warnings,
                 preview_should_pass: case.preview_should_pass,
+                real_std: case.real_std,
                 opt_level: case.opt_level,
                 timeout_ms: case.timeout_ms,
 
@@ -1957,6 +1962,11 @@ pub fn ice_message(status: &std::process::ExitStatus, stderr: &str) -> Option<Te
 
 fn test_case_compiler_command(case: &Case, binary: &Path) -> Command {
     let mut command = compiler_command(binary);
+    if case.real_std {
+        let std_path = find_dir("RUE_REAL_STD_PATH", &["std", "../std", "../../std"], "std");
+        let std_path = std_path.canonicalize().unwrap_or(std_path);
+        command.env("RUE_STD_PATH", std_path);
+    }
     if let Some(ref target) = case.target {
         command.arg("--target").arg(target);
     }
@@ -2487,6 +2497,7 @@ params = [
             expected_stdout: None,
             preview: None,
             preview_should_pass: false,
+            real_std: false,
             target: None,
             opt_level: None,
             timeout_ms: None,
@@ -2542,6 +2553,7 @@ params = [
             expected_stdout: None,
             preview: None,
             preview_should_pass: false,
+            real_std: false,
             target: None,
             opt_level: None,
             timeout_ms: None,
@@ -2605,6 +2617,7 @@ params = [
             expected_stdout: None,
             preview: None,
             preview_should_pass: false,
+            real_std: false,
             target: None,
             opt_level: None,
             timeout_ms: None,
@@ -2660,6 +2673,7 @@ params = [
             expected_stdout: None,
             preview: None,
             preview_should_pass: false,
+            real_std: false,
             target: None,
             opt_level: None,
             timeout_ms: None,
@@ -3166,6 +3180,21 @@ params = [
         );
     }
 
+    #[test]
+    fn test_case_compiler_command_opts_into_real_standard_library() {
+        let case = Case {
+            real_std: true,
+            ..Default::default()
+        };
+        let command = test_case_compiler_command(&case, Path::new("rue"));
+        let environments: HashMap<_, _> = command.get_envs().collect();
+
+        assert!(matches!(
+            environments.get(std::ffi::OsStr::new("RUE_STD_PATH")),
+            Some(Some(path)) if path.to_string_lossy().ends_with("std")
+        ));
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_fake_compiler_panic_is_fatal() {
@@ -3372,6 +3401,7 @@ chmod +x "$output"
             expected_stdout: None,
             preview: preview.map(|s| s.to_string()),
             preview_should_pass: false,
+            real_std: false,
             target: None,
             opt_level: None,
             timeout_ms: None,

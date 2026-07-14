@@ -436,9 +436,12 @@ exit_code = 3
 name = "wildcard_let_moves_affine_value"
 spec = ["5.1:16"]
 description = "let _ = affine_value moves out of the place, which is then no longer usable (RUE-299)"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "hello";
+    let s: StrBuf = "hello";
     let _ = s;
     @intCast(s.len())
 }

@@ -76,10 +76,7 @@ mod tests {
             .unwrap();
         let snapshot = assembler.snapshot().unwrap();
 
-        let mut options = CompileOptions::default();
-        options
-            .preview_features
-            .insert("string_trio".parse().unwrap());
+        let options = CompileOptions::default();
         let (rir, semantic, _) = test_frontend_snapshot(&snapshot, &options)
             .expect("qualified and aliased canonical StrBuf references should compile");
         let pool = semantic.type_pool();
@@ -140,6 +137,56 @@ mod tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn trusted_std_presence_does_not_create_a_bare_strbuf_prelude_name() {
+        let context = ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "test")
+            .expect("discovery context should be valid");
+        let mut assembler = DiscoverySourceAssembler::new(
+            context,
+            "/project/main.rue",
+            "/project/main.rue",
+            PhysicalFileIdentity::new(1, 1),
+            FileMetadataFingerprint::new(1, 1, 1),
+            Arc::new(
+                r#"const std = @import("/sdk/_std.rue");
+                   fn main() -> i32 { let value: StrBuf = "x"; @intCast(value.len()) }"#
+                    .to_owned(),
+            ),
+        )
+        .unwrap();
+        assembler
+            .add_explicit(
+                "/sdk/_std.rue",
+                "/sdk/_std.rue",
+                PhysicalFileIdentity::new(2, 2),
+                FileMetadataFingerprint::new(2, 2, 2),
+                Arc::new("pub const strbuf = @import(\"strbuf.rue\");".to_owned()),
+            )
+            .unwrap();
+        assembler
+            .add_explicit(
+                "/sdk/strbuf.rue",
+                "/sdk/strbuf.rue",
+                PhysicalFileIdentity::new(3, 3),
+                FileMetadataFingerprint::new(3, 3, 3),
+                Arc::new(
+                    "pub struct StrBuf { buf: ptr mut u8, len: u64, cap: u64, fn len(borrow self) -> u64 { self.len } }"
+                        .to_owned(),
+                ),
+            )
+            .unwrap();
+
+        let snapshot = assembler.snapshot().unwrap();
+        let errors = test_frontend_snapshot(&snapshot, &CompileOptions::default())
+            .expect_err("importing std must not place StrBuf in the root module's bare namespace");
+        assert!(
+            errors.iter().any(
+                |error| matches!(&error.kind, ErrorKind::UnknownType(name) if name == "StrBuf")
+            ),
+            "expected bare StrBuf to remain unknown: {errors:#?}"
+        );
     }
 
     #[test]
@@ -1237,30 +1284,34 @@ mod tests {
                 ),
                 SourceView::new(
                     &left_path,
-                    r#"pub struct Payload {
+                    r#"struct Owned { value: i32 }
+                    drop fn Owned(self) {}
+                    pub struct Payload {
                         value: i32,
-                        text: StrBuf,
+                        text: Owned,
                         fn score(borrow self) -> i32 { self.value }
                     }
                     drop fn Payload(self) { @dbg(self.value); }
-                    pub enum Choice { Empty, Text(StrBuf) }
+                    pub enum Choice { Empty, Text(Owned) }
                     pub fn entry() -> i32 {
-                        let payload = Payload { value: 10, text: "left" };
+                        let payload = Payload { value: 10, text: Owned { value: 1 } };
                         payload.score()
                     }"#,
                     left_id,
                 ),
                 SourceView::new(
                     &right_path,
-                    r#"pub struct Payload {
+                    r#"struct Owned { value: i32 }
+                    drop fn Owned(self) {}
+                    pub struct Payload {
                         value: i32,
-                        text: StrBuf,
+                        text: Owned,
                         fn score(borrow self) -> i32 { self.value }
                     }
                     drop fn Payload(self) { @dbg(self.value); }
-                    pub enum Choice { Empty, Text(StrBuf) }
+                    pub enum Choice { Empty, Text(Owned) }
                     pub fn entry() -> i32 {
-                        let payload = Payload { value: 20, text: "right" };
+                        let payload = Payload { value: 20, text: Owned { value: 2 } };
                         payload.score()
                     }"#,
                     right_id,
@@ -1346,12 +1397,12 @@ mod tests {
             SourceView::new("main.rue", "fn main() -> i32 { 0 }", main_id),
             SourceView::new(
                 "left/clash.rue",
-                "pub struct Clash { text: StrBuf }",
+                "struct OwnedLeft {} drop fn OwnedLeft(self) {} pub struct Clash { text: OwnedLeft }",
                 struct_id,
             ),
             SourceView::new(
                 "right/clash.rue",
-                "pub enum Clash { Text(StrBuf) }",
+                "struct OwnedRight {} drop fn OwnedRight(self) {} pub enum Clash { Text(OwnedRight) }",
                 enum_id,
             ),
         ];
@@ -1390,12 +1441,12 @@ mod tests {
             r#"
             struct D { value: i32 }
             drop fn D(self) { @dbg(self.value); }
-            struct Inner { leading: (), item: D, interior: (), text: StrBuf }
-            enum E { Full((), Inner, (), StrBuf), Empty }
+            struct Inner { leading: (), item: D, interior: (), text: D }
+            enum E { Full((), Inner, (), D), Empty }
             fn main() -> i32 {
                 let values = [
-                    E.Full((), Inner { leading: (), item: D { value: 1 }, interior: (), text: "one" }, (), "a"),
-                    E.Full((), Inner { leading: (), item: D { value: 2 }, interior: (), text: "two" }, (), "b"),
+                    E.Full((), Inner { leading: (), item: D { value: 1 }, interior: (), text: D { value: 3 } }, (), D { value: 5 }),
+                    E.Full((), Inner { leading: (), item: D { value: 2 }, interior: (), text: D { value: 4 } }, (), D { value: 6 }),
                 ];
                 0
             }

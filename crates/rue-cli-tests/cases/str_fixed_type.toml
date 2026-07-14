@@ -9,7 +9,7 @@
 # PACKED byte (bounds-checked against the length, traps exit 101). A `Str(N)`
 # coerces to a `str` view, so it reads through the universal `str` interface.
 #
-# Gated behind `--preview string_trio`. Deferred: mutation/append; methods
+# Stable. Deferred: mutation/append; methods
 # beyond len/index/borrow.
 
 [section]
@@ -29,7 +29,7 @@ fn main() -> i32 {
     if n == 5 && b == 104 { 42 } else { 0 }
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
 # `.len()` is the current byte length, independent of the capacity N.
@@ -44,7 +44,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 0
 stdout = "2\n2\n"
 
@@ -62,7 +62,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 0
 stdout = "5\n102\n195\n169\n"
 
@@ -76,7 +76,7 @@ fn main() -> i32 {
     @intCast(b)
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 101
 runtime_error_contains = ["index out of bounds"]
 
@@ -90,7 +90,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0492"]
 
@@ -113,7 +113,7 @@ fn main() -> i32 {
     if n == 5 && b == 104 { 42 } else { 0 }
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
 # The bare `str` parameter form of the above is rejected: a `Str(N)` buffer is
@@ -129,7 +129,7 @@ fn main() -> i32 {
     @intCast(len_of(s))
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0495", "did you mean `borrow str`?"]
 
@@ -146,7 +146,7 @@ fn main() -> i32 {
     if take(s) == 5 { 42 } else { 0 }
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
 # Exact fixed-string borrows retain Str(N)'s nominal capacity and pass one
@@ -163,7 +163,7 @@ fn main() -> i32 {
     if exact_len_of(borrow s) == 5 { 42 } else { 0 }
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
 # An exact inout fixed string is likewise one-pointer by-reference and may
@@ -180,12 +180,12 @@ fn main() -> i32 {
     if s.len() == 3 { 42 } else { 0 }
 }
 """ }]
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
-# `Str(N)` requires the preview flag; without it, a clean gate error.
+# `Str(N)` is stable without a preview flag.
 [[case]]
-name = "str_fixed_requires_preview"
+name = "str_fixed_is_stable"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let s: Str(8) = "hello";
@@ -193,5 +193,4 @@ fn main() -> i32 {
 }
 """ }]
 args = ["main.rue", "-o", "prog"]
-compile_fail = true
-error_contains = ["E1100"]
+exit_code = 0

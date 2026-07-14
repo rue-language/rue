@@ -7376,10 +7376,7 @@ mod tests {
             )],
             4,
         );
-        let mut options = CompileOptions::default();
-        options
-            .preview_features
-            .insert("string_trio".parse().unwrap());
+        let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let manifest = session.semantic_dependency_inputs(&options, None).unwrap();

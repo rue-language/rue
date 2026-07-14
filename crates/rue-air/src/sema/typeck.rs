@@ -51,7 +51,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             TypeKind::Unit => "()".to_string(),
             TypeKind::Never => "!".to_string(),
             TypeKind::Error => "<error>".to_string(),
-            // Note: String is now handled via TypeKind::Struct with builtin_string_id
+            // Nominal strings and generated string views are ordinary structs.
             TypeKind::Struct(struct_id) => self.type_pool.struct_def(struct_id).name.clone(),
             TypeKind::Enum(enum_id) => self.type_pool.enum_def(enum_id).name.clone(),
             TypeKind::Array(array_id) => {
@@ -597,11 +597,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             return Ok(ty);
         }
 
-        // The `str` string type (ADR-0043 Phase 3, RUE-324): `[u8]` + UTF-8,
-        // gated behind `--preview string_trio`. Resolved to a first-class 2-word
-        // fat-pointer struct so it flows through the existing slice/struct paths.
+        // The `str` string type (ADR-0043): `[u8]` + UTF-8, represented as a
+        // first-class 2-word fat-pointer struct.
         if type_name == "str" {
-            self.require_preview(PreviewFeature::StringTrio, "the string type `str`", span)?;
             return self.get_or_create_str_struct(span);
         }
 
@@ -674,8 +672,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 Ok(Type::new_ptr_mut(ptr_type_id))
             } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
                 // Fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326):
-                // the fixed string rung, `[u8; N]` + UTF-8. Gated behind
-                // `--preview string_trio` (shared with `str`). The capacity `N`
+                // the stable fixed string rung, `[u8; N]` + UTF-8. The capacity `N`
                 // is a literal (`Str(8)`, produced by `TypeExpr::StrFixed`) or a
                 // `const` name that resolved to a literal on the `TypeCall`
                 // path; either way it arrives here as the single argument
@@ -1991,20 +1988,14 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// Reduce a fixed-capacity string `Str(N)` type-call to its concrete
     /// 2-word fat-pointer struct (ADR-0043 Phase 5, RUE-326). Shared by the
     /// context-free (`resolve_type`) and context-aware (`resolve_type_with_ctx`)
-    /// annotation paths so both spellings resolve identically. Gated behind
-    /// `--preview string_trio` (shared with `str`); a non-single-argument form
-    /// (`Str()`, `Str(a, b)`) is a clean unknown-type error.
+    /// annotation paths so both spellings resolve identically. A non-single-
+    /// argument form (`Str()`, `Str(a, b)`) is a clean unknown-type error.
     fn resolve_str_fixed_type(
         &mut self,
         call_name: &str,
         arg_strs: &[String],
         span: Span,
     ) -> CompileResult<Type> {
-        self.require_preview(
-            PreviewFeature::StringTrio,
-            "the fixed string type `Str(N)`",
-            span,
-        )?;
         let capacity = match arg_strs {
             [arg] => self.resolve_str_fixed_capacity(arg, span)?,
             _ => {

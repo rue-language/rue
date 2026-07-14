@@ -114,22 +114,17 @@ impl<'a> BodySema<'a> {
             &self.type_pool,
             type_subst,
         );
-        let strbuf_ty = self.builtin_string_type();
-        cgen = cgen.with_strbuf_type(strbuf_ty);
-        if self.preview_features.contains(&PreviewFeature::StringTrio) {
-            let str_name = self
-                .interner
-                .get("str")
-                .expect("preview string default was registered before inference");
-            let str_ty = infer_ctx
-                .builtin_struct_types
-                .get(&str_name)
-                .copied()
-                .expect("canonical str type is present in the inference context");
-            cgen = cgen.with_string_literal_default(str_ty);
-        } else {
-            cgen = cgen.with_string_literal_default(strbuf_ty);
-        }
+        cgen = cgen.with_strbuf_type(self.strbuf_type());
+        let str_name = self
+            .interner
+            .get("str")
+            .expect("stable string default was registered before inference");
+        let str_ty = infer_ctx
+            .builtin_struct_types
+            .get(&str_name)
+            .copied()
+            .expect("canonical str type is present in the inference context");
+        cgen = cgen.with_string_literal_default(str_ty);
         let mut cgen = cgen
             .with_const_types(&infer_ctx.const_types)
             .with_const_type_aliases(&infer_ctx.const_type_aliases)
@@ -234,19 +229,11 @@ impl<'a> BodySema<'a> {
         // Pre-size the substitution for better performance on large functions
         let mut unifier = Unifier::with_capacity(type_var_count);
         unifier.mark_int_literal_vars(&int_literal_vars);
-        // Literal contextualization is nominal. Admit only identities owned by
-        // the compiler: the injected builtin StrBuf, the selected canonical
-        // default (`str` under the preview), and synthetic fixed strings from
-        // the generated-struct registry. A user struct with a coincidental
-        // name in another module must never become literal-compatible.
-        let mut string_literal_types = vec![self.builtin_string_type(), string_literal_default];
-        string_literal_types.extend(
-            self.type_pool
-                .all_struct_ids()
-                .into_iter()
-                .filter(|id| self.type_pool.is_strbuf(*id))
-                .map(Type::new_struct),
-        );
+        // Literal contextualization is nominal. Admit only compiler-owned
+        // identities: core `str`, the trusted std StrBuf language item when
+        // imported, and synthetic fixed strings.
+        let mut string_literal_types = vec![string_literal_default];
+        string_literal_types.extend(self.strbuf_type());
         string_literal_types.extend(
             self.generated_structs
                 .values()
@@ -548,7 +535,7 @@ impl<'a> BodySema<'a> {
             // delegation (`s[i] -> byte_at`) instead of rejecting it with E0900
             // (RUE-700); a let-bound `let c = s[0]` already goes through the
             // String-aware path.
-            if self.is_builtin_string(base_type) {
+            if self.is_strbuf(base_type) {
                 return self.analyze_string_index_get(
                     air,
                     base_result,

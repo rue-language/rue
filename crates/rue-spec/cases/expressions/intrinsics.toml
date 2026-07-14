@@ -275,7 +275,10 @@ exit_code = 0
 name = "dbg_string_borrows_not_consumed"
 spec = ["4.13:6", "4.13:7"]
 description = "@dbg borrows a StrBuf; the value stays usable after the call (RUE-21)"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");
@@ -295,7 +298,10 @@ exit_code = 0
 name = "dbg_string_dropped_exactly_once"
 spec = ["4.13:6"]
 description = "A @dbg'd StrBuf is dropped exactly once by its owner, not consumed by @dbg (RUE-21)"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Holder { s: StrBuf }
 drop fn Holder(self) {
     @dbg(self.s);
@@ -861,6 +867,8 @@ runtime_error = "integer cast overflow"
 name = "read_line_returns_option_string"
 spec = ["4.13:33", "4.13:35"]
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     // Type checking: @read_line returns Option(StrBuf).
@@ -873,6 +881,7 @@ fn main() -> i32 {
     0
 }
 """
+real_std = true
 # This test will hang waiting for stdin input, so we use compile_only=true
 # to verify it compiles, but don't actually run it
 compile_only = true
@@ -881,6 +890,8 @@ compile_only = true
 name = "read_line_no_args"
 spec = ["4.13:34"]
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     // Verify @read_line takes no arguments.
@@ -893,6 +904,7 @@ fn main() -> i32 {
     0
 }
 """
+real_std = true
 compile_only = true
 
 [[case]]
@@ -927,6 +939,8 @@ error_contains = "argument"
 name = "read_line_basic_input"
 spec = ["4.13:33", "4.13:36", "4.13:37"]
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(StrBuf);
@@ -937,6 +951,7 @@ fn main() -> i32 {
     0
 }
 """
+real_std = true
 stdin = "Hello World\n"
 expected_stdout = "Hello World"
 exit_code = 0
@@ -945,6 +960,8 @@ exit_code = 0
 name = "read_line_strips_newline"
 spec = ["4.13:37"]
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(StrBuf);
@@ -955,6 +972,7 @@ fn main() -> i32 {
     0
 }
 """
+real_std = true
 stdin = "test\n"
 expected_stdout = "test"
 exit_code = 0
@@ -963,6 +981,8 @@ exit_code = 0
 name = "read_line_multiple_lines"
 spec = ["4.13:36"]
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(StrBuf);
@@ -977,6 +997,7 @@ fn main() -> i32 {
     0
 }
 """
+real_std = true
 stdin = "first\nsecond\n"
 expected_stdout = """
 first
@@ -988,6 +1009,8 @@ exit_code = 0
 name = "read_line_partial_line_at_eof"
 spec = ["4.13:38"]
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(StrBuf);
@@ -998,6 +1021,7 @@ fn main() -> i32 {
     0
 }
 """
+real_std = true
 # No trailing newline - should still return Some(partial line)
 stdin = "partial"
 expected_stdout = "partial"
@@ -1007,6 +1031,8 @@ exit_code = 0
 name = "read_line_empty_line"
 spec = ["4.13:36", "4.13:37"]
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(StrBuf);
@@ -1017,6 +1043,7 @@ fn main() -> i32 {
     0
 }
 """
+real_std = true
 # Just a newline - should return Some("")
 stdin = "\n"
 expected_stdout = ""
@@ -1026,6 +1053,8 @@ exit_code = 0
 name = "read_line_eof_no_data_yields_none"
 spec = ["4.13:39"]
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(StrBuf);
@@ -1037,6 +1066,7 @@ fn main() -> i32 {
     }
 }
 """
+real_std = true
 # Empty stdin - EOF with no data yields None (no panic).
 stdin = ""
 exit_code = 0

@@ -58,9 +58,12 @@ exit_code = 6
 # (The point is that this compiles at all — previously it was E0800 <error>.)
 [[case]]
 name = "capacity_compare_literal_compiles"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "hi";
+    let s: StrBuf = "hi";
     if s.capacity() > 0 { 1 } else { 0 }
 }
 """ }]

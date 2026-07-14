@@ -218,6 +218,9 @@ no_warnings = true
 name = "method_call_on_field_receiver_no_warning"
 description = "A method call on a field receiver uses the base variable (RUE-135)"
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 struct H { s: StrBuf }
 
 fn main() -> i32 {
@@ -228,6 +231,7 @@ fn main() -> i32 {
 """
 exit_code = 5
 no_warnings = true
+real_std = true
 
 [[case]]
 name = "field_read_as_call_argument_no_warning"

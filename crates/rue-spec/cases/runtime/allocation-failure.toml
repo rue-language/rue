@@ -9,7 +9,10 @@ description = "Safe infallible allocation APIs trap with a stable, allocation-fr
 [[case]]
 name = "strbuf_allocation_failure_traps"
 spec = ["8.6:1", "8.6:2"]
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.with_capacity(18446744073709551615);
     @dbg(s.capacity());

@@ -179,6 +179,7 @@ args = ["main.rue", "-o", "prog"]
 exit_code = 65
 files = [{ path = "main.rue", source = """
 const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 
 fn main() -> i32 {
     let a = "hello";
@@ -223,9 +224,9 @@ args = ["main.rue", "-o", "prog"]
 exit_code = 66
 files = [{ path = "main.rue", source = """
 const std = @import("std");
-
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let valid = "hé";
+    let valid: StrBuf = "hé";
     let mut count = 0;
     let mut sum: u32 = 0;
     for scalar in valid.chars() {
@@ -253,10 +254,11 @@ fn main() -> i32 {
 name = "std_strbuf_formatting_and_text_consumers"
 description = "Owned formatting results and every text rung use the shared ptr/len consumer path."
 env = { RUE_STD_PATH = "${REAL_STD}" }
-args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 stdout = "viewfixedowned42\n7\nfixed\n"
 files = [{ path = "main.rue", source = """
 const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 const S = std.strbuf.StrBuf;
 
 struct Holder { text: S }
@@ -312,6 +314,7 @@ exit_code = 101
 runtime_error_contains = ["invalid UTF-8"]
 files = [{ path = "main.rue", source = """
 const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 
 fn main() -> i32 {
     let text = "é";
@@ -380,6 +383,7 @@ compile_stdout_not_contains = [
 ]
 files = [{ path = "main.rue", source = """
 const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 
 fn main() -> i32 {
     let a = "hello";

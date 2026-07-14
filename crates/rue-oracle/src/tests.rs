@@ -6,6 +6,7 @@
 //! CLI/spec corpus is the next step (RUE-50).
 
 use super::*;
+use rue_compiler::PreviewFeature;
 
 mod call_contracts;
 mod place_contracts;
@@ -32,9 +33,8 @@ fn run_with_output_caps(
     run_state_with_output_limits(state, STEP_BUDGET, stdout_cap, stderr_cap)
 }
 
-fn run_string_trio(src: &str) -> Outcome {
-    let mut preview_features = PreviewFeatures::new();
-    preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
+fn run_test_preview(src: &str) -> Outcome {
+    let preview_features = PreviewFeatures::from([PreviewFeature::TestInfra]);
     run_source_with_preview_features(src, &preview_features)
         .unwrap_or_else(|error| panic!("oracle failed: {error}"))
 }
@@ -64,6 +64,44 @@ fn arithmetic_precedence() {
     assert_eq!(exit("fn main() -> i32 { (2 + 3) * 4 }"), 20);
     assert_eq!(exit("fn main() -> i32 { 100 / 7 }"), 14);
     assert_eq!(exit("fn main() -> i32 { 100 % 7 }"), 2);
+}
+
+#[test]
+fn stable_str_equality_is_lowered_and_modeled_by_byte_content() {
+    let source = r#"fn equal(left: str, right: str) -> bool { left == right }
+        fn different(left: str, right: str) -> bool { left != right }
+        fn main() -> i32 {
+            if equal("same", "same") {
+                if different("same", "other") { 0 } else { 1 }
+            } else { 2 }
+        }"#;
+    let state = query_cfg_state(source).expect("stable str equality probe must compile");
+    for (function, expected) in [("equal", "Eq"), ("different", "Ne")] {
+        let cfg = state
+            .functions
+            .iter()
+            .map(|function| &function.cfg)
+            .find(|cfg| cfg.fn_name() == function)
+            .unwrap_or_else(|| panic!("missing {function} CFG"));
+        let (lhs, rhs) = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter().copied())
+            .find_map(|value| match cfg.get_inst(value).data {
+                CfgInstData::Eq(lhs, rhs) if expected == "Eq" => Some((lhs, rhs)),
+                CfgInstData::Ne(lhs, rhs) if expected == "Ne" => Some((lhs, rhs)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing {expected} in {function}"));
+        for operand in [lhs, rhs] {
+            let TypeKind::Struct(struct_id) = cfg.get_inst(operand).ty.kind() else {
+                panic!("{function} operand is not the stable str nominal")
+            };
+            assert_eq!(state.type_pool.struct_def(struct_id).name, "str");
+        }
+    }
+    let outcome = run_state(state).expect("stable str equality must be modeled");
+    assert_eq!(outcome.exit_code, 0);
 }
 
 #[test]
@@ -209,24 +247,12 @@ fn panic_and_assert_have_exact_observable_semantics() {
 #[test]
 fn assert_eagerly_evaluates_condition_then_message_even_when_true() {
     let out = run(r#"fn condition() -> bool { @dbg(1); true }
-        fn message() -> StrBuf { @dbg(2); "unused" }
+        fn message() -> str { @dbg(2); "unused" }
         fn main() -> i32 { @assert(condition(), message()); 42 }"#);
     assert_eq!(out.exit_code, 42);
     assert_eq!(out.stdout, "1\n2\n");
     assert_eq!(out.stderr, "");
     assert_eq!(out.panic, None);
-}
-
-#[test]
-fn panic_stderr_uses_raw_message_bytes_and_native_lossy_decoding() {
-    let out = run("fn main() -> i32 {
-            let mut message = StrBuf.new();
-            message.push(255);
-            @panic(message);
-            0
-        }");
-    assert_eq!(out.stderr, "panic: \u{fffd}\n");
-    assert_eq!(out.panic, Some(TrapKind::UserPanic));
 }
 
 #[test]
@@ -311,41 +337,31 @@ fn oversized_string_dbg_is_unsupported() {
 }
 
 #[test]
-fn stdout_cap_counts_raw_bytes_before_lossy_rendering() {
-    let src = "fn main() -> i32 {
-        let mut s = StrBuf.new();
-        s.push(195);
-        @dbg(s);
-        0
-    }";
-    let out = run_with_stdout_cap(src, 2)
-        .unwrap_or_else(|unsupported| panic!("two raw output bytes failed: {unsupported}"));
-    assert_eq!(out.stdout, "\u{fffd}\n");
-
-    let unsupported = run_with_stdout_cap(src, 1)
-        .expect_err("one content byte plus newline must exceed a one-byte cap");
+fn stdout_cap_counts_utf8_bytes_not_scalar_values() {
+    let source = "fn main() -> i32 { @dbg(\"é\"); 0 }";
+    let out = run_with_stdout_cap(source, 3)
+        .unwrap_or_else(|unsupported| panic!("two UTF-8 bytes plus newline failed: {unsupported}"));
+    assert_eq!(out.stdout, "é\n");
+    let unsupported = run_with_stdout_cap(source, 2)
+        .expect_err("two UTF-8 bytes plus newline must exceed a two-byte cap");
     assert_eq!(
         unsupported.kind(),
         UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
-    );
-    assert_eq!(
-        unsupported.detail(),
-        "stdout byte limit exceeded (1-byte limit)"
     );
 }
 
 #[test]
 fn preview_features_reach_oracle_frontend() {
     let src = r#"fn main() -> i32 {
-        let s: str = "hi";
+        @test_preview_gate();
         0
     }"#;
 
     assert!(
         matches!(run_source(src), Err(RunSourceError::Compile(_))),
-        "str should stay gated by default with a compile error"
+        "test-only intrinsic should stay gated by default with a compile error"
     );
-    assert_eq!(run_string_trio(src).exit_code, 0);
+    assert_eq!(run_test_preview(src).exit_code, 0);
 }
 
 #[test]
@@ -494,16 +510,6 @@ fn only_model_gaps_are_registrable() {
 }
 
 #[test]
-fn exact_string_capacity_is_implementation_defined() {
-    let unsupported =
-        expect_unsupported("fn main() -> i32 { let s = StrBuf.new(); @intCast(s.capacity()) }");
-    assert_eq!(
-        unsupported.kind(),
-        UnsupportedKind::ImplementationDefined(ImplementationDefinedKind::StringCapacityValue)
-    );
-}
-
-#[test]
 fn str_arguments_use_two_abi_slots() {
     let src = r#"fn take(s: str, n: i32) -> i32 {
         n
@@ -512,7 +518,7 @@ fn str_arguments_use_two_abi_slots() {
         take("hi", 7)
     }"#;
 
-    assert_eq!(run_string_trio(src).exit_code, 7);
+    assert_eq!(run(src).exit_code, 7);
 }
 
 #[test]
@@ -872,41 +878,6 @@ fn min_mod_neg_one_traps() {
 }
 
 #[test]
-fn string_equality_by_content() {
-    let src = "fn main() -> i32 {
-        let mut a = StrBuf.new();
-        a.push_str(\"hi\");
-        let mut b = StrBuf.new();
-        b.push_str(\"hi\");
-        if a == b { 7 } else { 0 }
-    }";
-    assert_eq!(exit(src), 7);
-}
-
-#[test]
-fn string_build_and_len() {
-    let src = "fn main() -> i32 {
-        let mut s = StrBuf.new();
-        s.push_str(\"hi\");
-        let n: u64 = s.len();
-        if n == 2 { 0 } else { 1 }
-    }";
-    assert_eq!(exit(src), 0);
-}
-
-#[test]
-fn string_dbg_and_concat() {
-    let src = "fn main() -> i32 {
-        let mut s = StrBuf.new();
-        s.push_str(\"foo\");
-        s.push_str(\"bar\");
-        @dbg(s);
-        0
-    }";
-    assert_eq!(run(src).stdout, "foobar\n");
-}
-
-#[test]
 fn string_literal_dbg() {
     let src = "fn main() -> i32 {
         let s = \"hello\";
@@ -959,122 +930,6 @@ fn string_byte_index_out_of_bounds_traps() {
     let out = run(src);
     assert_eq!(out.exit_code, 101);
     assert_eq!(out.panic, Some(TrapKind::IndexOutOfBounds));
-}
-
-#[test]
-fn string_byte_iteration_counts_bytes() {
-    // Byte view (`for _b in s`): "café" is 5 bytes (é is 2 UTF-8 bytes). Uses
-    // `__rue_String_byte_at` for the element and `__rue_String_len` for the bound.
-    let src = "fn main() -> i32 {
-        let s = \"café\";
-        let mut count = 0;
-        for _b in s {
-            count = count + 1;
-        }
-        count
-    }";
-    assert_eq!(exit(src), 5);
-}
-
-#[test]
-fn string_push_models_raw_non_utf8_byte() {
-    // `String.push` appends one byte, not one Unicode scalar. 0xC3 alone is
-    // not valid UTF-8, but the byte-string model permits storing it; byte
-    // operations must still see the raw byte.
-    let src = "fn main() -> i32 {
-        let mut s = StrBuf.new();
-        s.push(195);
-        @dbg(s.len());
-        @dbg(s[0]);
-        0
-    }";
-    assert_eq!(run(src).stdout, "1\n195\n");
-}
-
-#[test]
-fn string_chars_traps_on_raw_invalid_utf8_byte() {
-    // Strict `.chars()` is the UTF-8 validation boundary for byte strings.
-    let src = "fn main() -> i32 {
-        let mut s = StrBuf.new();
-        s.push(195);
-        for c in s.chars() {
-            @dbg(c);
-        }
-        0
-    }";
-    let out = run(src);
-    assert_eq!(out.exit_code, 101);
-    assert_eq!(out.panic, Some(TrapKind::InvalidUtf8));
-}
-
-#[test]
-fn string_chars_lossy_replaces_raw_invalid_utf8_byte() {
-    // The lossy view mirrors the runtime's replacement behavior: a lone invalid
-    // lead byte becomes U+FFFD and advances by one byte.
-    let src = "fn main() -> i32 {
-        let mut s = StrBuf.new();
-        s.push(195);
-        let mut count = 0;
-        for c in s.chars_lossy() {
-            @dbg(c);
-            count = count + 1;
-        }
-        count
-    }";
-    let out = run(src);
-    assert_eq!(out.stdout, "65533\n");
-    assert_eq!(out.exit_code, 1);
-}
-
-#[test]
-fn string_chars_iteration_scalars() {
-    // Scalar view (`for c in s.chars()`): yields Unicode scalars via
-    // `__rue_String_char_scalar` and advances via `__rue_String_char_next`.
-    // "café" → c=99, a=97, f=102, é=U+00E9=233; 4 scalars (matches the spec
-    // corpus case `for_chars_scalars`).
-    let src = "fn main() -> i32 {
-        let s = \"café\";
-        let mut count = 0;
-        for c in s.chars() {
-            @dbg(c);
-            count = count + 1;
-        }
-        count
-    }";
-    let out = run(src);
-    assert_eq!(out.stdout, "99\n97\n102\n233\n");
-    assert_eq!(out.exit_code, 4);
-}
-
-#[test]
-fn string_chars_lossy_matches_strict_over_valid_utf8() {
-    // Over well-formed UTF-8 the lossy view decodes identically to `.chars()`.
-    let src = "fn main() -> i32 {
-        let s = \"az€\";
-        let mut count = 0;
-        for c in s.chars_lossy() {
-            @dbg(c);
-            count = count + 1;
-        }
-        count
-    }";
-    // a=97, z=122, €=U+20AC=8364; 3 scalars.
-    let out = run(src);
-    assert_eq!(out.stdout, "97\n122\n8364\n");
-    assert_eq!(out.exit_code, 3);
-}
-
-#[test]
-fn string_is_empty_and_clear() {
-    let src = "fn main() -> i32 {
-        let mut s = StrBuf.new();
-        s.push_str(\"x\");
-        let a: bool = s.is_empty();
-        s.clear();
-        let b: bool = s.is_empty();
-        if !a { if b { 0 } else { 1 } } else { 2 }
-    }";
-    assert_eq!(exit(src), 0);
 }
 
 #[test]

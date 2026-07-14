@@ -28,8 +28,11 @@ exit_code = 1
 
 [[case]]
 name = "string_field_method_receiver_anchors_literal"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "RUE-126: h.s.len() resolves (field receiver is concrete) and anchors the compared literal."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Holder { s: StrBuf }
 fn main() -> i32 {
     let h = Holder { s: "hello" };

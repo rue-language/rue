@@ -384,8 +384,11 @@ exit_code = 0
 
 [[case]]
 name = "partial_string_field_move_no_double_free"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "RUE-62 with a heap type: moving one StrBuf field out of a struct must not double-free it at the struct's scope-exit drop."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Holder { name: StrBuf, tag: StrBuf }
 
 fn eat(s: StrBuf) -> i32 {
@@ -404,8 +407,11 @@ exit_code = 0
 
 [[case]]
 name = "branch_divergent_string_field_move_no_double_free"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "RUE-156 with a heap type: a StrBuf field moved in only ONE branch must not be freed again by the struct's scope-exit drop on the moving path."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Holder { name: StrBuf, tag: StrBuf }
 
 fn eat(s: StrBuf) -> i32 {

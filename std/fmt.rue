@@ -9,6 +9,8 @@
 //     let t = std.fmt.bool_to_string(true); // "true"
 
 const arraybuf = @import("arraybuf.rue");
+const strbuf = @import("strbuf.rue");
+const StrBuf = strbuf.StrBuf;
 
 // Decimal string of any integer value (wraps the `@to_string` intrinsic, which
 // already handles every integer width).

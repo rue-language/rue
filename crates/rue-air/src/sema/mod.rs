@@ -39,7 +39,6 @@ mod inference_ctx;
 mod info;
 mod known_symbols;
 mod output;
-mod sema_ctx_builder;
 mod semantic_body_export;
 mod typeck;
 mod visibility;
@@ -262,8 +261,6 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) preview_features: PreviewFeatures,
     /// Requested compilation target.
     pub(crate) target: Target,
-    /// StructId of the synthetic String type.
-    pub(crate) builtin_string_id: Option<StructId>,
     /// EnumId of the synthetic Arch enum (for @target_arch intrinsic).
     pub(crate) builtin_arch_id: Option<EnumId>,
     /// EnumId of the synthetic Os enum (for @target_os intrinsic).
@@ -383,7 +380,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             declaration_binding_active,
             preview_features,
             target,
-            builtin_string_id,
             builtin_arch_id,
             builtin_os_id,
             known,
@@ -435,7 +431,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             declaration_binding_active,
             preview_features,
             target,
-            builtin_string_id,
             builtin_arch_id,
             builtin_os_id,
             known,
@@ -753,7 +748,6 @@ impl<'a> Sema<'a> {
             declaration_binding_active: false,
             preview_features,
             target,
-            builtin_string_id: None,
             builtin_arch_id: None,
             builtin_os_id: None,
             known: KnownSymbols::new(interner),

@@ -16,8 +16,11 @@ description = "Using an aggregate whole after a nested subfield moved is E0205."
 # be rejected.
 [[case]]
 name = "use_whole_after_subfield_move_depth2"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
     { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Inner { s: StrBuf, n: i32 }
 struct Outer { inner: Inner, tag: i32 }
 fn consume(s: StrBuf) -> i32 { @intCast(s.len()) }
@@ -35,8 +38,11 @@ error_contains = ["E0205", "o.inner"]
 # Depth 3: same rule one level deeper (`c.b.a.s` moved, `c.b` used whole).
 [[case]]
 name = "use_whole_after_subfield_move_depth3"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
     { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct A { s: StrBuf, k: i32 }
 struct B { a: A, k: i32 }
 struct C { b: B, k: i32 }
@@ -55,8 +61,11 @@ error_contains = ["E0205", "c.b"]
 # Depth 1 (regression): the original one-level case must still be rejected.
 [[case]]
 name = "use_whole_after_field_move_depth1"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
     { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Inner { s: StrBuf, n: i32 }
 fn consume(s: StrBuf) -> i32 { @intCast(s.len()) }
 fn consume_inner(i: Inner) -> i32 { @intCast(i.s.len()) + i.n }
@@ -74,8 +83,11 @@ error_contains = ["E0205", "inner"]
 # passing `arr[0]` whole must be rejected.
 [[case]]
 name = "use_whole_element_after_subfield_move"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
     { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Inner { s: StrBuf, n: i32 }
 fn consume(s: StrBuf) -> i32 { @intCast(s.len()) }
 fn consume_inner(i: Inner) -> i32 { @intCast(i.s.len()) + i.n }
@@ -93,8 +105,11 @@ error_contains = ["E0205", "arr[0]"]
 # field `o.tag` is still readable (return 9).
 [[case]]
 name = "disjoint_sibling_after_subfield_move_ok"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
     { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Inner { s: StrBuf, n: i32 }
 struct Outer { inner: Inner, tag: i32 }
 fn consume(s: StrBuf) -> i32 { @intCast(s.len()) }
@@ -111,8 +126,11 @@ exit_code = 9
 # (constant indices are now tracked per element, not conflated). "yo".len() = 2.
 [[case]]
 name = "disjoint_sibling_element_move_ok"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
     { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Inner { s: StrBuf, n: i32 }
 fn consume(s: StrBuf) -> i32 { @intCast(s.len()) }
 fn main() -> i32 {

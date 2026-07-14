@@ -12,8 +12,11 @@ description = "Safe infallible owners trap canonically on allocation failure and
 
 [[case]]
 name = "strbuf_with_capacity_huge_traps"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "StrBuf.with_capacity(u64::MAX) fails fast with the canonical allocation diagnostic."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.with_capacity(18446744073709551615);
     @dbg(s.capacity());
@@ -25,8 +28,11 @@ runtime_error_contains = ["panic: out of memory"]
 
 [[case]]
 name = "strbuf_zero_capacity_does_not_allocate"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "StrBuf.with_capacity(0) succeeds as the canonical null, zero-capacity value."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = StrBuf.with_capacity(0);
     @dbg(s.capacity());
@@ -38,8 +44,11 @@ stdout = "0\n"
 
 [[case]]
 name = "with_capacity_normal_reserves"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "A satisfiable with_capacity still reserves the requested capacity and appends normally."
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.with_capacity(16);
     @dbg(s.capacity());

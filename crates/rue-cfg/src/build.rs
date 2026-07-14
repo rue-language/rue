@@ -2256,8 +2256,7 @@ impl<'a> CfgBuilder<'a> {
     /// A type needs drop if dropping it requires cleanup actions:
     /// - Primitives, bool, unit, never, error: trivially droppable (no)
     /// - Enum: needs drop if any variant payload needs drop
-    /// - Struct: needs drop when it has a destructor (including builtin
-    ///   `StrBuf`) or any field needs drop
+    /// - Struct: needs drop when it declares a destructor or any field needs drop
     /// - Array: needs drop if element type needs drop
     fn type_needs_drop(&self, ty: Type) -> bool {
         match ty.kind() {
@@ -2290,12 +2289,10 @@ impl<'a> CfgBuilder<'a> {
                     .any(|&ty| self.type_needs_drop(ty))
             }
 
-            // Struct types need drop if they have a destructor (e.g. builtin
-            // StrBuf)
-            // or if any field needs drop
+            // Struct types need drop if they declare a destructor or contain a
+            // field that needs drop.
             TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
-                // Builtins with destructors (like StrBuf) need drop.
                 if struct_def.destructor.is_some() {
                     return true;
                 }
@@ -3086,7 +3083,13 @@ mod tests {
         source: &str,
         select: impl for<'f> Fn(&'f [rue_air::AnalyzedFunction]) -> &'f rue_air::AnalyzedFunction,
     ) -> Cfg {
-        let lexer = Lexer::new(source);
+        // Drop tests use an ordinary source nominal so they do not depend on
+        // the trusted standard-library StrBuf language item.
+        let source = format!(
+            "struct StrBuf {{ cap: u64, fn with_capacity(cap: u64) -> StrBuf {{ StrBuf {{ cap: cap }} }} fn inspect(borrow self) {{}} }}\n\
+             drop fn StrBuf(self) {{}}\n{source}"
+        );
+        let lexer = Lexer::new(&source);
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
         let (ast, mut interner) = parser.parse().unwrap();
@@ -3239,90 +3242,6 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_computed_projection_drops_its_owner_once_after_the_consumer() {
-        let cases = [
-            (
-                "direct field",
-                "struct Holder { text: StrBuf }\n\
-                 fn make_holder() -> Holder { Holder { text: \"held\" } }\n\
-                 fn consume() -> i32 { print(make_holder().text); 0 }\n\
-                 fn main() -> i32 { consume() }",
-            ),
-            (
-                "nested fields",
-                "struct Holder { text: StrBuf }\n\
-                 struct Outer { holder: Holder }\n\
-                 fn make_outer() -> Outer { Outer { holder: Holder { text: \"held\" } } }\n\
-                 fn consume() -> i32 { print(make_outer().holder.text); 0 }\n\
-                 fn main() -> i32 { consume() }",
-            ),
-            (
-                "computed index and field",
-                "struct Holder { text: StrBuf }\n\
-                 struct Outer { holders: [Holder; 1] }\n\
-                 fn make_outer() -> Outer { Outer { holders: [Holder { text: \"held\" }] } }\n\
-                 fn consume() -> i32 { print(make_outer().holders[0].text); 0 }\n\
-                 fn main() -> i32 { consume() }",
-            ),
-        ];
-
-        for (label, source) in cases {
-            let cfg = build_cfg_named(source, "consume");
-            let instructions = cfg
-                .blocks()
-                .iter()
-                .flat_map(|block| block.insts.iter().copied())
-                .collect::<Vec<_>>();
-            let consumer = instructions
-                .iter()
-                .position(|value| {
-                    matches!(
-                        cfg.get_inst(*value).data,
-                        CfgInstData::Call { args_len: 1, .. }
-                    )
-                })
-                .unwrap_or_else(|| panic!("{label}: print consumer"));
-            let drops = instructions
-                .iter()
-                .enumerate()
-                .filter_map(|(index, value)| {
-                    matches!(cfg.get_inst(*value).data, CfgInstData::Drop { .. }).then_some(index)
-                })
-                .collect::<Vec<_>>();
-
-            assert_eq!(
-                drops.len(),
-                1,
-                "{label}: the computed aggregate has one owner"
-            );
-            assert!(
-                drops[0] > consumer,
-                "{label}: the owner must remain live until its projected StrBuf borrow is consumed"
-            );
-            let CfgInstData::Drop { value: dropped } = cfg.get_inst(instructions[drops[0]]).data
-            else {
-                unreachable!("selected a Drop")
-            };
-            let CfgInstData::Load { slot: owner_slot } = cfg.get_inst(dropped).data else {
-                panic!("{label}: owner drop must load its one temporary")
-            };
-            let storage_dead = instructions
-                .iter()
-                .position(|value| {
-                    matches!(
-                        cfg.get_inst(*value).data,
-                        CfgInstData::StorageDead { slot, .. } if slot == owner_slot
-                    )
-                })
-                .unwrap_or_else(|| panic!("{label}: computed owner storage ends"));
-            assert!(
-                storage_dead > drops[0],
-                "{label}: storage ends after its drop"
-            );
-        }
-    }
-
-    #[test]
     fn test_simple_return() {
         let cfg = build_cfg("fn main() -> i32 { 42 }");
 
@@ -3438,9 +3357,14 @@ mod tests {
     fn fallible_initializer_drops_local_only_after_successful_alloc() {
         let cfg = build_cfg_named(
             "fn Option(comptime T: type) -> type { enum { Some(T), None } }\n\
+             fn maybe_buf() -> Option(StrBuf) {\n\
+                 let O = Option(StrBuf);\n\
+                 if true { O.Some(StrBuf.with_capacity(8)) } else { O.None }\n\
+             }\n\
              fn read_num() -> Option(i64) {\n\
-                 let line = @read_line()?;\n\
-                 @parse_i64(line)\n\
+                 let O = Option(i64);\n\
+                 let line = maybe_buf()?;\n\
+                 O.Some(@intCast(line.cap))\n\
              }\n\
              fn main() -> i32 { let result = read_num(); 0 }",
             "read_num",
@@ -3484,7 +3408,7 @@ mod tests {
     fn diverging_initializer_never_makes_droppable_local_owned() {
         let cfg = build_cfg_named(
             "fn early() -> i32 {\n\
-                 let value: StrBuf = { return 7; \"never\" };\n\
+                 let value: StrBuf = { return 7; StrBuf.with_capacity(8) };\n\
                  0\n\
              }\n\
              fn main() -> i32 { early() }",
@@ -3783,6 +3707,227 @@ mod tests {
             inout_cfg.is_param_writable(0),
             "inout must preserve logical write permission"
         );
+    }
+
+    #[test]
+    fn borrowed_computed_projection_drops_its_owner_once_after_the_consumer() {
+        use rue_air::{Air, AirInst, AirPlaceBase, AirProjection, StructDef, StructField};
+        use rue_span::{FileId, Span};
+
+        for shape in ["direct", "nested", "index"] {
+            let interner = ThreadedRodeo::default();
+            let type_pool = TypeInternPool::new();
+            let span = Span::new(0, 1);
+            let struct_def = |name: &str, fields, destructor| StructDef {
+                name: name.to_string(),
+                fields,
+                is_copy: false,
+                is_linear: false,
+                destructor,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            };
+            let (leaf_id, _) = type_pool.register_struct(
+                interner.get_or_intern("Leaf"),
+                struct_def(
+                    "Leaf",
+                    vec![StructField {
+                        name: "value".into(),
+                        ty: Type::I32,
+                    }],
+                    None,
+                ),
+            );
+            let leaf_ty = Type::new_struct(leaf_id);
+            let array_id = type_pool.intern_array_from_type(leaf_ty, 1);
+            let array_ty = Type::new_array(array_id);
+            let owner_field_ty = match shape {
+                "direct" => Type::I32,
+                "nested" => leaf_ty,
+                "index" => array_ty,
+                _ => unreachable!(),
+            };
+            let (owner_id, _) = type_pool.register_struct(
+                interner.get_or_intern("Owner"),
+                struct_def(
+                    "Owner",
+                    vec![StructField {
+                        name: "field".into(),
+                        ty: owner_field_ty,
+                    }],
+                    Some("Owner.__drop".into()),
+                ),
+            );
+            let owner_ty = Type::new_struct(owner_id);
+
+            let mut air = Air::new(Type::UNIT);
+            let constant = air.add_inst(AirInst {
+                data: AirInstData::Const(7),
+                ty: Type::I32,
+                span,
+            });
+            let leaf_fields = air.add_extra(&[constant.as_u32()]);
+            let leaf_order = air.add_extra(&[0]);
+            let leaf = air.add_inst(AirInst {
+                data: AirInstData::StructInit {
+                    struct_id: leaf_id,
+                    fields_start: leaf_fields,
+                    fields_len: 1,
+                    source_order_start: leaf_order,
+                },
+                ty: leaf_ty,
+                span,
+            });
+            let array_fields = air.add_extra(&[leaf.as_u32()]);
+            let array = air.add_inst(AirInst {
+                data: AirInstData::ArrayInit {
+                    elems_start: array_fields,
+                    elems_len: 1,
+                },
+                ty: array_ty,
+                span,
+            });
+            let owner_field = match shape {
+                "direct" => constant,
+                "nested" => leaf,
+                "index" => array,
+                _ => unreachable!(),
+            };
+            let owner_fields = air.add_extra(&[owner_field.as_u32()]);
+            let owner_order = air.add_extra(&[0]);
+            let owner = air.add_inst(AirInst {
+                data: AirInstData::StructInit {
+                    struct_id: owner_id,
+                    fields_start: owner_fields,
+                    fields_len: 1,
+                    source_order_start: owner_order,
+                },
+                ty: owner_ty,
+                span,
+            });
+            let live = air.add_inst(AirInst {
+                data: AirInstData::StorageLive { slot: 0 },
+                ty: owner_ty,
+                span,
+            });
+            let alloc = air.add_inst(AirInst {
+                data: AirInstData::Alloc {
+                    slot: 0,
+                    init: owner,
+                },
+                ty: Type::UNIT,
+                span,
+            });
+            let index = air.add_inst(AirInst {
+                data: AirInstData::Const(0),
+                ty: Type::U64,
+                span,
+            });
+            let projections = match shape {
+                "direct" => vec![AirProjection::Field {
+                    struct_id: owner_id,
+                    field_index: 0,
+                }],
+                "nested" => vec![
+                    AirProjection::Field {
+                        struct_id: owner_id,
+                        field_index: 0,
+                    },
+                    AirProjection::Field {
+                        struct_id: leaf_id,
+                        field_index: 0,
+                    },
+                ],
+                "index" => vec![
+                    AirProjection::Field {
+                        struct_id: owner_id,
+                        field_index: 0,
+                    },
+                    AirProjection::Index {
+                        array_type: array_ty,
+                        index,
+                    },
+                    AirProjection::Field {
+                        struct_id: leaf_id,
+                        field_index: 0,
+                    },
+                ],
+                _ => unreachable!(),
+            };
+            let place = air.make_place(AirPlaceBase::Local(0), owner_ty, projections);
+            let read = air.add_inst(AirInst {
+                data: AirInstData::PlaceRead { place },
+                ty: Type::I32,
+                span,
+            });
+            let args = air.add_extra(&[read.as_u32(), AirArgMode::Borrow.as_u32()]);
+            let call = air.add_inst(AirInst {
+                data: AirInstData::Call {
+                    name: interner.get_or_intern("consume"),
+                    args_start: args,
+                    args_len: 1,
+                },
+                ty: Type::UNIT,
+                span,
+            });
+            let stmts = air.add_extra(&[live.as_u32(), alloc.as_u32()]);
+            let block = air.add_inst(AirInst {
+                data: AirInstData::Block {
+                    stmts_start: stmts,
+                    stmts_len: 2,
+                    value: call,
+                },
+                ty: Type::UNIT,
+                span,
+            });
+            air.add_inst(AirInst {
+                data: AirInstData::Ret(Some(block)),
+                ty: Type::UNIT,
+                span,
+            });
+
+            let cfg =
+                CfgBuilder::build(&air, 1, 0, "probe", &type_pool, vec![], &interner, false).cfg;
+            let instructions = cfg
+                .blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter().copied())
+                .collect::<Vec<_>>();
+            let consumer = instructions
+                .iter()
+                .position(|value| matches!(cfg.get_inst(*value).data, CfgInstData::Call { .. }))
+                .expect("consumer call");
+            let drops = instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(i, value)| {
+                    matches!(cfg.get_inst(*value).data, CfgInstData::Drop { .. }).then_some(i)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(drops.len(), 1, "{shape}: exactly one owner drop");
+            let CfgInstData::Drop { value } = cfg.get_inst(instructions[drops[0]]).data else {
+                unreachable!()
+            };
+            assert!(
+                matches!(cfg.get_inst(value).data, CfgInstData::Load { slot: 0 }),
+                "{shape}: drop loads owner slot 0"
+            );
+            let dead = instructions
+                .iter()
+                .position(|value| {
+                    matches!(
+                        cfg.get_inst(*value).data,
+                        CfgInstData::StorageDead { slot: 0, .. }
+                    )
+                })
+                .expect("owner storage dead");
+            assert!(
+                consumer < drops[0] && drops[0] < dead,
+                "{shape}: Call < Drop < StorageDead"
+            );
+            assert_all_blocks_terminated(&cfg);
+        }
     }
 
     #[test]

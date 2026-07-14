@@ -16,6 +16,7 @@ rue_binary(
     name = "rue-oracle-diff",
     deps = [
         "//crates/rue-oracle:rue-oracle",
+        "//crates/rue-compiler:rue-compiler",
         # rue-test-runner parses + template-expands the rue-spec corpus exactly
         # as the spec suite does, so the `spec` mode's templating can't drift.
         "//crates/rue-test-runner:rue-test-runner",
@@ -51,6 +52,7 @@ sh_test(
     test = ":rue-oracle-diff",
     env = {
         "RUE_ORACLE_DIFF_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+        "RUE_ORACLE_DIFF_STD": "$(location root//:std)/std",
     },
 )
 
@@ -66,5 +68,6 @@ sh_test(
     args = ["spec"],
     env = {
         "RUE_ORACLE_DIFF_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
+        "RUE_ORACLE_DIFF_STD": "$(location root//:std)/std",
     },
 )

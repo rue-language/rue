@@ -3,7 +3,7 @@ id = "string_field"
 name = "StrBuf fat-pointer materialization from places (RUE-111)"
 description = """
 Regression tests for the struct-field / parameter StrBuf ICEs (RUE-63, RUE-94).
-A multi-slot aggregate (builtin StrBuf, or a struct containing one) obtained by
+A multi-slot aggregate (the canonical standard-library StrBuf, or a struct containing one) obtained by
 reading a place — a struct field or a rebound parameter — must materialize all of
 its fat-pointer slots, not just the first. Previously these aborted the compiler
 with "string should have fat pointer fields" / "builtin type should have field
@@ -16,7 +16,10 @@ vregs" panics in codegen (both x86-64 and aarch64 backends).
 # ICE — defining the function was enough.)
 [[case]]
 name = "string_param_rebound_to_local"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn consume(s: StrBuf) -> i32 {
     let held = s;
     0
@@ -30,7 +33,10 @@ exit_code = 0
 # StrBuf was not registered in struct_slot_vregs.
 [[case]]
 name = "string_struct_field_eq_true"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Holder { s: StrBuf }
 fn main() -> i32 {
     let h = Holder { s: \"hello\" };
@@ -41,7 +47,10 @@ exit_code = 0
 
 [[case]]
 name = "string_struct_field_eq_false"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Holder { s: StrBuf }
 fn main() -> i32 {
     let h = Holder { s: \"hello\" };
@@ -55,7 +64,10 @@ exit_code = 7
 # (Alloc) of the fat pointer.
 [[case]]
 name = "string_field_rebound_then_eq"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Holder { s: StrBuf }
 fn main() -> i32 {
     let h = Holder { s: \"hello\" };
@@ -70,7 +82,10 @@ exit_code = 5
 # materializing the StrBuf sub-slots from the struct place-read.
 [[case]]
 name = "struct_with_string_field_eq"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct P { name: StrBuf, age: i32 }
 fn main() -> i32 {
     let a = P { name: \"bob\", age: 3 };

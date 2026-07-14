@@ -1,14 +1,16 @@
 +++
-title = "StrBuf Type"
+title = "String Types"
 weight = 7
 template = "spec/page.html"
 +++
 
-# StrBuf Type
+# String Types
 
 {{ rule(id="3.7:1", cat="normative") }}
 
-The type `StrBuf` represents an immutable sequence of UTF-8 encoded bytes.
+The core type `str` represents a read-only byte-string view. The fixed-capacity
+type `Str(N)` and the standard-library type `std.strbuf.StrBuf` are its buffer
+counterparts.
 
 {{ rule(id="3.7:57", cat="informative") }}
 
@@ -18,16 +20,18 @@ string trio (`str` / `Str(N)` / `StrBuf`) rather than a blessed built-in.
 
 {{ rule(id="3.7:2", cat="normative") }}
 
-A `StrBuf` value occupies three machine words — a pointer to the string data,
+A `StrBuf` value is available only through an explicit import of the trusted
+standard-library module. It occupies three machine words — a pointer to the string data,
 the length in bytes, and the allocated capacity in bytes — so `@size_of(StrBuf)`
-is `24` on a 64-bit target. A string literal has a capacity of zero and its
-pointer refers to read-only memory (3.7:3); a `StrBuf` produced by an operation
+is `24` on a 64-bit target. A `StrBuf` produced by an operation
 that allocates (`@to_string`, 3.7:22, or `+`, 3.7:25) has a capacity greater
 than zero and owns a heap buffer of that size.
 
 {{ rule(id="3.7:3", cat="normative") }}
 
-StrBuf literals are stored in read-only memory and have static lifetime.
+String literals are stored in read-only memory, have static lifetime, and infer
+to the first-class core type `str` unless a trusted `StrBuf` or `Str(N)` context
+requires materialization.
 
 {{ rule(id="3.7:4") }}
 
@@ -70,8 +74,13 @@ section 3.10) builds on this same three-word representation.
 {{ rule(id="3.7:42") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
-    let a = "foo" + "bar";   // heap-allocated: capacity > 0
+    let left: StrBuf = "foo";
+    let right: StrBuf = "bar";
+    let a = left + right;      // heap-allocated: capacity > 0
     let b = a;               // 'a' is moved into 'b'
     // let c = a;            // ERROR (E0205): use of moved value 'a'
     @dbg(b);                 // foobar
@@ -79,7 +88,7 @@ fn main() -> i32 {
 }                            // 'b' is dropped: its heap buffer is freed once
 ```
 
-## StrBuf Literals
+## String Literals
 
 {{ rule(id="3.7:5", cat="normative") }}
 
@@ -87,7 +96,7 @@ A string literal is a sequence of characters enclosed in double quotes (`"`).
 
 {{ rule(id="3.7:6", cat="normative") }}
 
-StrBuf literals support the following escape sequences:
+String literals support the following escape sequences:
 
 | Escape | Meaning |
 |--------|---------|
@@ -115,7 +124,7 @@ fn main() -> i32 {
 }
 ```
 
-## StrBuf Equality
+## String Equality
 
 {{ rule(id="3.7:9", cat="normative") }}
 
@@ -144,7 +153,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.7:12", cat="normative") }}
 
-The `@dbg` intrinsic accepts a `StrBuf` argument and prints its content followed by a newline.
+The `@dbg` intrinsic accepts any text rung and prints its content followed by a newline.
 
 {{ rule(id="3.7:13") }}
 
@@ -202,8 +211,11 @@ If `start + len` is greater than `s.len()` (or the addition overflows),
 {{ rule(id="3.7:21") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
-    let s = "café";
+    let s: StrBuf = "café";
     let tail = s.substring(3, 2);   // the two bytes of 'é'
     @dbg(tail.len());               // 2
     0
@@ -231,6 +243,8 @@ a single `-`; a zero value formats as `0`.
 {{ rule(id="3.7:24") }}
 
 ```rue
+const std = @import("std");
+
 fn main() -> i32 {
     @dbg(@to_string(42));    // 42
     @dbg(@to_string(-5));    // -5
@@ -256,8 +270,13 @@ conversion between `StrBuf` and integers.
 {{ rule(id="3.7:27") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
-    let greeting = "Hello, " + "world!";
+    let left: StrBuf = "Hello, ";
+    let right: StrBuf = "world!";
+    let greeting = left + right;
     @dbg(greeting);   // Hello, world!
     0
 }
@@ -267,7 +286,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.7:35", cat="normative") }}
 
-The free function `print(s)` takes a `StrBuf` and writes its raw bytes to
+The free function `print(s)` takes any text rung and writes its raw bytes to
 standard output, adding nothing. Unlike `@dbg`, it does not append a newline and
 does not apply any debug formatting. The argument `s` is borrowed, not consumed,
 and remains usable afterwards. This internal non-consuming access does not
@@ -276,7 +295,7 @@ change the call syntax: the source argument is unmarked (`print(s)`, not
 
 {{ rule(id="3.7:36", cat="normative") }}
 
-The free function `println(s)` takes a `StrBuf` and writes its raw bytes to
+The free function `println(s)` takes any text rung and writes its raw bytes to
 standard output followed by a single newline (`U+000A`). The argument `s` is
 borrowed, not consumed. Together with `@to_string` and `+`, `println` composes
 line-oriented output; there is no formatting or interpolation syntax. As with
@@ -285,20 +304,23 @@ argument is unmarked.
 
 {{ rule(id="3.7:37", cat="dynamic-semantics") }}
 
-`print(s)` and `println(s)` write exactly the bytes of `s`, in order, without
-transformation: because a `StrBuf` is a byte string, the output is byte-for-byte
-identical to the string's contents (the only difference between the two is the
-single trailing newline `println` adds). Writing an empty `StrBuf` writes no
-bytes (for `print`) or a lone newline (for `println`).
+`print(s)` and `println(s)` write exactly the bytes of the text value `s`, in
+order, without transformation. The output is byte-for-byte identical to the
+text's contents (the only difference between the two is the single trailing
+newline `println` adds). Writing an empty text value writes no bytes (for
+`print`) or a lone newline (for `println`).
 
 {{ rule(id="3.7:38") }}
 
 ```rue
+const std = @import("std");
+
 fn main() -> i32 {
     print("hello");                       // hello
     print(" world");                      // hello world   (no newline yet)
     println("");                          // hello world\n
-    println("value is " + @to_string(42)); // value is 42\n
+    let prefix: std.strbuf.StrBuf = "value is ";
+    println(prefix + @to_string(42));       // value is 42\n
     0
 }
 ```
@@ -307,27 +329,33 @@ fn main() -> i32 {
 
 {{ rule(id="3.7:28", cat="normative") }}
 
-The method `s.contains(needle)` returns `true` if and only if the bytes of the
-`StrBuf` `needle` occur as a contiguous subsequence of the bytes of `s`. The
+The method `s.contains(borrow needle)` returns `true` if and only if the bytes of the
+text view `needle` occur as a contiguous subsequence of the bytes of `s`. The
 comparison is byte-level and does not inspect UTF-8 character boundaries. The
 empty needle is contained in every string. The receiver `s` is borrowed, not
 consumed.
 
 {{ rule(id="3.7:29", cat="normative") }}
 
-The method `s.starts_with(prefix)` returns `true` if and only if the bytes of
-the `StrBuf` `prefix` are a prefix of the bytes of `s`. The comparison is
+The method `s.starts_with(borrow prefix)` returns `true` if and only if the bytes of
+the text view `prefix` are a prefix of the bytes of `s`. The comparison is
 byte-level. The empty prefix matches every string. The receiver `s` is borrowed,
 not consumed.
 
 {{ rule(id="3.7:30") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
-    let h = "hello";
-    @dbg(h.contains("ell"));      // true
-    @dbg(h.starts_with("he"));    // true
-    @dbg(h.starts_with("lo"));    // false
+    let h: StrBuf = "hello";
+    let needle: StrBuf = "ell";
+    let prefix: StrBuf = "he";
+    let other: StrBuf = "lo";
+    @dbg(h.contains(borrow needle));      // true
+    @dbg(h.starts_with(borrow prefix));   // true
+    @dbg(h.starts_with(borrow other));    // false
     0
 }
 ```
@@ -362,8 +390,11 @@ scalar value as a `u32`.
 {{ rule(id="3.7:33") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
-    let s = "café";
+    let s: StrBuf = "café";
     let mut count = 0;
     for c in s.chars() {
         @dbg(c);          // 99, 97, 102, 233 (the last is é = U+00E9)
@@ -375,7 +406,6 @@ fn main() -> i32 {
 
 ## The `str` Type
 
-{{ preview_feature(feature="string_trio", adr="ADR-0043") }}
 
 {{ rule(id="3.7:43", cat="normative") }}
 
@@ -470,7 +500,6 @@ exclusivity cannot see.
 
 ## The `Str(N)` Type
 
-{{ preview_feature(feature="string_trio", adr="ADR-0043") }}
 
 {{ rule(id="3.7:49", cat="normative") }}
 

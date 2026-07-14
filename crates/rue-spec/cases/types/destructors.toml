@@ -372,7 +372,10 @@ expected_stdout = "2\n1\n"
 name = "type_with_destructor"
 spec = ["3.9:11", "3.10:29"]
 description = "A type has a destructor if dropping requires cleanup (StrBuf drops heap buffer)"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");
@@ -386,9 +389,12 @@ exit_code = 0
 name = "type_with_destructor_literal_promoted"
 spec = ["3.9:11", "3.10:29", "3.10:21"]
 description = "StrBuf promoted from literal has destructor that frees heap"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let mut s = "hello";
+    let mut s: StrBuf = "hello";
     s.push_str("!");  // promotes to heap
     // s now has capacity > 0
     0
@@ -400,9 +406,12 @@ exit_code = 0
 name = "type_with_destructor_literal_no_heap"
 spec = ["3.9:11", "3.10:29"]
 description = "StrBuf literal (cap=0) has no cleanup action"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let s = "hello";
+    let s: StrBuf = "hello";
     // s is a literal with cap=0, no heap allocation
     0
 }  // no heap to free
@@ -413,7 +422,10 @@ exit_code = 0
 name = "struct_with_destructor_field"
 spec = ["3.9:12"]
 description = "Struct has destructor if any field has destructor"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct Container {
     name: StrBuf,
     value: i32,
@@ -456,7 +468,10 @@ expected_stdout = "1\n2\n"
 name = "struct_with_string_fields_dropped"
 spec = ["3.9:13"]
 description = "Struct whose StrBuf fields require cleanup drops each field (heap buffers freed)"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 struct TwoStrings {
     first: StrBuf,
     second: StrBuf,
@@ -675,7 +690,10 @@ cfg main (return_type: i32) {
 name = "codegen_nontrivial_drop_call"
 spec = ["3.9:21", "3.10:29"]
 description = "Non-trivially droppable types generate destructor calls"
+real_std = true
 source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");

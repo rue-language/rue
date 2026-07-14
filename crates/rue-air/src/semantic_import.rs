@@ -582,38 +582,6 @@ where
         let type_pool = TypeInternPool::new();
         let module_registry = ModuleRegistry::new();
         let mut builtins = BTreeMap::new();
-        for builtin in rue_builtins::BUILTIN_TYPES {
-            let symbol = interner.get_or_intern(builtin.name);
-            let fields = builtin
-                .fields
-                .iter()
-                .map(|field| StructField {
-                    name: field.name.to_owned(),
-                    ty: match field.ty {
-                        rue_builtins::BuiltinFieldType::U64 => Type::U64,
-                        rue_builtins::BuiltinFieldType::U8 => Type::U8,
-                        rue_builtins::BuiltinFieldType::Bool => Type::BOOL,
-                    },
-                })
-                .collect();
-            let (id, _) = type_pool.register_struct(
-                symbol,
-                StructDef {
-                    name: builtin.name.to_owned(),
-                    fields,
-                    is_copy: builtin.is_copy,
-                    is_linear: false,
-                    destructor: builtin.drop_fn.map(str::to_owned),
-                    is_builtin: true,
-                    is_pub: true,
-                    file_id: FileId::DEFAULT,
-                },
-            );
-            builtins.insert(
-                (Arc::from(builtin.name), SemanticImportNominalKind::Struct),
-                LocalNominal::Struct(id),
-            );
-        }
         for builtin in rue_builtins::BUILTIN_ENUMS {
             let symbol = interner.get_or_intern(builtin.name);
             let (id, _) = type_pool.register_enum(
@@ -720,6 +688,38 @@ where
             };
             local.insert(nominal.key, value);
         }
+        // Ordinary sema registers source nominals before lazily creating the
+        // stable core `str` identity. Preserve that order so a fresh epoch's
+        // packed nominal IDs match exported AIR exactly. StrBuf is deliberately
+        // absent: it is an ordinary source nominal supplied by std.
+        let str_symbol = interner.get_or_intern("str");
+        let ptr_id = type_pool.intern_ptr_const_from_type(Type::U8);
+        let (str_id, _) = type_pool.register_struct(
+            str_symbol,
+            StructDef {
+                name: "str".to_owned(),
+                fields: vec![
+                    StructField {
+                        name: "ptr".to_owned(),
+                        ty: Type::new_ptr_const(ptr_id),
+                    },
+                    StructField {
+                        name: "len".to_owned(),
+                        ty: Type::U64,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: true,
+                is_pub: true,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        builtins.insert(
+            (Arc::from("str"), SemanticImportNominalKind::Struct),
+            LocalNominal::Struct(str_id),
+        );
         Ok(Self {
             epoch: Arc::new(()),
             interner,
@@ -1538,12 +1538,18 @@ mod tests {
     #[test]
     fn builtin_nominals_are_closed_validated_and_round_trip_in_fresh_epochs() {
         let epoch = Epoch::new(vec![], vec![], vec![]).unwrap();
-        let strbuf = SemanticImportType::BuiltinNominal {
-            name: Arc::from("StrBuf"),
+        let arch = SemanticImportType::BuiltinNominal {
+            name: Arc::from("Arch"),
+            kind: SemanticImportNominalKind::Enum,
+        };
+        let local = epoch.import_type(&arch).unwrap();
+        assert_eq!(epoch.export_type(local).unwrap(), arch);
+        let str_ty = SemanticImportType::BuiltinNominal {
+            name: Arc::from("str"),
             kind: SemanticImportNominalKind::Struct,
         };
-        let local = epoch.import_type(&strbuf).unwrap();
-        assert_eq!(epoch.export_type(local).unwrap(), strbuf);
+        let local = epoch.import_type(&str_ty).unwrap();
+        assert_eq!(epoch.export_type(local).unwrap(), str_ty);
 
         assert!(matches!(
             epoch.import_type(&SemanticImportType::BuiltinNominal {
@@ -1555,9 +1561,9 @@ mod tests {
         assert!(matches!(
             epoch.import_type(&SemanticImportType::BuiltinNominal {
                 name: Arc::from("StrBuf"),
-                kind: SemanticImportNominalKind::Enum,
+                kind: SemanticImportNominalKind::Struct,
             }),
-            Err(SemanticImportFailure::BuiltinNominalKindMismatch)
+            Err(SemanticImportFailure::UnknownBuiltinNominal)
         ));
         assert!(matches!(
             epoch.import_type(&SemanticImportType::BuiltinNominal {
