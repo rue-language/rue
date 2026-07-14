@@ -1050,6 +1050,7 @@ pub struct ImportDiscoveryRevisionArtifact {
     context: crate::ImportDiscoveryContext,
     snapshot: SourceSnapshot,
     program: Option<Arc<ParsedProgram>>,
+    parse_work: ParsedModulesWork,
     plan: Option<crate::ImportDiscoveryPlan>,
     ledger: crate::ImportObservationLedger,
     accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
@@ -1070,6 +1071,14 @@ impl ImportDiscoveryRevisionArtifact {
     }
     pub fn snapshot(&self) -> &SourceSnapshot {
         &self.snapshot
+    }
+    #[cfg(test)]
+    pub(crate) fn program(&self) -> Option<&Arc<ParsedProgram>> {
+        self.program.as_ref()
+    }
+    /// Exact parse work performed by this bounded discovery lifecycle.
+    pub fn parse_work(&self) -> ParsedModulesWork {
+        self.parse_work
     }
     pub fn plan(&self) -> Option<&crate::ImportDiscoveryPlan> {
         self.plan.as_ref()
@@ -1348,6 +1357,19 @@ impl CompilerSession {
         accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
         carried_ledger: crate::ImportObservationLedger,
     ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
+        let mut parse_work = self
+            .discovery_attempt
+            .as_deref()
+            .filter(|attempt| {
+                continues_discovery_lifecycle(
+                    attempt,
+                    snapshot,
+                    &context,
+                    &accepted_reads,
+                    &carried_ledger,
+                )
+            })
+            .map_or_else(ParsedModulesWork::default, |attempt| attempt.parse_work);
         self.discovery_staging_active = true;
         let source_revision = snapshot.source_revision().clone();
         if let Err(errors) = validate_accepted_read_manifest(snapshot, &accepted_reads) {
@@ -1365,6 +1387,7 @@ impl CompilerSession {
                 context: context.clone(),
                 snapshot: snapshot.clone(),
                 program: None,
+                parse_work,
                 plan: None,
                 ledger: carried_ledger.clone(),
                 accepted_reads: accepted_reads.clone(),
@@ -1374,7 +1397,9 @@ impl CompilerSession {
             }));
             return Err(errors);
         }
-        let program = match self.discovery_parse.update(snapshot).into_result() {
+        let parse_update = self.discovery_parse.update(snapshot);
+        parse_work.accumulate(parse_update.work());
+        let program = match parse_update.into_result() {
             Ok(program) => program,
             Err(errors) => {
                 let diagnostic_snapshot = self.publish_import_diagnostics(
@@ -1391,6 +1416,7 @@ impl CompilerSession {
                     context: context.clone(),
                     snapshot: snapshot.clone(),
                     program: None,
+                    parse_work,
                     plan: None,
                     ledger: carried_ledger.clone(),
                     accepted_reads: accepted_reads.clone(),
@@ -1419,6 +1445,7 @@ impl CompilerSession {
                     context: context.clone(),
                     snapshot: snapshot.clone(),
                     program: Some(program),
+                    parse_work,
                     plan: None,
                     ledger: carried_ledger.clone(),
                     accepted_reads: accepted_reads.clone(),
@@ -1435,6 +1462,7 @@ impl CompilerSession {
             context,
             snapshot: snapshot.clone(),
             program: Some(program),
+            parse_work,
             plan: Some(plan.clone()),
             ledger: carried_ledger,
             accepted_reads,
@@ -1595,7 +1623,12 @@ impl CompilerSession {
             return Err(diagnostics);
         }
 
-        if let Err(errors) = self.update_for_presentation(&open.snapshot).into_result() {
+        let adoption = self.adopt_discovery_program_for_presentation(
+            &open.snapshot,
+            program.clone(),
+            open.parse_work,
+        );
+        if let Err(errors) = adoption.into_result() {
             self.publish_failed_import_attempt(
                 open,
                 plan,
@@ -1871,6 +1904,26 @@ impl CompilerSession {
                 .collect(),
         );
         let update = self.parse.update_for_batch(snapshot);
+        self.finish_update(snapshot, update)
+    }
+
+    fn adopt_discovery_program_for_presentation(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        program: Arc<ParsedProgram>,
+        work: ParsedModulesWork,
+    ) -> CompilerSessionUpdate {
+        #[cfg(test)]
+        {
+            self.supplied_test_import_graph = None;
+        }
+        self.batch_diagnostic_order = Some(
+            snapshot
+                .files()
+                .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
+                .collect(),
+        );
+        let update = self.parse.adopt_exact(snapshot, program, work);
         self.finish_update(snapshot, update)
     }
 
@@ -4438,6 +4491,45 @@ fn no_published_program() -> CompileErrors {
     CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
         "frontend query session has no successful parsed program".to_string(),
     )))
+}
+
+/// Successive fixed-point snapshots belong to one bounded discovery parse run
+/// only when they preserve all prior source, manifest, context, and ledger
+/// provenance. Any failed/closed/superseding attempt starts fresh accounting.
+fn continues_discovery_lifecycle(
+    previous: &ImportDiscoveryRevisionArtifact,
+    snapshot: &SourceSnapshot,
+    context: &crate::ImportDiscoveryContext,
+    accepted_reads: &[crate::AcceptedReadManifestEntry],
+    carried_ledger: &crate::ImportObservationLedger,
+) -> bool {
+    if previous.status != ImportDiscoveryRevisionStatus::Open || previous.context != *context {
+        return false;
+    }
+    let Some(program) = previous.program.as_deref() else {
+        return false;
+    };
+    if program.root() != snapshot.source_revision().root()
+        || !program.modules().iter().all(|module| {
+            let file_id = module.file_id();
+            snapshot.module_id(file_id) == Some(module.module_id())
+                && snapshot.source_id(file_id) == Some(module.source_id())
+                && snapshot.metadata().physical_path(file_id) == Some(module.physical_path())
+        })
+    {
+        return false;
+    }
+    if !previous
+        .accepted_reads
+        .iter()
+        .all(|entry| accepted_reads.iter().any(|candidate| candidate == entry))
+    {
+        return false;
+    }
+    previous
+        .ledger
+        .iter()
+        .all(|observation| carried_ledger.get(observation.request()) == Some(observation))
 }
 
 #[cfg(test)]

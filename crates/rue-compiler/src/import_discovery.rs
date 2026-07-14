@@ -1803,6 +1803,242 @@ mod tests {
     }
 
     #[test]
+    fn closed_import_free_discovery_publishes_the_exact_parse_without_reparsing() {
+        let source = snapshot(
+            &[(1, "/project/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let mut session = crate::CompilerSession::new();
+        session
+            .stage_import_discovery(
+                &source,
+                context(10),
+                accepted_reads(&source),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let staged = session
+            .discovery_attempt()
+            .unwrap()
+            .program()
+            .unwrap()
+            .clone();
+        let closed = session
+            .close_import_discovery(ImportObservationLedger::default())
+            .unwrap();
+
+        assert!(Arc::ptr_eq(closed.program().unwrap(), &staged));
+        assert!(Arc::ptr_eq(session.published().unwrap(), &staged));
+        assert_eq!(closed.parse_work().syntax.lexer_invocations, 1);
+        assert_eq!(closed.parse_work().syntax.parser_invocations, 1);
+        assert_eq!(session.work().last_parse, closed.parse_work());
+
+        let exact = session.update_for_presentation(&source);
+        assert_eq!(exact.work().syntax.lexer_invocations, 0);
+        assert_eq!(exact.work().syntax.parser_invocations, 0);
+        assert!(Arc::ptr_eq(exact.result().unwrap(), &staged));
+    }
+
+    #[test]
+    fn open_and_failed_discovery_attempts_never_seed_the_published_parse() {
+        let source = snapshot(
+            &[(
+                1,
+                "/project/main.rue",
+                "main.rue",
+                "fn main() { @import(\"missing\"); }",
+            )],
+            1,
+        );
+        let mut session = crate::CompilerSession::new();
+        session
+            .stage_import_discovery(
+                &source,
+                context(12),
+                accepted_reads(&source),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        assert!(session.published().is_none());
+        session
+            .close_import_discovery(ImportObservationLedger::default())
+            .unwrap_err();
+        assert!(session.published().is_none());
+
+        let direct = session.update_for_presentation(&source);
+        assert_eq!(direct.work().syntax.parser_invocations, 1);
+        direct.into_result().unwrap();
+    }
+
+    #[test]
+    fn discovery_work_resets_for_context_changes_and_superseding_edits() {
+        let original = snapshot(
+            &[(1, "/project/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let edited = snapshot(
+            &[(1, "/project/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
+            1,
+        );
+        let mut session = crate::CompilerSession::new();
+        session
+            .stage_import_discovery(
+                &original,
+                context(20),
+                accepted_reads(&original),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            session
+                .discovery_attempt()
+                .unwrap()
+                .parse_work()
+                .syntax
+                .parser_invocations,
+            1
+        );
+
+        session
+            .stage_import_discovery(
+                &original,
+                context(21),
+                accepted_reads(&original),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let changed_context = session.discovery_attempt().unwrap().parse_work();
+        assert_eq!(changed_context.syntax.parser_invocations, 0);
+        assert_eq!(changed_context.modules_considered, 1);
+        assert_eq!(changed_context.modules_reused, 1);
+
+        session
+            .stage_import_discovery(
+                &edited,
+                context(21),
+                accepted_reads(&edited),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let superseded = session.discovery_attempt().unwrap().parse_work();
+        assert_eq!(superseded.syntax.parser_invocations, 1);
+        assert_eq!(superseded.modules_considered, 1);
+        assert_eq!(superseded.modules_reparsed, 1);
+    }
+
+    #[test]
+    fn fixed_point_discovery_accumulates_exact_work_and_seeds_incremental_parse() {
+        let main_text = "const h = @import(\"helper\"); fn main() -> i32 { h.answer() }";
+        let helper_text = "pub fn answer() -> i32 { 42 }";
+        let root_only = snapshot(&[(1, "/project/main.rue", "main.rue", main_text)], 1);
+        let complete = snapshot(
+            &[
+                (1, "/project/main.rue", "main.rue", main_text),
+                (2, "/project/helper.rue", "helper.rue", helper_text),
+            ],
+            1,
+        );
+        let discovery_context = context(11);
+        let mut session = crate::CompilerSession::new();
+        let first = session
+            .stage_import_discovery(
+                &root_only,
+                discovery_context.clone(),
+                accepted_reads(&root_only),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let mut ledger = ImportObservationLedger::default();
+        for request in first.pending_requests(&ledger) {
+            let observation = if request.requested_path() == "/project/helper.rue" {
+                ImportObservation::accepted(
+                    request,
+                    AcceptedImportSource::new(
+                        "/project/helper.rue",
+                        "/project/helper.rue",
+                        PhysicalFileIdentity::new(1, 2),
+                        metadata_fingerprint(),
+                        Arc::new(helper_text.into()),
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+            } else {
+                ImportObservation::absent(request)
+            };
+            ledger.record(observation).unwrap();
+        }
+        let final_plan = session
+            .stage_import_discovery(
+                &complete,
+                discovery_context,
+                accepted_reads(&complete),
+                ledger.clone(),
+            )
+            .unwrap();
+        assert!(final_plan.pending_requests(&ledger).is_empty());
+        let staged = session
+            .discovery_attempt()
+            .unwrap()
+            .program()
+            .unwrap()
+            .clone();
+        let closed = session.close_import_discovery(ledger).unwrap();
+        let work = closed.parse_work();
+
+        assert!(Arc::ptr_eq(closed.program().unwrap(), &staged));
+        assert!(Arc::ptr_eq(session.published().unwrap(), &staged));
+        assert_eq!(work.syntax.lexer_invocations, 2);
+        assert_eq!(work.syntax.parser_invocations, 2);
+        assert_eq!(work.syntax.tokens, staged.token_count());
+        assert_eq!(work.modules_considered, 3);
+        assert_eq!(work.modules_reparsed, 2);
+        assert_eq!(work.modules_reused, 1);
+
+        let exact = session.update_for_presentation(&complete);
+        assert_eq!(exact.work().syntax.parser_invocations, 0);
+        assert_eq!(exact.work().modules_reused, 2);
+        assert!(Arc::ptr_eq(exact.result().unwrap(), &staged));
+
+        let broken_in_presentation_order = snapshot(
+            &[
+                (2, "/project/helper.rue", "helper.rue", "fn helper( {"),
+                (1, "/project/main.rue", "main.rue", "fn main( {"),
+            ],
+            1,
+        );
+        let errors = session
+            .update_for_presentation(&broken_in_presentation_order)
+            .into_result()
+            .unwrap_err();
+        assert_eq!(
+            errors
+                .iter()
+                .map(|error| error.span().unwrap().file_id)
+                .collect::<Vec<_>>(),
+            [FileId::new(2), FileId::new(1)]
+        );
+
+        let edited = snapshot(
+            &[
+                (1, "/project/main.rue", "main.rue", main_text),
+                (
+                    2,
+                    "/project/helper.rue",
+                    "helper.rue",
+                    "pub fn answer() -> i32 { 43 }",
+                ),
+            ],
+            1,
+        );
+        let edited_update = session.update_for_presentation(&edited);
+        assert_eq!(edited_update.work().syntax.parser_invocations, 1);
+        assert_eq!(edited_update.work().modules_reparsed, 1);
+        assert_eq!(edited_update.work().modules_reused, 1);
+        edited_update.into_result().unwrap();
+    }
+
+    #[test]
     fn incomplete_plain_ledger_closes_attempt_without_resolution_diagnostics() {
         let source = snapshot(
             &[(
