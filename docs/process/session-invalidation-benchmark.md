@@ -44,22 +44,21 @@ must run no RIR query or RIR instruction scan.
 
 At N=128 the structural gates require the supported reachable-root-body-edit
 workload to reuse and atomically install all 128 durable declaration records,
-skip ordinary declaration resolution, and perform zero cache-population binds.
-Cold compilation remains one bind. This is a measured declaration-resolution
-saving, not whole-pipeline incremental compilation: program merge/RIR and
-current body/CFG work still run. Constants, module values, function aliases,
-generic named methods, and anonymous structural owners currently fail closed to
-ordinary declaration resolution with zero partial installs. Persistent cache
-formats and LSP consumers remain deliberately out of scope.
+skip ordinary declaration resolution, and perform no population export. Cold
+compilation performs one ordinary bind and exports the durable baseline from
+that bind. This is a measured declaration-resolution saving, not whole-pipeline
+incremental compilation: program merge/RIR and current body/CFG work still run.
+Constants, module values, function aliases, generic named methods, and anonymous
+structural owners currently fail closed to ordinary declaration resolution with
+zero partial installs. Persistent cache formats and LSP consumers remain
+deliberately out of scope.
 
 Schema version 3 adds the exact declaration-reuse ledger under
 `semantic_work.declaration_reuse`: plans, durable comparisons and reuse,
 skipped ordinary resolution, installs, fallbacks, semantic/index/shell epochs,
 population exports, and fallback epochs. Cold and successful declaration-reuse
 scenarios are hard-gated to one epoch/index/shell-predeclaration each. Cold
-reports one export; reuse reports none and no fallback epoch. The legacy
-`queries.durable_cache_population_bindings` value remains present and must be
-zero.
+reports one export; reuse reports none and no fallback epoch.
 
 The ordinary test suite runs only a four-module, single-iteration structural
 smoke test through
@@ -113,3 +112,8 @@ artifacts has intentionally left the session. Compiler unit stress tests run a
 32-round syntax-failure, semantic-failure, recovery, and edit sequence and a
 plan workload beyond the eviction cap, pinning bounded bytes, deterministic
 FIFO recomputation, last-good recovery, and clean-session parity.
+
+Schema version 9 removes the obsolete population-binding query field. The
+authoritative `semantic_work.bind_invocations` and
+`semantic_work.declaration_reuse.durable_cache_population_exports` counters
+continue to gate the single-bind export path directly.

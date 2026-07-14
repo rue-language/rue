@@ -48,7 +48,6 @@ struct QueryCounts {
     ordinary_declaration_resolutions_skipped: usize,
     durable_installs: usize,
     declaration_reuse_fallbacks: usize,
-    durable_cache_population_bindings: usize,
 }
 
 impl QueryCounts {
@@ -75,7 +74,6 @@ impl QueryCounts {
             ordinary_declaration_resolutions_skipped: work.ordinary_declaration_resolutions_skipped,
             durable_installs: work.durable_installs,
             declaration_reuse_fallbacks: work.declaration_reuse_fallbacks,
-            durable_cache_population_bindings: work.durable_cache_population_bindings,
         }
     }
 
@@ -112,8 +110,6 @@ impl QueryCounts {
             durable_installs: self.durable_installs - before.durable_installs,
             declaration_reuse_fallbacks: self.declaration_reuse_fallbacks
                 - before.declaration_reuse_fallbacks,
-            durable_cache_population_bindings: self.durable_cache_population_bindings
-                - before.durable_cache_population_bindings,
         }
     }
 
@@ -140,7 +136,6 @@ impl QueryCounts {
             "ordinary_declaration_resolutions_skipped": self.ordinary_declaration_resolutions_skipped,
             "durable_installs": self.durable_installs,
             "declaration_reuse_fallbacks": self.declaration_reuse_fallbacks,
-            "durable_cache_population_bindings": self.durable_cache_population_bindings,
         })
     }
 }
@@ -714,10 +709,6 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
         cold["semantic_work"]["declaration_reuse"]["plan_executions"],
         0
     );
-    assert_eq!(
-        count(cold, &["queries", "durable_cache_population_bindings"]),
-        0
-    );
 
     let noop = get("exact_noop");
     assert_eq!(count(noop, &["parse", "modules_reused"]), modules as u64);
@@ -794,10 +785,6 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     );
     assert_eq!(
         count(root_edit, &["semantic_work", "fallback_epochs_started"]),
-        0
-    );
-    assert_eq!(
-        count(root_edit, &["queries", "durable_cache_population_bindings"]),
         0
     );
 
@@ -1108,7 +1095,7 @@ fn main() {
     println!(
         "{}",
         json!({
-            "schema_version": 8,
+            "schema_version": 9,
             "workload": "compiler_session_invalidation",
             "configuration": {
                 "modules": config.modules,

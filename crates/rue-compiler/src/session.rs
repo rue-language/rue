@@ -87,10 +87,6 @@ pub struct CompilerSessionWork {
     pub ordinary_declaration_resolutions_skipped: usize,
     pub durable_installs: usize,
     pub declaration_reuse_fallbacks: usize,
-    /// Extra ordinary declaration binds currently used to populate the
-    /// successful durable baseline. Kept explicit until export is folded into
-    /// the primary ordinary bind.
-    pub durable_cache_population_bindings: usize,
     /// Current bounded-retention gauges for long-lived service integrations.
     pub retention: FrontendRetentionMetrics,
 }
@@ -3320,8 +3316,13 @@ mod tests {
         let cold = session.semantic(&options).unwrap();
         assert_eq!(cold.work().binding.bind_invocations, 1);
         assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(
+            cold.work()
+                .declaration_reuse
+                .durable_cache_population_exports,
+            1
+        );
         assert_eq!(cold.work().manifest.rir_instructions_visited, 256);
-        assert_eq!(session.work().durable_cache_population_bindings, 0);
         session.update(&second).into_result().unwrap();
         let reused = session.semantic(&options).unwrap();
 

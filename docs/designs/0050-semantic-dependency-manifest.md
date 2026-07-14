@@ -425,17 +425,17 @@ ordinary binder before body analysis consumes it. The exporter uses the
 already captured declaration shells, so it neither materializes the optional
 binding manifest nor traverses RIR. The session publishes the semantic result
 and its durable baseline only after the whole ordinary request succeeds;
-failed requests leave the last-good baseline untouched. The legacy
-`durable_cache_population_bindings` work counter is hard-gated at zero to make
-an accidental second bind visible. Cold and successful reuse requests each
-construct exactly one semantic epoch, one declaration index, and one shell
-predeclaration epoch. Cold requests report one population export; reuse reports
-none. Projection failure is read-only and resolves the same unmutated shells.
-Only an installation failure, which consumes candidate shells to preserve
-atomicity, may report a second semantic/index epoch and one fallback epoch.
-These values, together with the exact plan/comparison/install/reuse counters,
-are serialized under `semantic_work.declaration_reuse` by the session benchmark
-and are treated as a checked schema rather than inferred timing data.
+failed requests leave the last-good baseline untouched. The ordinary binding
+and population-export counters directly enforce that cold requests bind once
+and export once. Cold and successful reuse requests each construct exactly one
+semantic epoch, one declaration index, and one shell predeclaration epoch. Cold
+requests report one population export; reuse reports none. Projection failure
+is read-only and resolves the same unmutated shells. Only an installation
+failure, which consumes candidate shells to preserve atomicity, may report a
+second semantic/index epoch and one fallback epoch. These values, together with
+the exact plan/comparison/install/reuse counters, are serialized under
+`semantic_work.declaration_reuse` by the session benchmark and are treated as a
+checked schema rather than inferred timing data.
 
 The split-binding seam now predeclares free-callable, named-method/associated,
 named-const, and named-destructor identities in logical-path order. It retains
