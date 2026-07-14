@@ -124,8 +124,8 @@ Important design properties:
 - Each architecture has its own MIR and backend.
 - Rue emits machine code directly; there is no LLVM dependency.
 - Built-in types are synthetic structs that follow ordinary semantic paths.
-  `StrBuf` is the canonical growable-string source type; runtime symbols may
-  retain historical `__rue_String_*` ABI spellings.
+  `StrBuf` is the canonical growable-string source type; its algorithms and
+  destructor are source-defined rather than runtime ABI exports.
 - A program is compiled from its root module's transitive `@import` graph.
   Do not add new tests or examples that rely on legacy positional flat-file
   lookup.

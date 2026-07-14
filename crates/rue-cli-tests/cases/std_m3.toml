@@ -350,8 +350,8 @@ fn main() -> i32 {
 """ }]
 
 [[case]]
-name = "std_strbuf_air_omits_migrated_runtime_family"
-description = "AIR calls canonical source StrBuf definitions, not migrated __rue_String helpers."
+name = "std_strbuf_air_uses_source_definitions"
+description = "AIR calls canonical source StrBuf definitions and core str iteration helpers."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["--emit", "air", "main.rue"]
 compile_only = true
@@ -361,25 +361,6 @@ compile_stdout_contains = [
     "byte_at_borrowed",
     "__rue_str_char_scalar",
     "__rue_str_char_next",
-]
-compile_stdout_not_contains = [
-    "__rue_String_new",
-    "__rue_String_with_capacity",
-    "__rue_String_reserve",
-    "__rue_String_push",
-    "__rue_String_push_str",
-    "__rue_String_clone",
-    "__rue_String_substring",
-    "__rue_String_len",
-    "__rue_String_capacity",
-    "__rue_String_is_empty",
-    "__rue_String_clear",
-    "__rue_String_concat",
-    "__rue_String_byte_at",
-    "__rue_String_contains",
-    "__rue_String_starts_with",
-    "__rue_String_char_scalar",
-    "__rue_String_char_next",
 ]
 files = [{ path = "main.rue", source = """
 const std = @import("std");

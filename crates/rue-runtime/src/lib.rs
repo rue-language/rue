@@ -185,9 +185,6 @@ pub mod parse;
 pub mod random;
 pub mod string;
 
-// Re-export StringResult for use by other modules
-pub use string::StringResult;
-
 // Re-export platform functions for tests
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use x86_64_linux::{exit, write, write_all, write_stderr};
@@ -226,28 +223,8 @@ mod export_safety_tests {
     /// permits a safe function pointer to coerce to an unsafe one, which would
     /// let an accidentally-safe export pass a type-only test.
     const POINTER_EXPORTS: &[(&str, bool, usize)] = &[
-        ("__rue_String_byte_at", true, 1),
-        ("__rue_String_capacity", false, 3),
-        ("__rue_String_char_next", true, 1),
-        ("__rue_String_char_next_lossy", true, 1),
-        ("__rue_String_char_scalar", true, 1),
-        ("__rue_String_char_scalar_lossy", true, 1),
-        ("__rue_String_clear", true, 3),
-        ("__rue_String_clone", true, 3),
-        ("__rue_String_concat", true, 1),
-        ("__rue_String_contains", true, 1),
-        ("__rue_String_is_empty", false, 3),
-        ("__rue_String_len", false, 3),
-        ("__rue_String_new", true, 3),
-        ("__rue_String_push", true, 3),
-        ("__rue_String_push_str", true, 3),
-        ("__rue_String_reserve", true, 3),
-        ("__rue_String_starts_with", true, 1),
-        ("__rue_String_substring", true, 1),
-        ("__rue_String_with_capacity", true, 3),
         ("__rue_alloc", false, 1),
         ("__rue_dbg_str", true, 1),
-        ("__rue_drop_String", false, 1),
         ("__rue_free", false, 1),
         ("__rue_panic", true, 1),
         ("__rue_parse_i32", true, 1),
@@ -371,16 +348,10 @@ mod export_safety_tests {
 
     #[test]
     fn pointer_taking_safe_exports_have_no_pointer_precondition() {
-        // These exports never inspect their pointer argument. The String query
-        // functions return another ABI field, while free/drop are deliberate
-        // bump-allocator no-ops. Calling any of them with an arbitrary pointer
-        // therefore cannot violate a Rust memory-safety invariant.
+        // Free is a deliberate bump-allocator no-op, so it never inspects its
+        // pointer argument.
         let arbitrary = core::ptr::dangling_mut::<u8>();
-        assert_eq!(crate::string::__rue_String_len(arbitrary, 7, 11), 7);
-        assert_eq!(crate::string::__rue_String_capacity(arbitrary, 7, 11), 11);
-        assert_eq!(crate::string::__rue_String_is_empty(arbitrary, 7, 11), 0);
         crate::string::__rue_free(arbitrary, u64::MAX, 3);
-        crate::string::__rue_drop_String(arbitrary, u64::MAX, u64::MAX);
     }
 
     #[test]
@@ -404,33 +375,6 @@ mod export_safety_tests {
             crate::parse::__rue_parse_i32(&mut parsed, null, 0, 7, 9);
             assert_eq!(parsed.disc, 9);
             assert_eq!(parsed.value, 0);
-
-            let mut substring = crate::string::StringResult {
-                ptr: core::ptr::dangling_mut(),
-                len: u64::MAX,
-                cap: u64::MAX,
-            };
-            crate::string::__rue_String_substring(&mut substring, null, 0, 0, 0, 0);
-            assert!(substring.ptr.is_null());
-            assert_eq!((substring.len, substring.cap), (0, 0));
-
-            assert_eq!(
-                crate::string::__rue_String_contains(null, 0, 0, null, 0, 0),
-                1
-            );
-            assert_eq!(
-                crate::string::__rue_String_starts_with(null, 0, 0, null, 0, 0),
-                1
-            );
-
-            let mut concatenated = crate::string::StringResult {
-                ptr: core::ptr::dangling_mut(),
-                len: u64::MAX,
-                cap: u64::MAX,
-            };
-            crate::string::__rue_String_concat(&mut concatenated, null, 0, 0, null, 0, 0);
-            assert!(concatenated.ptr.is_null());
-            assert_eq!((concatenated.len, concatenated.cap), (0, 0));
         }
     }
 }

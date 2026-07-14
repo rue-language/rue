@@ -1339,7 +1339,7 @@ impl<'a> Sema<'a> {
         directives_len: u32,
     ) -> CompileResult<()> {
         // Reject user functions whose name collides with a runtime/codegen helper
-        // symbol (e.g. `__rue_String_len`, `__rue_alloc`, `_start`). Without this, such a
+        // symbol (e.g. `__rue_str_eq`, `__rue_alloc`, `_start`). Without this, such a
         // definition either fails to link with a confusing duplicate-symbol error or
         // silently binds calls to the runtime's definition instead of the user's.
         let name_str = self.interner.resolve(&name);

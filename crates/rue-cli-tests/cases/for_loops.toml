@@ -2,7 +2,7 @@
 #
 # These drive the real compiler and check exact
 # stdout / exit codes end to end. The `.chars()` cases in particular exercise
-# the `__rue_String_char_scalar` / `__rue_String_char_next` runtime ABI (a
+# the `__rue_str_char_scalar` / `__rue_str_char_next` runtime ABI (a
 # StrBuf flattened to ptr/len/cap plus a byte offset, returning a scalar / next
 # offset), and the strict-UTF-8 decode trap, which the spec harness cannot fully
 # observe.

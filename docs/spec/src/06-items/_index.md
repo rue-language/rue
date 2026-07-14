@@ -57,7 +57,7 @@ struct StrBuf { data: i32 }
 
 {{ rule(id="6.0:5", cat="legality-rule") }}
 
-User-defined functions **MUST NOT** use names reserved for runtime and code-generation helpers. The reserved function names are exactly: any name beginning with `__rue_`; the program entry points `_start` and `_main`; and the compiler-builtin memory routines `memcpy`, `memmove`, `memset`, `memcmp`, and `bcmp` (the runtime exports these under their fixed platform names, so a user definition would collide at link time). Every other compiler- and runtime-emitted symbol — including built-in type methods and associated functions (`__rue_String_len`, `__rue_String_new`) — lives under the `__rue_` prefix, so the reserved set does not grow as built-in types are added. Defining a function with a reserved name produces a compile-time error.
+User-defined functions **MUST NOT** use names reserved for runtime and code-generation helpers. The reserved function names are exactly: any name beginning with `__rue_`; the program entry points `_start` and `_main`; and the compiler-builtin memory routines `memcpy`, `memmove`, `memset`, `memcmp`, and `bcmp` (the runtime exports these under their fixed platform names, so a user definition would collide at link time). Compiler- and runtime-emitted helpers such as `__rue_alloc` and `__rue_str_eq` live under the `__rue_` prefix, so the reserved set does not grow as helpers are added. Defining a function with a reserved name produces a compile-time error.
 
 {{ rule(id="6.0:6", cat="example") }}
 
@@ -65,7 +65,7 @@ User-defined functions **MUST NOT** use names reserved for runtime and code-gene
 // Error: cannot define function with reserved name
 fn __rue_alloc() -> i32 { 0 }  // compile error: `__rue_` prefix is reserved
 
-// OK: `String__len` is an ordinary identifier, distinct from the built-in
-// `StrBuf.len` method (whose runtime symbol is `__rue_String_len`).
+// OK: `String__len` is an ordinary identifier, distinct from the
+// source-defined `std.strbuf.StrBuf.len` method.
 fn String__len() -> i32 { 0 }  // allowed
 ```

@@ -118,15 +118,15 @@ crate::define_for_all_platforms! {
 /// This is a reasonable size for most interactive input.
 const READ_LINE_INITIAL_CAPACITY: u64 = 128;
 
-/// Result of `@read_line`: a tagged-union `Option(String)` written via sret.
+/// Result of `@read_line`: a tagged-union `Option(StrBuf)` written via sret.
 ///
 /// The compiler lays a payload-carrying enum out as slot 0 = discriminant
 /// followed by the payload slots (RUE-221), so the in-memory layout of
-/// `Option(String)` is `[disc, ptr, len, cap]`. This struct mirrors that
+/// `Option(StrBuf)` is `[disc, ptr, len, cap]`. This struct mirrors that
 /// layout exactly so the runtime can write the whole `Option` in one place and
 /// codegen simply loads the four slots back (RUE-6).
 #[repr(C)]
-pub struct OptionStringResult {
+pub struct OptionStrBufResult {
     /// Discriminant slot: `some_disc` on success, `none_disc` at EOF.
     pub disc: u64,
     pub ptr: *mut u8,
@@ -134,17 +134,17 @@ pub struct OptionStringResult {
     pub cap: u64,
 }
 
-/// Read a line from standard input, returning `Option(String)`.
+/// Read a line from standard input, returning `Option(StrBuf)`.
 ///
 /// Reads bytes from stdin (file descriptor 0) until a newline character (`\n`)
 /// is encountered or EOF is reached. Yields the line (excluding the trailing
-/// newline) as `Some(String)`, or `None` at end-of-input (RUE-6, ADR-0038).
+/// newline) as `Some(StrBuf)`, or `None` at end-of-input (RUE-6, ADR-0038).
 ///
 /// # Returns
 ///
-/// Writes the whole `Option(String)` to `out` via sret:
+/// Writes the whole `Option(StrBuf)` to `out` via sret:
 /// - On success (line read, or partial line at EOF): `disc = some_disc` and the
-///   String fields `ptr`/`len`/`cap` are populated.
+///   StrBuf fields `ptr`/`len`/`cap` are populated.
 /// - At EOF with no data read: `disc = none_disc` and the payload slots are
 ///   zeroed (a `None` never drops its payload, so the zeros are inert).
 ///
@@ -162,7 +162,7 @@ pub struct OptionStringResult {
 /// # ABI (sret convention)
 ///
 /// ```text
-/// extern "C" fn __rue_read_line(out: *mut OptionStringResult, some_disc: u64, none_disc: u64)
+/// extern "C" fn __rue_read_line(out: *mut OptionStrBufResult, some_disc: u64, none_disc: u64)
 /// ```
 ///
 /// Caller allocates space for the return value and passes pointer.
@@ -170,12 +170,12 @@ pub struct OptionStringResult {
 /// # Safety
 ///
 /// `out` must be valid, aligned, writable storage for one
-/// [`OptionStringResult`] and must remain exclusively accessible for the call.
+/// [`OptionStrBufResult`] and must remain exclusively accessible for the call.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn __rue_read_line(
-    out: *mut OptionStringResult,
+    out: *mut OptionStrBufResult,
     some_disc: u64,
     none_disc: u64,
 ) {
@@ -188,9 +188,9 @@ pub unsafe extern "C" fn __rue_read_line(
 /// # Safety
 ///
 /// `out` must be valid, aligned, writable storage for one
-/// [`OptionStringResult`] and must remain exclusively accessible for the call.
+/// [`OptionStrBufResult`] and must remain exclusively accessible for the call.
 pub unsafe extern "C" fn __rue_read_line(
-    out: *mut OptionStringResult,
+    out: *mut OptionStrBufResult,
     some_disc: u64,
     none_disc: u64,
 ) {
@@ -203,9 +203,9 @@ pub unsafe extern "C" fn __rue_read_line(
 /// # Safety
 ///
 /// `out` must be valid, aligned, writable storage for one
-/// [`OptionStringResult`] and must remain exclusively accessible for the call.
+/// [`OptionStrBufResult`] and must remain exclusively accessible for the call.
 pub unsafe extern "C" fn __rue_read_line(
-    out: *mut OptionStringResult,
+    out: *mut OptionStrBufResult,
     some_disc: u64,
     none_disc: u64,
 ) {
@@ -220,7 +220,7 @@ pub unsafe extern "C" fn __rue_read_line(
 /// - EOF is reached with no data (returns `None`)
 /// - A read error occurs (panics)
 #[inline]
-fn read_line_impl(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) {
+fn read_line_impl(out: *mut OptionStrBufResult, some_disc: u64, none_disc: u64) {
     // Allocate initial buffer
     let mut cap = READ_LINE_INITIAL_CAPACITY;
     let mut ptr = heap::alloc(cap, 1);
@@ -270,7 +270,7 @@ fn read_line_impl(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) 
                 // loop can terminate cleanly instead of trapping.
                 heap::free(ptr, cap, 1);
                 // SAFETY: `out` points to caller-allocated space for the
-                // Option(String) result (4 slots). We write `None` and zero
+                // Option(StrBuf) result (4 slots). We write `None` and zero
                 // the payload; a `None` never has its payload dropped, so the
                 // zeroed String slots are inert.
                 unsafe {
@@ -321,7 +321,7 @@ fn read_line_impl(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) 
     }
 
     // Return `Some(string)`.
-    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
+    // SAFETY: `out` is caller-provided, aligned, exclusive result storage.
     unsafe {
         (*out).disc = some_disc;
         (*out).ptr = ptr;
@@ -341,7 +341,7 @@ mod tests {
         const CHILD_ENV: &str = "RUE_READ_LINE_OOM_CHILD";
         if self::std::env::var_os(CHILD_ENV).is_some() {
             crate::heap::fail_allocations_after_for_test(0);
-            let mut out = super::OptionStringResult {
+            let mut out = super::OptionStrBufResult {
                 disc: 0,
                 ptr: core::ptr::null_mut(),
                 len: 0,

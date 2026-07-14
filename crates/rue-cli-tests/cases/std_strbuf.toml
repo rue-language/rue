@@ -225,15 +225,6 @@ fn main() -> i32 {
 args = ["--emit", "mir", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["duplicate", "byte_range", "concat_borrowed", "read_packed_byte", "write_packed_byte"]
-compile_stdout_not_contains = [
-  "__rue_String_with_capacity",
-  "__rue_String_reserve",
-  "__rue_String_push",
-  "__rue_String_push_str",
-  "__rue_String_clone",
-  "__rue_String_substring",
-  "__rue_String_concat",
-]
 
 [[case]]
 name = "raw_pointer_helpers_are_not_associated_surface"
