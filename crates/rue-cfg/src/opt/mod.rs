@@ -25,6 +25,7 @@ mod constprop;
 mod dce;
 
 use crate::Cfg;
+use rue_air::TypeInternPool;
 
 /// Optimization level, following standard compiler conventions.
 ///
@@ -126,10 +127,14 @@ impl std::fmt::Display for OptLevel {
 ///
 /// ```ignore
 /// let mut cfg = CfgBuilder::build(...);
-/// optimize(&mut cfg, OptLevel::O1);
+/// optimize(&mut cfg, OptLevel::O1, &type_pool);
 /// // cfg is now optimized
 /// ```
-pub fn optimize(cfg: &mut Cfg, level: OptLevel) {
+pub fn optimize(cfg: &mut Cfg, level: OptLevel, type_pool: &TypeInternPool) {
+    // Verify construction output before any pass can detach dead values or
+    // erase unreachable blocks and thereby hide a malformed definition/use.
+    cfg.verify_with_type_pool(type_pool);
+
     match level {
         OptLevel::O0 => {
             // No optimization
@@ -154,16 +159,11 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel) {
         }
     }
 
-    // Structural verification (RUE-227). This runs at EVERY opt level (O0
-    // included) so the CFG handed to codegen is always checked — the AIR→CFG
-    // "block has no terminator" bug class becomes a loud, localized panic here
-    // instead of a mysterious SIGABRT deep in cfg_lower. `optimize` is the
-    // single choke point every build site funnels through right before
-    // lowering, so verifying here covers both construction and optimization
-    // output. Malformed-AIR cases that populate `CfgOutput.errors` (e.g. an
-    // un-specialized CallGeneric) abort before this is reached, so they are
-    // never verified. See `crate::verify`.
-    cfg.verify();
+    // Recheck the graph handed to codegen. DCE deliberately leaves detached
+    // dead values in the arena, so attachment completeness was established by
+    // the strict pre-pass check above; all live attachments and uses are still
+    // checked here. See `crate::verify`.
+    cfg.verify_after_optimization_with_type_pool(type_pool);
 }
 
 #[cfg(test)]

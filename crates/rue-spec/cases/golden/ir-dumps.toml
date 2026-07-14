@@ -190,7 +190,6 @@ function set:
     mov v1, 42
     mov [v0], v1
     mov v2, 0
-    mov rax, v2
     ret
 """
 
@@ -229,7 +228,6 @@ function set:
     mov v1, #42
     str v1, [v0]
     mov v2, #0
-    mov x0, v2
     ret
 """
 

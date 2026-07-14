@@ -208,7 +208,7 @@ pub(crate) fn build_functions_and_cfgs(
             function_work.optimization_attempts = 1;
             function_work.optimized_level_attempts = usize::from(opt_level != OptLevel::O0);
             let mut cfg = cfg_output.cfg;
-            rue_cfg::opt::optimize(&mut cfg, opt_level);
+            rue_cfg::opt::optimize(&mut cfg, opt_level, &type_pool);
             function_work.optimization_completions = 1;
             function_work.cfg_warnings_emitted = cfg_output.warnings.len();
             function_work.implicit_destructor_targets_emitted =

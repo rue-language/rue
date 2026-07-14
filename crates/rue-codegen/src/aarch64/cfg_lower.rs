@@ -2610,13 +2610,13 @@ impl<'a> CfgLower<'a> {
                 );
             }
 
-            CfgInstData::StorageLive { slot: _ } => {
+            CfgInstData::StorageLive { .. } => {
                 // StorageLive marks a slot as valid for use.
                 // Currently a no-op in codegen. In the future, this could be used
                 // for stack slot optimization (LLVM lifetime intrinsics).
             }
 
-            CfgInstData::StorageDead { slot: _ } => {
+            CfgInstData::StorageDead { .. } => {
                 // StorageDead marks a slot as no longer in use.
                 // Currently a no-op in codegen. In the future, this could be used
                 // for stack slot optimization (LLVM lifetime intrinsics).
@@ -3734,7 +3734,19 @@ impl<'a> CfgLower<'a> {
             Terminator::Return { value } => {
                 // Handle `return;` without expression (unit-returning functions)
                 let Some(value) = value else {
-                    self.mir.push(Aarch64Inst::Ret);
+                    if self.fn_name == "main" {
+                        // Linux enters Rue's `main` directly. Unit has no CFG
+                        // value, so pass the language-defined success status to
+                        // the non-returning runtime exit shim explicitly.
+                        self.mir.push(Aarch64Inst::MovImm {
+                            dst: Operand::Physical(Reg::X0),
+                            imm: 0,
+                        });
+                        let symbol_id = self.intern_symbol("__rue_exit");
+                        self.mir.push(Aarch64Inst::Bl { symbol_id });
+                    } else {
+                        self.mir.push(Aarch64Inst::Ret);
+                    }
                     return;
                 };
 
@@ -4073,6 +4085,23 @@ mod tests {
     fn test_simple_return() {
         let mir = lower_to_mir("fn main() -> i32 { 42 }");
         assert!(!mir.instructions().is_empty());
+    }
+
+    #[test]
+    fn unit_main_exits_with_zero_status() {
+        let mir = lower_to_mir("fn main() {}");
+        assert!(mir.instructions().windows(2).any(|pair| {
+            matches!(
+                pair,
+                [
+                    Aarch64Inst::MovImm {
+                        dst: Operand::Physical(Reg::X0),
+                        imm: 0,
+                    },
+                    Aarch64Inst::Bl { .. },
+                ]
+            )
+        }));
     }
 
     #[test]

@@ -434,6 +434,7 @@ pub enum CfgInstData {
     /// The slot is now valid to write to.
     StorageLive {
         slot: u32,
+        local_ty: Type,
     },
 
     /// Marks that a local slot becomes dead (storage can be deallocated).
@@ -441,6 +442,7 @@ pub enum CfgInstData {
     /// Drop elaboration inserts Drop before this if the type needs drop.
     StorageDead {
         slot: u32,
+        local_ty: Type,
     },
 }
 
@@ -742,6 +744,26 @@ impl Cfg {
     #[inline]
     pub fn value_count(&self) -> usize {
         self.values.len()
+    }
+
+    #[inline]
+    pub(crate) fn extra_len(&self) -> usize {
+        self.extra.len()
+    }
+
+    #[inline]
+    pub(crate) fn call_args_len(&self) -> usize {
+        self.call_args.len()
+    }
+
+    #[inline]
+    pub(crate) fn switch_cases_len(&self) -> usize {
+        self.switch_cases.len()
+    }
+
+    #[inline]
+    pub(crate) fn projections_len(&self) -> usize {
+        self.projections.len()
     }
 
     /// Add values to the extra array and return (start, len).
@@ -1307,10 +1329,10 @@ impl Cfg {
             CfgInstData::Drop { value } => {
                 write!(f, "drop {}", value)
             }
-            CfgInstData::StorageLive { slot } => {
+            CfgInstData::StorageLive { slot, .. } => {
                 write!(f, "storage_live ${}", slot)
             }
-            CfgInstData::StorageDead { slot } => {
+            CfgInstData::StorageDead { slot, .. } => {
                 write!(f, "storage_dead ${}", slot)
             }
         }
