@@ -116,7 +116,6 @@ pub use canonical_semantic::{CanonicalSemanticOutput, CanonicalSemanticWork};
 pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
     DefinitionRecord, DefinitionShard, DefinitionShardWork, DefinitionSnapshot, ModuleDefinition,
-    ModuleKey,
 };
 pub use durable_body::{
     DURABLE_ORDINARY_BODY_SCHEMA_VERSION, DurableAirInst, DurableAirInstData, DurableAirRef,

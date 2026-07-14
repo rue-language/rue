@@ -17,15 +17,6 @@ use tracing::info_span;
 
 use crate::{ModuleId, SourceSnapshot};
 
-/// A durable module identity derived from a canonical logical source path.
-///
-/// Unlike a [`FileId`], this value remains meaningful across compiler requests
-/// within the same source graph. It is insensitive to checkout relocation when
-/// callers provide relocation-stable logical paths; metadata that deliberately
-/// falls back to physical paths retains those paths' location dependence.
-/// Compatibility name for [`ModuleId`].
-pub type ModuleKey = ModuleId;
-
 /// The concrete syntax kind of a parsed top-level definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DefinitionKind {
@@ -62,14 +53,14 @@ pub enum DefinitionNamespace {
 /// request-local file ID, or diagnostic path. Clones share their strings.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DefinitionNameKey {
-    module: ModuleKey,
+    module: ModuleId,
     namespace: DefinitionNamespace,
     name: Arc<str>,
 }
 
 impl DefinitionNameKey {
     /// Construct a name-binding key from durable, owned components.
-    pub fn new(module: ModuleKey, namespace: DefinitionNamespace, name: impl AsRef<str>) -> Self {
+    pub fn new(module: ModuleId, namespace: DefinitionNamespace, name: impl AsRef<str>) -> Self {
         Self {
             module,
             namespace,
@@ -79,7 +70,7 @@ impl DefinitionNameKey {
 
     /// The durable module containing this definition.
     #[inline]
-    pub fn module(&self) -> &ModuleKey {
+    pub fn module(&self) -> &ModuleId {
         &self.module
     }
 
@@ -194,7 +185,7 @@ impl DefinitionRecord {
 /// slice is empty. Definitions are ordered by source position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleDefinition {
-    key: ModuleKey,
+    key: ModuleId,
     file_id: FileId,
     definitions: Vec<DefinitionRecord>,
 }
@@ -208,7 +199,7 @@ pub struct DefinitionShardWork {
 
 #[derive(Debug, Clone)]
 pub struct DefinitionShard {
-    key: ModuleKey,
+    key: ModuleId,
     file_id: FileId,
     records: Arc<[DefinitionShardRecord]>,
 }
@@ -224,7 +215,7 @@ struct DefinitionShardRecord {
 }
 
 impl DefinitionShard {
-    pub fn key(&self) -> &ModuleKey {
+    pub fn key(&self) -> &ModuleId {
         &self.key
     }
     pub fn len(&self) -> usize {
@@ -254,7 +245,7 @@ impl DefinitionShard {
 impl ModuleDefinition {
     /// The durable logical identity of this module.
     #[inline]
-    pub fn key(&self) -> &ModuleKey {
+    pub fn key(&self) -> &ModuleId {
         &self.key
     }
 
@@ -298,7 +289,7 @@ impl ModuleDefinition {
 #[derive(Debug, Clone)]
 pub struct DefinitionSnapshot {
     source_snapshot: SourceSnapshot,
-    root_module: ModuleKey,
+    root_module: ModuleId,
     modules: Vec<ModuleDefinition>,
     definition_count: usize,
     definitions_by_name: HashMap<DefinitionNameKey, Vec<DefinitionId>>,
@@ -428,15 +419,15 @@ impl DefinitionSnapshot {
         &self.source_snapshot
     }
 
-    /// The explicitly designated root module's durable key.
+    /// The explicitly designated root module identity.
     #[inline]
-    pub fn root_module(&self) -> &ModuleKey {
+    pub fn root_module(&self) -> &ModuleId {
         &self.root_module
     }
 
-    /// Alias for [`Self::root_module`] emphasizing that this is a key.
+    /// The explicitly designated root module identity.
     #[inline]
-    pub fn root_key(&self) -> &ModuleKey {
+    pub fn root_key(&self) -> &ModuleId {
         self.root_module()
     }
 
@@ -450,10 +441,10 @@ impl DefinitionSnapshot {
         &self.shards
     }
 
-    /// Find a module by durable key.
-    pub fn module(&self, key: &ModuleKey) -> Option<&ModuleDefinition> {
+    /// Find a module by its durable identity.
+    pub fn module(&self, id: &ModuleId) -> Option<&ModuleDefinition> {
         self.modules
-            .binary_search_by(|module| module.key.cmp(key))
+            .binary_search_by(|module| module.key.cmp(id))
             .ok()
             .map(|index| &self.modules[index])
     }
@@ -655,8 +646,8 @@ mod tests {
     fn durable_projection(
         snapshot: &DefinitionSnapshot,
     ) -> (
-        ModuleKey,
-        Vec<ModuleKey>,
+        ModuleId,
+        Vec<ModuleId>,
         Vec<(DefinitionNameKey, DefinitionKind)>,
     ) {
         (
@@ -674,10 +665,10 @@ mod tests {
     }
 
     #[test]
-    fn module_keys_are_canonical_and_reject_empty_paths() {
-        let key = ModuleKey::from_logical_path("src/./nested/../main.rue").unwrap();
-        assert_eq!(key.as_str(), "src/main.rue");
-        assert!(ModuleKey::from_logical_path(".").is_err());
+    fn module_ids_are_canonical_and_reject_empty_paths() {
+        let id = ModuleId::from_logical_path("src/./nested/../main.rue").unwrap();
+        assert_eq!(id.as_str(), "src/main.rue");
+        assert!(ModuleId::from_logical_path(".").is_err());
     }
 
     #[test]
@@ -785,7 +776,7 @@ mod tests {
         assert_eq!(definitions.module_count(), 2);
         assert!(
             definitions
-                .module(&ModuleKey::from_logical_path("empty.rue").unwrap())
+                .module(&ModuleId::from_logical_path("empty.rue").unwrap())
                 .unwrap()
                 .is_empty()
         );
