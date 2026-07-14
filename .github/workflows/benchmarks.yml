@@ -7,8 +7,8 @@ name: Benchmarks
 #
 # Results flow: each platform job runs bench.sh and uploads results.json as
 # an artifact; the collect job appends them to per-platform history files on
-# the `perf` branch; the Website workflow (workflow_run trigger) then
-# redeploys the performance dashboard with the new data.
+# the `perf` branch; the daily Website workflow then redeploys the performance
+# dashboard with the latest collected data.
 
 on:
   push:
