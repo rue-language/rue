@@ -12,7 +12,8 @@ use std::{
 
 use rue_air::{
     AirArgMode, AirPlaceBase, SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind,
-    SemanticBodyInstData, SemanticBodyPattern, SemanticBodyProjection, SemanticImportType,
+    SemanticBodyInstData, SemanticBodyPattern, SemanticBodyProjection, SemanticImportConstValue,
+    SemanticImportType,
 };
 
 use crate::{
@@ -20,7 +21,8 @@ use crate::{
     StableDefinitionKey, StableDefinitionKind,
 };
 
-pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 3;
+pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 4;
+pub const DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION: u32 = 2;
 
 pub type DurableAirRef = u32;
 pub type DurablePlaceRef = u32;
@@ -146,6 +148,10 @@ pub enum DurableAirInstData {
         function: StableDefinitionKey,
         args: Arc<[DurableCallArg]>,
     },
+    CallSpecialized {
+        identity: DurableSpecializationIdentity,
+        args: Arc<[DurableCallArg]>,
+    },
     Intrinsic {
         name: Arc<str>,
         args: Arc<[DurableCallArg]>,
@@ -234,10 +240,139 @@ pub struct DurableOrdinaryBody {
     pub inputs: StableBodyDependencyInputRecord,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DurableSpecializationIdentity {
+    pub base: StableDefinitionKey,
+    pub type_arguments: Arc<[DurableType]>,
+    pub value_arguments: Arc<[crate::DurableConstValue]>,
+}
+
+impl DurableSpecializationIdentity {
+    fn import_dto(&self) -> rue_air::SemanticSpecializationIdentity<StableDefinitionKey, Arc<str>> {
+        rue_air::SemanticSpecializationIdentity {
+            base: self.base.clone(),
+            type_arguments: self
+                .type_arguments
+                .iter()
+                .map(DurableType::import_dto)
+                .collect::<Vec<_>>()
+                .into(),
+            value_arguments: self
+                .value_arguments
+                .iter()
+                .map(crate::DurableConstValue::import_dto)
+                .collect::<Vec<_>>()
+                .into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableSpecializedBodyPayload {
+    pub schema_version: u32,
+    pub identity: DurableSpecializationIdentity,
+    /// The completed body uses the same durable AIR algebra as ordinary bodies.
+    pub body: DurableOrdinaryBodyPayload,
+    pub dependencies: Arc<[StableDefinitionKey]>,
+    pub dependency_boundary_complete: bool,
+}
+
+/// A completed specialized body together with the exact stable inputs that
+/// authorize reusing this particular specialization in a later revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableSpecializedBody {
+    pub payload: DurableSpecializedBodyPayload,
+    pub inputs: StableBodyDependencyInputRecord,
+}
+
+impl DurableSpecializedBody {
+    pub fn identity(&self) -> &DurableSpecializationIdentity {
+        &self.payload.identity
+    }
+
+    pub fn inputs(&self) -> &StableBodyDependencyInputRecord {
+        &self.inputs
+    }
+
+    pub fn project_semantic_candidate(
+        &self,
+        body_span: rue_span::Span,
+        work: &mut DurableBodyWork,
+    ) -> Result<
+        rue_air::SemanticSpecializedBodyCandidate<StableDefinitionKey, Arc<str>>,
+        DurableBodyProjectionFailure,
+    > {
+        if self.inputs.owner() != &self.payload.identity.base
+            || self.inputs.fingerprint() != &self.payload.body.expected_inputs
+        {
+            work.projection_attempts += 1;
+            work.projection_failures += 1;
+            return Err(DurableBodyProjectionFailure::InputFingerprintMismatch);
+        }
+        self.payload.project_semantic_candidate(body_span, work)
+    }
+}
+
+impl DurableSpecializedBodyPayload {
+    pub fn project_semantic_candidate(
+        &self,
+        body_span: rue_span::Span,
+        work: &mut DurableBodyWork,
+    ) -> Result<
+        rue_air::SemanticSpecializedBodyCandidate<StableDefinitionKey, Arc<str>>,
+        DurableBodyProjectionFailure,
+    > {
+        if self.schema_version != DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION
+            || self.body.owner != self.identity.base
+        {
+            work.projection_attempts += 1;
+            work.projection_failures += 1;
+            return Err(DurableBodyProjectionFailure::SchemaVersionMismatch);
+        }
+        let value = |value: &crate::DurableConstValue| match value {
+            crate::DurableConstValue::Integer(value) => SemanticImportConstValue::Integer(*value),
+            crate::DurableConstValue::Bool(value) => SemanticImportConstValue::Bool(*value),
+            crate::DurableConstValue::Type(value) => {
+                SemanticImportConstValue::Type(value.import_dto())
+            }
+            crate::DurableConstValue::Function(value) => {
+                SemanticImportConstValue::Function(value.clone())
+            }
+            crate::DurableConstValue::Unit => SemanticImportConstValue::Unit,
+        };
+        Ok(rue_air::SemanticSpecializedBodyCandidate {
+            identity: rue_air::SemanticSpecializationIdentity {
+                base: self.identity.base.clone(),
+                type_arguments: self
+                    .identity
+                    .type_arguments
+                    .iter()
+                    .map(DurableType::import_dto)
+                    .collect::<Vec<_>>()
+                    .into(),
+                value_arguments: self
+                    .identity
+                    .value_arguments
+                    .iter()
+                    .map(value)
+                    .collect::<Vec<_>>()
+                    .into(),
+            },
+            body_span,
+            body: self.body.project_semantic_body(work)?,
+            dependencies: self.dependencies.clone(),
+            dependency_boundary_complete: self.dependency_boundary_complete,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DurableBodyWork {
     pub candidate_comparisons: usize,
     pub candidate_fallbacks: usize,
+    pub specialized_mapping_attempts: usize,
+    pub specialized_mapping_successes: usize,
+    pub specialized_mapping_failures: usize,
     pub export_attempts: usize,
     pub export_successes: usize,
     pub export_rejections: usize,
@@ -312,7 +447,8 @@ fn semantic_kind(kind: StableDefinitionKind) -> Option<SemanticBodyDefinitionKin
         StableDefinitionKind::Destructor => Some(SemanticBodyDefinitionKind::Destructor),
         StableDefinitionKind::Struct => Some(SemanticBodyDefinitionKind::Struct),
         StableDefinitionKind::Enum => Some(SemanticBodyDefinitionKind::Enum),
-        StableDefinitionKind::ValueConst | StableDefinitionKind::ModuleBinding => None,
+        StableDefinitionKind::ValueConst => Some(SemanticBodyDefinitionKind::ValueConst),
+        StableDefinitionKind::ModuleBinding => Some(SemanticBodyDefinitionKind::ModuleBinding),
     }
 }
 
@@ -472,6 +608,185 @@ fn durable_builtin_nominal(
         name: name.clone(),
         kind,
     })
+}
+
+fn durable_const_value(
+    value: &SemanticImportConstValue<SemanticBodyDefinitionIdentity, Arc<str>>,
+    merged: &CanonicalMergedProgram,
+    index: &DefinitionJoinIndex<'_>,
+    work: &mut DurableBodyWork,
+) -> Result<crate::DurableConstValue, DurableBodyConversionFailure> {
+    Ok(match value {
+        SemanticImportConstValue::Integer(value) => crate::DurableConstValue::Integer(*value),
+        SemanticImportConstValue::Bool(value) => crate::DurableConstValue::Bool(*value),
+        SemanticImportConstValue::Type(value) => {
+            crate::DurableConstValue::Type(durable_type(value, merged, index, work)?)
+        }
+        SemanticImportConstValue::Function(value) => {
+            let key = join_definition(value, index, work)?;
+            if !matches!(
+                key.kind(),
+                StableDefinitionKind::Function
+                    | StableDefinitionKind::Method
+                    | StableDefinitionKind::AssociatedFunction
+            ) {
+                return Err(DurableBodyConversionFailure::WrongDefinitionKind);
+            }
+            crate::DurableConstValue::Function(key.clone())
+        }
+        SemanticImportConstValue::Unit => crate::DurableConstValue::Unit,
+    })
+}
+
+fn durable_specialization_identity(
+    identity: &rue_air::SemanticSpecializationIdentity<SemanticBodyDefinitionIdentity, Arc<str>>,
+    merged: &CanonicalMergedProgram,
+    index: &DefinitionJoinIndex<'_>,
+    work: &mut DurableBodyWork,
+) -> Result<DurableSpecializationIdentity, DurableBodyConversionFailure> {
+    let base = join_definition(&identity.base, index, work)?.clone();
+    if base.kind() != StableDefinitionKind::Function {
+        return Err(DurableBodyConversionFailure::WrongDefinitionKind);
+    }
+    Ok(DurableSpecializationIdentity {
+        base,
+        type_arguments: identity
+            .type_arguments
+            .iter()
+            .map(|value| durable_type(value, merged, index, work))
+            .collect::<Result<Vec<_>, _>>()?
+            .into(),
+        value_arguments: identity
+            .value_arguments
+            .iter()
+            .map(|value| durable_const_value(value, merged, index, work))
+            .collect::<Result<Vec<_>, _>>()?
+            .into(),
+    })
+}
+
+fn durable_identity_dependency_keys(
+    identity: &DurableSpecializationIdentity,
+) -> BTreeSet<StableDefinitionKey> {
+    fn visit_type(value: &DurableType, keys: &mut BTreeSet<StableDefinitionKey>) {
+        match value {
+            DurableType::Nominal(key) => {
+                keys.insert(key.clone());
+            }
+            DurableType::Array { element, .. }
+            | DurableType::PtrConst(element)
+            | DurableType::PtrMut(element) => visit_type(element, keys),
+            _ => {}
+        }
+    }
+    let mut keys = BTreeSet::new();
+    for value in identity.type_arguments.iter() {
+        visit_type(value, &mut keys);
+    }
+    for value in identity.value_arguments.iter() {
+        match value {
+            crate::DurableConstValue::Type(value) => visit_type(value, &mut keys),
+            crate::DurableConstValue::Function(key) => {
+                keys.insert(key.clone());
+            }
+            _ => {}
+        }
+    }
+    keys
+}
+
+/// Atomically joins completed specialization identities and bodies to stable
+/// compiler-owned values. A failed identity, argument, or body conversion
+/// discards the whole export set, never a partially stable artifact.
+pub fn convert_semantic_specialized_body_exports(
+    exports: &[rue_air::SemanticSpecializedBodyExport],
+    merged: &CanonicalMergedProgram,
+    definitions: &BoundDefinitionSet,
+    work: &mut DurableBodyWork,
+) -> Result<Arc<[DurableSpecializedBodyPayload]>, DurableBodyConversionFailure> {
+    if definitions.source_revision() != merged.ast().source_revision() {
+        work.atomic_discards += usize::from(!exports.is_empty());
+        return Err(DurableBodyConversionFailure::ForeignRevision);
+    }
+    let index = DefinitionJoinIndex::new(merged, definitions);
+    let mut converted = Vec::with_capacity(exports.len());
+    for export in exports {
+        let identity = durable_specialization_identity(&export.identity, merged, &index, work)?;
+        let base = identity.base.clone();
+        let token = definitions
+            .body_owner_endpoints()
+            .into_iter()
+            .find(|endpoint| definitions.key_for_body_token(endpoint.token).ok() == Some(&base))
+            .map(|endpoint| endpoint.token)
+            .ok_or(DurableBodyConversionFailure::MissingStableDefinition)?;
+        let ordinary = rue_air::SemanticBodyExport {
+            owner: token,
+            body: export.body.clone(),
+        };
+        let bodies = convert_semantic_body_exports(&[ordinary], merged, definitions, work)?;
+        let [body] = bodies.as_ref() else {
+            work.atomic_discards += 1;
+            return Err(DurableBodyConversionFailure::MissingStableDefinition);
+        };
+        let mut dependencies = export
+            .dependencies
+            .iter()
+            .map(|dependency| join_definition(dependency, &index, work).cloned())
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        dependencies.extend(durable_identity_dependency_keys(&identity));
+        converted.push(DurableSpecializedBodyPayload {
+            schema_version: DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION,
+            identity,
+            body: body.clone(),
+            dependencies: dependencies.into_iter().collect::<Vec<_>>().into(),
+            dependency_boundary_complete: export.dependency_boundary_complete,
+        });
+    }
+    Ok(converted.into())
+}
+
+/// Attach destructor inputs observed by CFG lowering to the exact completed
+/// specialization that owned the drop. No dependency is inferred from types
+/// merely mentioned or borrowed by the body.
+pub fn attach_specialized_implicit_drop_dependencies(
+    payloads: Arc<[DurableSpecializedBodyPayload]>,
+    events: &[rue_air::ImplicitNamedDestructorDependencyEvent],
+    merged: &CanonicalMergedProgram,
+    definitions: &BoundDefinitionSet,
+    work: &mut DurableBodyWork,
+) -> Result<Arc<[DurableSpecializedBodyPayload]>, DurableBodyConversionFailure> {
+    let index = DefinitionJoinIndex::new(merged, definitions);
+    let mut payloads = payloads.to_vec();
+    for event in events {
+        let rue_air::ImplicitDropDependencySourceEvent::Specialization { identity } = &event.source
+        else {
+            continue;
+        };
+        let identity = durable_specialization_identity(identity, merged, &index, work)?;
+        let Some(payload) = payloads
+            .iter_mut()
+            .find(|payload| payload.identity == identity)
+        else {
+            // Warning-producing and otherwise rejected exports have no durable
+            // payload to enrich.
+            continue;
+        };
+        let destructor = rue_air::SemanticBodyDefinitionIdentity {
+            file_id: event.target_file,
+            name: Arc::from(event.target_owner_name.as_str()),
+            kind: rue_air::SemanticBodyDefinitionKind::Destructor,
+            owner: Some(Arc::from(event.target_owner_name.as_str())),
+        };
+        let destructor = join_definition(&destructor, &index, work)?.clone();
+        let mut dependencies = payload
+            .dependencies
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        dependencies.insert(destructor);
+        payload.dependencies = dependencies.into_iter().collect::<Vec<_>>().into();
+    }
+    Ok(payloads.into())
 }
 
 /// Atomically join AIR's neutral ordinary-body exports to the authoritative
@@ -634,6 +949,17 @@ pub fn convert_semantic_body_exports(
                     function: key(function, work)?,
                     args: args.iter().map(arg).collect::<Vec<_>>().into(),
                 },
+                SemanticBodyInstData::CallSpecialized { identity, args } => {
+                    DurableAirInstData::CallSpecialized {
+                        identity: durable_specialization_identity(
+                            identity,
+                            merged,
+                            &join_index,
+                            work,
+                        )?,
+                        args: args.iter().map(arg).collect::<Vec<_>>().into(),
+                    }
+                }
                 SemanticBodyInstData::CallGeneric => {
                     return Err(DurableBodyConversionFailure::UnsupportedGenericCall);
                 }
@@ -899,6 +1225,21 @@ impl DurableOrdinaryBodyPayload {
                 DurableAirInstData::Call { function, .. } => {
                     keys.insert(function.clone());
                 }
+                DurableAirInstData::CallSpecialized { identity, .. } => {
+                    keys.insert(identity.base.clone());
+                    for ty in identity.type_arguments.iter() {
+                        visit_type(ty, &mut keys);
+                    }
+                    for value in identity.value_arguments.iter() {
+                        match value {
+                            crate::DurableConstValue::Type(ty) => visit_type(ty, &mut keys),
+                            crate::DurableConstValue::Function(key) => {
+                                keys.insert(key.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 DurableAirInstData::StructInit { struct_key, .. } => {
                     keys.insert(struct_key.clone());
                 }
@@ -1062,9 +1403,9 @@ impl DurableOrdinaryBodyPayload {
                 D::Alloc { init, .. } => check(*init),
                 D::Store { value, .. } | D::ParamStore { value, .. } => check(*value),
                 D::Ret(value) => value.map_or(Ok(()), &check),
-                D::Call { args, .. } | D::Intrinsic { args, .. } => {
-                    args.iter().try_for_each(|arg| check(arg.value))
-                }
+                D::Call { args, .. }
+                | D::CallSpecialized { args, .. }
+                | D::Intrinsic { args, .. } => args.iter().try_for_each(|arg| check(arg.value)),
                 D::Block { statements, value } => {
                     check_all(statements).and_then(|()| check(*value))
                 }
@@ -1209,6 +1550,10 @@ impl DurableOrdinaryBodyPayload {
                 DurableAirInstData::Ret(v) => S::Ret(*v),
                 DurableAirInstData::Call { function, args } => S::Call {
                     function: function.clone(),
+                    args: args.iter().map(arg).collect::<Vec<_>>().into(),
+                },
+                DurableAirInstData::CallSpecialized { identity, args } => S::CallSpecialized {
+                    identity: identity.import_dto(),
                     args: args.iter().map(arg).collect::<Vec<_>>().into(),
                 },
                 DurableAirInstData::Intrinsic { name, args } => S::Intrinsic {
@@ -1395,6 +1740,43 @@ mod tests {
     }
 
     #[test]
+    fn specialization_identity_preserves_all_durable_argument_kinds() {
+        let function = StableDefinitionKey::for_test(
+            ModuleId::from_logical_path("helpers.rue").unwrap(),
+            StableDefinitionNamespace::Value,
+            StableDefinitionKind::Function,
+            "helper",
+            None,
+        );
+        let identity = DurableSpecializationIdentity {
+            base: owner(),
+            type_arguments: Arc::from([DurableType::I32]),
+            value_arguments: Arc::from([
+                crate::DurableConstValue::Bool(true),
+                crate::DurableConstValue::Type(DurableType::I64),
+                crate::DurableConstValue::Function(function.clone()),
+                crate::DurableConstValue::Unit,
+            ]),
+        };
+
+        let projected = identity.import_dto();
+        assert_eq!(projected.base, owner());
+        assert_eq!(
+            projected.type_arguments.as_ref(),
+            &[SemanticImportType::I32]
+        );
+        assert_eq!(
+            projected.value_arguments.as_ref(),
+            &[
+                SemanticImportConstValue::Bool(true),
+                SemanticImportConstValue::Type(SemanticImportType::I64),
+                SemanticImportConstValue::Function(function),
+                SemanticImportConstValue::Unit,
+            ]
+        );
+    }
+
+    #[test]
     fn projection_rejects_forward_instruction_references() {
         let candidate = payload(vec![instruction(DurableAirInstData::Ret(Some(0)))]);
         let mut work = DurableBodyWork::default();
@@ -1459,6 +1841,10 @@ mod tests {
                 name: Arc::from("Arch"),
                 kind: Enum,
             })
+        );
+        assert_eq!(
+            durable_builtin_nominal(&Arc::from("str"), Enum),
+            Err(DurableBodyConversionFailure::WrongDefinitionKind)
         );
     }
 

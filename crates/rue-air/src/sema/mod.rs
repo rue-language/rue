@@ -25,7 +25,7 @@
 //! - [`Sema::analyze_all`] - Perform full semantic analysis
 //! - [`Sema::analyze_all_bodies`] - Analyze function bodies after declarations
 
-mod analysis;
+pub(crate) mod analysis;
 mod analyze_ops;
 mod anon_structs;
 mod binding_manifest;
@@ -218,10 +218,18 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) body_analysis_work: BodyAnalysisWork,
     pub(crate) analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
     pub(crate) ordinary_body_exports: Vec<crate::SemanticBodyExport>,
+    pub(crate) specialized_body_exports: Vec<crate::SemanticSpecializedBodyExport>,
     pub(crate) reusable_ordinary_bodies: HashMap<
         BodyOwnerToken,
         crate::SemanticBodyCandidate<
             crate::SemanticBodyDefinitionIdentity,
+            crate::SemanticBodyModuleIdentity,
+        >,
+    >,
+    pub(crate) reusable_specialized_bodies: Vec<
+        crate::SemanticSpecializedBodyCandidate<
+            crate::SemanticBodyDefinitionIdentity,
+            std::sync::Arc<str>,
             crate::SemanticBodyModuleIdentity,
         >,
     >,
@@ -360,7 +368,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_analysis_work,
             analyzed_body_owners,
             ordinary_body_exports,
+            specialized_body_exports,
             reusable_ordinary_bodies,
+            reusable_specialized_bodies,
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
@@ -411,7 +421,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_analysis_work,
             analyzed_body_owners,
             ordinary_body_exports,
+            specialized_body_exports,
             reusable_ordinary_bodies,
+            reusable_specialized_bodies,
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
@@ -728,7 +740,9 @@ impl<'a> Sema<'a> {
             body_analysis_work: BodyAnalysisWork::default(),
             analyzed_body_owners: Vec::new(),
             ordinary_body_exports: Vec::new(),
+            specialized_body_exports: Vec::new(),
             reusable_ordinary_bodies: HashMap::new(),
+            reusable_specialized_bodies: Vec::new(),
             body_dependency_observer: None,
             body_owner_tokens: HashMap::new(),
             body_named_dependencies: Vec::new(),

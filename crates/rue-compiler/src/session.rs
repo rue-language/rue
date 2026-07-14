@@ -1165,6 +1165,7 @@ struct DurableDeclarationCache {
 struct DurableOrdinaryBodyCache {
     manifest: Arc<SemanticDependencyInputManifest>,
     bodies: Arc<[crate::DurableOrdinaryBody]>,
+    specialized_bodies: Arc<[crate::DurableSpecializedBody]>,
 }
 
 #[derive(Debug)]
@@ -2233,6 +2234,7 @@ impl CompilerSession {
             };
         let mut durable_body_work = crate::DurableBodyWork::default();
         let mut durable_body_candidates = Vec::new();
+        let mut durable_specialized_body_candidates = Vec::new();
         if let (Some(previous), Ok(fingerprints), Ok(prepared_definitions)) = (
             self.last_successful_body_cache.as_ref(),
             current_fingerprints.as_ref(),
@@ -2288,6 +2290,47 @@ impl CompilerSession {
                     Err(_) => durable_body_work.candidate_fallbacks += 1,
                 }
             }
+            for candidate in previous.specialized_bodies.iter() {
+                durable_body_work.candidate_comparisons += 1;
+                let base = &candidate.identity().base;
+                let inputs = candidate.inputs();
+                let exact = inputs.reusable_boundary_supported()
+                    && inputs.target() == options.target
+                    && inputs.preview_features()
+                        == &StablePreviewFeatures::new(&options.preview_features)
+                    && current
+                        .get(base)
+                        .is_some_and(|value| *value == inputs.fingerprint())
+                    && inputs.direct_dependency_inputs().iter().all(|dependency| {
+                        current
+                            .get(&dependency.key)
+                            .is_some_and(|value| *value == dependency)
+                    });
+                let Some(record) = prepared_definitions
+                    .definitions()
+                    .definition_by_key(base)
+                    .filter(|_| exact)
+                else {
+                    durable_body_work.candidate_fallbacks += 1;
+                    continue;
+                };
+                // Specialized exports are anchored to FunctionInfo::span,
+                // which is the full declaration span (ordinary exports use
+                // the AST body span).
+                let body_span = record.declaration_span();
+                match candidate.project_semantic_candidate(body_span, &mut durable_body_work) {
+                    Ok(candidate) => durable_specialized_body_candidates.push(
+                        crate::canonical_semantic::PreparedDurableSpecializedBodyCandidate {
+                            identity: candidate.identity,
+                            body_span: candidate.body_span,
+                            body: candidate.body,
+                            dependencies: candidate.dependencies,
+                            dependency_boundary_complete: candidate.dependency_boundary_complete,
+                        },
+                    ),
+                    Err(_) => durable_body_work.candidate_fallbacks += 1,
+                }
+            }
         }
         let mut reuse_plan = crate::canonical_semantic::CanonicalDeclarationReuseWork::default();
         let reusable = self.durable_declaration_cache.as_ref().and_then(|cache| {
@@ -2326,6 +2369,7 @@ impl CompilerSession {
                     &definitions,
                     &durable,
                     durable_body_candidates,
+                    durable_specialized_body_candidates,
                     durable_body_work,
                 )
             } else {
@@ -2336,6 +2380,7 @@ impl CompilerSession {
                     prepared,
                     reuse_plan,
                     durable_body_candidates,
+                    durable_specialized_body_candidates,
                     durable_body_work,
                 )
                 .map(|analysis| {
@@ -2402,6 +2447,12 @@ impl CompilerSession {
                 &options.preview_features,
             )
             .and_then(|bodies| {
+                let specialized_bodies = build_supported_specialized_body_cache(
+                    output,
+                    merged.definitions().source_snapshot(),
+                    options.target,
+                    &options.preview_features,
+                )?;
                 body_invalidation_manifest(
                     input.semantic.clone(),
                     imports.clone(),
@@ -2412,6 +2463,7 @@ impl CompilerSession {
                 .map(|manifest| DurableOrdinaryBodyCache {
                     manifest: Arc::new(manifest),
                     bodies,
+                    specialized_bodies,
                 })
             })
             .ok();
@@ -2836,6 +2888,12 @@ impl CompilerSession {
                 }
                 let mut implicit_destructor_edges = Vec::new();
                 for event in semantic.implicit_named_destructor_dependencies() {
+                    if matches!(
+                        event.source,
+                        rue_air::ImplicitDropDependencySourceEvent::Specialization { .. }
+                    ) {
+                        continue;
+                    }
                     implicit_destructor_edges.push(StableImplicitNamedDestructorDependency {
                         source: stable_implicit_drop_source_endpoint(
                             semantic,
@@ -3870,6 +3928,12 @@ fn build_supported_ordinary_body_cache(
             });
         }
         for event in semantic.implicit_named_destructor_dependencies() {
+            if matches!(
+                event.source,
+                rue_air::ImplicitDropDependencySourceEvent::Specialization { .. }
+            ) {
+                continue;
+            }
             let source =
                 stable_implicit_drop_source_endpoint(semantic, definitions, &event.source)?;
             if source == payload.owner {
@@ -3918,6 +3982,154 @@ fn build_supported_ordinary_body_cache(
         &mut work,
     )
     .map_err(|_| invalid_dependency_manifest("durable body finalization failed"))
+}
+
+/// Finalize each completed specialization against its own exact stable input
+/// boundary. Generic declarations are intentionally blocked from ordinary-body
+/// reuse, but a concrete specialization has no unresolved substitution
+/// identity: its ordered durable arguments are part of the cache key.
+fn build_supported_specialized_body_cache(
+    semantic: &CanonicalSemanticOutput,
+    snapshot: &SourceSnapshot,
+    target: crate::Target,
+    preview_features: &crate::PreviewFeatures,
+) -> Result<Arc<[crate::DurableSpecializedBody]>, CompileErrors> {
+    if !semantic.specialized_free_function_dependencies_complete()
+        || !semantic.declaration_type_dependencies_complete()
+        || !semantic.declaration_type_call_head_dependencies_complete()
+        || !semantic.supported_type_call_heads_complete()
+        || !semantic.named_value_const_dependencies_complete()
+        || !semantic.implicit_named_destructor_dependencies_complete()
+    {
+        return Ok(Arc::from([]));
+    }
+    let definitions = semantic.body_owner_issuer();
+    let fingerprints = definitions
+        .definitions()
+        .iter()
+        .map(|record| {
+            stable_definition_input_fingerprint(snapshot, record)
+                .map(|fingerprint| (record.stable_key().clone(), fingerprint))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let mut named_const_edges = BTreeMap::<StableDefinitionKey, Vec<StableDefinitionKey>>::new();
+    for event in semantic.named_const_dependencies() {
+        let source = stable_top_level_endpoint(
+            definitions,
+            event.source_file,
+            &event.source_name,
+            StableDefinitionNamespace::Value,
+            StableDefinitionKind::ValueConst,
+        )?;
+        let target = match &event.target {
+            rue_air::NamedConstDependencyTargetEvent::ValueConst { file, name } => {
+                stable_top_level_endpoint(
+                    definitions,
+                    *file,
+                    name,
+                    StableDefinitionNamespace::Value,
+                    StableDefinitionKind::ValueConst,
+                )?
+            }
+            rue_air::NamedConstDependencyTargetEvent::FreeFunction { file, name } => {
+                stable_free_function_endpoint(definitions, *file, name)?
+            }
+            rue_air::NamedConstDependencyTargetEvent::NamedType { file, name, kind } => {
+                let kind = match kind {
+                    rue_air::DeclarationTypeDependencyTargetKind::Struct => {
+                        StableDefinitionKind::Struct
+                    }
+                    rue_air::DeclarationTypeDependencyTargetKind::Enum => {
+                        StableDefinitionKind::Enum
+                    }
+                    rue_air::DeclarationTypeDependencyTargetKind::ValueConst => {
+                        StableDefinitionKind::ValueConst
+                    }
+                };
+                stable_top_level_endpoint(
+                    definitions,
+                    *file,
+                    name,
+                    if kind == StableDefinitionKind::ValueConst {
+                        StableDefinitionNamespace::Value
+                    } else {
+                        StableDefinitionNamespace::Type
+                    },
+                    kind,
+                )?
+            }
+            rue_air::NamedConstDependencyTargetEvent::ModuleBinding { file, name } => {
+                stable_top_level_endpoint(
+                    definitions,
+                    *file,
+                    name,
+                    StableDefinitionNamespace::Value,
+                    StableDefinitionKind::ModuleBinding,
+                )?
+            }
+        };
+        named_const_edges.entry(source).or_default().push(target);
+    }
+    let mut result = Vec::with_capacity(semantic.durable_specialized_body_payloads().len());
+    for payload in semantic.durable_specialized_body_payloads() {
+        if payload.schema_version != crate::DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION
+            || payload.body.owner != payload.identity.base
+            || payload.body.schema_version != crate::DURABLE_ORDINARY_BODY_SCHEMA_VERSION
+        {
+            return Err(invalid_dependency_manifest(
+                "durable specialized body has an incompatible schema or owner",
+            ));
+        }
+        if !payload.dependency_boundary_complete {
+            continue;
+        }
+        let fingerprint = fingerprints
+            .get(&payload.identity.base)
+            .cloned()
+            .filter(|value| value == &payload.body.expected_inputs)
+            .ok_or_else(|| {
+                invalid_dependency_manifest("durable specialized body base is absent or stale")
+            })?;
+        let mut dependency_keys = payload
+            .dependencies
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut pending = dependency_keys.iter().cloned().collect::<Vec<_>>();
+        while let Some(key) = pending.pop() {
+            if let Some(targets) = named_const_edges.get(&key) {
+                for target in targets {
+                    if dependency_keys.insert(target.clone()) {
+                        pending.push(target.clone());
+                    }
+                }
+            }
+        }
+        dependency_keys.remove(&payload.identity.base);
+        let direct_dependency_inputs = dependency_keys
+            .into_iter()
+            .map(|key| {
+                fingerprints.get(&key).cloned().ok_or_else(|| {
+                    invalid_dependency_manifest(
+                        "durable specialized body dependency is absent from fingerprints",
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        result.push(crate::DurableSpecializedBody {
+            payload: payload.clone(),
+            inputs: StableBodyDependencyInputRecord {
+                owner: payload.identity.base.clone(),
+                fingerprint,
+                target,
+                preview_features: StablePreviewFeatures::new(preview_features),
+                direct_dependency_inputs: direct_dependency_inputs.into(),
+                builtin_type_call_heads: Arc::from([]),
+                blockers: Arc::from([]),
+            },
+        });
+    }
+    Ok(result.into())
 }
 
 fn stable_module_imports(imports: &CanonicalImportGraph) -> Arc<[StableModuleImportDependency]> {
@@ -4039,6 +4251,12 @@ fn body_invalidation_manifest(
     let mut implicit_named_destructor_dependencies = semantic
         .implicit_named_destructor_dependencies()
         .iter()
+        .filter(|event| {
+            !matches!(
+                event.source,
+                rue_air::ImplicitDropDependencySourceEvent::Specialization { .. }
+            )
+        })
         .map(|event| {
             Ok(StableImplicitNamedDestructorDependency {
                 source: stable_implicit_drop_source_endpoint(semantic, definitions, &event.source)?,
@@ -4215,6 +4433,11 @@ fn stable_implicit_drop_source_endpoint(
         rue_air::ImplicitDropDependencySourceEvent::Anonymous => Err(invalid_dependency_manifest(
             "anonymous drop-dependency source has no stable endpoint",
         )),
+        rue_air::ImplicitDropDependencySourceEvent::Specialization { .. } => {
+            Err(invalid_dependency_manifest(
+                "specialized drop-dependency source requires specialization identity",
+            ))
+        }
         rue_air::ImplicitDropDependencySourceEvent::FreeFunction { token, file, name } => {
             let provenance = stable_free_function_endpoint(definitions, *file, name)?;
             stable_token_endpoint(semantic, *token, &provenance)
@@ -5601,19 +5824,83 @@ mod tests {
     }
 
     #[test]
+    fn reused_specializations_consume_the_persistent_round_budget() {
+        let source = |requested: i32| {
+            let program = format!(
+                "fn chain(comptime n: i32) -> i32 {{\n\
+                     if n == 0 {{ 0 }} else {{ chain(n - 1) }}\n\
+                 }}\n\
+                 fn main() -> i32 {{ chain({requested}) }}"
+            );
+            snapshot(&[(1, "/p/main.rue", "main.rue", program.as_str())], 1)
+        };
+        let baseline = source(63);
+        let overflowing = source(64);
+        let mut session = CompilerSession::new();
+        session.update(&baseline).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(cold.durable_specialized_body_payloads().len(), 64);
+        assert_eq!(cold.work().body_analysis.specialization_rounds, 64);
+
+        session.update(&overflowing).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap_err();
+        let failure = session.work().semantic_records.last().unwrap();
+        assert_eq!(
+            failure.failure.unwrap().phase,
+            CanonicalSemanticFailurePhase::BodyAnalysis
+        );
+        let work = failure.work.body_analysis;
+        assert_eq!(work.specialization_rounds, 65);
+        assert_eq!(work.specialized_bodies_attempted, 1);
+        assert_eq!(work.specialized_bodies_succeeded, 1);
+        assert_eq!(work.specialized_bodies_reused, 63);
+        assert_eq!(work.specialization_driver_failures, 1);
+
+        session.update(&baseline).into_result().unwrap();
+        let recovered = session
+            .semantic(&CompileOptions {
+                opt_level: OptLevel::O2,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(recovered.work().body_analysis.specialization_rounds, 64);
+        assert_eq!(recovered.work().body_analysis.specialized_bodies_reused, 64);
+        assert_eq!(
+            recovered.work().body_analysis.specialized_bodies_attempted,
+            0
+        );
+
+        let third_warm = session
+            .semantic(&CompileOptions {
+                opt_level: OptLevel::O3,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(third_warm.work().body_analysis.specialization_rounds, 64);
+        assert_eq!(
+            third_warm.work().body_analysis.specialized_bodies_reused,
+            64
+        );
+        assert_eq!(
+            third_warm.work().body_analysis.specialized_bodies_attempted,
+            0
+        );
+    }
+
+    #[test]
     fn declaration_failure_retains_completed_declaration_work() {
         let valid = snapshot(
             &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
             1,
         );
-        let changed = snapshot(
+        let changed_source = snapshot(
             &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
             1,
         );
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
         session.semantic(&CompileOptions::default()).unwrap();
-        session.update(&changed).into_result().unwrap();
+        session.update(&changed_source).into_result().unwrap();
         crate::canonical_semantic::with_test_declaration_failure_injection(|| {
             session.semantic(&CompileOptions::default()).unwrap_err();
         });
@@ -8197,6 +8484,572 @@ mod tests {
             format!("{:?}", reused.analyzed_body_owners()),
             format!("{:?}", fresh.analyzed_body_owners())
         );
+    }
+
+    #[test]
+    fn durable_specialized_body_reuses_in_existing_fixed_point_and_matches_fresh_output() {
+        let source = snapshot(
+            &[(
+                42,
+                "/p/main.rue",
+                "main.rue",
+                "fn id(comptime T: type, value: T) -> T { value }\nfn main() -> i32 { id(i32, 42) }",
+            )],
+            42,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(cold.durable_specialized_body_payloads().len(), 1);
+        assert_eq!(
+            session
+                .last_successful_body_cache
+                .as_ref()
+                .map(|cache| cache.specialized_bodies.len()),
+            Some(1)
+        );
+        assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 1);
+        assert_eq!(cold.work().body_analysis.specialized_bodies_reused, 0);
+
+        let optimized = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let reused = session.semantic(&optimized).unwrap();
+        let work = reused.work().body_analysis;
+        assert_eq!(work.specialized_body_import_attempts, 1);
+        assert_eq!(work.specialized_body_import_successes, 1);
+        assert_eq!(work.specialized_body_import_failures, 0);
+        assert_eq!(work.specialized_bodies_reused, 1);
+        assert_eq!(work.specialized_body_analyses_skipped, 1);
+        assert_eq!(work.specialized_bodies_attempted, 0);
+        assert_eq!(work.specialization_rounds, 1);
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&source).into_result().unwrap();
+        let fresh = fresh_session.semantic(&optimized).unwrap();
+        assert_eq!(
+            format!("{:?}", reused.functions()),
+            format!("{:?}", fresh.functions())
+        );
+        assert_eq!(reused.strings(), fresh.strings());
+        assert_eq!(
+            format!("{:?}", reused.warnings()),
+            format!("{:?}", fresh.warnings())
+        );
+
+        let reused_executable =
+            crate::queries::compile_with_session(&mut session, &source, &optimized).unwrap();
+        let fresh_executable =
+            crate::queries::compile_with_session(&mut fresh_session, &source, &optimized).unwrap();
+        assert_eq!(reused_executable.elf, fresh_executable.elf);
+        assert_eq!(
+            format!("{:?}", reused_executable.warnings),
+            format!("{:?}", fresh_executable.warnings)
+        );
+    }
+
+    #[test]
+    fn specialized_reuse_survives_relocation_file_ids_and_input_order() {
+        let original = snapshot(
+            &[
+                (
+                    71,
+                    "/old/main.rue",
+                    "main.rue",
+                    "const lib = @import(\"lib.rue\"); fn main() -> i32 { lib.id(i32, 42) }",
+                ),
+                (
+                    72,
+                    "/old/lib.rue",
+                    "lib.rue",
+                    "pub fn id(comptime T: type, value: T) -> T { value }",
+                ),
+            ],
+            71,
+        );
+        let relocated = snapshot(
+            &[
+                (
+                    4,
+                    "/new/lib.rue",
+                    "lib.rue",
+                    "pub fn id(comptime T: type, value: T) -> T { value }",
+                ),
+                (
+                    9,
+                    "/new/main.rue",
+                    "main.rue",
+                    "const lib = @import(\"lib.rue\"); fn main() -> i32 { lib.id(i32, 42) }",
+                ),
+            ],
+            9,
+        );
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &original);
+        session.semantic(&CompileOptions::default()).unwrap();
+        publish_with_test_imports(&mut session, &relocated);
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let reused = session.semantic(&options).unwrap();
+        assert_eq!(reused.work().durable_bodies.candidate_comparisons, 1);
+        assert_eq!(reused.work().durable_bodies.candidate_fallbacks, 0);
+        assert_eq!(reused.work().body_analysis.specialized_bodies_reused, 1);
+        assert_eq!(reused.work().body_analysis.specialized_bodies_attempted, 0);
+
+        let mut fresh_session = CompilerSession::new();
+        publish_with_test_imports(&mut fresh_session, &relocated);
+        let fresh = fresh_session.semantic(&options).unwrap();
+        assert_body_artifact_parity(&reused, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
+    }
+
+    #[test]
+    fn specialized_target_and_preview_boundaries_fail_closed_exactly() {
+        let source = snapshot(
+            &[(
+                42,
+                "/p/main.rue",
+                "main.rue",
+                "fn id(comptime T: type, value: T) -> T { value } fn main() -> i32 { id(i32, 42) }",
+            )],
+            42,
+        );
+        let run = |options: CompileOptions| {
+            let mut session = CompilerSession::new();
+            session.update(&source).into_result().unwrap();
+            session.semantic(&CompileOptions::default()).unwrap();
+            session.semantic(&options).unwrap()
+        };
+        let other_target = *Target::all()
+            .iter()
+            .find(|target| **target != CompileOptions::default().target)
+            .unwrap();
+        let target = run(CompileOptions {
+            target: other_target,
+            ..CompileOptions::default()
+        });
+        assert_eq!(target.work().durable_bodies.candidate_comparisons, 1);
+        assert_eq!(target.work().durable_bodies.candidate_fallbacks, 1);
+        assert_eq!(
+            target.work().body_analysis.specialized_body_import_attempts,
+            0
+        );
+        assert_eq!(target.work().body_analysis.specialized_bodies_attempted, 1);
+
+        let preview = run(CompileOptions {
+            preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
+            ..CompileOptions::default()
+        });
+        assert_eq!(preview.work().durable_bodies.candidate_comparisons, 1);
+        assert_eq!(preview.work().durable_bodies.candidate_fallbacks, 1);
+        assert_eq!(
+            preview
+                .work()
+                .body_analysis
+                .specialized_body_import_attempts,
+            0
+        );
+        assert_eq!(preview.work().body_analysis.specialized_bodies_attempted, 1);
+    }
+
+    #[test]
+    fn warning_specializations_recompute_once_and_are_never_published() {
+        let source = snapshot(
+            &[(
+                42,
+                "/p/main.rue",
+                "main.rue",
+                "fn noisy(comptime n: i32) -> i32 { let unused = 0; n } fn main() -> i32 { noisy(1) + noisy(1) }",
+            )],
+            42,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(cold.durable_specialized_body_payloads().len(), 0);
+        assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 1);
+        assert!(cold.work().body_analysis.specialization_requests_duplicate >= 1);
+        assert_eq!(cold.warnings().len(), 1);
+
+        let warm = session
+            .semantic(&CompileOptions {
+                opt_level: OptLevel::O1,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(warm.work().durable_bodies.candidate_comparisons, 0);
+        assert_eq!(warm.work().body_analysis.specialized_bodies_reused, 0);
+        assert_eq!(warm.work().body_analysis.specialized_bodies_attempted, 1);
+        assert!(warm.work().body_analysis.specialization_requests_duplicate >= 1);
+        assert_eq!(warm.warnings().len(), 1);
+        assert_eq!(
+            format!("{:?}", warm.warnings()),
+            format!("{:?}", cold.warnings())
+        );
+    }
+
+    #[test]
+    fn method_referencing_specialization_is_explicitly_fail_closed() {
+        let source = snapshot(
+            &[(
+                42,
+                "/p/main.rue",
+                "main.rue",
+                "struct Value { value: i32, fn get(borrow self) -> i32 { self.value } } fn use(comptime n: i32, value: Value) -> i32 { value.get() + n } fn main() -> i32 { use(1, Value { value: 41 }) }",
+            )],
+            42,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(cold.durable_specialized_body_payloads().len(), 1);
+        assert!(
+            !cold.durable_specialized_body_payloads()[0].dependency_boundary_complete,
+            "method provenance is unsupported and must be marked incomplete"
+        );
+        assert!(
+            session
+                .last_successful_body_cache
+                .as_ref()
+                .unwrap()
+                .specialized_bodies
+                .is_empty()
+        );
+        let warm = session
+            .semantic(&CompileOptions {
+                opt_level: OptLevel::O1,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(warm.work().durable_bodies.candidate_comparisons, 0);
+        assert_eq!(warm.work().body_analysis.specialized_bodies_reused, 0);
+        assert_eq!(warm.work().body_analysis.specialized_bodies_attempted, 1);
+    }
+
+    #[test]
+    fn unsupported_callable_alias_is_rejected_before_specialization() {
+        let source = snapshot(
+            &[(
+                42,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 1 } const F = helper; fn Witness(comptime T: type, comptime value: T) -> type { struct { marker: i32 } } fn bad(value: Witness(type, F)) -> i32 { value.marker } fn main() -> i32 { 0 }",
+            )],
+            42,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap_err();
+        let failure = session.work().semantic_records.last().unwrap();
+        assert!(failure.failure.is_some());
+        assert_eq!(failure.work.durable_bodies.import_attempts, 0);
+        assert_eq!(
+            failure.work.body_analysis.specialized_body_import_attempts,
+            0
+        );
+        assert_eq!(failure.work.body_analysis.specialized_bodies_attempted, 0);
+        assert!(session.last_successful_body_cache.is_none());
+    }
+
+    #[test]
+    fn nested_specialized_bodies_reuse_and_close_over_changed_callees() {
+        let source_text = "fn inner(comptime T: type, value: T) -> T { value }\n\
+             fn outer(comptime T: type, value: T) -> T { inner(T, value) }\n\
+             fn main() -> i32 { outer(i32, 41) + outer(i32, 1) }";
+        let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(cold.durable_specialized_body_payloads().len(), 2);
+        assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 2);
+        assert!(cold.work().body_analysis.specialization_requests_duplicate >= 1);
+
+        let optimized = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let warm = session.semantic(&optimized).unwrap();
+        let work = warm.work().body_analysis;
+        assert_eq!(work.specialized_body_import_attempts, 2);
+        assert_eq!(work.specialized_body_import_successes, 2);
+        assert_eq!(work.specialized_bodies_reused, 2);
+        assert_eq!(work.specialized_body_analyses_skipped, 2);
+        assert_eq!(work.specialized_bodies_attempted, 0);
+        assert_eq!(work.specialization_rounds, 2);
+
+        let unrelated_text = format!("{source_text}\nfn unrelated() -> i32 {{ 7 }}");
+        let unrelated = snapshot(
+            &[(42, "/p/main.rue", "main.rue", unrelated_text.as_str())],
+            42,
+        );
+        session.update(&unrelated).into_result().unwrap();
+        let unrelated = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(unrelated.work().body_analysis.specialized_bodies_reused, 2);
+        assert_eq!(
+            unrelated.work().body_analysis.specialized_bodies_attempted,
+            0
+        );
+
+        let changed_text = "fn inner(comptime T: type, value: T) -> T { let copy = value; copy }\n\
+             fn outer(comptime T: type, value: T) -> T { inner(T, value) }\n\
+             fn main() -> i32 { outer(i32, 41) + outer(i32, 1) }\n\
+             fn unrelated() -> i32 { 7 }";
+        let changed = snapshot(&[(42, "/p/main.rue", "main.rue", changed_text)], 42);
+        session.update(&changed).into_result().unwrap();
+        let changed = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(changed.work().body_analysis.specialized_bodies_reused, 0);
+        assert_eq!(changed.work().body_analysis.specialized_bodies_attempted, 2);
+    }
+
+    #[test]
+    fn missing_nested_specialized_callee_discards_only_that_candidate() {
+        let source_text = "fn inner(comptime T: type, value: T) -> T { value }\n\
+             fn outer(comptime T: type, value: T) -> T { inner(T, value) }\n\
+             fn main() -> i32 { outer(i32, 42) }";
+        let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+
+        let cache = session.last_successful_body_cache.as_mut().unwrap();
+        let outer = Arc::make_mut(&mut cache.specialized_bodies)
+            .iter_mut()
+            .find(|candidate| candidate.identity().base.name() == "outer")
+            .unwrap();
+        let call = Arc::make_mut(&mut outer.payload.body.instructions)
+            .iter_mut()
+            .find_map(|instruction| match &mut instruction.data {
+                crate::DurableAirInstData::CallSpecialized { identity, .. } => Some(identity),
+                _ => None,
+            })
+            .unwrap();
+        call.base = StableDefinitionKey::for_test(
+            call.base.module().clone(),
+            call.base.namespace(),
+            call.base.kind(),
+            "missing_inner",
+            None,
+        );
+
+        let optimized = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let recovered = session.semantic(&optimized).unwrap();
+        assert_eq!(recovered.work().durable_bodies.candidate_fallbacks, 1);
+        assert_eq!(
+            recovered.work().durable_bodies.specialized_mapping_attempts,
+            2
+        );
+        assert_eq!(
+            recovered
+                .work()
+                .durable_bodies
+                .specialized_mapping_successes,
+            1
+        );
+        assert_eq!(
+            recovered.work().durable_bodies.specialized_mapping_failures,
+            1
+        );
+        assert_eq!(
+            recovered
+                .work()
+                .body_analysis
+                .specialized_body_import_attempts,
+            1
+        );
+        assert_eq!(
+            recovered
+                .work()
+                .body_analysis
+                .specialized_body_import_successes,
+            1
+        );
+        assert_eq!(
+            recovered
+                .work()
+                .body_analysis
+                .specialized_body_import_failures,
+            0
+        );
+        assert_eq!(recovered.work().body_analysis.specialized_bodies_reused, 1);
+        assert_eq!(
+            recovered.work().body_analysis.specialized_bodies_attempted,
+            1
+        );
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&source).into_result().unwrap();
+        let fresh = fresh.semantic(&optimized).unwrap();
+        assert_eq!(
+            format!("{:?}", recovered.functions()),
+            format!("{:?}", fresh.functions())
+        );
+        assert_eq!(recovered.strings(), fresh.strings());
+    }
+
+    #[test]
+    fn malformed_nested_specialized_import_falls_back_atomically() {
+        let source_text = "fn inner(comptime T: type, value: T) -> T { value }\n\
+             fn outer(comptime T: type, value: T) -> T { inner(T, value) }\n\
+             fn main() -> i32 { outer(i32, 42) }";
+        let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+
+        let cache = session.last_successful_body_cache.as_mut().unwrap();
+        let outer = Arc::make_mut(&mut cache.specialized_bodies)
+            .iter_mut()
+            .find(|candidate| candidate.identity().base.name() == "outer")
+            .unwrap();
+        let call = Arc::make_mut(&mut outer.payload.body.instructions)
+            .iter_mut()
+            .find_map(|instruction| match &mut instruction.data {
+                crate::DurableAirInstData::CallSpecialized { identity, .. } => Some(identity),
+                _ => None,
+            })
+            .unwrap();
+        // Projection and stable-key mapping accept this durable shape, but an
+        // imported completed specialization has no declaration-scoped generic
+        // context in which this type can be resolved.
+        call.type_arguments = Arc::from([crate::DurableType::GenericParameter(0)]);
+
+        let optimized = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let recovered = session.semantic(&optimized).unwrap();
+        let work = recovered.work().body_analysis;
+        assert_eq!(recovered.work().durable_bodies.candidate_fallbacks, 0);
+        assert_eq!(work.specialized_body_import_attempts, 2);
+        assert_eq!(work.specialized_body_import_successes, 1);
+        assert_eq!(work.specialized_body_import_failures, 1);
+        assert_eq!(work.specialized_bodies_reused, 1);
+        assert_eq!(work.specialized_bodies_attempted, 1);
+        assert_eq!(work.specialized_bodies_succeeded, 1);
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&source).into_result().unwrap();
+        let fresh = fresh_session.semantic(&optimized).unwrap();
+        assert_body_artifact_parity(&recovered, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
+    }
+
+    #[test]
+    fn recursive_specialized_candidates_reenter_the_fixed_point_once_each() {
+        let source = snapshot(
+            &[(
+                42,
+                "/p/main.rue",
+                "main.rue",
+                r#"fn fib(comptime n: i32) -> i32 {
+                       if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+                   }
+                   fn main() -> i32 { fib(5) + fib(5) }"#,
+            )],
+            42,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(cold.durable_specialized_body_payloads().len(), 6);
+
+        let optimized = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let warm = session.semantic(&optimized).unwrap();
+        let work = warm.work().body_analysis;
+        assert_eq!(work.specialized_body_import_attempts, 6);
+        assert_eq!(work.specialized_body_import_successes, 6);
+        assert_eq!(work.specialized_bodies_reused, 6);
+        assert_eq!(work.specialized_bodies_attempted, 0);
+        assert_eq!(work.specialization_rounds, 4);
+        assert!(work.specialization_requests_duplicate >= 1);
+        assert_eq!(warm.specialized_free_function_origins().len(), 6);
+    }
+
+    #[test]
+    fn evaluated_away_named_const_provenance_invalidates_only_affected_instance() {
+        let first_text = "const answer: i32 = 41;\n\
+             fn choose(comptime use_answer: bool) -> i32 {\n\
+                 if use_answer { answer } else { 1 }\n\
+             }\n\
+             fn main() -> i32 { choose(true) + choose(false) }";
+        let first = snapshot(&[(42, "/p/main.rue", "main.rue", first_text)], 42);
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(cold.durable_specialized_body_payloads().len(), 2);
+        let bool_identities = cold
+            .durable_specialized_body_payloads()
+            .iter()
+            .map(|payload| payload.identity.value_arguments.as_ref())
+            .collect::<Vec<_>>();
+        assert!(bool_identities.contains(&[crate::DurableConstValue::Bool(true)].as_slice()));
+        assert!(bool_identities.contains(&[crate::DurableConstValue::Bool(false)].as_slice()));
+
+        let changed_text = first_text.replace("41", "42");
+        let changed_source = snapshot(
+            &[(42, "/p/main.rue", "main.rue", changed_text.as_str())],
+            42,
+        );
+        session.update(&changed_source).into_result().unwrap();
+        let changed = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(changed.work().body_analysis.specialized_bodies_reused, 1);
+        assert_eq!(changed.work().body_analysis.specialized_bodies_attempted, 1);
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&changed_source).into_result().unwrap();
+        let fresh = fresh.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(
+            format!("{:?}", changed.functions()),
+            format!("{:?}", fresh.functions())
+        );
+    }
+
+    #[test]
+    fn specialized_drop_provenance_invalidates_only_the_owning_instance() {
+        let first_text = "fn cleanup() {}\n\
+             struct Resource { value: i32 }\n\
+             drop fn Resource(self) { cleanup(); }\n\
+             fn borrowed(comptime n: i32, borrow resource: Resource) -> i32 {\n\
+                 resource.value + n\n\
+             }\n\
+             fn owned(comptime n: i32, resource: Resource) -> i32 {\n\
+                 resource.value + n\n\
+             }\n\
+             fn main() -> i32 {\n\
+                 let left = Resource { value: 20 };\n\
+                 let right = Resource { value: 20 };\n\
+                 borrowed(1, borrow left) + owned(1, right)\n\
+             }";
+        let first = snapshot(&[(43, "/p/main.rue", "main.rue", first_text)], 43);
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(cold.durable_specialized_body_payloads().len(), 2);
+
+        let changed_text = first_text.replace("cleanup();", "cleanup(); let marker = 0;");
+        let changed_source = snapshot(
+            &[(43, "/p/main.rue", "main.rue", changed_text.as_str())],
+            43,
+        );
+        session.update(&changed_source).into_result().unwrap();
+        let changed = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(changed.work().body_analysis.specialized_bodies_reused, 1);
+        assert_eq!(changed.work().body_analysis.specialized_bodies_attempted, 1);
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&changed_source).into_result().unwrap();
+        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        assert_body_artifact_parity(&changed, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
     }
 
     #[test]

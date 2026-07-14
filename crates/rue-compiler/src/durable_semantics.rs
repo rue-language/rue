@@ -51,7 +51,7 @@ impl DurableType {
 }
 
 impl DurableConstValue {
-    fn import_dto(&self) -> SemanticImportConstValue<StableDefinitionKey, Arc<str>> {
+    pub(crate) fn import_dto(&self) -> SemanticImportConstValue<StableDefinitionKey, Arc<str>> {
         match self {
             Self::Integer(value) => SemanticImportConstValue::Integer(*value),
             Self::Bool(value) => SemanticImportConstValue::Bool(*value),

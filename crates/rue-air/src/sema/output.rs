@@ -4,9 +4,9 @@
 //! - [`AnalyzedFunction`] - A single analyzed function with typed IR
 //! - [`SemaOutput`] - Complete output from analyzing a program
 
-use crate::SemanticBodyExport;
 use crate::inst::Air;
 use crate::intern_pool::TypeInternPool;
+use crate::{SemanticBodyExport, SemanticSpecializedBodyExport};
 use rue_error::CompileWarning;
 /// Opaque identity issued by the compiler for one supported ordinary body.
 ///
@@ -247,6 +247,12 @@ pub struct BodyNamedDependencyEvent {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ImplicitDropDependencySourceEvent {
     Anonymous,
+    Specialization {
+        identity: crate::SemanticSpecializationIdentity<
+            crate::SemanticBodyDefinitionIdentity,
+            std::sync::Arc<str>,
+        >,
+    },
     FreeFunction {
         token: BodyOwnerToken,
         file: u32,
@@ -364,6 +370,8 @@ pub struct SemaOutput {
     pub body_analysis_work: BodyAnalysisWork,
     /// Pre-specialization durable candidates for supported ordinary bodies.
     pub ordinary_body_exports: Vec<SemanticBodyExport>,
+    /// Completed post-fixed-point generic instances eligible for durable reuse.
+    pub specialized_body_exports: Vec<SemanticSpecializedBodyExport>,
     /// Stable-capable provenance for every successfully analyzed source body.
     pub analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
     pub body_named_dependencies: Vec<BodyNamedDependencyEvent>,
@@ -416,6 +424,20 @@ pub struct BodyAnalysisWork {
     pub ordinary_body_export_instructions_emitted: usize,
     pub ordinary_body_export_places_emitted: usize,
     pub ordinary_body_export_strings_emitted: usize,
+    pub specialized_body_exports_attempted: usize,
+    pub specialized_body_exports_succeeded: usize,
+    pub specialized_body_exports_rejected: usize,
+    pub specialized_body_export_instructions_emitted: usize,
+    pub specialized_body_export_places_emitted: usize,
+    pub specialized_body_export_strings_emitted: usize,
+    pub specialized_body_import_attempts: usize,
+    pub specialized_body_import_successes: usize,
+    pub specialized_body_import_failures: usize,
+    pub specialized_body_import_instructions_installed: usize,
+    pub specialized_body_import_places_installed: usize,
+    pub specialized_body_import_strings_installed: usize,
+    pub specialized_bodies_reused: usize,
+    pub specialized_body_analyses_skipped: usize,
     pub string_ids_remapped: usize,
     pub specialization_air_instructions_scanned: usize,
     pub generic_calls_observed: usize,

@@ -54,9 +54,9 @@ pub(crate) fn analyze_all_function_bodies_with_work(
     result.map_err(|errors| super::BodyAnalysisFailure::new(errors, work))
 }
 
-fn import_staged_ordinary_body(
+pub(crate) fn import_staged_body(
     sema: &mut BodySema<'_>,
-    candidate: &crate::SemanticBodyCandidate<
+    body: &crate::SemanticBody<
         crate::SemanticBodyDefinitionIdentity,
         crate::SemanticBodyModuleIdentity,
     >,
@@ -95,6 +95,11 @@ fn import_staged_ordinary_body(
                         *sema
                             .builtin_structs
                             .get(&symbol)
+                            .or_else(|| {
+                                (name.as_ref() == "str")
+                                    .then(|| sema.generated_structs.get(&symbol))
+                                    .flatten()
+                            })
                             .ok_or(F::UnknownBuiltinNominal)?,
                     ),
                     NK::Enum => Type::new_enum(
@@ -148,16 +153,59 @@ fn import_staged_ordinary_body(
         })
     }
 
+    fn resolve_body_function(
+        sema: &BodySema<'_>,
+        identity: &crate::SemanticBodyDefinitionIdentity,
+    ) -> Result<Spur, BF> {
+        let name = sema
+            .interner
+            .get(identity.name.as_ref())
+            .ok_or(BF::Semantic(F::MissingFunction))?;
+        if identity.kind == DK::FreeFunction {
+            return sema
+                .functions_by_file_name
+                .get(&(FileId::new(identity.file_id), name))
+                .copied()
+                .ok_or(BF::Semantic(F::MissingFunction));
+        }
+        let owner = identity
+            .owner
+            .as_deref()
+            .and_then(|owner| sema.interner.get(owner))
+            .ok_or(BF::Semantic(F::MissingFunction))?;
+        let struct_id = sema
+            .structs_by_file_name
+            .get(&(FileId::new(identity.file_id), owner))
+            .copied()
+            .ok_or(BF::Semantic(F::MissingFunction))?;
+        let info = sema
+            .method_info((struct_id, name))
+            .ok_or(BF::Semantic(F::MissingFunction))?;
+        let expected = match identity.kind {
+            DK::Method => info.has_self && identity.name.as_ref() != "__drop",
+            DK::AssociatedFunction => !info.has_self,
+            DK::Destructor => info.has_self && identity.name.as_ref() == "__drop",
+            _ => false,
+        };
+        if !expected {
+            return Err(BF::Semantic(F::MissingFunction));
+        }
+        let symbol = sema.method_symbol(struct_id, identity.name.as_ref(), info.has_self);
+        sema.interner
+            .get(&symbol)
+            .ok_or(BF::Semantic(F::MissingFunction))
+    }
+
     // Intrinsic and declaration-derived callable symbols are required to
     // pre-exist. This keeps importer mutation inside the scratch type pool
     // until the entire body validates.
-    if candidate.body.instructions.iter().any(|inst| matches!(&inst.data,
+    if body.instructions.iter().any(|inst| matches!(&inst.data,
         crate::SemanticBodyInstData::Intrinsic { name, .. } if sema.interner.get(name.as_ref()).is_none())) {
         return Err(BF::Semantic(F::MissingFunction));
     }
     let scratch = sema.type_pool.clone();
     let imported = crate::SemanticImportEpoch::import_body_with(
-        &candidate.body,
+        body,
         body_span,
         |value| import_type(sema, &scratch, value),
         |identity| {
@@ -186,44 +234,36 @@ fn import_staged_ordinary_body(
                 .copied()
                 .ok_or(BF::Semantic(F::MissingNominal))
         },
+        |identity| resolve_body_function(sema, identity),
         |identity| {
-            let name = sema
-                .interner
-                .get(identity.name.as_ref())
-                .ok_or(BF::Semantic(F::MissingFunction))?;
-            if identity.kind == DK::FreeFunction {
-                return sema
-                    .functions_by_file_name
-                    .get(&(FileId::new(identity.file_id), name))
-                    .copied()
-                    .ok_or(BF::Semantic(F::MissingFunction));
-            }
-            let owner = identity
-                .owner
-                .as_deref()
-                .and_then(|owner| sema.interner.get(owner))
-                .ok_or(BF::Semantic(F::MissingFunction))?;
-            let struct_id = sema
-                .structs_by_file_name
-                .get(&(FileId::new(identity.file_id), owner))
-                .copied()
-                .ok_or(BF::Semantic(F::MissingFunction))?;
-            let info = sema
-                .method_info((struct_id, name))
-                .ok_or(BF::Semantic(F::MissingFunction))?;
-            let expected = match identity.kind {
-                DK::Method => info.has_self && identity.name.as_ref() != "__drop",
-                DK::AssociatedFunction => !info.has_self,
-                DK::Destructor => info.has_self && identity.name.as_ref() == "__drop",
-                _ => false,
-            };
-            if !expected {
-                return Err(BF::Semantic(F::MissingFunction));
-            }
-            let symbol = sema.method_symbol(struct_id, identity.name.as_ref(), info.has_self);
-            sema.interner
-                .get(&symbol)
-                .ok_or(BF::Semantic(F::MissingFunction))
+            let base = resolve_body_function(sema, &identity.base)?;
+            let type_arguments = identity
+                .type_arguments
+                .iter()
+                .map(|value| import_type(sema, &scratch, value))
+                .collect::<Result<Vec<_>, _>>()?;
+            let value_arguments = identity
+                .value_arguments
+                .iter()
+                .map(|value| {
+                    Ok(match value {
+                        crate::SemanticImportConstValue::Integer(value) => {
+                            crate::sema::ConstValue::Integer(*value)
+                        }
+                        crate::SemanticImportConstValue::Bool(value) => {
+                            crate::sema::ConstValue::Bool(*value)
+                        }
+                        crate::SemanticImportConstValue::Type(value) => {
+                            crate::sema::ConstValue::Type(import_type(sema, &scratch, value)?)
+                        }
+                        crate::SemanticImportConstValue::Function(value) => {
+                            crate::sema::ConstValue::Function(resolve_body_function(sema, value)?)
+                        }
+                        crate::SemanticImportConstValue::Unit => crate::sema::ConstValue::Unit,
+                    })
+                })
+                .collect::<Result<Vec<_>, BF>>()?;
+            Ok((base, type_arguments, value_arguments))
         },
         |name| {
             sema.interner
@@ -235,7 +275,7 @@ fn import_staged_ordinary_body(
     Ok(imported)
 }
 
-fn imported_body_references(
+pub(crate) fn imported_body_references(
     sema: &BodySema<'_>,
     air: &Air,
 ) -> (HashSet<Spur>, HashSet<(crate::StructId, Spur)>) {
@@ -425,6 +465,7 @@ fn finalize_function_body_analysis(
         type_pool: sema.type_pool.clone(),
         body_analysis_work: sema.body_analysis_work,
         ordinary_body_exports: std::mem::take(&mut sema.ordinary_body_exports),
+        specialized_body_exports: std::mem::take(&mut sema.specialized_body_exports),
         analyzed_body_owners: {
             sema.analyzed_body_owners.sort();
             sema.analyzed_body_owners.dedup();
@@ -1053,8 +1094,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
             );
             if let Some(candidate) = sema.reusable_ordinary_bodies.remove(&ordinary_owner) {
                 sema.body_analysis_work.ordinary_body_import_attempts += 1;
-                let imported =
-                    import_staged_ordinary_body(sema, &candidate, sema.rir.get(body).span);
+                let imported = import_staged_body(sema, &candidate.body, sema.rir.get(body).span);
                 if let Ok(imported) = imported {
                     sema.body_analysis_work.ordinary_body_import_successes += 1;
                     sema.body_analysis_work
@@ -1482,7 +1522,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 && let Some(candidate) = sema.reusable_ordinary_bodies.remove(&ordinary_owner)
             {
                 sema.body_analysis_work.ordinary_body_import_attempts += 1;
-                match import_staged_ordinary_body(sema, &candidate, sema.rir.get(*body).span) {
+                match import_staged_body(sema, &candidate.body, sema.rir.get(*body).span) {
                     Ok(imported) => {
                         sema.body_analysis_work.ordinary_body_import_successes += 1;
                         sema.body_analysis_work
@@ -1781,9 +1821,9 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 );
                 if let Some(candidate) = sema.reusable_ordinary_bodies.remove(&ordinary_owner) {
                     sema.body_analysis_work.ordinary_body_import_attempts += 1;
-                    match import_staged_ordinary_body(
+                    match import_staged_body(
                         sema,
-                        &candidate,
+                        &candidate.body,
                         sema.rir.get(destructor.body).span,
                     ) {
                         Ok(imported) => {
@@ -2587,6 +2627,7 @@ mod error_invariant_tests {
             type_pool: TypeInternPool::new(),
             body_analysis_work: crate::BodyAnalysisWork::default(),
             ordinary_body_exports: Vec::new(),
+            specialized_body_exports: Vec::new(),
             analyzed_body_owners: Vec::new(),
             body_named_dependencies: Vec::new(),
             ordinary_free_function_dependencies: Vec::new(),

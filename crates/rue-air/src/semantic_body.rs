@@ -6,7 +6,9 @@
 use std::sync::Arc;
 
 use crate::{Air, ParamSlotModes};
-use crate::{AirArgMode, AirPlaceBase, BodyOwnerToken, SemanticImportType};
+use crate::{
+    AirArgMode, AirPlaceBase, BodyOwnerToken, SemanticImportConstValue, SemanticImportType,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticBodyDefinitionKind {
@@ -16,6 +18,8 @@ pub enum SemanticBodyDefinitionKind {
     Destructor,
     Struct,
     Enum,
+    ValueConst,
+    ModuleBinding,
 }
 
 /// Request-independent textual identity used only until the compiler joins it
@@ -44,6 +48,118 @@ impl AsRef<str> for SemanticBodyModuleIdentity {
 pub struct SemanticBodyExport {
     pub owner: BodyOwnerToken,
     pub body: SemanticBody<SemanticBodyDefinitionIdentity, Arc<str>>,
+}
+
+/// Request-independent identity of one completed generic specialization.
+///
+/// The base and every nested nominal/function value are declaration identities;
+/// no request-local symbol, type-pool, file, or AIR identifier crosses this seam.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticSpecializationIdentity<K, M> {
+    pub base: K,
+    pub type_arguments: Arc<[SemanticImportType<K, M>]>,
+    pub value_arguments: Arc<[SemanticImportConstValue<K, M>]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticSpecializedBodyExport {
+    pub identity: SemanticSpecializationIdentity<SemanticBodyDefinitionIdentity, Arc<str>>,
+    pub body: SemanticBody<SemanticBodyDefinitionIdentity, Arc<str>>,
+    pub dependencies: Arc<[SemanticBodyDefinitionIdentity]>,
+    pub dependency_boundary_complete: bool,
+}
+
+#[derive(Debug)]
+pub struct SemanticSpecializedBodyCandidate<K, IM, BM = IM> {
+    pub identity: SemanticSpecializationIdentity<K, IM>,
+    pub body_span: rue_span::Span,
+    pub body: SemanticBody<K, BM>,
+    pub dependencies: Arc<[K]>,
+    pub dependency_boundary_complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SemanticSpecializedCandidateInstallWork {
+    pub attempts: usize,
+    pub successes: usize,
+    pub mapping_failures: usize,
+}
+
+impl<K, M> SemanticSpecializationIdentity<K, M> {
+    pub fn try_map_keys<K2, M2, E>(
+        &self,
+        key: &impl Fn(&K) -> Result<K2, E>,
+        module: &impl Fn(&M) -> Result<M2, E>,
+    ) -> Result<SemanticSpecializationIdentity<K2, M2>, E> {
+        fn ty<K, M, K2, M2, E>(
+            value: &SemanticImportType<K, M>,
+            key: &impl Fn(&K) -> Result<K2, E>,
+            module: &impl Fn(&M) -> Result<M2, E>,
+        ) -> Result<SemanticImportType<K2, M2>, E> {
+            use SemanticImportType as T;
+            Ok(match value {
+                T::I8 => T::I8,
+                T::I16 => T::I16,
+                T::I32 => T::I32,
+                T::I64 => T::I64,
+                T::U8 => T::U8,
+                T::U16 => T::U16,
+                T::U32 => T::U32,
+                T::U64 => T::U64,
+                T::Bool => T::Bool,
+                T::Unit => T::Unit,
+                T::Never => T::Never,
+                T::ComptimeType => T::ComptimeType,
+                T::BuiltinNominal { name, kind } => T::BuiltinNominal {
+                    name: name.clone(),
+                    kind: *kind,
+                },
+                T::Nominal(value) => T::Nominal(key(value)?),
+                T::Array { element, len } => T::Array {
+                    element: Box::new(ty(element, key, module)?),
+                    len: *len,
+                },
+                T::PtrConst(value) => T::PtrConst(Box::new(ty(value, key, module)?)),
+                T::PtrMut(value) => T::PtrMut(Box::new(ty(value, key, module)?)),
+                T::Module(value) => T::Module(module(value)?),
+                T::GenericParameter(index) => T::GenericParameter(*index),
+            })
+        }
+        fn value<K, M, K2, M2, E>(
+            value: &SemanticImportConstValue<K, M>,
+            key: &impl Fn(&K) -> Result<K2, E>,
+            module: &impl Fn(&M) -> Result<M2, E>,
+        ) -> Result<SemanticImportConstValue<K2, M2>, E> {
+            Ok(match value {
+                SemanticImportConstValue::Integer(value) => {
+                    SemanticImportConstValue::Integer(*value)
+                }
+                SemanticImportConstValue::Bool(value) => SemanticImportConstValue::Bool(*value),
+                SemanticImportConstValue::Type(value) => {
+                    SemanticImportConstValue::Type(ty(value, key, module)?)
+                }
+                SemanticImportConstValue::Function(value) => {
+                    SemanticImportConstValue::Function(key(value)?)
+                }
+                SemanticImportConstValue::Unit => SemanticImportConstValue::Unit,
+            })
+        }
+        Ok(SemanticSpecializationIdentity {
+            base: key(&self.base)?,
+            type_arguments: self
+                .type_arguments
+                .iter()
+                .map(|value| ty(value, key, module))
+                .collect::<Result<Vec<_>, _>>()?
+                .into(),
+            value_arguments: self
+                .value_arguments
+                .iter()
+                .map(|item| value(item, key, module))
+                .collect::<Result<Vec<_>, _>>()?
+                .into(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -185,6 +301,12 @@ pub enum SemanticBodyInstData<K, M> {
     Ret(Option<SemanticBodyRef>),
     Call {
         function: K,
+        args: Arc<[SemanticBodyCallArg]>,
+    },
+    /// A call to another concrete specialization. Its stable generic origin
+    /// and ordered canonical arguments replace the request-local mangled name.
+    CallSpecialized {
+        identity: SemanticSpecializationIdentity<K, M>,
         args: Arc<[SemanticBodyCallArg]>,
     },
     CallGeneric,
@@ -440,6 +562,10 @@ impl<K, M> SemanticBody<K, M> {
                     D::Ret(v) => D::Ret(*v),
                     D::Call { function, args } => D::Call {
                         function: key(function)?,
+                        args: args.clone(),
+                    },
+                    D::CallSpecialized { identity, args } => D::CallSpecialized {
+                        identity: identity.try_map_keys(key, module)?,
                         args: args.clone(),
                     },
                     D::CallGeneric => D::CallGeneric,

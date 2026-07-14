@@ -818,6 +818,57 @@ impl Sema<'_> {
 }
 
 impl<'a> BoundSema<'a> {
+    pub fn install_specialized_body_candidates<K, M>(
+        mut self,
+        candidates: Vec<crate::SemanticSpecializedBodyCandidate<K, M>>,
+        definition: impl Fn(&K) -> Option<crate::SemanticBodyDefinitionIdentity>,
+        module: impl Fn(&M) -> Option<FileId>,
+    ) -> (Self, crate::SemanticSpecializedCandidateInstallWork)
+    where
+        K: Clone + Ord,
+        M: Clone + Ord + AsRef<str>,
+    {
+        let mut work = crate::SemanticSpecializedCandidateInstallWork::default();
+        for candidate in candidates {
+            work.attempts += 1;
+            let map_module = |key: &M| {
+                module(key)
+                    .map(|file| crate::SemanticBodyModuleIdentity {
+                        file_id: file.index(),
+                        path: std::sync::Arc::from(key.as_ref()),
+                    })
+                    .ok_or(())
+            };
+            let map_definition = |key: &K| definition(key).ok_or(());
+            let identity = candidate
+                .identity
+                .try_map_keys(&map_definition, &|key: &M| {
+                    Ok::<_, ()>(std::sync::Arc::from(key.as_ref()))
+                });
+            let body = candidate.body.try_map_keys(&map_definition, &map_module);
+            let dependencies = candidate
+                .dependencies
+                .iter()
+                .map(&map_definition)
+                .collect::<Result<Vec<_>, _>>();
+            if let (Ok(identity), Ok(body), Ok(dependencies)) = (identity, body, dependencies) {
+                self.sema.reusable_specialized_bodies.push(
+                    crate::SemanticSpecializedBodyCandidate {
+                        identity,
+                        body_span: candidate.body_span,
+                        body,
+                        dependencies: dependencies.into(),
+                        dependency_boundary_complete: candidate.dependency_boundary_complete,
+                    },
+                );
+                work.successes += 1;
+            } else {
+                work.mapping_failures += 1;
+            }
+        }
+        (self, work)
+    }
+
     /// Resolve durable keys into request-independent declaration identities and
     /// stage candidates for the canonical reachable-body worklist. No AIR type,
     /// instruction, string, nominal, or function ID is allocated here.
