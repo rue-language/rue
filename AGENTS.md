@@ -78,6 +78,8 @@ scripts/rue cli abi                  # filtered CLI integration tests
 scripts/rue test [pattern]           # broad/full suite
 scripts/rue fmt                      # format changed Rust files
 scripts/rue gc                       # reclaim stale Buck2 artifacts
+scripts/rue cache install            # securely install the shared cache config
+scripts/rue cache apply --all        # provision current Git/Codex worktrees
 ```
 
 Use `scripts/rue-bin` to obtain an absolute compiler path. Do not reconstruct
@@ -157,6 +159,15 @@ are timeout-only and unrelated tests are competing for the machine, rerun that
 target once in isolation. A clean isolated 64/64 run is sufficient local
 evidence; do not repeatedly rerun the entire suite. A semantic disagreement,
 compiler error, or isolated timeout remains a real failure.
+
+An unfiltered `scripts/rue test` is host-serialized across Rue worktrees and
+runs the opaque spec, UI, CLI, oracle, and reproducibility harnesses one at a
+time. Do not bypass that coordination with a direct `buck2 test //...` when a
+full local run is intended. Quick, filtered, and targeted checks do not take the
+host lock. The optional BuildBuddy action cache uses one private user config and
+ignored per-worktree symlinks; see `docs/process/build-cache.md`. Never commit or
+print its credential, and do not use `--prefer-remote` while RUE-320 remains
+open.
 
 Testing conventions:
 

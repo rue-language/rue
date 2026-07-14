@@ -30,6 +30,12 @@ just forwards to `./buck2 build //crates/rue:rue`, so you can drive Buck2
 directly if you prefer. macOS also requires Xcode Command Line Tools for linking
 Rue executables.
 
+On development machines with several Rue worktrees, unfiltered full suites are
+serialized automatically to avoid oversubscribing the host. Quick and filtered
+checks remain concurrent. Maintainers can opt into the shared action cache as
+documented in [docs/process/build-cache.md](docs/process/build-cache.md); no
+BuildBuddy account is required to build or test Rue.
+
 For IDE support, rust-analyzer reads the checked-in `rust-project.json` (Rue has
 no Cargo workspace). Regenerate it with `./gen-rust-project.sh` when crates or
 dependencies change — see [docs/development.md](docs/development.md#editor--ide-support).

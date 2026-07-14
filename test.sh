@@ -33,6 +33,20 @@ set -euo pipefail
 cd "$(dirname "$0")"
 repo_root="$PWD"
 
+# Direct full-suite invocations also bootstrap an already-installed private
+# cache config. This is a no-op when the user has not opted in.
+if [[ -x scripts/provision-build-cache ]]; then
+    scripts/provision-build-cache auto
+fi
+
+# A no-filter run is the host-wide full suite. Serialize it across independent
+# Buck project roots before starting any build work; filtered runs stay free to
+# run concurrently. The environment marker prevents recursion after the lock
+# wrapper re-enters this script.
+if [[ $# -eq 0 ]] && [[ "${RUE_FULL_SUITE_LOCK_HELD:-}" != 1 ]]; then
+    exec ./scripts/with-full-suite-lock env RUE_FULL_SUITE_LOCK_HELD=1 "$0"
+fi
+
 # Always print the result sentinel, even on an early `set -e` exit, so a piped
 # or captured run is self-describing (RUE-579).
 print_test_suite_result() {
@@ -54,8 +68,26 @@ REPOSITORY_QUALITY_GATES=(
 )
 
 if [[ $# -eq 0 ]]; then
-    echo "Running unit tests and spec/UI/CLI suites..."
-    ./buck2 test //...
+    # Keep discovery broad so new crate and repository tests cannot disappear
+    # behind a hand-maintained list. Heavy opaque harnesses are labeled in BUCK:
+    # query that label from the live graph, exclude it from the broad pass, then
+    # run every returned target alone. A newly labeled target is automatically
+    # included without ever putting the whole heavy set in one test invocation.
+    HEAVY_SUITES=()
+    while IFS= read -r suite; do
+        [[ -n "$suite" ]] && HEAVY_SUITES+=("$suite")
+    done < <(./buck2 uquery 'attrfilter(labels, rue_heavy_suite, //...)')
+    if [[ ${#HEAVY_SUITES[@]} -eq 0 ]]; then
+        echo "error: Buck query found no rue_heavy_suite targets" >&2
+        exit 1
+    fi
+
+    echo "Running unit tests and lightweight repository checks..."
+    ./buck2 test //... --exclude rue_heavy_suite --always-exclude
+    for suite in "${HEAVY_SUITES[@]}"; do
+        echo "Running heavy suite $suite..."
+        ./buck2 test "$suite"
+    done
 else
     # Unit tests live under //crates/...; the suite sh_tests are at the repo
     # root, so this scope keeps them out of the unfiltered step below.
