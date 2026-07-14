@@ -150,3 +150,100 @@ fn removed_parallel_entry_points_cannot_return() {
         );
     }
 }
+
+#[test]
+fn import_resolution_remains_discovery_owned() {
+    let production = PRODUCTION_MODULES
+        .iter()
+        .map(|(_, source)| *source)
+        .collect::<String>();
+    assert_eq!(
+        production.matches("pub struct ImportDirective {").count(),
+        1,
+        "the compiler must declare exactly one import-site representation"
+    );
+    assert_eq!(
+        production
+            .matches("pub enum CanonicalImportResolution {")
+            .count(),
+        1,
+        "the compiler must declare exactly one canonical resolution outcome"
+    );
+    for removed in [
+        ["ParsedImport", "Directive"].concat(),
+        ["ParsedImport", "Site"].concat(),
+        ["SemanticResolved", "Import"].concat(),
+        ["SemanticModule", "Identity"].concat(),
+        ["pub enum Import", "Resolution"].concat(),
+        ["resolve_", "import_graph"].concat(),
+        ["resolve_canonical_", "import_graph"].concat(),
+        ["extract_import_", "directives"].concat(),
+        ["Module", "Path"].concat(),
+        ["Dir", "Resolution"].concat(),
+    ] {
+        assert!(
+            !production.contains(&removed),
+            "retired import representation or resolver returned: {removed}"
+        );
+    }
+
+    let discovery = PRODUCTION_MODULES
+        .iter()
+        .find_map(|(name, source)| (*name == "import_discovery").then_some(*source))
+        .unwrap();
+    assert!(discovery.contains("pub struct ImportDiscoveryPlan"));
+    assert!(discovery.contains("CanonicalImportGraph"));
+
+    let compiler_import_policy = PRODUCTION_MODULES
+        .iter()
+        .filter(|(name, _)| {
+            matches!(
+                *name,
+                "parsed_modules"
+                    | "import_discovery"
+                    | "import_graph"
+                    | "bound_definitions"
+                    | "canonical_semantic"
+                    | "session"
+            )
+        })
+        .map(|(_, source)| *source)
+        .collect::<String>();
+    for forbidden_probe in [
+        ["std::", "fs"].concat(),
+        ["fs", "::"].concat(),
+        ["std::", "env"].concat(),
+        ["RUE_STD", "_PATH"].concat(),
+        ["canonicalize", "("].concat(),
+        [".exists", "("].concat(),
+    ] {
+        assert!(
+            !compiler_import_policy.contains(&forbidden_probe),
+            "compiler import policy must not probe host state: {forbidden_probe}"
+        );
+    }
+
+    let downstream_imports = PRODUCTION_MODULES
+        .iter()
+        .filter(|(name, _)| {
+            matches!(
+                *name,
+                "parsed_modules"
+                    | "import_graph"
+                    | "bound_definitions"
+                    | "canonical_semantic"
+                    | "session"
+            )
+        })
+        .map(|(_, source)| *source)
+        .collect::<String>();
+    for forbidden_policy in [
+        ["candidate_", "groups"].concat(),
+        ["resolve_explicit_", "candidates"].concat(),
+    ] {
+        assert!(
+            !downstream_imports.contains(&forbidden_policy),
+            "downstream compiler import consumer must not rediscover: {forbidden_policy}"
+        );
+    }
+}

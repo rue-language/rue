@@ -23,7 +23,7 @@ use crate::{
     },
     lower_canonical_rir,
     parsed_modules::ParsedProgram,
-    resolve_canonical_import_graph, validate_canonical_import_graph,
+    validate_canonical_import_graph,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -60,8 +60,6 @@ pub struct CompilerSessionWork {
     pub last_invalidation: ParseInvalidationSummary,
     pub imports: FrontendQueryWork,
     pub import_diagnostics: FrontendQueryWork,
-    pub import_entries: usize,
-    pub import_entries_invalidated: usize,
     pub merge: FrontendQueryWork,
     pub rir: FrontendQueryWork,
     pub downstream_invalidations: usize,
@@ -263,7 +261,7 @@ mod durable_body_integration_tests {
         let mut session = CompilerSession::new();
         let program = session.update(source).into_result().unwrap();
         if !program.import_directives().is_empty() {
-            let graph = session.import_graph(None).unwrap().graph().clone();
+            let graph = crate::test_support::test_fixture_import_graph(&program).unwrap();
             session.adopt_test_import_graph(graph);
         }
         let semantic = session.semantic(&CompileOptions::default()).unwrap();
@@ -1130,7 +1128,6 @@ pub struct CompilerSession {
     merge_cache: Option<Result<Arc<CanonicalMergedProgram>, CompileErrors>>,
     definition_shard_baseline: Option<crate::DefinitionSnapshot>,
     rir_cache: Option<Arc<CanonicalRirOutput>>,
-    import_cache: Vec<ImportCacheEntry>,
     semantic_cache: Vec<SemanticCacheEntry>,
     definition_cache: Vec<DefinitionCacheEntry>,
     work: CompilerSessionWork,
@@ -1157,12 +1154,6 @@ struct InvalidationPlanCacheEntry {
     previous: Arc<SemanticDependencyInputManifest>,
     current: Arc<SemanticDependencyInputManifest>,
     plan: Arc<SemanticInvalidationPlan>,
-}
-
-#[derive(Debug)]
-struct ImportCacheEntry {
-    input: ImportGraphInputDescriptor,
-    result: Result<Arc<CanonicalImportGraphOutput>, CompileErrors>,
 }
 
 #[derive(Debug)]
@@ -1920,9 +1911,6 @@ impl CompilerSession {
                     }
                     self.merge_cache = None;
                     self.rir_cache = None;
-                    self.work.import_entries_invalidated += self.import_cache.len();
-                    self.import_cache.clear();
-                    self.work.import_entries = 0;
                     self.work.semantic_entries_invalidated += self.semantic_cache.len();
                     self.semantic_cache.clear();
                     self.work.definition_entries_invalidated += self.definition_cache.len();
@@ -1956,7 +1944,10 @@ impl CompilerSession {
         }
     }
 
-    /// Resolve canonical parsed import sites without lowering or semantic work.
+    /// Return the graph adopted by import discovery.
+    ///
+    /// Import-free direct sessions synthesize the uniquely valid empty graph;
+    /// import-bearing sessions never reconstruct resolution from loaded paths.
     pub fn import_graph(
         &mut self,
         std_dir: Option<&str>,
@@ -1979,6 +1970,39 @@ impl CompilerSession {
             return Ok(graph.clone());
         }
         let parsed = self.published.as_deref().ok_or_else(no_published_program)?;
+        #[cfg(test)]
+        if let Some(graph) = self.supplied_test_import_graph.as_ref() {
+            let resolution = ModuleResolutionInputs::new(
+                parsed.root().clone(),
+                parsed
+                    .modules()
+                    .iter()
+                    .map(|module| crate::ModuleResolutionInput {
+                        module: module.module_id().clone(),
+                        physical_path: Arc::from(module.physical_path()),
+                    })
+                    .collect(),
+            )
+            .expect("published parsed modules have validated resolution inputs");
+            let validation = validate_canonical_import_graph(graph, &resolution);
+            self.work.imports.reuses += 1;
+            return Ok(Arc::new(CanonicalImportGraphOutput {
+                input: ImportGraphInputDescriptor {
+                    sources: parsed.source_revision().clone(),
+                    resolution,
+                    std_dir: std_dir.map(Arc::from),
+                },
+                graph: graph.clone(),
+                validation,
+            }));
+        }
+        if !parsed.import_directives().is_empty() {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InvalidCompilerInput(
+                    "import-bearing revisions require a committed discovery graph".into(),
+                ),
+            )));
+        }
         let resolution = ModuleResolutionInputs::new(
             parsed.root().clone(),
             parsed
@@ -1996,28 +2020,23 @@ impl CompilerSession {
             resolution,
             std_dir: std_dir.map(Arc::from),
         };
-        if let Some(entry) = self.import_cache.iter().find(|entry| entry.input == input) {
-            self.work.imports.reuses += 1;
-            return entry.result.clone();
-        }
         self.work.imports.executions += 1;
-        let result =
-            resolve_canonical_import_graph(parsed.import_directives(), &input.resolution, std_dir)
-                .map(|graph| {
-                    let validation = validate_canonical_import_graph(&graph, &input.resolution);
-                    Arc::new(CanonicalImportGraphOutput {
-                        input: input.clone(),
-                        graph,
-                        validation,
-                    })
-                })
-                .map_err(CompileErrors::from);
-        self.import_cache.push(ImportCacheEntry {
+        let graph = CanonicalImportGraph::from_supplied(
+            parsed.root().clone(),
+            Vec::new(),
+            &input.resolution,
+        )
+        .map_err(|validation| {
+            CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("invalid import-free graph: {validation:?}"),
+            )))
+        })?;
+        let validation = validate_canonical_import_graph(&graph, &input.resolution);
+        Ok(Arc::new(CanonicalImportGraphOutput {
             input,
-            result: result.clone(),
-        });
-        self.work.import_entries = self.import_cache.len();
-        result
+            graph,
+            validation,
+        }))
     }
 
     pub fn merge(&mut self) -> Result<Arc<CanonicalMergedProgram>, CompileErrors> {
@@ -3945,8 +3964,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CanonicalImportResolution, LinkerMode, ModuleId, OptLevel, PreviewFeature, PreviewFeatures,
-        SourceMetadata, SourceSnapshot, Target,
+        LinkerMode, ModuleId, OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata,
+        SourceSnapshot, Target,
     };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -3987,7 +4006,7 @@ mod tests {
         let work = update.work();
         let program = update.into_result().unwrap();
         if !program.import_directives().is_empty() {
-            let graph = session.import_graph(None).unwrap().graph().clone();
+            let graph = crate::test_support::test_fixture_import_graph(&program).unwrap();
             session.adopt_test_import_graph(graph);
         }
         work
@@ -4873,8 +4892,8 @@ mod tests {
     }
 
     #[test]
-    fn import_graph_query_reuses_and_recomputes_only_after_resolution_changes() {
-        let original = snapshot(
+    fn import_graph_requires_committed_discovery_for_import_bearing_revisions() {
+        let source = snapshot(
             &[
                 (
                     1,
@@ -4886,102 +4905,37 @@ mod tests {
             ],
             1,
         );
-        let relocated = snapshot(
-            &[
-                (
-                    1,
-                    "/p/app/main.rue",
-                    "app/main.rue",
-                    "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }",
-                ),
-                (2, "/else/helper.rue", "app/helper.rue", "fn helper() {}"),
-            ],
-            1,
-        );
         let mut session = CompilerSession::new();
-        session.update(&original).into_result().unwrap();
-        let first = session.import_graph(None).unwrap();
-        let reused = session.import_graph(None).unwrap();
-        assert!(Arc::ptr_eq(&first, &reused));
-        assert!(matches!(
-            first.graph().records()[0].resolution(),
-            CanonicalImportResolution::Resolved(module) if module.as_str() == "app/helper.rue"
-        ));
-
-        let update = session.update(&relocated);
-        assert_eq!(update.work().syntax.lexer_invocations, 0);
-        assert_eq!(update.work().syntax.parser_invocations, 0);
-        assert_eq!(update.work().modules_rebound, 1);
-        assert!(update.downstream_invalidated());
-        update.into_result().unwrap();
-        let moved = session.import_graph(None).unwrap();
-        assert!(matches!(
-            moved.graph().records()[0].resolution(),
-            CanonicalImportResolution::Missing
-        ));
-        assert_eq!(session.work().imports.calls, 3);
-        assert_eq!(session.work().imports.executions, 2);
-        assert_eq!(session.work().imports.reuses, 1);
-        assert_eq!(session.work().import_entries_invalidated, 1);
-        assert_eq!(session.work().merge.executions, 0);
-        assert_eq!(session.work().rir.executions, 0);
-        assert_eq!(session.work().semantic.executions, 0);
-        assert_eq!(session.work().definitions.executions, 0);
+        session.update(&source).into_result().unwrap();
+        let error = session.import_graph(None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("require a committed discovery graph")
+        );
+        assert_eq!(session.work().imports.executions, 0);
     }
 
     #[test]
-    fn import_graph_keys_root_std_context_and_preserves_last_good_graph() {
+    fn supplied_test_graph_is_consumed_without_resolution_fallback() {
         let source = snapshot(
             &[
                 (
                     1,
                     "/p/main.rue",
                     "main.rue",
-                    "fn main() -> i32 { let s = @import(\"std\"); 0 }",
+                    "fn main() -> i32 { let s = @import(\"helper.rue\"); 0 }",
                 ),
-                (2, "/sdk/_std.rue", "std/_std.rue", "fn helper() {}"),
+                (2, "/p/helper.rue", "helper.rue", "fn helper() {}"),
             ],
             1,
         );
-        let other_root = snapshot(
-            &[
-                (
-                    1,
-                    "/p/main.rue",
-                    "main.rue",
-                    "fn main() -> i32 { let s = @import(\"std\"); 0 }",
-                ),
-                (2, "/sdk/_std.rue", "std/_std.rue", "fn helper() {}"),
-            ],
-            2,
-        );
-        let broken = snapshot(&[(1, "/p/main.rue", "main.rue", "fn main( {")], 1);
         let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        let missing = session.import_graph(None).unwrap();
-        let resolved = session.import_graph(Some("/sdk")).unwrap();
-        assert!(matches!(
-            missing.graph().records()[0].resolution(),
-            CanonicalImportResolution::Missing
-        ));
-        assert!(matches!(
-            resolved.graph().records()[0].resolution(),
-            CanonicalImportResolution::Resolved(_)
-        ));
-        assert_eq!(session.work().import_entries, 2);
-        assert!(session.update(&broken).result().is_err());
-        assert!(Arc::ptr_eq(
-            &resolved,
-            &session.import_graph(Some("/sdk")).unwrap()
-        ));
-
-        session.update(&other_root).into_result().unwrap();
-        let rerooted = session.import_graph(Some("/sdk")).unwrap();
-        assert_eq!(rerooted.graph().root().as_str(), "std/_std.rue");
-        assert_ne!(
-            resolved.input().sources.root(),
-            rerooted.input().sources.root()
-        );
+        let program = session.update(&source).into_result().unwrap();
+        let graph = crate::test_support::test_fixture_import_graph(&program).unwrap();
+        session.adopt_test_import_graph(graph);
+        assert!(session.import_graph(None).is_ok());
+        assert_eq!(session.work().imports.executions, 0);
     }
 
     #[test]
@@ -5555,7 +5509,7 @@ mod tests {
     }
 
     #[test]
-    fn dependency_manifest_carries_resolved_and_fail_closed_module_edges() {
+    fn dependency_manifest_keeps_canonical_module_edges_across_physical_relocation() {
         let original = snapshot(
             &[
                 (
@@ -5594,17 +5548,17 @@ mod tests {
 
         let work = publish_with_test_imports(&mut session, &moved);
         assert_eq!(work.syntax.lexer_invocations, 0);
-        let missing = session
+        let relocated = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
-        assert!(!missing.definition_universe_complete());
+        assert!(relocated.definition_universe_complete());
         assert!(matches!(
-            &missing.module_imports()[0],
-            StableModuleImportDependency::Missing { importer, .. }
-                if importer.as_str() == "app/main.rue"
+            &relocated.module_imports()[0],
+            StableModuleImportDependency::Resolved { importer, target, .. }
+                if importer.as_str() == "app/main.rue" && target.as_str() == "app/helper.rue"
         ));
-        assert_eq!(missing.work().import_records_visited, 1);
-        assert_eq!(missing.work().extra_rir_instructions_visited, 0);
+        assert_eq!(relocated.work().import_records_visited, 1);
+        assert_eq!(relocated.work().extra_rir_instructions_visited, 0);
         assert_eq!(session.work().dependency_manifests.executions, 2);
     }
 

@@ -94,6 +94,16 @@ syntax inspection and presentation, but are not semantic compiler inputs; this
 prevents source, module, target, preview-feature, and optimization identity from
 being inferred or split across unrelated arguments.
 
+Import discovery is the single exception to the compiler's otherwise pure
+snapshot queries because a host must observe the filesystem. Parsing produces
+one canonical `ImportDirective` occurrence representation. The compiler turns
+those occurrences and an explicit discovery context (including the captured
+`RUE_STD_PATH` value, when present) into ordered requests; the source loader is
+the only component that probes or reads candidate files. It reports typed
+observations back to the session, which commits one `CanonicalImportGraph`.
+Semantic analysis, dependency reporting, and code generation consume that
+committed graph and never repeat path resolution from loaded file names.
+
 Long-lived frontend sessions use explicit bounded historical ownership. A
 session strongly retains at most 16 diagnostic snapshots, evicting in insertion
 order while protecting the latest attempted query, latest successful query,

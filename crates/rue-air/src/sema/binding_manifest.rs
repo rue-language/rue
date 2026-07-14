@@ -1561,7 +1561,7 @@ mod tests {
     use std::collections::HashMap;
 
     use lasso::ThreadedRodeo;
-    use rue_error::{CompileErrors, PreviewFeatures};
+    use rue_error::{CompileErrors, CompileResult, PreviewFeatures};
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::{AstGen, Rir};
@@ -1716,6 +1716,27 @@ mod tests {
     }
 
     fn bind_with_module_paths(source: &str) -> Result<SemanticBindingManifest, CompileErrors> {
+        struct FixtureView {
+            import_offset: u32,
+        }
+
+        impl crate::CanonicalImportView for FixtureView {
+            fn visit_modules(
+                &self,
+                visitor: &mut dyn FnMut(&str, FileId, &str) -> CompileResult<()>,
+            ) -> CompileResult<()> {
+                visitor("main.rue", FileId::DEFAULT, "/main.rue")?;
+                visitor("other.rue", FileId::new(1), "/other.rue")
+            }
+
+            fn visit_resolved_sites(
+                &self,
+                visitor: &mut dyn FnMut(&str, u32, &str, &str) -> CompileResult<()>,
+            ) -> CompileResult<()> {
+                visitor("main.rue", self.import_offset, "other.rue", "other.rue")
+            }
+        }
+
         let (tokens, interner) = Lexer::new(source)
             .tokenize()
             .map_err(CompileErrors::from_error)?;
@@ -1735,26 +1756,7 @@ mod tests {
             (FileId::DEFAULT, "/main.rue".to_owned()),
             (FileId::new(1), "/other.rue".to_owned()),
         ]));
-        sema.set_canonical_imports(
-            vec![
-                crate::SemanticModuleIdentity {
-                    durable_id: "main.rue".to_owned(),
-                    file_id: FileId::DEFAULT,
-                    file_path: "/main.rue".to_owned(),
-                },
-                crate::SemanticModuleIdentity {
-                    durable_id: "other.rue".to_owned(),
-                    file_id: FileId::new(1),
-                    file_path: "/other.rue".to_owned(),
-                },
-            ],
-            vec![crate::SemanticResolvedImport {
-                importer: "main.rue".to_owned(),
-                source_offset: import_offset,
-                specifier: "other.rue".to_owned(),
-                target: "other.rue".to_owned(),
-            }],
-        )?;
+        sema.set_canonical_imports(&FixtureView { import_offset })?;
         let bound = sema.bind_declarations()?;
         Ok(bound.binding_manifest().clone())
     }

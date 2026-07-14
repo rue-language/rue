@@ -110,8 +110,83 @@ fn publish_test_snapshot(
 ) -> MultiErrorResult<()> {
     let program = session.update_for_presentation(snapshot).into_result()?;
     if !program.import_directives().is_empty() {
-        let graph = session.import_graph(None)?.graph().clone();
+        let graph = test_fixture_import_graph(&program)?;
         session.adopt_test_import_graph(graph);
     }
     Ok(())
+}
+
+/// Build explicit canonical records for in-memory fixtures whose import
+/// spellings name one loaded logical or physical module spelling. This is
+/// deliberately a test-data convention, not a path-resolution implementation.
+pub(crate) fn test_fixture_import_graph(
+    program: &ParsedProgram,
+) -> MultiErrorResult<CanonicalImportGraph> {
+    test_fixture_import_graph_parts(
+        program.root(),
+        program
+            .modules()
+            .iter()
+            .map(|module| {
+                (
+                    module.module_id().clone(),
+                    std::sync::Arc::from(module.physical_path()),
+                )
+            })
+            .collect(),
+        program.import_directives(),
+    )
+}
+
+pub(crate) fn test_fixture_import_graph_parts(
+    root: &ModuleId,
+    modules: Vec<(ModuleId, std::sync::Arc<str>)>,
+    directives: &ImportDirectives,
+) -> MultiErrorResult<CanonicalImportGraph> {
+    let inputs = ModuleResolutionInputs::new(
+        root.clone(),
+        modules
+            .iter()
+            .map(|(module, physical_path)| ModuleResolutionInput {
+                module: module.clone(),
+                physical_path: physical_path.clone(),
+            })
+            .collect(),
+    )
+    .map_err(CompileErrors::from)?;
+    let records = directives
+        .iter()
+        .map(|directive| {
+            let target = modules
+                .iter()
+                .find(|(module, physical_path)| {
+                    [module.as_str(), physical_path.as_ref()]
+                        .into_iter()
+                        .any(|spelling| {
+                            spelling == directive.specifier()
+                                || spelling.strip_suffix(directive.specifier()).is_some_and(
+                                    |prefix| prefix.is_empty() || prefix.ends_with('/'),
+                                )
+                        })
+                })
+                .ok_or_else(|| {
+                    CompileErrors::from(CompileError::without_span(
+                        ErrorKind::InvalidCompilerInput(format!(
+                            "test fixture has no logical module matching import {:?}",
+                            directive.specifier()
+                        )),
+                    ))
+                })?;
+            Ok(CanonicalImportRecord::new(
+                directive.importer().clone(),
+                directive.specifier(),
+                CanonicalImportResolution::Resolved(target.0.clone()),
+            ))
+        })
+        .collect::<MultiErrorResult<Vec<_>>>()?;
+    CanonicalImportGraph::from_supplied(root.clone(), records, &inputs).map_err(|validation| {
+        CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+            format!("test fixture supplied an invalid import graph: {validation:?}"),
+        )))
+    })
 }

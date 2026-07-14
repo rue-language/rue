@@ -83,8 +83,8 @@ pub use import_discovery::{
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,
     CanonicalImportGraphValidation, CanonicalImportRecord, CanonicalImportResolution,
-    ImportDirective, ImportDirectives, ImportEdge, ImportResolution, ResolvedCodegenRevision,
-    ResolvedLinkRevision, ResolvedProgramRevision,
+    ImportDirective, ImportDirectives, ResolvedCodegenRevision, ResolvedLinkRevision,
+    ResolvedProgramRevision,
 };
 pub use parsed_modules::{
     InvalidImportShape, ParseInvalidationSummary, ParsedAstPresentation, ParsedAstPresentationWork,
@@ -175,9 +175,7 @@ pub(crate) use durable_body::{convert_semantic_body_exports, finalize_durable_or
 pub(crate) use durable_semantics::{
     import_durable_declaration_semantics, project_durable_declaration_semantics,
 };
-#[cfg(test)]
-pub(crate) use import_graph::extract_import_directives;
-pub(crate) use import_graph::{resolve_canonical_import_graph, validate_canonical_import_graph};
+pub(crate) use import_graph::validate_canonical_import_graph;
 #[cfg(test)]
 pub(crate) use linking::{
     parse_runtime_archive, runtime_for_target, runtime_for_target_with_host, validate_runtime,

@@ -7,19 +7,20 @@ use rue_span::{FileId, Span};
 
 use crate::{ModuleDef, ModuleId, ModuleRegistry, normalize_module_path};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticModuleIdentity {
-    pub durable_id: String,
-    pub file_id: FileId,
-    pub file_path: String,
-}
+/// Read-only bridge from the compiler's canonical source/import artifacts.
+///
+/// Implementations borrow their owning artifacts and expose fields only while
+/// AIR builds its compact semantic lookup. AIR does not own a peer import graph.
+pub trait CanonicalImportView {
+    fn visit_modules(
+        &self,
+        visitor: &mut dyn FnMut(&str, FileId, &str) -> CompileResult<()>,
+    ) -> CompileResult<()>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticResolvedImport {
-    pub importer: String,
-    pub source_offset: u32,
-    pub specifier: String,
-    pub target: String,
+    fn visit_resolved_sites(
+        &self,
+        visitor: &mut dyn FnMut(&str, u32, &str, &str) -> CompileResult<()>,
+    ) -> CompileResult<()>;
 }
 
 #[derive(Debug)]
@@ -29,71 +30,64 @@ pub(crate) struct CanonicalImportContext {
 }
 
 impl CanonicalImportContext {
-    pub(crate) fn build(
-        mut modules: Vec<SemanticModuleIdentity>,
-        mut imports: Vec<SemanticResolvedImport>,
-    ) -> CompileResult<(Self, ModuleRegistry)> {
-        modules.sort_by(|a, b| a.durable_id.cmp(&b.durable_id));
-        imports.sort_by(|a, b| {
-            (
-                &a.importer,
-                a.source_offset,
-                normalize_module_path(&a.specifier),
-                &a.target,
-            )
-                .cmp(&(
-                    &b.importer,
-                    b.source_offset,
-                    normalize_module_path(&b.specifier),
-                    &b.target,
-                ))
-        });
+    pub(crate) fn build(view: &dyn CanonicalImportView) -> CompileResult<(Self, ModuleRegistry)> {
         let mut display_names = BTreeMap::new();
-        for import in &imports {
+        let mut unresolved_sites = BTreeMap::new();
+        view.visit_resolved_sites(&mut |importer, source_offset, specifier, target| {
             display_names
-                .entry(import.target.clone())
-                .or_insert_with(|| import.specifier.clone());
-        }
-        let registry = ModuleRegistry::new();
-        let mut by_file = HashMap::new();
-        let mut compact = BTreeMap::new();
-        for module in modules {
-            if compact.contains_key(&module.durable_id)
-                || by_file
-                    .insert(module.file_id, module.durable_id.clone())
-                    .is_some()
+                .entry(target.to_owned())
+                .or_insert_with(|| specifier.to_owned());
+            let key = (
+                importer.to_owned(),
+                source_offset,
+                normalize_module_path(specifier),
+            );
+            if unresolved_sites.insert(key, target.to_owned()).is_some() {
+                return Err(invalid("canonical import site is duplicated"));
+            }
+            Ok(())
+        })?;
+
+        let mut modules = BTreeMap::new();
+        let mut files = HashMap::new();
+        view.visit_modules(&mut |durable_id, file_id, file_path| {
+            if modules
+                .insert(durable_id.to_owned(), (file_id, file_path.to_owned()))
+                .is_some()
+                || files.insert(file_id, durable_id.to_owned()).is_some()
             {
                 return Err(invalid(
                     "canonical semantic module identities are not one-to-one",
                 ));
             }
+            Ok(())
+        })?;
+
+        let registry = ModuleRegistry::new();
+        let mut by_file = HashMap::new();
+        let mut compact = BTreeMap::new();
+        for (durable_id, (file_id, file_path)) in modules {
             let display_name = display_names
-                .remove(&module.durable_id)
-                .unwrap_or_else(|| module.durable_id.clone());
+                .remove(&durable_id)
+                .unwrap_or_else(|| durable_id.clone());
             let id = registry.push_canonical(ModuleDef::new(
                 display_name,
-                module.file_path,
-                module.durable_id.clone(),
-                module.file_id,
+                file_path,
+                durable_id.clone(),
+                file_id,
             ));
-            compact.insert(module.durable_id, id);
+            by_file.insert(file_id, durable_id.clone());
+            compact.insert(durable_id, id);
         }
         let mut sites = BTreeMap::new();
-        for import in imports {
-            if !compact.contains_key(&import.importer) {
+        for ((importer, source_offset, specifier), target) in unresolved_sites {
+            if !compact.contains_key(&importer) {
                 return Err(invalid("canonical import has a foreign importer"));
             }
-            let Some(&target) = compact.get(&import.target) else {
+            let Some(&target) = compact.get(&target) else {
                 return Err(invalid("canonical import has a foreign target"));
             };
-            let key = (
-                import.importer,
-                import.source_offset,
-                normalize_module_path(&import.specifier),
-            );
-            if sites.insert(key, target).is_some() {
-                return Err(invalid("canonical import site is duplicated"));
-            }
+            sites.insert((importer, source_offset, specifier), target);
         }
         Ok((Self { by_file, sites }, registry))
     }
@@ -121,29 +115,45 @@ fn invalid(message: &str) -> CompileError {
 mod tests {
     use super::*;
 
-    fn module(id: &str, file: u32, path: &str) -> SemanticModuleIdentity {
-        SemanticModuleIdentity {
-            durable_id: id.to_owned(),
-            file_id: FileId::new(file),
-            file_path: path.to_owned(),
+    struct FixtureModule(&'static str, u32, &'static str);
+    struct FixtureSite(&'static str, u32, &'static str, &'static str);
+    struct FixtureView {
+        modules: Vec<FixtureModule>,
+        sites: Vec<FixtureSite>,
+    }
+
+    impl CanonicalImportView for FixtureView {
+        fn visit_modules(
+            &self,
+            visitor: &mut dyn FnMut(&str, FileId, &str) -> CompileResult<()>,
+        ) -> CompileResult<()> {
+            for FixtureModule(id, file, path) in &self.modules {
+                visitor(id, FileId::new(*file), path)?;
+            }
+            Ok(())
+        }
+
+        fn visit_resolved_sites(
+            &self,
+            visitor: &mut dyn FnMut(&str, u32, &str, &str) -> CompileResult<()>,
+        ) -> CompileResult<()> {
+            for FixtureSite(importer, offset, specifier, target) in &self.sites {
+                visitor(importer, *offset, specifier, target)?;
+            }
+            Ok(())
         }
     }
 
     #[test]
     fn compact_ids_are_durable_ordered_and_file_ids_are_arbitrary() {
-        let (context, registry) = CanonicalImportContext::build(
-            vec![
-                module("z.rue", 41, "/moved/z.rue"),
-                module("a.rue", 900, "/moved/a.rue"),
+        let view = FixtureView {
+            modules: vec![
+                FixtureModule("z.rue", 41, "/moved/z.rue"),
+                FixtureModule("a.rue", 900, "/moved/a.rue"),
             ],
-            vec![SemanticResolvedImport {
-                importer: "z.rue".into(),
-                source_offset: 17,
-                specifier: "./a.rue".into(),
-                target: "a.rue".into(),
-            }],
-        )
-        .unwrap();
+            sites: vec![FixtureSite("z.rue", 17, "./a.rue", "a.rue")],
+        };
+        let (context, registry) = CanonicalImportContext::build(&view).unwrap();
         assert_eq!(registry.get_def(ModuleId::new(0)).durable_id, "a.rue");
         assert_eq!(registry.get_def(ModuleId::new(0)).import_path, "./a.rue");
         assert_eq!(registry.get_def(ModuleId::new(1)).durable_id, "z.rue");
@@ -157,9 +167,11 @@ mod tests {
 
     #[test]
     fn sites_and_identity_bridge_fail_closed() {
-        let (context, _) =
-            CanonicalImportContext::build(vec![module("main.rue", 7, "/main.rue")], vec![])
-                .unwrap();
+        let empty = FixtureView {
+            modules: vec![FixtureModule("main.rue", 7, "/main.rue")],
+            sites: vec![],
+        };
+        let (context, _) = CanonicalImportContext::build(&empty).unwrap();
         assert!(
             context
                 .resolve("missing", Span::with_file(FileId::new(7), 1, 2))
@@ -171,15 +183,10 @@ mod tests {
                 .is_err()
         );
         assert!(
-            CanonicalImportContext::build(
-                vec![module("main.rue", 7, "/main.rue")],
-                vec![SemanticResolvedImport {
-                    importer: "foreign.rue".into(),
-                    source_offset: 0,
-                    specifier: "main".into(),
-                    target: "main.rue".into(),
-                }],
-            )
+            CanonicalImportContext::build(&FixtureView {
+                modules: vec![FixtureModule("main.rue", 7, "/main.rue")],
+                sites: vec![FixtureSite("foreign.rue", 0, "main", "main.rue")],
+            })
             .is_err()
         );
     }

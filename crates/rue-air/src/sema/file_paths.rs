@@ -2,7 +2,7 @@
 //!
 //! This module handles request-local source paths used in diagnostics and
 //! relocation-stable identities used in generated symbols. Import resolution
-//! is supplied separately as canonical compiler records.
+//! is consumed separately through a borrowing canonical compiler view.
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,11 +15,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     /// Install the complete resolved-import input for this semantic epoch.
     pub fn set_canonical_imports(
         &mut self,
-        modules: Vec<crate::SemanticModuleIdentity>,
-        imports: Vec<crate::SemanticResolvedImport>,
+        view: &dyn crate::CanonicalImportView,
     ) -> CompileResult<()> {
-        let (context, registry) =
-            crate::canonical_imports::CanonicalImportContext::build(modules, imports)?;
+        let (context, registry) = crate::canonical_imports::CanonicalImportContext::build(view)?;
         self.canonical_imports = Some(context);
         self.module_registry = registry;
         Ok(())

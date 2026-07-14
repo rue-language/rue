@@ -10,6 +10,8 @@
 //!
 //! Inspired by Zig's AIR (Analyzed Intermediate Representation).
 
+#[cfg(test)]
+mod api_inventory;
 mod canonical_imports;
 mod inference;
 mod inst;
@@ -24,7 +26,7 @@ mod semantic_import;
 pub mod specialize;
 mod types;
 
-pub use canonical_imports::{SemanticModuleIdentity, SemanticResolvedImport};
+pub use canonical_imports::CanonicalImportView;
 pub use inference::{
     Constraint, ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, InferType,
     LocalVarInfo, MethodSig, ParamVarInfo, Substitution, TypeVarAllocator, TypeVarId,
@@ -46,17 +48,17 @@ pub use sema::{
     DeclarationBindingWork, DeclarationBuiltinTypeCallHeadDependencyEvent,
     DeclarationInstallFailure, DeclarationShells, DeclarationTypeCallHeadDependencyEvent,
     DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
-    DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind, DirResolution,
-    FunctionInfo, ImplicitDropDependencySourceEvent, ImplicitNamedDestructorDependencyEvent,
-    MethodInfo, ModulePath, NamedConstDependencyEvent, NamedConstDependencyTargetEvent,
-    NamedDestructorDependencyEvent, NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
+    DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind, FunctionInfo,
+    ImplicitDropDependencySourceEvent, ImplicitNamedDestructorDependencyEvent, MethodInfo,
+    NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent,
+    NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
     OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, RirDeclarationIndexWork, Sema, SemaOutput,
     SemanticBinding, SemanticBindingKind, SemanticBindingManifest, SemanticBindingManifestWork,
     SemanticBindingNamespace, SemanticDeclarationExport, SemanticDeclarationExportWork,
     SemanticDeclarationPayload, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
     SemanticExportConstValue, SemanticExportFailure, SemanticExportParameter, SemanticExportType,
     SemanticNominalIdentity, SemanticParameterMode, SpecializedFreeFunctionDependencyEvent,
-    SpecializedFreeFunctionOrigin, import_candidate_groups,
+    SpecializedFreeFunctionOrigin,
 };
 pub use semantic_body::{
     SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg, SemanticBodyDefinitionIdentity,

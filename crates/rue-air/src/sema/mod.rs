@@ -38,7 +38,6 @@ mod file_paths;
 mod inference_ctx;
 mod info;
 mod known_symbols;
-mod module_path;
 mod output;
 mod sema_ctx_builder;
 mod semantic_body_export;
@@ -59,7 +58,6 @@ pub use declaration_index::RirDeclarationIndexWork;
 pub use inference_ctx::InferenceContext;
 pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
-pub use module_path::{DirResolution, ModulePath, import_candidate_groups};
 pub use output::{
     AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, BodyNamedDependencyEvent,
     BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken, BuiltinTypeCallHead,

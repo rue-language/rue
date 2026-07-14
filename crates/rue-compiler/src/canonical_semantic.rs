@@ -780,7 +780,7 @@ mod tests {
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
         let options = CompileOptions::default();
-        let imports = crate::bound_definitions::test_canonical_import_graph(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
 
         let ordinary = match crate::bound_definitions::configure_canonical_sema(
             &merged,
@@ -822,7 +822,7 @@ mod tests {
         let parsed = parse_source_snapshot_modules(snapshot).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_canonical_import_graph(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
         let output = analyze_canonical_program(&merged, &rir, options, &imports, ids).unwrap();
         (output, rir)
     }
