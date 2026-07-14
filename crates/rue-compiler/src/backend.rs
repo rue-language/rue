@@ -402,6 +402,12 @@ use crate::*;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    use rue_codegen::aarch64::{Aarch64Inst, Reg as Aarch64Reg};
+    use rue_codegen::x86_64::{Reg as X86Reg, X86Inst};
+
     use super::*;
 
     const FIRST_LITERAL: &[u8] = b"RUE784_FIRST_LITERAL";
@@ -438,6 +444,201 @@ fn main() -> i32 {
             crate::test_support::test_frontend_snapshot(&snapshot, &CompileOptions::default())
                 .unwrap();
         (rir, semantic)
+    }
+
+    fn strbuf_concat_frontend() -> (
+        std::sync::Arc<CanonicalRirOutput>,
+        std::sync::Arc<CanonicalSemanticOutput>,
+    ) {
+        let root = FileId::new(1);
+        let strbuf = FileId::new(2);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root,
+            HashMap::from([
+                (root, "/project/main.rue".to_owned()),
+                (strbuf, "/project/std/strbuf.rue".to_owned()),
+            ]),
+            HashMap::from([
+                (root, "main.rue".to_owned()),
+                (strbuf, "\0rue-std/strbuf.rue".to_owned()),
+            ]),
+            HashSet::from([strbuf]),
+        )
+        .unwrap();
+        let source = r#"
+const strbuf = @import("std/strbuf.rue");
+
+fn main() -> i32 {
+    println("count: " + @to_string(3));
+    println("sum: " + @to_string(13));
+    0
+}
+"#;
+        let snapshot = SourceSnapshot::new(
+            metadata,
+            vec![
+                (root, Arc::new(source.to_owned())),
+                (
+                    strbuf,
+                    Arc::new(
+                        r#"
+pub struct StrBuf {
+    buf: ptr mut u8,
+    len: u64,
+    cap: u64,
+
+    fn concat_borrowed(borrow first: Self, borrow second: Self) -> Self {
+        Self { buf: first.buf, len: first.len + second.len, cap: 0 }
+    }
+}
+
+drop fn StrBuf(self) { }
+"#
+                        .to_owned(),
+                    ),
+                ),
+            ],
+        )
+        .unwrap();
+        let (rir, semantic, _) =
+            crate::test_support::test_frontend_snapshot(&snapshot, &CompileOptions::default())
+                .unwrap();
+        (rir, semantic)
+    }
+
+    fn assert_three_result_slots_cross_cleanup(target: Target) {
+        let (rir, semantic) = strbuf_concat_frontend();
+        let main = semantic
+            .functions()
+            .iter()
+            .find(|function| function.analyzed.name == "main")
+            .unwrap();
+        let allocated = generate_allocated_mir(
+            &main.cfg,
+            semantic.type_pool(),
+            rir.semantic_symbols().interner(),
+            target,
+        )
+        .unwrap();
+
+        let (calls, stores, loads): (Vec<(usize, String)>, Vec<(usize, i32)>, Vec<(usize, i32)>) =
+            match &allocated {
+                Mir::X86_64(mir) => (
+                    mir.instructions()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, instruction)| match instruction {
+                            X86Inst::CallRel { symbol_id } => {
+                                Some((index, mir.get_symbol(*symbol_id).to_owned()))
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                    mir.instructions()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, instruction)| match instruction {
+                            X86Inst::MovMR {
+                                base: X86Reg::Rbp,
+                                offset,
+                                ..
+                            } => Some((index, *offset)),
+                            _ => None,
+                        })
+                        .collect(),
+                    mir.instructions()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, instruction)| match instruction {
+                            X86Inst::MovRM {
+                                base: X86Reg::Rbp,
+                                offset,
+                                ..
+                            } => Some((index, *offset)),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                Mir::Aarch64(mir) => (
+                    mir.instructions()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, instruction)| match instruction {
+                            Aarch64Inst::Bl { symbol_id } => {
+                                Some((index, mir.get_symbol(*symbol_id).to_owned()))
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                    mir.instructions()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, instruction)| match instruction {
+                            Aarch64Inst::Str {
+                                base: Aarch64Reg::Fp,
+                                offset,
+                                ..
+                            } => Some((index, *offset)),
+                            _ => None,
+                        })
+                        .collect(),
+                    mir.instructions()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, instruction)| match instruction {
+                            Aarch64Inst::Ldr {
+                                base: Aarch64Reg::Fp,
+                                offset,
+                                ..
+                            } => Some((index, *offset)),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+            };
+
+        let concats: Vec<_> = calls
+            .iter()
+            .filter(|(_, symbol)| symbol.contains("concat_borrowed"))
+            .collect();
+        assert_eq!(concats.len(), 2, "{target}: expected both concatenations");
+
+        for (concat_index, _) in concats {
+            let println_index = calls
+                .iter()
+                .find(|(index, symbol)| {
+                    index > concat_index && symbol.as_str() == "__rue_str_println"
+                })
+                .map(|(index, _)| *index)
+                .expect("println after concatenation");
+            let cleanups: Vec<_> = calls
+                .iter()
+                .filter(|(index, symbol)| {
+                    index > concat_index
+                        && *index < println_index
+                        && (symbol.contains(".__drop") || symbol.starts_with("__rue_drop_"))
+                })
+                .map(|(index, _)| *index)
+                .collect();
+            let first_cleanup = *cleanups.first().expect("temporary cleanup before println");
+            let last_cleanup = *cleanups.last().unwrap();
+            let saved: HashSet<_> = stores
+                .iter()
+                .filter(|(index, _)| *index > *concat_index && *index < first_cleanup)
+                .map(|(_, offset)| *offset)
+                .collect();
+            let restored: HashSet<_> = loads
+                .iter()
+                .filter(|(index, _)| *index > last_cleanup && *index < println_index)
+                .map(|(_, offset)| *offset)
+                .collect();
+            let preserved: HashSet<_> = saved.intersection(&restored).copied().collect();
+            assert_eq!(
+                preserved.len(),
+                3,
+                "{target}: StrBuf pointer, length, and capacity must all cross cleanup in frame storage"
+            );
+        }
     }
 
     #[test]
@@ -487,5 +688,11 @@ fn main() -> i32 {
 
         let repeated = compile_snapshot(&snapshot, &CompileOptions::default()).unwrap();
         assert_eq!(output.elf, repeated.elf);
+    }
+
+    #[test]
+    fn strbuf_concat_result_survives_cleanup_after_register_allocation() {
+        assert_three_result_slots_cross_cleanup(Target::X86_64Linux);
+        assert_three_result_slots_cross_cleanup(Target::Aarch64Linux);
     }
 }

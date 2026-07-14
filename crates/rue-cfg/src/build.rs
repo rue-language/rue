@@ -1091,7 +1091,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 // Lower the final value
-                let result = self.lower_inst(*value);
+                let mut result = self.lower_inst(*value);
 
                 // Pop scope and emit StorageDead (with Drop if needed) in reverse order.
                 // BUT: if the value diverged (break/continue/return), the diverging
@@ -1101,9 +1101,54 @@ impl<'a> CfgBuilder<'a> {
                     if let Some(scope_slots) = self.scope_stack.pop() {
                         // Only emit scope cleanup if the value didn't diverge
                         if !matches!(result.continuation, Continuation::Diverged) {
+                            // Preserve a block result in frame storage before
+                            // running its scope cleanup. A multi-slot result is
+                            // not safe to keep only in backend vregs here:
+                            // destructor lowering introduces more aggregate
+                            // operands, and register coalescing can otherwise
+                            // make those cleanup values reuse a result slot.
+                            //
+                            // This scratch region is not a second owner. It is
+                            // the block expression's value crossing the cleanup
+                            // boundary, so it deliberately is not added to the
+                            // drop scope. The post-cleanup Load continues the
+                            // same value and the eventual consumer owns it.
+                            let preserved = if !scope_slots.is_empty()
+                                && let Some(value) = result.value
+                                && ty != Type::UNIT
+                                && ty != Type::NEVER
+                                && self.type_pool.abi_slot_count(ty) > 1
+                            {
+                                let width = self.type_pool.abi_slot_count(ty).max(1);
+                                let slot = self.cfg.alloc_temp_local_slots(width);
+                                self.emit(
+                                    CfgInstData::StorageLive { slot, local_ty: ty },
+                                    Type::UNIT,
+                                    span,
+                                );
+                                self.emit(
+                                    CfgInstData::Alloc { slot, init: value },
+                                    Type::UNIT,
+                                    span,
+                                );
+                                Some(slot)
+                            } else {
+                                None
+                            };
+
                             for live_slot in scope_slots.into_iter().rev() {
                                 let slot_span = live_slot.span;
                                 self.emit_drop_for_slot(&live_slot, slot_span);
+                            }
+
+                            if let Some(slot) = preserved {
+                                let value = self.emit(CfgInstData::Load { slot }, ty, span);
+                                self.emit(
+                                    CfgInstData::StorageDead { slot, local_ty: ty },
+                                    Type::UNIT,
+                                    span,
+                                );
+                                result.value = Some(value);
                             }
                         }
                     }
@@ -3119,6 +3164,55 @@ mod tests {
             cfg.get_place_projections(&place),
             [Projection::Field { field_index: 1, .. }]
         ));
+    }
+
+    #[test]
+    fn aggregate_block_result_is_saved_while_scope_cleanup_runs() {
+        let cfg = build_cfg_named(
+            "struct Triple { a: u64, b: u64, c: u64 }\n\
+             struct Guard { value: i32 }\n\
+             drop fn Guard(self) { }\n\
+             fn make() -> Triple { Triple { a: 1, b: 2, c: 3 } }\n\
+             fn preserve() -> Triple { { let guard = Guard { value: 0 }; make() } }\n\
+             fn main() -> i32 { let value = preserve(); @intCast(value.a + value.b + value.c) }",
+            "preserve",
+        );
+
+        let instructions: Vec<_> = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter().copied())
+            .collect();
+        let drop_index = instructions
+            .iter()
+            .position(|value| matches!(cfg.get_inst(*value).data, CfgInstData::Drop { .. }))
+            .expect("the inner Guard is cleaned up");
+        let (alloc_index, scratch_slot) = instructions[..drop_index]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, value)| match cfg.get_inst(*value).data {
+                CfgInstData::Alloc { slot, .. } => Some((index, slot)),
+                _ => None,
+            })
+            .expect("the aggregate result is saved before cleanup");
+        let load_index = instructions[drop_index + 1..]
+            .iter()
+            .position(|value| {
+                matches!(
+                    cfg.get_inst(*value).data,
+                    CfgInstData::Load { slot } if slot == scratch_slot
+                )
+            })
+            .map(|index| index + drop_index + 1)
+            .expect("the aggregate result is restored after cleanup");
+
+        assert!(alloc_index < drop_index && drop_index < load_index);
+        assert_eq!(
+            cfg.num_locals(),
+            4,
+            "one Guard slot plus the complete three-slot result scratch"
+        );
     }
 
     #[test]
