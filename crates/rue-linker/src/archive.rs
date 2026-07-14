@@ -53,6 +53,10 @@ impl From<ParseError> for ArchiveError {
     }
 }
 
+fn checked_offset_add(offset: usize, amount: usize) -> Result<usize, ArchiveError> {
+    offset.checked_add(amount).ok_or(ArchiveError::Overflow)
+}
+
 impl Archive {
     /// Parse an ar archive from bytes.
     ///
@@ -76,7 +80,12 @@ impl Archive {
         let mut objects = Vec::new();
         let mut offset = AR_MAGIC.len();
 
-        while offset + HEADER_SIZE <= data.len() {
+        loop {
+            let header_end = checked_offset_add(offset, HEADER_SIZE)?;
+            if header_end > data.len() {
+                break;
+            }
+
             // Parse header (60 bytes):
             // - Name:      16 bytes (space-padded, may end with '/')
             // - Timestamp: 12 bytes (decimal ASCII)
@@ -85,7 +94,7 @@ impl Archive {
             // - Mode:       8 bytes (octal ASCII)
             // - Size:      10 bytes (decimal ASCII)
             // - Terminator: 2 bytes ("`\n")
-            let header = &data[offset..offset + HEADER_SIZE];
+            let header = &data[offset..header_end];
 
             // Name: first 16 bytes
             let name = std::str::from_utf8(&header[0..16])
@@ -105,7 +114,7 @@ impl Archive {
                 return Err(ArchiveError::InvalidHeader("invalid terminator".into()));
             }
 
-            offset += HEADER_SIZE;
+            offset = header_end;
 
             // Handle BSD long filename format (#1/N where N is the name length)
             // The real filename is embedded at the start of the member data.
@@ -117,10 +126,11 @@ impl Archive {
                     ))
                 })?;
                 // The actual name is at the start of the member data
-                if offset + name_len > data.len() {
+                let name_end = checked_offset_add(offset, name_len)?;
+                if name_end > data.len() {
                     return Err(ArchiveError::TooShort);
                 }
-                let actual_name = std::str::from_utf8(&data[offset..offset + name_len])
+                let actual_name = std::str::from_utf8(&data[offset..name_end])
                     .map_err(|_| ArchiveError::InvalidHeader("invalid BSD name encoding".into()))?
                     .trim_end_matches('\0')
                     .to_string();
@@ -139,20 +149,18 @@ impl Archive {
                 || actual_name.starts_with("__.SYMDEF");
 
             if is_special {
-                offset = offset.checked_add(size).ok_or(ArchiveError::Overflow)?;
+                offset = checked_offset_add(offset, size)?;
                 // Pad to even boundary
                 if offset % 2 == 1 {
-                    offset = offset.checked_add(1).ok_or(ArchiveError::Overflow)?;
+                    offset = checked_offset_add(offset, 1)?;
                 }
                 continue;
             }
 
             // Read member data (skip over BSD long filename if present)
-            let member_start = offset.checked_add(name_len).ok_or(ArchiveError::Overflow)?;
+            let member_start = checked_offset_add(offset, name_len)?;
             let member_size = size.checked_sub(name_len).ok_or(ArchiveError::Overflow)?;
-            let end_offset = member_start
-                .checked_add(member_size)
-                .ok_or(ArchiveError::Overflow)?;
+            let end_offset = checked_offset_add(member_start, member_size)?;
             if end_offset > data.len() {
                 return Err(ArchiveError::TooShort);
             }
@@ -171,10 +179,10 @@ impl Archive {
                 }
             }
 
-            offset = offset.checked_add(size).ok_or(ArchiveError::Overflow)?;
+            offset = checked_offset_add(offset, size)?;
             // Pad to even boundary
             if offset % 2 == 1 {
-                offset = offset.checked_add(1).ok_or(ArchiveError::Overflow)?;
+                offset = checked_offset_add(offset, 1)?;
             }
         }
 
@@ -238,10 +246,10 @@ mod tests {
     }
 
     #[test]
-    fn test_overflow_in_member_size() {
-        // Craft a malicious archive with a size field that would cause integer overflow.
-        // The size field is at bytes 48-58 of the header (10 bytes, decimal ASCII).
-        // We use usize::MAX which would overflow when added to any positive offset.
+    #[cfg(target_pointer_width = "64")]
+    fn test_oversized_member_is_too_short() {
+        // The largest size representable by the ten-byte field is valid on 64-bit hosts,
+        // but this fixture does not contain the claimed member data.
         let mut data = Vec::new();
 
         // AR magic
@@ -263,41 +271,26 @@ mod tests {
         // - Mode: 8 bytes
         data.extend_from_slice(b"644     "); // 8 bytes
 
-        // - Size: 10 bytes - use a huge number that would overflow
-        // usize::MAX on 64-bit is 18446744073709551615 (20 digits), too big for 10 bytes
-        // Use a smaller but still overflowing value: 9999999999 (fits in 10 bytes)
-        // When added to offset (already at 68 = 8 magic + 60 header), this won't overflow
-        // on 64-bit, so we need a different approach.
-        //
-        // Instead, use a value close to usize::MAX that's representable in 10 digits.
-        // The offset after the header is 68. Adding 9999999999 gives ~10 billion, no overflow.
-        // On 32-bit, usize::MAX is 4294967295 (10 digits), so "4294967295" would overflow
-        // when added to 68.
-        //
-        // For a portable test, we can't easily trigger overflow on 64-bit with 10 digits.
-        // However, we can test that the code handles the case correctly by using a size
-        // that's larger than the remaining data, which will give TooShort error but at
-        // least exercises the overflow check path on 32-bit systems.
-        //
-        // For this test, we'll verify that the overflow error variant exists and can be
-        // triggered by the checked_add logic. The actual overflow would require a 32-bit
-        // system or a specially crafted large file, but we can unit test the error path.
-        data.extend_from_slice(b"9999999999"); // 10 bytes - large size
+        // - Size: 10 bytes
+        data.extend_from_slice(b"9999999999");
 
         // - Terminator: 2 bytes
         data.extend_from_slice(b"`\n");
 
         let result = Archive::parse(&data);
-        // This should fail with TooShort (since data doesn't have 9999999999 bytes)
-        // On a 32-bit system or with checked arithmetic, overflow would be caught first.
-        // Either error is acceptable for malicious input.
         assert!(
-            matches!(
-                result,
-                Err(ArchiveError::TooShort) | Err(ArchiveError::Overflow)
-            ),
-            "Expected TooShort or Overflow error, got {:?}",
+            matches!(result, Err(ArchiveError::TooShort)),
+            "expected TooShort error, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn test_checked_offset_add_overflow() {
+        assert_eq!(checked_offset_add(usize::MAX - 1, 1).unwrap(), usize::MAX);
+        assert!(matches!(
+            checked_offset_add(usize::MAX, 1),
+            Err(ArchiveError::Overflow)
+        ));
     }
 }
