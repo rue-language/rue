@@ -44,21 +44,6 @@ impl DurableType {
             },
             Self::PtrConst(value) => SemanticImportType::PtrConst(Box::new(value.import_dto())),
             Self::PtrMut(value) => SemanticImportType::PtrMut(Box::new(value.import_dto())),
-            Self::Tuple(values) => SemanticImportType::Tuple(
-                values
-                    .iter()
-                    .map(Self::import_dto)
-                    .collect::<Vec<_>>()
-                    .into(),
-            ),
-            Self::Function { parameters, result } => SemanticImportType::Function {
-                parameters: parameters
-                    .iter()
-                    .map(Self::import_dto)
-                    .collect::<Vec<_>>()
-                    .into(),
-                result: Box::new(result.import_dto()),
-            },
             Self::Module(module) => SemanticImportType::Module(Arc::from(module.as_str())),
             Self::GenericParameter(index) => SemanticImportType::GenericParameter(*index),
         }
@@ -124,17 +109,6 @@ pub fn import_durable_declaration_semantics(
             DurableType::Array { element, .. }
             | DurableType::PtrConst(element)
             | DurableType::PtrMut(element) => collect_modules(element, modules),
-            DurableType::Tuple(elements) => {
-                for element in elements.iter() {
-                    collect_modules(element, modules);
-                }
-            }
-            DurableType::Function { parameters, result } => {
-                for parameter in parameters.iter() {
-                    collect_modules(parameter, modules);
-                }
-                collect_modules(result, modules);
-            }
             _ => {}
         }
     }
@@ -260,10 +234,11 @@ pub fn import_durable_declaration_semantics(
             DurableDeclarationPayload::Callable {
                 parameters, result, ..
             } => {
-                for parameter in parameters.iter() {
-                    epoch.import_type(&parameter.ty.import_dto())?;
-                }
-                epoch.import_type(&result.import_dto())?;
+                let parameters = parameters
+                    .iter()
+                    .map(|parameter| (parameter.ty.import_dto(), parameter.is_comptime))
+                    .collect::<Vec<_>>();
+                epoch.validate_callable_signature(&parameters, &result.import_dto())?;
             }
             DurableDeclarationPayload::Destructor => {}
         }
@@ -276,7 +251,7 @@ use crate::{
 };
 
 /// Version of the canonical durable type/value encoding.
-pub const DURABLE_SEMANTIC_SCHEMA_VERSION: u32 = 2;
+pub const DURABLE_SEMANTIC_SCHEMA_VERSION: u32 = 3;
 
 pub(crate) fn builtin_nominal_kind(name: &str) -> Option<SemanticImportNominalKind> {
     if rue_builtins::get_builtin_type(name).is_some() {
@@ -317,13 +292,6 @@ pub enum DurableType {
     },
     PtrConst(Box<DurableType>),
     PtrMut(Box<DurableType>),
-    /// Reserved for the source-level tuple surface once binding supports it.
-    Tuple(Arc<[DurableType]>),
-    /// Reserved for first-class function types. Parameter order is semantic.
-    Function {
-        parameters: Arc<[DurableType]>,
-        result: Box<DurableType>,
-    },
     /// A module value's resolved logical module identity.
     Module(ModuleId),
     /// A declaration-scoped generic parameter, indexed in source order.
@@ -499,11 +467,6 @@ pub fn project_durable_declaration_semantics(
 
     let mut shell_by_key = BTreeMap::new();
     for shell in shells {
-        // The AIR installer does not yet reconstruct the declaration-scoped
-        // type-parameter environment needed by generic callable bodies.
-        if shell.is_generic {
-            return Err(DurableSemanticProjectionFailure::UnsupportedDeclaration);
-        }
         let join_key = ProjectionJoinKey::from_shell(shell)
             .ok_or(DurableSemanticProjectionFailure::UnsupportedDeclaration)?;
         let key = definition_by_join_key
@@ -658,7 +621,7 @@ fn project_type(
         DurableType::PtrMut(value) => {
             SemanticExportType::PtrMut(Box::new(project_type(value, definitions, module_files)?))
         }
-        DurableType::Module(_) | DurableType::Tuple(_) | DurableType::Function { .. } => {
+        DurableType::Module(_) => {
             return Err(DurableSemanticProjectionFailure::UnsupportedType);
         }
     })
@@ -1018,7 +981,8 @@ impl From<SemanticExportFailure> for DurableSemanticExportFailure {
             SemanticExportFailure::AnonymousNominalType => Self::AnonymousNominalType,
             SemanticExportFailure::UnmappedNominalType => Self::MissingStableNominalDefinition,
             SemanticExportFailure::UnmappedFunction => Self::MissingStableFunctionDefinition,
-            SemanticExportFailure::UnsupportedParameterMode => Self::UnsupportedTypeForm,
+            SemanticExportFailure::UnsupportedParameterMode
+            | SemanticExportFailure::UnsupportedGenericSignature => Self::UnsupportedTypeForm,
             SemanticExportFailure::RecursiveStructuralType => Self::RecursiveStructuralType,
         }
     }
@@ -1085,9 +1049,24 @@ mod tests {
     }
 
     #[test]
-    fn structural_order_is_canonical_and_parameter_order_is_semantic() {
-        let a = DurableType::Tuple(Arc::from([DurableType::Bool, DurableType::I32]));
-        let b = DurableType::Tuple(Arc::from([DurableType::I32, DurableType::Bool]));
+    fn callable_parameter_order_is_semantic() {
+        let parameter = |ty| DurableSemanticParameter {
+            ty,
+            mode: DurableParameterMode::Value,
+            is_comptime: false,
+        };
+        let a = DurableDeclarationPayload::Callable {
+            parameters: Arc::from([parameter(DurableType::Bool), parameter(DurableType::I32)]),
+            result: DurableType::Unit,
+            has_self: false,
+            is_unchecked: false,
+        };
+        let b = DurableDeclarationPayload::Callable {
+            parameters: Arc::from([parameter(DurableType::I32), parameter(DurableType::Bool)]),
+            result: DurableType::Unit,
+            has_self: false,
+            is_unchecked: false,
+        };
         assert_ne!(a, b);
 
         let first = DurableConstValue::Type(DurableType::Array {
@@ -1127,6 +1106,35 @@ mod tests {
                 is_unchecked: false,
             },
         }
+    }
+
+    #[test]
+    fn durable_callable_rejects_generic_indices_outside_its_type_parameters() {
+        let declaration = DurableDeclarationSemantic {
+            key: test_key(StableDefinitionKind::Function, "invalid", None),
+            is_public: true,
+            payload: DurableDeclarationPayload::Callable {
+                parameters: Arc::from([
+                    DurableSemanticParameter {
+                        ty: DurableType::ComptimeType,
+                        mode: DurableParameterMode::Value,
+                        is_comptime: true,
+                    },
+                    DurableSemanticParameter {
+                        ty: DurableType::GenericParameter(1),
+                        mode: DurableParameterMode::Value,
+                        is_comptime: false,
+                    },
+                ]),
+                result: DurableType::GenericParameter(0),
+                has_self: false,
+                is_unchecked: false,
+            },
+        };
+        assert!(matches!(
+            import_durable_declaration_semantics(&[declaration]),
+            Err(SemanticImportFailure::GenericParameterOutOfRange)
+        ));
     }
 
     #[test]

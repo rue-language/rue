@@ -12,7 +12,9 @@ use rue_span::{FileId, Span};
 
 use super::RirDeclarationIndexWork;
 use super::{ConstValue, Sema, SemaOutput};
-use crate::types::{Type, TypeKind};
+use crate::types::{
+    ArrayLen, PtrMutability, Type, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
+};
 
 /// A nominal declaration identity valid for one successful binding request.
 /// Consumers must join this identity to their own stable definition universe
@@ -111,6 +113,7 @@ pub enum SemanticExportFailure {
     UnmappedNominalType,
     UnmappedFunction,
     UnsupportedParameterMode,
+    UnsupportedGenericSignature,
     RecursiveStructuralType,
 }
 
@@ -564,21 +567,6 @@ impl<'a> DeclarationShells<'a> {
                             return Err(DeclarationInstallFailure::CallableShapeMismatch);
                         }
                     }
-                    let names = pending
-                        .shell
-                        .parameter_names
-                        .iter()
-                        .map(|name| self.sema.interner.get_or_intern(name.as_ref()));
-                    let types = parameters
-                        .iter()
-                        .map(|parameter| self.sema.import_export_type(&parameter.ty))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let range = self.sema.param_arena.alloc(
-                        names,
-                        types,
-                        pending.shell.parameter_modes.iter().copied(),
-                        pending.shell.parameter_comptime.iter().copied(),
-                    );
                     let InstData::FnDecl {
                         name,
                         return_type,
@@ -592,7 +580,47 @@ impl<'a> DeclarationShells<'a> {
                     else {
                         return Err(DeclarationInstallFailure::KindMismatch);
                     };
-                    let return_type_value = self.sema.import_export_type(result)?;
+                    let type_name = self.sema.interner.get_or_intern("type");
+                    let rir_parameters = self.sema.rir.get_params(*params_start, *params_len);
+                    if parameters
+                        .iter()
+                        .zip(rir_parameters.iter())
+                        .any(|(parameter, rir)| {
+                            rir.is_comptime
+                                && rir.ty == type_name
+                                && parameter.ty != SemanticExportType::ComptimeType
+                        })
+                    {
+                        return Err(DeclarationInstallFailure::CallableShapeMismatch);
+                    }
+                    let names = pending
+                        .shell
+                        .parameter_names
+                        .iter()
+                        .map(|name| self.sema.interner.get_or_intern(name.as_ref()));
+                    let generic_parameters = rir_parameters
+                        .iter()
+                        .filter(|parameter| parameter.is_comptime && parameter.ty == type_name)
+                        .map(|_| Type::COMPTIME_TYPE)
+                        .collect::<Vec<_>>();
+                    let types = parameters
+                        .iter()
+                        .map(|parameter| {
+                            self.sema.import_export_type_with_generics(
+                                &parameter.ty,
+                                Some(&generic_parameters),
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let range = self.sema.param_arena.alloc(
+                        names,
+                        types,
+                        pending.shell.parameter_modes.iter().copied(),
+                        pending.shell.parameter_comptime.iter().copied(),
+                    );
+                    let return_type_value = self
+                        .sema
+                        .import_export_type_with_generics(result, Some(&generic_parameters))?;
                     if let Some(owner) = &pending.shell.identity.owner {
                         let owner = self.sema.interner.get_or_intern(owner.as_ref());
                         let id = *self
@@ -695,6 +723,23 @@ impl Sema<'_> {
         &self,
         value: &SemanticExportType,
     ) -> Result<Type, DeclarationInstallFailure> {
+        self.import_export_type_with_generics(value, None)
+    }
+
+    fn import_export_type_with_generics(
+        &self,
+        value: &SemanticExportType,
+        generic_parameters: Option<&[Type]>,
+    ) -> Result<Type, DeclarationInstallFailure> {
+        if let Some(generic_parameters) = generic_parameters
+            && Self::validate_generic_references(value, generic_parameters.len())?
+        {
+            // Ordinary declaration binding represents every generic-dependent
+            // signature type, including composites, as one top-level
+            // placeholder until specialization. Preserve the recursive DTO for
+            // durable identity, but reconstruct that exact AIR representation.
+            return Ok(Type::COMPTIME_TYPE);
+        }
         Ok(match value {
             SemanticExportType::I8 => Type::I8,
             SemanticExportType::I16 => Type::I16,
@@ -707,9 +752,10 @@ impl Sema<'_> {
             SemanticExportType::Bool => Type::BOOL,
             SemanticExportType::Unit => Type::UNIT,
             SemanticExportType::Never => Type::NEVER,
-            SemanticExportType::ComptimeType | SemanticExportType::GenericParameter(_) => {
-                Type::COMPTIME_TYPE
-            }
+            SemanticExportType::ComptimeType => Type::COMPTIME_TYPE,
+            SemanticExportType::GenericParameter(index) => *generic_parameters
+                .and_then(|parameters| parameters.get(*index as usize))
+                .ok_or(DeclarationInstallFailure::UnsupportedType)?,
             SemanticExportType::Nominal(nominal) => {
                 let name = self.interner.get_or_intern(nominal.name.as_ref());
                 match nominal.kind {
@@ -728,21 +774,45 @@ impl Sema<'_> {
                     _ => return Err(DeclarationInstallFailure::KindMismatch),
                 }
             }
-            SemanticExportType::Array { element, len } => Type::new_array(
-                self.type_pool
-                    .intern_array_from_type(self.import_export_type(element)?, *len),
-            ),
-            SemanticExportType::PtrConst(value) => Type::new_ptr_const(
-                self.type_pool
-                    .intern_ptr_const_from_type(self.import_export_type(value)?),
-            ),
-            SemanticExportType::PtrMut(value) => Type::new_ptr_mut(
-                self.type_pool
-                    .intern_ptr_mut_from_type(self.import_export_type(value)?),
-            ),
+            SemanticExportType::Array { element, len } => {
+                Type::new_array(self.type_pool.intern_array_from_type(
+                    self.import_export_type_with_generics(element, generic_parameters)?,
+                    *len,
+                ))
+            }
+            SemanticExportType::PtrConst(value) => {
+                Type::new_ptr_const(self.type_pool.intern_ptr_const_from_type(
+                    self.import_export_type_with_generics(value, generic_parameters)?,
+                ))
+            }
+            SemanticExportType::PtrMut(value) => {
+                Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(
+                    self.import_export_type_with_generics(value, generic_parameters)?,
+                ))
+            }
             SemanticExportType::Module(_) => {
                 return Err(DeclarationInstallFailure::UnsupportedType);
             }
+        })
+    }
+
+    fn validate_generic_references(
+        value: &SemanticExportType,
+        generic_parameter_count: usize,
+    ) -> Result<bool, DeclarationInstallFailure> {
+        Ok(match value {
+            SemanticExportType::GenericParameter(index) => {
+                if *index as usize >= generic_parameter_count {
+                    return Err(DeclarationInstallFailure::UnsupportedType);
+                }
+                true
+            }
+            SemanticExportType::Array { element, .. }
+            | SemanticExportType::PtrConst(element)
+            | SemanticExportType::PtrMut(element) => {
+                Self::validate_generic_references(element, generic_parameter_count)?
+            }
+            _ => false,
         })
     }
 }
@@ -1226,8 +1296,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
             .collect::<Vec<_>>();
         let convert = |ty: Type, symbol: Spur| {
             if ty == Type::COMPTIME_TYPE {
-                if let Some(index) = generic_names.iter().position(|name| *name == symbol) {
-                    return Ok(SemanticExportType::GenericParameter(index as u32));
+                let syntax = self.interner.resolve(&symbol);
+                if syntax != "type" {
+                    return self.export_deferred_signature_type(syntax, &generic_names);
                 }
             }
             self.export_type(ty, &mut Vec::new())
@@ -1254,6 +1325,36 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok((parameters.into(), convert(return_type, return_type_sym)?))
+    }
+
+    fn export_deferred_signature_type(
+        &self,
+        syntax: &str,
+        generic_names: &[Spur],
+    ) -> Result<SemanticExportType, SemanticExportFailure> {
+        if let Some(index) = generic_names
+            .iter()
+            .position(|name| self.interner.resolve(name) == syntax)
+        {
+            return Ok(SemanticExportType::GenericParameter(index as u32));
+        }
+        if let Some((element, len)) = parse_array_type_syntax(syntax) {
+            let ArrayLen::Literal(len) = len else {
+                return Err(SemanticExportFailure::UnsupportedGenericSignature);
+            };
+            return Ok(SemanticExportType::Array {
+                element: Box::new(self.export_deferred_signature_type(&element, generic_names)?),
+                len,
+            });
+        }
+        if let Some((pointee, mutability)) = parse_pointer_type_syntax(syntax) {
+            let pointee = Box::new(self.export_deferred_signature_type(&pointee, generic_names)?);
+            return Ok(match mutability {
+                PtrMutability::Const => SemanticExportType::PtrConst(pointee),
+                PtrMutability::Mut => SemanticExportType::PtrMut(pointee),
+            });
+        }
+        Err(SemanticExportFailure::UnsupportedGenericSignature)
     }
 
     fn build_declaration_semantics(
@@ -1709,6 +1810,9 @@ mod tests {
             enum Maybe { None, Some(Leaf) }
             const LIMIT: i32 = 7;
             fn id(comptime T: type, value: T) -> T { value }
+            fn nested(comptime T: type, value: [[T; 2]; 2]) -> [[T; 2]; 2] { value }
+            fn pointed(comptime T: type, value: ptr const T) -> ptr const T { value }
+            fn ordered(comptime T: type, comptime U: type, left: [T; 2], right: ptr const U) -> ptr const U { right }
             fn helper(value: ptr const Leaf) -> bool { true }
             const alias = helper;
             drop fn Boxed(self) {}
@@ -1727,6 +1831,45 @@ mod tests {
                     && parameters[1].ty == SemanticExportType::GenericParameter(0)
                     && *result == SemanticExportType::GenericParameter(0)
         )));
+        let nested = SemanticExportType::Array {
+            element: Box::new(SemanticExportType::Array {
+                element: Box::new(SemanticExportType::GenericParameter(0)),
+                len: 2,
+            }),
+            len: 2,
+        };
+        assert!(records.iter().any(|record| matches!(
+            &record.payload,
+            SemanticDeclarationPayload::Callable { parameters, result, .. }
+                if record.identity.name.as_ref() == "nested"
+                    && parameters[1].ty == nested
+                    && *result == nested
+        )));
+        assert!(records.iter().any(|record| matches!(
+            &record.payload,
+            SemanticDeclarationPayload::Callable { parameters, result, .. }
+                if record.identity.name.as_ref() == "pointed"
+                    && parameters[1].ty
+                        == SemanticExportType::PtrConst(Box::new(
+                            SemanticExportType::GenericParameter(0)
+                        ))
+                    && *result == parameters[1].ty
+        )));
+        assert!(records.iter().any(|record| matches!(
+            &record.payload,
+            SemanticDeclarationPayload::Callable { parameters, result, .. }
+                if record.identity.name.as_ref() == "ordered"
+                    && parameters[2].ty
+                        == SemanticExportType::Array {
+                            element: Box::new(SemanticExportType::GenericParameter(0)),
+                            len: 2,
+                        }
+                    && parameters[3].ty
+                        == SemanticExportType::PtrConst(Box::new(
+                            SemanticExportType::GenericParameter(1)
+                        ))
+                    && *result == parameters[3].ty
+        )));
         assert!(records.iter().any(|record| matches!(
             &record.payload,
             SemanticDeclarationPayload::Const { value: SemanticExportConstValue::Function { name, .. }, .. }
@@ -1741,6 +1884,14 @@ mod tests {
     }
 
     #[test]
+    fn value_dependent_composite_signature_export_fails_closed() {
+        assert!(matches!(
+            export("fn sized(comptime N: i32, values: [i32; N]) -> i32 { values[0] } fn main() {}"),
+            Err(SemanticExportFailure::UnsupportedGenericSignature)
+        ));
+    }
+
+    #[test]
     fn durable_payload_install_matches_ordinary_binding_in_a_fresh_epoch() {
         let source = r#"
             struct Resource {
@@ -1751,6 +1902,9 @@ mod tests {
             enum Choice { None, Some(Resource) }
             drop fn Resource(self) {}
             fn helper(value: ptr const Resource) -> i32 { value.value }
+            fn id(comptime T: type, value: T) -> T { value }
+            fn nested(comptime T: type, value: [[T; 2]; 2]) -> [[T; 2]; 2] { value }
+            fn pointed(comptime T: type, value: ptr const T) -> ptr const T { value }
             fn main() -> i32 { 0 }
         "#;
         let exports = export(source).unwrap().0;

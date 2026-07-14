@@ -149,8 +149,6 @@ fn import_staged_ordinary_body(
                 Type::new_module(id)
             }
             T::GenericParameter(_) => return Err(F::GenericParameterNeedsDeclarationContext),
-            T::Tuple(_) => return Err(F::UnsupportedTuple),
-            T::Function { .. } => return Err(F::UnsupportedFunctionType),
         })
     }
 
