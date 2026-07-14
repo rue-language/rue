@@ -59,6 +59,7 @@ pub struct CompilerSessionWork {
     pub last_parse: ParsedModulesWork,
     pub last_invalidation: ParseInvalidationSummary,
     pub imports: FrontendQueryWork,
+    pub import_diagnostics: FrontendQueryWork,
     pub import_entries: usize,
     pub import_entries_invalidated: usize,
     pub merge: FrontendQueryWork,
@@ -919,8 +920,40 @@ impl SemanticInvalidationPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FrontendDiagnosticStage {
     Syntax,
+    Import(ImportDiagnosticInputDescriptor),
     Merge,
     Semantic(CodegenInputDescriptor),
+}
+
+/// Exact immutable inputs to one canonical import-diagnostic projection.
+///
+/// Keeping the plan and observation ledger in the descriptor makes reuse an
+/// exact attempted-revision property rather than merely a source-text match.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ImportDiagnosticInputDescriptor {
+    source: SourceRevision,
+    context: Option<crate::ImportDiscoveryContext>,
+    plan: Option<crate::ImportDiscoveryPlan>,
+    ledger: crate::ImportObservationLedger,
+    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+}
+
+impl ImportDiagnosticInputDescriptor {
+    pub fn source_revision(&self) -> &SourceRevision {
+        &self.source
+    }
+    pub fn context(&self) -> Option<&crate::ImportDiscoveryContext> {
+        self.context.as_ref()
+    }
+    pub fn plan(&self) -> Option<&crate::ImportDiscoveryPlan> {
+        self.plan.as_ref()
+    }
+    pub fn ledger(&self) -> &crate::ImportObservationLedger {
+        &self.ledger
+    }
+    pub fn accepted_read_manifest(&self) -> &[crate::AcceptedReadManifestEntry] {
+        &self.accepted_reads
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1022,6 +1055,7 @@ pub struct ImportDiscoveryRevisionArtifact {
     accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
     graph: Option<Arc<CanonicalImportGraphOutput>>,
     diagnostics: CompileErrors,
+    diagnostic_snapshot: Option<Arc<FrontendDiagnosticSnapshot>>,
 }
 
 impl ImportDiscoveryRevisionArtifact {
@@ -1051,6 +1085,12 @@ impl ImportDiscoveryRevisionArtifact {
     }
     pub fn diagnostics(&self) -> &CompileErrors {
         &self.diagnostics
+    }
+    /// Revision-labeled canonical diagnostic batch for this attempted import
+    /// revision. An ordinary open iteration has none; an I/O/policy failure
+    /// publishes its batch without pretending that a graph closed.
+    pub fn diagnostic_snapshot(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        self.diagnostic_snapshot.as_ref()
     }
 }
 
@@ -1242,6 +1282,62 @@ impl CompilerSession {
             .clone())
     }
 
+    /// Return the sole compiler-owned diagnostic batch for the current import
+    /// attempt. Batch, emit, and incremental consumers all receive this exact
+    /// memoized `Arc`. Direct no-I/O sessions use the same query for parser
+    /// shape preflight; ordinary open discovery work has no publishable batch.
+    pub fn import_diagnostics(&mut self) -> Result<Arc<FrontendDiagnosticSnapshot>, CompileErrors> {
+        self.work.import_diagnostics.calls += 1;
+        let diagnostics = if let Some(attempt) = self.discovery_attempt.as_ref() {
+            let diagnostics = attempt.diagnostic_snapshot.as_ref().ok_or_else(|| {
+                CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                    "open import discovery work has no canonical diagnostic batch".into(),
+                )))
+            })?;
+            self.work.import_diagnostics.reuses += 1;
+            diagnostics.clone()
+        } else {
+            let source = self
+                .published_snapshot
+                .clone()
+                .ok_or_else(no_published_program)?;
+            let stage = FrontendDiagnosticStage::Import(ImportDiagnosticInputDescriptor {
+                source: source.source_revision().clone(),
+                context: None,
+                plan: None,
+                ledger: crate::ImportObservationLedger::default(),
+                accepted_reads: Arc::from([]),
+            });
+            if let Some(cached) = self
+                .diagnostic_cache
+                .iter()
+                .find(|entry| same_attempt(entry.source(), &source) && entry.stage() == &stage)
+                .cloned()
+            {
+                self.work.import_diagnostics.reuses += 1;
+                cached
+            } else {
+                let program = self.published.as_ref().ok_or_else(no_published_program)?;
+                let errors = crate::ImportDiscoveryPlan::shape_diagnostics(program);
+                self.work.import_diagnostics.executions += 1;
+                self.publish_diagnostics(&source, stage, Some(&errors), &[])
+            }
+        };
+        self.latest_diagnostics = Some(diagnostics.clone());
+        self.evict_diagnostics();
+        self.refresh_retention_metrics();
+        Ok(diagnostics)
+    }
+
+    fn require_successful_import_diagnostics(&mut self) -> Result<(), CompileErrors> {
+        let diagnostics = self.import_diagnostics()?;
+        if diagnostics.errors().is_empty() {
+            Ok(())
+        } else {
+            Err(CompileErrors::from(diagnostics.errors().to_vec()))
+        }
+    }
+
     /// Parse an immutable staging snapshot without publishing it to semantic
     /// or dependency queries.
     pub fn stage_import_discovery(
@@ -1253,26 +1349,54 @@ impl CompilerSession {
     ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
         self.discovery_staging_active = true;
         let source_revision = snapshot.source_revision().clone();
-        let publish_failed_attempt = |errors: CompileErrors| ImportDiscoveryRevisionArtifact {
-            status: ImportDiscoveryRevisionStatus::ClosedAttempted,
-            source_revision: source_revision.clone(),
-            context: context.clone(),
-            snapshot: snapshot.clone(),
-            program: None,
-            plan: None,
-            ledger: carried_ledger.clone(),
-            accepted_reads: accepted_reads.clone(),
-            graph: None,
-            diagnostics: errors,
-        };
         if let Err(errors) = validate_accepted_read_manifest(snapshot, &accepted_reads) {
-            self.discovery_attempt = Some(Arc::new(publish_failed_attempt(errors.clone())));
+            let diagnostic_snapshot = self.publish_import_diagnostics(
+                snapshot,
+                Some(context.clone()),
+                None,
+                carried_ledger.clone(),
+                accepted_reads.clone(),
+                &errors,
+            );
+            self.discovery_attempt = Some(Arc::new(ImportDiscoveryRevisionArtifact {
+                status: ImportDiscoveryRevisionStatus::ClosedAttempted,
+                source_revision: source_revision.clone(),
+                context: context.clone(),
+                snapshot: snapshot.clone(),
+                program: None,
+                plan: None,
+                ledger: carried_ledger.clone(),
+                accepted_reads: accepted_reads.clone(),
+                graph: None,
+                diagnostics: errors.clone(),
+                diagnostic_snapshot: Some(diagnostic_snapshot),
+            }));
             return Err(errors);
         }
         let program = match self.discovery_parse.update(snapshot).into_result() {
             Ok(program) => program,
             Err(errors) => {
-                self.discovery_attempt = Some(Arc::new(publish_failed_attempt(errors.clone())));
+                let diagnostic_snapshot = self.publish_import_diagnostics(
+                    snapshot,
+                    Some(context.clone()),
+                    None,
+                    carried_ledger.clone(),
+                    accepted_reads.clone(),
+                    &errors,
+                );
+                self.discovery_attempt = Some(Arc::new(ImportDiscoveryRevisionArtifact {
+                    status: ImportDiscoveryRevisionStatus::ClosedAttempted,
+                    source_revision: source_revision.clone(),
+                    context: context.clone(),
+                    snapshot: snapshot.clone(),
+                    program: None,
+                    plan: None,
+                    ledger: carried_ledger.clone(),
+                    accepted_reads: accepted_reads.clone(),
+                    graph: None,
+                    diagnostics: errors.clone(),
+                    diagnostic_snapshot: Some(diagnostic_snapshot),
+                }));
                 return Err(errors);
             }
         };
@@ -1280,7 +1404,27 @@ impl CompilerSession {
             Ok(plan) => plan,
             Err(error) => {
                 let errors = CompileErrors::from(error);
-                self.discovery_attempt = Some(Arc::new(publish_failed_attempt(errors.clone())));
+                let diagnostic_snapshot = self.publish_import_diagnostics(
+                    snapshot,
+                    Some(context.clone()),
+                    None,
+                    carried_ledger.clone(),
+                    accepted_reads.clone(),
+                    &errors,
+                );
+                self.discovery_attempt = Some(Arc::new(ImportDiscoveryRevisionArtifact {
+                    status: ImportDiscoveryRevisionStatus::ClosedAttempted,
+                    source_revision: source_revision.clone(),
+                    context: context.clone(),
+                    snapshot: snapshot.clone(),
+                    program: Some(program),
+                    plan: None,
+                    ledger: carried_ledger.clone(),
+                    accepted_reads: accepted_reads.clone(),
+                    graph: None,
+                    diagnostics: errors.clone(),
+                    diagnostic_snapshot: Some(diagnostic_snapshot),
+                }));
                 return Err(errors);
             }
         };
@@ -1295,6 +1439,7 @@ impl CompilerSession {
             accepted_reads,
             graph: None,
             diagnostics: CompileErrors::new(),
+            diagnostic_snapshot: None,
         }));
         Ok(plan)
     }
@@ -1322,32 +1467,48 @@ impl CompilerSession {
             .as_ref()
             .expect("open discovery attempt retains its program")
             .clone();
-        plan.validate_ledger(&ledger).map_err(CompileErrors::from)?;
+        if let Err(error) = plan.validate_ledger(&ledger) {
+            let errors = CompileErrors::from(error);
+            self.publish_failed_import_attempt(
+                open,
+                plan,
+                ledger,
+                ImportDiscoveryRevisionStatus::ClosedAttempted,
+                None,
+                &errors,
+            );
+            return Err(errors);
+        }
         if !plan.pending_requests(&ledger).is_empty() {
             let errors =
                 CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
-                    "import discovery ledger is incomplete; the revision remains open".into(),
+                    "import discovery ledger is incomplete; the attempted revision cannot close"
+                        .into(),
                 )));
-            let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
+            self.publish_failed_import_attempt(
+                open,
+                plan,
                 ledger,
-                diagnostics: errors.clone(),
-                ..open
-            });
-            self.discovery_attempt = Some(artifact);
+                ImportDiscoveryRevisionStatus::ClosedAttempted,
+                None,
+                &errors,
+            );
             return Err(errors);
         }
         let diagnostics = plan.diagnostics(&program, &ledger);
         if plan.failures(&ledger).next().is_some() {
-            let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
+            self.publish_failed_import_attempt(
+                open,
+                plan,
                 ledger,
-                diagnostics: diagnostics.clone(),
-                ..open
-            });
-            self.discovery_attempt = Some(artifact);
+                ImportDiscoveryRevisionStatus::ClosedAttempted,
+                None,
+                &diagnostics,
+            );
             return Err(diagnostics);
         }
 
-        let resolution = ModuleResolutionInputs::new(
+        let resolution = match ModuleResolutionInputs::new(
             program.root().clone(),
             program
                 .modules()
@@ -1357,17 +1518,46 @@ impl CompilerSession {
                     physical_path: Arc::from(module.physical_path()),
                 })
                 .collect(),
-        )?;
+        ) {
+            Ok(resolution) => resolution,
+            Err(error) => {
+                let errors = CompileErrors::from(error);
+                self.publish_failed_import_attempt(
+                    open,
+                    plan,
+                    ledger,
+                    ImportDiscoveryRevisionStatus::ClosedAttempted,
+                    None,
+                    &errors,
+                );
+                return Err(errors);
+            }
+        };
         let input = ImportGraphInputDescriptor {
             sources: program.source_revision().clone(),
             resolution,
             std_dir: open.context.std_root().map(Arc::from),
         };
-        let graph = plan.reduce_graph(program.root().clone(), &ledger, &open.accepted_reads)?;
-        let validation = validate_canonical_import_graph(&graph, &input.resolution);
+        let reduced = match plan.reduce_graph(program.root().clone(), &ledger, &open.accepted_reads)
+        {
+            Ok(graph) => graph,
+            Err(error) => {
+                let errors = CompileErrors::from(error);
+                self.publish_failed_import_attempt(
+                    open,
+                    plan,
+                    ledger,
+                    ImportDiscoveryRevisionStatus::ClosedAttempted,
+                    None,
+                    &errors,
+                );
+                return Err(errors);
+            }
+        };
+        let validation = validate_canonical_import_graph(&reduced, &input.resolution);
         let graph = Arc::new(CanonicalImportGraphOutput {
             input,
-            graph,
+            graph: reduced,
             validation,
         });
         let resolution_only = graph.validation().problems().iter().all(|problem| {
@@ -1382,32 +1572,53 @@ impl CompilerSession {
             errors.push(CompileError::without_span(ErrorKind::InvalidCompilerInput(
                 "import discovery produced a structurally invalid canonical graph".into(),
             )));
-            let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
+            self.publish_failed_import_attempt(
+                open,
+                plan,
                 ledger,
-                diagnostics: errors.clone(),
-                ..open
-            });
-            self.discovery_attempt = Some(artifact);
+                ImportDiscoveryRevisionStatus::ClosedAttempted,
+                None,
+                &errors,
+            );
             return Err(errors);
         }
         if !graph.validation().is_valid() || !diagnostics.is_empty() {
-            let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
-                status: ImportDiscoveryRevisionStatus::ClosedAttempted,
+            self.publish_failed_import_attempt(
+                open,
+                plan,
                 ledger,
-                graph: Some(graph),
-                diagnostics: diagnostics.clone(),
-                ..open
-            });
-            self.discovery_attempt = Some(artifact);
+                ImportDiscoveryRevisionStatus::ClosedAttempted,
+                Some(graph),
+                &diagnostics,
+            );
             return Err(diagnostics);
         }
 
-        self.update_for_presentation(&open.snapshot).into_result()?;
+        if let Err(errors) = self.update_for_presentation(&open.snapshot).into_result() {
+            self.publish_failed_import_attempt(
+                open,
+                plan,
+                ledger,
+                ImportDiscoveryRevisionStatus::ClosedAttempted,
+                None,
+                &errors,
+            );
+            return Err(errors);
+        }
+        let diagnostic_snapshot = self.publish_import_diagnostics(
+            &open.snapshot,
+            Some(open.context.clone()),
+            Some(plan),
+            ledger.clone(),
+            open.accepted_reads.clone(),
+            &diagnostics,
+        );
         let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
             status: ImportDiscoveryRevisionStatus::ClosedValid,
             ledger,
             graph: Some(graph),
             diagnostics,
+            diagnostic_snapshot: Some(diagnostic_snapshot),
             ..open
         });
         self.discovery_attempt = Some(artifact.clone());
@@ -1416,8 +1627,44 @@ impl CompilerSession {
         Ok(artifact)
     }
 
+    fn publish_failed_import_attempt(
+        &mut self,
+        open: ImportDiscoveryRevisionArtifact,
+        plan: crate::ImportDiscoveryPlan,
+        ledger: crate::ImportObservationLedger,
+        status: ImportDiscoveryRevisionStatus,
+        graph: Option<Arc<CanonicalImportGraphOutput>>,
+        errors: &CompileErrors,
+    ) -> Arc<ImportDiscoveryRevisionArtifact> {
+        debug_assert_ne!(status, ImportDiscoveryRevisionStatus::ClosedValid);
+        let diagnostic_snapshot = self.publish_import_diagnostics(
+            &open.snapshot,
+            Some(open.context.clone()),
+            Some(plan),
+            ledger.clone(),
+            open.accepted_reads.clone(),
+            errors,
+        );
+        let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
+            status,
+            ledger,
+            graph,
+            diagnostics: errors.clone(),
+            diagnostic_snapshot: Some(diagnostic_snapshot),
+            ..open
+        });
+        self.discovery_attempt = Some(artifact.clone());
+        self.discovery_staging_active = status == ImportDiscoveryRevisionStatus::Open;
+        artifact
+    }
+
     fn require_closed_discovery(&self) -> Result<(), CompileErrors> {
-        if self.discovery_staging_active {
+        if self.discovery_staging_active
+            || self
+                .discovery_attempt
+                .as_ref()
+                .is_some_and(|attempt| attempt.status != ImportDiscoveryRevisionStatus::ClosedValid)
+        {
             return Err(CompileErrors::from(CompileError::without_span(
                 ErrorKind::InvalidCompilerInput(
                     "semantic and dependency queries require a closed valid discovery revision"
@@ -1511,6 +1758,30 @@ impl CompilerSession {
         self.evict_diagnostics();
         self.refresh_retention_metrics();
         snapshot
+    }
+
+    fn publish_import_diagnostics(
+        &mut self,
+        source: &SourceSnapshot,
+        context: Option<crate::ImportDiscoveryContext>,
+        plan: Option<crate::ImportDiscoveryPlan>,
+        ledger: crate::ImportObservationLedger,
+        accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+        errors: &CompileErrors,
+    ) -> Arc<FrontendDiagnosticSnapshot> {
+        let input = ImportDiagnosticInputDescriptor {
+            source: source.source_revision().clone(),
+            context,
+            plan,
+            ledger,
+            accepted_reads,
+        };
+        self.publish_diagnostics(
+            source,
+            FrontendDiagnosticStage::Import(input),
+            Some(errors),
+            &[],
+        )
     }
 
     fn evict_diagnostics(&mut self) {
@@ -1799,6 +2070,7 @@ impl CompilerSession {
 
     pub fn rir(&mut self) -> Result<Arc<CanonicalRirOutput>, CompileErrors> {
         self.work.rir.calls += 1;
+        self.require_successful_import_diagnostics()?;
         if let Some(cached) = &self.rir_cache {
             self.work.rir.reuses += 1;
             return Ok(cached.clone());
@@ -1818,6 +2090,7 @@ impl CompilerSession {
         options: &CompileOptions,
     ) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
         self.work.semantic.calls += 1;
+        self.require_successful_import_diagnostics()?;
         let imports = self.accepted_semantic_import_graph()?;
         let rir = self.rir()?;
         let merged = match self.merge_cache.as_ref() {
@@ -1999,6 +2272,7 @@ impl CompilerSession {
         options: &CompileOptions,
     ) -> Result<Arc<BoundDefinitionSet>, CompileErrors> {
         self.work.definitions.calls += 1;
+        self.require_successful_import_diagnostics()?;
         let imports = self.accepted_semantic_import_graph()?;
         let rir = self.rir()?;
         let merged = match self.merge_cache.as_ref() {
@@ -6777,7 +7051,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&initial).into_result().unwrap();
         session.semantic(&options).unwrap();
-        assert_eq!(session.work().retention.diagnostic_entries, 3);
+        assert_eq!(session.work().retention.diagnostic_entries, 4);
         assert_eq!(session.work().retention.diagnostic_source_attempts, 1);
         assert_eq!(
             session.work().retention.diagnostic_source_bytes,

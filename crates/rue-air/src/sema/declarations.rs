@@ -1844,31 +1844,17 @@ impl<'a> Sema<'a> {
                 args_len,
             } => {
                 if *name == self.known.import {
-                    // Validate exactly one argument
-                    if *args_len != 1 {
-                        return Err(CompileError::new(
-                            ErrorKind::IntrinsicWrongArgCount {
-                                name: "import".to_string(),
-                                expected: 1,
-                                found: *args_len as usize,
-                            },
-                            span,
-                        ));
-                    }
-
-                    // Get the string literal argument
+                    assert_eq!(
+                        *args_len, 1,
+                        "compiler import preflight rejects malformed @import calls"
+                    );
                     let arg_refs = self.rir.get_inst_refs(*args_start, *args_len);
                     let arg_inst = self.rir.get(arg_refs[0]);
                     let import_path = match &arg_inst.data {
                         InstData::StringConst(path_spur) => {
                             self.interner.resolve(path_spur).to_string()
                         }
-                        _ => {
-                            return Err(CompileError::new(
-                                ErrorKind::ImportRequiresStringLiteral,
-                                arg_inst.span,
-                            ));
-                        }
+                        _ => unreachable!("compiler import preflight requires a string literal"),
                     };
 
                     let module_id = self.resolve_canonical_import(&import_path, span)?;

@@ -50,6 +50,15 @@ compile_stderr_contains = ["E0201", "bad.rue:", "undefined variable 'missing'"]
 compile_stdout_not_contains = ["=== RIR ==="]
 
 [[case]]
+name = "emit_rir_stops_at_canonical_import_preflight"
+description = "RUE-809: RIR emit cannot lower a malformed import before the compiler-owned import diagnostic batch succeeds."
+files = [{ path = "main.rue", source = "fn main() { let bad = @import(1); }\n" }]
+args = ["--emit", "rir", "main.rue"]
+compile_fail = true
+compile_stderr_contains = ["E0703", "@import requires a string literal argument"]
+compile_stdout_not_contains = ["=== RIR ==="]
+
+[[case]]
 name = "emit_rir_multifile_errors_follow_discovery_not_logical_order"
 description = "RUE-736: session-backed emit diagnostics retain caller discovery order when logical module order differs."
 files = [

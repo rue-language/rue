@@ -1269,17 +1269,23 @@ fn walk_expr(
                         specifier: Arc::from(specifier),
                     });
                 } else {
-                    let shape = if value.args.len() != 1 {
-                        InvalidImportShape::WrongArity {
-                            actual: u32::try_from(value.args.len()).unwrap_or(u32::MAX),
-                        }
+                    let (span, shape) = if value.args.len() != 1 {
+                        (
+                            value.span,
+                            InvalidImportShape::WrongArity {
+                                actual: u32::try_from(value.args.len()).unwrap_or(u32::MAX),
+                            },
+                        )
                     } else {
-                        InvalidImportShape::NonStringArgument
+                        let span = match &value.args[0] {
+                            IntrinsicArg::Expr(expr) => expr.span(),
+                            IntrinsicArg::Type(ty) => ty.span(),
+                        };
+                        (span, InvalidImportShape::NonStringArgument)
                     };
-                    imports.invalid.push(ParsedInvalidImportSite {
-                        span: value.span,
-                        shape,
-                    });
+                    imports
+                        .invalid
+                        .push(ParsedInvalidImportSite { span, shape });
                 }
             }
             for arg in &value.args {
