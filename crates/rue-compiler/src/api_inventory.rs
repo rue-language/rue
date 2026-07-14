@@ -14,6 +14,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("drop_glue", include_str!("drop_glue.rs")),
     ("durable_body", include_str!("durable_body.rs")),
     ("durable_semantics", include_str!("durable_semantics.rs")),
+    ("import_discovery", include_str!("import_discovery.rs")),
     ("import_graph", include_str!("import_graph.rs")),
     ("linking", include_str!("linking.rs")),
     ("parsed_modules", include_str!("parsed_modules.rs")),

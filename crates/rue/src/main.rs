@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
+use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -13,17 +15,19 @@ use tracing_subscriber::{EnvFilter, Layer as _, fmt};
 
 mod timing;
 
-#[cfg(test)]
-use rue_compiler::CompilerSessionWork;
 use rue_compiler::{
-    Ast, CanonicalRirOutput, CanonicalSemanticOutput, CompileError, CompileErrors, CompileOptions,
-    CompileWarning, CompilerSession, ErrorKind, FileId, Lexer, LinkerMode, MAX_SOURCE_BYTES,
-    MultiFileFormatter, MultiFileJsonFormatter, OptLevel, PipelineWork, PreviewFeature,
-    PreviewFeatures, SourceInfo, SourceMetadata, SourceSnapshot, Span, Token, TokenKind,
-    TypeInternPool, compile_snapshot, configure_thread_pool, generate_emitted_asm,
+    AcceptedImportSource, Ast, CanonicalRirOutput, CanonicalSemanticOutput, CompileError,
+    CompileErrors, CompileOptions, CompileWarning, CompilerSession, DiscoverySourceAssembler,
+    ErrorKind, FileId, FileMetadataFingerprint, ImportDiscoveryContext,
+    ImportDiscoveryRevisionArtifact, ImportObservation, ImportObservationLedger,
+    ImportObservationStatus, Lexer, LinkerMode, MultiFileFormatter, MultiFileJsonFormatter,
+    OptLevel, PhysicalFileIdentity, PipelineWork, PreviewFeature, PreviewFeatures, SourceInfo,
+    SourceSnapshot, Token, TypeInternPool, configure_thread_pool, generate_emitted_asm,
     generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
-    generate_stack_frame_info, import_candidate_groups, parse_source_snapshot_for_ast_presentation,
+    generate_stack_frame_info, parse_source_snapshot_for_ast_presentation,
 };
+#[cfg(test)]
+use rue_compiler::{CompilerSessionWork, SourceMetadata};
 use rue_rir::RirPrinter;
 use rue_target::Target;
 use serde::Serialize;
@@ -96,14 +100,15 @@ fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
     }
 }
 
-fn build_emit_frontend(
-    source_snapshot: &SourceSnapshot,
+fn build_emit_frontend_in_session(
+    session: &mut CompilerSession,
     options: CompileOptions,
 ) -> Result<EmitFrontend, CompileErrors> {
-    let mut session = CompilerSession::new();
-    let parsed = session
-        .update_for_presentation(source_snapshot)
-        .into_result()?;
+    let parsed = session.published().cloned().ok_or_else(|| {
+        CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+            "emit requires a published closed discovery revision".into(),
+        )))
+    })?;
     let rir = {
         let _span = info_span!("semantic_astgen").entered();
         session.rir()?
@@ -123,6 +128,18 @@ fn build_emit_frontend(
         #[cfg(test)]
         session_work,
     })
+}
+
+#[cfg(test)]
+fn build_emit_frontend(
+    source_snapshot: &SourceSnapshot,
+    options: CompileOptions,
+) -> Result<EmitFrontend, CompileErrors> {
+    let mut session = CompilerSession::new();
+    session
+        .update_for_presentation(source_snapshot)
+        .into_result()?;
+    build_emit_frontend_in_session(&mut session, options)
 }
 
 impl EmitFrontend {
@@ -1149,19 +1166,28 @@ impl SourceManifest {
                 base_dir.join(entry_path)
             };
             declared_paths.insert(normalize_lexical_path(&resolved));
-            let canonical = fs::canonicalize(&resolved).map_err(|e| {
-                format!(
-                    "Error reading source manifest '{}': line {} entry '{}' cannot be resolved: {}",
-                    path, line_number, entry, e
-                )
-            })?;
-            if !canonical.is_file() {
-                return Err(format!(
-                    "Error reading source manifest '{}': line {} entry '{}' is not a file",
-                    path, line_number, entry
-                ));
+            match fs::canonicalize(&resolved) {
+                Ok(canonical) if canonical.is_file() => {
+                    allowed.insert(canonical);
+                }
+                Ok(_) => {
+                    return Err(format!(
+                        "Error reading source manifest '{}': line {} entry '{}' is not a file",
+                        path, line_number, entry
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // A manifest grants an operation, not a claim that the
+                    // candidate exists. Declared absent ambiguity arms must be
+                    // observable without probing paths the policy did not name.
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "Error reading source manifest '{}': line {} entry '{}' cannot be resolved: {}",
+                        path, line_number, entry, error
+                    ));
+                }
             }
-            allowed.insert(canonical);
         }
 
         Ok(Self {
@@ -1181,6 +1207,26 @@ impl SourceManifest {
 
     fn display_path(&self) -> String {
         self.path.display().to_string()
+    }
+
+    fn policy_revision(&self) -> String {
+        let mut declared = self
+            .declared_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        declared.sort();
+        let mut allowed = self
+            .allowed
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        allowed.sort();
+        format!(
+            "manifest-v1\ndeclared={}\nallowed={}",
+            declared.join("\0"),
+            allowed.join("\0")
+        )
     }
 }
 
@@ -1206,11 +1252,98 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
     normalized
 }
 
+enum StableReadError {
+    Io(std::io::Error),
+    Changed,
+}
+
+struct StableRead {
+    source: String,
+    identity: PhysicalFileIdentity,
+    fingerprint: FileMetadataFingerprint,
+}
+
+fn stable_read_to_string(path: &Path) -> Result<StableRead, StableReadError> {
+    let before = fs::metadata(path).map_err(StableReadError::Io)?;
+    let mut file = fs::File::open(path).map_err(StableReadError::Io)?;
+    let opened = file.metadata().map_err(StableReadError::Io)?;
+    if !same_file_observation(&before, &opened) {
+        return Err(StableReadError::Changed);
+    }
+    let mut source = String::new();
+    file.read_to_string(&mut source)
+        .map_err(StableReadError::Io)?;
+    let after = file.metadata().map_err(StableReadError::Io)?;
+    if !same_file_observation(&opened, &after) {
+        return Err(StableReadError::Changed);
+    }
+    Ok(StableRead {
+        source,
+        identity: physical_file_identity(&opened),
+        fingerprint: file_metadata_fingerprint(&opened),
+    })
+}
+
+#[cfg(unix)]
+fn physical_file_identity(metadata: &fs::Metadata) -> PhysicalFileIdentity {
+    use std::os::unix::fs::MetadataExt;
+    PhysicalFileIdentity::new(metadata.dev(), metadata.ino())
+}
+
+#[cfg(unix)]
+fn file_metadata_fingerprint(metadata: &fs::Metadata) -> FileMetadataFingerprint {
+    use std::os::unix::fs::MetadataExt;
+    let modified = (metadata.mtime() as u64)
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(metadata.mtime_nsec() as u64);
+    let changed = (metadata.ctime() as u64)
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(metadata.ctime_nsec() as u64);
+    FileMetadataFingerprint::new(metadata.len(), modified, changed)
+}
+
+#[cfg(not(unix))]
+fn physical_file_identity(_metadata: &fs::Metadata) -> PhysicalFileIdentity {
+    PhysicalFileIdentity::new(0, 0)
+}
+
+#[cfg(not(unix))]
+fn file_metadata_fingerprint(metadata: &fs::Metadata) -> FileMetadataFingerprint {
+    use std::time::UNIX_EPOCH;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    FileMetadataFingerprint::new(metadata.len(), modified, 0)
+}
+
+#[cfg(unix)]
+fn same_file_observation(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev()
+        && left.ino() == right.ino()
+        && left.len() == right.len()
+        && left.mtime() == right.mtime()
+        && left.mtime_nsec() == right.mtime_nsec()
+        && left.ctime() == right.ctime()
+        && left.ctime_nsec() == right.ctime_nsec()
+}
+
+#[cfg(not(unix))]
+fn same_file_observation(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    left.len() == right.len()
+        && left.modified().ok() == right.modified().ok()
+        && left.is_file() == right.is_file()
+}
+
 /// Compute `target` relative to `base` without consulting the filesystem.
 ///
 /// Both inputs are expected to be absolute and lexically normalized. Keeping
 /// this lexical is important: following symlinks would turn source identity
 /// back into a property of the machine's physical directory layout.
+#[cfg(test)]
 fn lexical_relative_path(base: &Path, target: &Path) -> Option<PathBuf> {
     let base_components: Vec<_> = base.components().collect();
     let target_components: Vec<_> = target.components().collect();
@@ -1249,6 +1382,7 @@ fn lexical_relative_path(base: &Path, target: &Path) -> Option<PathBuf> {
     Some(relative)
 }
 
+#[cfg(test)]
 const STD_SYMBOL_NAMESPACE: &str = "\0rue-std";
 
 /// Derive relocation-stable source identities for generated symbol names.
@@ -1258,11 +1392,7 @@ const STD_SYMBOL_NAMESPACE: &str = "\0rue-std";
 /// remain stable when the whole source layout moves. The standard library has
 /// its own namespace because `$RUE_STD_PATH` may live outside (and at a
 /// different depth from) the relocated project root.
-fn derive_symbol_paths(sources: &[(String, String)]) -> Result<Vec<String>, String> {
-    let std_root = env::var_os("RUE_STD_PATH").map(PathBuf::from);
-    derive_symbol_paths_with_std_root(sources, std_root.as_deref())
-}
-
+#[cfg(test)]
 fn derive_symbol_paths_with_std_root(
     sources: &[(String, String)],
     std_root: Option<&Path>,
@@ -1379,317 +1509,320 @@ struct DependencyOutput {
     imports: Vec<DependencyImport>,
 }
 
-#[derive(Debug, Default)]
-struct DependencyGraph {
-    root: Option<PathBuf>,
-    sources: std::collections::BTreeMap<PathBuf, &'static str>,
-    imports: Vec<(PathBuf, String, PathBuf)>,
-    import_seen: std::collections::HashSet<(PathBuf, String, PathBuf)>,
-}
-
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ImportDiscoveryResult {
     mixed_imports: Vec<PathBuf>,
-    unresolved_imports: Vec<UnresolvedImport>,
+    source_snapshot: SourceSnapshot,
+    revision: Arc<ImportDiscoveryRevisionArtifact>,
+    session: CompilerSession,
 }
 
-#[derive(Debug)]
-struct UnresolvedImport {
-    path: String,
-    candidates: Vec<String>,
-    span: Span,
-}
-
-impl DependencyGraph {
-    fn record_source(&mut self, path: PathBuf, kind: &'static str) {
-        if kind == "root" {
-            self.root = Some(path.clone());
-        }
-        self.sources.entry(path).or_insert(kind);
-    }
-
-    fn record_import(&mut self, from: PathBuf, specifier: &str, resolved: PathBuf) {
-        let key = (from.clone(), specifier.to_string(), resolved.clone());
-        if self.import_seen.insert(key.clone()) {
-            self.imports.push(key);
-        }
-    }
-
-    fn to_output(&self) -> DependencyOutput {
-        let sources = self
-            .sources
-            .iter()
-            .map(|(path, kind)| DependencySource {
-                path: path.display().to_string(),
-                kind,
+fn dependency_output_from_canonical_graph(
+    snapshot: &SourceSnapshot,
+    graph: &rue_compiler::CanonicalImportGraph,
+    positional_sources: &HashSet<PathBuf>,
+) -> DependencyOutput {
+    let physical_for = |module: &rue_compiler::ModuleId| {
+        snapshot
+            .metadata()
+            .logical_paths()
+            .find_map(|(file_id, logical)| {
+                (logical == module.as_str())
+                    .then(|| snapshot.metadata().physical_path(file_id))
+                    .flatten()
             })
-            .collect();
-        let imports = self
-            .imports
-            .iter()
-            .map(|(from, specifier, resolved)| DependencyImport {
-                from: from.display().to_string(),
-                specifier: specifier.clone(),
-                resolved: resolved.display().to_string(),
+            .and_then(|path| fs::canonicalize(path).ok())
+    };
+    let root = physical_for(graph.root()).unwrap_or_default();
+    let sources = snapshot
+        .files()
+        .filter_map(|source| {
+            fs::canonicalize(source.path).ok().map(|path| {
+                let kind = if source.file_id == snapshot.metadata().root_file_id() {
+                    "root"
+                } else if positional_sources.contains(&path) {
+                    "positional"
+                } else {
+                    "import"
+                };
+                DependencySource {
+                    path: path.display().to_string(),
+                    kind,
+                }
             })
-            .collect();
-
-        DependencyOutput {
-            version: 1,
-            root: self
-                .root
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_default(),
-            sources,
-            imports,
+        })
+        .collect();
+    let mut imports = Vec::new();
+    for record in graph.records() {
+        let Some(from) = physical_for(record.importer()) else {
+            continue;
+        };
+        let targets: Vec<_> = match record.resolution() {
+            rue_compiler::CanonicalImportResolution::Resolved(target) => vec![target],
+            rue_compiler::CanonicalImportResolution::Ambiguous {
+                file_module,
+                directory_module,
+            } => vec![file_module, directory_module],
+            rue_compiler::CanonicalImportResolution::Missing => Vec::new(),
+        };
+        for target in targets {
+            if let Some(resolved) = physical_for(target) {
+                imports.push(DependencyImport {
+                    from: from.display().to_string(),
+                    specifier: record.normalized_specifier().to_owned(),
+                    resolved: resolved.display().to_string(),
+                });
+            }
         }
+    }
+    DependencyOutput {
+        version: 1,
+        root: root.display().to_string(),
+        sources,
+        imports,
     }
 }
 
 /// Reject a source before discovery lexing if Rue's span representation cannot
 /// describe its byte offsets.
-fn validate_source_len_before_discovery(
-    file_id: FileId,
-    path: &str,
-    source: &str,
-    error_format: ErrorFormat,
-) -> Result<(), ()> {
-    if source.len() <= MAX_SOURCE_BYTES {
-        return Ok(());
-    }
-
-    let error = CompileError::without_span(ErrorKind::InvalidCompilerInput(format!(
-        "source text for file ID {} ({path:?}) is {} bytes, exceeding the maximum supported length of {} bytes",
-        file_id.index(),
-        source.len(),
-        MAX_SOURCE_BYTES
-    )));
-    let diagnostics =
-        DiagnosticOutput::new(error_format, vec![(file_id, SourceInfo::new(source, path))]);
-    diagnostics.print_error(&error);
-    Err(())
-}
-
-/// Discover `@import("...")` references in the given sources and load the
-/// referenced module files from disk, transitively, appending them to
-/// `sources`.
-///
-/// Sema resolves import paths only against loaded files (see
-/// `resolve_import_path` in rue-air), so this is the step that makes
-/// `@import` work without hand-listing every module (RUE-14).
-///
-/// Imports are found by scanning the token stream (so comments and string
-/// contents are handled correctly) for the `@import ( "<path>" )` shape.
-/// Resolution mirrors sema's `ModulePath` order, probing the filesystem:
-///
-/// - `"std"`: `$RUE_STD_PATH/_std.rue`, then `std/_std.rue` relative to the
-///   importing file, then relative to the first (root) source file
-/// - `"foo.rue"`: exact path relative to the importing file, then the root
-/// - `"foo"` / `"a/b"`: `{path}.rue` then the directory-module facade
-///   `{path}/_{basename}.rue` (the facade lives INSIDE the directory, like
-///   `std/_std.rue` — ratified in RUE-137), relative to the importing file,
-///   then the root
-///
-/// Unresolvable imports are recorded for modes like `--emit deps` that need
-/// the import graph but should not run full semantic validation. Normal
-/// compilation still lets sema report those errors from the typed import use.
+/// Reach the parser-owned import fixed point by executing compiler-generated
+/// filesystem requests. This driver owns only the read-policy checks and
+/// physical observation transactions; the compiler owns recognition,
+/// candidate order, identity assembly, closure, and canonical outcomes.
 ///
 /// Returns non-root positional sources that were also reached through an
 /// import. That mixed mode is rejected by the CLI after discovery (RUE-434),
 /// because the file should be part of the root import graph, not also an
 /// additional flat positional input.
 fn discover_and_load_imports(
-    sources: &mut Vec<(String, String)>,
+    sources: &[(String, String)],
     source_manifest: Option<&SourceManifest>,
-    dependency_graph: &mut DependencyGraph,
+    std_root: Option<&Path>,
     error_format: ErrorFormat,
 ) -> Result<ImportDiscoveryResult, ()> {
     use std::collections::HashSet;
 
-    let root_dir = Path::new(&sources[0].0)
+    let root_path = normalize_lexical_path(Path::new(&sources[0].0));
+    let root_dir = root_path
         .parent()
-        .map(PathBuf::from)
-        .unwrap_or_default();
-
-    // Canonical paths of everything already loaded (for dedupe and cycles).
-    let mut loaded: HashSet<PathBuf> = sources
-        .iter()
-        .filter_map(|(p, _)| fs::canonicalize(p).ok())
-        .collect();
+        .unwrap_or_else(|| Path::new("/"))
+        .to_path_buf();
+    let std_root = std_root.map(normalize_lexical_path);
+    let policy_revision = source_manifest
+        .map(SourceManifest::policy_revision)
+        .unwrap_or_else(|| "unrestricted".into());
+    let context = ImportDiscoveryContext::new(
+        1,
+        root_dir.to_string_lossy(),
+        std_root
+            .as_deref()
+            .map(|path| path.to_string_lossy())
+            .as_deref(),
+        policy_revision,
+    )
+    .map_err(|error| {
+        eprintln!("Error: {error}");
+    })?;
+    let root_canonical = fs::canonicalize(&root_path).map_err(|error| {
+        eprintln!("Error reading {}: {error}", root_path.display());
+    })?;
+    if source_manifest.is_some_and(|manifest| !manifest.allows_canonical(&root_canonical)) {
+        eprintln!("Error: root source escapes the source manifest after canonicalization");
+        return Err(());
+    }
+    let root_read = stable_read_to_string(&root_canonical).map_err(|error| match error {
+        StableReadError::Io(error) => eprintln!("Error reading {}: {error}", root_path.display()),
+        StableReadError::Changed => eprintln!(
+            "Error reading {}: source changed during read",
+            root_path.display()
+        ),
+    })?;
+    let mut assembler = DiscoverySourceAssembler::new(
+        context.clone(),
+        root_path.to_string_lossy(),
+        root_canonical.to_string_lossy(),
+        root_read.identity,
+        root_read.fingerprint,
+        Arc::new(root_read.source),
+    )
+    .map_err(|error| {
+        eprintln!("Error: {error}");
+    })?;
     let explicit_non_root: HashSet<PathBuf> = sources
         .iter()
         .skip(1)
-        .filter_map(|(p, _)| fs::canonicalize(p).ok())
+        .filter_map(|(path, _)| fs::canonicalize(path).ok())
         .collect();
-    let mut result = ImportDiscoveryResult::default();
+    for (path, _) in sources.iter().skip(1) {
+        let canonical = fs::canonicalize(path).map_err(|error| {
+            eprintln!("Error reading {path}: {error}");
+        })?;
+        if source_manifest.is_some_and(|manifest| !manifest.allows_canonical(&canonical)) {
+            eprintln!(
+                "Error: positional source escapes the source manifest after canonicalization: {path}"
+            );
+            return Err(());
+        }
+        let read = stable_read_to_string(&canonical).map_err(|error| match error {
+            StableReadError::Io(error) => eprintln!("Error reading {path}: {error}"),
+            StableReadError::Changed => {
+                eprintln!("Error reading {path}: source changed during read")
+            }
+        })?;
+        let requested = normalize_lexical_path(Path::new(path));
+        assembler
+            .add_explicit(
+                requested.to_string_lossy().as_ref(),
+                canonical.to_string_lossy().as_ref(),
+                read.identity,
+                read.fingerprint,
+                Arc::new(read.source),
+            )
+            .map_err(|error| {
+                eprintln!("Error: {error}");
+            })?;
+    }
+
+    let mut ledger = ImportObservationLedger::default();
+    let mut staging = CompilerSession::new();
+    let mut mixed_imports = Vec::new();
     let mut mixed_seen = HashSet::new();
-
-    let mut i = 0;
-    while i < sources.len() {
-        let source_index = i;
-        let importer_file_id = FileId::new((i + 1) as u32);
-        let importer_path = sources[source_index].0.clone();
-        let importer_canonical = fs::canonicalize(&importer_path).ok();
-        i += 1;
-
-        let tokenized = {
-            let content = &sources[source_index].1;
-            validate_source_len_before_discovery(
-                importer_file_id,
-                &importer_path,
-                content,
-                error_format,
-            )?;
-            Lexer::new(content).tokenize()
-        };
-        let Ok((tokens, interner)) = tokenized else {
-            // Lex errors will be reported properly during compilation.
-            continue;
-        };
-
-        for w in tokens.windows(5) {
-            // Match `@import ( "<path>" )`, tolerating a trailing comma before
-            // the close paren (RUE-536): `@import("x",)` is a valid one-argument
-            // list and must still be discovered. The 5-token window lets us peek
-            // past the string at either `)` or `, )`.
-            let (TokenKind::AtImport(_), TokenKind::LParen, TokenKind::String(s)) =
-                (&w[0].kind, &w[1].kind, &w[2].kind)
-            else {
-                continue;
-            };
-            match (&w[3].kind, &w[4].kind) {
-                (TokenKind::RParen, _) => {}
-                (TokenKind::Comma, TokenKind::RParen) => {}
-                _ => continue,
-            }
-            let import_str = interner.resolve(s);
-
-            let importer_dir = Path::new(&importer_path)
-                .parent()
-                .map(PathBuf::from)
-                .unwrap_or_default();
-
-            // Candidate GROUPS, nearest base directory first. Within a group,
-            // EVERY existing candidate is loaded — if both `foo.rue` and
-            // `foo/_foo.rue` exist, loading both lets sema report the
-            // dual-entity ambiguity (E0708) instead of the driver silently
-            // picking one. Later groups are only probed when the nearer group
-            // had nothing.
-            let base_dirs = vec![
-                importer_dir.to_string_lossy().into_owned(),
-                root_dir.to_string_lossy().into_owned(),
-            ];
-            let std_dir = (import_str == "std")
-                .then(|| env::var("RUE_STD_PATH").ok())
-                .flatten();
-            let groups: Vec<Vec<PathBuf>> =
-                import_candidate_groups(import_str, &base_dirs, std_dir.as_deref())
-                    .into_iter()
-                    .map(|group| group.into_iter().map(PathBuf::from).collect())
+    let final_plan;
+    loop {
+        let snapshot = assembler.snapshot().map_err(|error| {
+            eprintln!("Error: {error}");
+        })?;
+        let plan = match staging.stage_import_discovery(
+            &snapshot,
+            context.clone(),
+            assembler.accepted_read_manifest(),
+            ledger.clone(),
+        ) {
+            Ok(plan) => plan,
+            Err(errors) => {
+                let infos = snapshot
+                    .files()
+                    .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
                     .collect();
-
-            let mut undeclared_candidate = None;
-            let mut candidate_paths = Vec::new();
-            let mut resolved_import = false;
-            'groups: for group in groups {
-                let mut group_hit = false;
-                for candidate in group {
-                    candidate_paths.push(candidate.display().to_string());
-                    if let Some(manifest) = source_manifest
-                        && !manifest.declares_path_without_probe(&candidate)
-                    {
-                        undeclared_candidate.get_or_insert(candidate.clone());
-                        continue;
-                    }
-                    let Ok(canonical) = fs::canonicalize(&candidate) else {
-                        continue;
-                    };
-                    if !canonical.is_file() {
-                        continue;
-                    }
-                    if let Some(importer_canonical) = &importer_canonical {
-                        dependency_graph.record_import(
-                            importer_canonical.clone(),
-                            import_str,
-                            canonical.clone(),
-                        );
-                    }
-                    if let Some(manifest) = source_manifest
-                        && !manifest.allows_canonical(&canonical)
-                    {
-                        eprintln!(
-                            "Error: import '{}' resolved to '{}' which is not listed in source manifest '{}'",
-                            import_str,
-                            candidate.display(),
-                            manifest.display_path()
-                        );
-                        eprintln!(
-                            "Source manifests constrain allowed reads; add the file to the manifest or remove the import."
-                        );
-                        return Err(());
-                    }
-                    if loaded.contains(&canonical) {
-                        if explicit_non_root.contains(&canonical)
-                            && mixed_seen.insert(canonical.clone())
-                        {
-                            result.mixed_imports.push(canonical);
-                        }
-                        group_hit = true; // already loaded (or a cycle)
-                        resolved_import = true;
-                        continue;
-                    }
-                    // The candidate EXISTS at this point (canonicalize +
-                    // is_file above), so a read failure is present-but-
-                    // unreadable (I/O error, invalid UTF-8) — a hard error,
-                    // not absence. Treating it as absence misreported an
-                    // existing import as E0704 "cannot find module", and
-                    // silently erased one arm of a file-vs-directory
-                    // ambiguity so the other candidate was picked without the
-                    // required E0708 (RUE-529).
-                    let module_content = match fs::read_to_string(&candidate) {
-                        Ok(content) => content,
-                        Err(e) => {
-                            eprintln!("Error reading {}: {}", candidate.display(), e);
-                            eprintln!("note: resolved from import '{import_str}'");
-                            return Err(());
-                        }
-                    };
-                    loaded.insert(canonical.clone());
-                    dependency_graph.record_source(canonical, "import");
-                    sources.push((candidate.to_string_lossy().into_owned(), module_content));
-                    group_hit = true;
-                    resolved_import = true;
-                }
-                if group_hit {
-                    resolved_import = true;
-                    break 'groups;
-                }
-            }
-            if !resolved_import
-                && let (Some(manifest), Some(candidate)) = (source_manifest, undeclared_candidate)
-            {
-                eprintln!(
-                    "Error: import '{}' resolved to '{}' which is not listed in source manifest '{}'",
-                    import_str,
-                    candidate.display(),
-                    manifest.display_path()
-                );
-                eprintln!(
-                    "Source manifests constrain allowed reads; add the file to the manifest or remove the import."
-                );
+                DiagnosticOutput::new(error_format, infos).print_errors(&errors);
                 return Err(());
             }
-            if !resolved_import {
-                result.unresolved_imports.push(UnresolvedImport {
-                    path: import_str.to_string(),
-                    candidates: candidate_paths,
-                    span: Span::with_file(importer_file_id, w[0].span.start, w[3].span.end),
-                });
+        };
+        loop {
+            let pending = plan.pending_requests(&ledger);
+            if pending.is_empty() {
+                break;
+            }
+            for request in pending {
+                let candidate = Path::new(request.requested_path());
+                let observation = if let Some(manifest) = source_manifest
+                    && !manifest.declares_path_without_probe(candidate)
+                {
+                    ImportObservation::failure(request, ImportObservationStatus::DeniedLexical)
+                        .unwrap()
+                } else {
+                    match fs::canonicalize(candidate) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            ImportObservation::absent(request)
+                        }
+                        Err(error) => ImportObservation::failure(
+                            request,
+                            ImportObservationStatus::PresentUnreadable(Arc::from(
+                                error.to_string(),
+                            )),
+                        )
+                        .unwrap(),
+                        Ok(canonical)
+                            if source_manifest
+                                .is_some_and(|manifest| !manifest.allows_canonical(&canonical)) =>
+                        {
+                            ImportObservation::failure(
+                                request,
+                                ImportObservationStatus::DeniedCanonical {
+                                    canonical_path: Arc::from(
+                                        canonical.to_string_lossy().into_owned(),
+                                    ),
+                                },
+                            )
+                            .unwrap()
+                        }
+                        Ok(canonical) if !canonical.is_file() => ImportObservation::failure(
+                            request,
+                            ImportObservationStatus::InvalidPhysicalType {
+                                canonical_path: Arc::from(canonical.to_string_lossy().into_owned()),
+                            },
+                        )
+                        .unwrap(),
+                        Ok(canonical) => match stable_read_to_string(&canonical) {
+                            Ok(read) => {
+                                let accepted = AcceptedImportSource::new(
+                                    Arc::from(request.requested_path()),
+                                    Arc::from(canonical.to_string_lossy().into_owned()),
+                                    read.identity,
+                                    read.fingerprint,
+                                    Arc::new(read.source),
+                                )
+                                .unwrap();
+                                ImportObservation::accepted(request, accepted).unwrap()
+                            }
+                            Err(StableReadError::Io(error)) => ImportObservation::failure(
+                                request,
+                                ImportObservationStatus::PresentUnreadable(Arc::from(
+                                    error.to_string(),
+                                )),
+                            )
+                            .unwrap(),
+                            Err(StableReadError::Changed) => ImportObservation::failure(
+                                request,
+                                ImportObservationStatus::UnstableRead(Arc::from(
+                                    "candidate metadata changed during read",
+                                )),
+                            )
+                            .unwrap(),
+                        },
+                    }
+                };
+                ledger.record(observation).map_err(|error| {
+                    eprintln!("Error: {error}");
+                })?;
             }
         }
+        if plan.failures(&ledger).next().is_some() {
+            final_plan = plan;
+            break;
+        }
+        for accepted in plan.accepted_sources(&ledger) {
+            let canonical = PathBuf::from(accepted.canonical_path());
+            if explicit_non_root.contains(&canonical) && mixed_seen.insert(canonical.clone()) {
+                mixed_imports.push(canonical);
+            }
+        }
+        let added = assembler.add_plan_reads(&plan, &ledger).map_err(|error| {
+            eprintln!("Error: {error}");
+        })?;
+        if added == 0 {
+            final_plan = plan;
+            break;
+        }
     }
-    Ok(result)
+
+    let snapshot = assembler.snapshot().map_err(|error| {
+        eprintln!("Error: {error}");
+    })?;
+    debug_assert_eq!(final_plan.source_revision(), snapshot.source_revision());
+    let closed = staging.close_import_discovery(ledger).map_err(|errors| {
+        let infos = snapshot
+            .files()
+            .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
+            .collect();
+        DiagnosticOutput::new(error_format, infos).print_errors(&errors);
+    })?;
+    Ok(ImportDiscoveryResult {
+        mixed_imports,
+        source_snapshot: snapshot,
+        revision: closed,
+        session: staging,
+    })
 }
 
 fn main() {
@@ -1755,35 +1888,26 @@ fn main() {
         }
     }
 
-    // Read all source files into memory
-    let mut sources: Vec<(String, String)> = options
+    // Discovery performs the accepted stable-read transaction for every root
+    // and positional source; keep only the requested spellings here.
+    let sources: Vec<(String, String)> = options
         .source_paths
         .iter()
-        .map(|path| {
-            let content = fs::read_to_string(path).unwrap_or_else(|e| {
-                eprintln!("Error reading {}: {}", path, e);
-                std::process::exit(1);
-            });
-            (path.clone(), content)
-        })
+        .map(|path| (path.clone(), String::new()))
         .collect();
 
     // Discover and load @import-ed modules from disk, transitively. Sema
     // resolves imports only against already-loaded files, so without this
     // step `const utils = @import("utils")` fails with E0704 unless the
     // user hand-lists every module on the command line (RUE-14).
-    let mut dependency_graph = DependencyGraph::default();
-    for (index, (path, _content)) in sources.iter().enumerate() {
-        if let Ok(canonical) = fs::canonicalize(path) {
-            let kind = if index == 0 { "root" } else { "positional" };
-            dependency_graph.record_source(canonical, kind);
-        }
-    }
-
-    let import_discovery = match discover_and_load_imports(
-        &mut sources,
+    // Capture environment-derived resolution context exactly once for this
+    // discovery epoch. Every compiler plan and identity decision receives this
+    // immutable value; no discovery iteration rereads the environment.
+    let captured_std_root = env::var_os("RUE_STD_PATH").map(PathBuf::from);
+    let mut import_discovery = match discover_and_load_imports(
+        &sources,
         source_manifest.as_ref(),
-        &mut dependency_graph,
+        captured_std_root.as_deref(),
         options.error_format,
     ) {
         Ok(result) => result,
@@ -1804,7 +1928,7 @@ fn main() {
         eprintln!("Build-system source manifests are tracked separately from positional inputs.");
         std::process::exit(1);
     }
-    let sources = sources;
+    let source_snapshot = import_discovery.source_snapshot.clone();
 
     // Re-run the output-clobber guard now that @import discovery has appended
     // the full source set: the parse-time guard only saw positional paths, so
@@ -1814,78 +1938,13 @@ fn main() {
     if options.emit_stages.is_empty()
         && check_output_clobbers_source(
             &options.output_path,
-            sources.iter().map(|(path, _)| path.as_str()),
+            source_snapshot.files().map(|source| source.path),
         )
         .is_err()
     {
         std::process::exit(1);
     }
 
-    // Give every loaded source a stable ID in caller order. Physical paths stay
-    // available for imports and diagnostics; generated symbols use a separate,
-    // relocation-stable identity (RUE-618).
-    let file_ids: Vec<_> = (1..=sources.len())
-        .map(|index| FileId::new(index as u32))
-        .collect();
-    let symbol_paths = match derive_symbol_paths(&sources) {
-        Ok(paths) => paths,
-        Err(message) => {
-            let source_infos = sources
-                .iter()
-                .zip(file_ids.iter().copied())
-                .map(|((path, content), file_id)| {
-                    (file_id, SourceInfo::new(content.as_str(), path.as_str()))
-                })
-                .collect();
-            let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
-            diagnostics.print_error(&CompileError::without_span(
-                ErrorKind::InvalidCompilerInput(message),
-            ));
-            std::process::exit(1);
-        }
-    };
-    let physical_path_map = sources
-        .iter()
-        .zip(file_ids.iter().copied())
-        .map(|((path, _), file_id)| (file_id, path.clone()))
-        .collect();
-    let logical_path_map = file_ids.iter().copied().zip(symbol_paths).collect();
-    let source_metadata =
-        match SourceMetadata::new(file_ids[0], physical_path_map, logical_path_map) {
-            Ok(source_metadata) => source_metadata,
-            Err(error) => {
-                let source_infos = sources
-                    .iter()
-                    .zip(file_ids.iter().copied())
-                    .map(|((path, content), file_id)| {
-                        (file_id, SourceInfo::new(content.as_str(), path.as_str()))
-                    })
-                    .collect();
-                let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
-                diagnostics.print_error(&error);
-                std::process::exit(1);
-            }
-        };
-
-    // Move each loaded String directly behind an Arc: this transfers its
-    // allocation without copying the source bytes. The snapshot now owns the
-    // complete, immutable compiler input used by every compilation path.
-    let source_contents = sources
-        .into_iter()
-        .zip(file_ids)
-        .map(|((_path, content), file_id)| (file_id, Arc::new(content)))
-        .collect();
-    let source_snapshot = match SourceSnapshot::new(source_metadata, source_contents) {
-        Ok(source_snapshot) => source_snapshot,
-        Err(error) => {
-            // Snapshot validation errors are unspanned. At this point the
-            // snapshot constructor owns the source buffers on both paths, so
-            // no borrowed source view remains available for formatting.
-            let diagnostics = DiagnosticOutput::new(options.error_format, Vec::new());
-            diagnostics.print_error(&error);
-            std::process::exit(1);
-        }
-    };
     // Create multi-file diagnostic formatters from the snapshot's borrowed
     // views so diagnostics and compilation necessarily observe the same input.
     let source_infos = source_snapshot
@@ -1905,21 +1964,22 @@ fn main() {
             );
             std::process::exit(1);
         }
-        if !import_discovery.unresolved_imports.is_empty() {
-            let mut errors = CompileErrors::new();
-            for import in &import_discovery.unresolved_imports {
-                errors.push(CompileError::new(
-                    ErrorKind::ModuleNotFound {
-                        path: import.path.clone(),
-                        candidates: import.candidates.clone(),
-                    },
-                    import.span,
-                ));
-            }
-            diagnostics.print_errors(&errors);
-            std::process::exit(1);
-        }
-        match serde_json::to_string_pretty(&dependency_graph.to_output()) {
+        let positional_sources = options
+            .source_paths
+            .iter()
+            .skip(1)
+            .filter_map(|path| fs::canonicalize(path).ok())
+            .collect();
+        let dependency_output = dependency_output_from_canonical_graph(
+            &source_snapshot,
+            import_discovery
+                .revision
+                .graph()
+                .expect("closed valid discovery has graph")
+                .graph(),
+            &positional_sources,
+        );
+        match serde_json::to_string_pretty(&dependency_output) {
             Ok(json) => println!("{json}"),
             Err(e) => {
                 eprintln!("Error emitting dependency graph: {e}");
@@ -1945,7 +2005,12 @@ fn main() {
 
     // Handle emit modes with multi-file support
     if !options.emit_stages.is_empty() {
-        if let Err(()) = handle_emit_multi_file(&source_snapshot, &options, &diagnostics) {
+        if let Err(()) = handle_emit_multi_file(
+            &source_snapshot,
+            &mut import_discovery.session,
+            &options,
+            &diagnostics,
+        ) {
             std::process::exit(1);
         }
         print_timing_output(
@@ -1965,7 +2030,7 @@ fn main() {
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
     };
-    let compile_result = compile_snapshot(&source_snapshot, &compile_options);
+    let compile_result = import_discovery.session.executable(&compile_options);
     match compile_result {
         Ok(output) => {
             // Print warnings using the diagnostic formatter
@@ -2085,6 +2150,7 @@ fn main() {
 /// For later stages (rir, air, cfg, etc.), the merged program is used.
 fn handle_emit_multi_file(
     source_snapshot: &SourceSnapshot,
+    session: &mut CompilerSession,
     options: &Options,
     diagnostics: &DiagnosticOutput<'_>,
 ) -> Result<(), ()> {
@@ -2144,7 +2210,7 @@ fn handle_emit_multi_file(
             opt_level: options.opt_level,
             preview_features: options.preview_features.clone(),
         };
-        let frontend = match build_emit_frontend(source_snapshot, compile_options) {
+        let frontend = match build_emit_frontend_in_session(session, compile_options) {
             Ok(frontend) => frontend,
             Err(errors) => {
                 diagnostics.print_errors(&errors);
@@ -2918,12 +2984,11 @@ mod tests {
         .unwrap();
         fs::write(dir.join("helper.rue"), [0xFFu8]).unwrap();
 
-        let mut sources = vec![(
+        let sources = vec![(
             main_path.to_string_lossy().into_owned(),
             fs::read_to_string(&main_path).unwrap(),
         )];
-        let mut graph = DependencyGraph::default();
-        let result = discover_and_load_imports(&mut sources, None, &mut graph, ErrorFormat::Text);
+        let result = discover_and_load_imports(&sources, None, None, ErrorFormat::Text);
         assert!(
             result.is_err(),
             "unreadable existing candidate must error, not resolve or vanish"
@@ -2931,14 +2996,16 @@ mod tests {
 
         // Control: once the candidate is valid text, discovery loads it.
         fs::write(dir.join("helper.rue"), "pub fn h() -> i32 {{ 1 }}\n").unwrap();
-        let mut sources = vec![(
+        let sources = vec![(
             main_path.to_string_lossy().into_owned(),
             fs::read_to_string(&main_path).unwrap(),
         )];
-        let mut graph = DependencyGraph::default();
-        let result = discover_and_load_imports(&mut sources, None, &mut graph, ErrorFormat::Text);
-        assert!(result.is_ok());
-        assert_eq!(sources.len(), 2, "helper must be discovered and loaded");
+        let result = discover_and_load_imports(&sources, None, None, ErrorFormat::Text).unwrap();
+        assert_eq!(
+            result.source_snapshot.len(),
+            2,
+            "helper must be discovered and loaded"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

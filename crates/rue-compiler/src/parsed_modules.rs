@@ -158,13 +158,52 @@ impl ParsedDefinitionIndex {
 pub struct ParsedImportDirective {
     importer: ModuleId,
     source_offset: u32,
+    source_end: u32,
     specifier: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParsedInvalidImport {
+    importer: ModuleId,
+    span: Span,
+    shape: InvalidImportShape,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum InvalidImportShape {
+    WrongArity { actual: u32 },
+    NonStringArgument,
+}
+
+impl ParsedInvalidImport {
+    pub fn importer(&self) -> &ModuleId {
+        &self.importer
+    }
+    pub fn span(&self) -> Span {
+        self.span
+    }
+    pub fn shape(&self) -> &InvalidImportShape {
+        &self.shape
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ParsedImportSite {
     source_offset: u32,
+    source_end: u32,
     specifier: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedInvalidImportSite {
+    span: Span,
+    shape: InvalidImportShape,
+}
+
+#[derive(Default)]
+struct ImportSiteCollector {
+    valid: Vec<ParsedImportSite>,
+    invalid: Vec<ParsedInvalidImportSite>,
 }
 
 /// Immutable parsed syntax whose spans and symbols belong to one FileId epoch.
@@ -177,6 +216,7 @@ struct ParsedSyntaxPayload {
     resolver: FrozenSymbolResolver,
     definitions: ParsedDefinitionIndex,
     import_sites: Arc<[ParsedImportSite]>,
+    invalid_import_sites: Arc<[ParsedInvalidImportSite]>,
 }
 
 impl ParsedImportDirective {
@@ -198,6 +238,7 @@ pub struct ParsedModule {
     physical_path: Arc<str>,
     payload: Arc<ParsedSyntaxPayload>,
     imports: Arc<[ParsedImportDirective]>,
+    invalid_imports: Arc<[ParsedInvalidImport]>,
 }
 
 /// An AST paired with the exact parsed module that owns all of its symbols.
@@ -311,6 +352,9 @@ impl ParsedModule {
     pub fn imports(&self) -> &[ParsedImportDirective] {
         &self.imports
     }
+    pub fn invalid_imports(&self) -> &[ParsedInvalidImport] {
+        &self.invalid_imports
+    }
 
     pub fn resolve(&self, symbol: &ParsedSymbol) -> CompileResult<&str> {
         self.payload.resolver.resolve(symbol)
@@ -355,6 +399,7 @@ pub struct ParsedProgram {
     source_revision: SourceRevision,
     modules: Arc<[Arc<ParsedModule>]>,
     imports: ImportDirectives,
+    invalid_imports: Arc<[ParsedInvalidImport]>,
 }
 
 impl ParsedProgram {
@@ -388,15 +433,27 @@ impl ParsedProgram {
                     ImportDirective::new(
                         directive.importer.clone(),
                         directive.source_offset,
+                        directive.source_end,
                         directive.specifier.clone(),
                     )
                 })
                 .collect(),
         );
+        let mut invalid_imports = modules
+            .iter()
+            .flat_map(|module| module.invalid_imports().iter().cloned())
+            .collect::<Vec<_>>();
+        invalid_imports.sort_by(|left, right| {
+            left.importer
+                .cmp(&right.importer)
+                .then(left.span.file_id.index().cmp(&right.span.file_id.index()))
+                .then(left.span.start.cmp(&right.span.start))
+        });
         Ok(Self {
             source_revision,
             modules: modules.into(),
             imports,
+            invalid_imports: invalid_imports.into(),
         })
     }
 
@@ -429,6 +486,9 @@ impl ParsedProgram {
     /// Canonical program-wide import occurrences, ready for graph resolution.
     pub fn import_directives(&self) -> &ImportDirectives {
         &self.imports
+    }
+    pub fn invalid_imports(&self) -> &[ParsedInvalidImport] {
+        &self.invalid_imports
     }
 
     pub(crate) fn shared_symbol_strings(&self) -> Option<Vec<&str>> {
@@ -861,7 +921,7 @@ fn build_module_with_resolver(
     ast: Arc<Ast>,
     resolver: Arc<RodeoResolver<Spur>>,
     token: Arc<SymbolProvenance>,
-    import_sites: Vec<ParsedImportSite>,
+    import_sites: ImportSiteCollector,
 ) -> CompileResult<Arc<ParsedModule>> {
     let module = snapshot
         .module_id(file_id)
@@ -897,7 +957,8 @@ fn build_module_with_resolver(
         ast: provenanced_ast,
         resolver,
         definitions,
-        import_sites: import_sites.into(),
+        import_sites: import_sites.valid.into(),
+        invalid_import_sites: import_sites.invalid.into(),
     });
     Ok(bind_payload(snapshot, file_id, payload))
 }
@@ -923,7 +984,17 @@ fn bind_payload(
         .map(|site| ParsedImportDirective {
             importer: module.clone(),
             source_offset: site.source_offset,
+            source_end: site.source_end,
             specifier: site.specifier.clone(),
+        })
+        .collect::<Vec<_>>();
+    let invalid_imports = payload
+        .invalid_import_sites
+        .iter()
+        .map(|site| ParsedInvalidImport {
+            importer: module.clone(),
+            span: site.span,
+            shape: site.shape.clone(),
         })
         .collect::<Vec<_>>();
     Arc::new(ParsedModule {
@@ -931,6 +1002,7 @@ fn bind_payload(
         physical_path: Arc::from(snapshot.metadata().physical_path(file_id).unwrap()),
         payload,
         imports: imports.into(),
+        invalid_imports: invalid_imports.into(),
     })
 }
 
@@ -938,8 +1010,8 @@ fn collect_imports(
     ast: &Ast,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-) -> CompileResult<Vec<ParsedImportSite>> {
-    let mut imports = Vec::new();
+) -> CompileResult<ImportSiteCollector> {
+    let mut imports = ImportSiteCollector::default();
     for item in &ast.items {
         match item {
             Item::Function(value) => {
@@ -984,7 +1056,10 @@ fn collect_imports(
             Item::Error(_) => {}
         }
     }
-    imports.sort();
+    imports.valid.sort();
+    imports
+        .invalid
+        .sort_by_key(|site| (site.span.file_id.index(), site.span.start));
     Ok(imports)
 }
 
@@ -993,7 +1068,7 @@ fn walk_signature(
     return_type: Option<&TypeExpr>,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-    imports: &mut Vec<ParsedImportSite>,
+    imports: &mut ImportSiteCollector,
 ) -> CompileResult<()> {
     for param in params {
         walk_type_expr(&param.ty, module, resolver, imports)?;
@@ -1008,7 +1083,7 @@ fn walk_type_expr(
     ty: &TypeExpr,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-    imports: &mut Vec<ParsedImportSite>,
+    imports: &mut ImportSiteCollector,
 ) -> CompileResult<()> {
     match ty {
         TypeExpr::Named(_)
@@ -1060,7 +1135,7 @@ fn walk_args(
     args: &[rue_parser::ast::CallArg],
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-    imports: &mut Vec<ParsedImportSite>,
+    imports: &mut ImportSiteCollector,
 ) -> CompileResult<()> {
     for arg in args {
         walk_expr(&arg.expr, module, resolver, imports)?;
@@ -1072,7 +1147,7 @@ fn walk_block(
     block: &rue_parser::ast::BlockExpr,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-    imports: &mut Vec<ParsedImportSite>,
+    imports: &mut ImportSiteCollector,
 ) -> CompileResult<()> {
     for statement in &block.statements {
         match statement {
@@ -1100,7 +1175,7 @@ fn walk_expr(
     expr: &Expr,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-    imports: &mut Vec<ParsedImportSite>,
+    imports: &mut ImportSiteCollector,
 ) -> CompileResult<()> {
     match expr {
         Expr::Int(_)
@@ -1183,16 +1258,29 @@ fn walk_expr(
             let name = resolver.try_resolve(&value.name.name).ok_or_else(|| {
                 invalid_input("intrinsic name is absent from the module symbol universe")
             })?;
-            if name == "import"
-                && let [IntrinsicArg::Expr(Expr::String(literal))] = value.args.as_slice()
-            {
-                let specifier = resolver.try_resolve(&literal.value).ok_or_else(|| {
-                    invalid_input("import literal is absent from the module symbol universe")
-                })?;
-                imports.push(ParsedImportSite {
-                    source_offset: value.span.start,
-                    specifier: Arc::from(specifier),
-                });
+            if name == "import" {
+                if let [IntrinsicArg::Expr(Expr::String(literal))] = value.args.as_slice() {
+                    let specifier = resolver.try_resolve(&literal.value).ok_or_else(|| {
+                        invalid_input("import literal is absent from the module symbol universe")
+                    })?;
+                    imports.valid.push(ParsedImportSite {
+                        source_offset: value.span.start,
+                        source_end: value.span.end,
+                        specifier: Arc::from(specifier),
+                    });
+                } else {
+                    let shape = if value.args.len() != 1 {
+                        InvalidImportShape::WrongArity {
+                            actual: u32::try_from(value.args.len()).unwrap_or(u32::MAX),
+                        }
+                    } else {
+                        InvalidImportShape::NonStringArgument
+                    };
+                    imports.invalid.push(ParsedInvalidImportSite {
+                        span: value.span,
+                        shape,
+                    });
+                }
             }
             for arg in &value.args {
                 if let IntrinsicArg::Expr(expr) = arg {

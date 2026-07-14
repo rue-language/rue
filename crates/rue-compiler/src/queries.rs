@@ -356,6 +356,26 @@ pub fn compile_snapshot(
     compile_snapshot_impl(snapshot, options)
 }
 
+/// Compile the closed-valid discovery revision already adopted by `session`.
+///
+/// This preserves the compiler-owned import graph and captured discovery
+/// context instead of reconstructing a peer frontend from source bytes.
+impl CompilerSession {
+    /// Produce an executable from this session's closed-valid discovery revision.
+    pub fn executable(&mut self, options: &CompileOptions) -> MultiErrorResult<CompileOutput> {
+        let snapshot = self
+            .committed_import_discovery()
+            .ok_or_else(|| {
+                CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                    "compilation requires a closed-valid import discovery revision".into(),
+                )))
+            })?
+            .snapshot()
+            .clone();
+        compile_with_session(self, &snapshot, options)
+    }
+}
+
 fn compile_snapshot_impl(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
@@ -366,6 +386,16 @@ fn compile_snapshot_impl(
     // (RUE-352). The jobs setting is now applied once in the driver's `main()`
     // via `configure_thread_pool` before dispatching to any path.
 
+    let mut session = CompilerSession::new();
+    session.update_for_presentation(snapshot).into_result()?;
+    compile_with_session(&mut session, snapshot, options)
+}
+
+fn compile_with_session(
+    session: &mut CompilerSession,
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+) -> MultiErrorResult<CompileOutput> {
     let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
     let _span = info_span!(
         "compile",
@@ -375,8 +405,6 @@ fn compile_snapshot_impl(
     )
     .entered();
 
-    let mut session = CompilerSession::new();
-    session.update_for_presentation(snapshot).into_result()?;
     let rir = {
         let _span = info_span!("semantic_astgen").entered();
         session.rir()?

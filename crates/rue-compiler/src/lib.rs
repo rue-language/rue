@@ -38,6 +38,7 @@ mod diagnostic;
 mod drop_glue;
 mod durable_body;
 mod durable_semantics;
+mod import_discovery;
 mod import_graph;
 mod linking;
 mod parsed_modules;
@@ -67,6 +68,12 @@ pub use diagnostic::{
     ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
     JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
 };
+pub use import_discovery::{
+    AcceptedImportSource, AcceptedReadManifestEntry, DiscoverySourceAssembler,
+    FileMetadataFingerprint, IMPORT_DISCOVERY_POLICY_VERSION, ImportCandidateRole,
+    ImportDiscoveryContext, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportObservation,
+    ImportObservationLedger, ImportObservationStatus, ImportOccurrenceKey, PhysicalFileIdentity,
+};
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,
     CanonicalImportGraphValidation, CanonicalImportRecord, CanonicalImportResolution,
@@ -74,8 +81,9 @@ pub use import_graph::{
     ResolvedLinkRevision, ResolvedProgramRevision,
 };
 pub use parsed_modules::{
-    ParseInvalidationSummary, ParsedAstPresentation, ParsedAstPresentationWork, ParsedModulesWork,
-    ParsedProgram, parse_source_snapshot_for_ast_presentation,
+    InvalidImportShape, ParseInvalidationSummary, ParsedAstPresentation, ParsedAstPresentationWork,
+    ParsedInvalidImport, ParsedModulesWork, ParsedProgram,
+    parse_source_snapshot_for_ast_presentation,
 };
 pub use queries::{
     CompileOptions, CompileOutput, FunctionWithCfg, LinkerMode, PipelineWork, SourceStats,
@@ -86,16 +94,16 @@ pub use session::{
     DefinitionQueryRecord, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
     FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT, FrontendDiagnosticSnapshot,
     FrontendDiagnosticStage, FrontendQueryWork, FrontendRetentionMetrics,
-    ImportGraphInputDescriptor, SemanticDependencyBlocker, SemanticDependencyIncompleteReason,
-    SemanticDependencyInputManifest, SemanticDependencyManifestWork, SemanticDependencySurface,
-    SemanticFullInvalidationReason, SemanticInvalidationPlan, SemanticInvalidationScope,
-    SemanticInvalidationWork, SemanticQueryRecord, StableBodyDependencyInputRecord,
-    StableBuiltinTypeCallHeadInput, StableDeclarationTypeCallHeadDependency,
-    StableDeclarationTypeDependency, StableDefinitionFingerprint,
-    StableDefinitionFingerprintPrecision, StableDefinitionInputFingerprint,
-    StableFreeFunctionDependency, StableModuleImportDependency, StableNamedConstDependency,
-    StableNamedConstDependencyTarget, StableNamedDestructorDependency, StableNamedMethodDependency,
-    StableNamedMethodDependencyTarget,
+    ImportDiscoveryRevisionArtifact, ImportDiscoveryRevisionStatus, ImportGraphInputDescriptor,
+    SemanticDependencyBlocker, SemanticDependencyIncompleteReason, SemanticDependencyInputManifest,
+    SemanticDependencyManifestWork, SemanticDependencySurface, SemanticFullInvalidationReason,
+    SemanticInvalidationPlan, SemanticInvalidationScope, SemanticInvalidationWork,
+    SemanticQueryRecord, StableBodyDependencyInputRecord, StableBuiltinTypeCallHeadInput,
+    StableDeclarationTypeCallHeadDependency, StableDeclarationTypeDependency,
+    StableDefinitionFingerprint, StableDefinitionFingerprintPrecision,
+    StableDefinitionInputFingerprint, StableFreeFunctionDependency, StableModuleImportDependency,
+    StableNamedConstDependency, StableNamedConstDependencyTarget, StableNamedDestructorDependency,
+    StableNamedMethodDependency, StableNamedMethodDependencyTarget,
 };
 pub use source_identity::{
     CodegenInputDescriptor, LinkInputDescriptor, ModuleId, ModuleResolutionInput,
@@ -137,7 +145,7 @@ pub use backend::{
 };
 
 // Small foundational types callers need to configure or inspect the facade.
-pub use rue_air::{TypeInternPool, import_candidate_groups};
+pub use rue_air::TypeInternPool;
 pub use rue_cfg::OptLevel;
 pub use rue_codegen::{
     LoweringDebugInfo, RegAllocDebugInfo, StackFrameInfo, generate_stack_frame_info,
