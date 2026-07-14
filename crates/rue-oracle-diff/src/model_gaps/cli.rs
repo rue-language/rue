@@ -567,6 +567,12 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.str_type",
+        "str_preview_defaults_unconstrained_literal_to_copy_str",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "cli.str_type",
         "strbuf_field_borrow_str_view",
         runtime_call(UnsupportedRuntimeCallKind::StringConcat),
         &[],

@@ -44,6 +44,38 @@ fn main() -> i32 {
 """
 exit_code = 0
 
+# 3.7:44 — without an expected buffer type, a literal defaults to first-class
+# `str`; its Copy value remains reusable after assignment.
+[[case]]
+name = "str_literal_unconstrained_default_is_copy_str"
+spec = ["3.7:44"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s = if true { "hello" } else { "goodbye" };
+    let first = s;
+    let second = s;
+    @intCast(first.len() + second.len())
+}
+"""
+exit_code = 10
+
+# 3.7:44 — an explicit legacy growable-buffer expectation still
+# contextualizes the literal as StrBuf.
+[[case]]
+name = "str_literal_explicit_strbuf_context"
+spec = ["3.7:44"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: StrBuf = "hello";
+    @intCast(s.len())
+}
+"""
+exit_code = 5
+
 # 3.7:45 — `.len()` is the byte length.
 [[case]]
 name = "str_len_bytes"

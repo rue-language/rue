@@ -1212,6 +1212,146 @@ mod tests {
     }
 
     #[test]
+    fn string_literal_default_tracks_preview_and_preserves_buffer_context() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        let output = compile_to_air_with_preview_features(
+            r#"
+                fn main() -> i32 {
+                    let value = "hello";
+                    let first = value;
+                    let second = value;
+                    @intCast(first.len() + second.len())
+                }
+            "#,
+            preview.clone(),
+        )
+        .expect("the preview default must be Copy and reusable");
+        let literal = output
+            .functions
+            .iter()
+            .flat_map(|function| function.air.iter())
+            .find_map(|(_, inst)| matches!(inst.data, AirInstData::StringConst(_)).then_some(inst))
+            .expect("main must materialize its literal");
+        assert_eq!(
+            literal.ty.safe_name_with_pool(Some(&output.type_pool)),
+            "str"
+        );
+        assert_eq!(output.type_pool.abi_slot_count(literal.ty), 2);
+
+        let explicit = compile_to_air_with_preview_features(
+            "fn main() -> i32 { let value: StrBuf = \"hello\"; @intCast(value.len()) }",
+            preview,
+        )
+        .unwrap();
+        let literal = explicit
+            .functions
+            .iter()
+            .flat_map(|function| function.air.iter())
+            .find_map(|(_, inst)| matches!(inst.data, AirInstData::StringConst(_)).then_some(inst))
+            .unwrap();
+        assert_eq!(
+            literal.ty.safe_name_with_pool(Some(&explicit.type_pool)),
+            "StrBuf"
+        );
+        assert_eq!(explicit.type_pool.abi_slot_count(literal.ty), 3);
+
+        let legacy =
+            compile_to_air("fn main() -> i32 { let value = \"hello\"; @intCast(value.len()) }")
+                .unwrap();
+        let literal = legacy
+            .functions
+            .iter()
+            .flat_map(|function| function.air.iter())
+            .find_map(|(_, inst)| matches!(inst.data, AirInstData::StringConst(_)).then_some(inst))
+            .unwrap();
+        assert_eq!(
+            literal.ty.safe_name_with_pool(Some(&legacy.type_pool)),
+            "StrBuf"
+        );
+        assert_eq!(legacy.type_pool.abi_slot_count(literal.ty), 3);
+    }
+
+    #[test]
+    fn preview_string_default_survives_control_flow_and_aggregate_joins() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        let output = compile_to_air_with_preview_features(
+            r#"
+                struct Holder { value: str }
+
+                fn main() -> i32 {
+                    let branch = if true { "a" } else { "bb" };
+                    let branch_first = branch;
+                    let branch_second = branch;
+
+                    let block = { let marker = 0; "ccc" };
+                    let block_first = block;
+                    let block_second = block;
+
+                    let matched = match true {
+                        true => "dddd",
+                        false => "eeeee",
+                    };
+                    let match_first = matched;
+                    let match_second = matched;
+
+                    let holder = Holder {
+                        value: if false { "ffffff" } else { "ggggggg" },
+                    };
+                    let field_first = holder.value;
+                    let field_second = holder.value;
+
+                    @intCast(
+                        branch_first.len() + branch_second.len()
+                            + block_first.len() + block_second.len()
+                            + match_first.len() + match_second.len()
+                            + field_first.len() + field_second.len()
+                    )
+                }
+            "#,
+            preview,
+        )
+        .expect("literal-derived joins must remain Copy first-class str values");
+
+        let literal_types: Vec<Type> = output
+            .functions
+            .iter()
+            .flat_map(|function| function.air.iter())
+            .filter_map(|(_, inst)| {
+                matches!(inst.data, AirInstData::StringConst(_)).then_some(inst.ty)
+            })
+            .collect();
+        assert_eq!(literal_types.len(), 7);
+        assert!(literal_types.iter().all(|&ty| {
+            ty.safe_name_with_pool(Some(&output.type_pool)) == "str"
+                && output.type_pool.abi_slot_count(ty) == 2
+                && ty.is_copy_in_pool(&output.type_pool)
+        }));
+    }
+
+    #[test]
+    fn string_literal_join_cannot_default_through_an_integer_literal() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        let errors = compile_to_air_with_preview_features(
+            r#"
+                fn choose(cond: bool) {
+                    let mixed = if cond { 42 } else { "not an integer" };
+                }
+                fn main() -> i32 { choose(true); 0 }
+            "#,
+            preview,
+        )
+        .expect_err("integer and string literal branches must not share a default");
+        assert!(matches!(
+            &errors.iter().next().unwrap().kind,
+            ErrorKind::TypeMismatch { expected, found }
+                if expected == "string type" && found == "{integer}"
+        ));
+    }
+
+    #[test]
     fn fixed_string_call_context_stops_at_nested_call_operands() {
         let mut preview = PreviewFeatures::new();
         preview.insert(PreviewFeature::StringTrio);
@@ -1343,10 +1483,11 @@ mod tests {
             .map(|(_, inst)| inst.ty.safe_name_with_pool(Some(&output.type_pool)))
             .collect();
 
-        // Comparison operands and a discarded loop-body value synthesize
-        // their own StrBuf representation. If/match-style branches and block
-        // tails remain transparent and materialize as the declared Str(8).
-        assert_eq!(literal_types.iter().filter(|ty| *ty == "StrBuf").count(), 3);
+        // Comparison operands and a discarded loop-body value have no buffer
+        // context, so under `string_trio` they use the first-class `str`
+        // default. If/match-style branches and block tails remain transparent
+        // and materialize as the declared Str(8).
+        assert_eq!(literal_types.iter().filter(|ty| *ty == "str").count(), 3);
         assert_eq!(literal_types.iter().filter(|ty| *ty == "Str(8)").count(), 4);
     }
 

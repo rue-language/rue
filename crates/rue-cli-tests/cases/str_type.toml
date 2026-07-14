@@ -163,19 +163,50 @@ args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["requires preview feature"]
 
-# A string literal with NO `str` expectation stays the 3-word heap `StrBuf`, so
-# existing StrBuf operations are unaffected by the `str` preview.
+# A string literal with no buffer expectation defaults to the 2-word, Copy
+# first-class `str` value under the preview.
 [[case]]
-name = "str_preview_does_not_change_string_default"
+name = "str_preview_defaults_unconstrained_literal_to_copy_str"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let s = "hello";        // no annotation -> StrBuf
-    let t: StrBuf = s;      // StrBuf, not str
-    @intCast(t.len())
+    let s = if true { "hello" } else { "goodbye" };
+    let first = s;
+    let second = s;
+    @intCast(first.len() + second.len())
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 10
+
+# An explicit StrBuf context retains the legacy three-word materialization.
+[[case]]
+name = "str_preview_preserves_explicit_strbuf_literal_context"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: StrBuf = "hello";
+    @intCast(s.len())
 }
 """ }]
 args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 5
+
+# A source-defined type with the same spelling in another module is a distinct
+# nominal identity and cannot contextualize a string literal.
+[[case]]
+name = "user_module_strbuf_name_does_not_gain_literal_identity"
+files = [
+  { path = "main.rue", source = """
+const other = @import("other.rue");
+fn take(value: other.StrBuf) -> i32 { 0 }
+fn main() -> i32 { take("literal") }
+""" },
+  { path = "other.rue", source = """
+pub struct StrBuf { value: i32 }
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "expected string type"]
 
 # ============================================================================
 # RUE-386 two-types model: reject buffer/view -> first-class `str` escapes.

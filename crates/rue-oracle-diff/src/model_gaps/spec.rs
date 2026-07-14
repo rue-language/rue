@@ -582,6 +582,12 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "types.str_type",
+        "str_literal_unconstrained_default_is_copy_str",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
         "types.strings",
         "print_borrows_argument_string",
         runtime_call(UnsupportedRuntimeCallKind::Print),

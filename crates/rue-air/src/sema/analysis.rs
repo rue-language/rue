@@ -677,6 +677,15 @@ fn enqueue_anonymous_destructors(
 ///
 /// This is the same trade-off Zig makes for faster builds and smaller binaries.
 fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<SemaOutput> {
+    // The preview changes the default type of an unconstrained string literal,
+    // so register the canonical synthetic `str` before freezing the shared
+    // inference context even when source never spells the type name. This keeps
+    // inference, AIR, CFG, and codegen on the single canonical type identity.
+    if sema.preview_features.contains(&PreviewFeature::StringTrio) {
+        sema.get_or_create_str_struct(Span::default())
+            .map_err(CompileErrors::from)?;
+    }
+
     // Build inference context once
     let infer_ctx = sema.build_inference_context();
 

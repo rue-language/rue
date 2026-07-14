@@ -484,11 +484,17 @@ impl<'a> BodySema<'a> {
                 // `StringConst` AIR node lowers to only the ptr+len words there
                 // (the cap word is dropped in codegen). Otherwise it is the
                 // 3-word heap `String` as before.
-                let want_str = ctx.expected_type.is_some_and(|ty| self.is_str_like(ty));
-                let ty = if want_str {
-                    ctx.expected_type.unwrap()
+                let ty = if let Some(expected) = ctx
+                    .expected_type
+                    .filter(|ty| self.is_str_like(*ty) || self.is_builtin_string(*ty))
+                {
+                    expected
                 } else {
-                    self.builtin_string_type()
+                    // HM inference carries the preview-dependent default and
+                    // any explicit `StrBuf` context. Use that resolved type as
+                    // the fallback so AIR materialization cannot drift from
+                    // the canonical inference path.
+                    Self::get_resolved_type(ctx, inst_ref, inst.span, "string literal")?
                 };
                 // Add string to the local per-function string table.
                 let string_content = self.interner.resolve(&*symbol).to_string();
@@ -2670,6 +2676,15 @@ impl<'a> BodySema<'a> {
             if annot.is_enum() || self.is_str_like(annot) {
                 ctx.expected_type = Some(annot);
             }
+        } else if let Some(inferred) = ctx.resolved_types.get(&init).copied()
+            && self.is_str_struct(inferred)
+        {
+            // Under `string_trio`, an unannotated literal-derived initializer
+            // defaults to the canonical first-class `str`. Propagate that HM
+            // result while materializing nested branch, match, aggregate, and
+            // block tails so every consumer uses the same two-slot type rather
+            // than allowing an inner literal to fall back independently.
+            ctx.expected_type = Some(inferred);
         }
 
         // Analyze the initializer. A `for`-loop element binding is a shared
