@@ -55,6 +55,8 @@ struct LiveSlot {
     ty: Type,
     /// The span where the slot became live (for error reporting)
     span: rue_span::Span,
+    /// Whether the slot's initializer completed on the current lowering path.
+    initialized: bool,
 }
 
 /// A storage location whose contents may have been moved out.
@@ -769,6 +771,22 @@ impl<'a> CfgBuilder<'a> {
                 self.moved.clear_slot(MovedSlot::Local(*slot));
                 let init_ty = self.air.get(*init).ty;
                 self.arm_drop_flag_if_needed(MovedSlot::Local(*slot), init_ty, span);
+
+                // StorageLive starts the storage lifetime, but the slot does
+                // not own a value until its initializer completes. In
+                // particular, `let value = fallible()?` can return from the
+                // initializer before this Alloc is reached. Marking ownership
+                // only now keeps those early-exit paths from loading and
+                // dropping uninitialized storage while still letting them
+                // emit StorageDead.
+                if let Some(live_slot) = self
+                    .scope_stack
+                    .iter_mut()
+                    .rev()
+                    .find_map(|scope| scope.iter_mut().rev().find(|live| live.slot == *slot))
+                {
+                    live_slot.initialized = true;
+                }
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -1929,12 +1947,16 @@ impl<'a> CfgBuilder<'a> {
                 // but it keeps the moved-slot state correct if reuse lands.
                 self.moved.clear_slot(MovedSlot::Local(*slot));
 
-                // Record this slot as live in the current scope for drop elaboration
+                // Record the storage lifetime immediately, but defer ownership
+                // until Alloc successfully completes. Diverging initializers
+                // still end their storage without attempting to drop its
+                // uninitialized contents.
                 if let Some(scope) = self.scope_stack.last_mut() {
                     scope.push(LiveSlot {
                         slot: *slot,
                         ty,
                         span,
+                        initialized: false,
                     });
                 }
 
@@ -2567,7 +2589,8 @@ impl<'a> CfgBuilder<'a> {
         // still owns and drops, so dropping it here would double-free
         // (RUE-259). Its storage still ends normally (StorageDead below).
         let key = MovedSlot::Local(live_slot.slot);
-        if !self.air.is_borrow_slot(live_slot.slot)
+        if live_slot.initialized
+            && !self.air.is_borrow_slot(live_slot.slot)
             && !self.moved.is_slot_moved(key)
             && self.type_needs_drop(live_slot.ty)
         {
@@ -3407,6 +3430,81 @@ mod tests {
         assert_eq!(
             drop_count, 2,
             "expected exactly one Drop per droppable local (s, t)"
+        );
+        assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn fallible_initializer_drops_local_only_after_successful_alloc() {
+        let cfg = build_cfg_named(
+            "fn Option(comptime T: type) -> type { enum { Some(T), None } }\n\
+             fn read_num() -> Option(i64) {\n\
+                 let line = @read_line()?;\n\
+                 @parse_i64(line)\n\
+             }\n\
+             fn main() -> i32 { let result = read_num(); 0 }",
+            "read_num",
+        );
+
+        let line_drops = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter().copied())
+            .filter(|value| match cfg.get_inst(*value).data {
+                CfgInstData::Drop { value } => {
+                    matches!(cfg.get_inst(value).data, CfgInstData::Load { slot: 0 })
+                }
+                _ => false,
+            })
+            .count();
+        let line_storage_dead = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter().copied())
+            .filter(|value| {
+                matches!(
+                    cfg.get_inst(*value).data,
+                    CfgInstData::StorageDead { slot: 0, .. }
+                )
+            })
+            .count();
+
+        assert_eq!(
+            line_drops, 1,
+            "the line is dropped on the initialized success path, not the EOF early-return path"
+        );
+        assert_eq!(
+            line_storage_dead, 2,
+            "both the success and EOF paths must end the line's storage lifetime"
+        );
+        assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn diverging_initializer_never_makes_droppable_local_owned() {
+        let cfg = build_cfg_named(
+            "fn early() -> i32 {\n\
+                 let value: StrBuf = { return 7; \"never\" };\n\
+                 0\n\
+             }\n\
+             fn main() -> i32 { early() }",
+            "early",
+        );
+
+        assert_eq!(
+            count_drops(&cfg),
+            0,
+            "a local whose initializer never completes must never be dropped"
+        );
+        assert!(
+            cfg.blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter().copied())
+                .any(|value| matches!(
+                    cfg.get_inst(value).data,
+                    CfgInstData::StorageDead { slot: 0, .. }
+                )),
+            "the diverging path still ends the local's storage lifetime"
         );
         assert_all_blocks_terminated(&cfg);
     }
