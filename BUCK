@@ -109,6 +109,7 @@ filegroup(
 
 sh_test(
     name = "spec-tests",
+    labels = ["rue_heavy_suite"],
     test = "//crates/rue-spec:rue-spec",
     args = ["--quiet"],
     env = {
@@ -129,6 +130,7 @@ sh_test(
 
 sh_test(
     name = "ui-tests",
+    labels = ["rue_heavy_suite"],
     test = "//crates/rue-ui-tests:rue-ui-tests",
     args = ["--quiet"],
     env = {
@@ -139,6 +141,7 @@ sh_test(
 
 sh_test(
     name = "cli-tests",
+    labels = ["rue_heavy_suite"],
     test = "//crates/rue-cli-tests:rue-cli-tests",
     args = ["--quiet"],
     env = {
@@ -152,6 +155,7 @@ sh_test(
 
 sh_test(
     name = "reproducible-programs",
+    labels = ["rue_heavy_suite"],
     test = "scripts/test-reproducible-output.sh",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
@@ -166,6 +170,7 @@ sh_test(
 # `test.sh` and CI include it while `quick-test.sh` remains unit-only.
 sh_test(
     name = "oracle-diff-generated-smoke",
+    labels = ["rue_heavy_suite"],
     test = "scripts/oracle-diff-generated-smoke.sh",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
@@ -250,6 +255,8 @@ filegroup(
         "fmt.sh",
         "scripts/rue",
         "scripts/rue-bin",
+        "scripts/provision-build-cache",
+        "scripts/with-full-suite-lock",
         "scripts/run-sanitizer.sh",
         "test.sh",
     ],
@@ -260,5 +267,24 @@ sh_test(
     test = "scripts/test-wrapper-scripts.sh",
     env = {
         "RUE_WRAPPER_ROOT": "$(location :wrapper-script-inputs)",
+    },
+)
+
+filegroup(
+    name = "build-sharing-test-inputs",
+    srcs = [
+        "buck2",
+        "buck2-bin",
+        "scripts/provision-build-cache",
+        "scripts/with-full-suite-lock",
+        "test.sh",
+    ],
+)
+
+sh_test(
+    name = "build-sharing-tests",
+    test = "scripts/test-build-sharing.sh",
+    env = {
+        "RUE_BUILD_SHARING_ROOT": "$(location :build-sharing-test-inputs)",
     },
 )

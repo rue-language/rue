@@ -11,10 +11,12 @@
 # Get the key from https://app.buildbuddy.io (Settings -> API keys). CI reads the
 # same key from the BUILDBUDDY_API_KEY repo secret instead of this file.
 #
-# With this config, a normal `buck2 build` uses the remote action cache (actions
-# execute locally, cache is shared across machines + daemon restarts). Adding
-# `--prefer-remote` runs the WHOLE build on BuildBuddy's workers (verified: the
-# full compiler builds with 171/175 actions remote, 0 local). Remote execution is
+# With this config, the repository's `./buck2` wrapper adds `--prefer-local` to
+# normal execution commands: the remote action cache is queried first, then
+# misses execute locally. Adding an explicit execution-mode flag overrides the
+# wrapper, but full remote execution is not supported until RUE-320. It was
+# previously demonstrated for compilation, but complete builds still need the
+# platform-scoped linker fix. Remote execution is
 # possible because the rust toolchain ships its own tree (rustc finds its libs via
 # $ORIGIN under RE) and links via `cc`+lld; the remote_cache platform pins the
 # rbe-ubuntu22-04 container image (Python 3.10 for the prelude's rustc wrapper).
@@ -36,6 +38,7 @@ http_headers = x-buildbuddy-api-key:<YOUR_BUILDBUDDY_API_KEY>
 digest_algorithms = SHA256
 
 [build]
-# Route execution through the remote-cache/RE platform (local exec + remote cache
-# by default; full remote execution with --prefer-remote).
+# Route commands through the remote-cache platform. The repository ./buck2
+# wrapper adds --prefer-local for ordinary execution commands; RUE-320 must land
+# before full remote execution is supported.
 execution_platforms = root//platforms:remote_cache

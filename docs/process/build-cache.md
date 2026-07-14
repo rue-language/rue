@@ -3,9 +3,9 @@
 Buck2 rebuilds everything from scratch in each `buck-out`, and OSS buck2 has **no
 persistent action cache across daemon restarts** (noted in `ci.yml`). Every CI run
 and every isolated worktree rebuilds unchanged crates. We use **BuildBuddy** (free
-tier) for a shared remote action cache — and full remote **execution** was proven
-to work locally: with the config below, the entire compiler built on BuildBuddy's
-workers (171/175 actions remote, 0 local, ~103s cold).
+tier) for a shared remote action cache. Remote execution experiments established
+the remaining toolchain requirements, but complete remote builds are not a
+supported workflow while RUE-320 remains open.
 
 > **Status (RUE-316 landed the groundwork; RUE-320 finishes it).** The remote
 > platform + the `$ORIGIN` toolchain-tree fix are in place, but full RE is **not
@@ -18,24 +18,55 @@ workers (171/175 actions remote, 0 local, ~103s cold).
 > **RUE-320**. Until then the `remote_cache` platform is opt-in/experimental and
 > its remote-execution actions require that linker override locally.
 
-- **Remote action cache**: actions execute locally; the cache is shared across
-  machines + daemon restarts. Can only affect *speed*, never correctness.
+- **Remote action cache**: the repository `./buck2` wrapper supplies
+  `--prefer-local`, so cache misses execute locally while hits are shared across
+  machines + daemon restarts. The cache can only affect *speed*, never
+  correctness.
 - **`--prefer-remote`**: full remote **execution** — compiles + links on
   BuildBuddy's container (~80 free-tier cores). Blocked on RUE-320.
 
 Tracking: RUE-316 (groundwork), RUE-320 (platform-scoped linker to finish RE).
 
-## Local dev
+## Local development across worktrees
 
 ```bash
-cp .buckconfig.local.example .buckconfig.local
-# paste your key (https://app.buildbuddy.io -> Settings -> API keys) into the
-# x-buildbuddy-api-key line
+scripts/rue cache install       # prompts without echo for the BuildBuddy key
+scripts/rue cache apply --all   # primary checkout + current Git/Codex worktrees
 ```
 
-`.buckconfig.local` is gitignored (holds the key) and buck2 layers it over
-`.buckconfig` automatically. Without the file, nothing changes — the shared config
-stays cache-agnostic.
+`install` writes one user-owned configuration at
+`${XDG_CONFIG_HOME:-~/.config}/rue/buildbuddy.buckconfig`, with mode `0600`.
+`apply` places only an ignored `.buckconfig.local` symlink in each checkout, so
+the credential is neither copied between worktrees nor stored in Git. It refuses
+to replace an existing local config and refuses a central config readable by
+another account. Commands never print the key.
+
+Once installed, direct `./buck2`, `scripts/rue ...`, and `test.sh` runs
+automatically link a new worktree on first use. If the central config is absent,
+Rue simply uses its ordinary local Buck configuration. If it is malformed or
+insecure, Rue warns and continues without provisioning it. Existing local paths,
+including broken or unrelated symlinks, are left untouched. This keeps cache
+setup opt-in and prevents a credential problem from making local builds unusable.
+
+The setup is for the shared **action cache**. Do not add `--prefer-remote` to
+normal commands: full remote execution remains blocked on RUE-320. The checked-in
+`.buckconfig.local.example` remains a reference for the generated configuration,
+not the recommended per-worktree setup.
+
+## Full-suite host coordination
+
+`scripts/rue test` with no filter takes a user-scoped lock under `/tmp`, shared by
+independent Rue project roots. Only one full suite runs on the host at once;
+`scripts/rue quick`, filtered tests, and direct targeted Buck commands remain
+available concurrently. A waiter reports the current holder once and then at
+most once per minute. Owner PID metadata and atomic stale-lock recovery handle
+normal exit, interruption, and a process that died while acquiring the lock.
+
+Within the full suite, Buck first discovers and runs all non-heavy tests with
+`//...`. The spec, UI, CLI, generated-oracle, and program-reproducibility targets
+carry the `rue_heavy_suite` label. `test.sh` queries that label from Buck's live
+target graph and runs every result one at a time, preserving independent cache
+entries without a hand-maintained inventory that can omit a new suite.
 
 ## What it took (the non-obvious bits)
 
@@ -46,10 +77,13 @@ they're recorded here so a future config change doesn't silently regress:
    scheme (buck2 rejects `grpcs://`; `tls = true` upgrades the transport), and
    **`[buck2] digest_algorithms = SHA256`** (BuildBuddy's CAS digest). Without
    these the RE client silently never connects (`remote: 0`, no error).
-2. **`remote_enabled = True`** in `platforms/remote_cache.bzl`: OSS buck2 only
-   opens the RE connection when remote is enabled — *even for cache-only use*. A
-   pure `remote_enabled = False` cache config connects to nothing. So the platform
-   enables remote but leans local (limited hybrid + fallback) for cache-mostly use.
+2. **`remote_enabled = True` plus `--prefer-local`**: OSS buck2 only opens the RE
+   connection when remote is enabled — *even for cache-only use*. A pure
+   `remote_enabled = False` cache config connects to nothing. Buck's limited
+   hybrid mode otherwise prefers remote execution, so the repository `./buck2`
+   wrapper adds `--prefer-local` to ordinary build/test/run/install commands.
+   Remote cache lookup still happens before a local miss executes. An explicit
+   execution-mode flag overrides the wrapper.
 3. **rustc under RE** (`toolchains/rust/defs.bzl`): rustc finds `librustc_driver.so`
    via its native `$ORIGIN/../lib` RPATH, which only resolves if the whole toolchain
    tree is materialized on the remote worker. The `compiler`/`rustdoc` RunInfo carry

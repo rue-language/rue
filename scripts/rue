@@ -14,6 +14,7 @@
 #   scripts/rue perf [args...]     Per-pass compiler perf baseline (scripts/perf-baseline.py)
 #   scripts/rue fmt                Format the code (./fmt.sh)
 #   scripts/rue gc                 Reclaim disk: drop buck-out artifacts unused for 1+ week
+#   scripts/rue cache [args...]    Provision the shared BuildBuddy action cache
 #   scripts/rue path               Print the absolute binary path (build if needed)
 #
 set -euo pipefail
@@ -26,6 +27,13 @@ set -euo pipefail
 caller_pwd="$PWD"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+
+# Once a private central cache config has been installed, make new worktrees
+# adopt it on first use. Missing/invalid credentials never enter the repository
+# and never prevent a local build.
+if [[ -x scripts/provision-build-cache ]]; then
+    scripts/provision-build-cache auto
+fi
 
 cmd="${1:-}"
 shift || true
@@ -109,6 +117,9 @@ case "$cmd" in
         # buck-out grows without bound; drop artifacts not used in the last
         # week. An optional argument overrides the window: scripts/rue gc 1d
         ./buck2 clean --stale "${1:-1w}"
+        ;;
+    cache)
+        scripts/provision-build-cache "$@"
         ;;
     ""|-h|--help|help)
         # Print the header comment block (everything between the shebang and

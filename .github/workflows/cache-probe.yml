@@ -29,45 +29,69 @@ jobs:
             exit 1
           fi
 
-      - name: Write .buckconfig.local from the secret
+      - name: Provision the private cache config
         env:
-          KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
-          cat > .buckconfig.local <<EOF
-          [buck2_re_client]
-          engine_address = grpc://remote.buildbuddy.io
-          action_cache_address = grpc://remote.buildbuddy.io
-          cas_address = grpc://remote.buildbuddy.io
-          tls = true
-          http_headers = x-buildbuddy-api-key:${KEY}
-
-          [buck2]
-          digest_algorithms = SHA256
-
-          [build]
-          execution_platforms = root//platforms:remote_cache
-          EOF
-          echo "wrote .buckconfig.local (key redacted)"
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
 
       - name: Cold build (populates the remote cache)
         run: |
-          set -o pipefail  # without it, `| tee | tail` makes a failed build exit 0
-          /usr/bin/time -v ./buck2 build //crates/rue:rue 2>&1 | tee cold.log | tail -3
+          set +e
+          /usr/bin/time -v ./buck2 build --prefer-local //crates/rue:rue >cold.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::group::Cold build failure (complete log)"
+            cat cold.log
+            echo "::endgroup::"
+            echo "::error::Cold cache-probe build failed with exit $status"
+            exit "$status"
+          fi
+          grep -E '^(Cache hits:|Commands:|Network:)' cold.log | tail -3 || tail -10 cold.log
 
       - name: Clear local buck-out, rebuild (should hit the remote cache)
         run: |
-          set -o pipefail  # without it, `| tee | tail` makes a failed build exit 0
           ./buck2 clean
-          /usr/bin/time -v ./buck2 build //crates/rue:rue 2>&1 | tee warm.log | tail -3
+          set +e
+          /usr/bin/time -v ./buck2 build --prefer-local //crates/rue:rue >warm.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::group::Warm build failure (complete log)"
+            cat warm.log
+            echo "::endgroup::"
+            echo "::error::Warm cache-probe build failed with exit $status"
+            exit "$status"
+          fi
+          grep -E '^(Cache hits:|Commands:|Network:)' warm.log | tail -3 || tail -10 warm.log
+
+      - name: Upload probe logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-probe-logs
+          path: |
+            cold.log
+            warm.log
+          if-no-files-found: warn
 
       - name: Cache-hit summary
         if: always()
         run: |
+          command_summary() {
+            if [ -f "$1" ]; then
+              grep -oE 'Commands: .*' "$1" | tail -1 || echo "unavailable (build failed before Buck summary)"
+            else
+              echo "unavailable (step did not run)"
+            fi
+          }
           {
             echo "### Remote cache probe"
             echo '```'
-            echo "COLD: $(grep -oE 'Commands: .*' cold.log | tail -1)"
-            echo "WARM: $(grep -oE 'Commands: .*' warm.log | tail -1)"
+            echo "COLD: $(command_summary cold.log)"
+            echo "WARM: $(command_summary warm.log)"
             echo '```'
             echo "A non-zero 'cached'/'remote' count on WARM means the remote cache is working."
           } >> "$GITHUB_STEP_SUMMARY"

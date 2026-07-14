@@ -1,8 +1,8 @@
 # Remote execution + cache platform (RUE-316). remote_enabled=True opens the RE
-# connection (required for the cache in OSS buck2); limited hybrid + local
-# fallback keeps most execution local. rustc's shared libs resolve on the remote
-# worker via the $ORIGIN RPATH now that the toolchain carries its full tree
-# (toolchains/rust/defs.bzl).
+# connection (required even for cache-only use in OSS buck2). Limited hybrid
+# prefers remote execution; the repository's ./buck2 wrapper therefore adds
+# --prefer-local for ordinary execution commands. Explicit execution-mode flags
+# still override it. Full remote execution remains blocked on RUE-320.
 def _remote_cache_platform_impl(ctx):
     base = ctx.attrs.base[ExecutionPlatformRegistrationInfo]
     platforms = [
