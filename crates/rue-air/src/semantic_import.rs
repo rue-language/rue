@@ -33,6 +33,7 @@ pub struct SemanticImportNominal<K> {
     pub name: Arc<str>,
     pub kind: SemanticImportNominalKind,
     pub is_public: bool,
+    pub lang_item: Option<crate::LangItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -641,6 +642,12 @@ where
                 .entry(nominal.module_path.clone())
                 .or_insert(FileId::new(next));
         }
+        type_pool.set_symbol_paths(
+            module_files
+                .iter()
+                .map(|(path, file_id)| (*file_id, path.to_string()))
+                .collect(),
+        );
         let mut local = BTreeMap::new();
         let mut local_identities = std::collections::BTreeSet::new();
         for nominal in nominals {
@@ -672,6 +679,9 @@ where
                             file_id,
                         },
                     );
+                    if let Some(lang_item) = nominal.lang_item {
+                        type_pool.set_struct_lang_item(id, lang_item);
+                    }
                     LocalNominal::Struct(id)
                 }
                 SemanticImportNominalKind::Enum => {
@@ -1025,6 +1035,7 @@ mod tests {
             name: Arc::from(name),
             kind,
             is_public: true,
+            lang_item: None,
         }
     }
 

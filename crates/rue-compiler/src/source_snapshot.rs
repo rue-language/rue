@@ -78,7 +78,22 @@ impl SourceSnapshot {
             .iter()
             .map(|module| (module.file_id(), module.module_id().as_str().to_owned()))
             .collect();
-        let metadata = SourceMetadata::new(root_file_id, physical_paths, logical_paths)?;
+        let trusted_standard_library_files = program
+            .modules()
+            .iter()
+            .filter_map(|module| {
+                module
+                    .module_id()
+                    .is_trusted_standard_library()
+                    .then_some(module.file_id())
+            })
+            .collect();
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root_file_id,
+            physical_paths,
+            logical_paths,
+            trusted_standard_library_files,
+        )?;
         validate_source_lengths(
             program
                 .modules()
@@ -199,11 +214,7 @@ impl SourceSnapshot {
         let candidates: Vec<_> = contents
             .into_iter()
             .map(|(file_id, text)| {
-                let module_id = ModuleId::from_validated_canonical(
-                    metadata
-                        .logical_path(file_id)
-                        .expect("validated membership"),
-                );
+                let module_id = metadata.module_id(file_id).expect("validated membership");
                 let source_id = SourceId::from_shared_text(text);
                 (file_id, module_id, source_id)
             })
@@ -241,11 +252,7 @@ impl SourceSnapshot {
             .enumerate()
             .map(|(index, record)| (record.file_id, index))
             .collect();
-        let root_module = ModuleId::from_validated_canonical(
-            metadata
-                .logical_path(metadata.root_file_id())
-                .expect("validated root"),
-        );
+        let root_module = metadata.root_module_id();
         let revision = SourceRevision::new(
             root_module,
             contents
@@ -647,6 +654,59 @@ mod tests {
                 .map(|m| m.module.as_str())
                 .collect::<Vec<_>>(),
             ["app/helper.rue", "app/main.rue"]
+        );
+    }
+
+    #[test]
+    fn parsed_module_reassembly_preserves_typed_module_origin() {
+        let root = FileId::new(7);
+        let standard_library = FileId::new(11);
+        let physical = HashMap::from([
+            (root, "/project/main.rue".to_owned()),
+            (standard_library, "/sdk/strbuf.rue".to_owned()),
+        ]);
+        let logical = HashMap::from([
+            (root, "app/main.rue".to_owned()),
+            (standard_library, "\0rue-std/strbuf.rue".to_owned()),
+        ]);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root,
+            physical,
+            logical,
+            HashSet::from([standard_library]),
+        )
+        .unwrap();
+        let original = SourceSnapshot::new(
+            metadata,
+            vec![
+                (root, Arc::new("fn main() {}".to_owned())),
+                (
+                    standard_library,
+                    Arc::new("pub struct StrBuf {}".to_owned()),
+                ),
+            ],
+        )
+        .unwrap();
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&original).unwrap();
+
+        let reconstructed = SourceSnapshot::from_parsed_modules(&parsed).unwrap();
+        for module in parsed.modules() {
+            assert_eq!(
+                reconstructed.metadata().module_id(module.file_id()),
+                Some(module.module_id().clone())
+            );
+        }
+        assert!(
+            reconstructed
+                .module_id(standard_library)
+                .unwrap()
+                .is_trusted_standard_library()
+        );
+        assert!(
+            !reconstructed
+                .module_id(root)
+                .unwrap()
+                .is_trusted_standard_library()
         );
     }
 

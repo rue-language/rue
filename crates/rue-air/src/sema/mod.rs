@@ -275,6 +275,9 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) file_paths: HashMap<FileId, String>,
     /// Maps FileId to relocation-stable paths used in generated symbols.
     pub(crate) symbol_paths: HashMap<FileId, String>,
+    /// FileIds whose standard-library provenance was established by the
+    /// frontend's import resolver, rather than inferred from path spelling.
+    pub(crate) trusted_standard_library_files: HashSet<FileId>,
     /// Explicit semantic root module for root-relative import fallback.
     pub(crate) root_file_id: Option<FileId>,
     /// Arena storage for function/method parameter data.
@@ -383,6 +386,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             canonical_imports,
             file_paths,
             symbol_paths,
+            trusted_standard_library_files,
             root_file_id,
             param_arena,
             anon_struct_method_sigs,
@@ -433,6 +437,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             canonical_imports,
             file_paths,
             symbol_paths,
+            trusted_standard_library_files,
             root_file_id,
             param_arena,
             anon_struct_method_sigs,
@@ -742,6 +747,7 @@ impl<'a> Sema<'a> {
             canonical_imports: None,
             file_paths: HashMap::new(),
             symbol_paths: HashMap::new(),
+            trusted_standard_library_files: HashSet::new(),
             root_file_id: None,
             param_arena: ParamArena::new(),
             anon_struct_method_sigs: HashMap::new(),

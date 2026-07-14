@@ -235,6 +235,13 @@ impl fmt::Display for SourceId {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModuleId {
     logical_path: Arc<str>,
+    origin: ModuleOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum ModuleOrigin {
+    Caller,
+    StandardLibrary,
 }
 
 impl ModuleId {
@@ -247,6 +254,7 @@ impl ModuleId {
         }
         Ok(Self {
             logical_path: path.into(),
+            origin: ModuleOrigin::Caller,
         })
     }
     pub(crate) fn from_validated_canonical(path: &str) -> Self {
@@ -254,7 +262,31 @@ impl ModuleId {
         debug_assert_eq!(normalize_module_path(path), path);
         Self {
             logical_path: Arc::from(path),
+            origin: ModuleOrigin::Caller,
         }
+    }
+    pub(crate) fn from_trusted_standard_library_path(path: impl AsRef<str>) -> CompileResult<Self> {
+        let path = normalize_module_path(path.as_ref());
+        if !path.starts_with("\0rue-std/") {
+            return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "trusted standard-library module is outside the standard-library namespace".into(),
+            )));
+        }
+        Ok(Self {
+            logical_path: path.into(),
+            origin: ModuleOrigin::StandardLibrary,
+        })
+    }
+    pub(crate) fn from_trusted_validated_canonical(path: &str) -> Self {
+        debug_assert!(path.starts_with("\0rue-std/"));
+        debug_assert_eq!(normalize_module_path(path), path);
+        Self {
+            logical_path: Arc::from(path),
+            origin: ModuleOrigin::StandardLibrary,
+        }
+    }
+    pub fn is_trusted_standard_library(&self) -> bool {
+        self.origin == ModuleOrigin::StandardLibrary
     }
     pub fn logical_path(&self) -> &str {
         &self.logical_path
@@ -395,13 +427,11 @@ impl ModuleResolutionInputs {
     }
 
     pub fn from_metadata(metadata: &SourceMetadata) -> Self {
-        let root = ModuleId::from_validated_canonical(
-            metadata.logical_path(metadata.root_file_id()).unwrap(),
-        );
+        let root = metadata.root_module_id();
         let modules: Vec<_> = metadata
             .file_ids()
             .map(|id| ModuleResolutionInput {
-                module: ModuleId::from_validated_canonical(metadata.logical_path(id).unwrap()),
+                module: metadata.module_id(id).unwrap(),
                 physical_path: Arc::from(metadata.physical_path(id).unwrap()),
             })
             .collect();

@@ -37,7 +37,8 @@ use rue_span::FileId;
 
 use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::types::{
-    ArrayTypeId, EnumDef, EnumId, PtrConstTypeId, PtrMutTypeId, StructDef, StructId, Type, TypeKind,
+    ArrayTypeId, EnumDef, EnumId, LangItem, PtrConstTypeId, PtrMutTypeId, StructDef, StructId,
+    Type, TypeKind,
 };
 
 /// Interned type index - 32 bits, Copy, cheap comparison.
@@ -267,6 +268,14 @@ struct TypeInternPoolInner {
 
     /// Relocation-stable logical identity for each defining source file.
     symbol_paths: HashMap<FileId, String>,
+
+    /// Explicit language-item assignments issued by a trusted frontend or
+    /// durable semantic import boundary.
+    struct_lang_items: HashMap<StructId, LangItem>,
+
+    /// Transitional compiler-injected StrBuf identity, recorded when its
+    /// runtime-backed nominal is registered rather than rediscovered by name.
+    builtin_strbuf: Option<StructId>,
 }
 
 impl TypeInternPool {
@@ -281,6 +290,8 @@ impl TypeInternPool {
                 struct_by_file_name: HashMap::new(),
                 enum_by_file_name: HashMap::new(),
                 symbol_paths: HashMap::new(),
+                struct_lang_items: HashMap::new(),
+                builtin_strbuf: None,
             }),
         }
     }
@@ -390,11 +401,16 @@ impl TypeInternPool {
         // Create new struct type
         let pool_index = inner.types.len() as u32;
         let interned = InternedType::from_pool_index(pool_index);
+        let struct_id = StructId::from_pool_index(pool_index);
+
+        if def.is_builtin && def.destructor.as_deref() == Some("__rue_drop_String") {
+            inner.builtin_strbuf = Some(struct_id);
+        }
 
         inner.types.push(TypeData::Struct(StructData { name, def }));
         inner.struct_by_file_name.insert(key, interned);
 
-        (StructId::from_pool_index(pool_index), true)
+        (struct_id, true)
     }
 
     /// Reserve a struct ID without registering the full definition yet.
@@ -728,6 +744,41 @@ impl TypeInternPool {
             TypeData::Struct(data) => Some(data.def.clone()),
             _ => None,
         }
+    }
+
+    /// Return the stable standard-library identity carried by a nominal type.
+    pub fn struct_lang_item(&self, struct_id: StructId) -> Option<LangItem> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.struct_lang_items.get(&struct_id).copied()
+    }
+
+    /// Assign an explicitly authorized language item to a registered nominal.
+    pub fn set_struct_lang_item(&self, struct_id: StructId, lang_item: LangItem) {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            matches!(
+                inner.types.get(struct_id.0 as usize),
+                Some(TypeData::Struct(_))
+            ),
+            "language items can only be assigned to registered structs"
+        );
+        inner.struct_lang_items.insert(struct_id, lang_item);
+    }
+
+    /// Whether a nominal is the canonical source StrBuf or the transitional
+    /// synthetic StrBuf. The two remain distinct nominal types.
+    pub fn is_strbuf(&self, struct_id: StructId) -> bool {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        if inner.builtin_strbuf == Some(struct_id) {
+            return true;
+        }
+        inner.struct_lang_items.get(&struct_id) == Some(&LangItem::StrBuf)
+    }
+
+    /// The transitional compiler-injected StrBuf type, if registered.
+    pub fn builtin_strbuf_type(&self) -> Option<Type> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.builtin_strbuf.map(Type::new_struct)
     }
 
     /// Get an enum definition by EnumId.
@@ -1248,6 +1299,8 @@ impl Clone for TypeInternPool {
                 struct_by_file_name: inner.struct_by_file_name.clone(),
                 enum_by_file_name: inner.enum_by_file_name.clone(),
                 symbol_paths: inner.symbol_paths.clone(),
+                struct_lang_items: inner.struct_lang_items.clone(),
+                builtin_strbuf: inner.builtin_strbuf,
             }),
         }
     }

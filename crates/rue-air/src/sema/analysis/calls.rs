@@ -289,8 +289,12 @@ impl<'a> BodySema<'a> {
             }
         };
 
-        // Check if this is a builtin type and handle its methods
-        if let Some(builtin_def) = self.get_builtin_type_def(struct_id) {
+        // Source-defined methods on a language item are authoritative. The
+        // builtin registry remains a transitional fallback for operations the
+        // source module has not migrated yet.
+        if self.method_info((struct_id, method)).is_none()
+            && let Some(builtin_def) = self.get_builtin_type_def(struct_id)
+        {
             let method_ctx = BuiltinMethodContext {
                 struct_id,
                 builtin_def,
@@ -774,8 +778,11 @@ impl<'a> BodySema<'a> {
             )?;
         }
 
-        // Handle builtin type associated functions
-        if let Some(builtin_def) = self.get_builtin_type_def(struct_id) {
+        // Prefer the canonical source implementation, retaining registry
+        // lowering only for associated functions not yet defined in source.
+        if self.method_info((struct_id, function)).is_none()
+            && let Some(builtin_def) = self.get_builtin_type_def(struct_id)
+        {
             return self.analyze_builtin_assoc_fn(
                 air,
                 ctx,

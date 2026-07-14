@@ -71,8 +71,8 @@ pub use semantic_import::{
     SemanticImportedType,
 };
 pub use types::{
-    ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,
-    StructField, StructId, Type, TypeKind, parse_array_type_syntax,
+    ArrayTypeId, EnumDef, EnumId, LangItem, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId,
+    StructDef, StructField, StructId, Type, TypeKind, parse_array_type_syntax,
 };
 
 /// Sentinel value used to encode parameter slots in AIR instructions.

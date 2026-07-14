@@ -179,6 +179,14 @@ pub fn import_durable_declaration_semantics(
                 name: Arc::from(declaration.key.name()),
                 kind: SemanticImportNominalKind::Struct,
                 is_public: declaration.is_public,
+                lang_item: if declaration.key.module().is_trusted_standard_library() {
+                    rue_air::LangItem::from_standard_library_nominal(
+                        declaration.key.module().as_str(),
+                        declaration.key.name(),
+                    )
+                } else {
+                    None
+                },
             }),
             DurableDeclarationPayload::Enum { .. } => nominals.push(SemanticImportNominal {
                 key: declaration.key.clone(),
@@ -186,6 +194,7 @@ pub fn import_durable_declaration_semantics(
                 name: Arc::from(declaration.key.name()),
                 kind: SemanticImportNominalKind::Enum,
                 is_public: declaration.is_public,
+                lang_item: None,
             }),
             DurableDeclarationPayload::Callable { .. } => {
                 // Length-prefix every component. Unlike a source-like name this
@@ -412,7 +421,11 @@ impl ProjectionJoinKey {
 
     fn from_shell(shell: &SemanticDeclarationShell) -> Option<Self> {
         Some(Self {
-            module: ModuleId::from_validated_canonical(&shell.identity.module_path),
+            module: if shell.identity.is_trusted_standard_library {
+                ModuleId::from_trusted_validated_canonical(&shell.identity.module_path)
+            } else {
+                ModuleId::from_validated_canonical(&shell.identity.module_path)
+            },
             namespace: stable_namespace(shell.identity.namespace),
             kind: stable_kind(shell.identity.kind)?,
             name: shell.identity.name.clone(),
@@ -1026,6 +1039,49 @@ mod tests {
         assert_query_value::<DurableDeclarationPayload>();
         assert_query_value::<DurableDeclarationSemantic>();
         assert_query_value::<DurableSemanticExportFailure>();
+    }
+
+    #[test]
+    fn trusted_std_strbuf_survives_durable_import_with_aarch64_sret_identity() {
+        let key = StableDefinitionKey::for_test(
+            ModuleId::from_trusted_standard_library_path("\0rue-std/strbuf.rue").unwrap(),
+            StableDefinitionNamespace::Type,
+            StableDefinitionKind::Struct,
+            "StrBuf",
+            None,
+        );
+        let epoch = import_durable_declaration_semantics(&[DurableDeclarationSemantic {
+            key,
+            is_public: true,
+            payload: DurableDeclarationPayload::Struct {
+                fields: Arc::from([
+                    (
+                        Arc::from("buf"),
+                        DurableType::PtrMut(Box::new(DurableType::U8)),
+                    ),
+                    (Arc::from("len"), DurableType::U64),
+                    (Arc::from("cap"), DurableType::U64),
+                ]),
+                is_copy: false,
+                is_linear: false,
+            },
+        }])
+        .unwrap();
+        let strbuf = epoch
+            .type_pool()
+            .all_struct_ids()
+            .into_iter()
+            .find(|id| epoch.type_pool().struct_lang_item(*id) == Some(rue_air::LangItem::StrBuf))
+            .expect("durable import should restore StrBuf language-item identity");
+        assert_eq!(
+            epoch.type_pool().struct_symbol_name(strbuf),
+            "StrBuf$_00rue_2dstd_2fstrbuf_2erue"
+        );
+        assert!(rue_codegen::cfg_lower::type_uses_sret_return(
+            epoch.type_pool(),
+            rue_air::Type::new_struct(strbuf),
+            8,
+        ));
     }
 
     #[test]

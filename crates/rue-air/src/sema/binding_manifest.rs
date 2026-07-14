@@ -159,6 +159,7 @@ pub struct DeclarationBindingWork {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemanticDeclarationShellIdentity {
     pub module_path: Arc<str>,
+    pub is_trusted_standard_library: bool,
     pub namespace: SemanticBindingNamespace,
     pub kind: SemanticBindingKind,
     pub name: Arc<str>,
@@ -383,6 +384,10 @@ impl<'a> DeclarationShells<'a> {
                 .unwrap_or_else(|| format!("file{}", export.identity.file_id.index()));
             let identity = SemanticDeclarationShellIdentity {
                 module_path: Arc::from(module_path),
+                is_trusted_standard_library: self
+                    .sema
+                    .trusted_standard_library_files
+                    .contains(&export.identity.file_id),
                 namespace: export.identity.namespace,
                 kind: export.identity.kind,
                 name: export.identity.name.clone(),
@@ -883,6 +888,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     shell: SemanticDeclarationShell {
                         identity: SemanticDeclarationShellIdentity {
                             module_path: module_path(inst.span.file_id),
+                            is_trusted_standard_library: self
+                                .trusted_standard_library_files
+                                .contains(&inst.span.file_id),
                             namespace: SemanticBindingNamespace::Type,
                             kind,
                             name: Arc::from(self.interner.resolve(name)),
@@ -940,6 +948,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         .collect::<Vec<_>>();
                     let identity = SemanticDeclarationShellIdentity {
                         module_path: module_path(inst.span.file_id),
+                        is_trusted_standard_library: self
+                            .trusted_standard_library_files
+                            .contains(&inst.span.file_id),
                         namespace: if owner.is_some() {
                             SemanticBindingNamespace::Method
                         } else {
@@ -966,6 +977,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 } => (
                     SemanticDeclarationShellIdentity {
                         module_path: module_path(inst.span.file_id),
+                        is_trusted_standard_library: self
+                            .trusted_standard_library_files
+                            .contains(&inst.span.file_id),
                         namespace: SemanticBindingNamespace::Value,
                         // Function aliases are classified only after evaluating
                         // the initializer; their stable value identity is already
@@ -986,6 +1000,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 InstData::DropFnDecl { type_name, body } => (
                     SemanticDeclarationShellIdentity {
                         module_path: module_path(inst.span.file_id),
+                        is_trusted_standard_library: self
+                            .trusted_standard_library_files
+                            .contains(&inst.span.file_id),
                         namespace: SemanticBindingNamespace::Destructor,
                         kind: SemanticBindingKind::Destructor,
                         name: Arc::from(self.interner.resolve(type_name)),

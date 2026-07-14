@@ -114,6 +114,11 @@ impl<'a> BodySema<'a> {
             &self.type_pool,
             type_subst,
         );
+        let strbuf_ty = self
+            .builtin_string_id
+            .map(Type::new_struct)
+            .expect("transitional StrBuf was registered before inference");
+        cgen = cgen.with_strbuf_type(strbuf_ty);
         if self.preview_features.contains(&PreviewFeature::StringTrio) {
             let str_name = self
                 .interner
@@ -125,6 +130,8 @@ impl<'a> BodySema<'a> {
                 .copied()
                 .expect("canonical str type is present in the inference context");
             cgen = cgen.with_string_literal_default(str_ty);
+        } else {
+            cgen = cgen.with_string_literal_default(strbuf_ty);
         }
         let mut cgen = cgen
             .with_const_types(&infer_ctx.const_types)
@@ -236,6 +243,13 @@ impl<'a> BodySema<'a> {
         // the generated-struct registry. A user struct with a coincidental
         // name in another module must never become literal-compatible.
         let mut string_literal_types = vec![self.builtin_string_type(), string_literal_default];
+        string_literal_types.extend(
+            self.type_pool
+                .all_struct_ids()
+                .into_iter()
+                .filter(|id| self.type_pool.is_strbuf(*id))
+                .map(Type::new_struct),
+        );
         string_literal_types.extend(
             self.generated_structs
                 .values()

@@ -29,6 +29,37 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "canonical_identity_drives_string_semantics"
+description = "Qualified and aliased std StrBuf values use view coercions, indexing, iteration, equality, and transitional runtime helpers."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn read_len(borrow value: str) -> u64 { value.len() }
+fn exclusive_len(inout value: str) -> u64 { value.len() }
+
+fn main() -> i32 {
+    let mut value: S = "abc";
+    if read_len(borrow value) != 3 { return 1; }
+    if exclusive_len(inout value) != 3 { return 2; }
+    if value[1] != 98 { return 3; }
+    if value != "abc" { return 4; }
+
+    let mut bytes = 0;
+    for _byte in value { bytes = bytes + 1; }
+    if bytes != 3 { return 5; }
+
+    let mut chars = 0;
+    for _char in value.chars() { chars = chars + 1; }
+    if chars != 3 { return 6; }
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 0
+
+[[case]]
 name = "owned_allocation_drop_and_early_free"
 description = "cap > 0 owns an allocation; moved scope-drop and explicit early free each leave one teardown path."
 env = { RUE_STD_PATH = "${REAL_STD}" }

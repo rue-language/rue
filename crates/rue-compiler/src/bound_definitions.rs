@@ -625,6 +625,19 @@ pub(crate) fn configure_canonical_sema<'a>(
         .collect();
     sema.set_canonical_imports(modules, imports)
         .map_err(CompileErrors::from)?;
+    sema.set_trusted_standard_library_files(
+        merged
+            .ast()
+            .modules()
+            .iter()
+            .filter_map(|module| {
+                module
+                    .module_id()
+                    .is_trusted_standard_library()
+                    .then_some(module.file_id())
+            })
+            .collect(),
+    );
     Ok(sema)
 }
 

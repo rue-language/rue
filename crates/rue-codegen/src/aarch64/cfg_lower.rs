@@ -2481,7 +2481,7 @@ impl<'a> CfgLower<'a> {
                 let dropped_ty = self.ctx.cfg.get_inst(*dropped_value).ty;
 
                 // Handle String specially - it's a fat pointer (ptr, len, cap)
-                if self.ctx.is_builtin_string(dropped_ty) {
+                if self.ctx.is_legacy_builtin_string(dropped_ty) {
                     // String requires all 3 slots as arguments to __rue_drop_String.
                     // The accessor handles every source (cache for StructInit/Call/
                     // BlockParam; materialize for Load/Param/PlaceRead). (RUE-118)
