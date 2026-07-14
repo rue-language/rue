@@ -261,16 +261,23 @@ impl BoundDefinitionSet {
         &self,
         token: rue_air::BodyOwnerToken,
     ) -> Result<&StableDefinitionKey, CompileError> {
+        self.definition_for_body_token(token)
+            .map(BoundDefinitionRecord::stable_key)
+    }
+
+    pub(crate) fn definition_for_body_token(
+        &self,
+        token: rue_air::BodyOwnerToken,
+    ) -> Result<&BoundDefinitionRecord, CompileError> {
         if token.issuer() != self.issuer.id {
             return Err(invalid("body owner token belongs to a foreign issuer"));
         }
-        let key = self
+        let record = self
             .definitions
             .get(token.slot() as usize)
-            .map(BoundDefinitionRecord::stable_key)
             .ok_or_else(|| invalid("body owner token has an invalid slot"))?;
         if !matches!(
-            key.kind(),
+            record.stable_key().kind(),
             StableDefinitionKind::Function
                 | StableDefinitionKind::Method
                 | StableDefinitionKind::AssociatedFunction
@@ -280,7 +287,7 @@ impl BoundDefinitionSet {
                 "body owner token refers to a non-body definition kind",
             ));
         }
-        Ok(key)
+        Ok(record)
     }
 
     /// Look up a definition by its stable, issuer-independent source key.
@@ -1341,6 +1348,13 @@ mod tests {
         let first_token = first.body_owner_endpoints()[0].token;
         let second_token = second.body_owner_endpoints()[0].token;
         assert!(first.key_for_body_token(first_token).is_ok());
+        assert_eq!(
+            first
+                .definition_for_body_token(first_token)
+                .unwrap()
+                .stable_key(),
+            first.key_for_body_token(first_token).unwrap(),
+        );
         assert!(first.key_for_body_token(second_token).is_err());
         assert!(
             first
