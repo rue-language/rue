@@ -250,6 +250,7 @@ impl Specializer {
             sema.body_analysis_work.specialization_rounds += 1;
             if self.rounds > MAX_SPECIALIZATION_ROUNDS {
                 let key = &pending[0];
+                sema.body_analysis_work.specialization_driver_failures += 1;
                 return Err(CompileError::new(
                     ErrorKind::ComptimeEvaluationFailed {
                         reason: format!(

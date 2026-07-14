@@ -128,6 +128,11 @@ pub(crate) struct CfgFrontendOutput {
     pub(crate) work: canonical_semantic::CfgConstructionWork,
 }
 
+pub(crate) struct CfgConstructionFailure {
+    pub(crate) errors: CompileErrors,
+    pub(crate) work: canonical_semantic::CfgConstructionWork,
+}
+
 /// Lower semantic-analysis output through drop-glue synthesis, comptime filtering,
 /// CFG construction, and CFG optimization.
 ///
@@ -137,7 +142,7 @@ pub(crate) fn build_functions_and_cfgs(
     sema_output: SemaOutput,
     opt_level: OptLevel,
     interner: &ThreadedRodeo,
-) -> MultiErrorResult<CfgFrontendOutput> {
+) -> Result<CfgFrontendOutput, CfgConstructionFailure> {
     let SemaOutput {
         functions,
         strings,
@@ -273,10 +278,16 @@ pub(crate) fn build_functions_and_cfgs(
     let mut functions = Vec::with_capacity(results.len());
     let mut implicit_named_destructor_dependencies = Vec::new();
     let mut implicit_named_destructor_dependencies_complete = true;
+    let mut first_errors = None;
     for result in results {
-        let ((func, func_warnings, mut implicit_edges, complete), function_work) = match result {
-            Ok(value) => value,
-            Err((errors, _discarded_work)) => return Err(errors),
+        let (output, function_work) = match result {
+            Ok((output, function_work)) => (Some(output), function_work),
+            Err((errors, function_work)) => {
+                if first_errors.is_none() {
+                    first_errors = Some(errors);
+                }
+                (None, function_work)
+            }
         };
         work.cfg_builds_attempted += function_work.cfg_builds_attempted;
         work.cfg_builds_succeeded += function_work.cfg_builds_succeeded;
@@ -288,10 +299,15 @@ pub(crate) fn build_functions_and_cfgs(
         work.cfg_warnings_emitted += function_work.cfg_warnings_emitted;
         work.implicit_destructor_targets_emitted +=
             function_work.implicit_destructor_targets_emitted;
-        functions.push(func);
-        warnings.extend(func_warnings);
-        implicit_named_destructor_dependencies.append(&mut implicit_edges);
-        implicit_named_destructor_dependencies_complete &= complete;
+        if let Some((func, func_warnings, mut implicit_edges, complete)) = output {
+            functions.push(func);
+            warnings.extend(func_warnings);
+            implicit_named_destructor_dependencies.append(&mut implicit_edges);
+            implicit_named_destructor_dependencies_complete &= complete;
+        }
+    }
+    if let Some(errors) = first_errors {
+        return Err(CfgConstructionFailure { errors, work });
     }
     implicit_named_destructor_dependencies.sort();
     implicit_named_destructor_dependencies.dedup();
@@ -435,4 +451,91 @@ pub(crate) fn compile_with_session(
         semantic: semantic.work(),
     };
     Ok(output)
+}
+
+#[cfg(test)]
+mod failure_work_tests {
+    use lasso::ThreadedRodeo;
+    use rue_air::{Air, AirInst, AirInstData, Sema, Type};
+    use rue_error::PreviewFeatures;
+    use rue_lexer::Lexer;
+    use rue_parser::Parser;
+    use rue_rir::AstGen;
+    use rue_span::Span;
+
+    use super::*;
+
+    fn malformed_cfg_input() -> (SemaOutput, ThreadedRodeo) {
+        let source = "fn alpha() -> i32 { 1 }\nfn broken() -> i32 { 2 }\nfn main() -> i32 { alpha() + broken() + zeta() }\nfn zeta() -> i32 { 3 }";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, interner) = parser.parse().unwrap();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+        let mut output = Sema::new(&rir, &interner, PreviewFeatures::new())
+            .analyze_all()
+            .unwrap();
+
+        for (name, start) in [("broken", 10), ("zeta", 20)] {
+            let generic = interner.get_or_intern(format!("unrewritten_{name}"));
+            let function = output
+                .functions
+                .iter_mut()
+                .find(|function| function.name == name)
+                .unwrap();
+            let mut air = Air::new(Type::I32);
+            let call = air.add_inst(AirInst {
+                data: AirInstData::CallGeneric {
+                    name: generic,
+                    type_args_start: 0,
+                    type_args_len: 0,
+                    value_args_start: 0,
+                    value_args_len: 0,
+                    args_start: 0,
+                    args_len: 0,
+                },
+                ty: Type::I32,
+                span: Span::new(start, start + 1),
+            });
+            air.add_inst(AirInst {
+                data: AirInstData::Ret(Some(call)),
+                ty: Type::I32,
+                span: Span::new(start, start + 1),
+            });
+            function.air = air;
+        }
+        (output, interner)
+    }
+
+    #[test]
+    fn malformed_air_retains_deterministic_work_from_every_cfg_builder() {
+        let run = || {
+            let (output, interner) = malformed_cfg_input();
+            match build_functions_and_cfgs(output, OptLevel::O1, &interner) {
+                Ok(_) => panic!("malformed AIR unexpectedly built a CFG"),
+                Err(failure) => failure,
+            }
+        };
+        let first = run();
+        let second = run();
+        assert_eq!(first.work, second.work);
+        assert_eq!(first.work.functions_considered, 4);
+        assert_eq!(first.work.cfg_builds_attempted, 4);
+        assert_eq!(first.work.cfg_builds_succeeded, 2);
+        assert_eq!(first.work.cfg_builds_failed, 2);
+        assert_eq!(first.work.optimization_attempts, 2);
+        assert_eq!(first.work.optimization_completions, 2);
+        assert_eq!(first.work.optimized_level_attempts, 2);
+        assert_eq!(
+            format!("{:?}", first.errors),
+            format!("{:?}", second.errors)
+        );
+        assert_eq!(
+            first.errors.iter().next().unwrap().span().unwrap().start,
+            10,
+            "the first sorted failing function supplies the published diagnostic"
+        );
+    }
 }

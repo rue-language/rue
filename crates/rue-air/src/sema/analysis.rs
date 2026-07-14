@@ -43,8 +43,19 @@ use crate::types::{
 ///
 /// Called from Sema::analyze_all after declarations are collected.
 /// Uses the demand-driven driver for every program shape.
-pub(crate) fn analyze_all_function_bodies(mut sema: BodySema<'_>) -> MultiErrorResult<SemaOutput> {
-    analyze_all_function_bodies_mut(&mut sema)
+pub(crate) fn analyze_all_function_bodies(sema: BodySema<'_>) -> MultiErrorResult<SemaOutput> {
+    analyze_all_function_bodies_with_work(sema).map_err(super::BodyAnalysisFailure::into_errors)
+}
+
+pub(crate) fn analyze_all_function_bodies_with_work(
+    mut sema: BodySema<'_>,
+) -> Result<SemaOutput, super::BodyAnalysisFailure> {
+    let result = analyze_all_function_bodies_mut(&mut sema);
+    let work = result
+        .as_ref()
+        .map(|output| output.body_analysis_work)
+        .unwrap_or(sema.body_analysis_work);
+    result.map_err(|errors| super::BodyAnalysisFailure::new(errors, work))
 }
 
 #[cfg(test)]

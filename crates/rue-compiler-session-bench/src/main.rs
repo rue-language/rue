@@ -146,6 +146,7 @@ struct Fixture {
     reachable_root_body_edit: SourceSnapshot,
     identity_edit: SourceSnapshot,
     syntax_error: SourceSnapshot,
+    semantic_error: SourceSnapshot,
 }
 
 impl Fixture {
@@ -157,6 +158,7 @@ impl Fixture {
             reachable_root_body_edit: snapshot(modules, Variant::ReachableRootBodyEdit),
             identity_edit: snapshot(modules, Variant::IdentityEdit),
             syntax_error: snapshot(modules, Variant::SyntaxError),
+            semantic_error: snapshot(modules, Variant::SemanticError),
         }
     }
 }
@@ -167,6 +169,7 @@ enum Variant {
     ReachableRootBodyEdit,
     IdentityEdit,
     SyntaxError,
+    SemanticError,
 }
 
 fn snapshot(modules: usize, variant: Variant) -> SourceSnapshot {
@@ -188,10 +191,14 @@ fn snapshot(modules: usize, variant: Variant) -> SourceSnapshot {
     let sources = (0..modules)
         .map(|index| {
             let source = if index == 0 {
-                format!(
-                    "fn main() -> i32 {{ {} }}",
-                    usize::from(!matches!(variant, Variant::Base))
-                )
+                if matches!(variant, Variant::SemanticError) {
+                    "fn main() -> i32 { missing_name }".to_string()
+                } else {
+                    format!(
+                        "fn main() -> i32 {{ {} }}",
+                        usize::from(!matches!(variant, Variant::Base))
+                    )
+                }
             } else if index == changed && matches!(variant, Variant::SyntaxError) {
                 format!("fn leaf{index}( {{")
             } else {
@@ -221,7 +228,16 @@ fn parse_json(work: ParsedModulesWork) -> Value {
 fn semantic_work_json(work: &CompilerSessionWork, from: usize) -> Value {
     let records = &work.semantic_records[from..];
     json!({
+        "failed_requests": records.iter().filter(|record| record.failure.is_some()).count(),
+        "failure_phases": {
+            "declaration": records.iter().filter(|record| matches!(record.failure.map(|failure| failure.phase), Some(rue_compiler::CanonicalSemanticFailurePhase::Declaration))).count(),
+            "body_analysis": records.iter().filter(|record| matches!(record.failure.map(|failure| failure.phase), Some(rue_compiler::CanonicalSemanticFailurePhase::BodyAnalysis))).count(),
+            "cfg_construction": records.iter().filter(|record| matches!(record.failure.map(|failure| failure.phase), Some(rue_compiler::CanonicalSemanticFailurePhase::CfgConstruction))).count(),
+        },
         "bind_invocations": records.iter().map(|record| record.work.binding.bind_invocations).sum::<usize>(),
+        "declaration_resolution_invocations": records.iter().map(|record| record.work.binding.declaration_resolution_invocations).sum::<usize>(),
+        "declaration_resolution_failures": records.iter().map(|record| record.work.binding.declaration_resolution_failures).sum::<usize>(),
+        "body_readiness_finalization_invocations": records.iter().map(|record| record.work.binding.body_readiness_finalization_invocations).sum::<usize>(),
         "body_free_function_lookups": records.iter().map(|record| record.work.body_analysis.free_function_record_lookups).sum::<usize>(),
         "bodies_attempted": records.iter().map(|record| record.work.body_analysis.bodies_attempted).sum::<usize>(),
         "bodies_succeeded": records.iter().map(|record| record.work.body_analysis.bodies_succeeded).sum::<usize>(),
@@ -236,6 +252,7 @@ fn semantic_work_json(work: &CompilerSessionWork, from: usize) -> Value {
         "specialization_requests_duplicate": records.iter().map(|record| record.work.body_analysis.specialization_requests_duplicate).sum::<usize>(),
         "specialization_rewrites": records.iter().map(|record| record.work.body_analysis.specialization_rewrites).sum::<usize>(),
         "specialization_rounds": records.iter().map(|record| record.work.body_analysis.specialization_rounds).sum::<usize>(),
+        "specialization_driver_failures": records.iter().map(|record| record.work.body_analysis.specialization_driver_failures).sum::<usize>(),
         "specialized_bodies_attempted": records.iter().map(|record| record.work.body_analysis.specialized_bodies_attempted).sum::<usize>(),
         "specialized_bodies_succeeded": records.iter().map(|record| record.work.body_analysis.specialized_bodies_succeeded).sum::<usize>(),
         "specialized_bodies_failed": records.iter().map(|record| record.work.body_analysis.specialized_bodies_failed).sum::<usize>(),
@@ -614,6 +631,25 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
             parse
         }),
     ));
+    scenarios.push(named(
+        "failed_semantic_edit",
+        measure(&mut session, |session| {
+            let update = session.update(&fixture.semantic_error);
+            assert!(update.downstream_invalidated());
+            let parse = update.work();
+            update.into_result().unwrap();
+            session.semantic(&options).unwrap_err();
+            parse
+        }),
+    ));
+    scenarios.push(named(
+        "semantic_recovery",
+        measure(&mut session, |session| {
+            let parse = session.update(&fixture.identity_edit).work();
+            session.semantic(&options).unwrap();
+            parse
+        }),
+    ));
 
     let mut stable = CompilerSession::new();
     scenarios.push(named(
@@ -821,6 +857,47 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     assert_query_executions(recovery, 0, 0, 0, 0);
     assert_eq!(count(recovery, &["queries", "semantic_reuses"]), 1);
 
+    let failed_semantic = get("failed_semantic_edit");
+    assert_query_executions(failed_semantic, 1, 1, 1, 0);
+    assert_eq!(
+        count(failed_semantic, &["semantic_work", "failed_requests"]),
+        1
+    );
+    assert_eq!(
+        count(
+            failed_semantic,
+            &["semantic_work", "failure_phases", "body_analysis"]
+        ),
+        1
+    );
+    assert_eq!(
+        count(failed_semantic, &["semantic_work", "bodies_attempted"]),
+        1
+    );
+    assert_eq!(
+        count(failed_semantic, &["semantic_work", "bodies_succeeded"]),
+        0
+    );
+    assert_eq!(
+        count(failed_semantic, &["semantic_work", "bodies_failed"]),
+        1
+    );
+
+    let semantic_recovery = get("semantic_recovery");
+    assert_query_executions(semantic_recovery, 1, 1, 1, 0);
+    assert_eq!(
+        count(
+            semantic_recovery,
+            &[
+                "semantic_work",
+                "declaration_reuse",
+                "ordinary_declaration_resolutions_skipped"
+            ]
+        ),
+        1,
+        "failed semantic requests must not replace the last-good durable baseline"
+    );
+
     let stable_cold = get("stable_definitions_cold");
     assert_query_executions(stable_cold, 1, 1, 1, 1);
     assert_semantic_work(stable_cold, 1, 1, 1);
@@ -925,6 +1002,7 @@ fn assert_body_cfg_work_equal(left: &Value, right: &Value) {
         "specialization_requests_duplicate",
         "specialization_rewrites",
         "specialization_rounds",
+        "specialization_driver_failures",
         "specialized_bodies_attempted",
         "specialized_bodies_succeeded",
         "specialized_bodies_failed",
@@ -1095,7 +1173,7 @@ fn main() {
     println!(
         "{}",
         json!({
-            "schema_version": 9,
+            "schema_version": 10,
             "workload": "compiler_session_invalidation",
             "configuration": {
                 "modules": config.modules,
@@ -1116,7 +1194,7 @@ mod tests {
     #[test]
     fn small_workload_is_a_structural_smoke_test() {
         let scenarios = run_iteration(&Fixture::new(4));
-        assert_eq!(scenarios.len(), 12);
+        assert_eq!(scenarios.len(), 14);
         assert!(
             scenarios
                 .iter()

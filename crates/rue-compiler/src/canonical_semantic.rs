@@ -12,6 +12,9 @@ use rue_air::{
 };
 use tracing::info_span;
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use crate::{
     BoundDefinitionSet, BoundDefinitionWork, CanonicalImportGraph, CanonicalMergedProgram,
     CanonicalRirOutput, CodegenInputDescriptor, CompileOptions, CompileWarning,
@@ -22,6 +25,105 @@ use crate::{
     },
     build_functions_and_cfgs,
 };
+
+#[cfg(test)]
+thread_local! {
+    static INJECT_CFG_FAILURE: Cell<bool> = const { Cell::new(false) };
+    static INJECT_DECLARATION_FAILURE: Cell<bool> = const { Cell::new(false) };
+    static INJECT_AUTHORITATIVE_KEY_MISMATCH: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_cfg_failure_injection<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            INJECT_CFG_FAILURE.with(|enabled| enabled.set(false));
+        }
+    }
+
+    INJECT_CFG_FAILURE.with(|enabled| {
+        assert!(
+            !enabled.replace(true),
+            "CFG failure injection is not nestable"
+        );
+    });
+    let _reset = Reset;
+    run()
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_declaration_failure_injection<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            INJECT_DECLARATION_FAILURE.with(|enabled| enabled.set(false));
+        }
+    }
+
+    INJECT_DECLARATION_FAILURE.with(|enabled| {
+        assert!(
+            !enabled.replace(true),
+            "declaration failure injection is not nestable"
+        );
+    });
+    let _reset = Reset;
+    run()
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_authoritative_key_mismatch<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            INJECT_AUTHORITATIVE_KEY_MISMATCH.with(|enabled| enabled.set(false));
+        }
+    }
+
+    INJECT_AUTHORITATIVE_KEY_MISMATCH.with(|enabled| {
+        assert!(
+            !enabled.replace(true),
+            "authoritative-key mismatch injection is not nestable"
+        );
+    });
+    let _reset = Reset;
+    run()
+}
+
+#[cfg(test)]
+fn inject_cfg_failure(sema_output: &mut rue_air::SemaOutput, interner: &crate::ThreadedRodeo) {
+    use rue_air::{Air, AirInst, AirInstData, Type};
+    use rue_span::Span;
+
+    if !INJECT_CFG_FAILURE.with(Cell::get) {
+        return;
+    }
+    let function = sema_output
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .expect("test CFG injection requires main");
+    let mut air = Air::new(Type::I32);
+    let call = air.add_inst(AirInst {
+        data: AirInstData::CallGeneric {
+            name: interner.get_or_intern("test_unrewritten_generic"),
+            type_args_start: 0,
+            type_args_len: 0,
+            value_args_start: 0,
+            value_args_len: 0,
+            args_start: 0,
+            args_len: 0,
+        },
+        ty: Type::I32,
+        span: Span::new(0, 1),
+    });
+    air.add_inst(AirInst {
+        data: AirInstData::Ret(Some(call)),
+        ty: Type::I32,
+        span: Span::new(0, 1),
+    });
+    function.air = air;
+}
 
 pub(crate) struct CanonicalOrdinaryAnalysis {
     pub output: CanonicalSemanticOutput,
@@ -61,17 +163,47 @@ pub(crate) fn prepare_canonical_declarations<'a>(
     rir: &'a CanonicalRirOutput,
     options: &CompileOptions,
     imports: &CanonicalImportGraph,
-) -> MultiErrorResult<CanonicalPreparedDeclarations<'a>> {
-    let sema = configure_timed_canonical_sema(merged, rir, options, imports)?;
+) -> Result<CanonicalPreparedDeclarations<'a>, CanonicalSemanticFailure> {
+    let sema = configure_timed_canonical_sema(merged, rir, options, imports).map_err(|errors| {
+        CanonicalSemanticFailure::declaration(errors, CanonicalSemanticWork::default())
+    })?;
     let declaration_index = sema.rir_declaration_index_work();
-    let shells = sema.predeclare_declaration_shells()?;
+    let declaration_reuse = CanonicalDeclarationReuseWork {
+        semantic_epochs_started: 1,
+        declaration_indexes_built: declaration_index.build_invocations,
+        shell_predeclaration_epochs: 1,
+        ..CanonicalDeclarationReuseWork::default()
+    };
+    let shells = sema.predeclare_declaration_shells().map_err(|errors| {
+        CanonicalSemanticFailure::declaration(
+            errors,
+            declaration_stage_work(
+                declaration_index,
+                DeclarationBindingWork::default(),
+                SemanticBindingManifestWork::default(),
+                BodyOwnerTokenWork::default(),
+                BodyAnalysisWork::default(),
+                false,
+                declaration_reuse,
+            ),
+        )
+    })?;
     let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
     let definitions = match issue_shell_definitions(merged, rir.source_revision(), &shell_records) {
         Ok(definitions) => definitions,
         Err(preparation_error) => {
             let preparation_error = crate::CompileErrors::from(preparation_error);
-            let bound = shells.resolve_declarations()?;
-            return recover_body_diagnostics(bound, preparation_error);
+            let bound = shells.resolve_declarations_with_work().map_err(|failure| {
+                declaration_resolution_failure(failure, declaration_index, false, declaration_reuse)
+            })?;
+            return Err(recover_declaration_failure(
+                bound,
+                preparation_error,
+                declaration_index,
+                false,
+                declaration_reuse,
+                BodyOwnerTokenWork::default(),
+            ));
         }
     };
     Ok(CanonicalPreparedDeclarations {
@@ -135,6 +267,85 @@ pub struct CfgConstructionWork {
     pub optimized_level_attempts: usize,
     pub cfg_warnings_emitted: usize,
     pub implicit_destructor_targets_emitted: usize,
+}
+
+/// The semantic phase that prevented publication of request artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalSemanticFailurePhase {
+    Declaration,
+    BodyAnalysis,
+    CfgConstruction,
+}
+
+/// Value-only structural work retained for a failed semantic request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanonicalSemanticFailureWork {
+    pub phase: CanonicalSemanticFailurePhase,
+    pub work: CanonicalSemanticWork,
+}
+
+pub(crate) struct CanonicalSemanticFailure {
+    pub(crate) errors: crate::CompileErrors,
+    pub(crate) failure: CanonicalSemanticFailureWork,
+}
+
+impl CanonicalSemanticFailure {
+    fn new(
+        phase: CanonicalSemanticFailurePhase,
+        errors: crate::CompileErrors,
+        work: CanonicalSemanticWork,
+    ) -> Self {
+        Self {
+            errors,
+            failure: CanonicalSemanticFailureWork { phase, work },
+        }
+    }
+
+    pub(crate) fn declaration(errors: crate::CompileErrors, work: CanonicalSemanticWork) -> Self {
+        Self::new(CanonicalSemanticFailurePhase::Declaration, errors, work)
+    }
+}
+
+fn declaration_stage_work(
+    declaration_index: RirDeclarationIndexWork,
+    binding: DeclarationBindingWork,
+    manifest: SemanticBindingManifestWork,
+    body_owner_tokens: BodyOwnerTokenWork,
+    body_analysis: BodyAnalysisWork,
+    stable_ids_requested: bool,
+    declaration_reuse: CanonicalDeclarationReuseWork,
+) -> CanonicalSemanticWork {
+    CanonicalSemanticWork {
+        declaration_index,
+        binding,
+        manifest,
+        body_owner_tokens,
+        body_analysis,
+        stable_ids_requested,
+        declaration_reuse,
+        ..CanonicalSemanticWork::default()
+    }
+}
+
+fn declaration_resolution_failure(
+    failure: rue_air::DeclarationResolutionFailure,
+    declaration_index: RirDeclarationIndexWork,
+    stable_ids_requested: bool,
+    declaration_reuse: CanonicalDeclarationReuseWork,
+) -> CanonicalSemanticFailure {
+    let binding = failure.work();
+    CanonicalSemanticFailure::declaration(
+        failure.into_errors(),
+        declaration_stage_work(
+            declaration_index,
+            binding,
+            SemanticBindingManifestWork::default(),
+            BodyOwnerTokenWork::default(),
+            BodyAnalysisWork::default(),
+            stable_ids_requested,
+            declaration_reuse,
+        ),
+    )
 }
 
 /// Owned semantic and optimized CFG artifacts returned by `CompilerSession`.
@@ -314,7 +525,8 @@ pub(crate) fn analyze_canonical_program(
         ),
         opt_level: options.opt_level.into(),
     };
-    let prepared = prepare_canonical_declarations(merged, rir, options, imports)?;
+    let prepared = prepare_canonical_declarations(merged, rir, options, imports)
+        .map_err(|failure| failure.errors)?;
     let CanonicalPreparedDeclarations {
         shells,
         shell_records: _,
@@ -334,6 +546,7 @@ pub(crate) fn analyze_canonical_program(
         CanonicalDeclarationReuseWork::default(),
         info_span!("sema").entered(),
     )
+    .map_err(|failure| failure.errors)
 }
 
 /// Run the ordinary canonical path once and opportunistically export its
@@ -345,7 +558,8 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
     rir: &CanonicalRirOutput,
     options: &CompileOptions,
     prepared: CanonicalPreparedDeclarations<'_>,
-) -> MultiErrorResult<CanonicalOrdinaryAnalysis> {
+    reuse_plan: CanonicalDeclarationReuseWork,
+) -> Result<CanonicalOrdinaryAnalysis, CanonicalSemanticFailure> {
     let input = CodegenInputDescriptor {
         semantic: SemanticInputDescriptor::new(
             merged.definitions().source_snapshot(),
@@ -361,7 +575,15 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
         definitions,
         declaration_index,
     } = prepared;
-    let bound = shells.resolve_declarations()?;
+    let declaration_reuse = CanonicalDeclarationReuseWork {
+        semantic_epochs_started: 1,
+        declaration_indexes_built: declaration_index.build_invocations,
+        shell_predeclaration_epochs: 1,
+        ..reuse_plan
+    };
+    let bound = shells.resolve_declarations_with_work().map_err(|failure| {
+        declaration_resolution_failure(failure, declaration_index, false, declaration_reuse)
+    })?;
 
     let durable_declarations = bound
         .with_declaration_semantics_from_shells(&shell_records, |records, _work| {
@@ -380,11 +602,8 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
         bound,
         definitions.clone(),
         CanonicalDeclarationReuseWork {
-            semantic_epochs_started: 1,
-            declaration_indexes_built: declaration_index.build_invocations,
-            shell_predeclaration_epochs: 1,
             durable_cache_population_exports: usize::from(durable_declarations.is_some()),
-            ..CanonicalDeclarationReuseWork::default()
+            ..declaration_reuse
         },
         sema_span,
     )?;
@@ -407,7 +626,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     prepared: CanonicalPreparedDeclarations<'_>,
     definitions: &BoundDefinitionSet,
     durable: &[DurableDeclarationSemantic],
-) -> MultiErrorResult<CanonicalSemanticOutput> {
+) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
     let input = CodegenInputDescriptor {
         semantic: SemanticInputDescriptor::new(
             merged.definitions().source_snapshot(),
@@ -441,7 +660,9 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
             reuse.fallbacks = 1;
             // Projection is read-only, so ordinary resolution consumes the
             // exact same unmutated shells and does not create a hidden epoch.
-            shells.resolve_declarations()?
+            shells.resolve_declarations_with_work().map_err(|failure| {
+                declaration_resolution_failure(failure, declaration_index, false, reuse)
+            })?
         }
         Ok((projected, _)) => {
             reuse.install_invocations += 1;
@@ -455,20 +676,67 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
                     // Installation consumes potentially mutated shells. Only
                     // this failure requires a wholly fresh ordinary epoch.
                     reuse.fallbacks = 1;
+                    let fallback = configure_timed_canonical_sema(merged, rir, options, imports)
+                        .map_err(|errors| {
+                            CanonicalSemanticFailure::declaration(
+                                errors,
+                                declaration_stage_work(
+                                    declaration_index,
+                                    DeclarationBindingWork::default(),
+                                    SemanticBindingManifestWork::default(),
+                                    BodyOwnerTokenWork::default(),
+                                    BodyAnalysisWork::default(),
+                                    false,
+                                    reuse,
+                                ),
+                            )
+                        })?;
                     reuse.fallback_epochs_started = 1;
                     reuse.semantic_epochs_started += 1;
-                    let fallback = configure_timed_canonical_sema(merged, rir, options, imports)?;
                     reuse.declaration_indexes_built +=
                         fallback.rir_declaration_index_work().build_invocations;
-                    let fallback_shells = fallback.predeclare_declaration_shells()?;
+                    reuse.shell_predeclaration_epochs += 1;
+                    let fallback_shells =
+                        fallback.predeclare_declaration_shells().map_err(|errors| {
+                            CanonicalSemanticFailure::declaration(
+                                errors,
+                                declaration_stage_work(
+                                    declaration_index,
+                                    DeclarationBindingWork::default(),
+                                    SemanticBindingManifestWork::default(),
+                                    BodyOwnerTokenWork::default(),
+                                    BodyAnalysisWork::default(),
+                                    false,
+                                    reuse,
+                                ),
+                            )
+                        })?;
                     let fallback_records = fallback_shells
                         .declaration_shells()
                         .cloned()
                         .collect::<Vec<_>>();
                     selected_definitions =
                         issue_shell_definitions(merged, rir.source_revision(), &fallback_records)
-                            .map_err(crate::CompileErrors::from)?;
-                    fallback_shells.resolve_declarations()?
+                            .map_err(crate::CompileErrors::from)
+                            .map_err(|errors| {
+                                CanonicalSemanticFailure::declaration(
+                                    errors,
+                                    declaration_stage_work(
+                                        declaration_index,
+                                        DeclarationBindingWork::default(),
+                                        SemanticBindingManifestWork::default(),
+                                        BodyOwnerTokenWork::default(),
+                                        BodyAnalysisWork::default(),
+                                        false,
+                                        reuse,
+                                    ),
+                                )
+                            })?;
+                    fallback_shells
+                        .resolve_declarations_with_work()
+                        .map_err(|failure| {
+                            declaration_resolution_failure(failure, declaration_index, false, reuse)
+                        })?
                 }
             }
         }
@@ -520,8 +788,21 @@ fn finish_canonical_analysis(
     provisional_definitions: BoundDefinitionSet,
     declaration_reuse: CanonicalDeclarationReuseWork,
     sema_span: tracing::span::EnteredSpan,
-) -> MultiErrorResult<CanonicalSemanticOutput> {
+) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
     let binding = bound.binding_work();
+    #[cfg(test)]
+    if INJECT_DECLARATION_FAILURE.with(Cell::get) {
+        return Err(recover_declaration_failure(
+            bound,
+            crate::CompileErrors::from(crate::CompileError::without_span(
+                rue_error::ErrorKind::InternalError("test declaration failure injection".into()),
+            )),
+            declaration_index,
+            request_stable_ids,
+            declaration_reuse,
+            BodyOwnerTokenWork::default(),
+        ));
+    }
     let manifest = bound.binding_manifest();
     let authoritative_definitions = match issue_bound_definitions(
         merged,
@@ -531,7 +812,14 @@ fn finish_canonical_analysis(
     ) {
         Ok(definitions) => definitions,
         Err(preparation_error) => {
-            return recover_body_diagnostics(bound, crate::CompileErrors::from(preparation_error));
+            return Err(recover_declaration_failure(
+                bound,
+                crate::CompileErrors::from(preparation_error),
+                declaration_index,
+                request_stable_ids,
+                declaration_reuse,
+                BodyOwnerTokenWork::default(),
+            ));
         }
     };
     let provisional_keys = provisional_definitions
@@ -562,6 +850,12 @@ fn finish_canonical_analysis(
         })
         .map(|r| r.stable_key())
         .collect::<Vec<_>>();
+    #[cfg(test)]
+    let mut authoritative_keys = authoritative_keys;
+    #[cfg(test)]
+    if INJECT_AUTHORITATIVE_KEY_MISMATCH.with(Cell::get) {
+        authoritative_keys.pop();
+    }
     if provisional_keys != authoritative_keys {
         let first_difference = provisional_keys
             .iter()
@@ -577,7 +871,21 @@ fn finish_canonical_analysis(
                 first_difference.and_then(|index| authoritative_keys.get(index)),
             )),
         ));
-        return recover_body_diagnostics(bound, preparation_error);
+        return Err(recover_declaration_failure(
+            bound,
+            preparation_error,
+            declaration_index,
+            request_stable_ids,
+            declaration_reuse,
+            BodyOwnerTokenWork {
+                provisional_slots: provisional_keys.len(),
+                authoritative_slots: authoritative_keys.len(),
+                slots_validated: first_difference
+                    .unwrap_or_else(|| provisional_keys.len().min(authoritative_keys.len())),
+                tokens_installed: 0,
+                validation_failures: 1,
+            },
+        ));
     }
     let manifest_work = manifest.work();
     let bound_definitions = request_stable_ids.then(|| authoritative_definitions.clone());
@@ -590,14 +898,53 @@ fn finish_canonical_analysis(
         validation_failures: 0,
     };
     let bound = bound.install_body_owner_tokens(&endpoints).map_err(|_| {
-        crate::CompileErrors::from(crate::CompileError::without_span(
-            rue_error::ErrorKind::InternalError(
-                "failed to install authoritative body-owner tokens".into(),
+        let mut failed_tokens = body_owner_tokens;
+        failed_tokens.tokens_installed = 0;
+        failed_tokens.validation_failures = 1;
+        CanonicalSemanticFailure::declaration(
+            crate::CompileErrors::from(crate::CompileError::without_span(
+                rue_error::ErrorKind::InternalError(
+                    "failed to install authoritative body-owner tokens".into(),
+                ),
+            )),
+            declaration_stage_work(
+                declaration_index,
+                binding,
+                manifest_work,
+                failed_tokens,
+                BodyAnalysisWork::default(),
+                request_stable_ids,
+                declaration_reuse,
             ),
-        ))
+        )
     })?;
 
-    let sema_output = bound.analyze_all_bodies()?;
+    let sema_output = match bound.analyze_all_bodies_with_work() {
+        Ok(output) => output,
+        Err(failure) => {
+            let work = CanonicalSemanticWork {
+                declaration_index,
+                binding,
+                manifest: manifest_work,
+                bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
+                body_owner_tokens,
+                body_analysis: failure.work(),
+                durable_bodies: crate::DurableBodyWork::default(),
+                cfg: CfgConstructionWork::default(),
+                stable_ids_requested: request_stable_ids,
+                declaration_reuse,
+            };
+            return Err(CanonicalSemanticFailure::new(
+                CanonicalSemanticFailurePhase::BodyAnalysis,
+                failure.into_errors(),
+                work,
+            ));
+        }
+    };
+    #[cfg(test)]
+    let mut sema_output = sema_output;
+    #[cfg(test)]
+    inject_cfg_failure(&mut sema_output, rir.semantic_symbols().interner());
     let body_analysis = sema_output.body_analysis_work;
     let mut durable_body_work = crate::DurableBodyWork {
         export_attempts: body_analysis.ordinary_body_exports_attempted,
@@ -651,7 +998,26 @@ fn finish_canonical_analysis(
         sema_output,
         options.opt_level,
         rir.semantic_symbols().interner(),
-    )?;
+    )
+    .map_err(|failure| {
+        let work = CanonicalSemanticWork {
+            declaration_index,
+            binding,
+            manifest: manifest_work,
+            bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
+            body_owner_tokens,
+            body_analysis,
+            durable_bodies: durable_body_work,
+            cfg: failure.work,
+            stable_ids_requested: request_stable_ids,
+            declaration_reuse,
+        };
+        CanonicalSemanticFailure::new(
+            CanonicalSemanticFailurePhase::CfgConstruction,
+            failure.errors,
+            work,
+        )
+    })?;
     let mut warnings = cfg.warnings;
     warnings.sort_by(|left, right| {
         let key = |warning: &CompileWarning| {
@@ -727,14 +1093,35 @@ fn finish_canonical_analysis(
 /// Preserve ordinary source diagnostics when strict token preparation rejects
 /// an already-bound epoch. The semantic result is consumed and discarded: it
 /// can recover diagnostics, but can never publish a partially prepared output.
-fn recover_body_diagnostics<T>(
+fn recover_declaration_failure(
     bound: rue_air::BoundSema<'_>,
     preparation_error: crate::CompileErrors,
-) -> MultiErrorResult<T> {
-    match bound.analyze_all_bodies() {
-        Err(source_errors) => Err(source_errors),
-        Ok(_) => Err(preparation_error),
-    }
+    declaration_index: RirDeclarationIndexWork,
+    stable_ids_requested: bool,
+    declaration_reuse: CanonicalDeclarationReuseWork,
+    body_owner_tokens: BodyOwnerTokenWork,
+) -> CanonicalSemanticFailure {
+    let binding = bound.binding_work();
+    let manifest = bound.binding_manifest().work();
+    let (errors, body_analysis) = match bound.analyze_all_bodies_with_work() {
+        Err(failure) => {
+            let work = failure.work();
+            (failure.into_errors(), work)
+        }
+        Ok(output) => (preparation_error, output.body_analysis_work),
+    };
+    CanonicalSemanticFailure::declaration(
+        errors,
+        declaration_stage_work(
+            declaration_index,
+            binding,
+            manifest,
+            body_owner_tokens,
+            body_analysis,
+            stable_ids_requested,
+            declaration_reuse,
+        ),
+    )
 }
 
 #[cfg(test)]

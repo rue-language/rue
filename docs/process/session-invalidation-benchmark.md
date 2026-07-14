@@ -74,12 +74,12 @@ values rather than timing-dependent shared state.
 Schema version 4 adds value-only body and CFG work. Top-level
 `semantic_work` records body attempts/successes/failures, AIR and local-string
 production, string remapping, specialization scans/calls/unique and duplicate
-requests/rewrites/rounds, and specialized-body attempts/successes/failures.
+requests/rewrites/rounds, specialization-driver failures, and specialized-body
+attempts/successes/failures.
 `semantic_work.cfg` records synthesized glue, functions considered and
 filtered, CFG attempts/successes/failures, AIR consumed, optimization attempts
 and completions (including non-O0 attempts), warnings, and implicit destructor
-targets. Counts describe completed semantic records; failed requests cannot yet
-be retained by the session record API and are tested at their owning phase.
+targets. Counts describe both successful and failed semantic executions.
 
 Schema version 5 adds `manifest_work.body_owner_events_translated`,
 `body_named_events_translated`, and `body_dependency_records_built`. The
@@ -117,3 +117,18 @@ Schema version 9 removes the obsolete population-binding query field. The
 authoritative `semantic_work.bind_invocations` and
 `semantic_work.declaration_reuse.durable_cache_population_exports` counters
 continue to gate the single-bind export path directly.
+
+Schema version 10 adds explicit failed semantic-request accounting.
+`semantic_work.failed_requests` counts retained failure envelopes and
+`semantic_work.failure_phases` splits declaration, body-analysis, and CFG
+construction failures. All ordinary body, specialization, and CFG fields now
+include deterministic work performed before a failed request was discarded.
+Declaration failures likewise retain each counter completed before their exact
+fallible boundary, including declaration-index, binding, manifest, recovery
+body, and durable-reuse work when those stages were reached.
+Declaration binding distinguishes resolution invocations, resolution failures,
+and successful body-readiness finalizations, so a rejected declaration epoch
+does not masquerade as an unattempted or completed one.
+The `failed_semantic_edit` scenario hard-gates attempted/failed body work, and
+`semantic_recovery` proves that a failure did not replace the last-good durable
+declaration baseline.

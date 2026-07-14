@@ -412,6 +412,8 @@ pub struct BodyAnalysisWork {
     pub specialization_requests_duplicate: usize,
     pub specialization_rewrites: usize,
     pub specialization_rounds: usize,
+    /// Failures in specialization orchestration before a specialized body is attempted.
+    pub specialization_driver_failures: usize,
     pub specialized_bodies_attempted: usize,
     pub specialized_bodies_succeeded: usize,
     pub specialized_bodies_failed: usize,
@@ -440,4 +442,26 @@ pub struct BodyAnalysisWork {
     /// This excludes one-time implicit-root scans, unused-reference scans, and
     /// comptime evaluation. Indexed dispatch keeps this value at zero.
     pub reachable_declaration_rir_visits: usize,
+}
+
+/// Diagnostics and value-only structural work from a failed body-analysis
+/// request. Failed AIR artifacts remain private and are never published.
+#[derive(Debug, Clone)]
+pub struct BodyAnalysisFailure {
+    errors: rue_error::CompileErrors,
+    work: BodyAnalysisWork,
+}
+
+impl BodyAnalysisFailure {
+    pub(crate) fn new(errors: rue_error::CompileErrors, work: BodyAnalysisWork) -> Self {
+        Self { errors, work }
+    }
+
+    pub fn work(&self) -> BodyAnalysisWork {
+        self.work
+    }
+
+    pub fn into_errors(self) -> rue_error::CompileErrors {
+        self.errors
+    }
 }

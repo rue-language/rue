@@ -138,6 +138,9 @@ pub struct DeclarationBindingWork {
     pub indexed_declaration_records_visited: usize,
     /// Resolution of declaration payloads, constants, and cycles.
     pub declaration_resolution_invocations: usize,
+    /// Declaration-resolution invocations that returned diagnostics before a
+    /// body-analysis-ready binder could be finalized.
+    pub declaration_resolution_failures: usize,
     /// Construction of the body-analysis-ready state.
     pub body_readiness_finalization_invocations: usize,
     /// Durable payload installation attempts at the declaration-shell seam.
@@ -151,6 +154,28 @@ pub struct DeclarationBindingWork {
     pub indexed_anonymous_methods: usize,
     pub indexed_destructors: usize,
     pub indexed_const_candidates: usize,
+}
+
+/// Diagnostics and value-only structural work from failed declaration
+/// resolution. Partially resolved semantic state remains private.
+#[derive(Debug, Clone)]
+pub struct DeclarationResolutionFailure {
+    errors: CompileErrors,
+    work: DeclarationBindingWork,
+}
+
+impl DeclarationResolutionFailure {
+    fn new(errors: CompileErrors, work: DeclarationBindingWork) -> Self {
+        Self { errors, work }
+    }
+
+    pub fn work(&self) -> DeclarationBindingWork {
+        self.work
+    }
+
+    pub fn into_errors(self) -> CompileErrors {
+        self.errors
+    }
 }
 
 /// Stable-joinable identity of a declaration whose semantic payload is not yet
@@ -330,7 +355,15 @@ impl<'a> DeclarationShells<'a> {
     }
 
     /// Resolve declaration payloads and finalize a body-analysis-ready binder.
-    pub fn resolve_declarations(mut self) -> MultiErrorResult<BoundSema<'a>> {
+    pub fn resolve_declarations(self) -> MultiErrorResult<BoundSema<'a>> {
+        self.resolve_declarations_with_work()
+            .map_err(DeclarationResolutionFailure::into_errors)
+    }
+
+    /// Resolve declaration payloads while retaining exact work on failure.
+    pub fn resolve_declarations_with_work(
+        mut self,
+    ) -> Result<BoundSema<'a>, DeclarationResolutionFailure> {
         // This is the explicit payload-install boundary. The ordinary adapter
         // deliberately resolves from the authoritative current-revision RIR in
         // historical order. A future importer may validate durable payloads
@@ -354,10 +387,14 @@ impl<'a> DeclarationShells<'a> {
                 .iter()
                 .all(|pending| pending.declaration.as_u32() < self.sema.rir.len() as u32)
         );
-        self.sema
-            .resolve_declarations()
-            .map_err(CompileErrors::from)?;
         self.binding_work.declaration_resolution_invocations += 1;
+        if let Err(error) = self.sema.resolve_declarations() {
+            self.binding_work.declaration_resolution_failures += 1;
+            return Err(DeclarationResolutionFailure::new(
+                CompileErrors::from(error),
+                self.binding_work,
+            ));
+        }
         self.binding_work.body_readiness_finalization_invocations += 1;
         Ok(self.sema.into_bound_with_work(self.binding_work))
     }
@@ -856,6 +893,12 @@ impl<'a> BoundSema<'a> {
 
     pub fn analyze_all_bodies(self) -> MultiErrorResult<SemaOutput> {
         self.sema.analyze_all_bodies()
+    }
+
+    /// Analyze bodies while retaining value-only work counters if diagnostics
+    /// prevent AIR publication.
+    pub fn analyze_all_bodies_with_work(self) -> Result<SemaOutput, super::BodyAnalysisFailure> {
+        self.sema.analyze_all_bodies_with_work()
     }
 }
 
@@ -1542,6 +1585,7 @@ impl DeclarationBindingWork {
             callable_value_shells_predeclared: 0,
             indexed_declaration_records_visited: 0,
             declaration_resolution_invocations: 0,
+            declaration_resolution_failures: 0,
             body_readiness_finalization_invocations: 0,
             durable_install_invocations: 0,
             durable_payloads_installed: 0,
