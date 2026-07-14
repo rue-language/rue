@@ -71,10 +71,10 @@ pub struct CfgLower<'a> {
     fn_name: &'a str,
     /// Maps StructInit CFG values to their field vregs
     struct_slot_vregs: HashMap<CfgValue, Vec<VReg>>,
-    /// Maps inout parameter indices to their pointer vregs.
-    /// For inout params, the slot contains a pointer to the caller's memory.
+    /// Maps by-reference parameter indices to their pointer vregs.
+    /// For by-ref params, the slot contains a pointer to the caller's memory.
     /// This map stores the vreg holding that pointer so Store can use it.
-    inout_param_ptrs: HashMap<u32, VReg>,
+    by_ref_param_ptrs: HashMap<u32, VReg>,
 }
 
 impl<'a> CfgLower<'a> {
@@ -89,8 +89,8 @@ impl<'a> CfgLower<'a> {
         let estimated_block_params = num_blocks.saturating_mul(4);
         // Estimate ~10% of values are struct inits
         let estimated_struct_inits = num_values / 10;
-        // Estimate inout params are rare, start small
-        let estimated_inout_params = num_params.min(4) as usize;
+        // Estimate by-ref params are rare, start small.
+        let estimated_by_ref_params = num_params.min(4) as usize;
 
         Self {
             ctx: CfgLowerContext::new(cfg, type_pool),
@@ -101,7 +101,7 @@ impl<'a> CfgLower<'a> {
             next_label: 0,
             fn_name: cfg.fn_name(),
             struct_slot_vregs: HashMap::with_capacity(estimated_struct_inits),
-            inout_param_ptrs: HashMap::with_capacity(estimated_inout_params),
+            by_ref_param_ptrs: HashMap::with_capacity(estimated_by_ref_params),
         }
     }
 
@@ -190,14 +190,14 @@ impl<'a> CfgLower<'a> {
         })
     }
 
-    /// Ensure the inout parameter pointer vreg exists for the given param slot.
+    /// Ensure the by-reference parameter pointer vreg exists for the given slot.
     /// If the pointer has already been loaded (via a Param instruction), returns the cached vreg.
     /// Otherwise, loads the pointer from the parameter slot and caches it.
     ///
-    /// This is needed because ParamStore and parameter-based PlaceWrite may reference an inout param
+    /// This is needed because ParamStore and parameter-based PlaceWrite may reference a by-ref param
     /// that was never accessed via a Param instruction (e.g., write-only parameter).
-    fn ensure_inout_param_ptr(&mut self, param_slot: u32) -> VReg {
-        if let Some(ptr_vreg) = self.inout_param_ptrs.get(&param_slot).copied() {
+    fn ensure_by_ref_param_ptr(&mut self, param_slot: u32) -> VReg {
+        if let Some(ptr_vreg) = self.by_ref_param_ptrs.get(&param_slot).copied() {
             return ptr_vreg;
         }
 
@@ -214,17 +214,17 @@ impl<'a> CfgLower<'a> {
         });
 
         // Cache it for future use
-        self.inout_param_ptrs.insert(param_slot, ptr_vreg);
+        self.by_ref_param_ptrs.insert(param_slot, ptr_vreg);
         ptr_vreg
     }
 
     /// Materialize every by-reference parameter pointer before CFG control
     /// flow begins, so the function-wide cache only contains definitions that
     /// dominate every block which may reuse them.
-    fn preload_inout_param_ptrs(&mut self) {
+    fn preload_by_ref_param_ptrs(&mut self) {
         for param_slot in 0..self.ctx.num_params {
-            if self.ctx.cfg.is_param_inout(param_slot) {
-                self.ensure_inout_param_ptr(param_slot);
+            if self.ctx.cfg.is_param_by_ref(param_slot) {
+                self.ensure_by_ref_param_ptr(param_slot);
             }
         }
     }
@@ -543,7 +543,7 @@ impl<'a> CfgLower<'a> {
 
     /// Lower CFG to X86Mir.
     pub fn lower(mut self) -> CompileResult<X86Mir> {
-        self.preload_inout_param_ptrs();
+        self.preload_by_ref_param_ptrs();
 
         // Pre-allocate vregs for block parameters
         for block in self.ctx.cfg.blocks() {
@@ -581,7 +581,7 @@ impl<'a> CfgLower<'a> {
             blocks: Vec::new(),
         };
 
-        self.preload_inout_param_ptrs();
+        self.preload_by_ref_param_ptrs();
 
         // Pre-allocate vregs for block parameters (same as lower())
         for block in self.ctx.cfg.blocks() {
@@ -733,8 +733,8 @@ impl<'a> CfgLower<'a> {
                 }
             }
             CfgInstData::Param { index } => {
-                if self.ctx.cfg.is_param_inout(*index) {
-                    Some("Inout param: load pointer then dereference".to_string())
+                if self.ctx.cfg.is_param_by_ref(*index) {
+                    Some("By-ref param: load pointer then dereference".to_string())
                 } else {
                     // ABI slot: shifted by one when a hidden sret pointer
                     // occupies the first arg register.
@@ -881,8 +881,8 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Param { index } => {
-                // Check if this is an inout parameter
-                let is_inout = self.ctx.cfg.is_param_inout(*index);
+                // Check if this parameter is physically passed by reference.
+                let is_by_ref = self.ctx.cfg.is_param_by_ref(*index);
 
                 // The prologue copies every ABI arg slot — register- and
                 // stack-passed alike — into the contiguous frame param area
@@ -891,10 +891,10 @@ impl<'a> CfgLower<'a> {
                 // the 6 arg registers were read from [rbp+16+...], which the
                 // frame-slot-based aggregate and write paths didn't mirror,
                 // dropping slots of >6-slot aggregate args. (RUE-13/79/91)
-                if is_inout {
-                    // For inout params, the slot contains a POINTER to the caller's memory.
+                if is_by_ref {
+                    // For by-ref params, the slot contains a POINTER to the caller's memory.
                     // Load the pointer, then dereference to get the value.
-                    let ptr_vreg = self.ensure_inout_param_ptr(*index);
+                    let ptr_vreg = self.ensure_by_ref_param_ptr(*index);
                     let val_vreg = self.mir.alloc_vreg();
 
                     // Dereference the pointer to get the actual value
@@ -2638,10 +2638,10 @@ impl<'a> CfgLower<'a> {
                         // param area (slots num_locals..), so its address is the
                         // corresponding frame slot.
                         let index = *index;
-                        if self.ctx.cfg.is_param_inout(index) {
-                            // inout params hold a POINTER to the caller's storage;
+                        if self.ctx.cfg.is_param_by_ref(index) {
+                            // By-ref params hold a POINTER to the caller's storage;
                             // that pointer already IS the address of the place.
-                            let ptr_vreg = self.ensure_inout_param_ptr(index);
+                            let ptr_vreg = self.ensure_by_ref_param_ptr(index);
                             self.value_map.insert(value, ptr_vreg);
                         } else {
                             // Whole by-value param: its low end is the highest
@@ -3847,8 +3847,8 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
 }
 
 impl crate::place_lower::PlaceLowerBackend for CfgLower<'_> {
-    fn ensure_inout_param_ptr(&mut self, param_slot: u32) -> VReg {
-        CfgLower::ensure_inout_param_ptr(self, param_slot)
+    fn ensure_by_ref_param_ptr(&mut self, param_slot: u32) -> VReg {
+        CfgLower::ensure_by_ref_param_ptr(self, param_slot)
     }
 
     fn emit_frame_addr(&mut self, dst: VReg, slot: u32) {

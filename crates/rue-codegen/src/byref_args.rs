@@ -69,11 +69,11 @@ pub fn lower_byref_arg_addr<B: PlaceLowerBackend + ?Sized>(
         }
         ArgShape::Param(index) => {
             let addr_vreg = b.alloc_vreg();
-            if b.ctx().cfg.is_param_inout(index) {
+            if b.ctx().cfg.is_param_by_ref(index) {
                 // Forwarding a by-ref param: pass along the pointer we
-                // received. ensure_inout_param_ptr covers params never
+                // received. ensure_by_ref_param_ptr covers params never
                 // accessed via a Param instruction.
-                let ptr_vreg = b.ensure_inout_param_ptr(index);
+                let ptr_vreg = b.ensure_by_ref_param_ptr(index);
                 b.emit_reg_move(addr_vreg, ptr_vreg);
             } else {
                 // Normal param: it lives in a frame slot after the locals.

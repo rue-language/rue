@@ -19,8 +19,8 @@ use crate::vreg::VReg;
 
 /// Per-target instruction leaves used by shared place lowering.
 pub trait PlaceLowerBackend: SlotBackend {
-    /// Get or lazily materialize a received inout/borrow parameter pointer.
-    fn ensure_inout_param_ptr(&mut self, param_slot: u32) -> VReg;
+    /// Get or lazily materialize a received by-reference parameter pointer.
+    fn ensure_by_ref_param_ptr(&mut self, param_slot: u32) -> VReg;
 
     /// Emit `dst = address of frame slot`.
     fn emit_frame_addr(&mut self, dst: VReg, slot: u32);
@@ -87,8 +87,8 @@ pub fn lower_place_read<B: PlaceLowerBackend>(b: &mut B, dst: VReg, place: &Plac
         match place.base {
             PlaceBase::Local(slot) => b.emit_load_slot(dst, slot),
             PlaceBase::Param(param_slot) => {
-                if b.ctx().cfg.is_param_inout(param_slot) {
-                    let ptr = b.ensure_inout_param_ptr(param_slot);
+                if b.ctx().cfg.is_param_by_ref(param_slot) {
+                    let ptr = b.ensure_by_ref_param_ptr(param_slot);
                     b.emit_load_ptr_base(dst, ptr);
                 } else {
                     let slot = b.ctx().num_locals + param_slot;
@@ -124,8 +124,8 @@ pub fn lower_place_write<B: PlaceLowerBackend>(b: &mut B, place: &Place, vals: &
         match place.base {
             PlaceBase::Local(slot) => agg_slots::store_slots(b, vals, slot),
             PlaceBase::Param(param_slot) => {
-                if b.ctx().cfg.is_param_inout(param_slot) {
-                    let ptr = b.ensure_inout_param_ptr(param_slot);
+                if b.ctx().cfg.is_param_by_ref(param_slot) {
+                    let ptr = b.ensure_by_ref_param_ptr(param_slot);
                     agg_slots::store_slots_through_ptr(b, vals, ptr, 0);
                 } else {
                     let slot = b.ctx().num_locals + param_slot;
@@ -170,10 +170,10 @@ pub fn lower_place_addr<B: PlaceLowerBackend>(b: &mut B, dst: VReg, place: &Plac
             }
         }
         PlaceBase::Param(param_slot) => {
-            if b.ctx().cfg.is_param_inout(param_slot) {
+            if b.ctx().cfg.is_param_by_ref(param_slot) {
                 // A received by-ref pointer already denotes the caller place's
                 // low end. Both field and index offsets therefore add.
-                let ptr = b.ensure_inout_param_ptr(param_slot);
+                let ptr = b.ensure_by_ref_param_ptr(param_slot);
                 b.emit_reg_move(dst, ptr);
                 let static_byte_offset = offsets.static_slot_offset as i32 * 8;
                 if static_byte_offset != 0 {
@@ -249,8 +249,8 @@ fn projected_access<B: PlaceLowerBackend>(
             frame_access(b, low_slot, dynamic_offset)
         }
         PlaceBase::Param(param_slot) => {
-            if b.ctx().cfg.is_param_inout(param_slot) {
-                let ptr = b.ensure_inout_param_ptr(param_slot);
+            if b.ctx().cfg.is_param_by_ref(param_slot) {
+                let ptr = b.ensure_by_ref_param_ptr(param_slot);
                 let static_byte_offset = offsets.static_slot_offset as i32 * 8;
                 if let Some(dynamic_offset) = dynamic_offset {
                     let addr = b.alloc_vreg();
@@ -330,10 +330,12 @@ mod tests {
         let source = r#"
             struct Grid { pad: i32, cells: [[i32; 2]; 2] }
             struct Empty { unit: () }
+            fn read_borrow(borrow value: i32) -> i32 { value }
             fn read_inout(inout value: i32) -> i32 { value }
             fn read_unit(value: Empty) -> () { value.unit }
             fn main() -> i32 {
                 let mut scalar = 7;
+                let _borrow_read = read_borrow(borrow scalar);
                 let _scalar_read = read_inout(inout scalar);
                 let empty = Empty { unit: () };
                 read_unit(empty);
@@ -447,39 +449,42 @@ mod tests {
         );
 
         // Lock down the two deliberately distinct compatibility leaves. A
-        // simple by-ref read must retain AArch64's base-only LdrIndexed form,
+        // simple borrow and inout reads must retain AArch64's base-only
+        // LdrIndexed form,
         // while a projected ZST read must materialize zero without attempting
         // root-origin address arithmetic (and x86 keeps its 64-bit immediate).
-        let inout_cfg = build_cfg("read_inout");
-        let inout_x86 = X86CfgLower::new(&inout_cfg, &output.type_pool, &interner)
+        for by_ref_fn in ["read_borrow", "read_inout"] {
+            let by_ref_cfg = build_cfg(by_ref_fn);
+            let by_ref_x86 = X86CfgLower::new(&by_ref_cfg, &output.type_pool, &interner)
+                .lower()
+                .expect("x86 by-ref fixture should lower");
+            let by_ref_arm = Aarch64CfgLower::new(
+                &by_ref_cfg,
+                &output.type_pool,
+                &interner,
+                Target::Aarch64Linux,
+            )
             .lower()
-            .expect("x86 inout fixture should lower");
-        let inout_arm = Aarch64CfgLower::new(
-            &inout_cfg,
-            &output.type_pool,
-            &interner,
-            Target::Aarch64Linux,
-        )
-        .lower()
-        .expect("AArch64 inout fixture should lower");
-        assert!(matches!(
-            inout_x86.instructions(),
-            [
-                X86Inst::MovRM { .. },
-                X86Inst::MovRMIndexed { .. },
-                X86Inst::MovRR { .. },
-                X86Inst::Ret
-            ]
-        ));
-        assert!(matches!(
-            inout_arm.instructions(),
-            [
-                Aarch64Inst::Ldr { .. },
-                Aarch64Inst::LdrIndexed { .. },
-                Aarch64Inst::MovRR { .. },
-                Aarch64Inst::Ret
-            ]
-        ));
+            .expect("AArch64 by-ref fixture should lower");
+            assert!(matches!(
+                by_ref_x86.instructions(),
+                [
+                    X86Inst::MovRM { .. },
+                    X86Inst::MovRMIndexed { .. },
+                    X86Inst::MovRR { .. },
+                    X86Inst::Ret
+                ]
+            ));
+            assert!(matches!(
+                by_ref_arm.instructions(),
+                [
+                    Aarch64Inst::Ldr { .. },
+                    Aarch64Inst::LdrIndexed { .. },
+                    Aarch64Inst::MovRR { .. },
+                    Aarch64Inst::Ret
+                ]
+            ));
+        }
 
         let unit_cfg = build_cfg("read_unit");
         let unit_x86 = X86CfgLower::new(&unit_cfg, &output.type_pool, &interner)

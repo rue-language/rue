@@ -1,7 +1,7 @@
 //! Shared local and parameter storage lowering (RUE-612).
 //!
 //! CFG storage operations choose between scalar and flattened aggregate values,
-//! frame slots and received inout pointers, and eager and lazy aggregate
+//! frame slots and received by-reference pointers, and eager and lazy aggregate
 //! materialization. Those choices are target-independent. Backends retain only
 //! recursive struct flattening and the exact base-only pointer-store MIR leaf.
 
@@ -79,7 +79,7 @@ pub(crate) fn lower_load<B: StorageLowerBackend>(b: &mut B, value: CfgValue, slo
     }
 }
 
-/// Lower a store to either a local frame slot or an inout parameter's pointee.
+/// Lower a store to either a local frame slot or a by-ref parameter's pointee.
 pub(crate) fn lower_store<B: StorageLowerBackend>(b: &mut B, slot: u32, value: CfgValue) {
     let value_type = b.ctx().cfg.get_inst(value).ty;
     let aggregate_vregs = b
@@ -88,16 +88,16 @@ pub(crate) fn lower_store<B: StorageLowerBackend>(b: &mut B, slot: u32, value: C
         .then(|| agg_slots::require_aggregate_slots(b, value));
 
     if let Some(slot_vregs) = aggregate_vregs {
-        if let Some(param_slot) = inout_param_for_slot(b, slot) {
-            let ptr = b.ensure_inout_param_ptr(param_slot);
+        if let Some(param_slot) = by_ref_param_for_slot(b, slot) {
+            let ptr = b.ensure_by_ref_param_ptr(param_slot);
             agg_slots::store_slots_through_ptr(b, &slot_vregs, ptr, 0);
         } else {
             agg_slots::store_slots(b, &slot_vregs, slot);
         }
     } else {
         let value_vreg = b.get_vreg(value);
-        if let Some(param_slot) = inout_param_for_slot(b, slot) {
-            let ptr = b.ensure_inout_param_ptr(param_slot);
+        if let Some(param_slot) = by_ref_param_for_slot(b, slot) {
+            let ptr = b.ensure_by_ref_param_ptr(param_slot);
             b.emit_store_ptr_base(value_vreg, ptr);
         } else {
             b.emit_store_slot(value_vreg, slot);
@@ -105,14 +105,14 @@ pub(crate) fn lower_store<B: StorageLowerBackend>(b: &mut B, slot: u32, value: C
     }
 }
 
-/// Lower a whole-value assignment through an inout parameter pointer.
+/// Lower a whole-value assignment through a writable by-ref parameter pointer.
 pub(crate) fn lower_param_store<B: StorageLowerBackend>(
     b: &mut B,
     param_slot: u32,
     value: CfgValue,
 ) {
-    if !b.ctx().cfg.is_param_inout(param_slot) {
-        panic!("ParamStore used on non-inout param slot {}", param_slot);
+    if !b.ctx().cfg.is_param_writable(param_slot) {
+        panic!("ParamStore used on non-writable param slot {}", param_slot);
     }
 
     let value_type = b.ctx().cfg.get_inst(value).ty;
@@ -121,7 +121,7 @@ pub(crate) fn lower_param_store<B: StorageLowerBackend>(
         .is_multislot_aggregate(value_type)
         .then(|| agg_slots::require_aggregate_slots(b, value));
 
-    let ptr = b.ensure_inout_param_ptr(param_slot);
+    let ptr = b.ensure_by_ref_param_ptr(param_slot);
     if let Some(slot_vregs) = aggregate_vregs {
         agg_slots::store_slots_through_ptr(b, &slot_vregs, ptr, 0);
     } else {
@@ -130,8 +130,8 @@ pub(crate) fn lower_param_store<B: StorageLowerBackend>(
     }
 }
 
-fn inout_param_for_slot<B: SlotBackend>(b: &B, slot: u32) -> Option<u32> {
+fn by_ref_param_for_slot<B: SlotBackend>(b: &B, slot: u32) -> Option<u32> {
     b.ctx()
-        .slot_to_inout_param_index(slot)
-        .filter(|&param_slot| b.ctx().cfg.is_param_inout(param_slot))
+        .slot_to_param_index(slot)
+        .filter(|&param_slot| b.ctx().cfg.is_param_by_ref(param_slot))
 }
