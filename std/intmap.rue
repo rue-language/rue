@@ -125,8 +125,16 @@ pub fn IntMap(comptime V: type) -> type {
 
         // Insert or overwrite `k -> v`.
         fn insert(inout self, k: i64, v: V) {
-            // Grow at 70% load (count+1 > cap*7/10).
-            if (self.count + 1) * 10 > self.cap * 7 {
+            // Grow above 70% load without overflowing intermediate products.
+            if self.count == 18446744073709551615 {
+                @panic("out of memory");
+            }
+            let next_count = self.count + 1;
+            let threshold = (self.cap / 10) * 7 + ((self.cap % 10) * 7) / 10;
+            if next_count > threshold {
+                if self.cap > 9223372036854775807 {
+                    @panic("out of memory");
+                }
                 self._grow_to(self.cap * 2);
             }
             let mut idx = self._slot(k);

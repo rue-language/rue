@@ -112,13 +112,22 @@ pub fn ArrayBuf(comptime T: type) -> type {
             let zero: u64 = 0;
             let mut v = Self { buf: checked { @int_to_ptr(zero) }, len: 0, cap: 0 };
             if n > 0 {
-                // `@realloc` of the null buffer allocates a fresh block; its
-                // result type is inferred from `v.buf` (a `ptr mut T` field),
-                // so no `T` annotation is needed in the method body.
-                checked {
-                    let grown = @realloc(v.buf, v.cap, n);
-                    v.buf = grown;
-                };
+                let element_size: u64 = @intCast(@size_of(T));
+                if element_size > 0 {
+                    if n > 18446744073709551615 / element_size {
+                        @panic("out of memory");
+                    }
+                    // `@realloc` of the null buffer allocates a fresh block;
+                    // install the result only after checking it so the owner
+                    // never publishes nonzero capacity backed by null.
+                    checked {
+                        let grown = @realloc(v.buf, v.cap, n);
+                        if @ptr_to_int(grown) == 0 {
+                            @panic("out of memory");
+                        }
+                        v.buf = grown;
+                    };
+                }
                 v.cap = n;
             }
             v
@@ -175,11 +184,27 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // buffer (amortized 2x) when full. Internal helper.
         fn reserve(inout self) {
             if self.len == self.cap {
-                let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
-                checked {
-                    let grown = @realloc(self.buf, self.cap, new_cap);
-                    self.buf = grown;
+                let new_cap: u64 = if self.cap == 0 {
+                    4
+                } else {
+                    if self.cap > 9223372036854775807 {
+                        @panic("out of memory");
+                    }
+                    self.cap * 2
                 };
+                let element_size: u64 = @intCast(@size_of(T));
+                if element_size > 0 {
+                    if new_cap > 18446744073709551615 / element_size {
+                        @panic("out of memory");
+                    }
+                    checked {
+                        let grown = @realloc(self.buf, self.cap, new_cap);
+                        if @ptr_to_int(grown) == 0 {
+                            @panic("out of memory");
+                        }
+                        self.buf = grown;
+                    };
+                }
                 self.cap = new_cap;
             }
         }

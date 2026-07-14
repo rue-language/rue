@@ -1,0 +1,20 @@
+# Safe allocation failure behavior (RUE-847).
+
+[section]
+id = "runtime.allocation-failure"
+spec_chapter = "8.6"
+name = "Allocation Failure"
+description = "Safe infallible allocation APIs trap with a stable, allocation-free diagnostic."
+
+[[case]]
+name = "strbuf_allocation_failure_traps"
+spec = ["8.6:1", "8.6:2"]
+source = """
+fn main() -> i32 {
+    let s = StrBuf.with_capacity(18446744073709551615);
+    @dbg(s.capacity());
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "panic: out of memory"

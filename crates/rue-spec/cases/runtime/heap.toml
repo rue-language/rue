@@ -87,6 +87,36 @@ fn main() -> i32 {
 """
 exit_code = 12
 
+# A failed reallocation returns null without consuming or modifying the old
+# allocation. The caller can still read and free the original pointer.
+[[case]]
+name = "realloc_failure_preserves_original"
+spec = ["9.2:12", "8.6:3", "8.6:4"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(4);
+        @ptr_write(p, 10);
+        @ptr_write(@ptr_offset(p, 1), 20);
+        @ptr_write(@ptr_offset(p, 2), 30);
+        @ptr_write(@ptr_offset(p, 3), 40);
+        let q: ptr mut u8 = @realloc(p, 4, 2305843009213693951);
+        if @ptr_to_int(q) == 0 {
+            let sum: i32 = @intCast(@ptr_read(p))
+                + @intCast(@ptr_read(@ptr_offset(p, 1)))
+                + @intCast(@ptr_read(@ptr_offset(p, 2)))
+                + @intCast(@ptr_read(@ptr_offset(p, 3)));
+            @free(p, 4);
+            sum
+        } else {
+            @free(q, 2305843009213693951);
+            1
+        }
+    }
+}
+"""
+exit_code = 100
+
 # @realloc of a null pointer behaves like a fresh @alloc.
 [[case]]
 name = "realloc_null_is_alloc"

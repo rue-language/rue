@@ -53,6 +53,34 @@ fn main() -> i32 {
 """ }]
 exit_code = 112
 
+[[case]]
+name = "realloc_failure_preserves_original"
+description = "A failed @realloc returns null while the original u8 allocation and contents remain valid."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(4);
+        @ptr_write(p, 10);
+        @ptr_write(@ptr_offset(p, 1), 20);
+        @ptr_write(@ptr_offset(p, 2), 30);
+        @ptr_write(@ptr_offset(p, 3), 40);
+        let q: ptr mut u8 = @realloc(p, 4, 2305843009213693951);
+        if @ptr_to_int(q) == 0 {
+            let sum: i32 = @intCast(@ptr_read(p))
+                + @intCast(@ptr_read(@ptr_offset(p, 1)))
+                + @intCast(@ptr_read(@ptr_offset(p, 2)))
+                + @intCast(@ptr_read(@ptr_offset(p, 3)));
+            @free(p, 4);
+            sum
+        } else {
+            @free(q, 2305843009213693951);
+            1
+        }
+    }
+}
+""" }]
+exit_code = 100
+
 # @free called from a user destructor: the whole owned-buffer-with-drop pattern
 # works on a concrete named struct (the generic-struct attachment is blocked;
 # see the meta report). Prints the live value, then the destructor's marker.

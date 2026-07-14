@@ -38,6 +38,41 @@ use crate::platform;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only fault seam at the raw allocator boundary. Production builds
+    /// contain no counter or alternate allocation path; native CI on each
+    /// supported platform uses this to exercise safe consumers deterministically.
+    static ALLOCATIONS_BEFORE_FAILURE: core::cell::Cell<Option<usize>> = const {
+        core::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_allocations_after_for_test(successful_allocations: usize) {
+    ALLOCATIONS_BEFORE_FAILURE.set(Some(successful_allocations));
+}
+
+#[cfg(test)]
+pub(crate) fn disable_allocation_failure_for_test() {
+    ALLOCATIONS_BEFORE_FAILURE.set(None);
+}
+
+#[cfg(test)]
+fn injected_allocation_failure() -> bool {
+    ALLOCATIONS_BEFORE_FAILURE.get().is_some_and(|remaining| {
+        if remaining == 0 {
+            true
+        } else {
+            ALLOCATIONS_BEFORE_FAILURE.set(Some(remaining - 1));
+            false
+        }
+    })
+}
+
 /// Default arena size: 64 KiB
 ///
 /// This is chosen to be:
@@ -187,6 +222,11 @@ fn alloc_arena(min_size: usize, align: usize) -> *mut ArenaHeader {
 /// The returned pointer (if non-null) is valid and properly aligned.
 /// The memory remains valid until the program exits.
 pub fn alloc(size: u64, align: u64) -> *mut u8 {
+    #[cfg(test)]
+    if injected_allocation_failure() {
+        return ptr::null_mut();
+    }
+
     // Validate arguments. `align` is also capped at the page size: the arena
     // base is only page-aligned (mmap), and blocks are placed at an offset
     // aligned relative to that base, so an `align` greater than a page could
@@ -502,6 +542,26 @@ mod tests {
         // must now return null instead.
         let ptr = alloc((usize::MAX as u64) - 124, 1);
         assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn failed_realloc_preserves_old_allocation() {
+        let old_ptr = alloc(4, 1);
+        assert!(!old_ptr.is_null());
+        unsafe {
+            old_ptr.write(11);
+            old_ptr.add(1).write(22);
+            old_ptr.add(2).write(33);
+            old_ptr.add(3).write(44);
+        }
+
+        fail_allocations_after_for_test(0);
+        let grown = realloc(old_ptr, 4, 8, 1);
+        disable_allocation_failure_for_test();
+
+        assert!(grown.is_null());
+        let bytes = unsafe { core::slice::from_raw_parts(old_ptr, 4) };
+        assert_eq!(bytes, &[11, 22, 33, 44]);
     }
 
     #[test]

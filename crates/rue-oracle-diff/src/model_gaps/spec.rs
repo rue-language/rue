@@ -276,6 +276,12 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "runtime.allocation-failure",
+        "strbuf_allocation_failure_traps",
+        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        &[],
+    ),
+    Entry::new(
         "runtime.heap",
         "alloc_multiple_elements",
         intrinsic(UnsupportedIntrinsicKind::Allocate),
@@ -290,6 +296,12 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "runtime.heap",
         "alloc_write_read",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "runtime.heap",
+        "realloc_failure_preserves_original",
         intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
@@ -693,6 +705,12 @@ const ENTRIES: &[Entry] = &[
         "types.strings",
         "string_substring_out_of_bounds_traps",
         runtime_call(UnsupportedRuntimeCallKind::StringSubstring),
+        &[],
+    ),
+    Entry::new(
+        "types.strings",
+        "string_with_capacity_zero",
+        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
         &[],
     ),
 ];

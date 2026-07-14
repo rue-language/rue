@@ -10,6 +10,32 @@
 
 use crate::platform;
 
+/// Abort a safe, infallible allocation operation after it fails.
+///
+/// This deliberately routes through the same `@panic` implementation used by
+/// source-level owners such as `ArrayBuf`, so every safe allocation failure has
+/// one stable, allocation-free diagnostic and exit status.
+#[inline]
+pub(crate) fn allocation_failure() -> ! {
+    let mut msg = [0u8; 13];
+    msg[0] = b'o';
+    msg[1] = b'u';
+    msg[2] = b't';
+    msg[3] = b' ';
+    msg[4] = b'o';
+    msg[5] = b'f';
+    msg[6] = b' ';
+    msg[7] = b'm';
+    msg[8] = b'e';
+    msg[9] = b'm';
+    msg[10] = b'o';
+    msg[11] = b'r';
+    msg[12] = b'y';
+    // SAFETY: `msg` is live for the non-returning call and describes exactly
+    // 13 initialized bytes.
+    unsafe { __rue_panic(msg.as_ptr(), msg.len() as u64) }
+}
+
 crate::define_for_all_platforms! {
     /// Runtime error: division by zero.
     ///
@@ -416,6 +442,7 @@ mod tests {
         assert_eq!(b"panic: ".len(), 7);
         assert_eq!(b"panic\n".len(), 6);
         assert_eq!(b"assertion failed\n".len(), 17);
+        assert_eq!(b"out of memory".len(), 13);
     }
 
     #[test]

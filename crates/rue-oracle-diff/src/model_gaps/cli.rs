@@ -207,6 +207,12 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.heap_intrinsics",
+        "realloc_failure_preserves_original",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.heap_intrinsics",
         "realloc_grows_and_preserves",
         intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
@@ -603,7 +609,13 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.string_alloc_failure",
-        "with_capacity_huge_no_segfault",
+        "strbuf_with_capacity_huge_traps",
+        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        &[],
+    ),
+    Entry::new(
+        "cli.string_alloc_failure",
+        "strbuf_zero_capacity_does_not_allocate",
         implementation_defined(ImplementationDefinedKind::StringCapacityValue),
         &[],
     ),
