@@ -5,7 +5,10 @@
 //! in this module are the only representation eligible for retention between
 //! frontend revisions.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use rue_air::{
     AirArgMode, AirPlaceBase, SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind,
@@ -509,10 +512,13 @@ pub fn convert_semantic_body_exports(
             .definition_for_body_token(export.owner)
             .map_err(|_| DurableBodyConversionFailure::ForeignOwnerToken)?;
         let owner = owner_record.stable_key().clone();
-        // This first retained schema intentionally admits ordinary free
-        // functions only. Methods and synthesized/specialized bodies remain
-        // fail-closed until their complete identity boundary is designed.
-        if owner.kind() != StableDefinitionKind::Function {
+        if !matches!(
+            owner.kind(),
+            StableDefinitionKind::Function
+                | StableDefinitionKind::Method
+                | StableDefinitionKind::AssociatedFunction
+                | StableDefinitionKind::Destructor
+        ) {
             return Err(DurableBodyConversionFailure::WrongDefinitionKind);
         }
         let expected_inputs = crate::session::stable_definition_input_fingerprint(
@@ -883,6 +889,78 @@ impl DurableOrdinaryBody {
 }
 
 impl DurableOrdinaryBodyPayload {
+    pub(crate) fn referenced_definition_keys(&self) -> BTreeSet<StableDefinitionKey> {
+        fn visit_type(value: &DurableType, keys: &mut BTreeSet<StableDefinitionKey>) {
+            match value {
+                DurableType::Nominal(key) => {
+                    keys.insert(key.clone());
+                }
+                DurableType::Array { element, .. }
+                | DurableType::PtrConst(element)
+                | DurableType::PtrMut(element) => visit_type(element, keys),
+                DurableType::Tuple(values) => {
+                    for value in values.iter() {
+                        visit_type(value, keys);
+                    }
+                }
+                DurableType::Function { parameters, result } => {
+                    for value in parameters.iter() {
+                        visit_type(value, keys);
+                    }
+                    visit_type(result, keys);
+                }
+                _ => {}
+            }
+        }
+
+        let mut keys = BTreeSet::new();
+        visit_type(&self.return_type, &mut keys);
+        for instruction in self.instructions.iter() {
+            visit_type(&instruction.ty, &mut keys);
+            match &instruction.data {
+                DurableAirInstData::TypeConst(value)
+                | DurableAirInstData::IntCast { from_ty: value, .. } => {
+                    visit_type(value, &mut keys);
+                }
+                DurableAirInstData::Call { function, .. } => {
+                    keys.insert(function.clone());
+                }
+                DurableAirInstData::StructInit { struct_key, .. } => {
+                    keys.insert(struct_key.clone());
+                }
+                DurableAirInstData::EnumVariant { enum_key, .. }
+                | DurableAirInstData::EnumPayloadGet { enum_key, .. } => {
+                    keys.insert(enum_key.clone());
+                }
+                DurableAirInstData::Match { arms, .. } => {
+                    for arm in arms.iter() {
+                        if let DurablePattern::EnumVariant { enum_key, .. } = &arm.pattern {
+                            keys.insert(enum_key.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for place in self.places.iter() {
+            visit_type(&place.base_type, &mut keys);
+            for projection in place.projections.iter() {
+                match projection {
+                    DurableProjection::Field { struct_key, .. } => {
+                        keys.insert(struct_key.clone());
+                    }
+                    DurableProjection::Index { array_type, .. } => {
+                        visit_type(array_type, &mut keys);
+                    }
+                }
+            }
+        }
+        for (_, value) in self.param_drops.iter() {
+            visit_type(value, &mut keys);
+        }
+        keys
+    }
+
     /// Project the durable algebra into AIR's neutral import DTO. This does not
     /// allocate any AIR instruction, type, string, nominal, or function ID.
     pub fn project_semantic_body(

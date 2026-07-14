@@ -2342,24 +2342,26 @@ impl CompilerSession {
             ) {
                 cache.fingerprints = fingerprints.into();
             }
-            let bodies = build_supported_ordinary_body_cache(
+            self.last_successful_body_cache = build_supported_ordinary_body_cache(
                 output,
                 merged.definitions().source_snapshot(),
                 options.target,
                 &options.preview_features,
             )
-            .unwrap_or_else(|_| Arc::from([]));
-            let manifest = body_invalidation_manifest(
-                input.semantic.clone(),
-                imports.clone(),
-                output.body_owner_issuer(),
-                merged.definitions().source_snapshot(),
-                bodies.clone(),
-            );
-            self.last_successful_body_cache = Some(DurableOrdinaryBodyCache {
-                manifest: Arc::new(manifest),
-                bodies,
-            });
+            .and_then(|bodies| {
+                body_invalidation_manifest(
+                    input.semantic.clone(),
+                    imports.clone(),
+                    output,
+                    merged.definitions().source_snapshot(),
+                    bodies.clone(),
+                )
+                .map(|manifest| DurableOrdinaryBodyCache {
+                    manifest: Arc::new(manifest),
+                    bodies,
+                })
+            })
+            .ok();
         }
         self.semantic_cache.push(SemanticCacheEntry {
             input: input.clone(),
@@ -3008,6 +3010,18 @@ impl CompilerSession {
                     )
                 })?;
             let mut direct_dependencies = Vec::new();
+            if let Some(payload) = semantic.as_ref().ok().and_then(|semantic| {
+                semantic
+                    .durable_ordinary_body_payloads()
+                    .iter()
+                    .find(|payload| &payload.owner == owner)
+            }) {
+                // Imported bodies intentionally skip source analysis and its
+                // declaration-type observers. The durable AIR is already
+                // joined to the same authoritative definition universe, so
+                // retain every named type/callable it embeds as direct input.
+                direct_dependencies.extend(payload.referenced_definition_keys());
+            }
             direct_dependencies.extend(
                 free_function_dependencies
                     .iter()
@@ -3708,9 +3722,6 @@ fn build_supported_ordinary_body_cache(
     preview_features: &crate::PreviewFeatures,
 ) -> Result<Arc<[crate::DurableOrdinaryBody]>, CompileErrors> {
     let definitions = semantic.body_owner_issuer();
-    // RUE-883 supports ordinary free-function call topology only. Other body
-    // dependency families are retained for their dedicated follow-up slices
-    // and fail closed here so a reuse hit never drops dependency evidence.
     let supported = semantic.ordinary_free_function_dependencies_complete()
         && semantic.specialized_free_function_dependencies_complete()
         && semantic.non_generic_named_method_dependencies_complete()
@@ -3723,10 +3734,6 @@ fn build_supported_ordinary_body_cache(
         && semantic.named_value_const_dependencies_complete()
         && semantic.specialized_free_function_origins().is_empty()
         && semantic.specialized_free_function_dependencies().is_empty()
-        && semantic.named_method_dependencies().is_empty()
-        && semantic.named_destructor_dependencies().is_empty()
-        && semantic.implicit_named_destructor_dependencies().is_empty()
-        && semantic.declaration_type_dependencies().is_empty()
         && semantic
             .declaration_type_call_head_dependencies()
             .is_empty()
@@ -3753,6 +3760,7 @@ fn build_supported_ordinary_body_cache(
             .cloned()
             .ok_or_else(|| invalid_dependency_manifest("durable body owner is absent"))?;
         let mut dependency_keys = Vec::new();
+        dependency_keys.extend(payload.referenced_definition_keys());
         for event in semantic.ordinary_free_function_dependencies() {
             let caller =
                 stable_free_function_endpoint(definitions, event.caller_file, &event.caller_name)?;
@@ -3763,6 +3771,70 @@ fn build_supported_ordinary_body_cache(
                     event.callee_file,
                     &event.callee_name,
                 )?);
+            }
+        }
+        for event in semantic.named_method_dependencies() {
+            let caller = stable_named_method_endpoint(
+                definitions,
+                event.caller_file,
+                &event.caller_owner_name,
+                &event.caller_method_name,
+            )?;
+            let caller = stable_token_endpoint(semantic, event.caller_token, &caller)?;
+            if caller != payload.owner {
+                continue;
+            }
+            dependency_keys.push(match &event.target {
+                rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
+                    stable_free_function_endpoint(definitions, *file, name)?
+                }
+                rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
+                    file,
+                    owner_name,
+                    method_name,
+                } => stable_named_method_endpoint(definitions, *file, owner_name, method_name)?,
+            });
+        }
+        for event in semantic.named_destructor_dependencies() {
+            let caller = stable_named_destructor_endpoint(
+                definitions,
+                event.caller_file,
+                &event.caller_owner_name,
+            )?;
+            let caller = stable_token_endpoint(semantic, event.caller_token, &caller)?;
+            if caller != payload.owner {
+                continue;
+            }
+            dependency_keys.push(match &event.target {
+                rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
+                    stable_free_function_endpoint(definitions, *file, name)?
+                }
+                rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
+                    file,
+                    owner_name,
+                    method_name,
+                } => stable_named_method_endpoint(definitions, *file, owner_name, method_name)?,
+            });
+        }
+        for event in semantic.implicit_named_destructor_dependencies() {
+            let source =
+                stable_implicit_drop_source_endpoint(semantic, definitions, &event.source)?;
+            if source == payload.owner {
+                dependency_keys.push(stable_named_destructor_endpoint(
+                    definitions,
+                    event.target_file,
+                    &event.target_owner_name,
+                )?);
+            }
+        }
+        for event in semantic.declaration_type_dependencies() {
+            let provenance = stable_declaration_source_endpoint(definitions, event)?;
+            let source = match event.source_token {
+                Some(token) => stable_token_endpoint(semantic, token, &provenance)?,
+                None => provenance,
+            };
+            if source == payload.owner {
+                dependency_keys.push(stable_named_type_endpoint(definitions, event)?);
             }
         }
         dependency_keys.sort();
@@ -3826,16 +3898,16 @@ fn stable_module_imports(imports: &CanonicalImportGraph) -> Arc<[StableModuleImp
 fn body_invalidation_manifest(
     input: SemanticInputDescriptor,
     imports: CanonicalImportGraph,
-    definitions: &BoundDefinitionSet,
+    semantic: &CanonicalSemanticOutput,
     snapshot: &SourceSnapshot,
     bodies: Arc<[crate::DurableOrdinaryBody]>,
-) -> SemanticDependencyInputManifest {
+) -> Result<SemanticDependencyInputManifest, CompileErrors> {
+    let definitions = semantic.body_owner_issuer();
     let definition_fingerprints = definitions
         .definitions()
         .iter()
         .map(|record| stable_definition_input_fingerprint(snapshot, record))
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_default();
+        .collect::<Result<Vec<_>, _>>()?;
     let mut free_function_dependencies = bodies
         .iter()
         .flat_map(|body| {
@@ -3850,6 +3922,100 @@ fn body_invalidation_manifest(
         .collect::<Vec<_>>();
     free_function_dependencies.sort();
     free_function_dependencies.dedup();
+    let mut named_method_dependencies = semantic
+        .named_method_dependencies()
+        .iter()
+        .map(|event| {
+            let provenance = stable_named_method_endpoint(
+                definitions,
+                event.caller_file,
+                &event.caller_owner_name,
+                &event.caller_method_name,
+            )?;
+            let caller = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
+            let target =
+                match &event.target {
+                    rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
+                        StableNamedMethodDependencyTarget::FreeFunction(
+                            stable_free_function_endpoint(definitions, *file, name)?,
+                        )
+                    }
+                    rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
+                        file,
+                        owner_name,
+                        method_name,
+                    } => StableNamedMethodDependencyTarget::NamedMethod(
+                        stable_named_method_endpoint(definitions, *file, owner_name, method_name)?,
+                    ),
+                };
+            Ok(StableNamedMethodDependency { caller, target })
+        })
+        .collect::<Result<Vec<_>, CompileErrors>>()?;
+    named_method_dependencies.sort();
+    named_method_dependencies.dedup();
+    let mut named_destructor_dependencies = semantic
+        .named_destructor_dependencies()
+        .iter()
+        .map(|event| {
+            let provenance = stable_named_destructor_endpoint(
+                definitions,
+                event.caller_file,
+                &event.caller_owner_name,
+            )?;
+            let caller = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
+            let target =
+                match &event.target {
+                    rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
+                        StableNamedMethodDependencyTarget::FreeFunction(
+                            stable_free_function_endpoint(definitions, *file, name)?,
+                        )
+                    }
+                    rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
+                        file,
+                        owner_name,
+                        method_name,
+                    } => StableNamedMethodDependencyTarget::NamedMethod(
+                        stable_named_method_endpoint(definitions, *file, owner_name, method_name)?,
+                    ),
+                };
+            Ok(StableNamedDestructorDependency { caller, target })
+        })
+        .collect::<Result<Vec<_>, CompileErrors>>()?;
+    named_destructor_dependencies.sort();
+    named_destructor_dependencies.dedup();
+    let mut implicit_named_destructor_dependencies = semantic
+        .implicit_named_destructor_dependencies()
+        .iter()
+        .map(|event| {
+            Ok(StableImplicitNamedDestructorDependency {
+                source: stable_implicit_drop_source_endpoint(semantic, definitions, &event.source)?,
+                target: stable_named_destructor_endpoint(
+                    definitions,
+                    event.target_file,
+                    &event.target_owner_name,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, CompileErrors>>()?;
+    implicit_named_destructor_dependencies.sort();
+    implicit_named_destructor_dependencies.dedup();
+    let mut declaration_type_dependencies = semantic
+        .declaration_type_dependencies()
+        .iter()
+        .map(|event| {
+            let provenance = stable_declaration_source_endpoint(definitions, event)?;
+            Ok(StableDeclarationTypeDependency {
+                source: match event.source_token {
+                    Some(token) => stable_token_endpoint(semantic, token, &provenance)?,
+                    None => provenance,
+                },
+                target: stable_named_type_endpoint(definitions, event)?,
+                kind: event.dependency_kind,
+            })
+        })
+        .collect::<Result<Vec<_>, CompileErrors>>()?;
+    declaration_type_dependencies.sort();
+    declaration_type_dependencies.dedup();
     let body_dependencies = bodies
         .iter()
         .map(|body| body.inputs.clone())
@@ -3860,17 +4026,17 @@ fn body_invalidation_manifest(
         .map(|record| record.stable_key().clone())
         .collect::<Vec<_>>();
     let module_imports = stable_module_imports(&imports);
-    SemanticDependencyInputManifest {
+    Ok(SemanticDependencyInputManifest {
         input,
         imports,
         definitions: definition_keys.into(),
         definition_fingerprints: definition_fingerprints.into(),
         module_imports,
         free_function_dependencies: free_function_dependencies.into(),
-        named_method_dependencies: Arc::from([]),
-        named_destructor_dependencies: Arc::from([]),
-        implicit_named_destructor_dependencies: Arc::from([]),
-        declaration_type_dependencies: Arc::from([]),
+        named_method_dependencies: named_method_dependencies.into(),
+        named_destructor_dependencies: named_destructor_dependencies.into(),
+        implicit_named_destructor_dependencies: implicit_named_destructor_dependencies.into(),
+        declaration_type_dependencies: declaration_type_dependencies.into(),
         declaration_type_call_head_dependencies: Arc::from([]),
         builtin_type_call_head_inputs: Arc::from([]),
         named_const_dependencies: Arc::from([]),
@@ -3880,7 +4046,7 @@ fn body_invalidation_manifest(
         dependency_blockers: Arc::from([]),
         definition_universe_complete: true,
         work: SemanticDependencyManifestWork::default(),
-    }
+    })
 }
 
 fn preflight_body_invalidation_manifest(
@@ -7806,6 +7972,160 @@ mod tests {
     }
 
     #[test]
+    fn durable_named_methods_associated_functions_and_destructors_reuse_canonically() {
+        let source = snapshot(
+            &[(
+                45,
+                "/p/main.rue",
+                "main.rue",
+                "fn method_helper(value: i32) -> i32 { value } fn cleanup() {} struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } fn get(borrow self) -> i32 { method_helper(self.value) } } drop fn Resource(self) { cleanup(); } fn main() -> i32 { let resource = Resource.make(42); resource.get() }",
+            )],
+            45,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(cold.work().body_analysis.bodies_attempted, 6);
+        assert_eq!(
+            session
+                .last_successful_body_cache
+                .as_ref()
+                .unwrap()
+                .bodies
+                .len(),
+            6
+        );
+
+        let relocated = snapshot(
+            &[(
+                145,
+                "/relocated/main.rue",
+                "main.rue",
+                "fn method_helper(value: i32) -> i32 { value } fn cleanup() {} struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } fn get(borrow self) -> i32 { method_helper(self.value) } } drop fn Resource(self) { cleanup(); } fn main() -> i32 { let resource = Resource.make(42); resource.get() }",
+            )],
+            145,
+        );
+        session.update(&relocated).into_result().unwrap();
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let reused = session.semantic(&options).unwrap();
+        assert_eq!(reused.work().durable_bodies.candidate_comparisons, 6);
+        assert_eq!(reused.work().durable_bodies.import_attempts, 6);
+        assert_eq!(reused.work().durable_bodies.import_successes, 6);
+        assert_eq!(reused.work().durable_bodies.reused_bodies, 6);
+        assert_eq!(reused.work().body_analysis.bodies_attempted, 0);
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&relocated).into_result().unwrap();
+        let fresh = fresh_session.semantic(&options).unwrap();
+        assert_body_artifact_parity(&reused, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
+
+        let edited = snapshot(
+            &[(
+                145,
+                "/relocated/main.rue",
+                "main.rue",
+                "fn method_helper(value: i32) -> i32 { value } fn cleanup() {} struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } fn get(borrow self) -> i32 { method_helper(self.value) + 1 } } drop fn Resource(self) { cleanup(); } fn main() -> i32 { let resource = Resource.make(42); resource.get() }",
+            )],
+            145,
+        );
+        session.update(&edited).into_result().unwrap();
+        let edited_output = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(edited_output.work().durable_bodies.candidate_comparisons, 6);
+        assert_eq!(edited_output.work().durable_bodies.reused_bodies, 4);
+        assert_eq!(edited_output.work().body_analysis.bodies_attempted, 2);
+        let mut edited_fresh_session = CompilerSession::new();
+        edited_fresh_session.update(&edited).into_result().unwrap();
+        let edited_fresh = edited_fresh_session
+            .semantic(&CompileOptions::default())
+            .unwrap();
+        assert_body_artifact_parity(&edited_output, &edited_fresh);
+        assert_diagnostic_parity(&session, &edited_fresh_session);
+
+        let destructor_edit = snapshot(
+            &[(
+                145,
+                "/relocated/main.rue",
+                "main.rue",
+                "fn method_helper(value: i32) -> i32 { value } fn cleanup() {} struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } fn get(borrow self) -> i32 { method_helper(self.value) + 1 } } drop fn Resource(self) { cleanup(); let _marker = 0; } fn main() -> i32 { let resource = Resource.make(42); resource.get() }",
+            )],
+            145,
+        );
+        session.update(&destructor_edit).into_result().unwrap();
+        let destructor_output = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(destructor_output.work().durable_bodies.reused_bodies, 2);
+        assert_eq!(destructor_output.work().body_analysis.bodies_attempted, 4);
+
+        let helper_edit = snapshot(
+            &[(
+                145,
+                "/relocated/main.rue",
+                "main.rue",
+                "fn method_helper(value: i32) -> i32 { value + 1 } fn cleanup() {} struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } fn get(borrow self) -> i32 { method_helper(self.value) + 1 } } drop fn Resource(self) { cleanup(); let _marker = 0; } fn main() -> i32 { let resource = Resource.make(42); resource.get() }",
+            )],
+            145,
+        );
+        session.update(&helper_edit).into_result().unwrap();
+        let helper_output = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(helper_output.work().durable_bodies.reused_bodies, 3);
+        assert_eq!(helper_output.work().body_analysis.bodies_attempted, 3);
+        let mut helper_fresh_session = CompilerSession::new();
+        helper_fresh_session
+            .update(&helper_edit)
+            .into_result()
+            .unwrap();
+        let helper_fresh = helper_fresh_session
+            .semantic(&CompileOptions::default())
+            .unwrap();
+        assert_body_artifact_parity(&helper_output, &helper_fresh);
+        assert_diagnostic_parity(&session, &helper_fresh_session);
+    }
+
+    #[test]
+    fn nested_layout_change_invalidates_receiver_destructor_and_callers_only() {
+        let source = |inner_type: &str| {
+            let program = if inner_type == "i32" {
+                "struct Inner { value: i32 } struct Outer { inner: Inner, fn consume(self) -> i32 { 0 } } drop fn Outer(self) {} fn unrelated() -> i32 { 7 } fn main() -> i32 { let outer = Outer { inner: Inner { value: 1 } }; outer.consume() + unrelated() }"
+            } else {
+                "struct Inner { value: i64 } struct Outer { inner: Inner, fn consume(self) -> i32 { 0 } } drop fn Outer(self) {} fn unrelated() -> i32 { 7 } fn main() -> i32 { let outer = Outer { inner: Inner { value: 1 } }; outer.consume() + unrelated() }"
+            };
+            snapshot(&[(46, "/p/main.rue", "main.rue", program)], 46)
+        };
+        let original = source("i32");
+        let edited = source("i64");
+        let mut session = CompilerSession::new();
+        session.update(&original).into_result().unwrap();
+        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(cold.work().body_analysis.bodies_attempted, 4);
+        let retained = session.last_successful_body_cache.as_ref().unwrap();
+        assert_eq!(retained.bodies.len(), 4);
+        assert!(
+            retained
+                .manifest
+                .declaration_type_dependencies()
+                .iter()
+                .any(|edge| edge.source.name() == "Outer" && edge.target.name() == "Inner")
+        );
+
+        session.update(&edited).into_result().unwrap();
+        let actual = session.semantic(&CompileOptions::default()).unwrap();
+        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 4);
+        assert_eq!(actual.work().durable_bodies.reused_bodies, 1);
+        assert_eq!(actual.work().durable_bodies.skipped_body_analyses, 1);
+        assert_eq!(actual.work().body_analysis.bodies_attempted, 3);
+        assert_eq!(actual.work().body_analysis.bodies_succeeded, 3);
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&edited).into_result().unwrap();
+        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        assert_body_artifact_parity(&actual, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
+    }
+
+    #[test]
     fn durable_ordinary_body_edit_reuses_unaffected_reachable_body_and_failure_keeps_baseline() {
         let original = snapshot(
             &[(
@@ -7906,6 +8226,127 @@ mod tests {
         fresh_session.update(&source).into_result().unwrap();
         let fresh = fresh_session.semantic(&options).unwrap();
         assert_body_artifact_parity(&output, &fresh);
+        assert_diagnostic_parity(&session, &fresh_session);
+    }
+
+    #[test]
+    fn rejected_named_call_import_leaves_symbol_and_type_epochs_unchanged() {
+        let source = snapshot(
+            &[(
+                63,
+                "/p/main.rue",
+                "main.rue",
+                "struct Value { fn helper() -> i32 { 1 } fn spare() -> i32 { 99 } fn compute(borrow self) -> i32 { Value.helper() + 1 } } fn main() -> i32 { let value = Value {}; value.compute() }",
+            )],
+            63,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.semantic(&CompileOptions::default()).unwrap();
+        assert!(
+            session
+                .last_successful_body_cache
+                .as_ref()
+                .unwrap()
+                .bodies
+                .iter()
+                .all(|body| body.owner().name() != "spare"),
+            "the cold body analysis must not observe the spare callable"
+        );
+        assert!(
+            session
+                .rir_cache
+                .as_ref()
+                .unwrap()
+                .semantic_symbols()
+                .interner()
+                .get("Value::spare")
+                .is_some(),
+            "declaration completion must pre-intern unreachable callable symbols"
+        );
+        let symbols_before = session
+            .rir_cache
+            .as_ref()
+            .unwrap()
+            .semantic_symbols()
+            .interner()
+            .len();
+        let cache = session.last_successful_body_cache.as_mut().unwrap();
+        let mut bodies = cache.bodies.to_vec();
+        let method = bodies
+            .iter_mut()
+            .find(|body| body.owner().kind() == StableDefinitionKind::Method)
+            .unwrap();
+        let mut instructions = method.payload.instructions.to_vec();
+        let call = instructions
+            .iter()
+            .position(|instruction| {
+                matches!(instruction.data, crate::DurableAirInstData::Call { .. })
+            })
+            .unwrap();
+        let crate::DurableAirInstData::Call {
+            function: helper, ..
+        } = &instructions[call].data
+        else {
+            unreachable!();
+        };
+        assert_eq!(helper.name(), "helper");
+        let helper_owner = helper.owner().unwrap();
+        let spare = StableDefinitionKey::for_test(
+            helper.module().clone(),
+            helper.namespace(),
+            StableDefinitionKind::AssociatedFunction,
+            "spare",
+            Some((helper_owner.kind(), Arc::from(helper_owner.name()))),
+        );
+        let crate::DurableAirInstData::Call { function, .. } = &mut instructions[call].data else {
+            unreachable!();
+        };
+        *function = spare;
+        let later = instructions.len() - 1;
+        assert!(later > call);
+        instructions[later].anchor.end = u32::MAX;
+        method.payload.instructions = instructions.into();
+        cache.bodies = bodies.into();
+
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let actual = session.semantic(&options).unwrap();
+        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 3);
+        assert_eq!(actual.work().durable_bodies.import_attempts, 3);
+        assert_eq!(actual.work().durable_bodies.import_successes, 2);
+        assert_eq!(actual.work().durable_bodies.import_failures, 1);
+        assert_eq!(actual.work().durable_bodies.atomic_discards, 1);
+        assert_eq!(actual.work().durable_bodies.reused_bodies, 2);
+        assert_eq!(actual.work().body_analysis.bodies_attempted, 1);
+        assert_eq!(
+            session
+                .rir_cache
+                .as_ref()
+                .unwrap()
+                .semantic_symbols()
+                .interner()
+                .len(),
+            symbols_before
+        );
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session.update(&source).into_result().unwrap();
+        let fresh = fresh_session.semantic(&options).unwrap();
+        assert_eq!(
+            symbols_before,
+            fresh_session
+                .rir_cache
+                .as_ref()
+                .unwrap()
+                .semantic_symbols()
+                .interner()
+                .len()
+        );
+        assert_body_artifact_parity(&actual, &fresh);
+        assert_eq!(actual.type_pool().stats(), fresh.type_pool().stats());
         assert_diagnostic_parity(&session, &fresh_session);
     }
 
@@ -8405,12 +8846,8 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_constant_nominal_and_destructor_provenance_fails_closed() {
-        let cases = [
-            "const n: i32 = 1; fn main() -> i32 { n }",
-            "struct Point { x: i32 } fn make() -> Point { Point { x: 1 } } fn main() -> i32 { make().x }",
-            "struct Loud { x: i32 } drop fn Loud(self) {} fn main() -> i32 { let value = Loud { x: 1 }; value.x }",
-        ];
+    fn unsupported_constant_provenance_fails_closed() {
+        let cases = ["const n: i32 = 1; fn main() -> i32 { n }"];
         for (index, program) in cases.into_iter().enumerate() {
             let id = u32::try_from(120 + index).unwrap();
             let source = snapshot(&[(id, "/p/main.rue", "main.rue", program)], id);

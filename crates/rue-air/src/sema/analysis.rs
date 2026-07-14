@@ -154,8 +154,9 @@ fn import_staged_ordinary_body(
         })
     }
 
-    // Intrinsic symbols are required to pre-exist. This keeps every importer
-    // mutation inside the scratch type pool until the entire body validates.
+    // Intrinsic and declaration-derived callable symbols are required to
+    // pre-exist. This keeps importer mutation inside the scratch type pool
+    // until the entire body validates.
     if candidate.body.instructions.iter().any(|inst| matches!(&inst.data,
         crate::SemanticBodyInstData::Intrinsic { name, .. } if sema.interner.get(name.as_ref()).is_none())) {
         return Err(BF::Semantic(F::MissingFunction));
@@ -192,16 +193,42 @@ fn import_staged_ordinary_body(
                 .ok_or(BF::Semantic(F::MissingNominal))
         },
         |identity| {
-            if identity.kind != DK::FreeFunction {
-                return Err(BF::Semantic(F::MissingFunction));
-            }
             let name = sema
                 .interner
                 .get(identity.name.as_ref())
                 .ok_or(BF::Semantic(F::MissingFunction))?;
-            sema.functions_by_file_name
-                .get(&(FileId::new(identity.file_id), name))
+            if identity.kind == DK::FreeFunction {
+                return sema
+                    .functions_by_file_name
+                    .get(&(FileId::new(identity.file_id), name))
+                    .copied()
+                    .ok_or(BF::Semantic(F::MissingFunction));
+            }
+            let owner = identity
+                .owner
+                .as_deref()
+                .and_then(|owner| sema.interner.get(owner))
+                .ok_or(BF::Semantic(F::MissingFunction))?;
+            let struct_id = sema
+                .structs_by_file_name
+                .get(&(FileId::new(identity.file_id), owner))
                 .copied()
+                .ok_or(BF::Semantic(F::MissingFunction))?;
+            let info = sema
+                .method_info((struct_id, name))
+                .ok_or(BF::Semantic(F::MissingFunction))?;
+            let expected = match identity.kind {
+                DK::Method => info.has_self && identity.name.as_ref() != "__drop",
+                DK::AssociatedFunction => !info.has_self,
+                DK::Destructor => info.has_self && identity.name.as_ref() == "__drop",
+                _ => false,
+            };
+            if !expected {
+                return Err(BF::Semantic(F::MissingFunction));
+            }
+            let symbol = sema.method_symbol(struct_id, identity.name.as_ref(), info.has_self);
+            sema.interner
+                .get(&symbol)
                 .ok_or(BF::Semantic(F::MissingFunction))
         },
         |name| {
@@ -212,6 +239,31 @@ fn import_staged_ordinary_body(
     )?;
     sema.type_pool = scratch;
     Ok(imported)
+}
+
+fn imported_body_references(
+    sema: &BodySema<'_>,
+    air: &Air,
+) -> (HashSet<Spur>, HashSet<(crate::StructId, Spur)>) {
+    let mut functions = HashSet::new();
+    let mut methods = HashSet::new();
+    for instruction in air.instructions() {
+        let AirInstData::Call { name, .. } = instruction.data else {
+            continue;
+        };
+        if sema.functions.contains_key(&name) {
+            functions.insert(name);
+            continue;
+        }
+        let symbol = sema.interner.resolve(&name);
+        if let Some((key, _)) = sema.methods.iter().find(|entry| {
+            let (&(struct_id, method), info) = *entry;
+            sema.method_symbol(struct_id, sema.interner.resolve(&method), info.has_self) == symbol
+        }) {
+            methods.insert(*key);
+        }
+    }
+    (functions, methods)
 }
 
 #[cfg(test)]
@@ -233,6 +285,7 @@ fn analyze_all_function_bodies_mut(sema: &mut BodySema<'_>) -> MultiErrorResult<
     debug_assert!(sema.const_resolution_in_progress.is_empty());
     debug_assert!(sema.fn_signatures_in_flight.is_empty());
     debug_assert!(sema.source_free_function_signatures_are_complete());
+    intern_named_callable_symbols(sema);
     let bound_source_function_signature_count = sema.functions_by_file_name.len();
 
     // ADR-0045 defines reachability from `main` as the function-body analysis
@@ -260,6 +313,27 @@ fn analyze_all_function_bodies_mut(sema: &mut BodySema<'_>) -> MultiErrorResult<
     }
 
     result
+}
+
+/// Materialize every qualified named callable symbol after declaration
+/// binding, before either fresh analysis or durable import can observe the
+/// body worklist. Hash-map iteration order must not affect Spur allocation.
+fn intern_named_callable_symbols(sema: &BodySema<'_>) {
+    let mut symbols = sema
+        .methods
+        .iter()
+        .filter_map(|(&(struct_id, method), info)| {
+            let owner = sema.type_pool.struct_def(struct_id);
+            (!owner.name.starts_with("__anon_struct_")).then(|| {
+                sema.method_symbol(struct_id, sema.interner.resolve(&method), info.has_self)
+            })
+        })
+        .collect::<Vec<_>>();
+    symbols.sort();
+    symbols.dedup();
+    for symbol in symbols {
+        sema.interner.get_or_intern(&symbol);
+    }
 }
 
 /// Scan analyzed AIR for an `<error>`-typed value that survived analysis with
@@ -1000,19 +1074,8 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                         .ordinary_body_import_strings_installed += imported.strings.len();
                     sema.body_analysis_work.ordinary_bodies_reused += 1;
                     sema.body_analysis_work.ordinary_body_analyses_skipped += 1;
-                    let referenced_fns = imported
-                        .air
-                        .instructions()
-                        .iter()
-                        .filter_map(|inst| match inst.data {
-                            crate::AirInstData::Call { name, .. }
-                                if sema.functions.contains_key(&name) =>
-                            {
-                                Some(name)
-                            }
-                            _ => None,
-                        })
-                        .collect::<HashSet<_>>();
+                    let (referenced_fns, referenced_meths) =
+                        imported_body_references(sema, &imported.air);
                     let mut ordered_referenced_fns =
                         referenced_fns.iter().copied().collect::<Vec<_>>();
                     ordered_referenced_fns
@@ -1081,7 +1144,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                     enqueue_references_sorted(
                         sema.interner,
                         referenced_fns,
-                        HashSet::new(),
+                        referenced_meths,
                         &analyzed_functions,
                         &analyzed_methods,
                         &mut pending_functions,
@@ -1407,6 +1470,124 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
 
             let params = sema.rir.get_params(*params_start, *params_len);
             let full_name = sema.method_symbol(struct_id, &method_name_str, *has_self);
+            let generic = sema
+                .param_arena
+                .comptime(method_info.params)
+                .iter()
+                .copied()
+                .any(|flag| flag);
+            let owner_kind = if *has_self {
+                super::BodyOwnerKind::Method
+            } else {
+                super::BodyOwnerKind::AssociatedFunction
+            };
+            let ordinary_owner = sema.body_owner_token(
+                method_info.span.file_id,
+                &method_name_str,
+                Some(&type_name_str),
+                owner_kind,
+            );
+            if !generic
+                && let Some(candidate) = sema.reusable_ordinary_bodies.remove(&ordinary_owner)
+            {
+                sema.body_analysis_work.ordinary_body_import_attempts += 1;
+                match import_staged_ordinary_body(sema, &candidate, sema.rir.get(*body).span) {
+                    Ok(imported) => {
+                        sema.body_analysis_work.ordinary_body_import_successes += 1;
+                        sema.body_analysis_work
+                            .ordinary_body_import_instructions_installed += imported.air.len();
+                        sema.body_analysis_work
+                            .ordinary_body_import_places_installed += imported.air.places().len();
+                        sema.body_analysis_work
+                            .ordinary_body_import_strings_installed += imported.strings.len();
+                        sema.body_analysis_work.ordinary_bodies_reused += 1;
+                        sema.body_analysis_work.ordinary_body_analyses_skipped += 1;
+                        let (referenced_fns, referenced_meths) =
+                            imported_body_references(sema, &imported.air);
+                        let analyzed = AnalyzedFunction {
+                            name: full_name,
+                            ordinary_owner: Some(ordinary_owner),
+                            implicit_drop_source: Some(
+                                super::ImplicitDropDependencySourceEvent::NamedMethod {
+                                    token: ordinary_owner,
+                                    file: method_info.span.file_id.index(),
+                                    owner_name: type_name_str.clone(),
+                                    method_name: method_name_str.clone(),
+                                },
+                            ),
+                            air: imported.air,
+                            num_locals: imported.num_locals,
+                            num_param_slots: imported.num_param_slots,
+                            param_modes: imported.param_modes,
+                            allow_unreachable_code: imported.allow_unreachable_code,
+                        };
+                        sema.analyzed_body_owners.push(
+                            super::AnalyzedBodyOwnerEvent::NamedMethod {
+                                token: ordinary_owner,
+                                file: method_info.span.file_id.index(),
+                                owner_name: type_name_str.clone(),
+                                method_name: method_name_str.clone(),
+                                generic: false,
+                            },
+                        );
+                        match named_method_dependency_events(
+                            sema,
+                            struct_id,
+                            method_name,
+                            &referenced_fns,
+                            &referenced_meths,
+                        ) {
+                            Ok(events) => {
+                                sema.body_analysis_work.named_method_dependency_events +=
+                                    events.len();
+                                sema.named_method_dependencies.extend(events);
+                            }
+                            Err(error) => {
+                                errors.push(error);
+                                continue;
+                            }
+                        }
+                        sema.body_analysis_work.ordinary_body_exports_attempted += 1;
+                        match sema.export_ordinary_body(
+                            ordinary_owner,
+                            sema.rir.get(*body).span,
+                            &analyzed,
+                            &imported.strings,
+                            &[],
+                        ) {
+                            Ok(export) => {
+                                sema.body_analysis_work.ordinary_body_exports_succeeded += 1;
+                                sema.body_analysis_work
+                                    .ordinary_body_export_instructions_emitted +=
+                                    export.body.instructions.len();
+                                sema.body_analysis_work.ordinary_body_export_places_emitted +=
+                                    export.body.places.len();
+                                sema.body_analysis_work.ordinary_body_export_strings_emitted +=
+                                    export.body.strings.len();
+                                sema.ordinary_body_exports.push(export);
+                            }
+                            Err(_) => {
+                                sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                            }
+                        }
+                        functions_with_strings.push((analyzed, imported.strings));
+                        enqueue_references_sorted(
+                            sema.interner,
+                            referenced_fns,
+                            referenced_meths,
+                            &analyzed_functions,
+                            &analyzed_methods,
+                            &mut pending_functions,
+                            &mut pending_methods,
+                        );
+                        continue;
+                    }
+                    Err(_) => {
+                        sema.body_analysis_work.ordinary_body_import_failures += 1;
+                        sema.body_analysis_work.ordinary_body_import_atomic_discards += 1;
+                    }
+                }
+            }
             sema.body_analysis_work.bodies_attempted += 1;
             let previous_type_observer = sema.declaration_type_observer.replace((
                 method_info.span.file_id,
@@ -1435,12 +1616,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                         file: method_info.span.file_id.index(),
                         owner_name: type_name_str.clone(),
                         method_name: method_name_str.clone(),
-                        generic: sema
-                            .param_arena
-                            .comptime(method_info.params)
-                            .iter()
-                            .copied()
-                            .any(|flag| flag),
+                        generic,
                     });
             let analysis = sema.analyze_method_function(
                 &infer_ctx,
@@ -1476,12 +1652,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                             file: method_info.span.file_id.index(),
                             owner_name: type_name_str.clone(),
                             method_name: method_name_str.clone(),
-                            generic: sema
-                                .param_arena
-                                .comptime(method_info.params)
-                                .iter()
-                                .copied()
-                                .any(|flag| flag),
+                            generic,
                         });
                     analyzed.ordinary_owner = Some(sema.body_owner_token(
                         method_info.span.file_id,
@@ -1493,6 +1664,31 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                             super::BodyOwnerKind::AssociatedFunction
                         },
                     ));
+                    if !generic {
+                        sema.body_analysis_work.ordinary_body_exports_attempted += 1;
+                        match sema.export_ordinary_body(
+                            ordinary_owner,
+                            sema.rir.get(*body).span,
+                            &analyzed,
+                            &local_strings,
+                            &warnings,
+                        ) {
+                            Ok(export) => {
+                                sema.body_analysis_work.ordinary_body_exports_succeeded += 1;
+                                sema.body_analysis_work
+                                    .ordinary_body_export_instructions_emitted +=
+                                    export.body.instructions.len();
+                                sema.body_analysis_work.ordinary_body_export_places_emitted +=
+                                    export.body.places.len();
+                                sema.body_analysis_work.ordinary_body_export_strings_emitted +=
+                                    export.body.strings.len();
+                                sema.ordinary_body_exports.push(export);
+                            }
+                            Err(_) => {
+                                sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                            }
+                        }
+                    }
                     analyzed.implicit_drop_source =
                         Some(super::ImplicitDropDependencySourceEvent::NamedMethod {
                             token: sema.body_owner_token(
@@ -1585,8 +1781,116 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 let struct_type = Type::new_struct(struct_id);
                 let full_name = sema.destructor_symbol(struct_id);
 
-                sema.body_analysis_work.bodies_attempted += 1;
                 let owner_name = sema.type_pool.struct_def(struct_id).name.clone();
+                let ordinary_owner = sema.body_owner_token(
+                    destructor.span.file_id,
+                    &owner_name,
+                    Some(&owner_name),
+                    super::BodyOwnerKind::Destructor,
+                );
+                if let Some(candidate) = sema.reusable_ordinary_bodies.remove(&ordinary_owner) {
+                    sema.body_analysis_work.ordinary_body_import_attempts += 1;
+                    match import_staged_ordinary_body(
+                        sema,
+                        &candidate,
+                        sema.rir.get(destructor.body).span,
+                    ) {
+                        Ok(imported) => {
+                            sema.body_analysis_work.ordinary_body_import_successes += 1;
+                            sema.body_analysis_work
+                                .ordinary_body_import_instructions_installed += imported.air.len();
+                            sema.body_analysis_work
+                                .ordinary_body_import_places_installed +=
+                                imported.air.places().len();
+                            sema.body_analysis_work
+                                .ordinary_body_import_strings_installed += imported.strings.len();
+                            sema.body_analysis_work.ordinary_bodies_reused += 1;
+                            sema.body_analysis_work.ordinary_body_analyses_skipped += 1;
+                            let (referenced_fns, referenced_meths) =
+                                imported_body_references(sema, &imported.air);
+                            let analyzed = AnalyzedFunction {
+                                name: full_name,
+                                ordinary_owner: Some(ordinary_owner),
+                                implicit_drop_source: Some(
+                                    super::ImplicitDropDependencySourceEvent::NamedDestructor {
+                                        token: ordinary_owner,
+                                        file: destructor.span.file_id.index(),
+                                        owner_name: owner_name.clone(),
+                                    },
+                                ),
+                                air: imported.air,
+                                num_locals: imported.num_locals,
+                                num_param_slots: imported.num_param_slots,
+                                param_modes: imported.param_modes,
+                                allow_unreachable_code: imported.allow_unreachable_code,
+                            };
+                            sema.analyzed_body_owners.push(
+                                super::AnalyzedBodyOwnerEvent::NamedDestructor {
+                                    token: ordinary_owner,
+                                    file: destructor.span.file_id.index(),
+                                    owner_name: owner_name.clone(),
+                                },
+                            );
+                            match named_destructor_dependency_events(
+                                sema,
+                                struct_id,
+                                destructor.span,
+                                &referenced_fns,
+                                &referenced_meths,
+                            ) {
+                                Ok(events) => {
+                                    sema.body_analysis_work.named_destructor_dependency_events +=
+                                        events.len();
+                                    sema.named_destructor_dependencies.extend(events);
+                                }
+                                Err(error) => {
+                                    errors.push(error);
+                                    continue;
+                                }
+                            }
+                            sema.body_analysis_work.ordinary_body_exports_attempted += 1;
+                            match sema.export_ordinary_body(
+                                ordinary_owner,
+                                sema.rir.get(destructor.body).span,
+                                &analyzed,
+                                &imported.strings,
+                                &[],
+                            ) {
+                                Ok(export) => {
+                                    sema.body_analysis_work.ordinary_body_exports_succeeded += 1;
+                                    sema.body_analysis_work
+                                        .ordinary_body_export_instructions_emitted +=
+                                        export.body.instructions.len();
+                                    sema.body_analysis_work.ordinary_body_export_places_emitted +=
+                                        export.body.places.len();
+                                    sema.body_analysis_work.ordinary_body_export_strings_emitted +=
+                                        export.body.strings.len();
+                                    sema.ordinary_body_exports.push(export);
+                                }
+                                Err(_) => {
+                                    sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                                }
+                            }
+                            functions_with_strings.push((analyzed, imported.strings));
+                            enqueue_references_sorted(
+                                sema.interner,
+                                referenced_fns,
+                                referenced_meths,
+                                &analyzed_functions,
+                                &analyzed_methods,
+                                &mut pending_functions,
+                                &mut pending_methods,
+                            );
+                            continue;
+                        }
+                        Err(_) => {
+                            sema.body_analysis_work.ordinary_body_import_failures += 1;
+                            sema.body_analysis_work.ordinary_body_import_atomic_discards += 1;
+                        }
+                    }
+                }
+
+                sema.body_analysis_work.bodies_attempted += 1;
                 let previous_type_observer = sema.declaration_type_observer.replace((
                     destructor.span.file_id,
                     owner_name.clone(),
@@ -1645,6 +1949,29 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                             Some(&sema.type_pool.struct_def(struct_id).name),
                             super::BodyOwnerKind::Destructor,
                         ));
+                        sema.body_analysis_work.ordinary_body_exports_attempted += 1;
+                        match sema.export_ordinary_body(
+                            ordinary_owner,
+                            sema.rir.get(destructor.body).span,
+                            &analyzed,
+                            &local_strings,
+                            &warnings,
+                        ) {
+                            Ok(export) => {
+                                sema.body_analysis_work.ordinary_body_exports_succeeded += 1;
+                                sema.body_analysis_work
+                                    .ordinary_body_export_instructions_emitted +=
+                                    export.body.instructions.len();
+                                sema.body_analysis_work.ordinary_body_export_places_emitted +=
+                                    export.body.places.len();
+                                sema.body_analysis_work.ordinary_body_export_strings_emitted +=
+                                    export.body.strings.len();
+                                sema.ordinary_body_exports.push(export);
+                            }
+                            Err(_) => {
+                                sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                            }
+                        }
                         analyzed.implicit_drop_source =
                             Some(super::ImplicitDropDependencySourceEvent::NamedDestructor {
                                 token: sema.body_owner_token(
