@@ -80,11 +80,12 @@ exit_code = 0
 [[case]]
 name = "i64_div_min32_neg1_no_sigfpe"
 files = [{ path = "main.rue", source = """
-fn main() -> i64 {
+fn divide() -> i64 {
     let a: i64 = 2147483648;
     let b: i64 = -1;
     a / b          // -2147483648; low byte 0
 }
+fn main() -> i32 { divide(); 0 }
 """ }]
 exit_code = 0
 

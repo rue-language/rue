@@ -3536,19 +3536,39 @@ mod tests {
     #[test]
     fn signature_target_and_failed_body_changes_fail_closed_and_recovery_reuses() {
         let base = snapshot(
-            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn value() -> i32 { 1 } fn main() { value(); }",
+            )],
             1,
         );
         let signature = snapshot(
-            &[(1, "/p/main.rue", "main.rue", "fn main() -> i64 { 1 }")],
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn value() -> i64 { 1 } fn main() { value(); }",
+            )],
             1,
         );
         let broken_body = snapshot(
-            &[(1, "/p/main.rue", "main.rue", "fn main() -> i64 { missing }")],
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn value() -> i64 { missing } fn main() { value(); }",
+            )],
             1,
         );
         let recovered = snapshot(
-            &[(1, "/p/main.rue", "main.rue", "fn main() -> i64 { 2 }")],
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn value() -> i64 { 2 } fn main() { value(); }",
+            )],
             1,
         );
         let options = CompileOptions::default();
@@ -3568,7 +3588,7 @@ mod tests {
             recovered.work().binding.declaration_resolution_invocations,
             0
         );
-        assert_eq!(recovered.work().declaration_reuse.durable_records_reused, 1);
+        assert_eq!(recovered.work().declaration_reuse.durable_records_reused, 2);
 
         let mut other_target = options.clone();
         other_target.target = *Target::all()
@@ -4363,12 +4383,15 @@ mod tests {
             session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
                 .unwrap()
-                .definition_fingerprints()[0]
+                .definition_fingerprints()
+                .iter()
+                .find(|fingerprint| fingerprint.key.name() == "value")
+                .expect("value definition fingerprint")
                 .clone()
         }
 
-        let original = fingerprints("fn main() -> i32 { 0 }");
-        let body_changed = fingerprints("fn main() -> i32 { 1 }");
+        let original = fingerprints("fn value() -> i32 { 0 } fn main() { value(); }");
+        let body_changed = fingerprints("fn value() -> i32 { 1 } fn main() { value(); }");
         assert_eq!(original.key, body_changed.key);
         assert_eq!(original.declaration, body_changed.declaration);
         assert_eq!(original.signature, body_changed.signature);
@@ -4381,7 +4404,7 @@ mod tests {
             StableDefinitionFingerprintPrecision::SignatureAndBody
         );
 
-        let visibility_changed = fingerprints("pub fn main() -> i32 { 0 }");
+        let visibility_changed = fingerprints("pub fn value() -> i32 { 0 } fn main() { value(); }");
         assert_eq!(original.key, visibility_changed.key);
         assert_ne!(original.declaration, visibility_changed.declaration);
         assert_ne!(original.signature, visibility_changed.signature);
@@ -4390,7 +4413,7 @@ mod tests {
             visibility_changed.body_or_initializer
         );
 
-        let signature_changed = fingerprints("fn main() -> i64 { 0 }");
+        let signature_changed = fingerprints("fn value() -> i64 { 0 } fn main() { value(); }");
         assert_eq!(original.declaration, signature_changed.declaration);
         assert_ne!(original.signature, signature_changed.signature);
         assert_eq!(

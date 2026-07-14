@@ -476,7 +476,7 @@ fn place_write_contracts_precede_rhs_model_gaps() {
             outer.inner.value = @random_u32();
             outer.inner.value
         }
-        fn main() -> u32 { write() }";
+        fn main() { write(); }";
 
     let gap = expect_unsupported(SOURCE);
     assert_eq!(
@@ -589,7 +589,7 @@ fn place_read_base_contract_precedes_index_model_gap() {
             let values: [u32; 2] = [1, 2];
             values[@random_u32()]
         }
-        fn main() -> u32 { read() }";
+        fn main() { read(); }";
 
     let gap = expect_unsupported(SOURCE);
     assert_eq!(
@@ -748,7 +748,7 @@ fn whole_place_write_requires_exact_type_and_writable_storage() {
             value = @random_u32();
             value
         }
-        fn main() -> u32 { write(1) }";
+        fn main() { write(1); }";
 
     let gap = expect_unsupported(SOURCE);
     assert_eq!(
@@ -834,33 +834,34 @@ fn whole_place_write_requires_exact_type_and_writable_storage() {
 #[test]
 fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
     const SOURCE: &str = "fn take(borrow value: str) -> u64 { value.len() }
-        fn main() -> u64 {
+        fn probe() -> u64 {
             let value: Str(2) = \"hi\";
             let other: Str(3) = \"hey\";
             take(borrow value) + other.len()
-        }";
+        }
+        fn main() { probe(); }";
     let mut preview_features = PreviewFeatures::new();
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
     let mut state = query_cfg_state_with_preview_features(SOURCE, &preview_features)
         .expect("whole PlaceRead probe must compile");
-    let main_index = state
+    let probe_index = state
         .functions
         .iter()
-        .position(|function| function.cfg.fn_name() == "main")
-        .expect("main CFG");
-    let other_fixed_type = state.functions[main_index]
+        .position(|function| function.cfg.fn_name() == "probe")
+        .expect("probe CFG");
+    let other_fixed_type = state.functions[probe_index]
         .cfg
         .blocks()
         .iter()
         .flat_map(|block| block.insts.iter().copied())
-        .map(|value| state.functions[main_index].cfg.get_inst(value).ty)
+        .map(|value| state.functions[probe_index].cfg.get_inst(value).ty)
         .find(|ty| {
             ty.as_struct()
                 .is_some_and(|struct_id| state.type_pool.struct_def(struct_id).name == "Str(3)")
         })
         .expect("Str(3) parameter type");
     let (read_value, original_place, read_type) = {
-        let cfg = &state.functions[main_index].cfg;
+        let cfg = &state.functions[probe_index].cfg;
         cfg.blocks()
             .iter()
             .flat_map(|block| block.insts.iter().copied())
@@ -875,7 +876,7 @@ fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
             .expect("Str(N)-to-str whole PlaceRead")
     };
     {
-        let cfg = &state.functions[main_index].cfg;
+        let cfg = &state.functions[probe_index].cfg;
         let interp = Interp {
             state: &state,
             stdout: String::new(),
@@ -904,7 +905,7 @@ fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
         ));
     }
 
-    state.functions[main_index]
+    state.functions[probe_index]
         .cfg
         .get_inst_mut(read_value)
         .data = CfgInstData::PlaceRead {
@@ -913,7 +914,7 @@ fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
             ..original_place
         },
     };
-    let cfg = &state.functions[main_index].cfg;
+    let cfg = &state.functions[probe_index].cfg;
     let mut interp = Interp {
         state: &state,
         stdout: String::new(),

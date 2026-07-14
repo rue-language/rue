@@ -64,6 +64,63 @@ mod tests {
     }
 
     #[test]
+    fn main_rejects_runtime_parameters() {
+        let errors = compile_to_air("fn main(value: i32) -> i32 { value }")
+            .expect_err("a runtime parameter would violate the entry ABI");
+        assert!(errors.iter().any(|error| matches!(
+            error.kind,
+            ErrorKind::InvalidMainSignature {
+                reason: "`main` must not declare parameters"
+            }
+        )));
+        assert!(errors.iter().all(|error| error.has_span()));
+    }
+
+    #[test]
+    fn main_rejects_comptime_parameters() {
+        let errors = compile_to_air("fn main(comptime T: type) -> i32 { 0 }")
+            .expect_err("a generic main cannot be specialized by the runtime");
+        assert!(errors.iter().any(|error| matches!(
+            error.kind,
+            ErrorKind::InvalidMainSignature {
+                reason: "`main` must not declare parameters"
+            }
+        )));
+    }
+
+    #[test]
+    fn main_rejects_non_abi_return_type() {
+        let errors = compile_to_air("fn main() -> bool { true }")
+            .expect_err("the runtime cannot consume a bool return value");
+        assert!(errors.iter().any(|error| matches!(
+            error.kind,
+            ErrorKind::InvalidMainSignature {
+                reason: "`main` must return `i32` or `()`"
+            }
+        )));
+    }
+
+    #[test]
+    fn main_rejects_aggregate_return_type() {
+        let errors =
+            compile_to_air("struct Exit { code: i32 } fn main() -> Exit { Exit { code: 0 } }")
+                .expect_err("the runtime cannot consume an aggregate return value");
+        assert!(errors.iter().any(|error| matches!(
+            error.kind,
+            ErrorKind::InvalidMainSignature {
+                reason: "`main` must return `i32` or `()`"
+            }
+        )));
+    }
+
+    #[test]
+    fn main_accepts_i32_and_unit_return_types() {
+        assert!(compile_to_air("fn main() -> i32 { 0 }").is_ok());
+        assert!(compile_to_air("fn main() {}").is_ok());
+        assert!(compile_to_air("fn main() -> () {}").is_ok());
+    }
+
+    #[test]
     fn byref_arguments_reject_non_places_during_air_analysis() {
         let cases = [
             (
@@ -390,10 +447,22 @@ mod tests {
 
     #[test]
     fn strbuf_literal_body_uses_explicit_builtin_identity_and_imports_fresh() {
-        let source = "fn main() -> StrBuf { \"hello\" }";
+        let source = "fn make() -> StrBuf { \"hello\" } fn main() { make(); }";
         let output = compile_to_air(source).unwrap();
-        assert_eq!(output.ordinary_body_exports.len(), 1);
-        let body = &output.ordinary_body_exports[0].body;
+        assert_eq!(output.ordinary_body_exports.len(), 2);
+        let body = output
+            .ordinary_body_exports
+            .iter()
+            .map(|export| &export.body)
+            .find(|body| {
+                matches!(
+                    &body.return_type,
+                    crate::SemanticImportType::BuiltinNominal { name, kind }
+                        if name.as_ref() == "StrBuf"
+                            && *kind == crate::SemanticImportNominalKind::Struct
+                )
+            })
+            .expect("reachable StrBuf-returning helper export");
         assert!(matches!(
             &body.return_type,
             crate::SemanticImportType::BuiltinNominal { name, kind }
@@ -421,7 +490,13 @@ mod tests {
         assert_eq!(imported.strings, vec!["hello"]);
         assert_eq!(
             imported.air.return_type(),
-            output.functions[0].air.return_type()
+            output
+                .functions
+                .iter()
+                .find(|function| function.name == "make")
+                .unwrap()
+                .air
+                .return_type()
         );
     }
 
@@ -1669,16 +1744,22 @@ mod tests {
     fn test_variable_shadowing_different_type() {
         // Variable shadowing with a different type should work
         let output = compile_to_air(
-            "fn main() -> bool {
+            "fn shadow() -> bool {
                 let x = 10;
                 let x = true;  // Shadow x with a different type
                 x
-            }",
+            }
+            fn main() -> i32 { if shadow() { 0 } else { 1 } }",
         )
         .unwrap();
 
-        assert_eq!(output.functions[0].num_locals, 2);
-        assert_eq!(output.functions[0].air.return_type(), Type::BOOL);
+        let shadow = output
+            .functions
+            .iter()
+            .find(|function| function.name == "shadow")
+            .unwrap();
+        assert_eq!(shadow.num_locals, 2);
+        assert_eq!(shadow.air.return_type(), Type::BOOL);
     }
 
     #[test]
@@ -1946,44 +2027,73 @@ mod tests {
     fn test_string_len_method() {
         // String.len() should return u64
         let output = compile_to_air(
-            "fn main() -> u64 {
+            "fn length() -> u64 {
                 let s = \"hello\";
                 s.len()
-            }",
+            }
+            fn main() -> i32 { if length() == 5 { 0 } else { 1 } }",
         )
         .unwrap();
 
-        assert_eq!(output.functions[0].air.return_type(), Type::U64);
+        assert_eq!(
+            output
+                .functions
+                .iter()
+                .find(|function| function.name == "length")
+                .unwrap()
+                .air
+                .return_type(),
+            Type::U64
+        );
     }
 
     #[test]
     fn test_string_is_empty_method() {
         // String.is_empty() should return bool
         let output = compile_to_air(
-            "fn main() -> bool {
+            "fn empty() -> bool {
                 let s = \"hello\";
                 s.is_empty()
-            }",
+            }
+            fn main() -> i32 { if empty() { 0 } else { 1 } }",
         )
         .unwrap();
 
-        assert_eq!(output.functions[0].air.return_type(), Type::BOOL);
+        assert_eq!(
+            output
+                .functions
+                .iter()
+                .find(|function| function.name == "empty")
+                .unwrap()
+                .air
+                .return_type(),
+            Type::BOOL
+        );
     }
 
     #[test]
     fn test_string_literal_type_inference() {
         // String literal should have type String
         let output = compile_to_air(
-            "fn main() -> bool {
+            "fn has_content() -> bool {
                 let s = \"hello\";
                 let t = \"world\";
                 s.is_empty()
-            }",
+            }
+            fn main() -> i32 { if has_content() { 0 } else { 1 } }",
         )
         .unwrap();
 
         // Should have local storage for two string variables
-        assert!(output.functions[0].num_locals >= 2);
+        assert!(
+            output
+                .functions
+                .iter()
+                .find(|function| function.name == "has_content")
+                .unwrap()
+                .num_locals
+                >= 2
+        );
     }
 
     // =========================================================================
@@ -2072,36 +2182,68 @@ mod tests {
     fn test_integer_literal_infers_from_context() {
         // Integer literal should infer type from context
         let output = compile_to_air(
-            "fn main() -> i64 {
+            "fn value() -> i64 {
                 let x: i64 = 42;
                 x
-            }",
+            }
+            fn main() -> i32 { if value() == 42 { 0 } else { 1 } }",
         )
         .unwrap();
 
-        assert_eq!(output.functions[0].air.return_type(), Type::I64);
+        assert_eq!(
+            output
+                .functions
+                .iter()
+                .find(|function| function.name == "value")
+                .unwrap()
+                .air
+                .return_type(),
+            Type::I64
+        );
     }
 
     #[test]
     fn test_integer_literal_infers_from_return_type() {
         // Integer literal should infer type from function return type
-        let output = compile_to_air("fn main() -> u8 { 42 }").unwrap();
+        let output = compile_to_air(
+            "fn value() -> u8 { 42 } fn main() -> i32 { if value() == 42 { 0 } else { 1 } }",
+        )
+        .unwrap();
 
-        assert_eq!(output.functions[0].air.return_type(), Type::U8);
+        assert_eq!(
+            output
+                .functions
+                .iter()
+                .find(|function| function.name == "value")
+                .unwrap()
+                .air
+                .return_type(),
+            Type::U8
+        );
     }
 
     #[test]
     fn test_integer_literal_infers_from_binary_op() {
         // Integer literal should infer type from binary operation context
         let output = compile_to_air(
-            "fn main() -> i64 {
+            "fn value() -> i64 {
                 let x: i64 = 10;
                 x + 5  // 5 should infer to i64
-            }",
+            }
+            fn main() -> i32 { if value() == 15 { 0 } else { 1 } }",
         )
         .unwrap();
 
-        assert_eq!(output.functions[0].air.return_type(), Type::I64);
+        assert_eq!(
+            output
+                .functions
+                .iter()
+                .find(|function| function.name == "value")
+                .unwrap()
+                .air
+                .return_type(),
+            Type::I64
+        );
     }
 
     // =========================================================================

@@ -14,10 +14,11 @@ description = "A builtin method-call result must anchor the type of an integer l
 [[case]]
 name = "len_plus_literal"
 files = [{ path = "main.rue", source = """
-fn main() -> u64 {
+fn length_plus_one() -> u64 {
     let s = "hello";
     s.len() + 1
 }
+fn main() -> i32 { if length_plus_one() == 6 { 6 } else { 0 } }
 """ }]
 exit_code = 6
 
@@ -44,11 +45,12 @@ exit_code = 9
 [[case]]
 name = "len_mul_literal_bound_to_local"
 files = [{ path = "main.rue", source = """
-fn main() -> u64 {
+fn doubled_length() -> u64 {
     let s = "abc";
     let n = s.len() * 2;
     n
 }
+fn main() -> i32 { if doubled_length() == 6 { 6 } else { 0 } }
 """ }]
 exit_code = 6
 

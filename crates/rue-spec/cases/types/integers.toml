@@ -12,7 +12,7 @@ description = "Signed and unsigned integer types: i8, i16, i32, i64, u8, u16, u3
 [[case]]
 name = "{type}_return"
 spec = ["3.1:1"]
-source = "fn main() -> {type} { {value} }"
+source = "fn value() -> {type} { {value} } fn main() -> i32 { if value() == {value} { {value} } else { 0 } }"
 params = [
   { type = "i8", value = "42", exit_code = 42, spec_extra = ["3.1:2"] },
   { type = "i16", value = "100", exit_code = 100, spec_extra = ["3.1:3"] },
@@ -27,7 +27,7 @@ params = [
 [[case]]
 name = "{type}_zero"
 spec = ["3.1:1"]
-source = "fn main() -> {type} { 0 }"
+source = "fn value() -> {type} { 0 } fn main() -> i32 { value(); 0 }"
 exit_code = 0
 params = [
   { type = "i8", spec_extra = ["3.1:2"] },
@@ -44,10 +44,11 @@ params = [
 name = "{type}_variable"
 spec = ["3.1:1"]
 source = """
-fn main() -> {type} {
+fn value() -> {type} {
     let x: {type} = {value};
     x
 }
+fn main() -> i32 { if value() == {value} { {value} } else { 0 } }
 """
 params = [
   { type = "i8", value = "50", exit_code = 50, spec_extra = ["3.1:2"] },
@@ -58,25 +59,26 @@ params = [
 [[case]]
 name = "i8_max_positive"
 spec = ["3.1:2"]
-source = "fn main() -> i8 { 127 }"
+source = "fn value() -> i8 { 127 } fn main() -> i32 { if value() == 127 { 127 } else { 0 } }"
 exit_code = 127
 
 [[case]]
 name = "i8_arithmetic"
 spec = ["3.1:1", "3.1:2"]
 source = """
-fn main() -> i8 {
+fn value() -> i8 {
     let a: i8 = 10;
     let b: i8 = 5;
     a + b
 }
+fn main() -> i32 { if value() == 15 { 15 } else { 0 } }
 """
 exit_code = 15
 
 [[case]]
 name = "u8_max"
 spec = ["3.1:9"]
-source = "fn main() -> u8 { 255 }"
+source = "fn value() -> u8 { 255 } fn main() -> i32 { if value() == 255 { 255 } else { 0 } }"
 exit_code = 255
 
 # =============================================================================
@@ -176,10 +178,11 @@ error_contains = "[E0206]"
 spec = ["3.1:1"]
 compile_fail = true
 source = """
-fn main() -> {to} {
+fn mismatch() -> {to} {
     let x: {from} = 42;
     x
 }
+fn main() { mismatch(); }
 """
 params = [
   { from = "i8", to = "i32" },
@@ -195,10 +198,11 @@ name = "{type}_overflow_addition"
 spec = ["3.1:6"]
 runtime_error = "integer overflow"
 source = """
-fn main() -> {type} {
+fn overflow() -> {type} {
     let x: {type} = {max};
     x + 1
 }
+fn main() { overflow(); }
 """
 params = [
   { type = "i8", max = "127" },
@@ -210,10 +214,11 @@ name = "{type}_overflow_subtraction"
 spec = ["3.1:6"]
 runtime_error = "integer overflow"
 source = """
-fn main() -> {type} {
+fn overflow() -> {type} {
     let x: {type} = {min};
     x - 1
 }
+fn main() { overflow(); }
 """
 params = [
   { type = "i8", min = "-128" },
@@ -224,10 +229,11 @@ params = [
 name = "i8_overflow_multiplication"
 spec = ["3.1:6"]
 source = """
-fn main() -> i8 {
+fn overflow() -> i8 {
     let x: i8 = 16;
     x * 16
 }
+fn main() -> i32 { overflow(); 0 }
 """
 runtime_error = "integer overflow"
 
@@ -246,11 +252,12 @@ runtime_error = "integer overflow"
 name = "i64_overflow_addition"
 spec = ["3.1:6"]
 source = """
-fn main() -> i64 {
+fn overflow() -> i64 {
     let x: i64 = 4611686018427387903;
     let y: i64 = x + x;
     y + x
 }
+fn main() -> i32 { overflow(); 0 }
 """
 runtime_error = "integer overflow"
 
@@ -258,11 +265,12 @@ runtime_error = "integer overflow"
 name = "i64_overflow_subtraction"
 spec = ["3.1:6"]
 source = """
-fn main() -> i64 {
+fn overflow() -> i64 {
     let x: i64 = -4611686018427387903;
     let y: i64 = x + x;
     y + x
 }
+fn main() -> i32 { overflow(); 0 }
 """
 runtime_error = "integer overflow"
 
@@ -270,10 +278,11 @@ runtime_error = "integer overflow"
 name = "i64_overflow_multiplication"
 spec = ["3.1:6"]
 source = """
-fn main() -> i64 {
+fn overflow() -> i64 {
     let x: i64 = 3037000500;
     x * x
 }
+fn main() -> i32 { overflow(); 0 }
 """
 runtime_error = "integer overflow"
 
@@ -286,10 +295,11 @@ name = "{type}_overflow_addition"
 spec = ["3.1:13"]
 runtime_error = "integer overflow"
 source = """
-fn main() -> {type} {
+fn overflow() -> {type} {
     let x: {type} = {max};
     x + 1
 }
+fn main() { overflow(); }
 """
 params = [
   { type = "u8", max = "255" },
@@ -301,11 +311,12 @@ params = [
 name = "u8_overflow_addition_rhs"
 spec = ["3.1:13"]
 source = """
-fn main() -> u8 {
+fn overflow() -> u8 {
     let x: u8 = 200;
     let y: u8 = 100;
     x + y
 }
+fn main() -> i32 { overflow(); 0 }
 """
 runtime_error = "integer overflow"
 
@@ -314,10 +325,11 @@ name = "{type}_overflow_subtraction"
 spec = ["3.1:13"]
 runtime_error = "integer overflow"
 source = """
-fn main() -> {type} {
+fn overflow() -> {type} {
     let x: {type} = 0;
     x - 1
 }
+fn main() { overflow(); }
 """
 params = [
   { type = "u8" },
@@ -331,10 +343,11 @@ name = "{type}_overflow_multiplication"
 spec = ["3.1:13"]
 runtime_error = "integer overflow"
 source = """
-fn main() -> {type} {
+fn overflow() -> {type} {
     let x: {type} = {value};
     x * {value}
 }
+fn main() { overflow(); }
 """
 params = [
   { type = "u8", value = "16" },
@@ -345,11 +358,12 @@ params = [
 name = "u64_overflow_addition"
 spec = ["3.1:13"]
 source = """
-fn main() -> u64 {
+fn overflow() -> u64 {
     let x: u64 = 9223372036854775807;
     let y: u64 = x + x;
     y + x
 }
+fn main() -> i32 { overflow(); 0 }
 """
 runtime_error = "integer overflow"
 
@@ -361,10 +375,11 @@ runtime_error = "integer overflow"
 name = "{type}_near_max_no_overflow"
 spec = ["3.1:6"]
 source = """
-fn main() -> {type} {
+fn value() -> {type} {
     let x: {type} = {near_max};
     x + 1
 }
+fn main() -> i32 { if value() == {near_max} + 1 { {near_max} + 1 } else { 0 } }
 """
 params = [
   { type = "i8", near_max = "126", exit_code = 127 },
@@ -398,10 +413,11 @@ exit_code = 42
 name = "{type}_near_max_no_overflow"
 spec = ["3.1:13"]
 source = """
-fn main() -> {type} {
+fn value() -> {type} {
     let x: {type} = {near_max};
     x + 1
 }
+fn main() -> i32 { if value() == {near_max} + 1 { {near_max} + 1 } else { 0 } }
 """
 params = [
   { type = "u8", near_max = "254", exit_code = 255 },
@@ -567,9 +583,10 @@ spec = ["3.1:17"]
 compile_fail = true
 error_contains = "out of range"
 source = """
-fn main() -> {type} {
+fn out_of_range() -> {type} {
     {value}
 }
+fn main() { out_of_range(); }
 """
 params = [
   { type = "i8", value = "128" },

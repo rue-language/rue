@@ -81,10 +81,11 @@ exit_code = 42
 name = "literal_inferred_i64"
 spec = ["4.1:3"]
 source = """
-fn main() -> i64 {
+fn inferred() -> i64 {
     let x: i64 = 42;
     x
 }
+fn main() -> i32 { if inferred() == 42 { 42 } else { 0 } }
 """
 exit_code = 42
 

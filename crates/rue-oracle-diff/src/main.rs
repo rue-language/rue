@@ -1722,7 +1722,9 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         };
         assert!(message.contains("KNOWN_ORACLE_GAPS entry is stale"));
 
-        case.source = "fn main() -> u32 { let value: u32 = @random_u32(); value }".to_string();
+        case.source =
+            "fn probe() -> u32 { let value: u32 = @random_u32(); value } fn main() { probe(); }"
+                .to_string();
         assert_eq!(
             check_spec_case_with_known_gap("test:1", &case, true),
             CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(ModelGapKind::ExternalDependency(
@@ -2057,7 +2059,8 @@ files = [{ path = "probe.rue", source = "not Rue" }]
             CaseOutcome::Agree
         ));
 
-        let unsupported_source = "fn main() -> u32 { let value: u32 = @random_u32(); value }";
+        let unsupported_source =
+            "fn probe() -> u32 { let value: u32 = @random_u32(); value } fn main() { probe(); }";
         let unsupported_cli = corpus_case(unsupported_source, false);
         assert!(matches!(
             check_case(Path::new("unsupported.toml"), &unsupported_cli),
@@ -2162,9 +2165,10 @@ files = [{ path = "probe.rue", source = "not Rue" }]
 
     #[test]
     fn exact_model_gap_kind_survives_case_classification() {
-        let error =
-            rue_oracle::run_source("fn main() -> u32 { let value: u32 = @random_u32(); value }")
-                .expect_err("randomness must remain outside the deterministic oracle");
+        let error = rue_oracle::run_source(
+            "fn probe() -> u32 { let value: u32 = @random_u32(); value } fn main() { probe(); }",
+        )
+        .expect_err("randomness must remain outside the deterministic oracle");
 
         assert_eq!(
             record_oracle_error("typed gap probe", error),
@@ -2216,7 +2220,7 @@ files = [{ path = "probe.rue", source = "not Rue" }]
     #[test]
     fn active_unknown_trap_contract_cannot_hide_behind_a_typed_model_gap() {
         let mut case = corpus_case(
-            "fn main() -> u32 { let value: u32 = @random_u32(); value }",
+            "fn probe() -> u32 { let value: u32 = @random_u32(); value } fn main() { probe(); }",
             false,
         );
         case.runtime_error_contains = vec!["custom trap wording".to_string()];
