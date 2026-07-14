@@ -4031,12 +4031,20 @@ mod tests {
     use super::*;
     use rue_air::Sema;
     use rue_cfg::CfgBuilder;
-    use rue_error::PreviewFeatures;
+    use rue_error::{PreviewFeature, PreviewFeatures};
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::AstGen;
 
     fn lower_function_to_mir(source: &str, function_name: &str) -> Aarch64Mir {
+        lower_function_to_mir_with_preview(source, function_name, PreviewFeatures::new())
+    }
+
+    fn lower_function_to_mir_with_preview(
+        source: &str,
+        function_name: &str,
+        preview: PreviewFeatures,
+    ) -> Aarch64Mir {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
@@ -4046,7 +4054,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
 
-        let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
+        let sema = Sema::new(&rir, &mut interner, preview);
         let output = sema.analyze_all().unwrap();
 
         let func = output
@@ -4114,6 +4122,32 @@ mod tests {
     fn test_if_else() {
         let mir = lower_to_mir("fn main() -> i32 { if true { 1 } else { 2 } }");
         assert!(!mir.instructions().is_empty());
+    }
+
+    #[test]
+    fn preview_default_string_literal_lowers_only_ptr_and_len() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        let mir = lower_function_to_mir_with_preview(
+            "fn main() -> i32 { let s = \"hello\"; @intCast(s.len()) }",
+            "main",
+            preview,
+        );
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::StringConstPtr { .. }))
+        );
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::StringConstLen { .. }))
+        );
+        assert!(
+            !mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::StringConstCap { .. }))
+        );
     }
 
     #[test]

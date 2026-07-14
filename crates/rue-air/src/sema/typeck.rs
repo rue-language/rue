@@ -289,7 +289,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// and reassignable — it is exempt from the second-class-escape rule. The
     /// struct is keyed by the name `str`, so every reference shares one
     /// `StructId`.
-    fn get_or_create_str_struct(&mut self, span: Span) -> CompileResult<Type> {
+    pub(crate) fn get_or_create_str_struct(&mut self, span: Span) -> CompileResult<Type> {
         use crate::types::{StructDef, StructField};
 
         let type_sym = self.interner.get_or_intern("str");

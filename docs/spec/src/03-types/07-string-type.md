@@ -386,8 +386,9 @@ value is a two-word view `{ptr, len}`: a pointer to the bytes and a byte length.
 
 {{ rule(id="3.7:44", cat="normative") }}
 
-Where a `str` is expected, a string literal has type `str` and is *static-backed*
-and *first-class*: its bytes reside in read-only data that cannot dangle, so the
+A string literal has type `str` unless an expected string-buffer type
+contextualizes it as `StrBuf` or `Str(N)`. A `str` literal is *static-backed* and
+*first-class*: its bytes reside in read-only data that cannot dangle, so the
 `str` value is `@copy`, storable in a binding or a struct field, reassignable,
 returnable from a function, and passable as an argument. A first-class `str`
 value originates only from a string literal or from another first-class `str`;

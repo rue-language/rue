@@ -113,20 +113,33 @@ impl<'a> BodySema<'a> {
             &infer_ctx.method_sigs,
             &self.type_pool,
             type_subst,
-        )
-        .with_const_types(&infer_ctx.const_types)
-        .with_const_type_aliases(&infer_ctx.const_type_aliases)
-        .with_const_values(&infer_ctx.const_values)
-        .with_const_function_aliases(&infer_ctx.const_function_aliases)
-        .with_structs_by_file_name(&infer_ctx.struct_types_by_file_name)
-        .with_enums_by_file_name(&infer_ctx.enum_types_by_file_name)
-        .with_module_binding_types(&infer_ctx.module_binding_types)
-        .with_module_file_ids(&infer_ctx.module_file_ids)
-        .with_functions_by_file_name(&infer_ctx.functions_by_file_name)
-        .with_comptime_local_bindings(&comptime_local_bindings)
-        .with_inline_ctor_head_types(&inline_ctor_head_types)
-        .with_comptime_values(value_subst)
-        .with_extra_method_sigs(&extra_method_sigs);
+        );
+        if self.preview_features.contains(&PreviewFeature::StringTrio) {
+            let str_name = self
+                .interner
+                .get("str")
+                .expect("preview string default was registered before inference");
+            let str_ty = infer_ctx
+                .builtin_struct_types
+                .get(&str_name)
+                .copied()
+                .expect("canonical str type is present in the inference context");
+            cgen = cgen.with_string_literal_default(str_ty);
+        }
+        let mut cgen = cgen
+            .with_const_types(&infer_ctx.const_types)
+            .with_const_type_aliases(&infer_ctx.const_type_aliases)
+            .with_const_values(&infer_ctx.const_values)
+            .with_const_function_aliases(&infer_ctx.const_function_aliases)
+            .with_structs_by_file_name(&infer_ctx.struct_types_by_file_name)
+            .with_enums_by_file_name(&infer_ctx.enum_types_by_file_name)
+            .with_module_binding_types(&infer_ctx.module_binding_types)
+            .with_module_file_ids(&infer_ctx.module_file_ids)
+            .with_functions_by_file_name(&infer_ctx.functions_by_file_name)
+            .with_comptime_local_bindings(&comptime_local_bindings)
+            .with_inline_ctor_head_types(&inline_ctor_head_types)
+            .with_comptime_values(value_subst)
+            .with_extra_method_sigs(&extra_method_sigs);
 
         // Build parameter map for constraint context.
         // Convert Type to InferType so arrays are represented structurally.
@@ -204,12 +217,35 @@ impl<'a> BodySema<'a> {
         }
 
         // Consume the constraint generator to release borrows
-        let (constraints, int_literal_vars, expr_types, type_var_count) = cgen.into_parts();
+        let (
+            constraints,
+            int_literal_vars,
+            string_literal_vars,
+            string_literal_default,
+            expr_types,
+            type_var_count,
+        ) = cgen.into_parts();
 
         // Phase 2: Solve constraints via unification
         // Pre-size the substitution for better performance on large functions
         let mut unifier = Unifier::with_capacity(type_var_count);
         unifier.mark_int_literal_vars(&int_literal_vars);
+        // Literal contextualization is nominal. Admit only identities owned by
+        // the compiler: the injected builtin StrBuf, the selected canonical
+        // default (`str` under the preview), and synthetic fixed strings from
+        // the generated-struct registry. A user struct with a coincidental
+        // name in another module must never become literal-compatible.
+        let mut string_literal_types = vec![self.builtin_string_type(), string_literal_default];
+        string_literal_types.extend(
+            self.generated_structs
+                .values()
+                .copied()
+                .map(Type::new_struct)
+                .filter(|&ty| self.is_str_fixed_struct(ty)),
+        );
+        string_literal_types.sort_unstable_by_key(Type::as_u32);
+        string_literal_types.dedup();
+        unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);
         let errors = unifier.solve_constraints(&constraints);
 
         // Convert unification errors to compile errors
@@ -226,6 +262,10 @@ impl<'a> BodySema<'a> {
                 UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
                     found: found.safe_name_with_pool(Some(&self.type_pool)),
+                },
+                UnifyResult::StringLiteralNonString { found } => ErrorKind::TypeMismatch {
+                    expected: "string type".to_string(),
+                    found: found.name_with_pool(&self.type_pool),
                 },
                 UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
                     expected: "non-recursive type".to_string(),
@@ -265,6 +305,7 @@ impl<'a> BodySema<'a> {
 
         // Default any unconstrained integer literals to i32
         unifier.default_int_literal_vars(&int_literal_vars);
+        unifier.default_unconstrained_vars(&string_literal_vars, string_literal_default);
 
         // Pre-collect all array types from resolved InferTypes before converting them.
         // This ensures all array types are created before the conversion loop, which

@@ -264,8 +264,26 @@ impl<'a> BodySema<'a> {
 
         // Comparisons read values without consuming them (like projections).
         // This matches Rust's PartialEq trait which takes references.
-        let lhs_result = self.analyze_inst_for_projection(air, lhs, ctx)?;
-        let rhs_result = self.analyze_inst_for_projection(air, rhs, ctx)?;
+        let lhs_is_literal = matches!(self.rir.get(lhs).data, InstData::StringConst(_));
+        let (lhs_result, rhs_result) = if lhs_is_literal {
+            let rhs_result = self.analyze_inst_for_projection(air, rhs, ctx)?;
+            let expected = (self.is_builtin_string(rhs_result.ty)
+                || self.is_str_like(rhs_result.ty))
+            .then_some(rhs_result.ty);
+            let lhs_result = ctx.with_expected_type(expected, |ctx| {
+                self.analyze_inst_for_projection(air, lhs, ctx)
+            })?;
+            (lhs_result, rhs_result)
+        } else {
+            let lhs_result = self.analyze_inst_for_projection(air, lhs, ctx)?;
+            let expected = (self.is_builtin_string(lhs_result.ty)
+                || self.is_str_like(lhs_result.ty))
+            .then_some(lhs_result.ty);
+            let rhs_result = ctx.with_expected_type(expected, |ctx| {
+                self.analyze_inst_for_projection(air, rhs, ctx)
+            })?;
+            (lhs_result, rhs_result)
+        };
         let lhs_type = lhs_result.ty;
 
         // Propagate Never/Error without additional type errors

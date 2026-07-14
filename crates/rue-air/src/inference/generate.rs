@@ -194,6 +194,14 @@ pub struct ConstraintGenerator<'a> {
     /// Type variables allocated for integer literals.
     /// These start as unbound and need to be defaulted to i32 if unconstrained.
     int_literal_vars: Vec<TypeVarId>,
+    /// Type variables allocated for string literals. Unlike integer literals,
+    /// these have a concrete, edition/preview-dependent default supplied by
+    /// semantic analysis: legacy programs default to `StrBuf`, while the
+    /// `string_trio` preview defaults to the canonical synthetic `str` type.
+    /// Contextual constraints may still bind a literal to `StrBuf` first.
+    string_literal_vars: Vec<TypeVarId>,
+    /// Concrete default for an otherwise-unconstrained string literal.
+    string_literal_default: Type,
     /// Type substitutions for Self and type parameters (used in method bodies).
     /// Maps type names (like "Self") to their concrete types.
     type_subst: Option<&'a HashMap<Spur, Type>>,
@@ -326,6 +334,10 @@ impl<'a> ConstraintGenerator<'a> {
         type_pool: &'a TypeInternPool,
         type_subst: Option<&'a HashMap<Spur, Type>>,
     ) -> Self {
+        let string_literal_default = interner
+            .get("StrBuf")
+            .and_then(|name| builtin_structs.get(&name).copied())
+            .unwrap_or(Type::ERROR);
         Self {
             rir,
             interner,
@@ -339,6 +351,8 @@ impl<'a> ConstraintGenerator<'a> {
             enums_by_file_name: None,
             methods,
             int_literal_vars: Vec::new(),
+            string_literal_vars: Vec::new(),
+            string_literal_default,
             type_subst,
             const_types: None,
             const_type_aliases: None,
@@ -355,6 +369,15 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_values: None,
             type_pool,
         }
+    }
+
+    /// Override the default used for unconstrained string literals.
+    ///
+    /// Semantic analysis uses this for the `string_trio` preview after it has
+    /// registered the canonical synthetic `str` type in the shared type pool.
+    pub fn with_string_literal_default(mut self, ty: Type) -> Self {
+        self.string_literal_default = ty;
+        self
     }
 
     /// Is `ty` the synthetic slice struct `[T]` (ADR-0043, RUE-322), the `str`
@@ -685,7 +708,8 @@ impl<'a> ConstraintGenerator<'a> {
         &self.expr_types
     }
 
-    /// Consume the constraint generator and return (constraints, int_literal_vars, expr_types, type_var_count).
+    /// Consume the constraint generator and return its generated constraints,
+    /// literal variables, expression types, and allocated variable count.
     ///
     /// This is useful when you need ownership of the expression types map.
     /// The `type_var_count` can be used to pre-size the unifier's substitution for better performance.
@@ -694,12 +718,16 @@ impl<'a> ConstraintGenerator<'a> {
     ) -> (
         Vec<Constraint>,
         Vec<TypeVarId>,
+        Vec<TypeVarId>,
+        Type,
         HashMap<InstRef, InferType>,
         u32,
     ) {
         (
             self.constraints,
             self.int_literal_vars,
+            self.string_literal_vars,
+            self.string_literal_default,
             self.expr_types,
             self.type_vars.count(),
         )
@@ -780,20 +808,14 @@ impl<'a> ConstraintGenerator<'a> {
 
             InstData::BoolConst(_) => InferType::Concrete(Type::BOOL),
 
-            // String literals have the builtin growable-string type `StrBuf`
-            // (ADR-0043; formerly `String`).
+            // String literals are context-sensitive. A fresh variable lets an
+            // explicit `StrBuf` context retain the legacy owning-buffer type;
+            // otherwise semantic analysis defaults it after unification (to
+            // `str` under `string_trio`, and `StrBuf` without the preview).
             InstData::StringConst(_) => {
-                // Look up the StrBuf type from the structs map
-                if let Some(string_spur) = self.interner.get("StrBuf") {
-                    if let Some(&string_ty) = self.builtin_structs.get(&string_spur) {
-                        InferType::Concrete(string_ty)
-                    } else {
-                        // Fallback if StrBuf struct not found (shouldn't happen after builtin injection)
-                        InferType::Concrete(Type::ERROR)
-                    }
-                } else {
-                    InferType::Concrete(Type::ERROR)
-                }
+                let var = self.fresh_var();
+                self.string_literal_vars.push(var);
+                InferType::Var(var)
             }
 
             InstData::UnitConst => InferType::Concrete(Type::UNIT),
@@ -1320,7 +1342,14 @@ impl<'a> ConstraintGenerator<'a> {
                     // here — rather than leaning on the generic unit fallback —
                     // stops HM and semantic analysis from drifting apart.
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        let info = self.generate(*arg_ref, ctx);
+                        if self.is_string_literal_candidate(&info.ty) {
+                            self.add_constraint(Constraint::equal(
+                                info.ty,
+                                self.string_infer_type(),
+                                info.span,
+                            ));
+                        }
                     }
                     InferType::Concrete(Type::NEVER)
                 } else if intrinsic_name == "assert" {
@@ -1328,8 +1357,15 @@ impl<'a> ConstraintGenerator<'a> {
                     // and evaluates to `()`. It only aborts when the condition is
                     // false, so its static type is unit on both paths (spec
                     // 4.13:5b). Keep it explicit so HM and sema stay in lockstep.
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                    for (index, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        if index == 1 && self.is_string_literal_candidate(&info.ty) {
+                            self.add_constraint(Constraint::equal(
+                                info.ty,
+                                self.string_infer_type(),
+                                info.span,
+                            ));
+                        }
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "read_line" {
@@ -1361,7 +1397,14 @@ impl<'a> ConstraintGenerator<'a> {
                     // int type) is resolved from context, so use a fresh
                     // variable and let sema validate the resolved Option shape.
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        let info = self.generate(*arg_ref, ctx);
+                        if self.is_string_literal_candidate(&info.ty) {
+                            self.add_constraint(Constraint::equal(
+                                info.ty,
+                                self.string_infer_type(),
+                                info.span,
+                            ));
+                        }
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
@@ -2289,6 +2332,41 @@ impl<'a> ConstraintGenerator<'a> {
                 let receiver_info = self.generate(*receiver, ctx);
                 let args = self.rir.get_call_args(*args_start, *args_len);
 
+                // A string literal is otherwise defaulted only after solving,
+                // but method lookup needs a receiver type while constraints
+                // are still being generated. Use the StrBuf registry signature
+                // as contextual information for legacy buffer-only methods.
+                // `len` is shared by `str` and StrBuf; under the preview it may
+                // use the same result signature without forcing the receiver
+                // away from its `str` default.
+                if self.is_string_literal_candidate(&receiver_info.ty)
+                    && let InferType::Concrete(string_ty) = self.string_infer_type()
+                    && let Some(string_id) = string_ty.as_struct()
+                    && let Some(method_sig) = self.method_sig(&(string_id, *method))
+                {
+                    let shared_str_method = self.string_literal_default_is_str()
+                        && self.interner.resolve(method) == "len";
+                    if !shared_str_method {
+                        self.add_constraint(Constraint::equal(
+                            receiver_info.ty.clone(),
+                            InferType::Concrete(string_ty),
+                            receiver_info.span,
+                        ));
+                    }
+                    let param_types = method_sig.param_types.clone();
+                    let return_type = method_sig.return_type.clone();
+                    for (arg, param_type) in args.iter().zip(param_types.iter()) {
+                        let arg_info = self.generate(arg.value, ctx);
+                        self.add_constraint(Constraint::equal(
+                            arg_info.ty,
+                            param_type.clone(),
+                            arg_info.span,
+                        ));
+                    }
+                    self.record_type(inst_ref, return_type.clone());
+                    return ExprInfo::new(return_type, span);
+                }
+
                 // Resolve the call's result type from the receiver's type.
                 // When the receiver cannot yet be resolved but sema will
                 // resolve it later, yield a fresh variable rather than ERROR:
@@ -2655,7 +2733,11 @@ impl<'a> ConstraintGenerator<'a> {
             return InferType::Concrete(Type::NEVER);
         }
 
-        if self.is_string_concrete(&lhs_info.ty) || self.is_string_concrete(&rhs_info.ty) {
+        if self.is_string_concrete(&lhs_info.ty)
+            || self.is_string_concrete(&rhs_info.ty)
+            || self.is_string_literal_candidate(&lhs_info.ty)
+            || self.is_string_literal_candidate(&rhs_info.ty)
+        {
             let string_ty = self.string_infer_type();
             self.add_constraint(Constraint::equal(
                 lhs_info.ty,
@@ -2710,6 +2792,19 @@ impl<'a> ConstraintGenerator<'a> {
             }
         }
         false
+    }
+
+    /// Whether an inference type is the still-contextual type variable rooted
+    /// at a string literal. Local bindings retain the same variable, so this
+    /// also recognizes `let s = "a"; s + "b"` before defaulting runs.
+    fn is_string_literal_candidate(&self, ty: &InferType) -> bool {
+        matches!(ty, InferType::Var(var) if self.string_literal_vars.contains(var))
+    }
+
+    fn string_literal_default_is_str(&self) -> bool {
+        self.string_literal_default
+            .as_struct()
+            .is_some_and(|id| self.type_pool.struct_def(id).name == "str")
     }
 
     /// Generate constraints for a type-qualified call — an associated-function

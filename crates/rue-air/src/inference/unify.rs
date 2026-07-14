@@ -25,6 +25,9 @@ pub enum UnifyResult {
     /// Integer literal cannot unify with non-integer type.
     IntLiteralNonInteger { found: Type },
 
+    /// String literal cannot unify with a non-string type.
+    StringLiteralNonString { found: InferType },
+
     /// Occurs check failed (would create infinite type).
     OccursCheck { var: TypeVarId, ty: InferType },
 
@@ -75,6 +78,9 @@ impl UnificationError {
             UnifyResult::IntLiteralNonInteger { found } => {
                 format!("integer literal cannot be used as {found}")
             }
+            UnifyResult::StringLiteralNonString { found } => {
+                format!("string literal cannot be used as {found}")
+            }
             UnifyResult::OccursCheck { var, ty } => {
                 format!("infinite type: {var} cannot unify with {ty}")
             }
@@ -109,6 +115,10 @@ pub struct Unifier {
     /// offending match arm) instead of surfacing later at an unrelated, wider
     /// span like the whole function body (RUE-133).
     int_literal_vars: std::collections::HashSet<TypeVarId>,
+    /// Variables rooted at string literals, plus variables joined with them.
+    string_literal_vars: std::collections::HashSet<TypeVarId>,
+    /// Concrete string types that may contextualize a literal.
+    string_literal_types: std::collections::HashSet<Type>,
 }
 
 impl Default for Unifier {
@@ -123,6 +133,8 @@ impl Unifier {
         Unifier {
             substitution: Substitution::new(),
             int_literal_vars: std::collections::HashSet::new(),
+            string_literal_vars: std::collections::HashSet::new(),
+            string_literal_types: std::collections::HashSet::new(),
         }
     }
 
@@ -134,6 +146,8 @@ impl Unifier {
         Unifier {
             substitution: Substitution::with_capacity(type_var_count as usize),
             int_literal_vars: std::collections::HashSet::new(),
+            string_literal_vars: std::collections::HashSet::new(),
+            string_literal_types: std::collections::HashSet::new(),
         }
     }
 
@@ -145,6 +159,13 @@ impl Unifier {
     /// `int_literal_vars` field documentation.
     pub fn mark_int_literal_vars(&mut self, vars: &[TypeVarId]) {
         self.int_literal_vars.extend(vars.iter().copied());
+    }
+
+    /// Register string-literal variables and the concrete string types they
+    /// may acquire from context (`StrBuf`, `str`, and `Str(N)`).
+    pub fn mark_string_literal_vars(&mut self, vars: &[TypeVarId], types: &[Type]) {
+        self.string_literal_vars.extend(vars.iter().copied());
+        self.string_literal_types.extend(types.iter().copied());
     }
 
     /// Unify two types.
@@ -334,6 +355,46 @@ impl Unifier {
                 // by the Array-vs-non-array case in `unify`.
                 InferType::IntLiteral | InferType::Array { .. } => {}
             }
+        }
+
+        if self.string_literal_vars.contains(&var) {
+            match ty {
+                InferType::Var(other) => {
+                    if self.int_literal_vars.contains(other) {
+                        return UnifyResult::StringLiteralNonString {
+                            found: InferType::IntLiteral,
+                        };
+                    }
+                    self.string_literal_vars.insert(*other);
+                }
+                InferType::Concrete(t) => {
+                    if t.is_error() {
+                        return UnifyResult::Ok;
+                    }
+                    if !t.is_never() && !self.string_literal_types.contains(t) {
+                        return UnifyResult::StringLiteralNonString {
+                            found: InferType::Concrete(*t),
+                        };
+                    }
+                }
+                InferType::IntLiteral => {
+                    return UnifyResult::StringLiteralNonString {
+                        found: InferType::IntLiteral,
+                    };
+                }
+                InferType::Array { .. } => {
+                    return UnifyResult::StringLiteralNonString { found: ty.clone() };
+                }
+            }
+        } else if let InferType::Var(other) = ty
+            && self.string_literal_vars.contains(other)
+        {
+            if self.int_literal_vars.contains(&var) {
+                return UnifyResult::StringLiteralNonString {
+                    found: InferType::IntLiteral,
+                };
+            }
+            self.string_literal_vars.insert(var);
         }
 
         self.substitution.insert(var, ty.clone());
@@ -526,6 +587,20 @@ impl Unifier {
                     .insert(rep, InferType::Concrete(Type::I32));
             }
             // If it resolved to Concrete, it was already constrained - no action needed
+        }
+    }
+
+    /// Default unconstrained variables to a caller-selected concrete type.
+    ///
+    /// As with integer-literal defaulting, bind the representative at the end
+    /// of a variable chain so joined literals and expressions resolve through
+    /// one canonical default without overwriting existing contextual bindings.
+    pub fn default_unconstrained_vars(&mut self, vars: &[TypeVarId], default: Type) {
+        for &var in vars {
+            let resolved = self.substitution.apply(&InferType::Var(var));
+            if let InferType::Var(rep) = resolved {
+                self.substitution.insert(rep, InferType::Concrete(default));
+            }
         }
     }
 
