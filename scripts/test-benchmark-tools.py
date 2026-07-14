@@ -29,6 +29,7 @@ def load_module(name: str, relative_path: str):
 
 
 validator = load_module("validate_benchmark", "scripts/validate-benchmark.py")
+collection = load_module("benchmark_collection", "scripts/benchmark_collection.py")
 charts = load_module("generate_charts", "scripts/generate-charts.py")
 perf_baseline = load_module("perf_baseline", "scripts/perf-baseline.py")
 
@@ -512,8 +513,15 @@ class BenchmarkValidationTests(unittest.TestCase):
             "version": 1,
             "timestamp": "2026-07-09T00:00:00Z",
             "commit": "probe",
+            "iterations": 5,
             "benchmarks": [
-                {"name": name, "mean_ms": index + 0.5}
+                {
+                    "name": name,
+                    "mean_ms": index + 0.5,
+                    "std_ms": 0.1,
+                    "iterations": 5,
+                    "passes": {"compile": {"mean_ms": index + 0.5}},
+                }
                 for index, name in enumerate(self.expected_names)
             ],
         }
@@ -550,16 +558,74 @@ class BenchmarkValidationTests(unittest.TestCase):
         result["benchmarks"][0]["mean_ms"] = "fast"
         errors = validator.validate_results(result, self.expected_names)
         self.assertIn(
-            f"benchmark '{self.expected_names[0]}' has no numeric mean_ms", errors
+            f"benchmark '{self.expected_names[0]}' has no finite non-negative mean_ms",
+            errors,
         )
+
+    def test_rejects_partial_and_mixed_iteration_counts(self):
+        partial = self.valid_result()
+        partial["benchmarks"][0]["iterations"] = 1
+        self.assertIn(
+            f"benchmark '{self.expected_names[0]}' iterations (1) does not match "
+            "root iterations (5)",
+            validator.validate_results(partial, self.expected_names),
+        )
+
+        mixed = self.valid_result()
+        mixed["benchmarks"][1]["iterations"] = 4
+        errors = validator.validate_results(mixed, self.expected_names)
+        self.assertTrue(any("iterations (4) does not match" in error for error in errors))
+
+    def test_rejects_malformed_counts_timing_and_pass_data(self):
+        mutations = [
+            (lambda result: result.update(iterations=True), "iterations must be"),
+            (lambda result: result.update(iterations=0), "iterations must be"),
+            (
+                lambda result: result["benchmarks"][0].update(iterations=1.0),
+                "iterations must be a positive integer",
+            ),
+            (
+                lambda result: result["benchmarks"][0].update(mean_ms=float("inf")),
+                "finite non-negative mean_ms",
+            ),
+            (
+                lambda result: result["benchmarks"][0].update(std_ms=-0.1),
+                "finite non-negative std_ms",
+            ),
+            (
+                lambda result: result["benchmarks"][0].update(passes=[]),
+                "passes must be an object",
+            ),
+            (
+                lambda result: result["benchmarks"][0]["passes"]["compile"].update(
+                    mean_ms=float("nan")
+                ),
+                "finite non-negative mean_ms",
+            ),
+        ]
+        for mutate, message in mutations:
+            with self.subTest(message=message):
+                result = self.valid_result()
+                mutate(result)
+                self.assertTrue(
+                    any(
+                        message in error
+                        for error in validator.validate_results(
+                            result, self.expected_names
+                        )
+                    )
+                )
+
 
     def test_empty_and_malformed_corpora_are_rejected(self):
         self.assertEqual(
-            validator.validate_results({"benchmarks": []}, self.expected_names),
+            validator.validate_results(
+                {"iterations": 1, "benchmarks": []}, self.expected_names
+            ),
             ["no benchmark results collected; all benchmarks failed"],
         )
         errors = validator.validate_results(
-            {"benchmarks": ["not an object"]}, self.expected_names
+            {"iterations": 1, "benchmarks": ["not an object"]}, self.expected_names
         )
         self.assertIn("benchmark #1 must be an object", errors)
         self.assertTrue(any("missing benchmark result" in error for error in errors))
@@ -644,6 +710,90 @@ class BenchmarkValidationTests(unittest.TestCase):
             self.assertEqual(published[0]["version"], 2)
             self.assertEqual(published[0]["benchmark_reason"], "push")
             self.assertEqual(published[0]["commit_range"], ["probe"])
+
+
+class BenchmarkCollectionTests(unittest.TestCase):
+    @staticmethod
+    def payload(total_ms=2.0, passes=None):
+        return json.dumps(
+            {
+                "schema_version": 2,
+                "total_ms": total_ms,
+                "passes": passes
+                if passes is not None
+                else [
+                    {
+                        "name": "lexer",
+                        "duration_ms": 1.0,
+                        "invocations": 1,
+                        "root_invocations": 0,
+                        "leaf_invocations": 1,
+                    }
+                ],
+            }
+        )
+
+    def test_valid_iterations_are_all_aggregated(self):
+        result = collection.aggregate_iterations(
+            [self.payload(2.0), self.payload(4.0)]
+        )
+        self.assertEqual(result["passes"], {"lexer": {"mean_ms": 1.0}})
+
+    def test_malformed_timing_or_pass_payload_aborts_collection(self):
+        bad_payloads = [
+            "not json",
+            self.payload(float("inf")),
+            self.payload(passes={}),
+            self.payload(passes=[{"name": "lexer", "duration_ms": "fast"}]),
+            self.payload(
+                passes=[
+                    {
+                        "name": "lexer",
+                        "duration_ms": 1.0,
+                        "invocations": 1,
+                        "leaf_invocations": 1,
+                    }
+                ]
+            ),
+            self.payload(
+                passes=[
+                    {
+                        "name": "lexer",
+                        "duration_ms": 1.0,
+                        "invocations": True,
+                        "root_invocations": 0,
+                        "leaf_invocations": 1,
+                    }
+                ]
+            ),
+            self.payload(
+                passes=[
+                    {
+                        "name": "lexer",
+                        "duration_ms": 1.0,
+                        "invocations": 1,
+                        "root_invocations": 0,
+                        "leaf_invocations": 2,
+                    }
+                ]
+            ),
+        ]
+        for payload in bad_payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises((ValueError, json.JSONDecodeError)):
+                    collection.aggregate_iterations([self.payload(), payload])
+
+    def test_rejects_unsupported_timing_schema(self):
+        payload = json.loads(self.payload())
+        payload["schema_version"] = 3
+        with self.assertRaisesRegex(ValueError, "integer 1 or 2"):
+            collection.aggregate_iterations([json.dumps(payload)])
+
+    def test_rejects_pass_set_drift_between_iterations(self):
+        changed = json.loads(self.payload())
+        changed["passes"][0]["name"] = "parser"
+        with self.assertRaisesRegex(ValueError, "pass set changed"):
+            collection.aggregate_iterations([self.payload(), json.dumps(changed)])
 
 
 class ChartAggregationTests(unittest.TestCase):

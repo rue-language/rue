@@ -93,6 +93,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ ! "$ITERATIONS" =~ ^[1-9][0-9]*$ ]]; then
+    log_error "--iterations must be a positive integer"
+    exit 1
+fi
+
 # Verify we're in the right directory
 if [[ ! -f "$MANIFEST" ]]; then
     log_error "Cannot find benchmarks/manifest.toml"
@@ -169,8 +174,8 @@ for i in "${!benchmark_names[@]}"; do
     full_path="$BENCHMARKS_DIR/$path"
 
     if [[ ! -f "$full_path" ]]; then
-        log_warn "Benchmark file not found: $path (skipping)"
-        continue
+        log_error "Benchmark file not found: $path"
+        exit 1
     fi
 
     log_info "Running: $name"
@@ -189,9 +194,10 @@ for i in "${!benchmark_names[@]}"; do
         if [[ "$os" == "darwin" ]]; then
             # macOS: -l gives max resident set size in bytes
             if ! timing_json=$(/usr/bin/time -l "$RUE_BIN" --benchmark-json "$full_path" -o "$output_binary" 2>"$time_output"); then
-                log_warn "  Iteration $iter failed, skipping"
+                log_error "  Iteration $iter failed"
+                cat "$time_output" >&2
                 rm -f "$time_output"
-                continue
+                exit 1
             fi
             # Extract max RSS from time output (in bytes on macOS).
             # `|| true`: a missing line is not fatal (pipefail would abort otherwise).
@@ -199,9 +205,10 @@ for i in "${!benchmark_names[@]}"; do
         else
             # Linux: -v gives max resident set size in KB
             if ! timing_json=$(/usr/bin/time -v "$RUE_BIN" --benchmark-json "$full_path" -o "$output_binary" 2>"$time_output"); then
-                log_warn "  Iteration $iter failed, skipping"
+                log_error "  Iteration $iter failed"
+                cat "$time_output" >&2
                 rm -f "$time_output"
-                continue
+                exit 1
             fi
             # Extract max RSS from time output (in KB on Linux, convert to bytes).
             # `|| true`: a missing line is not fatal (pipefail would abort otherwise);
@@ -211,20 +218,17 @@ for i in "${!benchmark_names[@]}"; do
         fi
         rm -f "$time_output"
 
-        # Extract the schema-v2 root-span total. Before RUE-642 this field
-        # summed nested spans and was inflated; historical dashboard entries
-        # retain that older meaning. `|| true`: grep may not match and
-        # `head -1` closing the pipe early can SIGPIPE grep — neither is fatal
-        # (the `-n "$total_ms"` check below handles a missing value).
-        total_ms=$(echo "$timing_json" | grep -o '"total_ms":[0-9.]*' | head -1 | cut -d: -f2 || true)
-        if [[ -n "$total_ms" ]]; then
-            iteration_results+=("$total_ms")
-            # Store full JSON for pass data extraction
-            iteration_pass_data+=("$timing_json")
-            # Store memory usage
-            if [[ -n "$peak_mem_bytes" && "$peak_mem_bytes" -gt 0 ]]; then
-                iteration_memory+=("$peak_mem_bytes")
-            fi
+        # Parse every timing payload strictly. A malformed payload invalidates
+        # the run rather than being silently omitted from the sample set.
+        total_ms=$(PYTHONPATH="$SCRIPT_DIR/scripts" python3 -c '
+import sys
+from benchmark_collection import parse_iteration_json
+print(parse_iteration_json(sys.argv[1])["total_ms"])
+' "$timing_json")
+        iteration_results+=("$total_ms")
+        iteration_pass_data+=("$timing_json")
+        if [[ -n "$peak_mem_bytes" && "$peak_mem_bytes" -gt 0 ]]; then
+            iteration_memory+=("$peak_mem_bytes")
         fi
 
         # Capture binary size from the last successful iteration
@@ -244,9 +248,9 @@ for i in "${!benchmark_names[@]}"; do
         rm -f "$output_binary"
     done
 
-    if [[ ${#iteration_results[@]} -eq 0 ]]; then
-        log_warn "  No successful iterations for $name"
-        continue
+    if [[ ${#iteration_results[@]} -ne $ITERATIONS ]]; then
+        log_error "  Collected ${#iteration_results[@]} of $ITERATIONS iterations for $name"
+        exit 1
     fi
 
     # Calculate mean and stddev for total time
@@ -299,59 +303,14 @@ for i in "${!benchmark_names[@]}"; do
 
     log_info "  $name: time=${mean}ms (±${stddev}), mem=${mem_mean_mb}MB, binary=${binary_size_kb}KB (n=$count)"
 
-    # Extract and aggregate per-pass timing data, source metrics, and memory
-    # Use Python to parse JSON and compute per-pass means
-    extra_json=$(python3 -c "
+    # Every payload is parsed again by the shared strict aggregator. Any
+    # malformed pass row or inconsistent timing schema aborts publication.
+    extra_json=$(PYTHONPATH="$SCRIPT_DIR/scripts" python3 -c '
 import json
 import sys
-
-pass_data = {}
-source_metrics = None
-peak_memory_samples = []
-timing_schema_version = None
-
-for json_str in sys.argv[1:]:
-    try:
-        data = json.loads(json_str)
-        schema_version = data.get('schema_version', 1)
-        if timing_schema_version is None:
-            timing_schema_version = schema_version
-        for p in data.get('passes', []):
-            pname = p['name']
-            # Schema v2 durations are inclusive. Persist only structural
-            # leaves so parse_file is not stacked with lexer + parser in the
-            # dashboard. V1 had no nesting metadata and parse_file was a leaf.
-            if schema_version >= 2 and p.get('leaf_invocations') != p.get('invocations'):
-                continue
-            duration = p['duration_ms']
-            if pname not in pass_data:
-                pass_data[pname] = []
-            pass_data[pname].append(duration)
-        # Get source_metrics from first run (they're constant)
-        if source_metrics is None and 'source_metrics' in data:
-            source_metrics = data['source_metrics']
-        # Collect peak memory samples
-        if 'peak_memory_bytes' in data and data['peak_memory_bytes']:
-            peak_memory_samples.append(data['peak_memory_bytes'])
-    except:
-        pass
-
-# Calculate means for passes
-passes = {}
-for pname, durations in pass_data.items():
-    mean = sum(durations) / len(durations) if durations else 0
-    passes[pname] = {'mean_ms': round(mean, 3)}
-
-result = {'passes': passes}
-if timing_schema_version is not None:
-    result['timing_schema_version'] = timing_schema_version
-if source_metrics:
-    result['source_metrics'] = source_metrics
-if peak_memory_samples:
-    result['peak_memory_bytes'] = int(sum(peak_memory_samples) / len(peak_memory_samples))
-
-print(json.dumps(result))
-" "${iteration_pass_data[@]}" 2>/dev/null || echo "{\"passes\":{}}")
+from benchmark_collection import aggregate_iterations
+print(json.dumps(aggregate_iterations(sys.argv[1:])))
+' "${iteration_pass_data[@]}")
 
     # Extract components from the JSON
     passes_json=$(echo "$extra_json" | python3 -c "import sys, json; d=json.load(sys.stdin); print(json.dumps(d.get('passes', {})))")
