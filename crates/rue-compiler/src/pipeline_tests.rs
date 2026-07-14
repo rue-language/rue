@@ -6,6 +6,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_token_volume_survives_an_exact_zero_parse_update() {
+        let snapshot =
+            SourceSnapshot::single("/project/main.rue", "fn main() -> i32 { 42 }").unwrap();
+        let mut session = CompilerSession::new();
+        let first = session.update_for_presentation(&snapshot);
+        let expected_tokens = first.work().syntax.tokens;
+        first.into_result().unwrap();
+        let exact = session.update_for_presentation(&snapshot);
+        assert_eq!(exact.work().syntax.parser_invocations, 0);
+        exact.into_result().unwrap();
+
+        let output = crate::queries::compile_with_session(
+            &mut session,
+            &snapshot,
+            &CompileOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(output.work.parsed.syntax.parser_invocations, 0);
+        assert_eq!(output.source_stats.tokens, expected_tokens);
+    }
+
+    #[test]
     fn canonical_std_strbuf_identity_survives_qualified_and_aliased_lookup() {
         let context = ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "test")
             .expect("discovery context should be valid");

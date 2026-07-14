@@ -2200,7 +2200,8 @@ fn handle_emit_multi_file(
         // Every --emit mode must surface frontend warnings (RUE-130).
         diagnostics.print_warnings(state.warnings());
         let work = state.query_work();
-        debug_assert_eq!(work.parsed.syntax.parser_invocations, source_snapshot.len());
+        debug_assert_eq!(state.parsed.modules().len(), source_snapshot.len());
+        debug_assert!(work.parsed.syntax.parser_invocations <= source_snapshot.len());
         debug_assert_eq!(work.lowered.parser_invocations, 0);
         debug_assert_eq!(work.semantic.binding.bind_invocations, 1);
         debug_assert_eq!(work.semantic.manifest.build_invocations, 1);

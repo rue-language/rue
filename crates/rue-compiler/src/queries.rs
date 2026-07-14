@@ -412,6 +412,15 @@ pub(crate) fn compile_with_session(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
+    let source_tokens = session
+        .published()
+        .filter(|program| program.belongs_to_exact_snapshot(snapshot))
+        .map(|program| program.token_count())
+        .ok_or_else(|| {
+            CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "compilation snapshot differs from the published parsed program".into(),
+            )))
+        })?;
     let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
     let _span = info_span!(
         "compile",
@@ -442,7 +451,7 @@ pub(crate) fn compile_with_session(
             .files()
             .map(|source| source.source.lines().count())
             .sum(),
-        tokens: session_work.last_parse.syntax.tokens,
+        tokens: source_tokens,
     };
     output.work = PipelineWork {
         parsed: session_work.last_parse,

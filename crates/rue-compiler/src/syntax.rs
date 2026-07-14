@@ -14,8 +14,11 @@ use crate::{
 /// Token counts include the EOF token emitted by the lexer. A file contributes
 /// tokens only when lexing succeeds and produces the token vector passed to the
 /// parser. Source bytes use UTF-8 byte lengths, matching Rue's byte-based spans.
-/// Values describe one syntax run; they are neither process-global totals nor
-/// metadata attached to a reusable parsed artifact.
+/// Values describe one bounded syntax run; they are neither process-global
+/// totals nor metadata attached to a reusable parsed artifact. Import discovery
+/// treats one provenance-preserving fixed-point lifecycle as a bounded run, so
+/// its values sum only the actual calls made across that lifecycle's snapshot
+/// expansions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SyntaxWork {
     /// Number of lexer invocations.

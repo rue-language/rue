@@ -196,6 +196,7 @@ struct ParsedSyntaxPayload {
     source: SourceId,
     file_id: FileId,
     source_text: Arc<String>,
+    token_count: usize,
     ast: ProvenancedAst,
     resolver: FrozenSymbolResolver,
     definitions: ParsedDefinitionIndex,
@@ -307,6 +308,9 @@ impl ParsedModule {
     pub fn source_text(&self) -> &str {
         &self.payload.source_text
     }
+    pub(crate) fn token_count(&self) -> usize {
+        self.payload.token_count
+    }
     pub(crate) fn shared_source_text(&self) -> Arc<String> {
         self.payload.source_text.clone()
     }
@@ -363,6 +367,24 @@ pub struct ParsedModulesWork {
     pub source_text_clones: usize,
     /// Source bytes rehashed while classifying reusable modules.
     pub source_bytes_rehashed: usize,
+}
+
+impl ParsedModulesWork {
+    /// Add the work from another update in the same bounded parse lifecycle.
+    pub(crate) fn accumulate(&mut self, other: Self) {
+        self.syntax.lexer_invocations += other.syntax.lexer_invocations;
+        self.syntax.parser_invocations += other.syntax.parser_invocations;
+        self.syntax.lexed_bytes += other.syntax.lexed_bytes;
+        self.syntax.tokens += other.syntax.tokens;
+        self.previous_modules_indexed += other.previous_modules_indexed;
+        self.modules_considered += other.modules_considered;
+        self.previous_module_lookups += other.previous_module_lookups;
+        self.modules_reused += other.modules_reused;
+        self.modules_rebound += other.modules_rebound;
+        self.modules_reparsed += other.modules_reparsed;
+        self.source_text_clones += other.source_text_clones;
+        self.source_bytes_rehashed += other.source_bytes_rehashed;
+    }
 }
 
 /// Deterministically ordered collection of independently parsed modules.
@@ -456,6 +478,23 @@ impl ParsedProgram {
         &self.invalid_imports
     }
 
+    /// Token volume of this immutable program, including one EOF token per module.
+    pub(crate) fn token_count(&self) -> usize {
+        self.modules.iter().map(|module| module.token_count()).sum()
+    }
+
+    pub(crate) fn belongs_to_exact_snapshot(&self, snapshot: &SourceSnapshot) -> bool {
+        self.source_revision() == snapshot.source_revision()
+            && self.modules.len() == snapshot.len()
+            && self.modules.iter().all(|module| {
+                let file_id = module.file_id();
+                snapshot.module_id(file_id) == Some(module.module_id())
+                    && snapshot.source_id(file_id) == Some(module.source_id())
+                    && snapshot.metadata().physical_path(file_id) == Some(module.physical_path())
+                    && snapshot.source_text(file_id) == Some(module.source_text())
+            })
+    }
+
     pub(crate) fn shared_symbol_strings(&self) -> Option<Vec<&str>> {
         let first = self.modules.first()?;
         if self.modules.iter().all(|module| {
@@ -541,14 +580,45 @@ impl CanonicalParseSession {
         snapshot: &SourceSnapshot,
         baseline: Arc<ParsedProgram>,
     ) -> CompileResult<Self> {
-        if baseline.source_revision() != snapshot.source_revision() {
+        if !baseline.belongs_to_exact_snapshot(snapshot) {
             return Err(invalid_input(
-                "parse-session baseline belongs to a foreign source revision",
+                "parse-session baseline belongs to a foreign source snapshot",
             ));
         }
         Ok(Self {
             baseline: Some(baseline),
         })
+    }
+
+    /// Adopt an already parsed exact-snapshot program as this session's baseline.
+    ///
+    /// This performs no syntax work. The caller supplies work already performed
+    /// by the bounded operation that produced `program`; foreign revisions are
+    /// rejected without advancing the baseline.
+    pub(crate) fn adopt_exact(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        program: Arc<ParsedProgram>,
+        work: ParsedModulesWork,
+    ) -> CanonicalParseUpdate {
+        let invalidation = classify_invalidation(snapshot, self.baseline.as_deref());
+        if !program.belongs_to_exact_snapshot(snapshot) {
+            return CanonicalParseUpdate {
+                result: Err(CompileErrors::from(invalid_input(
+                    "adopted parsed program belongs to a foreign source snapshot",
+                ))),
+                work,
+                invalidation,
+                baseline_advanced: false,
+            };
+        }
+        self.baseline = Some(program.clone());
+        CanonicalParseUpdate {
+            result: Ok(program),
+            work,
+            invalidation,
+            baseline_advanced: true,
+        }
     }
 
     #[cfg(test)]
@@ -775,7 +845,8 @@ fn parse_snapshot_file(
     let outcome = crate::syntax::parse_file(source, ThreadedRodeo::new());
     let work = outcome.work;
     let result = outcome.result.and_then(|ast| {
-        build_module(snapshot, file_id, ast, outcome.interner).map_err(CompileErrors::from)
+        build_module(snapshot, file_id, ast, outcome.interner, work.tokens)
+            .map_err(CompileErrors::from)
     });
     (result, work)
 }
@@ -872,12 +943,21 @@ fn build_module(
     file_id: FileId,
     ast: Arc<Ast>,
     interner: ThreadedRodeo,
+    token_count: usize,
 ) -> CompileResult<Arc<ParsedModule>> {
     let token = Arc::new(SymbolProvenance);
     let module = snapshot.module_id(file_id).expect("snapshot membership");
     let import_sites = collect_imports(&ast, module, &interner)?;
     let resolver = Arc::new(interner.into_resolver());
-    build_module_with_resolver(snapshot, file_id, ast, resolver, token, import_sites)
+    build_module_with_resolver(
+        snapshot,
+        file_id,
+        ast,
+        resolver,
+        token,
+        import_sites,
+        token_count,
+    )
 }
 
 fn build_module_with_resolver(
@@ -887,6 +967,7 @@ fn build_module_with_resolver(
     resolver: Arc<RodeoResolver<Spur>>,
     token: Arc<SymbolProvenance>,
     import_sites: ImportSiteCollector,
+    token_count: usize,
 ) -> CompileResult<Arc<ParsedModule>> {
     let module = snapshot
         .module_id(file_id)
@@ -919,6 +1000,7 @@ fn build_module_with_resolver(
         source,
         file_id,
         source_text,
+        token_count,
         ast: provenanced_ast,
         resolver,
         definitions,
@@ -2099,7 +2181,7 @@ fn main() -> i32 {
             CanonicalParseSession::from_baseline(&foreign, parsed)
                 .unwrap_err()
                 .to_string(),
-            "invalid compiler input: parse-session baseline belongs to a foreign source revision"
+            "invalid compiler input: parse-session baseline belongs to a foreign source snapshot"
         );
 
         let broken = snapshot(
@@ -2116,5 +2198,24 @@ fn main() -> i32 {
             error_fingerprint(update.result().unwrap_err()),
             error_fingerprint(&direct)
         );
+    }
+
+    #[test]
+    fn exact_adoption_rejects_relocated_snapshot_without_advancing_baseline() {
+        let original = snapshot(&[(1, "/a.rue", "a.rue", "fn a() {}")], 1);
+        let relocated = snapshot(&[(9, "/moved/a.rue", "a.rue", "fn a() {}")], 9);
+        assert_eq!(original.source_revision(), relocated.source_revision());
+        let parsed = Arc::new(parse_source_snapshot_modules(&original).unwrap());
+        let work = ParsedModulesWork {
+            modules_considered: 1,
+            modules_reparsed: 1,
+            ..ParsedModulesWork::default()
+        };
+        let mut session = CanonicalParseSession::new();
+        let update = session.adopt_exact(&relocated, parsed, work);
+        assert!(update.result().is_err());
+        assert_eq!(update.work(), work);
+        assert!(!update.baseline_advanced());
+        assert!(session.baseline().is_none());
     }
 }
