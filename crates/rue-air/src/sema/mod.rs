@@ -485,7 +485,14 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         what: &str,
         span: Span,
     ) -> rue_error::CompileResult<()> {
-        if self.preview_features.contains(&feature) {
+        // The repository standard library is trusted compiler input and may
+        // use the packed-byte substrate that implements its safe StrBuf
+        // surface. Authorization comes from canonical import provenance, not
+        // a path spelling, and deliberately applies only to RawBytes: every
+        // other preview feature remains subject to the consumer's flags.
+        let trusted_std_raw_bytes = feature == rue_error::PreviewFeature::RawBytes
+            && self.trusted_standard_library_files.contains(&span.file_id);
+        if self.preview_features.contains(&feature) || trusted_std_raw_bytes {
             Ok(())
         } else {
             Err(rue_error::CompileError::new(

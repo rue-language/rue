@@ -1,43 +1,224 @@
-// std.strbuf — the source-defined growable string buffer header (RUE-871).
+// std.strbuf — the source-defined growable byte-string buffer.
 //
-// This module deliberately provides only construction, observation, clearing,
-// and teardown. Allocation and growth remain out of scope: `new()` creates a
-// null, zero-capacity buffer without allocating.
-//
-// The ownership invariant is encoded by `cap`: a value with `cap == 0` owns no
-// allocation and must not call `@free`; a value with `cap > 0` owns its `buf`
-// allocation. `free()` supports early release and resets all three fields, so
-// the ordinary scope-exit destructor is then a safe no-op.
+// `cap == 0` is the non-owning representation used by literals and `new()`.
+// A value with `cap > 0` owns exactly `cap` packed bytes at alignment one.
+// Allocation failure is fail-fast, and an owner header is changed only after
+// its replacement allocation has succeeded.
+
+// Raw-pointer operations are private module implementation details. Keeping
+// them outside the public struct prevents callers from laundering unchecked
+// arbitrary pointers through safe-looking associated functions.
+fn read_packed_byte(source: ptr mut u8, index: u64) -> u8 {
+    checked { @byte_read(source, index) }
+}
+
+fn write_packed_byte(destination: ptr mut u8, index: u64, byte: u8) {
+    checked { @byte_write(destination, index, byte); };
+}
+
+fn copy_packed_bytes(
+    source: ptr mut u8,
+    source_start: u64,
+    destination: ptr mut u8,
+    destination_start: u64,
+    count: u64,
+) {
+    let mut i: u64 = 0;
+    while i < count {
+        let byte = read_packed_byte(source, source_start + i);
+        write_packed_byte(destination, destination_start + i, byte);
+        i = i + 1;
+    }
+}
 
 pub struct StrBuf {
     buf: ptr mut u8,
     len: u64,
     cap: u64,
 
-    // Construct an empty buffer without allocating.
     fn new() -> Self {
         let zero: u64 = 0;
-        Self {
-            buf: checked { @int_to_ptr(zero) },
-            len: 0,
-            cap: 0,
+        Self { buf: checked { @int_to_ptr(zero) }, len: 0, cap: 0 }
+    }
+
+    fn with_capacity(requested: u64) -> Self {
+        Self.allocate(requested)
+    }
+
+    // Ordinary entry point used to exercise the source implementation until
+    // RUE-875 removes the compiler's special handling of `with_capacity`.
+    fn allocate(requested: u64) -> Self {
+        if requested == 0 {
+            return Self.new();
         }
+        let cap = Self.initial_capacity(requested);
+        let allocation: ptr mut u8 = checked { @alloc_bytes(cap) };
+        if checked { @ptr_to_int(allocation) } == 0 {
+            @panic("out of memory");
+        }
+        Self { buf: allocation, len: 0, cap: cap }
     }
 
     fn len(borrow self) -> u64 { self.len }
     fn capacity(borrow self) -> u64 { self.cap }
     fn is_empty(borrow self) -> bool { self.len == 0 }
 
-    // Remove all bytes while retaining any owned allocation.
+    fn initial_capacity(required: u64) -> u64 {
+        if required < 16 { 16 } else { required }
+    }
+
+    // Shared checked growth policy: required capacity is `len + additional`,
+    // with a minimum of 16 and doubling when that remains representable.
+    fn growth_capacity(current: u64, required: u64) -> u64 {
+        let mut candidate = Self.initial_capacity(current);
+        while candidate < required {
+            if candidate > 9223372036854775807 {
+                candidate = required;
+            } else {
+                candidate = candidate * 2;
+            }
+        }
+        candidate
+    }
+
+    fn reserve(inout self, additional: u64) {
+        self.grow(additional);
+    }
+
+    // Ordinary entry point for direct source testing before RUE-875 routes the
+    // public `reserve` spelling to the body above.
+    fn reserve_source(inout self, additional: u64) {
+        self.grow(additional);
+    }
+
+    // Literal promotion allocates before copying. Owned growth uses realloc;
+    // on failure, @realloc_bytes leaves the old allocation valid, and this
+    // method leaves the header unchanged before taking the fail-fast path.
+    fn grow(inout self, additional: u64) {
+        if additional > 18446744073709551615 - self.len {
+            @panic("out of memory");
+        }
+        let required = self.len + additional;
+        if required <= self.cap {
+            return;
+        }
+
+        let new_cap = Self.growth_capacity(self.cap, required);
+        if self.cap == 0 {
+            let replacement: ptr mut u8 = checked { @alloc_bytes(new_cap) };
+            if checked { @ptr_to_int(replacement) } == 0 {
+                @panic("out of memory");
+            }
+            copy_packed_bytes(self.buf, 0, replacement, 0, self.len);
+            self.buf = replacement;
+        } else {
+            let replacement = checked { @realloc_bytes(self.buf, self.cap, new_cap) };
+            if checked { @ptr_to_int(replacement) } == 0 {
+                @panic("out of memory");
+            }
+            self.buf = replacement;
+        }
+        self.cap = new_cap;
+    }
+
+    fn push(inout self, byte: u8) {
+        self.append_byte(byte);
+    }
+
+    fn append_byte(inout self, byte: u8) {
+        self.grow(1);
+        write_packed_byte(self.buf, self.len, byte);
+        self.len = self.len + 1;
+    }
+
+    fn push_str(inout self, other: Self) {
+        Self.append_owned(other, inout self);
+    }
+
+    // The normal source append path consumes a separate owner. Literal inputs
+    // may share static storage safely because the destination is promoted to a
+    // fresh allocation before any writes.
+    fn append_owned(other: Self, inout target: Self) {
+        let source_len = other.len;
+        let destination_start = target.len;
+        target.grow(source_len);
+        if source_len == 0 {
+            return;
+        }
+        copy_packed_bytes(other.buf, 0, target.buf, destination_start, source_len);
+        target.len = destination_start + source_len;
+    }
+
+    // Directly exercise the alias-sensitive case before RUE-875 routes the
+    // public spelling here. Growth happens first; reads then use the current
+    // pointer, so reallocating a self append never reads a stale allocation.
+    fn duplicate(inout self) {
+        let old_len = self.len;
+        self.grow(old_len);
+        copy_packed_bytes(self.buf, 0, self.buf, old_len, old_len);
+        self.len = old_len + old_len;
+    }
+
     fn clear(inout self) {
         self.len = 0;
     }
 
-    // Release an owned allocation early. Resetting the header transfers this
-    // value to the non-owning empty state before its eventual scope-exit drop.
+    fn clone(borrow self) -> Self {
+        self.copy()
+    }
+
+    // Clone always allocates, including for an empty or literal-backed value.
+    fn copy(borrow self) -> Self {
+        let mut result = Self.allocate(Self.initial_capacity(self.len));
+        copy_packed_bytes(self.buf, 0, result.buf, 0, self.len);
+        result.len = self.len;
+        result
+    }
+
+    fn substring(borrow self, start: u64, count: u64) -> Self {
+        self.byte_range(start, count)
+    }
+
+    fn byte_range(borrow self, start: u64, count: u64) -> Self {
+        if start > self.len || count > self.len - start {
+            // Preserve the canonical user-visible diagnostic until Rue has a
+            // source-accessible bounds-trap primitive.
+            @panic("index out of bounds");
+        }
+        if count == 0 {
+            return Self.new();
+        }
+        let mut result = Self.allocate(count);
+        copy_packed_bytes(self.buf, start, result.buf, 0, count);
+        result.len = count;
+        result
+    }
+
+    fn concat(borrow self, borrow other: Self) -> Self {
+        Self.concat_borrowed(borrow self, borrow other)
+    }
+
+    // Ordinary entry point for the source concatenation algorithm until the
+    // operator's compiler cutover in RUE-875.
+    fn concat_borrowed(borrow first: Self, borrow second: Self) -> Self {
+        if second.len > 18446744073709551615 - first.len {
+            @panic("out of memory");
+        }
+        let total = first.len + second.len;
+        if total == 0 {
+            return Self.new();
+        }
+        let mut result = Self.allocate(total);
+        copy_packed_bytes(first.buf, 0, result.buf, 0, first.len);
+        copy_packed_bytes(second.buf, 0, result.buf, first.len, second.len);
+        result.len = total;
+        result
+    }
+
+    // Reset after freeing so the later destructor is a no-op.
     fn free(inout self) {
         if self.cap > 0 {
-            checked { @free(self.buf, self.cap); };
+            checked { @free_bytes(self.buf, self.cap); };
         }
         let zero: u64 = 0;
         self.buf = checked { @int_to_ptr(zero) };
@@ -46,10 +227,8 @@ pub struct StrBuf {
     }
 }
 
-// Source-defined drop glue owns teardown for `std.strbuf.StrBuf`. In
-// particular, the null header from `new()` never reaches `@free`.
 drop fn StrBuf(self) {
     if self.cap > 0 {
-        checked { @free(self.buf, self.cap); };
+        checked { @free_bytes(self.buf, self.cap); };
     }
 }

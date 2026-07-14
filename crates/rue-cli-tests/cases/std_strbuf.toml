@@ -29,6 +29,264 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "source_owned_algorithms_use_packed_bytes"
+description = "The qualified source type allocates, grows, appends, clones, slices, and concatenates packed bytes."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mut bytes = S.allocate(2);
+    bytes.append_byte(1);
+    bytes.append_byte(2);
+    bytes.append_byte(3);
+    bytes.append_byte(4);
+    bytes.append_byte(5);
+    bytes.append_byte(6);
+    bytes.append_byte(7);
+    bytes.append_byte(8);
+    bytes.append_byte(9);
+    bytes.append_byte(10);
+    bytes.append_byte(11);
+    bytes.append_byte(12);
+    bytes.append_byte(13);
+    bytes.append_byte(14);
+    bytes.append_byte(15);
+    bytes.append_byte(16);
+    bytes.append_byte(17);
+    if bytes.len() != 17 || bytes.capacity() < 17 { return 1; }
+    bytes.reserve_source(20);
+    if bytes.len() != 17 || bytes.capacity() < 37 { return 2; }
+    checked {
+        if @byte_read(bytes.buf, 0) != 1 { return 3; }
+        if @byte_read(bytes.buf, 7) != 8 { return 4; }
+        if @byte_read(bytes.buf, 8) != 9 { return 5; }
+        if @byte_read(bytes.buf, 15) != 16 { return 6; }
+        if @byte_read(bytes.buf, 16) != 17 { return 7; }
+    };
+
+    let value: S = "abcdefghijklmnopq";
+    let copied = value.copy();
+    if value != "abcdefghijklmnopq" || copied != value { return 8; }
+
+    let empty = S.new();
+    let empty_copy = empty.copy();
+    if empty_copy.len() != 0 || empty_copy.capacity() < 16 { return 9; }
+
+    let mut appended: S = "ab";
+    let suffix: S = "cdefghijk";
+    S.append_owned(suffix, inout appended);
+    if appended != "abcdefghijk" { return 10; }
+
+    let middle = value.byte_range(2, 10);
+    if middle != "cdefghijkl" { return 11; }
+    let right: S = "XY";
+    let joined = S.concat_borrowed(borrow middle, borrow right);
+    if joined != "cdefghijklXY" { return 12; }
+    if middle != "cdefghijkl" || right != "XY" { return 13; }
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "raw_bytes", "--preview", "string_trio", "-o", "prog"]
+exit_code = 0
+
+[[case]]
+name = "source_literal_promotion_self_append_and_adjacent_bytes"
+description = "Literal promotion and a reallocating self append preserve every adjacent packed byte."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mut value: S = "abcdefghijk";
+    value.duplicate();
+    if value != "abcdefghijkabcdefghijk" { return 1; }
+    if value.capacity() < value.len() { return 2; }
+    checked {
+        if @byte_read(value.buf, 7) != 104 { return 3; }
+        if @byte_read(value.buf, 8) != 105 { return 4; }
+        if @byte_read(value.buf, 10) != 107 { return 5; }
+        if @byte_read(value.buf, 11) != 97 { return 6; }
+        if @byte_read(value.buf, 21) != 107 { return 7; }
+    };
+
+    let mut reserved: S = "stay";
+    reserved.reserve_source(0);
+    if reserved != "stay" || reserved.capacity() == 0 { return 8; }
+
+    let mut appended_empty: S = "put";
+    let empty = S.new();
+    S.append_owned(empty, inout appended_empty);
+    if appended_empty != "put" || appended_empty.capacity() == 0 { return 9; }
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "raw_bytes", "--preview", "string_trio", "-o", "prog"]
+exit_code = 0
+
+[[case]]
+name = "source_zero_capacity_empty_ranges_and_early_free"
+description = "Zero-sized construction and ranges remain unallocated, while early free resets an owner."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let zero = S.allocate(0);
+    if zero.capacity() != 0 { return 1; }
+    let source: S = "abc";
+    let empty = source.byte_range(3, 0);
+    if empty.len() != 0 || empty.capacity() != 0 { return 2; }
+
+    let mut owned = S.allocate(4);
+    owned.append_byte(65);
+    owned.free();
+    if owned.len() != 0 || owned.capacity() != 0 { return 3; }
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 0
+
+[[case]]
+name = "source_capacity_overflow_fails_fast"
+description = "Reserve overflow follows the canonical allocation-failure contract before touching the owner."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let zero: u64 = 0;
+    let p: ptr mut u8 = checked { @int_to_ptr(zero) };
+    let mut impossible = S { buf: p, len: 18446744073709551615, cap: 0 };
+    impossible.grow(1);
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["panic: out of memory"]
+
+[[case]]
+name = "source_allocation_failure_fails_fast"
+description = "A failed source allocation never publishes a null-backed nonzero capacity."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let impossible = S.allocate(18446744073709551615);
+    @intCast(impossible.len())
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["panic: out of memory"]
+
+[[case]]
+name = "source_byte_range_out_of_bounds"
+description = "Source byte-range copying rejects an overflowing or out-of-bounds range."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let value: S = "abc";
+    let impossible = value.byte_range(2, 18446744073709551615);
+    @intCast(impossible.len())
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["index out of bounds"]
+
+[[case]]
+name = "source_emit_avoids_transitional_runtime_methods"
+description = "MIR for qualified source algorithms has no transitional String allocation or mutation calls."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mut value: S = "ab";
+    value.duplicate();
+    let copied = value.copy();
+    let prefix = copied.byte_range(1, 2);
+    let suffix: S = "z";
+    let joined = S.concat_borrowed(borrow prefix, borrow suffix);
+    @intCast(joined.len())
+}
+""" }]
+args = ["--emit", "mir", "main.rue", "--preview", "string_trio"]
+compile_only = true
+compile_stdout_contains = ["duplicate", "byte_range", "concat_borrowed", "read_packed_byte", "write_packed_byte"]
+compile_stdout_not_contains = [
+  "__rue_String_with_capacity",
+  "__rue_String_reserve",
+  "__rue_String_push",
+  "__rue_String_push_str",
+  "__rue_String_clone",
+  "__rue_String_substring",
+  "__rue_String_concat",
+]
+
+[[case]]
+name = "raw_pointer_helpers_are_not_associated_surface"
+description = "The source StrBuf type exposes no associated function that accepts arbitrary raw pointers."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let zero: u64 = 0;
+    let p: ptr mut u8 = checked { @int_to_ptr(zero) };
+    @intCast(S.read_byte(p, 0))
+}
+""" }]
+compile_fail = true
+error_contains = ["read_byte"]
+
+[[case]]
+name = "module_raw_pointer_helpers_are_private"
+description = "Packed-byte implementation functions cannot be called through the imported std.strbuf module."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let zero: u64 = 0;
+    let p: ptr mut u8 = checked { @int_to_ptr(zero) };
+    @intCast(std.strbuf.read_packed_byte(p, 0))
+}
+""" }]
+compile_fail = true
+error_contains = ["private"]
+
+[[case]]
+name = "append_owned_rejects_same_owner_alias"
+description = "The supported self-append path is duplicate; a consumed source cannot alias its inout target."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mut value: S = "abc";
+    S.append_owned(value, inout value);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+compile_fail = true
+error_contains = ["into a call that also passes it"]
+
+[[case]]
 name = "canonical_identity_drives_string_semantics"
 description = "Qualified and aliased std StrBuf values use view coercions, indexing, iteration, equality, and transitional runtime helpers."
 env = { RUE_STD_PATH = "${REAL_STD}" }
@@ -68,8 +326,8 @@ const std = @import("std");
 const S = std.strbuf.StrBuf;
 
 fn owned(byte: u8) -> S {
-    let p: ptr mut u8 = checked { @alloc(4) };
-    checked { @ptr_write(p, byte); };
+    let p: ptr mut u8 = checked { @alloc_bytes(4) };
+    checked { @byte_write(p, 0, byte); };
     std.strbuf.StrBuf { buf: p, len: 1, cap: 4 }
 }
 
@@ -92,6 +350,7 @@ fn main() -> i32 {
     0
 }
 """ }]
+args = ["main.rue", "--preview", "raw_bytes", "-o", "prog"]
 exit_code = 0
 
 [[case]]
