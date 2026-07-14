@@ -946,9 +946,7 @@ impl<'a> BodySema<'a> {
                 // borrowed view passed here would escape and dangle. A
                 // `borrow str` parameter (Borrow mode) is the sanctioned view
                 // and accepts a buffer, so it is exempt.
-                if matches!(param_mode, RirParamMode::Normal | RirParamMode::Comptime)
-                    && self.is_str_struct(str_ty)
-                {
+                if param_mode == RirParamMode::Normal && self.is_str_struct(str_ty) {
                     self.reject_non_first_class_str(
                         arg.value,
                         arg_result.ty,

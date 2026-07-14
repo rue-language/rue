@@ -1144,7 +1144,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
             .map(|(((&ty, &mode), &is_comptime), rir)| {
                 use rue_rir::RirParamMode;
                 let mode = match mode {
-                    RirParamMode::Normal | RirParamMode::Comptime => SemanticParameterMode::Value,
+                    RirParamMode::Normal => SemanticParameterMode::Value,
                     RirParamMode::Borrow => SemanticParameterMode::Borrow,
                     RirParamMode::Inout => SemanticParameterMode::Inout,
                 };
