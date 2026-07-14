@@ -439,9 +439,6 @@ pub enum Aarch64Inst {
         offset: i32,
     },
 
-    /// `add dst, src, #imm, lsl #12` - Add immediate with shift (for large offsets).
-    /// Note: Using regular AddImm for now, this is for future large offset support.
-
     /// `lsl dst, src, #imm` - Logical shift left by immediate (64-bit).
     LslImm { dst: Operand, src: Operand, imm: u8 },
 
@@ -1086,7 +1083,7 @@ impl Aarch64Mir {
 
     /// Take ownership of the symbol table.
     ///
-    /// Used during register allocation to transfer symbols to the new MIR.
+    /// Used during register allocation to transfer symbols to the rewritten MIR.
     pub fn take_symbols(&mut self) -> Vec<String> {
         self.symbol_index.clear();
         std::mem::take(&mut self.symbols)
@@ -1094,7 +1091,7 @@ impl Aarch64Mir {
 
     /// Set the symbol table.
     ///
-    /// Used during register allocation to restore symbols from the old MIR.
+    /// Used during register allocation to restore symbols from the pre-rewrite MIR.
     pub fn set_symbols(&mut self, symbols: Vec<String>) {
         // Rebuild the index from the symbol table
         self.symbol_index.clear();

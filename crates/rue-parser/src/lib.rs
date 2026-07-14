@@ -42,7 +42,7 @@ pub use ast::{
     MatchExpr,
     Method,
     MethodCallExpr,
-    // SOA AST types (Phase 1)
+    // Struct-of-arrays AST types
     Param,
     ParamMode,
     ParenExpr,

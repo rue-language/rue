@@ -1438,11 +1438,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         let name_sym = self.interner.get_or_intern(call_name);
         // During declaration binding, the constructor may not be collected yet: struct-field and
         // enum-payload types, const initializers, and earlier function
-        // signatures all resolve before the main declaration sweep reaches
-        // the callee's `FnDecl`, so `struct S { v: Vec(i32) }` — or a
-        // signature naming `Vec(i32)` declared above `fn Vec` — used to
-        // E0204 while the same application resolved fine later (RUE-603).
-        // Collect the same-file declaration on demand, mirroring the
+        // signatures can resolve before the main declaration sweep reaches
+        // the callee's `FnDecl`. Collect the same-file declaration on demand
+        // so `struct S { v: Vec(i32) }` and signatures naming a later-collected
+        // `Vec(i32)` resolve consistently (RUE-603), mirroring the
         // declaration-time indexed const-alias resolution path.
         let mut name_key = self.resolve_function_name_local(name_sym, span.file_id);
         if name_key.is_none() && self.declaration_binding_active {
@@ -3139,9 +3138,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 
     /// Checked companion to [`Self::abi_slot_count`]: `None` when the type's
     /// layout overflows or exceeds [`MAX_TYPE_SLOTS`] (RUE-561). Computed in
-    /// u64 with checked arithmetic, so a `[i32; 4294967296]` no longer
-    /// truncates to zero slots and a `[i32; 536870912]` no longer overflows
-    /// the debug-build multiply.
+    /// u64 with checked arithmetic so large array lengths cannot truncate to
+    /// zero slots or overflow the slot-count multiplication.
     pub(crate) fn checked_abi_slot_count(&self, ty: Type) -> Option<u64> {
         let slots = match ty.kind() {
             TypeKind::Array(array_type_id) => {

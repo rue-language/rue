@@ -121,8 +121,7 @@ impl ParserState {
     }
 }
 
-/// Type alias for parser extras that carries parser state.
-/// This replaces the previous thread-local approach with compile-time safe state passing.
+/// Parser extras carry symbols and file identity explicitly through parser state.
 type ParserExtras<'src> = extra::Full<Rich<'src, TokenKind>, SimpleState<ParserState>, ()>;
 
 /// Convert a `usize` offset to `u32`, asserting it fits in debug builds.
@@ -548,9 +547,8 @@ where
 /// Parser for function parameters: [comptime|inout|borrow] name: type
 ///
 /// A parameter takes at most one mode keyword. Repeated (`comptime comptime
-/// T`) or conflicting (`comptime inout x`) modifiers used to be silently
-/// accepted — the duplicate landed in a vestigial `is_comptime` flag next to
-/// `ParamMode` — and are now rejected with a targeted error. (RUE-133)
+/// T`) and conflicting (`comptime inout x`) modifiers are rejected at the
+/// second keyword with a targeted error (RUE-133).
 fn param_parser<'src, I>() -> impl Parser<'src, I, Param, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -825,11 +823,9 @@ where
         // Atom parser - primary expressions
         let atom = atom_parser(expr.clone(), block_like);
 
-        // Rust-refugee diagnostic: `expr as T` is not Rue syntax (`as` is an
-        // ordinary identifier, so `5 as i64` used to die with a generic
-        // "expected semicolon" error). An expression directly followed by the
-        // identifier `as` is never valid Rue, so consume it and report a
-        // targeted error pointing at the `as`. (RUE-133)
+        // Rust-refugee diagnostic: `expr as T` is not Rue syntax. Because `as`
+        // is otherwise an ordinary identifier, consume it in this invalid
+        // position and report a targeted error at the token (RUE-133).
         let as_misuse = select! { TokenKind::Ident(name) => name }
             .map_with(|name, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
                 (name, e.state().syms.as_kw, e.span())
@@ -1940,8 +1936,7 @@ where
         // Never type: ! — but only when the `!` is the entire argument (the
         // next token is `,` or `)`). A `!` followed by anything else is the
         // logical-not operator (e.g. `@dbg(!flag)`), which must fall through
-        // to the expression branch; committing to the never-type parse here
-        // used to reject those arguments (RUE-150). The lookahead is
+        // to the expression branch (RUE-150). The lookahead is
         // non-consuming (`rewind`) so the delimiter is still parsed normally.
         let never_type = just(TokenKind::Bang)
             .then_ignore(one_of([TokenKind::Comma, TokenKind::RParen]).rewind())
@@ -2738,16 +2733,11 @@ where
 ///    infix, so they already start a new statement without special handling.
 ///
 ///  * **Linear-time nesting (RUE-276).** Accepting `;`/`}`/end as boundaries
-///    (not just `-`) is what keeps parsing near-linear in block-nesting depth.
-///    A nested block `{ { { ... } } }` is always terminated by `}`, so this
-///    parser *succeeds* at every level and the block-like is descended exactly
-///    once. The narrow `-`-only predicate this replaced instead *failed* on
-///    every `;`/`}`-terminated block, forcing the general Pratt `expr` to
-///    re-descend the same nested input — two full descents per level, i.e.
-///    O(2^depth) (depth 20 took >30s). The general `expr` is now reached only
-///    for the rarer case of a block-like actually continued by an operator or
-///    suffix, which is shallow in practice. Producing the same block-like `Expr`
-///    the Pratt `expr` would, the AST is byte-identical either way.
+///    keeps parsing near-linear in block-nesting depth. A nested block
+///    `{ { { ... } } }` terminates with `}` at every level, so this parser
+///    succeeds and descends each level once. The general Pratt parser is used
+///    only when an operator or suffix actually continues the block-like
+///    expression, and both paths produce the same block-like AST node.
 ///
 /// It is `recursive` because the block bodies it contains hold block-items that
 /// again prefer this parser; the recursion knot lets those bodies reference the

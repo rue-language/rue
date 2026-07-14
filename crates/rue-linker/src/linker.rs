@@ -15,11 +15,9 @@ use crate::util::align_up;
 
 /// Which merged output buffer a relocation's patch site lives in.
 ///
-/// Historically only `.text` relocations were collected at all — relocation
-/// records on `.rodata`/`.data` sections were silently dropped, leaving
-/// e.g. panic-Location string pointers null in every linked binary
-/// (RUE-131 item 1). Each pending relocation now carries its home so the
-/// apply loop can patch the right buffer against the right base address.
+/// Each pending relocation carries its home buffer and base address so
+/// relocations from `.text`, `.rodata`, and `.data` patch the correct merged
+/// section (RUE-131 item 1).
 #[derive(Clone, Copy, Debug)]
 enum PatchHome {
     /// Patch site is in the merged text buffer (base = code vaddr).
@@ -99,9 +97,8 @@ fn is_bss_section(name: &str) -> bool {
 /// Apply a single already-resolved relocation by patching `buf` in place.
 ///
 /// Shared by both `link_elf` and `link_macho` (RUE-335): the per-kind patch
-/// encoding is identical across object formats, so it lives here once instead
-/// of being duplicated in each linker path — a relocation fix now lands in a
-/// single place. The caller resolves the format-specific inputs first (which
+/// encoding is identical across object formats, so it lives here once. The
+/// caller resolves the format-specific inputs first (which
 /// merged buffer the patch site lives in, its base virtual address, and the
 /// symbol's resolved address) and passes them in.
 ///
@@ -747,8 +744,8 @@ impl Linker {
                         return Err(LinkError::DuplicateSymbol(sym.name.clone()));
                     }
                     // A strong definition overrides a weak one. Among weak
-                    // definitions the FIRST wins (standard linker semantics;
-                    // this used to keep the last). (RUE-131 item 9)
+                    // definitions the first wins, as required by standard
+                    // linker semantics (RUE-131 item 9).
                     if existing.binding == SymbolBinding::Weak
                         && sym.binding == SymbolBinding::Global
                     {
@@ -953,8 +950,7 @@ impl Linker {
         // Merge rodata sections directly into __TEXT (after code).
         // This keeps rodata addresses close to code for PC-relative addressing.
         // Patch sites in rodata live in the merged text buffer, so their home
-        // is Text. Rodata relocations used to not be collected at all on the
-        // Mach-O path, leaving e.g. pointer tables in rodata null.
+        // is Text and their relocations are applied against that base.
         // (RUE-131 items 8 and 11)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
@@ -1029,11 +1025,9 @@ impl Linker {
             }
         }
 
-        // Compute the final file/VM layout BEFORE placing symbols, using the
-        // same single-source-of-truth computation build_dynamic() uses. The
-        // data segment address used to be hardcoded to VM_BASE + PAGE_SIZE
-        // here, which went stale the moment __TEXT outgrew one page —
-        // the unified layout places __DATA wherever __TEXT actually ends.
+        // Compute the final file/VM layout before placing symbols, using the
+        // same single-source-of-truth computation as build_dynamic(). __DATA
+        // begins wherever the actual __TEXT layout ends.
         // (RUE-131 items 3 and 8)
         let mut layout_builder = MachOBuilder::new()
             .with_code(merged_text.clone(), 0) // only the length matters for layout
@@ -1055,10 +1049,9 @@ impl Linker {
         let text_vaddr = VM_BASE + text_file_offset;
         // __DATA segment virtual address (0 if there is no writable data)
         let data_vaddr = layout.data_vm_addr;
-        // bss begins right after the (8-aligned) initialized data within the
-        // __DATA segment. The old formula also added bss_offset_in_data —
-        // which IS merged_data.len() — double-counting the data length, so
-        // every bss symbol pointed past its real storage. (RUE-131 item 4)
+        // bss begins right after the 8-aligned initialized data within the
+        // __DATA segment; `merged_data.len()` is the complete offset and must
+        // be added exactly once. (RUE-131 item 4)
         let bss_vaddr = if bss_size > 0 {
             data_vaddr + align_up(merged_data.len() as u64, 8)
         } else {
@@ -1156,10 +1149,9 @@ impl Linker {
 
             // Resolve the symbol (locals only within their own object), with
             // the same fallbacks as the ELF path: the symbol's own section,
-            // then 0 for undefined weaks. An unresolved symbol is an ERROR —
-            // it used to be silently skipped on the theory that dyld would
-            // bind it at runtime, but we emit no binding info (nsyms = 0), so
-            // the unpatched instruction was just garbage at runtime.
+            // then 0 for undefined weaks. Any other unresolved symbol is an
+            // error because this output emits no dynamic binding information;
+            // leaving its relocation unpatched would produce invalid code.
             // (RUE-131 item 7)
             let target_vaddr =
                 if let Some(addr) = symbol_addresses.resolve(obj_idx, &sym_name, sym_binding) {

@@ -42,11 +42,9 @@ pub struct InferenceContext {
     /// `const N: i32 = 41`, a module type for `const m = @import(...)`). Constant
     /// types are fully resolved during declaration gathering, before any
     /// function body is inferred, so they can be consulted like params here.
-    /// Without this map a const reference inferred to `<error>` and poisoned
-    /// every expression it touched (RUE-142). Keyed by (declaring file, name):
-    /// same-named constants in sibling modules are distinct declarations, and
-    /// the old bare-name keying let one file's constant silently type another
-    /// file's code (RUE-638).
+    /// Keyed by (declaring file, name) so references receive their declared
+    /// type (RUE-142) and same-named constants in sibling modules remain
+    /// distinct declarations (RUE-638).
     pub const_types: HashMap<(FileId, Spur), Type>,
     /// File-level type aliases: name -> concrete type denoted by a
     /// type-valued constant (`const OptI = std.option.Option(i64)`). These are

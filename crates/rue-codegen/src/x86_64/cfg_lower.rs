@@ -266,9 +266,9 @@ impl<'a> CfgLower<'a> {
     /// Call `symbol` passing `arg_vregs` as flattened by-value slot arguments
     /// per the standard convention: the first slots in ARG_REGS, the rest
     /// pushed on the stack (16-byte aligned, cleaned up after the call) —
-    /// the same shape as the generic `Call` lowering. Used by the Drop paths,
-    /// whose destructor/drop-glue calls previously moved slots into argument
-    /// registers only and panicked past 6 slots (RUE-193).
+    /// the same shape as generic `Call` lowering. Drop and drop-glue calls use
+    /// this path so every slot beyond the six register arguments is passed on
+    /// the stack (RUE-193).
     fn emit_call_with_slot_args(&mut self, arg_vregs: &[VReg], symbol: &str) {
         let num_reg_args = arg_vregs.len().min(ARG_REGS.len());
         let num_stack_args = arg_vregs.len().saturating_sub(ARG_REGS.len());
@@ -886,11 +886,10 @@ impl<'a> CfgLower<'a> {
 
                 // The prologue copies every ABI arg slot — register- and
                 // stack-passed alike — into the contiguous frame param area
-                // (slots num_locals..num_locals+num_params), so all param
-                // reads are uniform frame-slot loads. Previously slots past
-                // the 6 arg registers were read from [rbp+16+...], which the
-                // frame-slot-based aggregate and write paths didn't mirror,
-                // dropping slots of >6-slot aggregate args. (RUE-13/79/91)
+                // (slots num_locals..num_locals+num_params), so scalar,
+                // aggregate, and write paths all use uniform frame-slot loads,
+                // including ABI slots beyond the six argument registers.
+                // (RUE-13/79/91)
                 if is_by_ref {
                     // For by-ref params, the slot contains a POINTER to the caller's memory.
                     // Load the pointer, then dereference to get the value.
@@ -1779,9 +1778,9 @@ impl<'a> CfgLower<'a> {
                         // (RUE-221) — regardless of how it was produced. The accessor
                         // materializes lazily-sourced values (Load/Param/PlaceRead) and
                         // cache-hits eager ones (StructInit/ArrayInit/Call/BlockParam).
-                        // The old per-source array ladder iterated array_len (element
-                        // count), not slot_count, so a multidimensional array dropped
-                        // every row after the first. (RUE-118, RUE-79)
+                        // Materialization uses the recursive slot count, so every
+                        // scalar slot of a multidimensional array is passed.
+                        // (RUE-118, RUE-79)
                         let field_vregs = self.require_aggregate_slots(arg_value);
                         // Pass a Rue callee's aggregate slots in REVERSED
                         // logical order (ADR-0040 / RUE-311). The callee

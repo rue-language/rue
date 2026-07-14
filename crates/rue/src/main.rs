@@ -757,9 +757,9 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         (positional, out)
     } else if !emit_stages.is_empty() {
         // --emit produces no executable, so there is no output positional:
-        // every positional arg is a source file. Without this, the legacy
-        // two-positional mode claimed the second FILE as the output path and
-        // `--emit air a.rue b.rue` was impossible (RUE-130).
+        // every positional arg is a source file, including the second path
+        // that legacy two-positional mode would otherwise treat as output
+        // (RUE-130).
         (positional, "a.out".to_string())
     } else if positional.len() == 1 {
         // Single source file, no -o: default output to a.out
@@ -767,9 +767,8 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     } else if positional.len() == 2 {
         // Two positional args, no -o: backwards compatible mode
         // First is source, second is output — but NEVER treat a .rue file as
-        // the output. `rue a.rue b.rue` used to silently overwrite the b.rue
-        // SOURCE FILE with the compiled binary (RUE-130); the user almost
-        // certainly meant to compile both.
+        // the output. Refusing `rue a.rue b.rue` protects the second source
+        // from being overwritten by the compiled binary (RUE-130).
         if positional[1].ends_with(".rue") {
             eprintln!(
                 "Error: refusing to use '{}' as the output path: it looks like a source file",
@@ -2173,7 +2172,7 @@ fn handle_emit_multi_file(
         None
     };
     if let Some(state) = &frontend_state {
-        // Warnings used to be silently dropped in all --emit modes (RUE-130).
+        // Every --emit mode must surface frontend warnings (RUE-130).
         diagnostics.print_warnings(state.warnings());
         let work = state.query_work();
         debug_assert_eq!(work.parsed.syntax.parser_invocations, source_snapshot.len());
@@ -2685,9 +2684,9 @@ mod tests {
 
     #[test]
     fn parse_output_equals_extensionless_input_error() {
-        // RUE-351: `-o` targeting an extensionless input source is refused. The
-        // old guard only recognized inputs by a `.rue` suffix. Paths resolve
-        // against the cwd; neither file needs to exist for the keys to match.
+        // RUE-351: `-o` targeting an extensionless input source is refused.
+        // Resolved-path identity, rather than a `.rue` suffix, protects the
+        // input; neither file needs to exist for the keys to match.
         assert!(is_error(&parse_args_from(&["prog", "-o", "prog"])));
     }
 

@@ -183,7 +183,8 @@ pub unsafe extern "C" fn _main() -> ! {
     }
 
     // Install the stack-overflow SIGSEGV handler before running user code.
-    // (Currently a no-op on macOS — see the platform stub for why. RUE-645.)
+    // (A deliberate no-op on macOS; the Darwin trampoline is tracked by
+    // RUE-707.)
     platform::install_stack_overflow_handler(__rue_stack_overflow_handler);
 
     let exit_code: i32;

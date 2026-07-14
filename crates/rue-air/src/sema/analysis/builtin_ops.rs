@@ -1,7 +1,7 @@
 //! Built-in arithmetic, comparison, string, and builtin method/assoc-fn analysis.
 //!
-//! Split out of `analysis.rs` (RUE-4); methods are part of the same
-//! `impl<'a> Sema<'a>` and behave identically.
+//! This category owns builtin operations within the canonical semantic-analysis
+//! implementation.
 
 use super::*;
 

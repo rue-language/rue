@@ -15,7 +15,7 @@
 //! - [`analyze_decl_noop`] - DropFnDecl (declarations that produce Unit)
 //!
 //! Binary operations (arithmetic, comparison, logical, bitwise) are handled
-//! by existing helper methods in `analysis.rs`:
+//! by helpers in `sema::analysis::builtin_ops`:
 //! - `analyze_binary_arith` - Add, Sub, Mul, Div, Mod, BitAnd, BitOr, BitXor, Shl, Shr
 //! - `analyze_comparison` - Eq, Ne, Lt, Gt, Le, Ge
 //! - Logical And/Or are simple enough to remain inline
@@ -111,12 +111,10 @@ impl PlaceTrace {
     ///
     /// A **dynamic** (or negative) index cannot be named, so it resets the
     /// path: segments before it are dropped and collection continues after it.
-    /// This keeps the old "you can't statically track a partial move through a
-    /// runtime index" behavior for that case (the caller falls back to the
-    /// conservative whole-array E0904 rejection), while constant indices are
-    /// now tracked precisely instead of being conflated (every `arr[K].f`
-    /// previously collapsed to `["f"]`, which both hid nested partial moves
-    /// and false-rejected sibling-element moves).
+    /// A runtime index cannot identify one statically tracked element, so the
+    /// caller uses the conservative whole-array E0904 rejection. Constant
+    /// indices remain distinct, preserving nested partial moves without
+    /// rejecting moves from sibling elements.
     pub fn field_path(&self) -> Vec<Spur> {
         let mut path = Vec::new();
         for p in &self.projections {
@@ -3304,7 +3302,7 @@ impl<'a> BodySema<'a> {
                 }
 
                 // RUE-387: reassigning an `inout` parameter whose type carries
-                // a linear value would silently drop the caller's live value.
+                // a linear value would drop the caller's live value implicitly.
                 // An `inout` binding can never be proven moved-out, so this is
                 // always ill-formed (E0494).
                 let discharged = self.place_linear_discharged(param_ty, name, &[], span, ctx);
@@ -3362,15 +3360,15 @@ impl<'a> BodySema<'a> {
         };
 
         // RUE-387: overwriting a local that still holds a live linear value
-        // would silently drop it. Legal only when the whole variable was
+        // would drop it implicitly. Legal only when the whole variable was
         // proven moved-out on every path (reinit-after-move idiom) — evaluated
         // on the post-RHS move state so `x = f(x)` counts as a discharge.
         let discharged = self.place_linear_discharged(local_ty, name, &[], span, ctx);
         self.check_linear_overwrite(local_ty, discharged, false, span)?;
         // Two-types model (ADR-0043, RUE-386): reassigning a first-class `str`
-        // local must store a first-class `str`, not a buffer or a borrowed view
-        // (`s = <buffer>` used to silently truncate a 3-word `StrBuf` into the
-        // 2-word `str` slot, leaving a dangling pointer).
+        // local must store a first-class `str`, not a buffer or a borrowed view;
+        // truncating a 3-word `StrBuf` into the 2-word slot would leave a
+        // dangling pointer.
         if self.is_str_struct(local_ty) {
             self.reject_non_first_class_str(
                 value,
@@ -3684,9 +3682,9 @@ impl<'a> BodySema<'a> {
             let field_inst = self.rir.get(*field_value);
             let field_result = if let InstData::IntConst(value) = &field_inst.data {
                 // Integer literal - use the expected field type directly, but
-                // range-check it first: this shortcut bypasses analyze_literal,
-                // and previously skipped the E0800 check entirely, so
-                // `S { a: 300 }` with a: u8 silently truncated to 44. (RUE-72)
+                // range-check it first because this shortcut bypasses
+                // `analyze_literal`; `S { a: 300 }` with `a: u8` must produce
+                // E0800 rather than truncate to 44. (RUE-72)
                 if !expected_field_type.literal_fits(*value) {
                     return Err(CompileError::new(
                         ErrorKind::LiteralOutOfRange {
@@ -4304,8 +4302,8 @@ impl<'a> BodySema<'a> {
 
     /// Analyze a field assignment.
     ///
-    /// This is a complex operation that handles VarRef and chained field access.
-    /// The full implementation is in analysis.rs as it's quite large (~200 lines).
+    /// Handles both direct and chained field access; the implementation lives
+    /// in `sema::analysis::instructions`.
     fn analyze_field_set(
         &mut self,
         air: &mut Air,
@@ -4315,9 +4313,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Delegate to the main implementation in analysis.rs
-        // This is one of the larger handlers that we'll keep in the main file
-        // for now and refactor in a future pass
+        // Use the category implementation shared by instruction dispatch.
         self.analyze_field_set_impl(air, base, field, value, span, ctx)
     }
 
@@ -4755,9 +4751,8 @@ impl<'a> BodySema<'a> {
     }
 
     /// Try to resolve `module.Enum.Variant` as a module-qualified enum-variant
-    /// path (RUE-488). `.` is the sole member-access spelling; this mirrors what
-    /// the old `module.Enum::Variant` path did, including E0706 module-visibility
-    /// enforcement.
+    /// path (RUE-488). `.` is the sole member-access spelling, and the path
+    /// enforces E0706 module visibility.
     ///
     /// Returns `Ok(None)` — falling through to ordinary field access — unless
     /// `module_ref` names a module **and** `type_name` is an enum defined by that
@@ -5793,8 +5788,8 @@ impl<'a> BodySema<'a> {
 
     /// Analyze an array index write.
     ///
-    /// This is a complex operation that handles VarRef bases.
-    /// The full implementation is in analysis.rs as it's quite large.
+    /// Handles VarRef and projected place bases; the implementation lives in
+    /// `sema::analysis::instructions`.
     fn analyze_index_set(
         &mut self,
         air: &mut Air,
@@ -5804,7 +5799,6 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Delegate to the main implementation in analysis.rs
         self.analyze_index_set_impl(air, base, index, value, span, ctx)
     }
 
@@ -6470,8 +6464,8 @@ impl<'a> BodySema<'a> {
 
     /// Analyze a method call.
     ///
-    /// This is a complex operation that handles both user-defined methods and
-    /// builtin methods. The full implementation is in analysis.rs.
+    /// Handles user-defined and builtin methods through the call-analysis
+    /// category.
     fn analyze_method_call(
         &mut self,
         air: &mut Air,
@@ -6482,7 +6476,6 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Delegate to the main implementation in analysis.rs
         self.analyze_method_call_impl(air, receiver, method, args_start, args_len, span, ctx)
     }
 
@@ -6607,7 +6600,8 @@ impl<'a> BodySema<'a> {
 
     /// Analyze an associated function call.
     ///
-    /// This is a complex operation. The full implementation is in analysis.rs.
+    /// Resolves and analyzes an associated-function call through the
+    /// call-analysis category.
     pub(crate) fn analyze_assoc_fn_call(
         &mut self,
         air: &mut Air,
@@ -6642,7 +6636,6 @@ impl<'a> BodySema<'a> {
             }
         }
 
-        // Delegate to the main implementation in analysis.rs
         self.analyze_assoc_fn_call_impl(
             air, type_name, function, args_start, args_len, span, ctx, None,
         )
@@ -6843,10 +6836,9 @@ impl<'a> BodySema<'a> {
             return Ok(AnalysisResult::new(air_ref, Type::UNIT));
         }
 
-        // Calculate the value based on which intrinsic. Checked layout query
-        // (E0906 on oversized types, RUE-561): the old unchecked u32 math
-        // ICEd on a 2 GiB array in debug builds and truncated a 32 GiB one to
-        // size 0 / alignment 1.
+        // Calculate the value through the checked layout query. Oversized
+        // types produce E0906 rather than overflowing or truncating the slot
+        // count (RUE-561).
         let value: u64 = match intrinsic_name.as_str() {
             "size_of" => {
                 // Calculate size in bytes (slot count * 8)
@@ -6959,8 +6951,7 @@ impl<'a> BodySema<'a> {
 
     /// Analyze an intrinsic call.
     ///
-    /// This is a complex operation that handles many different intrinsics.
-    /// The full implementation is in analysis.rs.
+    /// Dispatches the intrinsic to the corresponding analysis category.
     fn analyze_intrinsic(
         &mut self,
         air: &mut Air,
@@ -6972,7 +6963,6 @@ impl<'a> BodySema<'a> {
         result_expected: Option<Type>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Delegate to the main implementation in analysis.rs
         self.analyze_intrinsic_impl(
             air,
             inst_ref,

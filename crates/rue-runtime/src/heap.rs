@@ -29,12 +29,10 @@
 //!
 //! # Memory Efficiency
 //!
-//! Individual `free()` calls are no-ops. Memory is only reclaimed when:
-//! - The program exits (OS reclaims all memory)
-//! - A future allocator implementation adds actual freeing
-//!
-//! This is a deliberate trade-off: simplicity over memory efficiency.
-//! Rue programs are typically short-lived, so memory waste is acceptable.
+//! Individual `free()` calls are deliberately no-ops: the bump allocator
+//! retains every arena until the process exits, when the OS reclaims it. This
+//! is the runtime ABI contract for this allocator and trades memory efficiency
+//! for simple, predictable allocation.
 
 use crate::platform;
 use core::ptr;
@@ -355,15 +353,14 @@ fn alloc_from_arena(arena: *mut ArenaHeader, size: usize, align: usize) -> *mut 
 /// # Arguments
 ///
 /// * `ptr` - Pointer to the memory to free
-/// * `size` - Size of the allocation (for future compatibility)
-/// * `align` - Alignment of the allocation (for future compatibility)
+/// * `size` - Size supplied by the runtime allocation ABI
+/// * `align` - Alignment supplied by the runtime allocation ABI
 ///
-/// # Current Implementation
+/// # Bump-allocator contract
 ///
-/// This is a **no-op** in the current bump allocator. Memory is only
-/// reclaimed when the program exits. The `size` and `align` parameters
-/// are accepted for API compatibility with future allocators that may
-/// actually free memory.
+/// This is a **no-op**. Memory is reclaimed when the program exits. The
+/// `ptr`, `size`, and `align` parameters preserve the allocator ABI used by
+/// generated code, but no arena bookkeeping is changed.
 ///
 /// # Safety
 ///
@@ -371,13 +368,7 @@ fn alloc_from_arena(arena: *mut ArenaHeader, size: usize, align: usize) -> *mut 
 /// but since this is a no-op, invalid pointers are harmless.
 #[allow(unused_variables)]
 pub fn free(ptr: *mut u8, size: u64, align: u64) {
-    // No-op for bump allocator.
-    // Memory is reclaimed when the program exits.
-    //
-    // Future allocators may implement actual freeing by:
-    // 1. Finding which arena the pointer belongs to
-    // 2. Marking the region as free in a freelist
-    // 3. Potentially unmapping arenas when fully free
+    // Deliberate ABI no-op; the OS reclaims all arenas at process exit.
 }
 
 /// Reallocate memory to a new size.

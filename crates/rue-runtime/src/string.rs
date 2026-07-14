@@ -1,6 +1,8 @@
 //! String runtime functions and methods.
 //!
-//! This module provides all runtime support for the String type:
+//! This module provides runtime support for the source-level `StrBuf` type.
+//! Exported `__rue_String_*` symbols retain their historical `String` spelling
+//! as part of the runtime ABI:
 //! - String equality comparison (`__rue_str_eq`)
 //! - Heap allocation wrappers (`__rue_alloc`, `__rue_free`, `__rue_realloc`)
 //! - String-specific allocation functions
@@ -139,14 +141,14 @@ crate::define_for_all_platforms! {
     /// # Arguments
     ///
     /// * `ptr` - Pointer to the memory to free
-    /// * `size` - Size of the allocation (for future compatibility)
-    /// * `align` - Alignment of the allocation (for future compatibility)
+    /// * `size` - Size supplied by the runtime allocation ABI
+    /// * `align` - Alignment supplied by the runtime allocation ABI
     ///
-    /// # Current Implementation
+    /// # Bump-allocator contract
     ///
-    /// This is a **no-op** in the current bump allocator. Memory is only
-    /// reclaimed when the program exits. The size and align parameters are
-    /// accepted for API compatibility with future allocators.
+    /// This is a **no-op**. Memory is reclaimed when the program exits. The
+    /// pointer, size, and alignment are retained in the generated-code ABI even
+    /// though this allocator does not use them.
     ///
     /// # ABI
     ///
@@ -362,7 +364,7 @@ pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_c
     }
 }
 // =============================================================================
-// String Query Methods (Phase 6: len, capacity, is_empty)
+// String query methods
 // =============================================================================
 //
 // These methods take a String (ptr, len, cap) and return a single value.
@@ -468,7 +470,7 @@ pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) ->
 }
 
 // =============================================================================
-// String Byte Access (RUE-17 Phase 2, ADR-0035)
+// String byte access (ADR-0035)
 // =============================================================================
 //
 // Rue's String is a byte string (conventionally UTF-8, not guaranteed valid),
@@ -525,7 +527,7 @@ crate::define_for_all_platforms! {
 
 crate::define_for_all_platforms! {
     /// Read the byte at `index` in a `str`, returning it as `u8` (ADR-0043
-    /// Phase 3, RUE-324).
+    /// ADR-0043, RUE-324).
     ///
     /// Implements `s[i]` for the `str` string type. A `str` is `[u8]` + UTF-8:
     /// its bytes are PACKED (1 byte each, in `.rodata` for a literal), so like
@@ -692,7 +694,7 @@ crate::define_for_all_platforms! {
 /// Leniently decode one UTF-8 scalar starting at byte `offset` in the `len`-byte
 /// buffer at `ptr`, returning `(scalar, width_in_bytes)`.
 ///
-/// This backs `for c in s.chars_lossy()` (RUE-17 Phase 3, ADR-0035). Unlike the
+/// This backs `for c in s.chars_lossy()` (RUE-17, ADR-0035). Unlike the
 /// strict [`__rue_decode_utf8_at`], which traps at the decode boundary, this
 /// **never traps**: an invalid, truncated, overlong, or surrogate sequence
 /// yields the Unicode replacement scalar `U+FFFD` and advances past its
@@ -776,7 +778,7 @@ crate::define_for_all_platforms! {
     /// Decode the Unicode scalar at byte `offset`, replacing invalid UTF-8.
     ///
     /// Backs the element projection of `for c in s.chars_lossy()` (RUE-17
-    /// Phase 3). Like [`__rue_String_char_scalar`] but never traps: an invalid
+    /// RUE-17). Like [`__rue_String_char_scalar`] but never traps: an invalid
     /// sequence yields `U+FFFD` (see [`__rue_decode_utf8_lossy_at`]). Returns
     /// the scalar zero-extended into `u64` (language-level type `u32`).
     ///
@@ -807,7 +809,7 @@ crate::define_for_all_platforms! {
     /// replacing invalid UTF-8.
     ///
     /// Backs the position advance of `for c in s.chars_lossy()` (RUE-17
-    /// Phase 3). Like [`__rue_String_char_next`] but never traps: the advance
+    /// RUE-17). Like [`__rue_String_char_next`] but never traps: the advance
     /// past an invalid sequence is the width of its maximal subpart (see
     /// [`__rue_decode_utf8_lossy_at`]), guaranteeing forward progress.
     ///
@@ -912,7 +914,7 @@ crate::define_for_all_platforms! {
 }
 
 // =============================================================================
-// Byte-string search predicates (RUE-17 Phase 1, ADR-0035)
+// Byte-string search predicates (ADR-0035)
 // =============================================================================
 //
 // `s.contains(needle)` and `s.starts_with(prefix)` are byte-level: they compare
@@ -926,8 +928,8 @@ crate::define_for_all_platforms! {
 
 crate::define_for_all_platforms! {
     /// True (1) iff the bytes of `needle` occur as a contiguous run inside the
-    /// receiver's bytes. Naive O(len * needle_len) scan — adequate for the
-    /// design-light Phase 1; the empty needle is always contained.
+    /// receiver's bytes. Uses a naive O(len * needle_len) scan; the empty
+    /// needle is always contained.
     ///
     /// # Safety
     ///
@@ -1016,7 +1018,7 @@ crate::define_for_all_platforms! {
 }
 
 // =============================================================================
-// Integer-to-String formatting (RUE-17 Phase 1, ADR-0035)
+// Integer-to-String formatting (ADR-0035)
 // =============================================================================
 
 crate::define_for_all_platforms! {
@@ -1177,7 +1179,7 @@ crate::define_for_all_platforms! {
 crate::define_for_all_platforms! {
     /// Return a NEW String whose bytes are the concatenation of two Strings.
     ///
-    /// Implements `s1 + s2` (RUE-17 Phase 1, ADR-0035). Both operands are
+    /// Implements `s1 + s2` (RUE-17, ADR-0035). Both operands are
     /// borrowed (passed as their three fields each; the caps are unused but part
     /// of the ABI) and neither is consumed. The result owns a fresh heap buffer.
     ///
@@ -1256,7 +1258,7 @@ crate::define_for_all_platforms! {
 }
 
 // =============================================================================
-// String Clone Method (Phase 8)
+// String clone method
 // =============================================================================
 //
 // Clone creates a deep copy of a String. It uses `borrow self` semantics -
@@ -1386,7 +1388,7 @@ pub extern "C" fn __rue_String_clone(out: *mut StringResult, ptr: *const u8, len
 }
 
 // =============================================================================
-// String Mutation Methods (Phase 7: push_str, push, clear, reserve)
+// String mutation methods: push_str, push, clear, reserve
 // =============================================================================
 //
 // These methods take a String (ptr, len, cap) and additional arguments,
@@ -1849,11 +1851,10 @@ fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> 
         }
         (new_ptr, new_cap)
     } else if required > cap {
-        // Need to grow. Compute the doubled capacity FIRST and allocate exactly
-        // that: the capacity we record must never exceed the bytes we actually
-        // own. (This previously realloc'd only `required` while recording the
-        // doubled value — the next append that fit the phantom capacity wrote
-        // past the allocation into neighboring heap memory. RUE-34)
+        // Need to grow. The recorded capacity must equal bytes actually owned,
+        // so compute the doubled capacity first and allocate exactly that
+        // amount. Otherwise a later append could trust nonexistent capacity
+        // and write past the allocation (RUE-34).
         let grown_cap = cap.saturating_mul(2);
         let new_cap = required.max(grown_cap).max(STRING_MIN_CAPACITY);
         let new_ptr = heap::realloc(ptr, cap, new_cap, 1);

@@ -1,7 +1,7 @@
 //! Pointer and low-level intrinsics: ptr read/write/offset, alloc/free/realloc, addr-of, syscall, target arch/os.
 //!
-//! Split out of `analysis.rs` (RUE-4); methods are part of the same
-//! `impl<'a> Sema<'a>` and behave identically.
+//! This category owns pointer and platform-facing intrinsic analysis within
+//! the canonical semantic-analysis implementation.
 
 use super::*;
 

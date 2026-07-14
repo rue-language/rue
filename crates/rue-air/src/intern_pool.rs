@@ -6,7 +6,7 @@
 //! - O(1) type equality (u32 comparison)
 //! - Efficient memory usage
 //! - Clean parallel compilation (no per-function type merging)
-//! - Foundation for future generics
+//! - Canonical identities for generic instantiations
 //!
 //! # Architecture
 //!
@@ -17,17 +17,11 @@
 //! Primitive types (i8-i64, u8-u64, bool, unit, never, error) are encoded directly
 //! in the `InternedType` index using reserved indices 0-15, requiring no pool lookup.
 //!
-//! # Migration Strategy (ADR-0024)
-//!
-//! This module is part of Phase 1 of the Type Intern Pool migration:
-//! - Phase 1: Introduce pool alongside existing system (this module)
-//! - Phase 2: Migrate array types to the pool
-//! - Phase 3: Migrate struct/enum IDs to pool indices
-//! - Phase 4: Unify Type representation to `InternedType(u32)`
-//!
-//! During Phase 1, the pool coexists with the existing `Type` enum, `StructId`,
-//! `EnumId`, and `ArrayTypeId`. The pool is populated during declaration collection
-//! but not yet used for type operations.
+//! [`Type`] is the compact compiler-facing handle. Composite `StructId`,
+//! `EnumId`, `ArrayTypeId`, and pointer IDs are indices into this pool, while
+//! `InternedType` provides the pool's primitive-or-composite encoding for
+//! interning and structural lookup. Definitions and structural identities are
+//! therefore resolved through one pool (ADR-0024).
 //!
 //! # Thread Safety
 //!
@@ -195,29 +189,23 @@ pub enum TypeData {
 
 /// Data for a struct type in the intern pool.
 ///
-/// During Phase 1, this mirrors the existing `StructDef` to verify correctness.
-/// In later phases, `StructDef` will be replaced by this.
+/// The pool entry for a nominal struct and its definition.
 #[derive(Debug, Clone)]
 pub struct StructData {
     /// The name symbol (interned string).
     pub name: Spur,
-    /// Reference to the full struct definition.
-    /// During Phase 1, we keep a clone of the StructDef for verification.
-    /// In later phases, the pool will be the canonical source.
+    /// The canonical struct definition stored at this pool index.
     pub def: StructDef,
 }
 
 /// Data for an enum type in the intern pool.
 ///
-/// During Phase 1, this mirrors the existing `EnumDef` to verify correctness.
-/// In later phases, `EnumDef` will be replaced by this.
+/// The pool entry for a nominal enum and its definition.
 #[derive(Debug, Clone)]
 pub struct EnumData {
     /// The name symbol (interned string).
     pub name: Spur,
-    /// Reference to the full enum definition.
-    /// During Phase 1, we keep a clone of the EnumDef for verification.
-    /// In later phases, the pool will be the canonical source.
+    /// The canonical enum definition stored at this pool index.
     pub def: EnumDef,
 }
 
@@ -707,7 +695,7 @@ impl TypeInternPool {
     }
 
     // ========================================================================
-    // Phase 3 helpers: Direct StructId/EnumId access
+    // Direct nominal-ID access
     // ========================================================================
     //
     // These methods allow accessing struct and enum definitions directly via
@@ -1022,8 +1010,7 @@ impl TypeInternPool {
 
     /// Convert Type to InternedType recursively (handles composite types).
     ///
-    /// This is used during Phase 2B migration to convert Type to InternedType
-    /// for array interning.
+    /// Used when structural interning needs the pool encoding of a [`Type`].
     fn type_to_interned_recursive(ty: Type) -> InternedType {
         match ty.kind() {
             TypeKind::I8 => InternedType::I8,
@@ -1145,13 +1132,10 @@ impl TypeInternPool {
     }
 
     // ========================================================================
-    // Conversion helpers for migration (Phase 1)
+    // Primitive conversion helpers
     // ========================================================================
 
-    /// Convert an old-style `Type` to an `InternedType`.
-    ///
-    /// This is a temporary helper for Phase 1 migration. It converts the
-    /// existing `Type` enum to the new interned representation.
+    /// Convert a [`Type`] to an [`InternedType`] when no pool lookup is needed.
     ///
     /// # Note
     ///
@@ -1186,10 +1170,10 @@ impl TypeInternPool {
         }
     }
 
-    /// Convert an `InternedType` back to the old-style `Type`.
+    /// Convert a primitive [`InternedType`] back to [`Type`].
     ///
-    /// This is a temporary helper for Phase 1 migration to verify correctness.
-    /// Returns `None` for composite types since we need the old IDs.
+    /// Composite encodings return `None` because their concrete ID kind must be
+    /// read from the pool.
     pub fn interned_to_type(&self, ty: InternedType) -> Option<Type> {
         if !ty.is_primitive() {
             return None;
@@ -1582,12 +1566,12 @@ mod tests {
         };
         let (struct_id, _) = pool.register_struct(name, def.clone());
 
-        // Test the new Phase 3 struct_def() method that takes StructId directly
+        // Direct nominal-ID lookup returns the canonical definition.
         let retrieved = pool.struct_def(struct_id);
         assert_eq!(retrieved.name, def.name);
         assert_eq!(retrieved.is_copy, def.is_copy);
 
-        // Test the old get_struct_def() that takes InternedType
+        // The pool encoding resolves to the same definition.
         let interned = pool.struct_id_to_interned(struct_id);
         let retrieved2 = pool
             .get_struct_def(interned)
@@ -1615,12 +1599,12 @@ mod tests {
         };
         let (enum_id, _) = pool.register_enum(name, def.clone());
 
-        // Test the new Phase 3 enum_def() method that takes EnumId directly
+        // Direct nominal-ID lookup returns the canonical definition.
         let retrieved = pool.enum_def(enum_id);
         assert_eq!(retrieved.name, def.name);
         assert_eq!(retrieved.variants.len(), 2);
 
-        // Test the old get_enum_def() that takes InternedType
+        // The pool encoding resolves to the same definition.
         let interned = pool.enum_id_to_interned(enum_id);
         let retrieved2 = pool.get_enum_def(interned).expect("should get enum def");
         assert_eq!(retrieved2.name, def.name);

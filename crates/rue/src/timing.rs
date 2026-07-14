@@ -8,7 +8,7 @@
 //!
 //! The timing system is built on tracing's layer architecture:
 //!
-//! 1. **Instrumentation** (Phase 4): Compiler passes are wrapped in tracing spans
+//! 1. **Instrumentation**: Compiler passes are wrapped in tracing spans
 //!    like `info_span!("lexer")`. These are zero-cost when no subscriber collects them.
 //!
 //! 2. **Collection** (this module): `TimingLayer` implements `tracing_subscriber::Layer`

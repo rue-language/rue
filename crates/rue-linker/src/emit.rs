@@ -618,8 +618,7 @@ impl ObjectBuilder {
             .collect();
         // Mach-O ARM64 relocation entries have no addend field: a non-zero
         // addend is carried by an extra ARM64_RELOC_ADDEND entry immediately
-        // preceding the relocation it modifies. (Addends used to be silently
-        // dropped here; the parser side ignored them too — RUE-131 item 5b.)
+        // preceding the relocation it modifies (RUE-131 item 5b).
         let num_addend_entries = text_relocs.iter().filter(|r| r.addend != 0).count();
         let num_text_relocs = text_relocs.len() + num_addend_entries;
 
@@ -975,9 +974,8 @@ impl ObjectBuilder {
             macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
             // n_value is an address within the object's VM layout (section
             // addr + offset), per the Mach-O spec — the same convention
-            // rustc/clang objects use, and what our parser normalizes away.
-            // (This used to write the bare section offset, which only worked
-            // because the parser made the matching mistake.)
+            // rustc/clang objects use and the parser normalizes to a section
+            // offset.
             let value = (rodata_addr + string_offsets[i]) as u64;
             macho.extend_from_slice(&value.to_le_bytes());
             sym_name_idx += 1;
@@ -1436,9 +1434,8 @@ mod tests {
     }
 
     /// RUE-131 item 5b: non-zero addends must round-trip through the Mach-O
-    /// object format (emitted as ARM64_RELOC_ADDEND entries, re-attached by
-    /// the parser). They used to be silently dropped on emit AND hardcoded to
-    /// zero on parse.
+    /// object format: emission writes ARM64_RELOC_ADDEND entries and parsing
+    /// re-attaches them to the following relocation.
     #[test]
     fn test_macho_addend_roundtrip() {
         let obj_bytes = ObjectBuilder::new(Target::Aarch64Macos, "main")

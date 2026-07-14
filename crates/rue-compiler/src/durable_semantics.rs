@@ -746,7 +746,7 @@ fn validate_payload_shape(
     }
 }
 
-/// Typed fail-closed reasons from the future successful-binding exporter.
+/// Typed fail-closed reasons from successful-binding export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DurableSemanticExportFailure {
     ErrorType,

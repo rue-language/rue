@@ -405,8 +405,8 @@ fn print_usage(program: &str) {
         program
     );
     eprintln!();
-    // Driven from all_targets() so this list can't drift from reality again
-    // (it used to omit emitter/emitter_sequence).
+    // Drive this from all_targets() so help output and target dispatch share
+    // one authoritative inventory.
     eprintln!("Targets:");
     for target in targets::all_targets() {
         eprintln!("  {}", target.name());

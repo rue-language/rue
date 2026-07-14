@@ -1187,8 +1187,8 @@ pub enum InstData {
     /// Anonymous enum type: an enum (sum) type used as a value expression
     /// (e.g., `enum { Some(T), None }` in comptime type construction). The
     /// enum analog of [`InstData::AnonStructType`]; enables generic sum types
-    /// like `Option`/`Result` as comptime type functions (ADR-0038, RUE-6
-    /// phase 2). Variant names and tuple-variant payloads are encoded exactly
+    /// like `Option`/`Result` as comptime type functions (ADR-0038, RUE-6).
+    /// Variant names and tuple-variant payloads are encoded exactly
     /// as in [`InstData::EnumDecl`].
     AnonEnumType {
         /// Index into extra data where variant name symbols start

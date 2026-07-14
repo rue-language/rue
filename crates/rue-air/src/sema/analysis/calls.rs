@@ -1,7 +1,7 @@
 //! Method, module-member, and associated-function call analysis.
 //!
-//! Split out of `analysis.rs` (RUE-4); methods are part of the same
-//! `impl<'a> Sema<'a>` and behave identically.
+//! This category owns call resolution and emission within the canonical
+//! semantic-analysis implementation.
 
 use super::*;
 
@@ -214,8 +214,8 @@ impl<'a> BodySema<'a> {
             // The preview gate covers exactly what RUE-596 added: a CALL as
             // the path head (`F(args).NAME(..)`). A bare qualified member
             // that merely evaluates to a type (`m.Alias.new()`) is ordinary
-            // module-member access and must not trip the gate — it used to,
-            // with a message naming a call that doesn't exist (RUE-631).
+            // module-member access and must not trip the call-head gate
+            // (RUE-631).
             let receiver_is_call_head = matches!(
                 self.rir.get(receiver).data,
                 rue_rir::InstData::Call { .. } | rue_rir::InstData::MethodCall { .. }
@@ -634,8 +634,8 @@ impl<'a> BodySema<'a> {
         // validate here before treating any explicit marker as a loan/place.
         self.validate_explicit_call_modes(&args, param_modes.iter().copied())?;
 
-        // Check for exclusive access violation. (The old, pre-deduplication
-        // copy of this function skipped this check entirely.)
+        // Module-qualified calls enforce the same exclusive-access rule as
+        // every other call path.
         self.check_exclusive_access(&args, span)?;
 
         // Analyze arguments (the per-pipeline recursion seam). Module-qualified
