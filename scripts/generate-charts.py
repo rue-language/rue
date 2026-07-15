@@ -10,10 +10,10 @@ This script reads benchmark history from JSON and generates SVG charts:
 
 Usage:
     # Generate charts for a single platform
-    ./generate-charts.py <history.json> <output-dir> [--platform <name>]
+    ./generate-charts.py <history-path> <output-dir> [--platform <name>]
 
     # Generate comparison charts from multiple platform histories
-    ./generate-charts.py --comparison <output-dir> <history1.json> <history2.json> ...
+    ./generate-charts.py --comparison <output-dir> <history1> <history2> ...
 
 Examples:
     # Single platform (legacy mode)
@@ -31,6 +31,13 @@ import json
 import sys
 from pathlib import Path
 from typing import Optional
+
+from benchmark_history import (
+    comparison_break,
+    latest_comparable_segment,
+    load_history,
+    run_regime,
+)
 
 # Chart dimensions
 TIMELINE_WIDTH = 800
@@ -98,19 +105,40 @@ PLATFORM_INFO = {
 }
 
 
-def load_history(path: Path) -> dict:
-    """Load benchmark history from JSON file."""
-    if not path.exists():
-        return {"version": 1, "runs": []}
+def regime_summary(runs: list[dict]) -> list[dict]:
+    """Describe contiguous comparable/non-comparable chart segments."""
+    segments = []
+    for index, run in enumerate(runs):
+        regime = run_regime(run)
+        if index == 0 or comparison_break(runs[index - 1], run):
+            segments.append({
+                "regime_id": regime,
+                "comparable": regime != "unknown",
+                "start_commit": short_commit(run.get("commit", "")),
+                "end_commit": short_commit(run.get("commit", "")),
+                "run_count": 1,
+            })
+        else:
+            segments[-1]["end_commit"] = short_commit(run.get("commit", ""))
+            segments[-1]["run_count"] += 1
+    return segments
 
-    with open(path, "r") as f:
-        data = json.load(f)
 
-    # Handle legacy format
-    if isinstance(data, list):
-        return {"version": 1, "runs": data}
-
-    return data
+def point_segments(runs: list[dict], values: list[float]) -> list[list[tuple[int, float]]]:
+    """Split nonzero chart points at missing data and comparison boundaries."""
+    segments: list[list[tuple[int, float]]] = []
+    current: list[tuple[int, float]] = []
+    for index, (run, value) in enumerate(zip(runs, values)):
+        previous = runs[index - 1] if index else None
+        if comparison_break(previous, run) or value <= 0:
+            if current:
+                segments.append(current)
+            current = []
+        if value > 0:
+            current.append((index, value))
+    if current:
+        segments.append(current)
+    return segments
 
 
 def get_pass_times(run: dict) -> dict[str, float]:
@@ -226,10 +254,12 @@ def generate_timeline_chart(runs: list[dict], platform: Optional[str] = None) ->
 
     # Extract data points
     points = []
-    for run in runs[-20:]:  # Show last 20 commits
+    recent_runs = runs[-20:]
+    for index, run in enumerate(recent_runs):  # Show last 20 commits
         total = get_total_time(run)
         commit = short_commit(run.get("commit", ""))
-        points.append({"commit": commit, "time": total})
+        previous = recent_runs[index - 1] if index else None
+        points.append({"commit": commit, "time": total, "break": comparison_break(previous, run)})
 
     if not points or all(p["time"] == 0 for p in points):
         return generate_empty_chart(TIMELINE_WIDTH, TIMELINE_HEIGHT, "No timing data in benchmarks")
@@ -302,12 +332,15 @@ def generate_timeline_chart(runs: list[dict], platform: Optional[str] = None) ->
     )
 
     # Draw line connecting points
-    if len(points) > 1:
-        path_d = "M " + " L ".join(
-            f"{scale_x(i)},{scale_y(p['time'])}"
-            for i, p in enumerate(points)
-        )
-        svg_parts.append(f'  <path class="chart-line" d="{path_d}"/>')
+    segment = []
+    for index, point in enumerate(points):
+        if point["break"] and segment:
+            if len(segment) > 1:
+                svg_parts.append('  <path class="chart-line" d="M ' + " L ".join(segment) + '"/>')
+            segment = []
+        segment.append(f"{scale_x(index)},{scale_y(point['time'])}")
+    if len(segment) > 1:
+        svg_parts.append('  <path class="chart-line" d="M ' + " L ".join(segment) + '"/>')
 
     # Draw points and x-axis labels
     for i, p in enumerate(points):
@@ -361,12 +394,13 @@ def generate_multi_timeline_chart(runs: list[dict], benchmark_names: list[str]) 
         return generate_empty_chart(TIMELINE_WIDTH, TIMELINE_HEIGHT + 50, "No benchmark data available yet")
 
     # Extract data points for each benchmark
-    commits = [short_commit(run.get("commit", "")) for run in runs[-20:]]
+    recent_runs = runs[-20:]
+    commits = [short_commit(run.get("commit", "")) for run in recent_runs]
     benchmark_data = {}
 
     for name in benchmark_names:
         points = []
-        for run in runs[-20:]:
+        for run in recent_runs:
             time = get_benchmark_time(run, name)
             points.append(time)
         benchmark_data[name] = points
@@ -443,12 +477,12 @@ def generate_multi_timeline_chart(runs: list[dict], benchmark_names: list[str]) 
 
         # Draw connecting line
         if len(points) > 1:
-            line_points = []
-            for i, time in enumerate(points):
-                if time > 0:
-                    line_points.append(f"{scale_x(i)},{scale_y(time)}")
-            if line_points:
-                path_d = "M " + " L ".join(line_points)
+            for segment in point_segments(recent_runs, points):
+                if len(segment) < 2:
+                    continue
+                path_d = "M " + " L ".join(
+                    f"{scale_x(i)},{scale_y(time)}" for i, time in segment
+                )
                 svg_parts.append(f'  <path d="{path_d}" fill="none" stroke="{color}" stroke-width="2"/>')
 
         # Draw points
@@ -612,7 +646,8 @@ def generate_memory_chart(runs: list[dict], platform: Optional[str] = None) -> s
 
     # Extract data points
     points = []
-    for run in runs[-20:]:  # Show last 20 commits
+    recent_runs = runs[-20:]
+    for run in recent_runs:  # Show last 20 commits
         memory = get_peak_memory(run)
         commit = short_commit(run.get("commit", ""))
         points.append({"commit": commit, "memory": memory})
@@ -688,13 +723,10 @@ def generate_memory_chart(runs: list[dict], platform: Optional[str] = None) -> s
     )
 
     # Draw line connecting points
-    valid_points = [(i, p) for i, p in enumerate(points) if p["memory"] > 0]
-    if len(valid_points) > 1:
-        path_d = "M " + " L ".join(
-            f"{scale_x(i)},{scale_y(p['memory'])}"
-            for i, p in valid_points
-        )
-        svg_parts.append(f'  <path class="chart-line" d="{path_d}"/>')
+    for segment in point_segments(recent_runs, [point["memory"] for point in points]):
+        if len(segment) > 1:
+            path_d = "M " + " L ".join(f"{scale_x(i)},{scale_y(value)}" for i, value in segment)
+            svg_parts.append(f'  <path class="chart-line" d="{path_d}"/>')
 
     # Draw points and x-axis labels
     for i, p in enumerate(points):
@@ -720,7 +752,8 @@ def generate_binary_size_chart(runs: list[dict], platform: Optional[str] = None)
 
     # Extract data points
     points = []
-    for run in runs[-20:]:  # Show last 20 commits
+    recent_runs = runs[-20:]
+    for run in recent_runs:  # Show last 20 commits
         size = get_binary_size(run)
         commit = short_commit(run.get("commit", ""))
         points.append({"commit": commit, "size": size})
@@ -796,13 +829,10 @@ def generate_binary_size_chart(runs: list[dict], platform: Optional[str] = None)
     )
 
     # Draw line connecting points
-    valid_points = [(i, p) for i, p in enumerate(points) if p["size"] > 0]
-    if len(valid_points) > 1:
-        path_d = "M " + " L ".join(
-            f"{scale_x(i)},{scale_y(p['size'])}"
-            for i, p in valid_points
-        )
-        svg_parts.append(f'  <path class="chart-line" d="{path_d}"/>')
+    for segment in point_segments(recent_runs, [point["size"] for point in points]):
+        if len(segment) > 1:
+            path_d = "M " + " L ".join(f"{scale_x(i)},{scale_y(value)}" for i, value in segment)
+            svg_parts.append(f'  <path class="chart-line" d="{path_d}"/>')
 
     # Draw points and x-axis labels
     for i, p in enumerate(points):
@@ -910,22 +940,40 @@ def generate_comparison_timeline_chart(platform_data: dict[str, list[dict]]) -> 
         color = info["color"]
 
         # Collect points for this platform
+        line_segments = []
         line_points = []
+        runs_by_commit = {
+            short_commit(run.get("commit", "")): run
+            for run in platform_data[platform][-20:]
+        }
+        previous_run = None
         for i, commit in enumerate(commits):
             time = commit_to_times.get(commit, {}).get(platform, 0)
-            if time > 0:
+            run = runs_by_commit.get(commit)
+            if run is None or time <= 0 or comparison_break(previous_run, run):
+                if line_points:
+                    line_segments.append(line_points)
+                line_points = []
+            if run is not None and time > 0:
                 line_points.append((i, time))
+                previous_run = run
+            else:
+                previous_run = None
+        if line_points:
+            line_segments.append(line_points)
 
         # Draw connecting line
-        if len(line_points) > 1:
-            path_d = "M " + " L ".join(
-                f"{scale_x(i)},{scale_y(t)}" for i, t in line_points
-            )
-            svg_parts.append(f'  <path d="{path_d}" fill="none" stroke="{color}" stroke-width="2"/>')
+        for segment in line_segments:
+            if len(segment) > 1:
+                path_d = "M " + " L ".join(
+                    f"{scale_x(i)},{scale_y(t)}" for i, t in segment
+                )
+                svg_parts.append(f'  <path d="{path_d}" fill="none" stroke="{color}" stroke-width="2"/>')
 
         # Draw points
-        for i, t in line_points:
-            svg_parts.append(f'  <circle cx="{scale_x(i)}" cy="{scale_y(t)}" r="4" fill="{color}"/>')
+        for segment in line_segments:
+            for i, t in segment:
+                svg_parts.append(f'  <circle cx="{scale_x(i)}" cy="{scale_y(t)}" r="4" fill="{color}"/>')
 
     # X-axis labels
     for i, commit in enumerate(commits):
@@ -960,47 +1008,45 @@ def calculate_coverage_metrics(runs: list[dict]) -> dict:
     """
     if not runs:
         return {
-            "total_commits_covered": 0,
+            "measured_commit_count": 0,
+            "skipped_commit_count": 0,
+            "unknown_gap_count": 0,
             "run_count": 0,
-            "coverage_pct": 0,
-            "gaps": []
+            "runs": [],
         }
 
-    # Collect all commits covered by benchmark runs
-    covered_commits = set()
+    measured_commits = set()
+    skipped_commits = set()
+    unknown_gaps = 0
     run_info = []
 
     for run in runs:
-        # Version 2 schema has commit_range field
-        commit_range = run.get("commit_range", [])
-        if not commit_range:
-            # Version 1 schema - single commit only
-            commit = run.get("commit", "")
-            if commit:
-                covered_commits.add(commit)
-                commit_range = [commit]
-        else:
-            # Add all commits in the range
-            for c in commit_range:
-                if c:
-                    covered_commits.add(c)
+        publication = run.get("publication", {})
+        coverage = publication.get("coverage", {}) if isinstance(publication, dict) else {}
+        measured = coverage.get("measured_commit")
+        if measured:
+            measured_commits.add(measured)
+        skipped = coverage.get("skipped_commits", [])
+        if isinstance(skipped, list):
+            skipped_commits.update(c for c in skipped if isinstance(c, str) and c)
+        if coverage.get("gap_unknown") is True:
+            unknown_gaps += 1
 
         run_info.append({
             "commit": short_commit(run.get("commit", "")),
             "timestamp": run.get("timestamp", ""),
-            "commit_count": len(commit_range),
-            "reason": run.get("benchmark_reason", "unknown")
+            "represented_commits": coverage.get("represented_commits", []),
+            "skipped_commits": skipped,
+            "gap_unknown": coverage.get("gap_unknown", True),
+            "reason": publication.get("trigger_reason", "unknown"),
+            "regime_id": run_regime(run),
         })
 
-    # Calculate coverage percentage
-    # Note: We can't calculate true coverage without knowing the total number of commits
-    # in the repository, so we report the number of distinct commits benchmarked
-    total_commits_covered = len(covered_commits)
-
     return {
-        "total_commits_covered": total_commits_covered,
+        "measured_commit_count": len(measured_commits),
+        "skipped_commit_count": len(skipped_commits),
+        "unknown_gap_count": unknown_gaps,
         "run_count": len(runs),
-        "avg_commits_per_run": round(total_commits_covered / len(runs), 1) if runs else 0,
         "runs": run_info[-20:]  # Last 20 runs for display
     }
 
@@ -1010,8 +1056,9 @@ def generate_summary_data(runs: list[dict], platform: Optional[str] = None) -> d
     if not runs:
         return {}
 
-    latest = runs[-1] if runs else None
-    previous = runs[-2] if len(runs) >= 2 else None
+    comparable_runs = latest_comparable_segment(runs)
+    latest = comparable_runs[-1]
+    previous = comparable_runs[-2] if len(comparable_runs) >= 2 else None
 
     # Get latest values
     latest_time = get_total_time(latest) if latest else 0
@@ -1029,12 +1076,12 @@ def generate_summary_data(runs: list[dict], platform: Optional[str] = None) -> d
     binary_delta_pct, binary_delta_str = calculate_delta(latest_binary, prev_binary)
 
     # Calculate 7-run average (or whatever we have)
-    recent_runs = runs[-7:] if len(runs) >= 7 else runs
+    recent_runs = comparable_runs[-7:]
     avg_time = sum(get_total_time(r) for r in recent_runs) / len(recent_runs) if recent_runs else 0
     avg_memory = sum(get_peak_memory(r) for r in recent_runs) / len(recent_runs) if recent_runs else 0
 
     # Find best ever
-    all_times = [get_total_time(r) for r in runs if get_total_time(r) > 0]
+    all_times = [get_total_time(r) for r in comparable_runs if get_total_time(r) > 0]
     best_time = min(all_times) if all_times else 0
 
     result = {
@@ -1052,6 +1099,7 @@ def generate_summary_data(runs: list[dict], platform: Optional[str] = None) -> d
         "avg_memory_mb": round(avg_memory, 2),
         "best_time_ms": round(best_time, 2),
         "run_count": len(runs),
+        "comparable_run_count": len(comparable_runs),
     }
 
     if platform:
@@ -1162,6 +1210,7 @@ def generate_platform_charts(history_path: Path, output_dir: Path, platform: Opt
         "summary": summary,
         "latest_benchmarks": latest_benchmarks,
         "coverage": coverage,
+        "regimes": regime_summary(runs),
     }
     if platform:
         metadata["platform"] = platform
@@ -1183,7 +1232,7 @@ def generate_comparison_charts(history_files: list[Path], output_dir: Path):
     platform_info_list = []
 
     for path in history_files:
-        # Extract platform from filename (e.g., history-x86-64-linux.json -> x86-64-linux)
+        # Extract platform from a legacy filename or v3 directory name.
         name = path.stem
         if name.startswith("history-"):
             platform = name[8:]  # Remove "history-" prefix

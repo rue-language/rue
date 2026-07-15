@@ -99,12 +99,13 @@ filegroup(
 
 filegroup(
     name = "benchmark-tool-inputs",
-    srcs = [
-        "benchmarks/manifest.toml",
+    srcs = glob(["benchmarks/**"]) + [
         "scripts/append-benchmark.py",
         "scripts/benchmark_collection.py",
+        "scripts/benchmark_history.py",
         "scripts/benchmark_validation.py",
         "scripts/generate-charts.py",
+        "scripts/generate-site-status.py",
         "scripts/perf-baseline.py",
         "scripts/validate-benchmark.py",
     ],

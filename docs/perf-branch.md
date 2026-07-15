@@ -6,22 +6,23 @@ This document describes the `perf` branch workflow for storing benchmark history
 
 Benchmark results are stored on a dedicated `perf` branch to avoid cluttering the main branch with frequent updates. CI runs benchmarks in parallel across platforms and a collector job aggregates results before pushing atomically to the `perf` branch.
 
-**Architecture (ADR-0031 Phase 1-4):** The workflow uses artifact-based collection with atomic pushing, time-based batching, and commit range tracking. Individual platform jobs upload artifacts, and a single collector job downloads all artifacts, enhances them with commit range metadata (version 2 schema), and pushes to perf branch once. Time-based batching (scheduled runs + cancellation) handles high commit velocity by ensuring only the most recent commits are benchmarked.
+The workflow uses artifact-based collection and one atomic Git publication. Individual platform jobs upload artifacts; a single collector enriches them with version 3 publication metadata and pushes all platform histories in one commit.
 
 ## Branch Structure
 
-The `perf` branch contains:
-- `benchmarks/history.json` - Complete benchmark history
+The `perf` branch contains one partitioned history per platform:
+
+- `benchmarks/history-<platform>/index.json` — the atomic snapshot index.
+- `benchmarks/history-<platform>/shards/YYYY/MM/<sha256>.json` — immutable per-run shards.
+
+Legacy `history-<platform>.json` files are read once during migration. Their missing metadata remains explicitly unknown and non-comparable.
 
 ## Workflow
 
 ### CI Workflow (Automated)
 
-**Current (Phase 1-4 - Parallel execution with atomic collection, time-based batching, and commit range tracking):**
-
 1. Benchmarks are triggered by:
    - **Push to trunk**: Triggered on every commit (older queued runs are canceled)
-   - **Scheduled**: Every 15 minutes to ensure coverage
    - **Manual**: workflow_dispatch for on-demand runs
 
 2. When triggered:
@@ -35,16 +36,9 @@ The `perf` branch contains:
      - Appends each platform's results to its history file
      - Commits and pushes once (atomic push, no race conditions)
 
-3. **Time-based batching (Phase 3)**:
-   - If multiple commits arrive rapidly, older queued runs are canceled
-   - Only the most recent commit in the queue is benchmarked
-   - Scheduled runs (every 15 minutes) ensure no commits are missed completely
-
-4. **Commit range tracking (Phase 4)**:
-   - Each benchmark result includes a commit_range field (version 2 schema)
-   - Tracks all commits in the last 24 hours that this benchmark represents
-   - Includes benchmark_reason field: "push", "scheduled", or "manual"
-   - Enables bisecting regressions across commit ranges
+3. If multiple commits arrive rapidly, cancellation keeps the newest run. The
+   collector records the measured commit, every explicitly skipped commit, and
+   whether any gap is unknown. Skipped commits are never represented as measured.
 
 **Legacy (Before Phase 1):**
 
@@ -57,23 +51,23 @@ The `perf` branch contains:
 To run benchmarks locally and update history:
 
 ```bash
-# Run benchmarks (auto-appends to website/static/benchmarks/history.json)
+# Run benchmarks (auto-appends to the local host's partitioned history)
 ./bench.sh
 
 # Or save to specific file without updating history
 ./bench.sh --no-history --output my-results.json
 
 # Manually append to history
-./scripts/append-benchmark.py my-results.json website/static/benchmarks/history.json
+python3 scripts/append-benchmark.py my-results.json \
+  website/static/benchmarks/history-x86-64-linux \
+  --platform x86-64-linux --runner-image local:x86-64-linux --reason manual
 ```
 
 ### Website Build
 
-During website deployment:
-1. Fetch `history.json` from `perf` branch
-2. Copy to `website/static/benchmarks/history.json`
-3. Generate charts from history (Phase 5)
-4. Build website with Zola
+During website deployment, one `git archive` extracts the complete benchmark
+tree from a single perf commit. Chart and status consumers then read the shared
+index-and-shard schema before Zola builds the site.
 
 ## Why a Separate Branch?
 
@@ -84,9 +78,9 @@ During website deployment:
 
 ## History Retention
 
-- Maximum 100 benchmark runs are retained
-- Older results are automatically pruned by `append-benchmark.py`
-- This limits `history.json` to approximately 100KB
+Logical history is unbounded. Appending creates one immutable content-addressed
+run shard and atomically replaces the small index; existing measurements are
+never pruned or rewritten.
 
 ## Manual Maintenance
 
@@ -94,18 +88,11 @@ During website deployment:
 > is managed by GitHub Actions CI, which uses git. The perf branch exists only
 > on the remote and is not part of the normal jj workflow.
 
-To reset benchmark history:
-```bash
-# Delete and recreate perf branch
-git branch -D perf
-git checkout --orphan perf
-echo '{"version": 1, "runs": []}' > benchmarks/history.json
-git add benchmarks/history.json
-git commit -m "Reset benchmark history"
-git push -f origin perf
-```
+History is durable and should not be reset during ordinary maintenance. A
+deliberate repair must preserve or explicitly account for every indexed shard
+and publish the repaired tree in one perf-branch commit.
 
-To view current history:
+To view the current x86-64 Linux index:
 ```bash
-git show perf:benchmarks/history.json | jq '.runs | length'
+git show perf:benchmarks/history-x86-64-linux/index.json | jq '.run_count'
 ```
