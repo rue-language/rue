@@ -1,5 +1,6 @@
 //! In-process canonical parse, merge, and RIR query orchestration.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -2456,7 +2457,7 @@ impl CompilerSession {
                 options.target,
                 &options.preview_features,
             )
-            .and_then(|bodies| {
+            .and_then(|(bodies, _dependency_work)| {
                 let specialized_bodies = build_supported_specialized_body_cache(
                     output,
                     merged.definitions().source_snapshot(),
@@ -3832,6 +3833,395 @@ fn stable_kind_tag(kind: StableDefinitionKind) -> u8 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum StableEndpointIndexKey {
+    FreeFunction(u32, String),
+    TopLevel(u32, String, StableDefinitionNamespace, StableDefinitionKind),
+    NamedMethod(u32, String, String),
+    NamedDestructor(u32, String),
+}
+
+/// Exact endpoint join index for translating semantic dependency events.
+///
+/// An ambiguous entry is retained as `None` so every lookup keeps the former
+/// fail-closed "exactly one" behavior without rescanning all definitions.
+struct StableEndpointIndex {
+    entries: BTreeMap<StableEndpointIndexKey, Option<StableDefinitionKey>>,
+    definition_records_indexed: usize,
+    endpoint_lookups: Cell<usize>,
+}
+
+impl StableEndpointIndex {
+    fn new(definitions: &BoundDefinitionSet) -> Self {
+        let mut index = Self {
+            entries: BTreeMap::new(),
+            definition_records_indexed: 0,
+            endpoint_lookups: Cell::new(0),
+        };
+        for record in definitions.definitions() {
+            index.definition_records_indexed += 1;
+            let file = record.declaration_span().file_id.index();
+            let stable = record.stable_key();
+            if stable.namespace() == StableDefinitionNamespace::Value
+                && stable.kind() == StableDefinitionKind::Function
+            {
+                index.insert(
+                    StableEndpointIndexKey::FreeFunction(file, stable.name().to_owned()),
+                    stable,
+                );
+            }
+            if stable.owner().is_none() {
+                index.insert(
+                    StableEndpointIndexKey::TopLevel(
+                        file,
+                        stable.name().to_owned(),
+                        stable.namespace(),
+                        stable.kind(),
+                    ),
+                    stable,
+                );
+            }
+            if stable.namespace() == StableDefinitionNamespace::Method
+                && matches!(
+                    stable.kind(),
+                    StableDefinitionKind::Method | StableDefinitionKind::AssociatedFunction
+                )
+            {
+                if let Some(owner) = stable.owner() {
+                    index.insert(
+                        StableEndpointIndexKey::NamedMethod(
+                            file,
+                            owner.name().to_owned(),
+                            stable.name().to_owned(),
+                        ),
+                        stable,
+                    );
+                }
+            }
+            if stable.namespace() == StableDefinitionNamespace::Destructor
+                && stable.kind() == StableDefinitionKind::Destructor
+            {
+                if let Some(owner) = stable.owner() {
+                    if owner.name() == stable.name() {
+                        index.insert(
+                            StableEndpointIndexKey::NamedDestructor(file, owner.name().to_owned()),
+                            stable,
+                        );
+                    }
+                }
+            }
+        }
+        index
+    }
+
+    fn insert(&mut self, endpoint: StableEndpointIndexKey, stable: &StableDefinitionKey) {
+        self.entries
+            .entry(endpoint)
+            .and_modify(|entry| *entry = None)
+            .or_insert_with(|| Some(stable.clone()));
+    }
+
+    fn resolve(
+        &self,
+        endpoint: StableEndpointIndexKey,
+        reason: &str,
+    ) -> Result<StableDefinitionKey, CompileErrors> {
+        self.endpoint_lookups
+            .set(self.endpoint_lookups.get().saturating_add(1));
+        self.entries
+            .get(&endpoint)
+            .and_then(Option::as_ref)
+            .cloned()
+            .ok_or_else(|| invalid_dependency_manifest(reason))
+    }
+
+    fn free_function(&self, file: u32, name: &str) -> Result<StableDefinitionKey, CompileErrors> {
+        self.resolve(
+            StableEndpointIndexKey::FreeFunction(file, name.to_owned()),
+            &format!(
+                "free-function dependency endpoint ({file}, '{name}') did not join exactly one bound function"
+            ),
+        )
+    }
+
+    fn named_method(
+        &self,
+        file: u32,
+        owner_name: &str,
+        method_name: &str,
+    ) -> Result<StableDefinitionKey, CompileErrors> {
+        self.resolve(
+            StableEndpointIndexKey::NamedMethod(
+                file,
+                owner_name.to_owned(),
+                method_name.to_owned(),
+            ),
+            &format!(
+                "named-method dependency endpoint ({file}, '{owner_name}', '{method_name}') did not join exactly one bound method"
+            ),
+        )
+    }
+
+    fn named_destructor(
+        &self,
+        file: u32,
+        owner_name: &str,
+    ) -> Result<StableDefinitionKey, CompileErrors> {
+        self.resolve(
+            StableEndpointIndexKey::NamedDestructor(file, owner_name.to_owned()),
+            &format!(
+                "named-destructor dependency endpoint ({file}, '{owner_name}') did not join exactly one bound destructor"
+            ),
+        )
+    }
+
+    fn top_level(
+        &self,
+        file: u32,
+        name: &str,
+        namespace: StableDefinitionNamespace,
+        kind: StableDefinitionKind,
+    ) -> Result<StableDefinitionKey, CompileErrors> {
+        self.resolve(
+            StableEndpointIndexKey::TopLevel(file, name.to_owned(), namespace, kind),
+            "declaration-type dependency endpoint did not join exactly one stable definition",
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct StableOrdinaryBodyDependencyWork {
+    definition_records_indexed: usize,
+    endpoint_lookups: usize,
+    free_function_events_translated: usize,
+    named_method_events_translated: usize,
+    named_destructor_events_translated: usize,
+    implicit_named_destructor_events_translated: usize,
+    declaration_type_events_translated: usize,
+    body_dependency_lookups: usize,
+}
+
+fn push_stable_body_dependency(
+    dependencies: &mut BTreeMap<StableDefinitionKey, Vec<StableDefinitionKey>>,
+    source: StableDefinitionKey,
+    target: StableDefinitionKey,
+) {
+    dependencies.entry(source).or_default().push(target);
+}
+
+/// Translate each semantic event exactly once, then group by its stable body
+/// owner. Durable payloads perform one map lookup instead of joining every
+/// body against every dependency event.
+fn stable_ordinary_body_dependencies_by_owner(
+    semantic: &CanonicalSemanticOutput,
+    definitions: &BoundDefinitionSet,
+) -> Result<
+    (
+        BTreeMap<StableDefinitionKey, Vec<StableDefinitionKey>>,
+        StableOrdinaryBodyDependencyWork,
+    ),
+    CompileErrors,
+> {
+    let endpoints = StableEndpointIndex::new(definitions);
+    let mut work = StableOrdinaryBodyDependencyWork {
+        definition_records_indexed: endpoints.definition_records_indexed,
+        ..StableOrdinaryBodyDependencyWork::default()
+    };
+    let mut dependencies = BTreeMap::new();
+
+    for event in semantic.ordinary_free_function_dependencies() {
+        work.free_function_events_translated += 1;
+        let provenance = endpoints.free_function(event.caller_file, &event.caller_name)?;
+        let source = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
+        let target = endpoints.free_function(event.callee_file, &event.callee_name)?;
+        push_stable_body_dependency(&mut dependencies, source, target);
+    }
+    for event in semantic.named_method_dependencies() {
+        work.named_method_events_translated += 1;
+        let provenance = endpoints.named_method(
+            event.caller_file,
+            &event.caller_owner_name,
+            &event.caller_method_name,
+        )?;
+        let source = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
+        let target = match &event.target {
+            rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
+                endpoints.free_function(*file, name)?
+            }
+            rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
+                file,
+                owner_name,
+                method_name,
+            } => endpoints.named_method(*file, owner_name, method_name)?,
+        };
+        push_stable_body_dependency(&mut dependencies, source, target);
+    }
+    for event in semantic.named_destructor_dependencies() {
+        work.named_destructor_events_translated += 1;
+        let provenance = endpoints.named_destructor(event.caller_file, &event.caller_owner_name)?;
+        let source = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
+        let target = match &event.target {
+            rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
+                endpoints.free_function(*file, name)?
+            }
+            rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
+                file,
+                owner_name,
+                method_name,
+            } => endpoints.named_method(*file, owner_name, method_name)?,
+        };
+        push_stable_body_dependency(&mut dependencies, source, target);
+    }
+    for event in semantic.implicit_named_destructor_dependencies() {
+        work.implicit_named_destructor_events_translated += 1;
+        if matches!(
+            event.source,
+            rue_air::ImplicitDropDependencySourceEvent::Specialization { .. }
+        ) {
+            continue;
+        }
+        let source =
+            stable_implicit_drop_source_endpoint_indexed(semantic, &endpoints, &event.source)?;
+        let target = endpoints.named_destructor(event.target_file, &event.target_owner_name)?;
+        push_stable_body_dependency(&mut dependencies, source, target);
+    }
+    for event in semantic.declaration_type_dependencies() {
+        work.declaration_type_events_translated += 1;
+        let provenance = stable_declaration_source_endpoint_indexed(&endpoints, event)?;
+        let source = match event.source_token {
+            Some(token) => stable_token_endpoint(semantic, token, &provenance)?,
+            None => provenance,
+        };
+        let target = stable_named_type_endpoint_indexed(&endpoints, event)?;
+        push_stable_body_dependency(&mut dependencies, source, target);
+    }
+
+    for targets in dependencies.values_mut() {
+        targets.sort();
+        targets.dedup();
+    }
+    work.endpoint_lookups = endpoints.endpoint_lookups.get();
+    Ok((dependencies, work))
+}
+
+fn stable_implicit_drop_source_endpoint_indexed(
+    semantic: &CanonicalSemanticOutput,
+    endpoints: &StableEndpointIndex,
+    source: &rue_air::ImplicitDropDependencySourceEvent,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    match source {
+        rue_air::ImplicitDropDependencySourceEvent::Anonymous => Err(invalid_dependency_manifest(
+            "anonymous drop-dependency source has no stable endpoint",
+        )),
+        rue_air::ImplicitDropDependencySourceEvent::Specialization { .. } => {
+            Err(invalid_dependency_manifest(
+                "specialized drop-dependency source requires specialization identity",
+            ))
+        }
+        rue_air::ImplicitDropDependencySourceEvent::FreeFunction { token, file, name } => {
+            let provenance = endpoints.free_function(*file, name)?;
+            stable_token_endpoint(semantic, *token, &provenance)
+        }
+        rue_air::ImplicitDropDependencySourceEvent::NamedMethod {
+            token,
+            file,
+            owner_name,
+            method_name,
+        } => {
+            let provenance = endpoints.named_method(*file, owner_name, method_name)?;
+            stable_token_endpoint(semantic, *token, &provenance)
+        }
+        rue_air::ImplicitDropDependencySourceEvent::NamedDestructor {
+            token,
+            file,
+            owner_name,
+        } => {
+            let provenance = endpoints.named_destructor(*file, owner_name)?;
+            stable_token_endpoint(semantic, *token, &provenance)
+        }
+        rue_air::ImplicitDropDependencySourceEvent::NamedStruct { file, name } => endpoints
+            .top_level(
+                *file,
+                name,
+                StableDefinitionNamespace::Type,
+                StableDefinitionKind::Struct,
+            ),
+        rue_air::ImplicitDropDependencySourceEvent::NamedEnum { file, name } => endpoints
+            .top_level(
+                *file,
+                name,
+                StableDefinitionNamespace::Type,
+                StableDefinitionKind::Enum,
+            ),
+    }
+}
+
+fn stable_declaration_source_endpoint_indexed(
+    endpoints: &StableEndpointIndex,
+    event: &rue_air::DeclarationTypeDependencyEvent,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    use rue_air::DeclarationTypeDependencySourceKind as K;
+    match event.source_kind {
+        K::Function => endpoints.free_function(event.source_file, &event.source_name),
+        K::Method | K::AssociatedFunction => endpoints.named_method(
+            event.source_file,
+            event.source_owner_name.as_deref().unwrap_or(""),
+            &event.source_name,
+        ),
+        K::Destructor => endpoints.named_destructor(
+            event.source_file,
+            event
+                .source_owner_name
+                .as_deref()
+                .unwrap_or(&event.source_name),
+        ),
+        K::Struct => endpoints.top_level(
+            event.source_file,
+            &event.source_name,
+            StableDefinitionNamespace::Type,
+            StableDefinitionKind::Struct,
+        ),
+        K::Enum => endpoints.top_level(
+            event.source_file,
+            &event.source_name,
+            StableDefinitionNamespace::Type,
+            StableDefinitionKind::Enum,
+        ),
+        K::ValueConst => endpoints.top_level(
+            event.source_file,
+            &event.source_name,
+            StableDefinitionNamespace::Value,
+            StableDefinitionKind::ValueConst,
+        ),
+    }
+}
+
+fn stable_named_type_endpoint_indexed(
+    endpoints: &StableEndpointIndex,
+    event: &rue_air::DeclarationTypeDependencyEvent,
+) -> Result<StableDefinitionKey, CompileErrors> {
+    match event.target_kind {
+        rue_air::DeclarationTypeDependencyTargetKind::Struct => endpoints.top_level(
+            event.target_file,
+            &event.target_name,
+            StableDefinitionNamespace::Type,
+            StableDefinitionKind::Struct,
+        ),
+        rue_air::DeclarationTypeDependencyTargetKind::Enum => endpoints.top_level(
+            event.target_file,
+            &event.target_name,
+            StableDefinitionNamespace::Type,
+            StableDefinitionKind::Enum,
+        ),
+        rue_air::DeclarationTypeDependencyTargetKind::ValueConst => endpoints.top_level(
+            event.target_file,
+            &event.target_name,
+            StableDefinitionNamespace::Value,
+            StableDefinitionKind::ValueConst,
+        ),
+    }
+}
+
 /// Build the supported ordinary-body baseline directly from the successful
 /// canonical semantic artifact. This closes the publication circularity: no
 /// current dependency manifest (and therefore no second analysis or bind) is
@@ -3841,7 +4231,13 @@ fn build_supported_ordinary_body_cache(
     snapshot: &SourceSnapshot,
     target: crate::Target,
     preview_features: &crate::PreviewFeatures,
-) -> Result<Arc<[crate::DurableOrdinaryBody]>, CompileErrors> {
+) -> Result<
+    (
+        Arc<[crate::DurableOrdinaryBody]>,
+        StableOrdinaryBodyDependencyWork,
+    ),
+    CompileErrors,
+> {
     let definitions = semantic.body_owner_issuer();
     let supported = semantic.ordinary_free_function_dependencies_complete()
         && semantic.specialized_free_function_dependencies_complete()
@@ -3864,7 +4260,7 @@ fn build_supported_ordinary_body_cache(
         && semantic.named_const_dependencies().is_empty()
         && semantic.body_named_dependencies().is_empty();
     if !supported {
-        return Ok(Arc::from([]));
+        return Ok((Arc::from([]), StableOrdinaryBodyDependencyWork::default()));
     }
     let fingerprints = definitions
         .definitions()
@@ -3874,95 +4270,19 @@ fn build_supported_ordinary_body_cache(
                 .map(|fingerprint| (record.stable_key().clone(), fingerprint))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let (dependencies_by_owner, mut dependency_work) =
+        stable_ordinary_body_dependencies_by_owner(semantic, definitions)?;
     let mut records = Vec::with_capacity(semantic.durable_ordinary_body_payloads().len());
     for payload in semantic.durable_ordinary_body_payloads() {
+        dependency_work.body_dependency_lookups += 1;
         let fingerprint = fingerprints
             .get(&payload.owner)
             .cloned()
             .ok_or_else(|| invalid_dependency_manifest("durable body owner is absent"))?;
         let mut dependency_keys = Vec::new();
         dependency_keys.extend(payload.referenced_definition_keys());
-        for event in semantic.ordinary_free_function_dependencies() {
-            let caller =
-                stable_free_function_endpoint(definitions, event.caller_file, &event.caller_name)?;
-            let caller = stable_token_endpoint(semantic, event.caller_token, &caller)?;
-            if caller == payload.owner {
-                dependency_keys.push(stable_free_function_endpoint(
-                    definitions,
-                    event.callee_file,
-                    &event.callee_name,
-                )?);
-            }
-        }
-        for event in semantic.named_method_dependencies() {
-            let caller = stable_named_method_endpoint(
-                definitions,
-                event.caller_file,
-                &event.caller_owner_name,
-                &event.caller_method_name,
-            )?;
-            let caller = stable_token_endpoint(semantic, event.caller_token, &caller)?;
-            if caller != payload.owner {
-                continue;
-            }
-            dependency_keys.push(match &event.target {
-                rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
-                    stable_free_function_endpoint(definitions, *file, name)?
-                }
-                rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
-                    file,
-                    owner_name,
-                    method_name,
-                } => stable_named_method_endpoint(definitions, *file, owner_name, method_name)?,
-            });
-        }
-        for event in semantic.named_destructor_dependencies() {
-            let caller = stable_named_destructor_endpoint(
-                definitions,
-                event.caller_file,
-                &event.caller_owner_name,
-            )?;
-            let caller = stable_token_endpoint(semantic, event.caller_token, &caller)?;
-            if caller != payload.owner {
-                continue;
-            }
-            dependency_keys.push(match &event.target {
-                rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
-                    stable_free_function_endpoint(definitions, *file, name)?
-                }
-                rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
-                    file,
-                    owner_name,
-                    method_name,
-                } => stable_named_method_endpoint(definitions, *file, owner_name, method_name)?,
-            });
-        }
-        for event in semantic.implicit_named_destructor_dependencies() {
-            if matches!(
-                event.source,
-                rue_air::ImplicitDropDependencySourceEvent::Specialization { .. }
-            ) {
-                continue;
-            }
-            let source =
-                stable_implicit_drop_source_endpoint(semantic, definitions, &event.source)?;
-            if source == payload.owner {
-                dependency_keys.push(stable_named_destructor_endpoint(
-                    definitions,
-                    event.target_file,
-                    &event.target_owner_name,
-                )?);
-            }
-        }
-        for event in semantic.declaration_type_dependencies() {
-            let provenance = stable_declaration_source_endpoint(definitions, event)?;
-            let source = match event.source_token {
-                Some(token) => stable_token_endpoint(semantic, token, &provenance)?,
-                None => provenance,
-            };
-            if source == payload.owner {
-                dependency_keys.push(stable_named_type_endpoint(definitions, event)?);
-            }
+        if let Some(dependencies) = dependencies_by_owner.get(&payload.owner) {
+            dependency_keys.extend(dependencies.iter().cloned());
         }
         dependency_keys.sort();
         dependency_keys.dedup();
@@ -3986,12 +4306,13 @@ fn build_supported_ordinary_body_cache(
         });
     }
     let mut work = crate::DurableBodyWork::default();
-    crate::finalize_durable_ordinary_bodies(
+    let bodies = crate::finalize_durable_ordinary_bodies(
         semantic.durable_ordinary_body_payloads(),
         &records,
         &mut work,
     )
-    .map_err(|_| invalid_dependency_manifest("durable body finalization failed"))
+    .map_err(|_| invalid_dependency_manifest("durable body finalization failed"))?;
+    Ok((bodies, dependency_work))
 }
 
 /// Finalize each completed specialization against its own exact stable input
@@ -9330,6 +9651,78 @@ mod tests {
         let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
         assert_body_artifact_parity(&changed, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
+    }
+
+    #[test]
+    fn durable_body_dependency_grouping_visits_definitions_events_and_bodies_once() {
+        let mut program = String::from(
+            "fn method_helper(value: i32) -> i32 { value } fn cleanup() {} \
+             struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } \
+             fn get(borrow self) -> i32 { method_helper(self.value) } } \
+             drop fn Resource(self) { cleanup(); } ",
+        );
+        for index in 0..32 {
+            program.push_str(&format!("fn independent_{index}() -> i32 {{ {index} }} "));
+        }
+        program.push_str(
+            "fn main() -> i32 { let resource = Resource.make(42); resource.get() + independent_0() }",
+        );
+        let source = snapshot(&[(90, "/p/main.rue", "main.rue", &program)], 90);
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let semantic = session.semantic(&CompileOptions::default()).unwrap();
+        let definitions = semantic.body_owner_issuer();
+        let (bodies, work) = build_supported_ordinary_body_cache(
+            &semantic,
+            &source,
+            crate::Target::default(),
+            &crate::PreviewFeatures::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            bodies.len(),
+            semantic.durable_ordinary_body_payloads().len()
+        );
+        assert_eq!(
+            work.definition_records_indexed,
+            definitions.definitions().len()
+        );
+        assert_eq!(
+            work.body_dependency_lookups,
+            semantic.durable_ordinary_body_payloads().len()
+        );
+        let dependency_events = semantic.ordinary_free_function_dependencies().len()
+            + semantic.named_method_dependencies().len()
+            + semantic.named_destructor_dependencies().len()
+            + semantic.implicit_named_destructor_dependencies().len()
+            + semantic.declaration_type_dependencies().len();
+        assert_eq!(work.endpoint_lookups, dependency_events * 2);
+        assert_eq!(
+            work.free_function_events_translated,
+            semantic.ordinary_free_function_dependencies().len()
+        );
+        assert_eq!(
+            work.named_method_events_translated,
+            semantic.named_method_dependencies().len()
+        );
+        assert_eq!(
+            work.named_destructor_events_translated,
+            semantic.named_destructor_dependencies().len()
+        );
+        assert_eq!(
+            work.implicit_named_destructor_events_translated,
+            semantic.implicit_named_destructor_dependencies().len()
+        );
+        assert_eq!(
+            work.declaration_type_events_translated,
+            semantic.declaration_type_dependencies().len()
+        );
+        assert!(work.free_function_events_translated > 0);
+        assert!(work.named_method_events_translated > 0);
+        assert!(work.named_destructor_events_translated > 0);
+        assert!(work.implicit_named_destructor_events_translated > 0);
+        assert!(work.declaration_type_events_translated > 0);
     }
 
     #[test]
