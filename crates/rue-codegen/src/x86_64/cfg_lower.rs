@@ -77,6 +77,33 @@ pub struct CfgLower<'a> {
     by_ref_param_ptrs: HashMap<u32, VReg>,
 }
 
+impl crate::call_plan::CallMaterializer for CfgLower<'_> {
+    fn materialize_scalar(&mut self, value: CfgValue) -> VReg {
+        self.get_vreg(value)
+    }
+
+    fn materialize_aggregate(&mut self, value: CfgValue) -> Vec<VReg> {
+        self.require_aggregate_slots(value)
+    }
+
+    fn materialize_by_ref(&mut self, value: CfgValue, mode: rue_cfg::CfgArgMode) -> VReg {
+        crate::byref_args::lower_byref_arg_addr(self, value, mode == rue_cfg::CfgArgMode::Inout)
+    }
+
+    fn materialize_sret_pointer(&mut self, storage_bytes: u32) -> VReg {
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: -(storage_bytes as i32),
+        });
+        let pointer = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(pointer),
+            src: Operand::Physical(Reg::Rsp),
+        });
+        pointer
+    }
+}
+
 impl<'a> CfgLower<'a> {
     /// Create a new CFG lowering pass.
     pub fn new(
@@ -180,12 +207,13 @@ impl<'a> CfgLower<'a> {
     /// this path so every slot beyond the six register arguments is passed on
     /// the stack (RUE-193).
     fn emit_call_with_slot_args(&mut self, arg_vregs: &[VReg], symbol: &str) {
-        let num_reg_args = arg_vregs.len().min(ARG_REGS.len());
-        let num_stack_args = arg_vregs.len().saturating_sub(ARG_REGS.len());
+        let plan = crate::call_plan::CallPlan::from_slot_values(symbol, arg_vregs, ARG_REGS.len());
+        let num_reg_args = plan.abi_slots.len().min(ARG_REGS.len());
+        let num_stack_args = plan.stack_slot_count;
 
         // RSP must be 16-byte aligned before the call; each push is 8 bytes,
         // so an odd number of stack arguments needs 8 bytes of padding.
-        let needs_alignment = num_stack_args % 2 == 1;
+        let needs_alignment = plan.stack_bytes > (num_stack_args * 8) as u32;
         if needs_alignment {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
@@ -196,7 +224,7 @@ impl<'a> CfgLower<'a> {
         // Push stack arguments (in reverse, so the lowest-index slot ends up
         // at the lowest address), then stage register arguments via push/pop
         // so regalloc's scratch use of rax can't clobber them.
-        for arg_vreg in arg_vregs.iter().skip(ARG_REGS.len()).rev() {
+        for arg_vreg in plan.abi_slots.iter().skip(ARG_REGS.len()).rev() {
             self.mir.push(X86Inst::MovRR {
                 dst: Operand::Physical(Reg::Rax),
                 src: Operand::Virtual(*arg_vreg),
@@ -205,7 +233,7 @@ impl<'a> CfgLower<'a> {
                 src: Operand::Physical(Reg::Rax),
             });
         }
-        for arg_vreg in arg_vregs.iter().take(num_reg_args).rev() {
+        for arg_vreg in plan.abi_slots.iter().take(num_reg_args).rev() {
             self.mir.push(X86Inst::MovRR {
                 dst: Operand::Physical(Reg::Rax),
                 src: Operand::Virtual(*arg_vreg),
@@ -220,15 +248,12 @@ impl<'a> CfgLower<'a> {
             });
         }
 
-        let symbol_id = self.intern_symbol(symbol);
+        let symbol_id = self.intern_symbol(&plan.symbol);
         self.mir.push(X86Inst::CallRel { symbol_id });
 
         // Clean up stack arguments and alignment padding
         if num_stack_args > 0 || needs_alignment {
-            let mut stack_space = (num_stack_args * 8) as i32;
-            if needs_alignment {
-                stack_space += 8;
-            }
+            let stack_space = plan.stack_bytes as i32;
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
                 imm: stack_space,
@@ -1586,116 +1611,38 @@ impl<'a> CfgLower<'a> {
                 let result_vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, result_vreg);
 
-                // By-value aggregate arguments are passed in REVERSED logical
-                // slot order to Rue-compiled callees (ADR-0040 / RUE-311), which
-                // read them back with the ascending frame convention. Runtime
-                // helpers (`__rue_*`, hand-written with the C ABI) instead expect
-                // a builtin aggregate's slots (e.g. a String's ptr/len/cap) in
-                // natural order, so calls to them are NOT reversed.
-                let callee_is_runtime = self.interner.resolve(name).starts_with("__rue_");
-
-                // Does this call return via the sret convention? Builtin
-                // String always does (runtime fns take an out-pointer first
-                // param); other aggregates do when their slots exceed the
-                // return registers. See crate::cfg_lower::type_uses_sret_return.
-                let is_sret_call = self.ctx.type_uses_sret(ty, RET_REGS.len() as u32);
-                let ret_slot_count = if self.ctx.is_multislot_aggregate(ty) {
-                    self.ctx.type_slot_count(ty)
-                } else {
-                    1
-                };
-                // Caller-allocated return buffer: one 8-byte slot per
-                // aggregate slot, padded to keep rsp 16-byte aligned.
-                let sret_bytes = ((ret_slot_count as i32 * 8) + 15) / 16 * 16;
-
-                // For sret calls, allocate the return buffer on the stack;
-                // we'll pass a pointer to this space as the first argument.
-                // Use add with negative offset (no SubRI in MIR)
-                if is_sret_call {
-                    self.mir.push(X86Inst::AddRI {
-                        dst: Operand::Physical(Reg::Rsp),
-                        imm: -sret_bytes,
-                    });
-                }
-
-                // Flatten struct arguments and handle by-ref arguments (inout and borrow)
-                let mut flattened_vregs: Vec<VReg> = Vec::new();
-
-                // For sret calls, the first argument is the output pointer (current rsp)
-                if is_sret_call {
-                    let sret_ptr_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(sret_ptr_vreg),
-                        src: Operand::Physical(Reg::Rsp),
-                    });
-                    flattened_vregs.push(sret_ptr_vreg);
-                }
                 let args = self.ctx.cfg.get_call_args(*args_start, *args_len).to_vec();
-                for arg in &args {
-                    let arg_value = arg.value;
-                    let arg_type = self.ctx.cfg.get_inst(arg_value).ty;
-
-                    // For by-ref args (inout or borrow), pass the address of
-                    // the argument place — a variable, field, or array
-                    // element (RUE-143). Single shared implementation — see
-                    // crate::byref_args.
-                    if arg.is_by_ref() {
-                        let addr_vreg = crate::byref_args::lower_byref_arg_addr(
-                            self,
-                            arg_value,
-                            arg.is_inout(),
-                        );
-                        flattened_vregs.push(addr_vreg);
-                        continue;
-                    }
-
-                    // CFG materializes a value for every continuing
-                    // expression, including unit and other zero-sized values,
-                    // but a Normal argument's physical ABI width comes from
-                    // its static type. Do not mistake the dummy CFG value for
-                    // a scalar slot. Keep this after the by-ref branch: a
-                    // borrow/inout ZST still passes one real pointer.
-                    if self.ctx.type_slot_count(arg_type) == 0 {
-                        continue;
-                    }
-
-                    if self.ctx.is_multislot_aggregate(arg_type) {
-                        // Pass all slots of the (possibly multi-slot) aggregate arg —
-                        // struct, builtin String, fixed-size array, or payload enum
-                        // (RUE-221) — regardless of how it was produced. The accessor
-                        // materializes lazily-sourced values (Load/Param/PlaceRead) and
-                        // cache-hits eager ones (StructInit/ArrayInit/Call/BlockParam).
-                        // Materialization uses the recursive slot count, so every
-                        // scalar slot of a multidimensional array is passed.
-                        // (RUE-118, RUE-79)
-                        let field_vregs = self.require_aggregate_slots(arg_value);
-                        // Pass a Rue callee's aggregate slots in REVERSED
-                        // logical order (ADR-0040 / RUE-311). The callee
-                        // prologue spills ABI slot j to frame slot base+j, so
-                        // pushing logical slot k at ABI slot (C-1-k) lands it
-                        // at frame slot base + (C-1-k) — exactly the
-                        // ascending frame layout `store_slots`/
-                        // `load_consecutive` use for locals (logical slot 0
-                        // at the low-address end). Runtime callees keep
-                        // natural order.
-                        if callee_is_runtime {
-                            flattened_vregs.extend(field_vregs);
-                        } else {
-                            flattened_vregs.extend(field_vregs.into_iter().rev());
-                        }
-                    } else {
-                        // Note: String is now Type::Struct, handled above
-                        flattened_vregs.push(self.get_vreg(arg_value));
-                    }
-                }
-
-                let num_reg_args = flattened_vregs.len().min(ARG_REGS.len());
-                let num_stack_args = flattened_vregs.len().saturating_sub(ARG_REGS.len());
+                let symbol = self.interner.resolve(name).to_owned();
+                let inputs = crate::call_plan::CallInputs::from_cfg(
+                    self.ctx.cfg,
+                    self.ctx.type_pool,
+                    ty,
+                    &args,
+                    RET_REGS.len() as u32,
+                );
+                let plan = crate::call_plan::CallPlan::from_inputs(
+                    &symbol,
+                    inputs.return_plan,
+                    &inputs.args,
+                    ARG_REGS.len(),
+                    self,
+                );
+                assert_eq!(
+                    plan.abi_slots.len(),
+                    plan.hidden_sret.map_or(0, |_| 1)
+                        + plan
+                            .user_args
+                            .iter()
+                            .map(|arg| arg.slots.len())
+                            .sum::<usize>()
+                );
+                let num_reg_args = plan.abi_slots.len().min(ARG_REGS.len());
+                let num_stack_args = plan.stack_slot_count;
 
                 // Add alignment padding if we have an odd number of stack arguments.
                 // RSP must be 16-byte aligned before the call, and each push is 8 bytes.
                 // If we push an odd number of arguments, we need 8 bytes of padding.
-                let needs_alignment = num_stack_args % 2 == 1;
+                let needs_alignment = plan.stack_bytes > (num_stack_args * 8) as u32;
                 if needs_alignment {
                     // sub rsp, 8 to add alignment padding
                     self.mir.push(X86Inst::AddRI {
@@ -1705,7 +1652,7 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Push stack arguments
-                for arg_vreg in flattened_vregs.iter().skip(ARG_REGS.len()).rev() {
+                for arg_vreg in plan.abi_slots.iter().skip(ARG_REGS.len()).rev() {
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rax),
                         src: Operand::Virtual(*arg_vreg),
@@ -1716,7 +1663,7 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Push register arguments temporarily
-                for arg_vreg in flattened_vregs.iter().take(num_reg_args).rev() {
+                for arg_vreg in plan.abi_slots.iter().take(num_reg_args).rev() {
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rax),
                         src: Operand::Virtual(*arg_vreg),
@@ -1733,16 +1680,12 @@ impl<'a> CfgLower<'a> {
                     });
                 }
 
-                let symbol_name = self.interner.resolve(name);
-                let symbol_id = self.intern_symbol(symbol_name);
+                let symbol_id = self.intern_symbol(&plan.symbol);
                 self.mir.push(X86Inst::CallRel { symbol_id });
 
                 // Clean up stack arguments and alignment padding
                 if num_stack_args > 0 || needs_alignment {
-                    let mut stack_space = (num_stack_args * 8) as i32;
-                    if needs_alignment {
-                        stack_space += 8; // Include alignment padding
-                    }
+                    let stack_space = plan.stack_bytes as i32;
                     self.mir.push(X86Inst::AddRI {
                         dst: Operand::Physical(Reg::Rsp),
                         imm: stack_space,
@@ -1752,56 +1695,74 @@ impl<'a> CfgLower<'a> {
                 // Handle struct and string returns (multi-slot types)
                 // sret calls first: the callee wrote the slots to the buffer
                 // at [rsp]. (String always; big aggregates per RUE-106.)
-                if is_sret_call {
-                    // Load every slot from the return buffer
-                    let mut slot_vregs = Vec::new();
-                    for slot_idx in 0..ret_slot_count {
-                        let slot_vreg = self.mir.alloc_vreg();
-                        let offset = (slot_idx * 8) as i32;
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(slot_vreg),
-                            base: Reg::Rsp,
-                            offset,
-                        });
-                        slot_vregs.push(slot_vreg);
-                    }
-                    // Pop the sret space (including alignment padding)
-                    self.mir.push(X86Inst::AddRI {
-                        dst: Operand::Physical(Reg::Rsp),
-                        imm: sret_bytes,
-                    });
-                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Virtual(slot_vregs[0]),
-                    });
-                } else if self.ctx.is_multislot_aggregate(ty) {
-                    // Aggregates that fit return in registers have a complete
-                    // cached representation populated from RET_REGS. (RUE-78)
-                    let slot_count = ret_slot_count;
-                    let mut slot_vregs = Vec::new();
-                    for slot_idx in 0..slot_count {
-                        let slot_vreg = self.mir.alloc_vreg();
-                        if (slot_idx as usize) < RET_REGS.len() {
-                            self.mir.push(X86Inst::MovRR {
+                match plan.return_plan {
+                    crate::call_plan::ReturnPlan::Sret {
+                        slot_count: ret_slot_count,
+                        storage_bytes: sret_bytes,
+                    } => {
+                        // Load every slot from the return buffer
+                        let mut slot_vregs = Vec::new();
+                        for slot_idx in 0..ret_slot_count {
+                            let slot_vreg = self.mir.alloc_vreg();
+                            let offset = (slot_idx * 8) as i32;
+                            self.mir.push(X86Inst::MovRM {
                                 dst: Operand::Virtual(slot_vreg),
-                                src: Operand::Physical(RET_REGS[slot_idx as usize]),
+                                base: Reg::Rsp,
+                                offset,
                             });
+                            slot_vregs.push(slot_vreg);
                         }
-                        slot_vregs.push(slot_vreg);
-                    }
-                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
-                    if let Some(&first_vreg) = slot_vregs.first() {
+                        assert_eq!(slot_vregs.len(), ret_slot_count as usize);
+                        // Pop the sret space (including alignment padding)
+                        self.mir.push(X86Inst::AddRI {
+                            dst: Operand::Physical(Reg::Rsp),
+                            imm: sret_bytes as i32,
+                        });
+                        self.struct_slot_vregs.insert(value, slot_vregs.clone());
                         self.mir.push(X86Inst::MovRR {
                             dst: Operand::Virtual(result_vreg),
-                            src: Operand::Virtual(first_vreg),
+                            src: Operand::Virtual(slot_vregs[0]),
                         });
                     }
-                } else {
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Physical(Reg::Rax),
-                    });
+                    crate::call_plan::ReturnPlan::Registers { slot_count } => {
+                        // Aggregates that fit return in registers have a complete
+                        // cached representation populated from RET_REGS. (RUE-78)
+                        assert!((slot_count as usize) <= RET_REGS.len());
+                        let mut slot_vregs = Vec::new();
+                        for slot_idx in 0..slot_count {
+                            let slot_vreg = self.mir.alloc_vreg();
+                            if (slot_idx as usize) < RET_REGS.len() {
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Virtual(slot_vreg),
+                                    src: Operand::Physical(RET_REGS[slot_idx as usize]),
+                                });
+                            }
+                            slot_vregs.push(slot_vreg);
+                        }
+                        assert_eq!(slot_vregs.len(), slot_count as usize);
+                        self.struct_slot_vregs.insert(value, slot_vregs.clone());
+                        if let Some(&first_vreg) = slot_vregs.first() {
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Virtual(result_vreg),
+                                src: Operand::Virtual(first_vreg),
+                            });
+                        }
+                    }
+                    crate::call_plan::ReturnPlan::Scalar => {
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(result_vreg),
+                            src: Operand::Physical(Reg::Rax),
+                        });
+                    }
+                    crate::call_plan::ReturnPlan::ZeroSized => {
+                        // Zero-sized values have no ABI return slot. Keep the
+                        // CFG's cached dummy value defined for any later
+                        // storage path that asks for its vreg.
+                        self.mir.push(X86Inst::MovRI32 {
+                            dst: Operand::Virtual(result_vreg),
+                            imm: 0,
+                        });
+                    }
                 }
             }
 
