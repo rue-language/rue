@@ -11,4 +11,8 @@ rue_crate(
         "//third-party:smallvec",
         "//third-party:tracing",
     ],
+    test_deps = [
+        "//third-party:sha2",
+        "//third-party:toml",
+    ],
 )
