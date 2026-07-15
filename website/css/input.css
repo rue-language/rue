@@ -760,13 +760,14 @@ pre:not(.z-code) {
 .chart-point { stroke: var(--color-surface); stroke-width: 2; fill: var(--color-olive); cursor: pointer; }
 .chart-point:hover, .chart-point:focus { fill: var(--color-gold); outline: none; }
 .chart-boundary { stroke: var(--color-border-dark); stroke-width: 1; stroke-dasharray: 3 5; }
-.series-1 { stroke: var(--color-gold); fill: var(--color-gold); }
-.series-2 { stroke: var(--chart-blue); fill: var(--chart-blue); }
-.series-3 { stroke: var(--chart-purple); fill: var(--chart-purple); }
-.series-4 { stroke: #7d5b39; fill: #7d5b39; }
-.series-5 { stroke: #697342; fill: #697342; }
-.series-6 { stroke: #8b695c; fill: #8b695c; }
-.series-7 { stroke: #55616f; fill: #55616f; }
+.series-0 { color: var(--color-olive); }
+.series-1 { color: var(--color-gold); stroke: var(--color-gold); fill: var(--color-gold); }
+.series-2 { color: var(--chart-blue); stroke: var(--chart-blue); fill: var(--chart-blue); }
+.series-3 { color: var(--chart-purple); stroke: var(--chart-purple); fill: var(--chart-purple); }
+.series-4 { color: #7d5b39; stroke: #7d5b39; fill: #7d5b39; }
+.series-5 { color: #697342; stroke: #697342; fill: #697342; }
+.series-6 { color: #8b695c; stroke: #8b695c; fill: #8b695c; }
+.series-7 { color: #55616f; stroke: #55616f; fill: #55616f; }
 .phase-legend { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; padding: 0 1rem 0.5rem; font-size: 0.78rem; color: var(--color-muted); }
 .phase-legend span { display: flex; align-items: center; gap: 0.3rem; }
 .phase-legend i { width: 1rem; border-top: 2px solid currentColor; }
