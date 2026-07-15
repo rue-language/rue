@@ -45,6 +45,7 @@ metrics = load_module("benchmark_metrics", "scripts/benchmark_metrics.py")
 evolution = load_module("benchmark_evolution", "scripts/benchmark_evolution.py")
 recent = load_module("benchmark_recent", "scripts/benchmark_recent.py")
 perf_baseline = load_module("perf_baseline", "scripts/perf-baseline.py")
+parser_profile = load_module("parser_profile", "scripts/parser-profile.py")
 
 
 class PerfBaselineAggregationTests(unittest.TestCase):
@@ -125,6 +126,7 @@ class PerfBaselineAggregationTests(unittest.TestCase):
         )
         self.assertEqual(result["unattributed_ms"], 2.0)
         self.assertEqual(result["unattributed_mad_ms"], 1.0)
+        self.assertEqual(result["inclusive_rows"], [("parse", 5.5, 50.0)])
         self.assertEqual(result["overlapping_leaf_work_ms"], 0.0)
         self.assertEqual(result["overlapping_leaf_work_mad_ms"], 0.0)
         self.assertEqual(result["peak_memory_bytes"], 1024.0)
@@ -133,6 +135,35 @@ class PerfBaselineAggregationTests(unittest.TestCase):
             [name for name, _ms, _percent in result["rows"]],
             ["lexer", "parser", "codegen"],
         )
+
+    def test_inclusive_ratio_handles_zero_root_and_is_paired_before_median(self):
+        zero = self.sample(
+            0.0,
+            0.0,
+            leaf_durations={"lexer": 0.0, "parser": 0.0, "codegen": 0.0},
+        )
+        next(pass_data for pass_data in zero["passes"] if pass_data["name"] == "parse")[
+            "duration_ms"
+        ] = 0.0
+        self.assertEqual(
+            perf_baseline.aggregate([zero])["inclusive_rows"],
+            [("parse", 0.0, 0.0)],
+        )
+
+        samples = [
+            self.sample(10.0, 11.0),
+            self.sample(100.0, 101.0),
+            self.sample(1000.0, 1001.0),
+        ]
+        for sample, duration in zip(samples, (1.0, 40.0, 100.0)):
+            next(
+                pass_data
+                for pass_data in sample["passes"]
+                if pass_data["name"] == "parse"
+            )["duration_ms"] = duration
+        inclusive = perf_baseline.aggregate(samples)["inclusive_rows"][0]
+        self.assertEqual(inclusive[1], 40.0)
+        self.assertEqual(inclusive[2], 10.0)
 
     def test_current_leaf_order_includes_semantic_lowering_and_frontend_indexes(self):
         result = perf_baseline.aggregate(
@@ -439,6 +470,15 @@ class PerfBaselineAggregationTests(unittest.TestCase):
                     "median_percent": 15.0,
                 },
             ],
+            "inclusive_passes": [
+                {"name": "parser", "median_ms": 6.0, "median_percent": 30.0}
+            ],
+            "source_metrics": {"files": 1, "lines": 1, "bytes": 10, "tokens": 5},
+            "driver_overhead_ms": {"median": 5.0, "mad": 0.0},
+            "leaf_to_root_ratio_percent": {"median": 40.0, "mad": 0.0},
+            "unattributed_ms": {"median": 12.0, "mad": 0.0},
+            "overlapping_leaf_work_ms": {"median": 0.0, "mad": 0.0},
+            "peak_memory_bytes": None,
         }
         self.assertEqual(
             perf_baseline.hot_passes([result]),
@@ -448,6 +488,14 @@ class PerfBaselineAggregationTests(unittest.TestCase):
         self.assertIn("future_phase", markdown)
         self.assertIn("**20.00**", markdown)
         self.assertIn("**25.00**", markdown)
+        with mock.patch("builtins.print") as output:
+            perf_baseline.print_text([result], 3)
+        self.assertTrue(
+            any("parser (inclusive)" in str(call) for call in output.call_args_list)
+        )
+        v1 = dict(result)
+        v1.pop("inclusive_passes")
+        self.assertNotIn("parser (inclusive)", perf_baseline._md_table([v1]))
 
     def test_corpus_json_names_paired_phase_ratio_as_a_median(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -463,6 +511,9 @@ class PerfBaselineAggregationTests(unittest.TestCase):
         phase = results[0]["passes"][0]
         self.assertEqual(phase["median_percent"], 30.0)
         self.assertNotIn("percent", phase)
+        inclusive = results[0]["inclusive_passes"][0]
+        self.assertEqual(inclusive["name"], "parse")
+        self.assertAlmostEqual(inclusive["median_percent"], 55.0)
 
     def test_deep_nesting_corpus_shape_and_explicit_complexity_gate(self):
         source = (
@@ -575,6 +626,55 @@ class PerfBaselineAggregationTests(unittest.TestCase):
                     perf_baseline.compile_once(
                         "rue", ["main.rue"], str(output), 1.0, 1
                     )
+
+
+class ParserProfileTests(unittest.TestCase):
+    def test_fixture_matrix_covers_required_parser_regimes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixtures = parser_profile.write_fixtures(Path(directory))
+            self.assertEqual(
+                [scale for _name, kind, scale, _files in fixtures if kind == "malformed"],
+                [8, 32, 128, 512],
+            )
+            self.assertEqual(
+                [scale for _name, kind, scale, _files in fixtures if kind == "adversarial"],
+                [12, 24, 48, 96, 192],
+            )
+            malformed = fixtures[4][3][0].read_text()
+            adversarial = fixtures[-1][3][0].read_text()
+            self.assertEqual(malformed.count("fn broken_"), 8)
+            self.assertEqual(adversarial.count("{ "), 64 * 193)
+
+    def test_scaling_summary_normalizes_endpoint_growth_by_tokens(self):
+        results = [
+            {
+                "class": "adversarial",
+                "scale": 12,
+                "tokens": 100,
+                "parser_ms": {"median": 1.0},
+                "allocations": {"median": 50},
+            },
+            {
+                "class": "adversarial",
+                "scale": 192,
+                "tokens": 1000,
+                "parser_ms": {"median": 8.0},
+                "allocations": {"median": 500},
+            },
+        ]
+        summary = parser_profile.scaling_summary(results, "adversarial")
+        self.assertEqual(summary["token_growth"], 10)
+        self.assertEqual(summary["time_growth_per_token_growth"], 0.8)
+        self.assertEqual(summary["allocation_growth_per_token_growth"], 1.0)
+
+    def test_profile_run_enforces_subprocess_timeout(self):
+        with mock.patch.object(
+            parser_profile.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(["driver"], 0.25),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "exceeded 0.25s timeout"):
+                parser_profile.run("driver", ["fixture.rue"], 1, 0, 0.25)
 
 
 class BenchmarkValidationTests(unittest.TestCase):
