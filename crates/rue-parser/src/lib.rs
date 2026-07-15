@@ -4,6 +4,11 @@
 
 pub mod ast;
 mod chumsky_parser;
+// RUE-904: the handwritten candidate is deliberately test-only. Keeping the
+// module behind cfg(test) prevents it from becoming a selectable production
+// frontend while its parity and performance are evaluated.
+#[cfg(test)]
+mod handwritten_parser;
 mod parser_policy;
 mod validate;
 
