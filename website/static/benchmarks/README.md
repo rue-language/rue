@@ -22,6 +22,15 @@ Version 3 uses a compact index whose `shards` array points to per-run files:
 }
 ```
 
+Each new run contains two deliberately separate products: `benchmarks` holds
+the non-representative static phase-probe aggregate, while `scaling` holds
+generated multi-size families with latency, peak memory, source/pass structural
+counters, robust variation, conservative adjacent size-normalized growth
+bounds, an extreme-range guard, and proven/indeterminate/within-budget evidence
+status. Failed and indeterminate scaling evidence both block publication.
+Neither product measures generated-program runtime performance; representative
+RUE-901 scenarios use a different scenario family and headline.
+
 ## Updating History
 
 History is updated automatically by CI on each commit to trunk. To run manually:

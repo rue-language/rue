@@ -3,5 +3,8 @@ title = "Performance"
 template = "performance.html"
 +++
 
-The Rue compiler is designed for fast compilation. This dashboard tracks compilation
-performance over time, helping detect regressions and measure the impact of optimizations.
+This dashboard publishes synthetic compiler phase probes and deterministic
+scaling diagnostics. They help locate compiler regressions; they are not
+representative applications and do not measure compiled-program runtime
+performance. Representative RUE-901 scenarios will remain a separate metric
+family and headline.

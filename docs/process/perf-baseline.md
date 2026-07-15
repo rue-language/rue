@@ -14,15 +14,22 @@ scripts/perf-baseline.py --format markdown   # prints compact current tables
 scripts/perf-baseline.py --format json       # machine-readable aggregate
 ```
 
-The harness compiles a representative corpus with the real `rue` binary using
+The harness compiles a convenient mix of examples and synthetic phase probes
+with the real `rue` binary using
 `--benchmark-json` (the machine-readable form of `--time-passes`, see
 [logging.md](logging.md)). Every sample is a **fresh compiler process**; the
 optional warmups warm host/filesystem caches, not compiler state. The harness
 reports median absolute deviation alongside both the compiler pipeline span
 and fresh-process wall time, plus peak resident memory where the host exposes
 it. It is separate from `bench.sh` (which feeds the
-historical website dashboard); this one is a quick, self-contained snapshot
+historical website dashboard); this one is a quick, self-contained diagnostic snapshot
 with no history/network side effects.
+
+Neither this snapshot nor the website phase-probe aggregate is a representative
+application benchmark or a compiled-program runtime benchmark. The canonical
+classifications live in `benchmarks/manifest.toml`; deterministic scaling
+families are published separately on the website and are excluded from the
+aggregate headline. Representative scenarios belong to RUE-901.
 
 The current corpus includes the exact 12,198-line
 `benchmarks/stress/deep_nesting.rue`: 120 nested-control functions (50 block,

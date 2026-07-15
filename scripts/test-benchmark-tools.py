@@ -46,6 +46,8 @@ evolution = load_module("benchmark_evolution", "scripts/benchmark_evolution.py")
 recent = load_module("benchmark_recent", "scripts/benchmark_recent.py")
 perf_baseline = load_module("perf_baseline", "scripts/perf-baseline.py")
 parser_profile = load_module("parser_profile", "scripts/parser-profile.py")
+manifest_tools = load_module("benchmark_manifest", "scripts/benchmark_manifest.py")
+scaling = load_module("benchmark_scaling", "scripts/benchmark_scaling.py")
 
 
 class PerfBaselineAggregationTests(unittest.TestCase):
@@ -685,7 +687,7 @@ class BenchmarkValidationTests(unittest.TestCase):
         )
 
     def valid_result(self):
-        return {
+        result = {
             "version": 1,
             "timestamp": "2026-07-09T00:00:00Z",
             "commit": "probe",
@@ -699,17 +701,393 @@ class BenchmarkValidationTests(unittest.TestCase):
                     "iterations": 5,
                     "samples_ms": [index + 0.5] * 5,
                     "timing_schema_version": 2,
-                    "passes": {"compile": {"mean_ms": index + 0.5}},
+                    "passes": {"compile": {
+                        "mean_ms": index + 0.5,
+                        "invocations": 1,
+                        "root_invocations": 1,
+                        "leaf_invocations": 0,
+                    }},
                 }
                 for index, name in enumerate(self.expected_names)
             ],
         }
+        manifest_path = INPUT_ROOT / "benchmarks" / "manifest.toml"
+        manifest_tools.enrich_results(result, manifest_path)
+        families = []
+        for family in manifest_tools.scaling_families(manifest_path):
+            tiers = [
+                {
+                    "input_size": size,
+                    "samples_ms": [float(size)] * 5,
+                    "peak_memory_samples_bytes": [size * 1024] * 5,
+                    "source_metrics": {
+                        "bytes": size * 8,
+                        "files": 1,
+                        "lines": size,
+                        "tokens": size * 4,
+                    },
+                    "passes": {
+                        family["focus_pass"]: {
+                            "mean_ms": float(size),
+                            "invocations": size,
+                            "root_invocations": 0,
+                            "leaf_invocations": size,
+                        }
+                    },
+                }
+                for size in family["sizes"]
+            ]
+            families.append(scaling.derive_family(family, tiers))
+        result["scaling"] = {
+            "schema_version": 1,
+            "measurement_family": "compiler_scaling_diagnostics",
+            "scenario_family": "synthetic_phase_probes",
+            "representative": False,
+            "iterations": 5,
+            "families": families,
+            "budget_status": "passed",
+        }
+        return result
 
     def test_exact_manifest_corpus_is_accepted(self):
         result = self.valid_result()
         self.assertEqual(validator.validate_results(result, self.expected_names), [])
         result["benchmarks"].reverse()
         self.assertEqual(validator.validate_results(result, self.expected_names), [])
+
+    def test_manifest_classifies_every_probe_and_verified_dimensions_match(self):
+        manifest_path = INPUT_ROOT / "benchmarks" / "manifest.toml"
+        manifest = manifest_tools.load_manifest(manifest_path)
+        self.assertEqual(manifest_tools.validate_static_dimensions(manifest_path), [])
+        self.assertEqual(manifest_tools.validate_readme_inventory(manifest_path), [])
+        self.assertEqual(len(manifest["benchmark"]), 7)
+        self.assertEqual(len(manifest["scaling_family"]), 5)
+        for probe in manifest["benchmark"]:
+            self.assertEqual(probe["kind"], "synthetic_phase_probe")
+            self.assertIn("not representative", probe["non_representative"].lower())
+            self.assertTrue(probe["subsystem"])
+            self.assertTrue(probe["workload_family"])
+        for family in manifest["scaling_family"]:
+            self.assertIn("not", family["non_representative"].lower())
+            self.assertIn("runtime", family["non_representative"].lower())
+        subsystems = {family["subsystem"].split("/", 1)[0] for family in manifest["scaling_family"]}
+        self.assertEqual(subsystems, {"frontend", "semantic", "cfg", "backend"})
+
+    def test_append_authority_rejects_copied_manifest_with_false_dimensions(self):
+        original = INPUT_ROOT / "benchmarks/manifest.toml"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            copied = root / "benchmarks/manifest.toml"
+            copied.parent.mkdir()
+            copied.write_text(
+                original.read_text().replace(
+                    "dimensions = { source_lines = 2120,",
+                    "dimensions = { source_lines = 2121,",
+                    1,
+                )
+            )
+            (copied.parent / "README.md").write_bytes(
+                (original.parent / "README.md").read_bytes()
+            )
+            for relative, source in manifest_tools.corpus_paths(original):
+                target = copied.parent / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
+            errors = validator.validate_manifest_results(self.valid_result(), copied)
+        self.assertTrue(any("manifest=2121, source=2120" in error for error in errors))
+
+    def test_scaling_generators_are_deterministic_and_monotonic(self):
+        workload_module = load_module("scaling_workloads_test", "scripts/scaling_workloads.py")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for name in workload_module.GENERATORS:
+                first = workload_module.generate(name, root / "first", 12)
+                second = workload_module.generate(name, root / "second", 12)
+                first_files = sorted(
+                    (path.relative_to(first.parent), path.read_text())
+                    for path in first.parent.rglob("*.rue")
+                )
+                second_files = sorted(
+                    (path.relative_to(second.parent), path.read_text())
+                    for path in second.parent.rglob("*.rue")
+                )
+                self.assertEqual(first_files, second_files)
+                larger = workload_module.generate(name, root / "larger", 36)
+                self.assertGreater(
+                    sum(path.stat().st_size for path in larger.parent.rglob("*.rue")),
+                    sum(path.stat().st_size for path in first.parent.rglob("*.rue")),
+                )
+
+    def test_scaling_growth_budget_is_size_normalized(self):
+        family = manifest_tools.scaling_families(INPUT_ROOT / "benchmarks/manifest.toml")[0]
+        def tier(size, latency, samples=5):
+            return {
+                "input_size": size,
+                "samples_ms": [latency] * samples,
+                "peak_memory_samples_bytes": [size * 1024] * samples,
+                "source_metrics": {"bytes": size, "files": 1, "lines": size, "tokens": size},
+                "passes": {family["focus_pass"]: {
+                    "mean_ms": latency,
+                    "invocations": 1,
+                    "root_invocations": 0,
+                    "leaf_invocations": 1,
+                }},
+            }
+
+        quiet = scaling.derive_family(
+            family, [tier(100, 10.0), tier(300, 30.0), tier(900, 90.0)]
+        )
+        self.assertEqual(
+            quiet["adjacent_growth"][0]["latency_per_unit_growth"]["center"],
+            1.0,
+        )
+        self.assertEqual(quiet["classification"], "within_normalized_growth_budget")
+        self.assertEqual(scaling.budget_status([quiet]), "passed")
+
+        proven = scaling.derive_family(
+            family, [tier(100, 10.0), tier(300, 90.0), tier(900, 810.0)]
+        )
+        self.assertEqual(proven["classification"], "budget_exceeded")
+        self.assertEqual(scaling.budget_status([proven]), "failed")
+        self.assertGreater(
+            proven["adjacent_growth"][0]["latency_per_unit_growth"]["lower_bound"],
+            family["latency_per_unit_growth_budget"],
+        )
+
+        noisy_tiers = [tier(100, 10.0), tier(300, 60.0), tier(900, 180.0)]
+        noisy_tiers[0]["samples_ms"] = [9.0, 10.0, 11.0]
+        noisy_tiers[1]["samples_ms"] = [50.0, 60.0, 70.0]
+        noisy_tiers[2]["samples_ms"] = [150.0, 180.0, 210.0]
+        noisy = scaling.derive_family(family, noisy_tiers)
+        self.assertEqual(noisy["classification"], "indeterminate")
+        self.assertEqual(scaling.budget_status([noisy]), "indeterminate")
+        self.assertEqual(
+            noisy["adjacent_growth"][0]["latency_per_unit_growth"]["reason"],
+            "uncertainty_crosses_budget",
+        )
+
+        one_sample = scaling.derive_family(
+            family,
+            [tier(100, 10.0, 1), tier(300, 90.0, 1), tier(900, 810.0, 1)],
+        )
+        self.assertEqual(one_sample["classification"], "indeterminate")
+        self.assertEqual(
+            one_sample["adjacent_growth"][0]["latency_per_unit_growth"]["reason"],
+            "at_least_three_samples_required",
+        )
+
+        extreme_tiers = [
+            tier(100, 10.0),
+            tier(300, 30.0),
+            tier(900, 90.0),
+        ]
+        for current, center in zip(extreme_tiers, (10.0, 30.0, 90.0)):
+            current["samples_ms"] = [center, center, center, center * 100, center * 100]
+        extreme = scaling.derive_family(family, extreme_tiers)
+        summary = extreme["tiers"][0]["latency_summary_ms"]
+        self.assertEqual(summary["scaled_mad"], 0.0)
+        self.assertEqual(summary["minimum"], 10.0)
+        self.assertEqual(summary["maximum"], 1000.0)
+        self.assertEqual(summary["range"], 990.0)
+        self.assertEqual(summary["dispersion_classification"], "extreme_range")
+        self.assertEqual(extreme["classification"], "indeterminate")
+        self.assertEqual(scaling.budget_status([extreme]), "indeterminate")
+        self.assertEqual(
+            extreme["adjacent_growth"][0]["latency_per_unit_growth"]["reason"],
+            "extreme_sample_range",
+        )
+        self.assertIn("per_tier_compile_timeout_seconds", quiet["budgets"])
+
+    def test_scaling_cli_enforcement_rejects_failed_and_indeterminate(self):
+        manifest_path = INPUT_ROOT / "benchmarks/manifest.toml"
+        argv = [
+            "benchmark_scaling.py",
+            "--manifest",
+            str(manifest_path),
+            "--rue-bin",
+            "/unused/rue",
+            "--enforce-budgets",
+        ]
+        failed = {
+            "budget_status": "failed",
+            "families": [
+                {
+                    "name": "probe",
+                    "classification": "budget_exceeded",
+                    "violations": [
+                        {
+                            "metric": "latency",
+                            "from_size": 1,
+                            "to_size": 2,
+                            "lower_bound": 3.0,
+                            "budget": 2.0,
+                        }
+                    ],
+                }
+            ],
+        }
+        indeterminate = {
+            "budget_status": "indeterminate",
+            "families": [
+                {
+                    "name": "probe",
+                    "classification": "indeterminate",
+                    "violations": [],
+                    "adjacent_growth": [
+                        {
+                            "latency_per_unit_growth": {
+                                "classification": "indeterminate",
+                                "reason": "extreme_sample_range",
+                            },
+                            "memory_per_unit_growth": {
+                                "classification": "within_budget",
+                                "reason": None,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        for result, expected, diagnostic in (
+            (failed, 2, "Budget violation"),
+            (indeterminate, 3, "Insufficient scaling evidence"),
+        ):
+            with self.subTest(status=result["budget_status"]):
+                with mock.patch.object(sys, "argv", argv), mock.patch.object(
+                    scaling, "run_scaling", return_value=result
+                ), mock.patch("builtins.print") as printer:
+                    self.assertEqual(scaling.main(), expected)
+                self.assertTrue(
+                    any(diagnostic in str(call) for call in printer.call_args_list)
+                )
+
+    def test_scaling_runner_enforces_bounded_per_tier_compile_timeout(self):
+        family = manifest_tools.scaling_families(INPUT_ROOT / "benchmarks/manifest.toml")[0]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(scaling, "generate", return_value=Path(temp_dir) / "main.rue"):
+                with mock.patch.object(
+                    scaling,
+                    "compile_once",
+                    side_effect=subprocess.TimeoutExpired(["rue"], family["timeout_seconds"]),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "timed out after 20s"):
+                        scaling.run_family(family, Path("rue"), 1, "darwin", Path(temp_dir))
+
+    def test_scaling_validation_requires_structural_counters_and_exact_tiers(self):
+        result = self.valid_result()
+        manifest_path = INPUT_ROOT / "benchmarks/manifest.toml"
+        self.assertEqual(validator.validate_manifest_results(result, manifest_path), [])
+        family = result["scaling"]["families"][0]
+        del family["tiers"][0]["passes"][family["focus_pass"]]["invocations"]
+        self.assertTrue(
+            any(
+                "structural counter" in error
+                for error in validator.validate_manifest_results(
+                    result, manifest_path
+                )
+            )
+        )
+
+    def test_scaling_validation_rederives_all_claims_and_rejects_bad_raw_evidence(self):
+        manifest_path = INPUT_ROOT / "benchmarks/manifest.toml"
+        mutations = [
+            lambda result: result["scaling"].update(measurement_family="other"),
+            lambda result: result["scaling"]["families"][0].update(
+                classification="budget_exceeded"
+            ),
+            lambda result: result["scaling"]["families"][0]["adjacent_growth"][0][
+                "latency_per_unit_growth"
+            ].update(lower_bound=0.0),
+            lambda result: result["scaling"]["families"][0]["tiers"][0][
+                "samples_ms"
+            ].__setitem__(0, float("nan")),
+            lambda result: result["scaling"]["families"][0]["tiers"][0][
+                "peak_memory_samples_bytes"
+            ].__setitem__(0, True),
+            lambda result: result["scaling"]["families"][0]["tiers"][0][
+                "passes"
+            ][result["scaling"]["families"][0]["focus_pass"]].update(
+                invocations=True
+            ),
+            lambda result: result["scaling"]["families"][0]["tiers"][0][
+                "passes"
+            ][result["scaling"]["families"][0]["focus_pass"]].update(
+                invocations=0
+            ),
+            lambda result: result["scaling"]["families"][0].update(tiers=None),
+            lambda result: result["scaling"].update(budget_status="failed"),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                result = self.valid_result()
+                mutate(result)
+                self.assertTrue(validator.validate_manifest_results(result, manifest_path))
+
+        proven = self.valid_result()
+        declared = manifest_tools.scaling_families(manifest_path)[0]
+        existing = proven["scaling"]["families"][0]["tiers"]
+        raw = [
+            {
+                "input_size": tier["input_size"],
+                "samples_ms": [value] * 5,
+                "peak_memory_samples_bytes": tier["peak_memory_samples_bytes"],
+                "passes": tier["passes"],
+                "source_metrics": tier["source_metrics"],
+            }
+            for tier, value in zip(existing, (10.0, 90.0, 810.0))
+        ]
+        proven["scaling"]["families"][0] = scaling.derive_family(declared, raw)
+        proven["scaling"]["budget_status"] = "failed"
+        self.assertTrue(
+            any(
+                "proven complexity budget violation" in error
+                for error in validator.validate_manifest_results(proven, manifest_path)
+            )
+        )
+
+        indeterminate = self.valid_result()
+        declared = manifest_tools.scaling_families(manifest_path)[0]
+        existing = indeterminate["scaling"]["families"][0]["tiers"]
+        raw = []
+        for tier, center in zip(existing, (10.0, 30.0, 90.0)):
+            raw.append(
+                {
+                    "input_size": tier["input_size"],
+                    "samples_ms": [center, center, center, center * 100, center * 100],
+                    "peak_memory_samples_bytes": tier["peak_memory_samples_bytes"],
+                    "passes": tier["passes"],
+                    "source_metrics": tier["source_metrics"],
+                }
+            )
+        indeterminate["scaling"]["families"][0] = scaling.derive_family(
+            declared, raw
+        )
+        indeterminate["scaling"]["budget_status"] = "indeterminate"
+        self.assertTrue(
+            any(
+                "insufficient evidence for publication" in error
+                for error in validator.validate_manifest_results(
+                    indeterminate, manifest_path
+                )
+            )
+        )
+
+    def test_website_publishes_scaling_separately_from_phase_probe_headline(self):
+        template = (INPUT_ROOT / "website/templates/performance.html").read_text()
+        self.assertIn("Synthetic compiler scaling diagnostics", template)
+        self.assertIn("excluded from the aggregate headline", template)
+        self.assertIn("latency_per_unit_growth", template)
+        self.assertIn("<caption", template)
+        self.assertIn('scope="col"', template)
+        self.assertIn("scaled_mad", template)
+        self.assertIn("extreme dispersion", template)
+        result = self.valid_result()
+        self.assertIs(charts.scaling_diagnostics([result]), result["scaling"])
+        phase_total = charts.get_total_time(result)
+        result["scaling"]["families"][0]["tiers"][0]["median_ms"] = 10**12
+        self.assertEqual(charts.get_total_time(result), phase_total)
+        representative = {"scaling": {**result["scaling"], "representative": True}}
+        self.assertIsNone(charts.scaling_diagnostics([representative]))
 
     def test_missing_unknown_and_duplicate_names_are_rejected(self):
         missing = self.valid_result()
@@ -812,14 +1190,14 @@ class BenchmarkValidationTests(unittest.TestCase):
     def test_duplicate_and_malformed_manifest_entries_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             manifest_path = Path(temp_dir) / "manifest.toml"
-            manifest_path.write_text(
-                '[[benchmark]]\nname = "same"\npath = "a.rue"\n'
-                '[[benchmark]]\nname = "same"\npath = "b.rue"\n'
-            )
+            source = (INPUT_ROOT / "benchmarks/manifest.toml").read_text()
+            manifest_path.write_text(source.replace(
+                'name = "deep_nesting"', 'name = "many_functions"', 1
+            ))
             with self.assertRaisesRegex(ValueError, "duplicate benchmark name"):
                 validator.load_manifest_names(manifest_path)
 
-            manifest_path.write_text('[[benchmark]]\npath = "missing-name.rue"\n')
+            manifest_path.write_text(source.replace('name = "many_functions"\n', "", 1))
             with self.assertRaisesRegex(ValueError, "has no valid name"):
                 validator.load_manifest_names(manifest_path)
 
@@ -958,7 +1336,7 @@ class DurableBenchmarkHistoryTests(unittest.TestCase):
                 self.assertTrue(publication["coverage"]["gap_unknown"])
 
     def test_regime_ignores_commit_but_tracks_comparability_dimensions(self):
-        corpus = {"schema_version": 1, "sha256": "a" * 64}
+        corpus = {"schema_version": 2, "sha256": "a" * 64}
         base = {
             "commit": "one",
             "build_mode": "release",
@@ -972,6 +1350,73 @@ class DurableBenchmarkHistoryTests(unittest.TestCase):
         self.assertEqual(first["id"], changed_commit["id"])
         self.assertNotEqual(first["id"], changed_iterations["id"])
         self.assertNotEqual(first["id"], changed_runner["id"])
+
+    def test_corpus_hash_includes_scaling_generator_definitions(self):
+        manifest = INPUT_ROOT / "benchmarks/manifest.toml"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            copied_manifest = root / "benchmarks/manifest.toml"
+            copied_manifest.parent.mkdir()
+            copied_manifest.write_bytes(manifest.read_bytes())
+            for relative, source in manifest_tools.corpus_paths(manifest):
+                target = copied_manifest.parent / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
+            before = history_tools.corpus_metadata(copied_manifest)
+            generator = root / "scripts/scaling_workloads.py"
+            generator.write_text(generator.read_text() + "\n# workload definition changed\n")
+            after = history_tools.corpus_metadata(copied_manifest)
+        self.assertEqual(before["schema_version"], 2)
+        self.assertIn("../scripts/scaling_workloads.py", before["files"])
+        self.assertNotEqual(before["sha256"], after["sha256"])
+
+    def test_schema_one_and_two_corpora_remain_loadable_across_regime_boundary(self):
+        def published(schema, digest, commit):
+            run = {
+                "timestamp": f"2026-07-{schema:02d}T00:00:00Z",
+                "commit": commit,
+                "build_mode": "release",
+                "iterations": 3,
+                "measurement_family": "compiler",
+                "scenario_family": "cold_compilation",
+                "benchmarks": [{
+                    "name": "probe",
+                    "samples_ms": [10.0, 10.0, 10.0],
+                    "mean_ms": 10.0,
+                    "passes": {"compile": {"mean_ms": 10.0}},
+                    "timing_schema_version": 2,
+                }],
+            }
+            corpus = {"schema_version": schema, "sha256": digest, "files": []}
+            regime = history_tools.regime_metadata(run, "x86-64-linux", "runner", corpus)
+            run["publication"] = {
+                "schema_version": 3,
+                "comparable": True,
+                "regime_id": regime["id"],
+                "regime": regime["dimensions"],
+                "corpus": corpus,
+                "timing_schema_versions": [2],
+                "build_mode": "release",
+                "compiler": {"commit": commit, "identity": f"rue@{commit}"},
+                "iteration_policy": {"kind": "fixed", "iterations": 3},
+                "platform": "x86-64-linux",
+                "runner": {"image": "runner", "host": None},
+                "metric_semantics": {"measurement_family": "compiler", "scenario_family": "cold_compilation"},
+                "trigger_reason": "push",
+                "coverage": {"measured_commit": commit, "represented_commits": [commit], "skipped_commits": [], "gap_unknown": False},
+            }
+            self.assertEqual(history_tools.validate_publication(run), [])
+            return run
+
+        old = published(1, "a" * 64, "old")
+        current = published(2, "b" * 64, "current")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "history"
+            history_tools.save_history(path, [old, current], "x86-64-linux")
+            loaded = history_tools.load_history(path)["runs"]
+        self.assertEqual(len(loaded), 2)
+        self.assertTrue(history_tools.comparison_break(loaded[0], loaded[1]))
+        self.assertEqual(metrics.compare_runs(loaded[1], loaded[0])["status"], "non_comparable")
 
     def test_coverage_makes_skipped_commits_and_unknown_gaps_explicit(self):
         completed = subprocess.CompletedProcess([], 0, "middle\ncurrent\n", "")
@@ -2039,7 +2484,12 @@ class BenchmarkCollectionTests(unittest.TestCase):
         result = collection.aggregate_iterations(
             [self.payload(2.0), self.payload(4.0)]
         )
-        self.assertEqual(result["passes"], {"lexer": {"mean_ms": 1.0}})
+        self.assertEqual(result["passes"], {"lexer": {
+            "mean_ms": 1.0,
+            "invocations": 1,
+            "root_invocations": 0,
+            "leaf_invocations": 1,
+        }})
 
     def test_malformed_timing_or_pass_payload_aborts_collection(self):
         bad_payloads = [
@@ -2095,6 +2545,12 @@ class BenchmarkCollectionTests(unittest.TestCase):
         changed = json.loads(self.payload())
         changed["passes"][0]["name"] = "parser"
         with self.assertRaisesRegex(ValueError, "pass set changed"):
+            collection.aggregate_iterations([self.payload(), json.dumps(changed)])
+
+    def test_rejects_structural_counter_drift_between_iterations(self):
+        changed = json.loads(self.payload())
+        changed["passes"][0].update(invocations=2, leaf_invocations=2)
+        with self.assertRaisesRegex(ValueError, "invocation structure changed"):
             collection.aggregate_iterations([self.payload(), json.dumps(changed)])
 
 

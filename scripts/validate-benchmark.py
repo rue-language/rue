@@ -19,6 +19,7 @@ from benchmark_validation import (
     DEFAULT_MANIFEST,
     load_manifest_names,
     validate_results,
+    validate_manifest_results,
 )
 
 
@@ -36,7 +37,7 @@ def main() -> int:
     try:
         with args.results.open() as f:
             data = json.load(f)
-        expected_names = load_manifest_names(args.manifest)
+        errors = validate_manifest_results(data, args.manifest)
     except (OSError, ValueError) as error:
         print(f"::error::Cannot validate benchmark results: {error}")
         return 1
@@ -54,7 +55,6 @@ def main() -> int:
         if isinstance(mean, (int, float)) and not isinstance(mean, bool):
             print(f"  - {name}: {mean:.2f}ms")
 
-    errors = validate_results(data, expected_names)
     for error in errors:
         print(f"::error::{error}")
 

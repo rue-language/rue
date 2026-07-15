@@ -17,6 +17,8 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
+from benchmark_manifest import corpus_paths
+
 
 HISTORY_VERSION = 3
 FORMAT = "rue-benchmark-history"
@@ -180,22 +182,16 @@ def save_history(path: Path, runs: list[dict], platform: str) -> None:
 
 
 def corpus_metadata(manifest: Path) -> dict:
-    """Hash the manifest and every declared source file in manifest order."""
-    import tomllib
+    """Hash the manifest, static sources, and generated-workload definitions."""
     raw = manifest.read_bytes()
-    parsed = tomllib.loads(raw.decode())
     digest = hashlib.sha256()
     digest.update(b"manifest\0" + raw)
     files = []
-    for entry in parsed.get("benchmark", []):
-        relative = entry.get("path")
-        if not isinstance(relative, str):
-            raise ValueError("benchmark manifest entry has no path")
-        source = manifest.parent / relative
+    for relative, source in corpus_paths(manifest):
         contents = source.read_bytes()
         digest.update(relative.encode() + b"\0" + contents)
         files.append(relative)
-    return {"schema_version": 1, "sha256": digest.hexdigest(), "files": files}
+    return {"schema_version": 2, "sha256": digest.hexdigest(), "files": files}
 
 
 def regime_metadata(result: dict, platform: str, runner_image: str, corpus: dict) -> dict:
@@ -274,7 +270,7 @@ def validate_publication(run: dict) -> list[str]:
     else:
         errors.append("publication regime must be an object")
     corpus = publication.get("corpus")
-    if not isinstance(corpus, dict) or corpus.get("schema_version") != 1 or not isinstance(corpus.get("sha256"), str) or len(corpus.get("sha256", "")) != 64:
+    if not isinstance(corpus, dict) or corpus.get("schema_version") not in (1, 2) or not isinstance(corpus.get("sha256"), str) or len(corpus.get("sha256", "")) != 64:
         errors.append("publication corpus metadata is malformed")
     compiler = publication.get("compiler")
     if not isinstance(compiler, dict) or compiler.get("commit") != run.get("commit") or not isinstance(compiler.get("identity"), str):
