@@ -65,6 +65,27 @@
             </details>
         </section>
 
+        <details class="evolution-disclosure">
+            <summary>Explore the full performance evolution</summary>
+            <section id="evolution-workspace" class="performance-workspace evolution-workspace" aria-labelledby="evolution-title">
+                <div class="specimen-head"><span class="no">Secondary observation</span><span>normalized, segmented history</span></div>
+                <div class="performance-section-heading">
+                    <div>
+                        <h2 id="evolution-title">Long-term performance evolution</h2>
+                        <p>Calendar-scaled normalized performance. Faint points are measurements; solid daily or weekly trends include observed variation and stop at every gap or regime change.</p>
+                    </div>
+                </div>
+                <div class="evolution-controls">
+                    <fieldset><legend>Calendar range</legend><div id="evolution-range-controls" class="performance-button-group"></div></fieldset>
+                    <label>Machine <select id="evolution-platform-select"></select></label>
+                    <label>Workload or family <select id="evolution-workload-select"></select></label>
+                </div>
+                <div id="evolution-chart" class="diagnostic-chart evolution-chart" aria-live="polite"></div>
+                <div id="evolution-annotations" class="evolution-annotations"></div>
+                <details class="evolution-raw"><summary>Raw measurements, gaps, and coverage</summary><div id="evolution-details" class="table-scroll"></div></details>
+            </section>
+        </details>
+
         <section class="secondary-diagnostics" aria-labelledby="secondary-title">
             <div class="specimen-head"><span class="no">Supporting observations</span><span>open as needed</span></div>
             <h2 id="secondary-title">Other diagnostic views</h2>
@@ -81,12 +102,6 @@
                     <figure><figcaption>Peak memory</figcaption><div id="memory-chart"></div></figure>
                     <figure><figcaption>Combined output binary size</figcaption><div id="binary-chart"></div></figure>
                 </div>
-            </details>
-
-            <details>
-                <summary>Normalized cross-platform evolution</summary>
-                <p class="details-intro">For comparing direction across unlike machines. Each machine remains a separate normalized series; this is not the default latency view.</p>
-                <div id="normalized-chart" class="diagnostic-chart"></div>
             </details>
 
             <details>
@@ -130,9 +145,12 @@
         phases: $('phase-chart'), before: $('before-select'), after: $('after-select'),
         comparison: $('comparison-card'), authored: $('authored-annotations'), derived: $('derived-annotations'),
         multiples: $('workload-multiples'), memory: $('memory-chart'), binary: $('binary-chart'),
-        normalized: $('normalized-chart'), metrics: $('metrics-table'), scaling: $('scaling-diagnostics'),
+        metrics: $('metrics-table'), scaling: $('scaling-diagnostics'),
         scenarios: $('scenario-diagnostics'),
-        records: $('measurement-records')
+        records: $('measurement-records'), evolution: $('evolution-workspace'),
+        evolutionRanges: $('evolution-range-controls'), evolutionPlatform: $('evolution-platform-select'),
+        evolutionWorkload: $('evolution-workload-select'), evolutionChart: $('evolution-chart'),
+        evolutionAnnotations: $('evolution-annotations'), evolutionDetails: $('evolution-details')
     };
     let rootMetadata = null;
     let metadata = null;
@@ -236,6 +254,132 @@
         }
     }
 
+    function annotationBadge(category) {
+        return node('span', String(category || 'measurement_infrastructure').replaceAll('_', ' '), `annotation-badge category-${category || 'measurement_infrastructure'}`);
+    }
+    function configureEvolution(workspace) {
+        const query = new URLSearchParams(location.search);
+        let activeRange = workspace.range_options.includes(query.get('range')) ? query.get('range') : workspace.default_range;
+        const requestedPlatform = query.get('platform');
+        const requestedWorkload = query.get('workload');
+        let activeAnnotation = query.get('annotation');
+        els.evolutionRanges.replaceChildren(); els.evolutionPlatform.replaceChildren(); els.evolutionWorkload.replaceChildren();
+        const allMachines = node('option', 'All machines (separate normalized series)'); allMachines.value = '*'; els.evolutionPlatform.appendChild(allMachines);
+        workspace.platform_options.forEach(platform => { const option = node('option', platform); option.value = platform; els.evolutionPlatform.appendChild(option); });
+        els.evolutionPlatform.value = workspace.platform_options.includes(requestedPlatform) ? requestedPlatform : '*';
+        workspace.workload_options.forEach(workload => {
+            const option = node('option', workload === 'all' ? 'Entire benchmark suite' : `Workload: ${workload.replaceAll('_', ' ')}`);
+            option.value = `workload:${workload}`; els.evolutionWorkload.appendChild(option);
+        });
+        workspace.workload_families.forEach(family => {
+            const option = node('option', `Family: ${family.label}`); option.value = `family:${family.id}`; els.evolutionWorkload.appendChild(option);
+        });
+        if ([...els.evolutionWorkload.options].some(option => option.value === requestedWorkload)) els.evolutionWorkload.value = requestedWorkload;
+
+        const selectedWorkloads = () => {
+            const selection = els.evolutionWorkload.value;
+            if (!selection.startsWith('family:')) return new Set([selection.slice(9)]);
+            const family = workspace.workload_families.find(item => item.id === selection.slice(7));
+            return new Set(family?.workloads || []);
+        };
+        const updateQuery = annotation => {
+            const state = new URLSearchParams(location.search);
+            state.set('range', activeRange); state.set('platform', els.evolutionPlatform.value);
+            state.set('workload', els.evolutionWorkload.value);
+            activeAnnotation = annotation || null;
+            if (activeAnnotation) state.set('annotation', activeAnnotation); else state.delete('annotation');
+            history.replaceState(null, '', `${location.pathname}?${state.toString()}#evolution-workspace`);
+        };
+        const render = () => {
+            const workloads = selectedWorkloads();
+            const platform = els.evolutionPlatform.value;
+            const selected = workspace.series.filter(series => (platform === '*' || series.platform === platform) && workloads.has(series.workload));
+            els.evolutionChart.replaceChildren(); els.evolutionAnnotations.replaceChildren(); els.evolutionDetails.replaceChildren();
+            const allPoints = selected.flatMap(series => series.raw_points.slice(series.ranges[activeRange].raw_start_index));
+            const drawable = allPoints.filter(point => Number.isFinite(point.index));
+            if (!selected.length || !allPoints.length) { els.evolutionChart.appendChild(node('p', 'No measurements exist in this calendar range.', 'chart-empty')); return; }
+            if (!drawable.length) { els.evolutionChart.appendChild(node('p', 'Measurements exist, but no comparable normalized index can be drawn. The raw records remain below.', 'chart-empty')); }
+            const width = 920, height = 360, margin = {left: 64, right: 20, top: 32, bottom: 54};
+            const times = allPoints.map(point => Date.parse(point.timestamp));
+            const observedMinTime = Math.min(...times), observedMaxTime = Math.max(...times);
+            const rangeView = selected[0].ranges[activeRange];
+            const minTime = rangeView.calendar_start ? Date.parse(rangeView.calendar_start) : observedMinTime;
+            const maxTime = rangeView.calendar_end ? Date.parse(rangeView.calendar_end) : observedMaxTime;
+            const indexes = drawable.length ? drawable.map(point => point.index) : [99, 101];
+            const lo0 = Math.min(...indexes), hi0 = Math.max(...indexes), padding = Math.max((hi0 - lo0) * .1, 1);
+            const lo = lo0 - padding, hi = hi0 + padding;
+            const x = timestamp => margin.left + (width - margin.left - margin.right) * (Date.parse(timestamp) - minTime) / Math.max(1, maxTime - minTime);
+            const y = value => margin.top + (height - margin.top - margin.bottom) * (hi - value) / Math.max(1, hi - lo);
+            const svg = svgElement('svg', {viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': `${activeRange} normalized performance by calendar date; raw measurements are faint, trends show variation, and paths stop at gaps`});
+            for (let tick = 0; tick <= 4; tick++) {
+                const value = lo + (hi - lo) * tick / 4, yy = y(value);
+                svg.appendChild(svgElement('line', {x1: margin.left, x2: width - margin.right, y1: yy, y2: yy, class: 'chart-grid'}));
+                const label = svgElement('text', {x: margin.left - 8, y: yy + 4, 'text-anchor': 'end', class: 'chart-axis-label'}); label.textContent = value.toFixed(0); svg.appendChild(label);
+            }
+            [[minTime, margin.left, 'start'], [maxTime, width - margin.right, 'end']].forEach(([time, xx, anchor]) => {
+                const label = svgElement('text', {x: xx, y: height - 18, 'text-anchor': anchor, class: 'chart-axis-label'}); label.textContent = new Date(time).toISOString().slice(0, 10); svg.appendChild(label);
+            });
+            const colors = ['series-0', 'series-1', 'series-2', 'series-3', 'series-4'];
+            selected.forEach((series, seriesIndex) => {
+                const view = series.ranges[activeRange], color = colors[seriesIndex % colors.length];
+                view.rendered_raw_points.filter(point => Number.isFinite(point.index)).forEach(point => {
+                    const raw = svgElement('circle', {cx: x(point.timestamp), cy: y(point.index), r: 2.5, class: `evolution-raw-point ${color}`});
+                    raw.setAttribute('aria-label', `${series.platform}, ${series.workload}, ${point.timestamp}, index ${point.index.toFixed(2)}`); svg.appendChild(raw);
+                    if (point.annotation_ids.length) {
+                        const marker = svgElement('circle', {cx: x(point.timestamp), cy: y(point.index), r: 6, class: `evolution-annotation-marker ${color}`});
+                        marker.setAttribute('aria-label', `Annotated milestone at ${point.timestamp}`); svg.appendChild(marker);
+                    }
+                });
+                view.rendered_raw_points.filter(point => point.boundary).forEach(point => {
+                    svg.appendChild(svgElement('line', {x1: x(point.timestamp), x2: x(point.timestamp), y1: margin.top, y2: height - margin.bottom, class: 'chart-boundary evolution-boundary'}));
+                });
+                view.trend_points.forEach(point => {
+                    svg.appendChild(svgElement('line', {x1: x(point.timestamp), x2: x(point.timestamp), y1: y(point.index - point.variation), y2: y(point.index + point.variation), class: `evolution-variation ${color}`}));
+                });
+                view.trend_segments.forEach(segment => {
+                    const points = segment.points;
+                    if (points.length > 1) svg.appendChild(svgElement('polyline', {points: points.map(point => `${x(point.timestamp)},${y(point.index)}`).join(' '), fill: 'none', class: `chart-line evolution-trend ${color}`}));
+                });
+                const label = svgElement('text', {x: margin.left + 4, y: 16 + seriesIndex * 16, class: `chart-series-label ${color}`}); label.textContent = `${series.platform} / ${series.workload}`; svg.appendChild(label);
+            });
+            if (drawable.length) els.evolutionChart.appendChild(svg);
+            els.evolutionChart.appendChild(node('p', `${activeRange} calendar view · ${selected[0].ranges[activeRange].resolution} median trend ± scaled MAD · ${allPoints.length} raw records selected`, 'evolution-caption'));
+
+            const eventIds = new Set(allPoints.flatMap(point => point.annotation_ids));
+            const events = workspace.annotations.filter(event => eventIds.has(event.id));
+            if (!events.length) els.evolutionAnnotations.appendChild(node('p', 'No milestone annotations apply to this selection.', 'annotation-empty'));
+            events.forEach(event => {
+                const article = node('article', undefined, `evolution-event${event.id === activeAnnotation ? ' selected-annotation' : ''}`);
+                article.id = `annotation-${event.id}`; article.appendChild(annotationBadge(event.category));
+                const title = node('h3'); appendLink(title, event.title, event.link); article.appendChild(title); article.appendChild(node('p', event.explanation));
+                const deep = node('a', `Show this event in the ${activeRange} range`); deep.href = `?range=${encodeURIComponent(activeRange)}&platform=${encodeURIComponent(platform)}&workload=${encodeURIComponent(els.evolutionWorkload.value)}&annotation=${encodeURIComponent(event.id)}#evolution-workspace`; article.appendChild(deep);
+                els.evolutionAnnotations.appendChild(article);
+            });
+
+            const table = node('table'); table.appendChild(node('caption', 'Raw evolution measurements with comparison boundaries and coverage'));
+            const header = node('tr'); ['Machine / workload', 'Date / commit', 'Index / absolute', 'Variation / samples', 'Coverage and comparability', 'Annotations'].forEach(label => { const cell = node('th', label); cell.scope = 'col'; header.appendChild(cell); }); table.appendChild(header);
+            selected.forEach(series => series.raw_points.slice(series.ranges[activeRange].raw_start_index).forEach(point => {
+                const row = node('tr'); row.appendChild(node('td', `${series.platform} / ${series.workload}`));
+                const identity = node('td'); identity.append(`${point.timestamp} · `); appendLink(identity, short(point.commit), point.commit_url); row.appendChild(identity);
+                row.appendChild(node('td', `${Number.isFinite(point.index) ? point.index.toFixed(3) : 'not comparable'} · ${Number.isFinite(point.absolute_ms) ? fmt(point.absolute_ms, 3) : 'absolute unavailable'}`));
+                const samples = Array.isArray(point.raw_samples_ms) ? point.raw_samples_ms : Object.entries(point.raw_samples_ms).map(([name, values]) => `${name}: ${values.join(', ')}`).join('; ');
+                row.appendChild(node('td', `${Number.isFinite(point.variation_pct) ? `${point.variation_pct.toFixed(2)}%` : 'aggregate variation in trend'} · ${samples || 'samples unavailable'}`));
+                const boundary = point.boundary;
+                row.appendChild(node('td', boundary ? `boundary: ${String(boundary.reason).replaceAll('_', ' ')}; regime ${boundary.regime_id}; represented ${boundary.represented_commits.length}; skipped ${boundary.skipped_commits.length}; ${boundary.gap_unknown ? 'coverage gap unknown' : 'coverage gap known'}` : 'continuous comparable segment'));
+                const categories = node('td'); point.annotation_ids.forEach(id => { const event = workspace.annotations.find(item => item.id === id); if (event) categories.appendChild(annotationBadge(event.category)); }); if (!categories.childNodes.length) categories.append('none'); row.appendChild(categories);
+                table.appendChild(row);
+            })); els.evolutionDetails.appendChild(table);
+            if (activeAnnotation || location.hash === '#evolution-workspace') document.querySelector('.evolution-disclosure').open = true;
+        };
+        workspace.range_options.forEach(range => {
+            const button = node('button', range); button.type = 'button'; button.setAttribute('aria-pressed', range === activeRange ? 'true' : 'false');
+            button.onclick = () => { activeRange = range; els.evolutionRanges.querySelectorAll('button').forEach(item => item.setAttribute('aria-pressed', item === button ? 'true' : 'false')); updateQuery(); render(); };
+            els.evolutionRanges.appendChild(button);
+        });
+        els.evolutionPlatform.onchange = () => { updateQuery(); render(); }; els.evolutionWorkload.onchange = () => { updateQuery(); render(); };
+        render();
+    }
+
     function renderPrimaryCharts() {
         const points = visiblePoints();
         drawCommitChart(els.latency, points, [{label: 'Compilation time', values: points.map(selectedValue)}], {points: true, label: 'Absolute compilation time by measured commit'});
@@ -320,11 +464,29 @@
             if (!selectedWorkload && explanation.dominant_workload) cause.append(`Largest workload movement: ${explanation.dominant_workload.name.replaceAll('_', ' ')} (${explanation.dominant_workload.delta_ms >= 0 ? '+' : ''}${explanation.dominant_workload.delta_ms.toFixed(1)} ms).`);
             els.comparison.appendChild(cause);
         }
+        const workloadTable = node('table', undefined, 'comparison-table');
+        workloadTable.appendChild(node('caption', 'Complete per-workload latency comparison'));
+        const workloadHead = node('tr'); ['Workload', 'Before', 'After', 'Delta', 'Relative change', 'Observed variation'].forEach(label => { const cell = node('th', label); cell.scope = 'col'; workloadHead.appendChild(cell); }); workloadTable.appendChild(workloadHead);
+        explanation.workloads.forEach(value => {
+            const row = node('tr');
+            const delta = Number.isFinite(value.delta_ms) ? `${value.delta_ms >= 0 ? '+' : ''}${value.delta_ms.toFixed(1)} ms` : 'unavailable';
+            const relative = Number.isFinite(value.delta_pct) ? `${value.delta_pct >= 0 ? '+' : ''}${value.delta_pct.toFixed(1)}%` : 'unclassified';
+            const variation = Number.isFinite(value.variation_pct) ? `${value.variation_pct.toFixed(1)}%` : 'unavailable';
+            [value.name.replaceAll('_', ' '), fmt(value.reference_median_ms), fmt(value.current_median_ms), delta, relative, variation].forEach(text => row.appendChild(node('td', text))); workloadTable.appendChild(row);
+        });
+        els.comparison.appendChild(workloadTable);
         const table = node('table', undefined, 'comparison-table');
+        table.appendChild(node('caption', 'Complete compiler-phase comparison'));
         const head = node('tr'); ['Compiler phase', 'Before', 'After', 'Contribution'].forEach(label => head.appendChild(node('th', label))); table.appendChild(head);
-        const comparedPasses = selectedWorkload?.passes || explanation.passes;
+        const comparedPasses = explanation.passes;
         comparedPasses.forEach(value => { const row = node('tr'); [value.name.replaceAll('_', ' '), fmt(value.before_ms), fmt(value.after_ms), `${value.delta_ms >= 0 ? '+' : ''}${value.delta_ms.toFixed(1)} ms`].forEach(text => row.appendChild(node('td', text))); table.appendChild(row); });
         if (comparedPasses.length) els.comparison.appendChild(table);
+        [['Peak memory', explanation.memory_bytes], ['Output binary size', explanation.binary_size_bytes]].forEach(([label, values]) => {
+            const product = node('table', undefined, 'comparison-table'); product.appendChild(node('caption', `${label} by workload`));
+            const productHead = node('tr'); ['Workload', 'Before', 'After', 'Delta'].forEach(text => { const cell = node('th', text); cell.scope = 'col'; productHead.appendChild(cell); }); product.appendChild(productHead);
+            values.forEach(value => { const row = node('tr'); [value.name.replaceAll('_', ' '), bytes(value.before), bytes(value.after), `${value.delta >= 0 ? '+' : '−'}${bytes(Math.abs(value.delta))}`].forEach(text => row.appendChild(node('td', text))); product.appendChild(row); });
+            if (values.length) els.comparison.appendChild(product);
+        });
     }
 
     function miniChart(values, label) {
@@ -350,6 +512,7 @@
             if (!items.length) { target.appendChild(node('p', empty, 'annotation-empty')); return; }
             items.forEach(item => {
                 const article = node('article', undefined, 'annotation-note');
+                article.appendChild(annotationBadge(item.category));
                 const title = node('h3'); appendLink(title, item.title, item.link); article.appendChild(title);
                 article.appendChild(node('p', item.explanation));
                 article.appendChild(node('p', item.occurrences.join(' · '), 'annotation-location')); target.appendChild(article);
@@ -455,9 +618,12 @@
         els.records.replaceChildren();
         visiblePoints().slice().reverse().forEach(point => {
             const details = node('details', undefined, 'measurement-record');
-            const summary = node('summary', `${short(point.commit)} · ${point.subject || 'subject unavailable'} · ${fmt(point.suite_ms)}`); details.appendChild(summary);
+            const summary = node('summary'); appendLink(summary, short(point.commit), point.links?.commit); summary.append(` · ${point.subject || 'subject unavailable'} · ${fmt(point.suite_ms)}`); details.appendChild(summary);
             const fields = node('dl', undefined, 'measurement-fields');
+            fields.append(labeledField('Commit date', point.date || 'unavailable'));
+            fields.append(labeledField('Subject', point.subject || 'unavailable'));
             fields.append(labeledField('Measured at', point.measured_at || 'unavailable'));
+            fields.append(labeledField('Freshness', `${point.freshness.latest ? 'latest point' : `${point.freshness.age_from_latest_seconds ?? 'unknown'}s before latest`}; ${point.freshness.stale ? 'stale' : 'current'}`));
             fields.append(labeledField('Measurement regime', point.regime_id || 'unknown'));
             fields.append(labeledField('Measurement family', point.comparability.measurement_family || 'compiler'));
             fields.append(labeledField('Scenario', String(point.comparability.scenario_family || 'cold_compilation').replaceAll('_', ' ')));
@@ -466,6 +632,13 @@
             fields.append(labeledField('Skipped commits', point.coverage.skipped_commits.length ? point.coverage.skipped_commits.map(short).join(', ') : 'none recorded'));
             fields.append(labeledField('Coverage gap', point.coverage.gap_unknown ? 'unknown' : 'known'));
             fields.append(labeledField('Comparison status', point.comparability.status === 'comparable' ? 'comparable with previous measurement' : `new boundary: ${String(point.comparability.reason).replaceAll('_', ' ')}`));
+            const headline = point.comparability.headline;
+            fields.append(labeledField('Absolute suite', fmt(point.suite_ms, 2)));
+            fields.append(labeledField('Relative result', headline && headline.classification !== 'insufficient_data' ? `${headline.classification}; ${headline.delta_pct >= 0 ? '+' : ''}${headline.delta_pct.toFixed(2)}%; variation ${headline.variation_pct.toFixed(2)}%` : 'not classified'));
+            const references = [...(point.links?.pull_requests || []), ...(point.links?.issues || [])];
+            const referenceField = node('div'); referenceField.appendChild(node('dt', 'PRs and issues')); const referenceValue = node('dd');
+            references.forEach((item, index) => { if (index) referenceValue.append(' · '); appendLink(referenceValue, item.id, item.url); }); if (!references.length) referenceValue.append('none discovered'); referenceField.appendChild(referenceValue); fields.append(referenceField);
+            const annotationField = node('div'); annotationField.appendChild(node('dt', 'Annotations')); const annotationValue = node('dd'); point.annotations.forEach(event => { annotationValue.appendChild(annotationBadge(event.category)); const link = node('a', event.title); link.href = event.link; annotationValue.append(' '); annotationValue.appendChild(link); annotationValue.append(' '); }); if (!annotationValue.childNodes.length) annotationValue.append('none'); annotationField.appendChild(annotationValue); fields.append(annotationField);
             details.appendChild(fields);
             const table = node('table', undefined, 'raw-samples-table');
             const head = node('tr'); ['Workload', 'Reported value', 'Estimator', 'Observed variation', 'Raw samples (ms)'].forEach(label => head.appendChild(node('th', label))); table.appendChild(head);
@@ -476,15 +649,12 @@
             details.appendChild(table); els.records.appendChild(details);
         });
     }
-    function renderNormalized(workspace) {
-        const byPlatform = workspace.series.filter(item => item.workload === 'all');
-        const commits = [...new Set(byPlatform.flatMap(item => item.raw_points.map(point => point.commit)))].slice(-50);
-        const points = commits.map(commit => ({commit, comparability: {status: 'comparable'}}));
-        const series = byPlatform.map(item => { const map = new Map(item.raw_points.map(point => [point.commit, point.index])); return {label: item.platform, values: commits.map(commit => map.get(commit) ?? null)}; });
-        drawCommitChart(els.normalized, points, series, {height: 300, unit: 'index', label: 'Normalized performance index by platform and measured commit; higher is better'});
-    }
-    function fetchNormalized() {
-        fetch('/benchmarks/comparison/metadata.json').then(response => response.json()).then(data => renderNormalized(data.evolution_workspace)).catch(() => els.normalized.replaceChildren(node('p', 'Cross-platform data unavailable.', 'chart-empty')));
+    function fetchEvolution() {
+        fetch('/benchmarks/comparison/metadata.json').then(response => response.json()).then(data => {
+            configureEvolution(data.evolution_workspace);
+        }).catch(() => {
+            els.evolutionChart.replaceChildren(node('p', 'Long-term evolution data unavailable.', 'chart-empty'));
+        });
     }
 
     function renderAll() {
@@ -524,7 +694,7 @@
         const available = (data.platforms || []).filter(item => item.has_data);
         available.forEach(item => { const option = node('option', item.name); option.value = item.id; els.platform.appendChild(option); });
         const preferred = available.some(item => item.id === 'x86-64-linux') ? 'x86-64-linux' : (data.default_platform !== 'comparison' ? data.default_platform : available[0]?.id);
-        if (!preferred) throw new Error(); els.platform.value = preferred; loadPlatform(preferred); fetchNormalized();
+        if (!preferred) throw new Error(); els.platform.value = preferred; loadPlatform(preferred); fetchEvolution();
     }).catch(() => {
         els.info.textContent = 'No benchmark data is available yet.';
         els.latency.replaceChildren(node('p', 'Benchmark data unavailable.', 'chart-empty'));

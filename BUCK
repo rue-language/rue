@@ -116,6 +116,7 @@ benchmark_tool_local_inputs = glob(["benchmarks/**"]) + [
         "scripts/scaling_workloads.py",
         "scripts/validate-benchmark.py",
         "website/build.sh",
+        "website/css/input.css",
         "website/templates/performance.html",
         "website/templates/index.html",
     ]
