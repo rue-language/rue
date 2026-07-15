@@ -1,0 +1,614 @@
+{
+  "format": "rue-benchmark-history",
+  "platform": "aarch64-linux",
+  "run_count": 101,
+  "shards": [
+    {
+      "first_timestamp": "2026-07-12T08:51:48Z",
+      "last_timestamp": "2026-07-12T08:51:48Z",
+      "path": "shards/2026/07/56e1ed304de442c453088910872fdd9545bf670a782814da1640a2cd708b09ba.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T09:09:32Z",
+      "last_timestamp": "2026-07-12T09:09:32Z",
+      "path": "shards/2026/07/fa0246d5bbfe4103a438f058fc781ce3e05967cc9d4d4fe3839a04ef8fa310b8.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T09:29:59Z",
+      "last_timestamp": "2026-07-12T09:29:59Z",
+      "path": "shards/2026/07/55311ba0a699070f49e2fa43960eff3cff83331baf9442d5ae8f841e858a2701.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T09:49:56Z",
+      "last_timestamp": "2026-07-12T09:49:56Z",
+      "path": "shards/2026/07/cbe1289fc01cf25233d2d4b17c63e18b07f7177638d19b2696994bb68ff90eef.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T10:08:43Z",
+      "last_timestamp": "2026-07-12T10:08:43Z",
+      "path": "shards/2026/07/3fbae6716dc5afa26e45296039c800a49ff7c18ae50778da37cdcb72559e7613.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T10:21:54Z",
+      "last_timestamp": "2026-07-12T10:21:54Z",
+      "path": "shards/2026/07/bcca4492e69c198541522921aa6b1dec1f85da539d2db9261a8ffa8ae2250510.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T10:36:21Z",
+      "last_timestamp": "2026-07-12T10:36:21Z",
+      "path": "shards/2026/07/4fd0f252d41a0c9c2d80ef8d4a9dcfdbfb6c5c0a0140a7b058abb6d5dfc26245.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T10:50:36Z",
+      "last_timestamp": "2026-07-12T10:50:36Z",
+      "path": "shards/2026/07/dc61486472f5913f1e820b089df365c54a7acead056817835f3f4f64b1886486.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T11:06:14Z",
+      "last_timestamp": "2026-07-12T11:06:14Z",
+      "path": "shards/2026/07/2185fe38b828dedd138ec24f9097ea787e490d51b0cec5f005e96543e6a757ce.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T11:20:49Z",
+      "last_timestamp": "2026-07-12T11:20:49Z",
+      "path": "shards/2026/07/aed91bd9dc3b631e46141f26142db37395a8dcda41f257bf46e02c372a24d851.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T11:37:27Z",
+      "last_timestamp": "2026-07-12T11:37:27Z",
+      "path": "shards/2026/07/bc838002caa2ea145aa5e0aa96825ad269959d73955282b17a50114356a9c627.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T11:51:34Z",
+      "last_timestamp": "2026-07-12T11:51:34Z",
+      "path": "shards/2026/07/801523696a46037bb51f252f473ec780ae868a7632b22bfbc6aa61ac5453f1d9.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T12:05:50Z",
+      "last_timestamp": "2026-07-12T12:05:50Z",
+      "path": "shards/2026/07/49a07e2bdbc677ea8e55a57aca71f1fa0862c8c8ac2b0235ccc9307df345c38b.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T12:20:01Z",
+      "last_timestamp": "2026-07-12T12:20:01Z",
+      "path": "shards/2026/07/b97117ba5df9859adb43c0929dcc0bd4eb9d40a8bc883de611f1161fd46a3739.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T12:34:22Z",
+      "last_timestamp": "2026-07-12T12:34:22Z",
+      "path": "shards/2026/07/362118afbc3716b1709a1b15141b47c5539fe6db6d0f347c3d4c9b03a95edc27.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T12:47:51Z",
+      "last_timestamp": "2026-07-12T12:47:51Z",
+      "path": "shards/2026/07/e088a648914de0319da6d15cf4eda01997347e2282318361ed5c5eb0dc0fba23.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T13:02:29Z",
+      "last_timestamp": "2026-07-12T13:02:29Z",
+      "path": "shards/2026/07/2a3a5fd0097ce01343f697229228ab1ded0593d8958819df07ef41f03ad6ab99.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T13:28:50Z",
+      "last_timestamp": "2026-07-12T13:28:50Z",
+      "path": "shards/2026/07/c72d9a5be0f8e5123e40d2a03b4eea700123559d9a243c41ee1372e02e1d0fca.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T13:42:33Z",
+      "last_timestamp": "2026-07-12T13:42:33Z",
+      "path": "shards/2026/07/5097413c745036934c7c10a2c3de47d05e797675621ba69f508329c15ac0b809.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T13:56:53Z",
+      "last_timestamp": "2026-07-12T13:56:53Z",
+      "path": "shards/2026/07/94a087c15f3ff50676fc424184c40530ff76995bb37b4081ee34e9a390ba1ca7.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T14:12:16Z",
+      "last_timestamp": "2026-07-12T14:12:16Z",
+      "path": "shards/2026/07/fcf775ec72800e23c74acac278b07544c6d4a244e9be6b5c176bc355186cff39.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T14:28:41Z",
+      "last_timestamp": "2026-07-12T14:28:41Z",
+      "path": "shards/2026/07/d43f455af0486044c09643fe7f12abb9d384255b96b582b5b26152fdb04d26ca.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T14:41:58Z",
+      "last_timestamp": "2026-07-12T14:41:58Z",
+      "path": "shards/2026/07/0b266951e350894b97296cc6be2183b85009a8c9ac2e3f9d91ae77363ba0cf83.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T15:02:30Z",
+      "last_timestamp": "2026-07-12T15:02:30Z",
+      "path": "shards/2026/07/18a939bc09fa7c4dfd14a1e00ad4e8dc8cdfe48be20ed9fbd6f4bc61a81b739f.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T15:16:11Z",
+      "last_timestamp": "2026-07-12T15:16:11Z",
+      "path": "shards/2026/07/c951b82b3e0f34dd758932b5ae98d972e6145a9fb49760ad2ef8425d51b3d8d6.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T15:30:20Z",
+      "last_timestamp": "2026-07-12T15:30:20Z",
+      "path": "shards/2026/07/dbb4c99216313787c56ef485f0be36f874322954d2a9b29ac23846d936bd89d9.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T15:46:09Z",
+      "last_timestamp": "2026-07-12T15:46:09Z",
+      "path": "shards/2026/07/f3a25eb5c1e41be2ffd75dd869453f18e6df56f0acd8349041cda157200b452f.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T16:01:43Z",
+      "last_timestamp": "2026-07-12T16:01:43Z",
+      "path": "shards/2026/07/3e16f0b02ccf366f01fdc7e42d032860232bb28b7cc8bf7fd1fbcd3e9401e1f8.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T16:14:48Z",
+      "last_timestamp": "2026-07-12T16:14:48Z",
+      "path": "shards/2026/07/f0699f6ee814845e29be49683545b84cd474ae0675c6e9ad36740694a874cb0f.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T16:27:52Z",
+      "last_timestamp": "2026-07-12T16:27:52Z",
+      "path": "shards/2026/07/78398cb7013de2aeb35b1e1c10d750ca5030555bf6b0750d0ac4b59e74955f1a.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T16:39:52Z",
+      "last_timestamp": "2026-07-12T16:39:52Z",
+      "path": "shards/2026/07/b5c5aa6afc3b962aa49a100dc4e51bdd248d40813d9c2cfba829ae68111e1387.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T17:07:41Z",
+      "last_timestamp": "2026-07-12T17:07:41Z",
+      "path": "shards/2026/07/e83eaf5ade2faaf9e97ff55c580733fc27226d3430a52bc5278db3e37a292f8f.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T17:23:47Z",
+      "last_timestamp": "2026-07-12T17:23:47Z",
+      "path": "shards/2026/07/af10ab94b4c0c85173387345139513df9358e01b371565f900f7e22d17e25d41.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T19:46:08Z",
+      "last_timestamp": "2026-07-12T19:46:08Z",
+      "path": "shards/2026/07/f0f9f4c03e741fb5d8342da85f3ad175bd4b80ae6c9fac1c31790307066239d0.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T20:06:44Z",
+      "last_timestamp": "2026-07-12T20:06:44Z",
+      "path": "shards/2026/07/e77c7b423b7a33179618e5bffba3f57d44fe2088f25144a07f83516f913a0f9c.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T20:19:22Z",
+      "last_timestamp": "2026-07-12T20:19:22Z",
+      "path": "shards/2026/07/3d79f64e6813f7e7934109ae4297e39d5cd061b1ea548d9528e7ee4635d2cfca.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T20:38:03Z",
+      "last_timestamp": "2026-07-12T20:38:03Z",
+      "path": "shards/2026/07/da866dce2c9da3192af334df6df05c9708c9a1d04fe7df3298a25ff7167f7589.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T20:58:10Z",
+      "last_timestamp": "2026-07-12T20:58:10Z",
+      "path": "shards/2026/07/4ce83e7495e25ea2642c52b00e6e77b390eb4f267cb82287e1ec2c41b74c618c.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T21:27:23Z",
+      "last_timestamp": "2026-07-12T21:27:23Z",
+      "path": "shards/2026/07/175b302df14c0a14633dbb2ff47a078a1dee03d6835122e147d372e7edafdb75.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-12T22:42:22Z",
+      "last_timestamp": "2026-07-12T22:42:22Z",
+      "path": "shards/2026/07/972eeabcf810c2c8c7354459d00ca339b35a71f4512de76c5c616b7b3466f5b2.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T01:15:07Z",
+      "last_timestamp": "2026-07-13T01:15:07Z",
+      "path": "shards/2026/07/dd8f074b87c47a346f78e5ad6c77ed75a7d14f632186499227e99d71be560d70.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T02:22:07Z",
+      "last_timestamp": "2026-07-13T02:22:07Z",
+      "path": "shards/2026/07/ce43309636e268eae8733b1ef97856d17fae537f6dd8c1f9b08b7c9e0920fcff.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T02:51:49Z",
+      "last_timestamp": "2026-07-13T02:51:49Z",
+      "path": "shards/2026/07/cffaa1da360f4ce39f8984a5af65bab2877be6c26b246b6f1db29198d72a8c8f.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T03:29:41Z",
+      "last_timestamp": "2026-07-13T03:29:41Z",
+      "path": "shards/2026/07/495069d9986e363456f8e80fdee1d60be63c9dec5ff52db5d0a5f76624ab626c.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T04:16:57Z",
+      "last_timestamp": "2026-07-13T04:16:57Z",
+      "path": "shards/2026/07/6597c60468dddf0912098715a3800fbf901533902f6c3a47c4a101c8593d2ad8.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T05:04:33Z",
+      "last_timestamp": "2026-07-13T05:04:33Z",
+      "path": "shards/2026/07/40f1bf765d12403e73f9d0b5cd2f3669dfa9d40b54a9baac5660fed455763ea8.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T05:39:09Z",
+      "last_timestamp": "2026-07-13T05:39:09Z",
+      "path": "shards/2026/07/c7af8b3a7eac7dac1c415d1a6bca1b8cb9e010cfc73faecb3c3878fca7d30edf.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T15:07:10Z",
+      "last_timestamp": "2026-07-13T15:07:10Z",
+      "path": "shards/2026/07/551754660ec09942492c7cf57a88ccb00897dfcc46f1632e4be9a95b5c81168b.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T16:36:13Z",
+      "last_timestamp": "2026-07-13T16:36:13Z",
+      "path": "shards/2026/07/5138c1d660667f26b125b6881037b26d27be4abbc3d6ab225cd1ea64ca2db0f1.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T16:50:18Z",
+      "last_timestamp": "2026-07-13T16:50:18Z",
+      "path": "shards/2026/07/f1ff6b65fb98188ef090969ca047b0a819d921a1676cc11e583a1b7d92fccac5.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T17:30:57Z",
+      "last_timestamp": "2026-07-13T17:30:57Z",
+      "path": "shards/2026/07/e733ff30a221ea0befc495ce0f3dfa90e37d03cfde96d21d805d110a648bdcd2.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T17:48:45Z",
+      "last_timestamp": "2026-07-13T17:48:45Z",
+      "path": "shards/2026/07/09ba21debb2a311fa2994c08456bae69e888af6b2a1e59ee3d5e13b51e229ea9.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T18:10:05Z",
+      "last_timestamp": "2026-07-13T18:10:05Z",
+      "path": "shards/2026/07/d99b1f620679b47bb4c6f146f0564e76804516f8be17053f884a4953a2e082aa.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T19:26:43Z",
+      "last_timestamp": "2026-07-13T19:26:43Z",
+      "path": "shards/2026/07/977855fd5b81b42efea53800d74ca2f4cc593574ea0c4f09aff312cf52a82d76.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T20:11:27Z",
+      "last_timestamp": "2026-07-13T20:11:27Z",
+      "path": "shards/2026/07/86b3e37f5d6966659afe1720d65f5cd6a32a48e342275a71bb5b67bd46d9b902.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T21:13:46Z",
+      "last_timestamp": "2026-07-13T21:13:46Z",
+      "path": "shards/2026/07/85e6844d5884605d1fc4179995adb00de45962cb40f650ef21c34443c6b02197.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T21:56:44Z",
+      "last_timestamp": "2026-07-13T21:56:44Z",
+      "path": "shards/2026/07/bb745326f3106ecafb32509c299c8a2dc1b54e3c4fc01c25440e60002c41abc1.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T22:20:41Z",
+      "last_timestamp": "2026-07-13T22:20:41Z",
+      "path": "shards/2026/07/41efaf1f9982e0f94c16e1eb1f59fcf58d9ea9a3ede94a007da52cbf948aff64.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T22:58:32Z",
+      "last_timestamp": "2026-07-13T22:58:32Z",
+      "path": "shards/2026/07/eab0732de9a6256aa8dd97b5b60c5886e97c4ab4ce9dffa2a818c1b66ed7b8c5.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T23:24:12Z",
+      "last_timestamp": "2026-07-13T23:24:12Z",
+      "path": "shards/2026/07/8e63c60e2641fe0b1c79ce0ace1d8b3d72f128afeda631baa811a7dda31f8e81.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T23:36:06Z",
+      "last_timestamp": "2026-07-13T23:36:06Z",
+      "path": "shards/2026/07/b6615683a16bba8dd04532c9db4aad72f861333fe06fa07a09369bbd4beec324.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-13T23:47:07Z",
+      "last_timestamp": "2026-07-13T23:47:07Z",
+      "path": "shards/2026/07/05d13888adcab46e8eaa782b8ff52641309af6be773586136074d9534a68adf5.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T00:41:42Z",
+      "last_timestamp": "2026-07-14T00:41:42Z",
+      "path": "shards/2026/07/6b9d74e24f572468a4dbf936fbe108d2440d34adddb71461b037c9ed4b20db39.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T01:11:54Z",
+      "last_timestamp": "2026-07-14T01:11:54Z",
+      "path": "shards/2026/07/35c80fff0f4d2ab1335723ff7496d03111fb0f1bf1fdab46f772da116ff4da23.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T01:37:05Z",
+      "last_timestamp": "2026-07-14T01:37:05Z",
+      "path": "shards/2026/07/71438660677aac97ca21f4a953814f047c1a49818785919a0bfce878b9da829a.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T01:56:23Z",
+      "last_timestamp": "2026-07-14T01:56:23Z",
+      "path": "shards/2026/07/64061311c9f4e89368301e6e9b273bb0f8f344b096192940159dd520e4a9d89b.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T02:04:18Z",
+      "last_timestamp": "2026-07-14T02:04:18Z",
+      "path": "shards/2026/07/5cf46c06286ebc5608c7540167f82eb47d60d276ad24a8c05ddce84df28223a8.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T02:28:36Z",
+      "last_timestamp": "2026-07-14T02:28:36Z",
+      "path": "shards/2026/07/9a9307705cf5ada0f4b84483ad00674d31a6fecac05001b2673b1f62cb4eed3a.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T02:38:19Z",
+      "last_timestamp": "2026-07-14T02:38:19Z",
+      "path": "shards/2026/07/95bf8772d5cef1a8b32274f7d7e3892c1ff86f71693a0ce7308444b0c6d070af.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T03:21:34Z",
+      "last_timestamp": "2026-07-14T03:21:34Z",
+      "path": "shards/2026/07/1d673926ccfaab6f611b68d7ed261542247afc6818073f63b1aca8ae44c1fc81.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T03:54:50Z",
+      "last_timestamp": "2026-07-14T03:54:50Z",
+      "path": "shards/2026/07/79d18ba0d461901f1220434b7fa991abe528c4837393cb5d38b9da602267f425.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T03:58:45Z",
+      "last_timestamp": "2026-07-14T03:58:45Z",
+      "path": "shards/2026/07/ccd25a48eed2e72524deb129bb58fcd0f3ec9871210e43ca60baaef87c878788.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T04:11:12Z",
+      "last_timestamp": "2026-07-14T04:11:12Z",
+      "path": "shards/2026/07/4f14c4305cb191664458b17f99677efcb3c5211e5f24010ee6fecbb5f6ead0a7.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T04:31:08Z",
+      "last_timestamp": "2026-07-14T04:31:08Z",
+      "path": "shards/2026/07/b1648e848568f4bba6309dce55e22e28ec7e60f982502f1dc3ec754ab4bd9775.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T04:46:29Z",
+      "last_timestamp": "2026-07-14T04:46:29Z",
+      "path": "shards/2026/07/6ab921a1e660010bae34ce22a8a8cee2ec4c32f77bd5e0115ffe49ee738f99c7.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T05:01:34Z",
+      "last_timestamp": "2026-07-14T05:01:34Z",
+      "path": "shards/2026/07/d8071e132f1274466e8e9236629faaca067fd5391bd87d57fcd20ad7ac4ab850.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T05:50:06Z",
+      "last_timestamp": "2026-07-14T05:50:06Z",
+      "path": "shards/2026/07/cdf2d4b50985b0f198f1db885832bf27b18f9a15926a12bce8b18ed0b37b7f59.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T06:08:41Z",
+      "last_timestamp": "2026-07-14T06:08:41Z",
+      "path": "shards/2026/07/e6a7b45be4e2739c4f8ec09d0403b6dffe9c73013a32c60203882dd29eba11b5.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T06:31:26Z",
+      "last_timestamp": "2026-07-14T06:31:26Z",
+      "path": "shards/2026/07/72a83e1d3964685e6635c5baf7687a140db97873e8b6828279a473dffdd89bc0.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T07:02:44Z",
+      "last_timestamp": "2026-07-14T07:02:44Z",
+      "path": "shards/2026/07/de44e1c4d6a4d9a3dd205091a30e0741b994458b5af5cedebd43257bf7078816.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T08:07:23Z",
+      "last_timestamp": "2026-07-14T08:07:23Z",
+      "path": "shards/2026/07/b2c34b0b65300a5d18eb8219b67902f6997af801e45e7dc5d73c72803f23012f.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T09:02:51Z",
+      "last_timestamp": "2026-07-14T09:02:51Z",
+      "path": "shards/2026/07/faa52f790f18a49ef082fbbed1ebdd699237c21b0f64187bc37208f96e27c2e0.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T14:16:01Z",
+      "last_timestamp": "2026-07-14T14:16:01Z",
+      "path": "shards/2026/07/ed13b38b69be6703a1a55dbb0185d81a6efdc43131f1221c701fc8e2fe94789d.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T15:06:03Z",
+      "last_timestamp": "2026-07-14T15:06:03Z",
+      "path": "shards/2026/07/0a6943c23b30a433f237acd1be0f533c3e127d848261be2add9f8e7036f07505.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T15:22:34Z",
+      "last_timestamp": "2026-07-14T15:22:34Z",
+      "path": "shards/2026/07/3bd26b698d6e42987c18cab6afab4a40ad9159fdf87dda5e79dd6df705b82dad.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T16:16:34Z",
+      "last_timestamp": "2026-07-14T16:16:34Z",
+      "path": "shards/2026/07/b0f2e17653cec3819ca79a721bd02ebd75910984943289883a0c9e8f41ad32fd.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T16:59:57Z",
+      "last_timestamp": "2026-07-14T16:59:57Z",
+      "path": "shards/2026/07/527546c50b341266a166dbc5fbf4cad9b258a1e5320c49d136526d17f5a0f12e.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T17:44:38Z",
+      "last_timestamp": "2026-07-14T17:44:38Z",
+      "path": "shards/2026/07/eaaaebb71fcc6901f3635a1a3401939e80be3f22d527ba8c110ec3c1bb5bdca9.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T18:05:31Z",
+      "last_timestamp": "2026-07-14T18:05:31Z",
+      "path": "shards/2026/07/513b7a071404fd332e2b7379553f94a1f6f300d011243d975cdedcd5e7bc54be.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T18:09:47Z",
+      "last_timestamp": "2026-07-14T18:09:47Z",
+      "path": "shards/2026/07/1adb4a203bc59cd09b373c751385a38963d20f0ddd57f7732864f14a861cc960.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T18:41:47Z",
+      "last_timestamp": "2026-07-14T18:41:47Z",
+      "path": "shards/2026/07/ce509fda618eda9db01aacd67471aa2e25bcfb7bd48e229006c2ec8076a75074.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T20:10:10Z",
+      "last_timestamp": "2026-07-14T20:10:10Z",
+      "path": "shards/2026/07/66907b0865802a5a022735b7e0f7a8ddba9c922e5ce4b684166244e60d955558.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T21:26:33Z",
+      "last_timestamp": "2026-07-14T21:26:33Z",
+      "path": "shards/2026/07/84ab9b6d4ab0698f5d2c2790f4387e03793ba12e4647c01a42b8f8ec1f4db3c9.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T21:36:14Z",
+      "last_timestamp": "2026-07-14T21:36:14Z",
+      "path": "shards/2026/07/fcf955f61ba09beabfacc92a15ac3d12ed0db97f0865611b69dc07ef9cfbbd88.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T22:02:04Z",
+      "last_timestamp": "2026-07-14T22:02:04Z",
+      "path": "shards/2026/07/f74ad108fc96929de40481f23152a1a761b47f276e4fef666037a443f0a8d952.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T22:32:41Z",
+      "last_timestamp": "2026-07-14T22:32:41Z",
+      "path": "shards/2026/07/ee4beb615eb8f109a52890d861ed8d2d3fa6fedae30d7a29c78fb67e6b2ac6e1.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T22:51:08Z",
+      "last_timestamp": "2026-07-14T22:51:08Z",
+      "path": "shards/2026/07/783169bac2623be7cb9353d9c650c9d68630bd7ccf3d9fa1102496acd9ab77dc.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-14T23:46:38Z",
+      "last_timestamp": "2026-07-14T23:46:38Z",
+      "path": "shards/2026/07/b5d541671eefada828c769da738c772139348b6796b6fd0fa11c089818e5cbd5.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-15T00:00:57Z",
+      "last_timestamp": "2026-07-15T00:00:57Z",
+      "path": "shards/2026/07/a1b9e3efbfd5999acb87507d6c89bbabeb15649c42065262b4d51d319fcc0abb.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-15T00:54:38Z",
+      "last_timestamp": "2026-07-15T00:54:38Z",
+      "path": "shards/2026/07/81dbe61f5450c67a568df4a44f9bf44575a4008a79f58e0452bd50107b93073e.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-15T01:21:43Z",
+      "last_timestamp": "2026-07-15T01:21:43Z",
+      "path": "shards/2026/07/93e1ee9bb48a4bfd9592684cb0bb91d5c2f3bc54505889cd02b1303f5757ffa5.json",
+      "run_count": 1
+    }
+  ],
+  "version": 3
+}
