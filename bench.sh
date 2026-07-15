@@ -123,6 +123,7 @@ if [[ ! -x "$RUE_BIN" ]]; then
 fi
 
 log_info "Using compiler: $RUE_BIN"
+SESSION_BENCH_BIN="$(./scripts/rue-bin --session-bench --target-platforms //platforms:$BUILD_MODE)"
 
 # Create temp directory for outputs
 TEMP_DIR=$(mktemp -d)
@@ -321,6 +322,11 @@ scaling_json=$(PYTHONPATH="$SCRIPT_DIR/scripts" python3 "$SCRIPT_DIR/scripts/ben
     --manifest "$MANIFEST" --rue-bin "$RUE_BIN" --iterations "$ITERATIONS" \
     --platform "$os" --enforce-budgets)
 
+log_info "Running representative compiler build/query scenarios..."
+scenario_json=$(PYTHONPATH="$SCRIPT_DIR/scripts" python3 "$SCRIPT_DIR/scripts/benchmark_scenarios.py" \
+    --manifest "$MANIFEST" --rue-bin "$RUE_BIN" \
+    --session-bench-bin "$SESSION_BENCH_BIN" --iterations "$ITERATIONS")
+
 # Get metadata
 timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Get commit hash - try jj first (for local dev), fall back to git (for CI)
@@ -356,6 +362,7 @@ cat > "$RESULTS_FILE" << EOF
   },
   "iterations": $ITERATIONS,
   "scaling": $scaling_json,
+  "scenarios": $scenario_json,
   "benchmarks": [
 EOF
 

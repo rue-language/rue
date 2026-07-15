@@ -13,6 +13,20 @@ Run the deterministic N=128 workload with:
   --modules 128 --warmup 3 --iterations 10 > session-invalidation.json
 ```
 
+Run the schema-1 representative multi-module mode with:
+
+```sh
+./buck2 run //crates/rue-compiler-session-bench:rue-compiler-session-bench -- \
+  --representative --warmup 1 --iterations 5
+```
+
+That mode uses the exact tracked `benchmarks/scenarios/representative` bytes,
+canonical import-discovery closure, and six fixed no-op/edit/error/recovery
+queries over each variant's exact transitive closure. It hard-gates direct
+required/reused work plus exact fresh-session parity, and the base executable's
+digest and size must exactly match the real batch driver's raw compiler output.
+Unsupported durable conversions remain visible as fail-closed rebuilds.
+
 The historical `--modules` spelling is retained for command compatibility. In
 the RUE-720 completion scenarios N is the exact number of reachable analyzed
 bodies: `main` plus N-1 generated functions. One additional unreachable
@@ -119,8 +133,10 @@ The ordinary suite runs an N=4 structural smoke test through
 `//crates/rue-compiler-session-bench:rue-compiler-session-bench-test`. The full
 N=128 timing workload remains opt-in, but it executes the same assertions.
 
-This benchmark is deliberately bounded to synthetic, supported programs.
+This benchmark is deliberately bounded to synthetic, supported programs and
+the one tracked representative fixture.
 [RUE-813](https://linear.app/steve-klabnik/issue/RUE-813) tracks a reusable,
 broader differential oracle. [RUE-901](https://linear.app/steve-klabnik/issue/RUE-901)
-tracks realistic multi-module cold/reused projects and performance baselines.
-Neither gap weakens the exact structural completion evidence recorded here.
+adds the bounded multi-module cold/reused baseline described above. RUE-813
+remains the boundary for a broader reusable differential oracle; the
+representative scenarios do not claim arbitrary-project coverage.

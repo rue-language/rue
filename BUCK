@@ -97,9 +97,7 @@ filegroup(
     srcs = glob(["docs/designs/**"]),
 )
 
-filegroup(
-    name = "benchmark-tool-inputs",
-    srcs = glob(["benchmarks/**"]) + [
+benchmark_tool_local_inputs = glob(["benchmarks/**"]) + [
         "scripts/append-benchmark.py",
         "scripts/benchmark_collection.py",
         "scripts/benchmark_manifest.py",
@@ -109,6 +107,7 @@ filegroup(
         "scripts/benchmark_history.py",
         "scripts/benchmark_metrics.py",
         "scripts/benchmark_recent.py",
+        "scripts/benchmark_scenarios.py",
         "scripts/benchmark_validation.py",
         "scripts/generate-charts.py",
         "scripts/generate-site-status.py",
@@ -119,7 +118,23 @@ filegroup(
         "website/build.sh",
         "website/templates/performance.html",
         "website/templates/index.html",
-    ],
+    ]
+
+filegroup(
+    name = "benchmark-tool-inputs",
+    srcs = dict([(path, path) for path in benchmark_tool_local_inputs] + [
+        ("benchmarks/scenarios/representative/labels.rue", "//benchmarks/scenarios/representative:labels.rue"),
+        ("benchmarks/scenarios/representative/labels_alt.rue", "//benchmarks/scenarios/representative:labels_alt.rue"),
+        ("benchmarks/scenarios/representative/main.rue", "//benchmarks/scenarios/representative:main.rue"),
+        ("benchmarks/scenarios/representative/model.rue", "//benchmarks/scenarios/representative:model.rue"),
+        ("benchmarks/scenarios/representative/report.rue", "//benchmarks/scenarios/representative:report.rue"),
+        ("benchmarks/scenarios/representative/std/_std.rue", "//benchmarks/scenarios/representative:std_root.rue"),
+        ("benchmarks/scenarios/representative/std/math.rue", "//benchmarks/scenarios/representative:std_math.rue"),
+        ("benchmarks/scenarios/representative/worker.rue", "//benchmarks/scenarios/representative:worker.rue"),
+        ("crates/rue/src/main.rs", "//crates/rue:benchmark-definition"),
+        ("crates/rue-compiler-session-bench/src/main.rs", "//crates/rue-compiler-session-bench:benchmark-main-definition"),
+        ("crates/rue-compiler-session-bench/src/representative.rs", "//crates/rue-compiler-session-bench:benchmark-representative-definition"),
+    ]),
 )
 
 sh_test(

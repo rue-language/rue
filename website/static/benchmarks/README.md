@@ -22,14 +22,17 @@ Version 3 uses a compact index whose `shards` array points to per-run files:
 }
 ```
 
-Each new run contains two deliberately separate products: `benchmarks` holds
+Each new run contains three deliberately separate products: `benchmarks` holds
 the non-representative static phase-probe aggregate, while `scaling` holds
 generated multi-size families with latency, peak memory, source/pass structural
 counters, robust variation, conservative adjacent size-normalized growth
 bounds, an extreme-range guard, and proven/indeterminate/within-budget evidence
 status. Failed and indeterminate scaling evidence both block publication.
-Neither product measures generated-program runtime performance; representative
-RUE-901 scenarios use a different scenario family and headline.
+Neither product measures generated-program runtime performance. `scenarios`
+holds representative cold-root and reused-session compiler build/query work,
+with exact cross-family batch/fresh/reused output parity evidence and
+authoritative required/reused counters. It has
+its own section and never changes the synthetic aggregate headline.
 
 ## Updating History
 

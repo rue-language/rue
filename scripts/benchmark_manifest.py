@@ -37,6 +37,9 @@ REQUIRED_SCALING_FIELDS = (
     "memory_per_unit_growth_budget",
     "timeout_seconds",
 )
+REQUIRED_SCENARIO_FAMILY_FIELDS = (
+    "name", "runner", "fixture", "measurement_family", "interpretation", "not_runtime", "target"
+)
 
 
 def _unique(entries: list[dict], label: str) -> None:
@@ -50,8 +53,8 @@ def load_manifest(path: Path) -> dict:
     """Load the single source of benchmark workload semantics."""
     with path.open("rb") as stream:
         manifest = tomllib.load(stream)
-    if manifest.get("schema_version") != 2:
-        raise ValueError("benchmark manifest schema_version must be 2")
+    if manifest.get("schema_version") != 3:
+        raise ValueError("benchmark manifest schema_version must be 3")
     probes = manifest.get("benchmark")
     families = manifest.get("scaling_family")
     if not isinstance(probes, list) or not probes:
@@ -119,6 +122,34 @@ def load_manifest(path: Path) -> dict:
     unknown = sorted(generators - set(GENERATORS))
     if unknown:
         raise ValueError("unknown scaling generator(s): " + ", ".join(unknown))
+    scenario_families = manifest.get("scenario_family")
+    if not isinstance(scenario_families, list) or len(scenario_families) != 2:
+        raise ValueError("manifest must contain exactly two [[scenario_family]] entries")
+    _unique(scenario_families, "scenario family")
+    if [family.get("runner") for family in scenario_families] != [
+        "cold_batch_root_compiler", "reused_compiler_session"
+    ]:
+        raise ValueError("scenario families must declare the canonical cold and reused runners")
+    for index, family in enumerate(scenario_families):
+        for field in REQUIRED_SCENARIO_FAMILY_FIELDS:
+            if not isinstance(family.get(field), str) or not family[field]:
+                raise ValueError(f"scenario family #{index + 1} has no valid {field}")
+        if family["measurement_family"] != "compiler_build_and_query_performance":
+            raise ValueError(f"scenario family '{family['name']}' has invalid measurement family")
+        if family["target"] != "host-default":
+            raise ValueError(f"scenario family '{family['name']}' has invalid target")
+    scenarios = scenario_families[1].get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        raise ValueError("reused scenario family must contain scenarios")
+    _unique(scenarios, "representative scenario")
+    for scenario in scenarios:
+        for artifact in ("modules", "semantic_bodies", "cfgs", "semantic_queries"):
+            counts = scenario.get(artifact)
+            if (not isinstance(counts, list) or len(counts) != 2 or any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in counts
+            )):
+                raise ValueError(f"representative scenario '{scenario.get('name')}' has invalid {artifact}")
     corpus = manifest.get("corpus")
     paths = corpus.get("definition_paths") if isinstance(corpus, dict) else None
     if (
@@ -136,6 +167,10 @@ def static_probes(path: Path) -> list[dict]:
 
 def scaling_families(path: Path) -> list[dict]:
     return load_manifest(path)["scaling_family"]
+
+
+def scenario_families(path: Path) -> list[dict]:
+    return load_manifest(path)["scenario_family"]
 
 
 def corpus_paths(path: Path) -> list[tuple[str, Path]]:

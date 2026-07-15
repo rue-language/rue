@@ -28,3 +28,9 @@ Historical `bench.sh` data is identified as `compiler/cold_compilation`; new
 runs record that identity explicitly. Comparison APIs reject a different
 measurement or scenario family, reserving distinct reused-session/query
 scenarios for RUE-901 without conflating them with cold compilation.
+
+Representative compiler scenarios are a separate publication family. Their
+latency is descriptive; correctness and cache claims come from exact emitted
+output/fresh-session parity and direct `CompilerSession` structural counters.
+They measure compiler build/query work, never generated-program runtime, and do
+not feed the static phase-probe performance index or scaling budgets.

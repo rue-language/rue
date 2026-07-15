@@ -1,0 +1,7 @@
+pub struct WeightedValue {
+    value: i32,
+}
+
+pub fn weight(value: i32) -> i32 {
+    value * 3
+}

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from benchmark_manifest import (
     load_manifest,
+    scenario_families,
     scaling_families,
     validate_readme_inventory,
     validate_static_dimensions,
@@ -168,6 +169,7 @@ def validate_manifest_results(data: object, manifest_path: Path) -> list[str]:
         + validate_readme_inventory(manifest_path)
         + validate_results(data, load_manifest_names(manifest_path))
         + validate_scaling_results(data, manifest_path)
+        + validate_scenario_results(data, manifest_path)
     )
     expected_suite = {
         "kind": "synthetic_phase_probe",
@@ -192,6 +194,112 @@ def validate_manifest_results(data: object, manifest_path: Path) -> list[str]:
         ):
             if bench.get(field) != probe[field]:
                 errors.append(f"benchmark '{bench['name']}' {field} does not match manifest")
+    return errors
+
+
+def validate_scenario_results(data: object, manifest_path: Path) -> list[str]:
+    """Validate representative samples, parity proof, and exact structural work."""
+    scenarios = data.get("scenarios") if isinstance(data, dict) else None
+    if not isinstance(scenarios, dict):
+        return ["benchmark result is missing representative scenarios"]
+    errors = []
+    expected_identity = {
+        "schema_version": 1,
+        "measurement_family": "compiler_build_and_query_performance",
+        "representative": True,
+        "generated_program_runtime": False,
+        "iterations": data.get("iterations"),
+    }
+    for field, expected in expected_identity.items():
+        if scenarios.get(field) != expected:
+            errors.append(f"representative scenarios {field} is malformed")
+    cross_family = scenarios.get("cross_family_emitted_output")
+    if (
+        not isinstance(cross_family, dict)
+        or cross_family.get("cold_batch_vs_fresh_and_reused_session") != "byte_exact"
+        or cross_family.get("representation")
+        != "raw_compiler_executable_before_platform_postprocessing"
+        or not isinstance(cross_family.get("sha256"), str)
+        or len(cross_family["sha256"]) != 64
+        or any(character not in "0123456789abcdef" for character in cross_family["sha256"])
+        or not isinstance(cross_family.get("size_bytes"), int)
+        or cross_family["size_bytes"] <= 0
+    ):
+        errors.append("representative scenarios lack cross-family emitted-output parity")
+    actual_families = scenarios.get("families")
+    declared_families = scenario_families(manifest_path)
+    if not isinstance(actual_families, list) or [family.get("name") for family in actual_families if isinstance(family, dict)] != [family["name"] for family in declared_families]:
+        return errors + ["representative scenario family composition does not match manifest"]
+    iterations = data.get("iterations")
+    for declared, family in zip(declared_families, actual_families):
+        for field in ("interpretation", "not_runtime"):
+            if family.get(field) != declared[field]:
+                errors.append(f"scenario family '{declared['name']}' {field} does not match manifest")
+        rows = family.get("scenarios")
+        expected_names = [declared["name"]] if declared["runner"] == "cold_batch_root_compiler" else [row["name"] for row in declared["scenarios"]]
+        if not isinstance(rows, list) or [row.get("name") for row in rows if isinstance(row, dict)] != expected_names:
+            errors.append(f"scenario family '{declared['name']}' composition does not match manifest")
+            continue
+        for row in rows:
+            samples = row.get("samples_ms")
+            samples_valid = isinstance(samples, list) and len(samples) == iterations and all(_is_finite_non_negative_number(value) and value > 0 for value in samples)
+            if not samples_valid:
+                errors.append(f"representative scenario '{row.get('name')}' has invalid samples")
+            if not _is_finite_non_negative_number(row.get("mean_ms")) or row.get("mean_ms") <= 0:
+                errors.append(f"representative scenario '{row.get('name')}' has invalid mean")
+            elif samples_valid and row["mean_ms"] != round(sum(samples) / len(samples), 3):
+                errors.append(f"representative scenario '{row.get('name')}' mean does not match samples")
+        if declared["runner"] == "cold_batch_root_compiler":
+            emitted = rows[0].get("emitted_output")
+            if not isinstance(emitted, dict) or emitted.get("parity") != "byte_exact" or emitted.get("representation") != "raw_compiler_executable_before_platform_postprocessing" or not isinstance(emitted.get("sha256"), str) or len(emitted["sha256"]) != 64 or any(character not in "0123456789abcdef" for character in emitted.get("sha256", "")) or not isinstance(emitted.get("size_bytes"), int) or emitted["size_bytes"] <= 0:
+                errors.append("cold representative scenario lacks exact emitted-output parity")
+            elif not isinstance(cross_family, dict) or (
+                emitted["sha256"] != cross_family.get("sha256")
+                or emitted["size_bytes"] != cross_family.get("size_bytes")
+            ):
+                errors.append(
+                    "cold representative emitted output does not match cross-family parity"
+                )
+            continue
+        declared_rows = {row["name"]: row for row in declared["scenarios"]}
+        for row in rows:
+            expected = declared_rows[row["name"]]
+            work = row.get("required_vs_reused_work")
+            expected_work = {
+                artifact: {"required": expected[artifact][0], "reused": expected[artifact][1]}
+                for artifact in ("modules", "semantic_bodies", "cfgs", "semantic_queries")
+            }
+            if work != expected_work:
+                errors.append(f"representative scenario '{row['name']}' structural work does not match manifest")
+            if row["name"] == "diagnostic_error_edit":
+                parity = row.get("diagnostic_parity")
+                if not isinstance(parity, dict) or parity.get("fresh_session") != "exact" or parity.get("last_good_preserved") is not True:
+                    errors.append("diagnostic representative scenario lacks exact fresh parity")
+            else:
+                parity = row.get("differential_parity")
+                exact_fields = {
+                    "dependency_records": "exact",
+                    "diagnostics": "exact",
+                    "durable_ordinary_body_manifest_artifacts": "exact",
+                    "durable_specialized_body_payloads": "exact",
+                    "emitted_output": "byte_exact",
+                    "public_semantic_cfg_artifacts": "exact",
+                    "public_type_universe": "exact_ordered_entries",
+                    "stable_identities": "exact",
+                    "warnings": "exact",
+                }
+                if not isinstance(parity, dict) or any(parity.get(field) != value for field, value in exact_fields.items()):
+                    errors.append(f"representative scenario '{row['name']}' lacks differential parity")
+                elif row["name"] == "no_change_query" and (
+                    not isinstance(cross_family, dict) or
+                    parity.get("emitted_output_sha256") != cross_family.get("sha256")
+                    or parity.get("emitted_output_size_bytes")
+                    != cross_family.get("size_bytes")
+                ):
+                    errors.append(f"representative scenario '{row['name']}' emitted output does not match the batch driver")
+        recovery = rows[-1] if rows else {}
+        if recovery.get("recovered_from_diagnostic_error") is not True:
+            errors.append("diagnostic recovery scenario lacks recovery proof")
     return errors
 
 

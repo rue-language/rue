@@ -13,12 +13,21 @@
 # Any extra arguments are passed through to `buck2 build`, e.g. a release build:
 #
 #   RUE_BINARY="$(scripts/rue-bin --target-platforms //platforms:release)"
+#   SESSION_BENCH="$(scripts/rue-bin --session-bench)"
 #
 set -euo pipefail
 
 # Resolve repo root (this script lives in scripts/) so we work from any cwd.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+
+target="//crates/rue:rue"
+target_label="crates/rue:rue"
+if [[ "${1:-}" == "--session-bench" ]]; then
+    target="//crates/rue-compiler-session-bench:rue-compiler-session-bench"
+    target_label="crates/rue-compiler-session-bench:rue-compiler-session-bench"
+    shift
+fi
 
 # Build the compiler. Capture Buck's stdout (which carries the --show-output
 # line) and its stderr (build chatter/diagnostics) SEPARATELY, guarding the exit
@@ -30,18 +39,18 @@ cd "$repo_root"
 build_err="$(mktemp)"
 trap 'rm -f "$build_err"' EXIT
 build_status=0
-build_out="$(./buck2 build //crates/rue:rue --show-output "$@" 2>"$build_err")" \
+build_out="$(./buck2 build "$target" --show-output "$@" 2>"$build_err")" \
     || build_status=$?
 
 if [[ $build_status -ne 0 ]]; then
-    echo "rue-bin: 'buck2 build //crates/rue:rue' failed (exit $build_status):" >&2
+    echo "rue-bin: 'buck2 build $target' failed (exit $build_status):" >&2
     cat "$build_err" >&2
     exit "$build_status"
 fi
 
 # stdout stays clean for command substitution; the --show-output line names the
 # binary at a repo-root-relative path.
-rel_path="$(printf '%s\n' "$build_out" | awk '/crates\/rue:rue / {print $2}' | tail -1)"
+rel_path="$(printf '%s\n' "$build_out" | awk -v target="$target_label" 'index($1, target) {print $2}' | tail -1)"
 
 if [[ -z "${rel_path:-}" ]]; then
     echo "rue-bin: build succeeded but --show-output did not name the binary." >&2

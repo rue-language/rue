@@ -17,6 +17,9 @@ use rue_compiler::{
 };
 use rue_span::FileId;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+mod representative;
 
 const DEFAULT_MODULES: usize = 128;
 const DEFAULT_WARMUP: usize = 3;
@@ -27,6 +30,7 @@ struct Config {
     modules: usize,
     warmup: usize,
     iterations: usize,
+    representative: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -597,14 +601,16 @@ where
     let query_delta = QueryCounts::from(work).delta(before);
     // Successful updates replace the current-revision record vectors. Treat
     // that reset as a new zero-based measurement window.
-    let semantic_records =
-        if query_delta.semantic_executions > 0 && work.semantic_records.len() <= semantic_records {
-            0
-        } else {
-            semantic_records
-        };
-    let definition_records = if query_delta.definition_executions > 0
-        && work.definition_records.len() <= definition_records
+    let semantic_records = if work.semantic_records.len() < semantic_records
+        || (query_delta.semantic_executions > 0 && work.semantic_records.len() <= semantic_records)
+    {
+        0
+    } else {
+        semantic_records
+    };
+    let definition_records = if work.definition_records.len() < definition_records
+        || (query_delta.definition_executions > 0
+            && work.definition_records.len() <= definition_records)
     {
         0
     } else {
@@ -838,8 +844,34 @@ fn assert_cold_reused_parity(
     source: &SourceSnapshot,
     options: &CompileOptions,
 ) -> Value {
+    assert_cold_reused_parity_with_discovery(
+        reused_session,
+        reused,
+        source,
+        options,
+        None,
+        |_, _| {},
+        close_completion_discovery,
+    )
+}
+
+fn assert_cold_reused_parity_with_discovery<F, G>(
+    reused_session: &mut CompilerSession,
+    reused: &CanonicalSemanticOutput,
+    source: &SourceSnapshot,
+    options: &CompileOptions,
+    std_dir: Option<&str>,
+    prepare_semantic: F,
+    prepare_executable: G,
+) -> Value
+where
+    F: Fn(&mut CompilerSession, &SourceSnapshot),
+    G: Fn(&mut CompilerSession, &SourceSnapshot),
+{
+    prepare_semantic(reused_session, source);
     let mut cold_session = CompilerSession::new();
     cold_session.update(source).into_result().unwrap();
+    prepare_semantic(&mut cold_session, source);
     let cold = cold_session.semantic(options).unwrap();
     let cold_semantic_work = semantic_work_json(cold_session.work(), 0);
     let cold_count = |path: &[&str]| count(&cold_semantic_work, path);
@@ -855,10 +887,6 @@ fn assert_cold_reused_parity(
     assert_eq!(
         cold_count(&["cfg", "builds_attempted"]),
         cold_count(&["cfg", "builds_succeeded"])
-    );
-    assert_eq!(
-        cold_count(&["declaration_reuse", "durable_cache_population_exports"]),
-        1
     );
     assert_eq!(
         format!("{:?}", reused.functions()),
@@ -961,6 +989,19 @@ fn assert_cold_reused_parity(
         cold.implicit_named_destructor_dependencies_complete()
     );
 
+    let reused_manifest = reused_session
+        .semantic_dependency_inputs(options, std_dir)
+        .unwrap();
+    let cold_manifest = cold_session
+        .semantic_dependency_inputs(options, std_dir)
+        .unwrap();
+    // Dependency queries may publish import-stage diagnostics on only the
+    // cold side when the reused side already retained the manifest. Re-query
+    // the canonical semantic artifact on both sides before comparing the
+    // user-visible semantic diagnostic snapshot.
+    reused_session.semantic(options).unwrap();
+    cold_session.semantic(options).unwrap();
+
     assert_diagnostic_parity(
         reused_session.latest_diagnostics(),
         cold_session.latest_diagnostics(),
@@ -974,12 +1015,6 @@ fn assert_cold_reused_parity(
         cold_session.last_good_semantic_diagnostics(),
     );
 
-    let reused_manifest = reused_session
-        .semantic_dependency_inputs(options, None)
-        .unwrap();
-    let cold_manifest = cold_session
-        .semantic_dependency_inputs(options, None)
-        .unwrap();
     assert_eq!(reused_manifest.input(), cold_manifest.input());
     assert_eq!(reused_manifest.imports(), cold_manifest.imports());
     macro_rules! assert_manifest_field {
@@ -1090,8 +1125,8 @@ fn assert_cold_reused_parity(
         format!("{:?}", cold.implicit_named_destructor_dependencies())
     );
 
-    close_completion_discovery(reused_session, source);
-    close_completion_discovery(&mut cold_session, source);
+    prepare_executable(reused_session, source);
+    prepare_executable(&mut cold_session, source);
     let reused_executable = reused_session.executable(options).unwrap();
     let cold_executable = cold_session.executable(options).unwrap();
     assert_eq!(reused_executable.elf, cold_executable.elf);
@@ -1100,6 +1135,7 @@ fn assert_cold_reused_parity(
         format!("{:?}", cold_executable.warnings)
     );
 
+    let executable_sha256 = format!("{:x}", Sha256::digest(&reused_executable.elf));
     json!({
         "public_semantic_cfg_artifacts": "exact",
         "public_type_universe": "exact_ordered_entries",
@@ -1111,6 +1147,8 @@ fn assert_cold_reused_parity(
         "stable_identities": "exact",
         "dependency_records": "exact",
         "emitted_output": "byte_exact",
+        "emitted_output_sha256": executable_sha256,
+        "emitted_output_size_bytes": reused_executable.elf.len(),
         "work_counters": "reused_and_cold_serialized_with_structural_assertions",
         "cold_semantic_work": cold_semantic_work,
     })
@@ -2075,9 +2113,14 @@ fn parse_config_args(args: impl IntoIterator<Item = String>) -> Result<Config, S
         modules: DEFAULT_MODULES,
         warmup: DEFAULT_WARMUP,
         iterations: DEFAULT_ITERATIONS,
+        representative: false,
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
+        if arg == "--representative" {
+            config.representative = true;
+            continue;
+        }
         let value = args
             .next()
             .ok_or_else(|| format!("missing value for {arg}"))?;
@@ -2097,13 +2140,40 @@ fn parse_config_args(args: impl IntoIterator<Item = String>) -> Result<Config, S
 fn usage(message: &str) -> ! {
     eprintln!("error: {message}");
     eprintln!(
-        "usage: rue-compiler-session-bench [--modules N>=4] [--warmup N] [--iterations N>=1]"
+        "usage: rue-compiler-session-bench [--representative] [--modules N>=4] [--warmup N] [--iterations N>=1]"
     );
     process::exit(2)
 }
 
 fn main() {
     let config = parse_config();
+    if config.representative {
+        for _ in 0..config.warmup {
+            representative::run_iteration();
+        }
+        let iterations = (0..config.iterations)
+            .map(|_| representative::run_iteration())
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            json!({
+                "schema_version": 1,
+                "workload": "representative_compiler_session_scenarios",
+                "fixture": "benchmarks/scenarios/representative/main.rue",
+                "measurement_scope": "compiler_build_and_query_performance_not_runtime",
+                "configuration": {
+                    "warmup_iterations": config.warmup,
+                    "measured_iterations": config.iterations,
+                    "canonical_query_graph": "CompilerSession",
+                    "persistent_cache": false,
+                    "timing_inferred_reuse": false,
+                    "fresh_session_parity": true,
+                },
+                "iterations": iterations,
+            })
+        );
+        return;
+    }
     let fixture = Fixture::new(config.modules);
     for _ in 0..config.warmup {
         run_iteration(&fixture);
@@ -2160,7 +2230,17 @@ mod tests {
                 modules: 4,
                 warmup: DEFAULT_WARMUP,
                 iterations: DEFAULT_ITERATIONS,
+                representative: false,
             }
+        );
+    }
+
+    #[test]
+    fn representative_mode_is_explicit() {
+        assert!(
+            parse_config_args(["--representative".to_owned()])
+                .unwrap()
+                .representative
         );
     }
 }

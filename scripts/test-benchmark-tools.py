@@ -48,6 +48,7 @@ perf_baseline = load_module("perf_baseline", "scripts/perf-baseline.py")
 parser_profile = load_module("parser_profile", "scripts/parser-profile.py")
 manifest_tools = load_module("benchmark_manifest", "scripts/benchmark_manifest.py")
 scaling = load_module("benchmark_scaling", "scripts/benchmark_scaling.py")
+scenario_tools = load_module("benchmark_scenarios", "scripts/benchmark_scenarios.py")
 
 
 class PerfBaselineAggregationTests(unittest.TestCase):
@@ -747,6 +748,59 @@ class BenchmarkValidationTests(unittest.TestCase):
             "families": families,
             "budget_status": "passed",
         }
+        scenario_families = manifest_tools.scenario_families(manifest_path)
+        reused = []
+        for declared in scenario_families[1]["scenarios"]:
+            work = {
+                artifact: {"required": declared[artifact][0], "reused": declared[artifact][1]}
+                for artifact in ("modules", "semantic_bodies", "cfgs", "semantic_queries")
+            }
+            row = {
+                "name": declared["name"], "samples_ms": [1.0] * 5, "mean_ms": 1.0,
+                "required_vs_reused_work": work,
+            }
+            if declared["name"] == "diagnostic_error_edit":
+                row["diagnostic_parity"] = {"fresh_session": "exact", "last_good_preserved": True}
+            else:
+                row["differential_parity"] = {
+                    "dependency_records": "exact", "diagnostics": "exact",
+                    "durable_ordinary_body_manifest_artifacts": "exact",
+                    "durable_specialized_body_payloads": "exact",
+                    "emitted_output": "byte_exact", "public_semantic_cfg_artifacts": "exact",
+                    "public_type_universe": "exact_ordered_entries", "stable_identities": "exact",
+                    "warnings": "exact",
+                    "emitted_output_sha256": "a" * 64,
+                    "emitted_output_size_bytes": 100,
+                }
+            if declared["name"] == "diagnostic_recovery":
+                row["recovered_from_diagnostic_error"] = True
+            reused.append(row)
+        result["scenarios"] = {
+            "schema_version": 1,
+            "measurement_family": "compiler_build_and_query_performance",
+            "representative": True,
+            "generated_program_runtime": False,
+            "cross_family_emitted_output": {
+                "cold_batch_vs_fresh_and_reused_session": "byte_exact",
+                "representation": "raw_compiler_executable_before_platform_postprocessing",
+                "sha256": "a" * 64,
+                "size_bytes": 100,
+            },
+            "iterations": 5,
+            "families": [
+                {
+                    **{field: scenario_families[0][field] for field in ("name", "interpretation", "not_runtime")},
+                    "scenarios": [{
+                        "name": "cold_batch_root_compiler", "samples_ms": [2.0] * 5, "mean_ms": 2.0,
+                        "emitted_output": {"parity": "byte_exact", "representation": "raw_compiler_executable_before_platform_postprocessing", "sha256": "a" * 64, "size_bytes": 100},
+                    }],
+                },
+                {
+                    **{field: scenario_families[1][field] for field in ("name", "interpretation", "not_runtime")},
+                    "scenarios": reused,
+                },
+            ],
+        }
         return result
 
     def test_exact_manifest_corpus_is_accepted(self):
@@ -762,6 +816,7 @@ class BenchmarkValidationTests(unittest.TestCase):
         self.assertEqual(manifest_tools.validate_readme_inventory(manifest_path), [])
         self.assertEqual(len(manifest["benchmark"]), 7)
         self.assertEqual(len(manifest["scaling_family"]), 5)
+        self.assertEqual(len(manifest["scenario_family"]), 2)
         for probe in manifest["benchmark"]:
             self.assertEqual(probe["kind"], "synthetic_phase_probe")
             self.assertIn("not representative", probe["non_representative"].lower())
@@ -1088,6 +1143,55 @@ class BenchmarkValidationTests(unittest.TestCase):
         self.assertEqual(charts.get_total_time(result), phase_total)
         representative = {"scaling": {**result["scaling"], "representative": True}}
         self.assertIsNone(charts.scaling_diagnostics([representative]))
+        self.assertIs(charts.scenario_diagnostics([result]), result["scenarios"])
+        self.assertIn("Representative compiler build/query scenarios", template)
+        self.assertIn("required_vs_reused_work", template)
+
+    def test_representative_scenario_validation_is_fail_closed(self):
+        manifest_path = INPUT_ROOT / "benchmarks/manifest.toml"
+        result = self.valid_result()
+        self.assertEqual(validator.validate_manifest_results(result, manifest_path), [])
+        result["scenarios"]["families"][1]["scenarios"][1]["required_vs_reused_work"]["modules"]["required"] += 1
+        self.assertTrue(any("structural work" in error for error in validator.validate_manifest_results(result, manifest_path)))
+        missing = self.valid_result()
+        del missing["scenarios"]
+        self.assertIn("benchmark result is missing representative scenarios", validator.validate_manifest_results(missing, manifest_path))
+
+    def test_cross_family_output_parity_is_required(self):
+        manifest_path = INPUT_ROOT / "benchmarks/manifest.toml"
+        result = self.valid_result()
+        result["scenarios"]["cross_family_emitted_output"]["sha256"] = "b" * 64
+        errors = validator.validate_manifest_results(result, manifest_path)
+        self.assertTrue(any("does not match the batch driver" in error for error in errors))
+
+        families = manifest_tools.scenario_families(manifest_path)
+        cold = {
+            "name": "cold_batch_root_compiler",
+            "samples_ms": [1.0],
+            "mean_ms": 1.0,
+            "emitted_output": {"parity": "byte_exact", "representation": "raw_compiler_executable_before_platform_postprocessing", "sha256": "a" * 64, "size_bytes": 100},
+        }
+        with mock.patch.object(scenario_tools, "collect_cold", return_value=cold), mock.patch.object(
+            scenario_tools,
+            "collect_reused",
+            return_value=([], {"sha256": "b" * 64, "size_bytes": 100}),
+        ):
+            with self.assertRaisesRegex(ValueError, "differs from fresh/reused"):
+                scenario_tools.collect(manifest_path, Path("rue"), Path("session"), 1)
+        self.assertEqual(len(families), 2)
+
+    def test_cold_output_must_equal_cross_family_identity(self):
+        manifest_path = INPUT_ROOT / "benchmarks/manifest.toml"
+        for field, value in (("sha256", "b" * 64), ("size_bytes", 101)):
+            with self.subTest(field=field):
+                result = self.valid_result()
+                result["scenarios"]["families"][0]["scenarios"][0][
+                    "emitted_output"
+                ][field] = value
+                errors = validator.validate_manifest_results(result, manifest_path)
+                self.assertTrue(
+                    any("does not match cross-family parity" in error for error in errors)
+                )
 
     def test_missing_unknown_and_duplicate_names_are_rejected(self):
         missing = self.valid_result()
@@ -1351,7 +1455,7 @@ class DurableBenchmarkHistoryTests(unittest.TestCase):
         self.assertNotEqual(first["id"], changed_iterations["id"])
         self.assertNotEqual(first["id"], changed_runner["id"])
 
-    def test_corpus_hash_includes_scaling_generator_definitions(self):
+    def test_corpus_hash_includes_scaling_and_scenario_definitions(self):
         manifest = INPUT_ROOT / "benchmarks/manifest.toml"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1366,9 +1470,16 @@ class DurableBenchmarkHistoryTests(unittest.TestCase):
             generator = root / "scripts/scaling_workloads.py"
             generator.write_text(generator.read_text() + "\n# workload definition changed\n")
             after = history_tools.corpus_metadata(copied_manifest)
+            fixture = root / "benchmarks/scenarios/representative/main.rue"
+            fixture.write_text(fixture.read_text() + "\n")
+            after_fixture = history_tools.corpus_metadata(copied_manifest)
         self.assertEqual(before["schema_version"], 2)
         self.assertIn("../scripts/scaling_workloads.py", before["files"])
+        self.assertIn("../scripts/benchmark_scenarios.py", before["files"])
+        self.assertIn("../crates/rue/src/main.rs", before["files"])
+        self.assertIn("../crates/rue-compiler-session-bench/src/main.rs", before["files"])
         self.assertNotEqual(before["sha256"], after["sha256"])
+        self.assertNotEqual(after["sha256"], after_fixture["sha256"])
 
     def test_schema_one_and_two_corpora_remain_loadable_across_regime_boundary(self):
         def published(schema, digest, commit):
