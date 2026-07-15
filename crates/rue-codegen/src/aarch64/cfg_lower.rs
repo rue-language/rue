@@ -3952,7 +3952,7 @@ impl crate::allocation::ScaleBackend for CfgLower<'_> {
                     dst: Operand::Virtual(dst),
                     src: Operand::Virtual(src),
                 }),
-                ScaleKind::Constant(bytes) if bytes == 8 => self.mir.push(Aarch64Inst::LslImm {
+                ScaleKind::Constant(8) => self.mir.push(Aarch64Inst::LslImm {
                     dst: Operand::Virtual(dst),
                     src: Operand::Virtual(src),
                     imm: 3,
