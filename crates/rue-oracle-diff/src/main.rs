@@ -57,7 +57,7 @@ use rue_oracle::{
     run_source_with_preview_features,
 };
 use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -573,7 +573,14 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
         // `load_test_files` expands `params` templates and validates preview
         // feature names exactly as the spec runner does; it needs only the
         // cases dir (no spec markdown).
-        let files = rue_test_runner::load_test_files(dir);
+        let files = match rue_test_runner::load_test_files(dir) {
+            Ok(files) => files,
+            Err(error) => {
+                inventory_complete = false;
+                report.harness_failures.push(error);
+                continue;
+            }
+        };
         if files.is_empty() {
             inventory_complete = false;
             report.harness_failures.push(format!(
@@ -1252,119 +1259,22 @@ fn discover_toml(dirs: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
     let mut files = Vec::new();
     let mut failures = Vec::new();
     for dir in dirs {
-        let before = files.len();
-        match collect_toml(dir, &mut files) {
-            Ok(()) if files.len() == before => failures.push(format!(
+        match rue_test_runner::discover_files(dir, "toml") {
+            Ok(discovered) if discovered.is_empty() => failures.push(format!(
                 "no .toml case files found under requested root {}",
                 dir.display()
             )),
-            Ok(()) => {}
-            Err(mut errors) => failures.append(&mut errors),
+            Ok(mut discovered) => files.append(&mut discovered),
+            Err(error) => failures.push(format!(
+                "could not discover case files under {}: {error}",
+                dir.display()
+            )),
         }
     }
     files.sort();
     files.dedup();
     failures.sort();
     (files, failures)
-}
-
-/// Recursively collect TOML files, reporting rather than hiding filesystem errors.
-fn collect_toml(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Vec<String>> {
-    let mut failures = Vec::new();
-    let mut visited_dirs = BTreeSet::new();
-    collect_toml_inner(dir, out, &mut failures, &mut visited_dirs);
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        failures.sort();
-        Err(failures)
-    }
-}
-
-fn collect_toml_inner(
-    dir: &Path,
-    out: &mut Vec<PathBuf>,
-    failures: &mut Vec<String>,
-    visited_dirs: &mut BTreeSet<PathBuf>,
-) {
-    let canonical_dir = match std::fs::canonicalize(dir) {
-        Ok(path) => path,
-        Err(error) => {
-            failures.push(format!(
-                "could not resolve cases directory {}: {error}",
-                dir.display()
-            ));
-            return;
-        }
-    };
-    if !visited_dirs.insert(canonical_dir) {
-        return;
-    }
-
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) => {
-            failures.push(format!(
-                "could not read cases directory {}: {error}",
-                dir.display()
-            ));
-            return;
-        }
-    };
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                failures.push(format!(
-                    "could not read a directory entry under {}: {error}",
-                    dir.display()
-                ));
-                continue;
-            }
-        };
-        let path = entry.path();
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(error) => {
-                failures.push(format!(
-                    "could not determine file type for {}: {error}",
-                    path.display()
-                ));
-                continue;
-            }
-        };
-
-        if file_type.is_dir() {
-            collect_toml_inner(&path, out, failures, visited_dirs);
-        } else if file_type.is_file() {
-            collect_toml_file(&path, out);
-        } else if file_type.is_symlink() {
-            // Buck inputs and user-provided case roots may contain symlinks.
-            // Follow them explicitly, but surface a broken link as discovery
-            // failure instead of silently treating it as an absent case.
-            match std::fs::metadata(&path) {
-                Ok(metadata) if metadata.is_dir() => {
-                    collect_toml_inner(&path, out, failures, visited_dirs);
-                }
-                Ok(metadata) if metadata.is_file() => collect_toml_file(&path, out),
-                Ok(_) => {}
-                Err(error) => failures.push(format!(
-                    "could not determine symlink target type for {}: {error}",
-                    path.display()
-                )),
-            }
-        }
-    }
-}
-
-fn collect_toml_file(path: &Path, out: &mut Vec<PathBuf>) {
-    if path
-        .extension()
-        .is_some_and(|extension| extension == "toml")
-    {
-        out.push(path.to_path_buf());
-    }
 }
 
 #[cfg(test)]

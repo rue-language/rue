@@ -41,7 +41,10 @@ fn main() {
     let cases_dir = find_dir("RUE_UI_CASES", CASES_DIR_PATHS, "cases");
 
     // Load all test files
-    let test_files = load_test_files(&cases_dir);
+    let test_files = load_test_files(&cases_dir).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    });
     let total_cases: usize = test_files
         .iter()
         .map(|(_, test_file)| test_file.case.len())

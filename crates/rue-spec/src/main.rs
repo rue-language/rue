@@ -69,7 +69,10 @@ fn run_traceability(detailed: bool) {
         std::process::exit(1);
     }
 
-    let report = traceability::generate_report(&spec_dir, &cases_dir);
+    let report = traceability::generate_report(&spec_dir, &cases_dir).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    });
 
     if detailed {
         report.print_detailed();
@@ -172,7 +175,10 @@ fn main() {
     let cases_dir = find_dir("RUE_SPEC_CASES", CASES_DIR_PATHS, "cases");
 
     // Load all test files
-    let specs = load_test_files(&cases_dir);
+    let specs = load_test_files(&cases_dir).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    });
 
     // Build test trials, separating stable and preview tests
     // Pre-allocate based on total case count across all specs

@@ -6,7 +6,6 @@ rue_binary(
         "//crates/rue-test-runner:rue-test-runner",
         "//third-party:libtest2-mimic",
         "//third-party:tempfile",
-        "//third-party:toml",
     ],
 )
 
