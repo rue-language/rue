@@ -36,6 +36,7 @@ charts = load_module("generate_charts", "scripts/generate-charts.py")
 site_status = load_module("generate_site_status", "scripts/generate-site-status.py")
 history_tools = load_module("benchmark_history", "scripts/benchmark_history.py")
 metrics = load_module("benchmark_metrics", "scripts/benchmark_metrics.py")
+evolution = load_module("benchmark_evolution", "scripts/benchmark_evolution.py")
 recent = load_module("benchmark_recent", "scripts/benchmark_recent.py")
 perf_baseline = load_module("perf_baseline", "scripts/perf-baseline.py")
 
@@ -1482,6 +1483,212 @@ class TestRecentRegressionWorkspace(unittest.TestCase):
         self.assertIn("headline.classification === 'insufficient_data'", template)
         self.assertIn("populateComparisons(points)", template)
         self.assertNotIn("function calculateDelta", template)
+
+
+class BenchmarkEvolutionTests(unittest.TestCase):
+    class Resolver:
+        def is_ancestor(self, start, end):
+            return int(start[:8], 16) <= int(end[:8], 16)
+
+    @staticmethod
+    def sample_run(index, instant, value=100.0, regime="corpus-a", skipped=(), runner="runner-a"):
+        commit = f"{index:08x}" * 5
+        return {
+            "commit": commit,
+            "timestamp": instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "publication": {
+                "comparable": True,
+                "regime_id": regime,
+                "regime": {
+                    "platform": "x86-64-linux",
+                    "corpus_sha256": regime,
+                    "runner_image": runner,
+                },
+                "coverage": {
+                    "measured_commit": commit,
+                    "represented_commits": [commit],
+                    "skipped_commits": list(skipped),
+                    "gap_unknown": False,
+                },
+            },
+            "benchmarks": [{
+                "name": "probe",
+                "samples_ms": [value - 0.2, value, value + 0.2],
+                "mean_ms": value,
+                "passes": {"compile": {"mean_ms": value}},
+            }],
+        }
+
+    def test_calendar_ranges_boundaries_annotations_and_canonical_source(self):
+        end = datetime(2026, 12, 31, tzinfo=timezone.utc)
+        runs = [
+            self.sample_run(1, end - evolution.timedelta(days=400), 120),
+            self.sample_run(2, end - evolution.timedelta(days=200), 110),
+            self.sample_run(3, end - evolution.timedelta(days=60), 100, regime="corpus-b"),
+            self.sample_run(4, end - evolution.timedelta(days=20), 105, regime="corpus-b", skipped=("deadbeef",)),
+            self.sample_run(5, end, 106, regime="environment-c", runner="runner-b"),
+        ]
+        intentional = {
+            "id": "intentional-cost",
+            "source": "authored",
+            "location": {"kind": "commit", "commit": runs[3]["commit"]},
+            "category": "capability",
+            "title": "Intentional-cost feature",
+            "explanation": "Accepted compile cost for a language capability.",
+            "link": "https://github.com/rue-language/rue/pull/1",
+            "scope": {"metrics": ["latency"], "workloads": ["*"], "platforms": ["*"]},
+        }
+        model = evolution.evolution_workspace(
+            {"x86-64-linux": runs}, [intentional], self.Resolver()
+        )
+        series = next(item for item in model["series"] if item["workload"] == "all")
+        self.assertEqual(series["ranges"]["30d"]["raw_point_count"], 2)
+        self.assertEqual(series["ranges"]["90d"]["raw_point_count"], 3)
+        self.assertEqual(series["ranges"]["1y"]["raw_point_count"], 4)
+        self.assertEqual(series["ranges"]["all"]["raw_point_count"], 5)
+        self.assertEqual(series["ranges"]["30d"]["resolution"], "day")
+        self.assertEqual(series["ranges"]["1y"]["resolution"], "week")
+        self.assertEqual(model["raw_history_run_count"], len(runs))
+        self.assertEqual(model["metric_policy"], "benchmark_metrics.derive_history_metrics")
+        self.assertEqual(model["annotation_policy"], "benchmark_annotations.normalized_annotation_stream")
+        self.assertIs(model["annotations"][0], intentional)
+
+        canonical = metrics.derive_history_metrics(runs)
+        self.assertEqual(
+            [point["index"] for point in series["raw_points"]],
+            [point["performance_index"]["value"] for point in canonical["points"]],
+        )
+        points = series["raw_points"]
+        self.assertEqual(points[2]["boundary"]["reason"], "regime_boundary")
+        self.assertEqual(points[3]["boundary"]["skipped_commits"], ["deadbeef"])
+        self.assertEqual(points[4]["boundary"]["reason"], "regime_boundary")
+        self.assertIn("intentional-cost", points[3]["annotation_ids"])
+        self.assertEqual(
+            {point["segment"] for point in series["ranges"]["all"]["trend_points"]},
+            {0, 1, 2, 3},
+        )
+        self.assertEqual(model["cross_platform_default"], "normalized_index_separate_machine_series")
+        self.assertEqual(model["workload_families"][0]["source"], "identity_fallback")
+
+    def test_non_latency_annotations_are_excluded_from_aggregate_and_workload(self):
+        end = datetime(2026, 12, 31, tzinfo=timezone.utc)
+        run = self.sample_run(1, end)
+        events = []
+        for metric in ("memory", "binary_size", "throughput"):
+            events.append({
+                "id": metric,
+                "location": {"kind": "commit", "commit": run["commit"]},
+                "scope": {"metrics": [metric], "workloads": ["*"], "platforms": ["*"]},
+            })
+        model = evolution.evolution_workspace({"x86-64-linux": [run]}, events, self.Resolver())
+        aggregate = next(item for item in model["series"] if item["workload"] == "all")
+        workload = next(item for item in model["series"] if item["workload"] == "probe")
+        self.assertEqual(aggregate["raw_points"][0]["annotation_ids"], [])
+        self.assertEqual(workload["raw_points"][0]["annotation_ids"], [])
+
+    def test_shared_declared_family_unions_workloads_across_platforms(self):
+        instant = datetime(2026, 12, 31, tzinfo=timezone.utc)
+        left = self.sample_run(1, instant)
+        right = self.sample_run(2, instant)
+        left["benchmarks"][0].update(name="parser_probe", workload_family="compiler-core", workload_family_label="Compiler core")
+        right["benchmarks"][0].update(name="codegen_probe", workload_family="compiler-core", workload_family_label="Compiler core")
+        model = evolution.evolution_workspace(
+            {"aarch64-linux": [right], "x86-64-linux": [left]}, [], self.Resolver()
+        )
+        family = next(item for item in model["workload_families"] if item["id"] == "compiler-core")
+        self.assertEqual(family["workloads"], ["codegen_probe", "parser_probe"])
+        inconsistent = self.sample_run(3, instant)
+        inconsistent["benchmarks"][0].update(
+            name="other", workload_family="compiler-core", workload_family_label="Different label"
+        )
+        with self.assertRaisesRegex(ValueError, "inconsistent workload-family metadata"):
+            evolution.evolution_workspace(
+                {"aarch64-linux": [right], "x86-64-linux": [left], "other": [inconsistent]},
+                [], self.Resolver(),
+            )
+        fallback = self.sample_run(4, instant)
+        declared_collision = self.sample_run(5, instant)
+        declared_collision["benchmarks"][0].update(workload_family="identity:probe")
+        with self.assertRaisesRegex(ValueError, "inconsistent workload-family metadata"):
+            evolution.evolution_workspace(
+                {"fallback": [fallback], "declared": [declared_collision]},
+                [], self.Resolver(),
+            )
+
+    def test_one_year_uses_calendar_anniversary_across_leap_day(self):
+        end = datetime(2028, 2, 29, 12, tzinfo=timezone.utc)
+        runs = [
+            self.sample_run(1, datetime(2027, 2, 27, 12, tzinfo=timezone.utc)),
+            self.sample_run(2, datetime(2027, 2, 28, 12, tzinfo=timezone.utc)),
+            self.sample_run(3, end),
+        ]
+        model = evolution.evolution_workspace({"x86-64-linux": runs}, [], self.Resolver())
+        series = next(item for item in model["series"] if item["workload"] == "all")
+        self.assertEqual(series["ranges"]["1y"]["raw_point_count"], 2)
+        self.assertEqual(series["ranges"]["1y"]["raw_start_index"], 1)
+
+    def test_trend_uses_exact_canonical_median_and_scaled_mad(self):
+        start = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        runs = [
+            self.sample_run(1, start, 100),
+            self.sample_run(2, start + evolution.timedelta(hours=1), 200),
+            self.sample_run(3, start + evolution.timedelta(hours=2), 400),
+        ]
+        model = evolution.evolution_workspace({"x86-64-linux": runs}, [], self.Resolver())
+        series = next(item for item in model["series"] if item["workload"] == "all")
+        trend = series["ranges"]["all"]["trend_points"][0]
+        self.assertEqual(trend["index"], 50.0)
+        self.assertAlmostEqual(trend["variation"], 1.4826 * 25.0)
+        self.assertEqual(metrics.robust_summary([100.0, 50.0, 25.0])["scaled_mad"], trend["variation"])
+
+    def test_high_velocity_history_is_thinned_only_for_rendering(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        runs = [
+            self.sample_run(
+                index + 1,
+                start + evolution.timedelta(hours=index),
+                100 + (index % 7),
+                regime="corpus-a" if index < 200 else "corpus-b",
+                skipped=("feedface",) if index == 350 else (),
+            )
+            for index in range(500)
+        ]
+        annotation = {
+            "id": "non-boundary-milestone",
+            "location": {"kind": "commit", "commit": runs[123]["commit"]},
+            "scope": {"metrics": ["latency"], "workloads": ["*"], "platforms": ["*"]},
+        }
+        model = evolution.evolution_workspace(
+            {"x86-64-linux": runs}, [annotation], self.Resolver()
+        )
+        series = next(
+            item for item in model["series"] if item["workload"] == "all"
+        )
+        view = series["ranges"]["all"]
+        self.assertEqual(len(series["raw_points"]), 500)
+        self.assertEqual(view["rendered_raw_point_count"], evolution.MAX_RENDERED_RAW_POINTS)
+        self.assertLess(len(view["trend_points"]), len(series["raw_points"]))
+        self.assertEqual(view["rendered_raw_points"][0]["commit"], runs[0]["commit"])
+        self.assertEqual(view["rendered_raw_points"][-1]["commit"], runs[-1]["commit"])
+        rendered = {point["commit"] for point in view["rendered_raw_points"]}
+        self.assertIn(runs[200]["commit"], rendered)
+        self.assertIn(runs[350]["commit"], rendered)
+        self.assertIn(runs[123]["commit"], rendered)
+
+    def test_evolution_template_only_renders_precomputed_policy(self):
+        template = (INPUT_ROOT / "website" / "templates" / "performance.html").read_text()
+        self.assertIn("series.raw_points.slice(series.ranges[activeRange].raw_start_index)", template)
+        self.assertIn("view.trend_points.forEach", template)
+        self.assertIn("point.absolute_ms.toFixed", template)
+        self.assertIn("point.boundary.skipped_commits.join", template)
+        self.assertIn("All machines (normalized, separate series)", template)
+        self.assertIn("Calendar time", template)
+        self.assertIn("Normalized performance index", template)
+        self.assertIn("evolution-boundary-marker", template)
+        self.assertIn("evolution-annotation-marker", template)
+        self.assertIn("point.boundary.regime_id", template)
+        self.assertIn("point.boundary.represented_commits.join", template)
+        self.assertNotIn("function calculateEvolutionIndex", template)
 
 
 class BenchmarkCollectionTests(unittest.TestCase):

@@ -102,6 +102,29 @@ def sample_summary(samples: object) -> dict | None:
     return _sample_summary(samples)
 
 
+def robust_summary(values: object) -> dict | None:
+    """Return the canonical median and scaled-MAD summary for numeric values."""
+    if not isinstance(values, list) or not values:
+        return None
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        for value in values
+    ):
+        return None
+    numeric = [float(value) for value in values]
+    center = statistics.median(numeric)
+    mad = statistics.median(abs(value - center) for value in numeric)
+    return {
+        "center": center,
+        "scaled_mad": 1.4826 * mad,
+        "minimum": min(numeric),
+        "maximum": max(numeric),
+        "sample_count": len(numeric),
+    }
+
+
 def _classification(delta_pct: float, variation_pct: float) -> str:
     if delta_pct > variation_pct:
         return "regressed"
@@ -218,19 +241,30 @@ def performance_index(current: dict, baseline: dict) -> dict:
     identity = require_same_identity(baseline, current)
     if run_regime(current) != run_regime(baseline):
         return {"status": "rebase", "reason": "regime_changed", **identity}
-    if comparison_break(baseline, current):
+    # A segment anchor is compared with itself so evolution consumers retain
+    # an explicit 100-valued rebase point even when the run also records a
+    # coverage gap.  Comparisons between distinct runs still honor that gap.
+    if current is not baseline and comparison_break(baseline, current):
         return {"status": "rebase", "reason": "comparison_boundary", **identity}
     names = workload_names(current)
     if names != workload_names(baseline):
         return {"status": "rebase", "reason": "workload_composition_changed", **identity}
     current_benches, baseline_benches = _benches(current), _benches(baseline)
     ratios = []
+    workloads = {}
     for name in names:
         current_sample = _sample_summary(current_benches[name].get("samples_ms"))
         baseline_sample = _sample_summary(baseline_benches[name].get("samples_ms"))
         if current_sample is None or baseline_sample is None:
             return {"status": "insufficient_data", **identity}
-        ratios.append(baseline_sample["center"] / current_sample["center"])
+        ratio = baseline_sample["center"] / current_sample["center"]
+        ratios.append(ratio)
+        workloads[name] = {
+            "value": 100.0 * ratio,
+            "baseline": 100.0,
+            "absolute_ms": current_sample["center"],
+            "relative_variation_pct": current_sample["relative_variation_pct"],
+        }
     if not ratios:
         return {"status": "insufficient_data", **identity}
     return {
@@ -238,6 +272,7 @@ def performance_index(current: dict, baseline: dict) -> dict:
         "value": 100.0 * math.exp(sum(math.log(value) for value in ratios) / len(ratios)),
         "baseline": 100.0,
         "direction": "higher_is_better",
+        "workloads": workloads,
         **identity,
     }
 
