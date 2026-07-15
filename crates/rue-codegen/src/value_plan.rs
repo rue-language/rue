@@ -19,7 +19,9 @@ use crate::cfg_lower::CfgLowerContext;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueShape {
     /// No storage slots exist.  A primary vreg may still be used as a
-    /// never-read placeholder for CFG bookkeeping.
+    /// never-read placeholder for CFG bookkeeping.  A zero-slot struct or
+    /// array is represented by `CompleteAggregate { slot_count: 0 }` instead;
+    /// this shape is reserved for non-aggregate zero-sized values.
     ZeroSized,
     /// Exactly one logical slot; the primary vreg is the complete value.
     Scalar,
@@ -198,10 +200,7 @@ impl ValuePlan {
                     Some(ComparisonPreparation::Unit)
                 } else {
                     Some(ComparisonPreparation::Scalar {
-                        width: integer_width(lhs_ty).unwrap_or(IntegerWidth {
-                            bits: 32,
-                            signed: false,
-                        }),
+                        width: comparison_integer_width(lhs_ty),
                     })
                 }
             }
@@ -317,6 +316,24 @@ pub fn integer_width(ty: Type) -> Option<IntegerWidth> {
     })
 }
 
+/// Select the width used by a scalar comparison. Booleans are represented in
+/// the ordinary 32-bit scalar register form; every other valid scalar
+/// comparison operand must be an integer. Do not silently assign an integer
+/// width to malformed or unsupported types: doing so would let the backends
+/// choose a target-specific interpretation of the same invalid CFG.
+pub fn comparison_integer_width(ty: Type) -> IntegerWidth {
+    if ty == Type::BOOL {
+        IntegerWidth {
+            bits: 32,
+            signed: false,
+        }
+    } else {
+        integer_width(ty).unwrap_or_else(|| {
+            panic!("scalar comparison requires an integer or bool type, got {ty:?}")
+        })
+    }
+}
+
 /// Shared signedness query for target encodings that need a flag or extension
 /// form after the integer policy has been selected.
 pub fn type_is_signed(ty: Type) -> bool {
@@ -383,10 +400,11 @@ pub fn assert_slot_policy(plan: ValuePlan, actual: usize) {
 mod tests {
     use super::{
         ComparisonPreparation, IntegerWidth, MaterializationRequirement, StoragePolicy, ValueKind,
-        ValuePlan, ValueShape, assert_slot_policy, integer_range, kind, type_bits, type_range,
+        ValuePlan, ValueShape, assert_slot_policy, comparison_integer_width, integer_range, kind,
+        type_bits, type_range,
     };
     use lasso::{Spur, ThreadedRodeo};
-    use rue_air::{LangItem, StructDef, StructField, TypeInternPool};
+    use rue_air::{EnumDef, LangItem, ParamSlotModes, StructDef, StructField, TypeInternPool};
     use rue_cfg::{Cfg, CfgInst, CfgInstData, CfgValue, Place, Terminator, Type};
     use rue_span::{FileId, Span};
     use rue_target::Target;
@@ -436,6 +454,303 @@ mod tests {
         CfgValue::from_raw(0)
     }
 
+    fn all_value_kinds() -> &'static [ValueKind] {
+        use ValueKind::*;
+        &[
+            Constant,
+            BoolConstant,
+            StringConstant,
+            Parameter,
+            BlockParameter,
+            BinaryArithmetic,
+            Comparison,
+            UnaryArithmetic,
+            Bitwise,
+            Shift,
+            Allocation,
+            Load,
+            Store,
+            ParameterStore,
+            Call,
+            Intrinsic,
+            StructInit,
+            ArrayInit,
+            EnumVariant,
+            EnumPayloadGet,
+            IntegerCast,
+            Drop,
+            StorageLive,
+            StorageDead,
+            PlaceRead,
+            PlaceWrite,
+        ]
+    }
+
+    /// Construct one valid CFG containing every current CfgInstData variant.
+    /// The exhaustive `kind` match and `all_value_kinds` inventory make adding
+    /// a language-level variant a compile-time/test-time coverage obligation;
+    /// the two adapters then lower this same fixture and expose each value in
+    /// their debug traces.
+    fn every_cfg_value_fixture() -> (
+        Cfg,
+        rue_air::FrozenTypeInternPool,
+        ThreadedRodeo,
+        Vec<CfgValue>,
+    ) {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let (str_id, _) = pool.register_struct(
+            interner.get_or_intern("str"),
+            StructDef {
+                name: "str".to_string(),
+                fields: vec![
+                    StructField {
+                        name: "ptr".to_string(),
+                        ty: Type::U64,
+                    },
+                    StructField {
+                        name: "len".to_string(),
+                        ty: Type::U64,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: true,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let (struct_id, _) = pool.register_struct(
+            interner.get_or_intern("CoverageStruct"),
+            StructDef {
+                name: "CoverageStruct".to_string(),
+                fields: vec![
+                    StructField {
+                        name: "left".to_string(),
+                        ty: Type::I32,
+                    },
+                    StructField {
+                        name: "right".to_string(),
+                        ty: Type::I32,
+                    },
+                ],
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let (enum_id, _) = pool.register_enum(
+            interner.get_or_intern("CoverageEnum"),
+            EnumDef {
+                name: "CoverageEnum".to_string(),
+                variants: vec!["None".to_string(), "Some".to_string()],
+                variant_payloads: vec![vec![], vec![Type::I32]],
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let array_id = pool.intern_array_from_type(Type::I32, 2);
+        let str_ty = Type::new_struct(str_id);
+        let struct_ty = Type::new_struct(struct_id);
+        let enum_ty = Type::new_enum(enum_id);
+        let array_ty = Type::new_array(array_id);
+
+        let mut cfg = Cfg::new(
+            Type::I32,
+            2,
+            1,
+            "every_cfg_value_variant".to_string(),
+            ParamSlotModes::new(vec![true], vec![true]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let mut values = Vec::new();
+        let block_parameter = cfg.add_inst(inst(CfgInstData::BlockParam { index: 0 }, Type::I32));
+        cfg.get_block_mut(entry)
+            .params
+            .push((block_parameter, Type::I32));
+        values.push(block_parameter);
+        let mut add = |cfg: &mut Cfg, data: CfgInstData, ty: Type| {
+            let value = cfg.add_inst(inst(data, ty));
+            cfg.get_block_mut(entry).insts.push(value);
+            values.push(value);
+            value
+        };
+
+        let constant = add(&mut cfg, CfgInstData::Const(7), Type::I32);
+        let bool_constant = add(&mut cfg, CfgInstData::BoolConst(true), Type::BOOL);
+        let _string_constant = add(&mut cfg, CfgInstData::StringConst(0), str_ty);
+        let _parameter = add(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+
+        for data in [
+            CfgInstData::Add(constant, constant),
+            CfgInstData::Sub(constant, constant),
+            CfgInstData::Mul(constant, constant),
+            CfgInstData::Div(constant, constant),
+            CfgInstData::Mod(constant, constant),
+            CfgInstData::Eq(constant, constant),
+            CfgInstData::Ne(constant, constant),
+            CfgInstData::Lt(constant, constant),
+            CfgInstData::Gt(constant, constant),
+            CfgInstData::Le(constant, constant),
+            CfgInstData::Ge(constant, constant),
+            CfgInstData::BitAnd(constant, constant),
+            CfgInstData::BitOr(constant, constant),
+            CfgInstData::BitXor(constant, constant),
+            CfgInstData::Shl(constant, constant),
+            CfgInstData::Shr(constant, constant),
+            CfgInstData::Neg(constant),
+            CfgInstData::BitNot(constant),
+        ] {
+            add(&mut cfg, data, Type::I32);
+        }
+        add(&mut cfg, CfgInstData::Not(bool_constant), Type::BOOL);
+        add(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: constant,
+            },
+            Type::UNIT,
+        );
+        let load = add(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        add(
+            &mut cfg,
+            CfgInstData::Store {
+                slot: 0,
+                value: constant,
+            },
+            Type::UNIT,
+        );
+        add(
+            &mut cfg,
+            CfgInstData::ParamStore {
+                param_slot: 0,
+                value: constant,
+            },
+            Type::UNIT,
+        );
+        let call_name = interner.get_or_intern("coverage_call");
+        add(
+            &mut cfg,
+            CfgInstData::Call {
+                name: call_name,
+                args_start: 0,
+                args_len: 0,
+            },
+            Type::I32,
+        );
+        let panic_name = interner.get_or_intern("panic");
+        add(
+            &mut cfg,
+            CfgInstData::Intrinsic {
+                name: panic_name,
+                args_start: 0,
+                args_len: 0,
+            },
+            Type::UNIT,
+        );
+        let (fields_start, fields_len) = cfg.push_extra([constant, load]);
+        let struct_value = add(
+            &mut cfg,
+            CfgInstData::StructInit {
+                struct_id,
+                fields_start,
+                fields_len,
+            },
+            struct_ty,
+        );
+        let (elements_start, elements_len) = cfg.push_extra([constant, load]);
+        add(
+            &mut cfg,
+            CfgInstData::ArrayInit {
+                elements_start,
+                elements_len,
+            },
+            array_ty,
+        );
+        let (payload_start, payload_len) = cfg.push_extra([constant]);
+        let enum_value = add(
+            &mut cfg,
+            CfgInstData::EnumVariant {
+                enum_id,
+                variant_index: 1,
+                payload_start,
+                payload_len,
+            },
+            enum_ty,
+        );
+        add(
+            &mut cfg,
+            CfgInstData::EnumPayloadGet {
+                base: enum_value,
+                enum_id,
+                variant_index: 1,
+                field_index: 0,
+            },
+            Type::I32,
+        );
+        add(
+            &mut cfg,
+            CfgInstData::IntCast {
+                value: constant,
+                from_ty: Type::I32,
+            },
+            Type::U64,
+        );
+        add(
+            &mut cfg,
+            CfgInstData::Drop {
+                value: struct_value,
+            },
+            Type::UNIT,
+        );
+        add(
+            &mut cfg,
+            CfgInstData::StorageLive {
+                slot: 1,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        add(
+            &mut cfg,
+            CfgInstData::StorageDead {
+                slot: 1,
+                local_ty: Type::I32,
+            },
+            Type::UNIT,
+        );
+        add(
+            &mut cfg,
+            CfgInstData::PlaceRead {
+                place: Place::local(0, Type::I32),
+            },
+            Type::I32,
+        );
+        add(
+            &mut cfg,
+            CfgInstData::PlaceWrite {
+                place: Place::local(0, Type::I32),
+                value: constant,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(
+            entry,
+            Terminator::Return {
+                value: Some(constant),
+            },
+        );
+
+        assert_eq!(values.len(), 40, "fixture must contain every CFG variant");
+        (cfg, pool.freeze(), interner, values)
+    }
+
     #[test]
     fn aggregate_shape_has_no_single_slot_fallback() {
         let shape = ValueShape::CompleteAggregate { slot_count: 3 };
@@ -457,6 +772,19 @@ mod tests {
             }),
             (0, 65535)
         );
+        assert_eq!(
+            comparison_integer_width(Type::BOOL),
+            IntegerWidth {
+                bits: 32,
+                signed: false
+            }
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "scalar comparison requires an integer or bool type")]
+    fn invalid_scalar_comparison_type_is_not_defaulted_to_32_bits() {
+        comparison_integer_width(Type::UNIT);
     }
 
     #[test]
@@ -898,6 +1226,132 @@ mod tests {
                 .instructions()
                 .iter()
                 .any(|inst| matches!(inst, Aarch64Inst::LdrIndexed { .. }))
+        );
+    }
+
+    #[test]
+    fn both_target_debug_traces_cover_every_cfg_value_variant() {
+        let (cfg, pool, interner, values) = every_cfg_value_fixture();
+        let (x86, x86_debug) = X86CfgLower::new(&cfg, &pool, &interner)
+            .lower_with_debug()
+            .expect("x86 coverage fixture should lower");
+        let (arm, arm_debug) = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux)
+            .lower_with_debug()
+            .expect("AArch64 coverage fixture should lower");
+
+        let signature = |debug: &crate::LoweringDebugInfo| {
+            let mut entries = debug
+                .blocks
+                .iter()
+                .flat_map(|block| block.instructions.iter())
+                .map(|decision| {
+                    (
+                        decision.cfg_value.as_u32(),
+                        decision.cfg_inst_desc.clone(),
+                        decision.cfg_type.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.0);
+            entries
+        };
+        assert_eq!(signature(&x86_debug), signature(&arm_debug));
+
+        let mut expected_ids = values
+            .iter()
+            .map(|value| value.as_u32())
+            .collect::<Vec<_>>();
+        expected_ids.sort_unstable();
+        let actual_ids = signature(&x86_debug)
+            .iter()
+            .map(|entry| entry.0)
+            .collect::<Vec<_>>();
+        assert_eq!(actual_ids, expected_ids);
+
+        for value in &values {
+            let expected_kind = kind(&cfg.get_inst(*value).data);
+            assert!(
+                all_value_kinds().contains(&expected_kind),
+                "variant {expected_kind:?} must be in the exhaustive policy inventory"
+            );
+            let x86_decision = x86_debug
+                .blocks
+                .iter()
+                .flat_map(|block| block.instructions.iter())
+                .find(|decision| decision.cfg_value == *value)
+                .expect("x86 debug trace must contain every CFG value");
+            let arm_decision = arm_debug
+                .blocks
+                .iter()
+                .flat_map(|block| block.instructions.iter())
+                .find(|decision| decision.cfg_value == *value)
+                .expect("AArch64 debug trace must contain every CFG value");
+
+            // Only the three intentional no-op policies lack target MIR: a
+            // preallocated block parameter and storage lifetime markers.
+            if !matches!(
+                expected_kind,
+                ValueKind::BlockParameter | ValueKind::StorageLive | ValueKind::StorageDead
+            ) {
+                assert!(
+                    !x86_decision.mir_insts.is_empty(),
+                    "x86 variant {expected_kind:?} must produce MIR"
+                );
+                assert!(
+                    !arm_decision.mir_insts.is_empty(),
+                    "AArch64 variant {expected_kind:?} must produce MIR"
+                );
+            }
+        }
+
+        // These are the aggregate cases whose complete slot policy must be
+        // visible in the same fixture rather than inferred from planner-only
+        // assertions.
+        for value in &values {
+            let ty = cfg.get_inst(*value).ty;
+            if ty.is_struct() || ty.is_array() || ty.is_enum() {
+                let plan = ValuePlan::for_value(
+                    &crate::cfg_lower::CfgLowerContext::new(&cfg, &pool),
+                    *value,
+                );
+                assert!(plan.shape.requires_complete_slots());
+                assert!(plan.shape.slot_count() > 0 || ty.is_struct() || ty.is_array());
+            }
+        }
+
+        assert!(!x86.instructions().is_empty());
+        assert!(!arm.instructions().is_empty());
+    }
+
+    #[test]
+    fn zero_slot_aggregate_parameter_emits_no_frame_load_on_either_target() {
+        let pool = TypeInternPool::new();
+        let array_id = pool.intern_array_from_type(Type::UNIT, 2);
+        let pool = pool.freeze();
+        let array_ty = Type::new_array(array_id);
+        let mut cfg = Cfg::new(array_ty, 0, 1, "zero_slot_param".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let param = cfg.add_inst(inst(CfgInstData::Param { index: 0 }, array_ty));
+        cfg.get_block_mut(entry).insts.push(param);
+        cfg.set_terminator(entry, Terminator::Return { value: Some(param) });
+        let interner = ThreadedRodeo::new();
+
+        let x86 = X86CfgLower::new(&cfg, &pool, &interner)
+            .lower()
+            .expect("x86 zero-slot parameter should lower");
+        let arm = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux)
+            .lower()
+            .expect("AArch64 zero-slot parameter should lower");
+        assert!(
+            !x86.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRM { .. }))
+        );
+        assert!(
+            !arm.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::Ldr { .. }))
         );
     }
 }

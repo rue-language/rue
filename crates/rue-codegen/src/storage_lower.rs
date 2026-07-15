@@ -38,10 +38,6 @@ pub(crate) fn lower_alloc<B: StorageLowerBackend>(b: &mut B, slot: u32, init: Cf
         // Every multi-slot aggregate initializer has one vreg per logical slot.
         let scalar_vregs = agg_slots::require_aggregate_slots(b, init);
         agg_slots::store_slots(b, &scalar_vregs, slot);
-    } else if b.ctx().cfg.get_inst(init).ty.is_array() {
-        // Zero- and one-slot arrays use their scalar/ZST representation.
-        let scalar_vregs = b.collect_array_scalars(init);
-        agg_slots::store_slots(b, &scalar_vregs, slot);
     } else {
         let init_vreg = b.get_vreg(init);
         b.emit_store_slot(init_vreg, slot);
