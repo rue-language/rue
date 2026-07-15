@@ -180,7 +180,7 @@ function main:
     push rax
     pop rdi
     call set
-    mov v3, rax
+    mov v3, 0
     mov v5, [rbp-8]
     mov rdi, v5
     call __rue_exit
@@ -218,7 +218,7 @@ function main:
     add v4, fp, #-8
     mov x0, v4
     bl set
-    mov v3, x0
+    mov v3, #0
     ldr v5, [fp, #-8]
     mov x0, v5
     bl __rue_exit
