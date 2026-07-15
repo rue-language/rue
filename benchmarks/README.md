@@ -23,8 +23,10 @@ benchmarks/
 | `many_functions` | Function handling, symbol resolution | 1,000 functions |
 | `deep_nesting` | Scope handling and parser nesting | 120 nested-control functions: 50 block + 50 if + 20 while, each up to 40 levels (`v39`); 30 deep-expression helpers; 12,198 lines |
 | `large_structs` | Type definitions, field access | 700 struct types |
-| `arithmetic_heavy` | Expression parsing, codegen | 250 long-expression functions |
-| `control_flow` | CFG construction | if/while/match mix |
+| `arithmetic_heavy` | Expression parsing, codegen | 250 functions with 100-term chains |
+| `control_flow` | CFG construction | 390 functions with if/while/match mixes |
+| `array_heavy` | Array declarations, indexing, mutation | 200 functions |
+| `register_pressure` | Simultaneously live local values | 210 functions |
 
 ## Running Benchmarks
 
@@ -72,6 +74,8 @@ The quick per-pass corpus (`scripts/rue perf`) also includes the exact
 the depth-60 CLI regression in `crates/rue-cli-tests/cases/deep_nesting.toml`
 has its own explicit 10-second timeout; it is the executable complexity gate
 that turns renewed superlinear/exponential nesting behavior into a test failure.
+For parser-only timing and allocation density, including malformed and
+adversarial scaling families, run `scripts/parser-profile.py --release`.
 
 ## Adding Benchmarks
 

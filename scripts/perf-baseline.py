@@ -30,8 +30,9 @@ the raw JSON contains both leaf passes and their aggregate parents:
 
 Schema v2 marks root and leaf invocations explicitly. `total_ms` is the
 inclusive duration of root compiler spans; nested pass rows are also inclusive
-and therefore overlap their parents. This harness reports only leaves in its
-phase table. Leaf/root ratio, unattributed time, overlap, and driver overhead
+and therefore overlap their parents. This harness ranks only leaves in its hot
+phase table, and reports the inclusive parser aggregate separately. Leaf/root
+ratio, unattributed time, overlap, and driver overhead
 are calculated within each sample before their medians are taken, so unrelated
 samples are never combined into a fictional timing breakdown. It also measures
 the fresh process around `subprocess.run`: that includes startup, source
@@ -303,6 +304,7 @@ def aggregate(samples):
     if not samples:
         return {
             "rows": [],
+            "inclusive_rows": [],
             "compile_ms": 0.0,
             "compile_mad_ms": 0.0,
             "process_ms": 0.0,
@@ -323,6 +325,7 @@ def aggregate(samples):
         }
 
     per_pass = {}
+    per_inclusive_pass = {}
     order_seen = []
     compile_samples = []
     process_samples = []
@@ -336,6 +339,7 @@ def aggregate(samples):
     source_metrics_seen = False
     compiler_identity = None
     expected_leaf_names = None
+    expected_inclusive_names = None
     expected_schema_version = None
 
     for sample_index, sample in enumerate(samples):
@@ -431,6 +435,14 @@ def aggregate(samples):
             if is_leaf_pass(pass_data, schema_version)
         ]
         leaf_name_set = set(leaf_names)
+        inclusive_names = [
+            pass_data["name"]
+            for pass_data in passes
+            if schema_version == 2
+            and pass_data["name"] != WALL_CLOCK_PASS
+            and pass_data["leaf_invocations"] != pass_data["invocations"]
+        ]
+        inclusive_name_set = set(inclusive_names)
         if expected_leaf_names is None:
             expected_leaf_names = leaf_name_set
             order_seen.extend(leaf_names)
@@ -445,6 +457,18 @@ def aggregate(samples):
 
         for name in per_pass:
             per_pass[name].append(pass_ms[name])
+        if expected_inclusive_names is None:
+            expected_inclusive_names = inclusive_name_set
+            per_inclusive_pass = {name: [] for name in inclusive_names}
+        elif inclusive_name_set != expected_inclusive_names:
+            missing = sorted(expected_inclusive_names - inclusive_name_set)
+            extra = sorted(inclusive_name_set - expected_inclusive_names)
+            raise ValueError(
+                f"sample {sample_index + 1} inclusive pass set drifted; "
+                f"missing={missing}, extra={extra}"
+            )
+        for name in per_inclusive_pass:
+            per_inclusive_pass[name].append(pass_ms[name])
 
         leaf_work_ms = sum(pass_ms[name] for name in leaf_names)
         if compile_ms == 0 and leaf_work_ms > 0:
@@ -540,8 +564,21 @@ def aggregate(samples):
             for pass_ms, root_ms in zip(per_pass[name], compile_samples)
         )
         rows.append((name, med, pct))
+    inclusive_rows = []
+    for name, durations in per_inclusive_pass.items():
+        inclusive_rows.append(
+            (
+                name,
+                statistics.median(durations),
+                statistics.median(
+                    pass_ms / root_ms * 100.0 if root_ms > 0 else 0.0
+                    for pass_ms, root_ms in zip(durations, compile_samples)
+                ),
+            )
+        )
     return {
         "rows": rows,
+        "inclusive_rows": inclusive_rows,
         "compile_ms": compile_ms,
         "compile_mad_ms": compile_mad_ms,
         "process_ms": process_ms,
@@ -649,6 +686,10 @@ def run_corpus(rue_bin, corpus, iterations, warmup, workdir, timeout, jobs):
                     {"name": n, "median_ms": ms, "median_percent": pct}
                     for n, ms, pct in aggregated["rows"]
                 ],
+                "inclusive_passes": [
+                    {"name": n, "median_ms": ms, "median_percent": pct}
+                    for n, ms, pct in aggregated["inclusive_rows"]
+                ],
                 "source_metrics": aggregated["source_metrics"],
             }
         )
@@ -674,13 +715,23 @@ def print_text(results, iterations):
     for r in results:
         print(f"\n{r['name']}  ({r['bucket']}, n={iterations} fresh processes, median)")
         sm = r["source_metrics"] or {}
+        namew = max(
+            [len(p["name"]) for p in r["passes"]] + [len("parser (inclusive)"), 8]
+        )
         if sm:
             print(
                 f"  source: {sm.get('files', '?')} files, "
                 f"{sm.get('lines', '?')} lines, "
                 f"{sm.get('bytes', '?')} bytes, {sm.get('tokens', '?')} tokens"
             )
-        namew = max((len(p["name"]) for p in r["passes"]), default=8)
+        parser = next(
+            (p for p in r["inclusive_passes"] if p["name"] == "parser"), None
+        )
+        if parser is not None:
+            print(
+                f"  {'parser (inclusive)':<{namew}}  {parser['median_ms']:>8.2f} ms  "
+                f"({parser['median_percent']:>4.1f}% median phase/root; overlaps children)"
+            )
         for p in r["passes"]:
             print(
                 f"  {p['name']:<{namew}}  {p['median_ms']:>8.2f} ms  "
@@ -742,15 +793,35 @@ def _md_table(results, bucket_filter=None):
         for pass_data in result["passes"]:
             if pass_data["name"] not in names:
                 names.append(pass_data["name"])
-    header = "| program | " + " | ".join(names) + " | **compile** | **process** |"
-    sep = "|" + "|".join(["---"] * (len(names) + 3)) + "|"
+    has_inclusive_parser = any(
+        any(p["name"] == "parser" for p in r.get("inclusive_passes", []))
+        for r in rows
+    )
+    parser_header = " | parser (inclusive)" if has_inclusive_parser else ""
+    header = (
+        "| program | "
+        + " | ".join(names)
+        + parser_header
+        + " | **compile** | **process** |"
+    )
+    sep = "|" + "|".join(
+        ["---"] * (len(names) + 3 + int(has_inclusive_parser))
+    ) + "|"
     lines = [header, sep]
     for r in rows:
         pm = {p["name"]: p["median_ms"] for p in r["passes"]}
+        inclusive = {
+            p["name"]: p["median_ms"] for p in r.get("inclusive_passes", [])
+        }
         cells = [f"{pm.get(n, 0.0):.2f}" for n in names]
         lines.append(
             f"| {r['name']} | "
             + " | ".join(cells)
+            + (
+                f" | {inclusive['parser']:.2f}"
+                if has_inclusive_parser and "parser" in inclusive
+                else (" | N/A" if has_inclusive_parser else "")
+            )
             + f" | **{r['compile_ms']['median']:.2f}**"
             + f" | **{r['process_ms']['median']:.2f}** |"
         )

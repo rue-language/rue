@@ -77,6 +77,9 @@ additive breakdown of one median run** and should not be summed to reconstruct
 the compile median. In JSON, a phase's `median_percent` is separately computed
 as the median of its per-sample phase/root ratios; it is not
 `median_ms / compile median`.
+The JSON results preserve non-leaf spans under `inclusive_passes`; compact text
+and Markdown output show the inclusive `parser` span separately from its leaf
+children. These values overlap and must not be added to the leaf-pass table.
 The harness also rejects malformed v2 trees: `compile` must be the sole root
 and must have children, every reported leaf must be nested beneath it, and the
 source workload counters must be non-negative integers with at least one file.
@@ -171,14 +174,27 @@ and remain valid as historical compiler-pipeline measurements.
 
 ## Findings
 
-1. **`parse_file` is the dominant cost — by a wide margin.** It is 62% of total
-   corpus time and rises to **48–79% of a single large compile**. Lexing itself
+### Post-replacement parser result (RUE-906)
+
+The 2026-07-14 matched release profile finds that the production handwritten
+parser's inclusive span is 5.48 ms across 417.04 ms of summed workload medians
+(1.31%). The largest measured median parser share is 1.86%. A separate
+parser-only survey covers valid, multi-file, stress, malformed-recovery, and
+adversarial-nesting
+inputs while counting allocations after lexing and before lowering. Its
+quantitative arena-AST decision and reproduction details are in
+[parser-performance.md](parser-performance.md). Parsing is no longer the
+compiler bottleneck; an arena conversion is not justified by current data.
+
+1. **At the historical baseline, `parse_file` was the dominant cost — by a wide
+   margin.** It was 62% of total
+   corpus time and rose to **48–79% of a single large compile**. Lexing itself
    is cheap (measured ~20 ms for the 12k-line `deep_nesting.rue`); the cost is
    in the former Chumsky parser and AST construction. RUE-276 had already
    removed the nested-block exponential path, and RUE-891 later removed the
    remaining continued-block and slice-type exponential paths. RUE-905 replaced
-   that already-linearized parser; fresh measurements are required before
-   treating parsing as the current dominant cost. Files still parse
+   that already-linearized parser; the RUE-906 measurements above show it is
+   no longer the current dominant cost. Files still parse
    sequentially with a shared interner, so parse parallelism would require
    interner merging and AST symbol remapping.
 
@@ -273,5 +289,7 @@ unoptimized profile.
 
 - RUE-245 — define what each `-O` level does (this baseline informs it).
 - RUE-45 — release-mode CI (the build caveat above is a symptom).
+- [parser-performance.md](parser-performance.md) — current parser-only profile
+  and AST representation decision.
 - `docs/process/logging.md` — the wide-events instrumentation behind
   `--time-passes` / `--benchmark-json`.

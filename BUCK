@@ -110,6 +110,7 @@ filegroup(
         "scripts/benchmark_validation.py",
         "scripts/generate-charts.py",
         "scripts/generate-site-status.py",
+        "scripts/parser-profile.py",
         "scripts/perf-baseline.py",
         "scripts/validate-benchmark.py",
         "website/templates/performance.html",
