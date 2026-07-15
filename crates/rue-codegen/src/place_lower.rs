@@ -15,6 +15,7 @@ use rue_air::Type;
 use rue_cfg::{CfgValue, Place, PlaceBase, Projection};
 
 use crate::agg_slots::{self, SlotBackend};
+use crate::allocation::{self, ScalePlan};
 use crate::vreg::VReg;
 
 /// Per-target instruction leaves used by shared place lowering.
@@ -31,9 +32,9 @@ pub trait PlaceLowerBackend: SlotBackend {
     /// Add a nonzero byte displacement to an address in `dst`.
     fn emit_addr_add_imm(&mut self, dst: VReg, byte_offset: i32);
 
-    /// Scale the copied index in `scaled` by `elem_slot_count * 8` bytes.
+    /// Scale the copied index in `scaled` by the normalized byte-width plan.
     /// Implementations may allocate target-specific temporary vregs.
-    fn emit_scale_index_bytes(&mut self, scaled: VReg, elem_slot_count: u32);
+    fn emit_scale_index_bytes(&mut self, scaled: VReg, plan: ScalePlan);
 
     /// Materialize the canonical value for a zero-sized place read.
     ///
@@ -53,7 +54,7 @@ pub trait PlaceLowerBackend: SlotBackend {
 #[derive(Clone, Copy)]
 struct IndexLevel {
     index: CfgValue,
-    elem_slot_count: u32,
+    scale: ScalePlan,
 }
 
 struct ProjectionOffsets {
@@ -150,6 +151,22 @@ pub fn lower_place_write<B: PlaceLowerBackend>(b: &mut B, place: &Place, vals: &
     }
 }
 
+/// Check every index projection in source order. Callers that form an address
+/// directly (by-ref arguments and aggregate materialization) use this helper
+/// so they cannot accidentally bypass the shared trap edge.
+pub fn lower_place_bounds<B: PlaceLowerBackend + ?Sized>(b: &mut B, place: &Place) {
+    let projections = b.ctx().cfg.get_place_projections(place).to_vec();
+    for projection in projections {
+        if let Projection::Index { array_type, index } = projection {
+            let index_vreg = b.get_vreg(index);
+            allocation::lower_bounds_check(
+                b,
+                allocation::BoundsCheckPlan::new(index_vreg, b.ctx().array_length(array_type)),
+            );
+        }
+    }
+}
+
 /// Emit the low-end address of `place` into `dst`.
 ///
 /// Index projections are intentionally unchecked here: `@raw` is unchecked,
@@ -216,11 +233,14 @@ fn analyze_projections<B: PlaceLowerBackend>(
                     // emitted while walking the chain, before any address math.
                     let index_vreg = b.get_vreg(*index);
                     let length = b.ctx().array_length(*array_type);
-                    b.emit_bounds_check(index_vreg, length);
+                    allocation::lower_bounds_check(
+                        b,
+                        allocation::BoundsCheckPlan::new(index_vreg, length),
+                    );
                 }
                 index_levels.push(IndexLevel {
                     index: *index,
-                    elem_slot_count: b.ctx().array_element_slot_count(*array_type),
+                    scale: allocation::index_scale_plan(b.ctx().type_pool, *array_type),
                 });
             }
         }
@@ -297,7 +317,7 @@ fn compute_index_offset<B: PlaceLowerBackend>(b: &mut B, levels: &[IndexLevel]) 
         let index = b.get_vreg(level.index);
         let scaled = b.alloc_vreg();
         b.emit_reg_move(scaled, index);
-        b.emit_scale_index_bytes(scaled, level.elem_slot_count);
+        b.emit_scale_index_bytes(scaled, level.scale);
 
         if let Some(previous) = total {
             b.emit_addr_add(previous, scaled);
