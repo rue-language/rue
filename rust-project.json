@@ -35,11 +35,11 @@
           "name": "rue_target"
         },
         {
-          "crate": 60,
+          "crate": 57,
           "name": "lasso"
         },
         {
-          "crate": 90,
+          "crate": 87,
           "name": "rayon"
         }
       ],
@@ -94,7 +94,7 @@
           "name": "rue_span"
         },
         {
-          "crate": 60,
+          "crate": 57,
           "name": "lasso"
         }
       ],
@@ -122,19 +122,19 @@
           "name": "rue_test_runner"
         },
         {
-          "crate": 69,
+          "crate": 66,
           "name": "libtest2_mimic"
         },
         {
-          "crate": 96,
+          "crate": 93,
           "name": "serde"
         },
         {
-          "crate": 105,
+          "crate": 101,
           "name": "tempfile"
         },
         {
-          "crate": 108,
+          "crate": 104,
           "name": "toml"
         }
       ],
@@ -182,11 +182,11 @@
           "name": "rue_target"
         },
         {
-          "crate": 49,
+          "crate": 48,
           "name": "fixedbitset"
         },
         {
-          "crate": 60,
+          "crate": 57,
           "name": "lasso"
         }
       ],
@@ -218,7 +218,7 @@
           "name": "rue_span"
         },
         {
-          "crate": 98,
+          "crate": 95,
           "name": "serde_json"
         }
       ],
@@ -244,6 +244,10 @@
         {
           "crate": 0,
           "name": "rue_air"
+        },
+        {
+          "crate": 1,
+          "name": "rue_builtins"
         },
         {
           "crate": 2,
@@ -286,23 +290,27 @@
           "name": "annotate_snippets"
         },
         {
-          "crate": 60,
+          "crate": 57,
           "name": "lasso"
         },
         {
-          "crate": 90,
+          "crate": 87,
           "name": "rayon"
         },
         {
-          "crate": 98,
+          "crate": 93,
+          "name": "serde"
+        },
+        {
+          "crate": 95,
           "name": "serde_json"
         },
         {
-          "crate": 100,
+          "crate": 97,
           "name": "sha2"
         },
         {
-          "crate": 112,
+          "crate": 108,
           "name": "tracing"
         }
       ],
@@ -330,7 +338,7 @@
           "name": "rue_span"
         },
         {
-          "crate": 106,
+          "crate": 102,
           "name": "thiserror"
         }
       ],
@@ -374,11 +382,11 @@
           "name": "anyhow"
         },
         {
-          "crate": 65,
+          "crate": 62,
           "name": "libc"
         },
         {
-          "crate": 83,
+          "crate": 80,
           "name": "proptest"
         }
       ],
@@ -410,11 +418,11 @@
           "name": "rue_span"
         },
         {
-          "crate": 60,
+          "crate": 57,
           "name": "lasso"
         },
         {
-          "crate": 72,
+          "crate": 69,
           "name": "logos"
         }
       ],
@@ -442,7 +450,7 @@
           "name": "rue_target"
         },
         {
-          "crate": 112,
+          "crate": 108,
           "name": "tracing"
         }
       ],
@@ -466,6 +474,10 @@
       "edition": "2024",
       "deps": [
         {
+          "crate": 6,
+          "name": "rue_compiler"
+        },
+        {
           "crate": 7,
           "name": "rue_error"
         },
@@ -478,15 +490,15 @@
           "name": "rue_test_runner"
         },
         {
-          "crate": 96,
+          "crate": 93,
           "name": "serde"
         },
         {
-          "crate": 105,
+          "crate": 101,
           "name": "tempfile"
         },
         {
-          "crate": 108,
+          "crate": 104,
           "name": "toml"
         }
       ],
@@ -522,7 +534,7 @@
           "name": "rue_compiler"
         },
         {
-          "crate": 60,
+          "crate": 57,
           "name": "lasso"
         }
       ],
@@ -558,16 +570,16 @@
           "name": "rue_span"
         },
         {
-          "crate": 39,
-          "name": "chumsky"
-        },
-        {
-          "crate": 60,
+          "crate": 57,
           "name": "lasso"
         },
         {
-          "crate": 102,
+          "crate": 99,
           "name": "smallvec"
+        },
+        {
+          "crate": 108,
+          "name": "tracing"
         }
       ],
       "is_workspace_member": true,
@@ -602,7 +614,7 @@
           "name": "rue_span"
         },
         {
-          "crate": 60,
+          "crate": 57,
           "name": "lasso"
         }
       ],
@@ -668,15 +680,15 @@
           "name": "rue_test_runner"
         },
         {
-          "crate": 69,
+          "crate": 66,
           "name": "libtest2_mimic"
         },
         {
-          "crate": 105,
+          "crate": 101,
           "name": "tempfile"
         },
         {
-          "crate": 108,
+          "crate": 104,
           "name": "toml"
         }
       ],
@@ -727,19 +739,19 @@
           "name": "rue_target"
         },
         {
-          "crate": 65,
+          "crate": 62,
           "name": "libc"
         },
         {
-          "crate": 96,
+          "crate": 93,
           "name": "serde"
         },
         {
-          "crate": 105,
+          "crate": 101,
           "name": "tempfile"
         },
         {
-          "crate": 108,
+          "crate": 104,
           "name": "toml"
         }
       ],
@@ -767,7 +779,7 @@
           "name": "rue_test_runner"
         },
         {
-          "crate": 69,
+          "crate": 66,
           "name": "libtest2_mimic"
         }
       ],
@@ -803,23 +815,23 @@
           "name": "rue_target"
         },
         {
-          "crate": 65,
+          "crate": 62,
           "name": "libc"
         },
         {
-          "crate": 96,
+          "crate": 93,
           "name": "serde"
         },
         {
-          "crate": 98,
+          "crate": 95,
           "name": "serde_json"
         },
         {
-          "crate": 112,
+          "crate": 108,
           "name": "tracing"
         },
         {
-          "crate": 116,
+          "crate": 112,
           "name": "tracing_subscriber"
         }
       ],
@@ -843,7 +855,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 73,
+          "crate": 70,
           "name": "logos_codegen"
         }
       ],
@@ -867,15 +879,15 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 82,
+          "crate": 79,
           "name": "proc_macro2"
         },
         {
-          "crate": 85,
+          "crate": 82,
           "name": "quote"
         },
         {
-          "crate": 104,
+          "crate": 100,
           "name": "syn"
         }
       ],
@@ -900,15 +912,15 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 82,
+          "crate": 79,
           "name": "proc_macro2"
         },
         {
-          "crate": 85,
+          "crate": 82,
           "name": "quote"
         },
         {
-          "crate": 104,
+          "crate": 100,
           "name": "syn"
         }
       ],
@@ -932,15 +944,15 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 82,
+          "crate": 79,
           "name": "proc_macro2"
         },
         {
-          "crate": 85,
+          "crate": 82,
           "name": "quote"
         },
         {
-          "crate": 104,
+          "crate": 100,
           "name": "syn"
         }
       ],
@@ -968,11 +980,11 @@
           "name": "cfg_if"
         },
         {
-          "crate": 78,
+          "crate": 75,
           "name": "once_cell"
         },
         {
-          "crate": 124,
+          "crate": 119,
           "name": "zerocopy"
         }
       ],
@@ -996,7 +1008,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 75,
+          "crate": 72,
           "name": "memchr"
         }
       ],
@@ -1046,7 +1058,7 @@
           "name": "anstyle"
         },
         {
-          "crate": 121,
+          "crate": 116,
           "name": "unicode_width"
         }
       ],
@@ -1223,7 +1235,7 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 52,
+          "crate": 50,
           "name": "generic_array"
         }
       ],
@@ -1261,47 +1273,6 @@
       "is_proc_macro": false
     },
     {
-      "display_name": "chumsky-1.0.0-alpha.8",
-      "root_module": "third-party/vendor/chumsky-1.0.0-alpha.8/src/lib.rs",
-      "edition": "2021",
-      "deps": [
-        {
-          "crate": 55,
-          "name": "hashbrown"
-        },
-        {
-          "crate": 103,
-          "name": "stacker"
-        },
-        {
-          "crate": 119,
-          "name": "unicode_ident"
-        },
-        {
-          "crate": 120,
-          "name": "unicode_segmentation"
-        }
-      ],
-      "is_workspace_member": false,
-      "source": {
-        "include_dirs": [
-          "third-party/vendor/chumsky-1.0.0-alpha.8/src"
-        ],
-        "exclude_dirs": []
-      },
-      "cfg": [
-        "test",
-        "debug_assertions",
-        "feature=\"default\"",
-        "feature=\"pratt\"",
-        "feature=\"stacker\"",
-        "feature=\"std\"",
-        "feature=\"unstable\""
-      ],
-      "env": {},
-      "is_proc_macro": false
-    },
-    {
       "display_name": "cpufeatures-0.2.17",
       "root_module": "third-party/vendor/cpufeatures-0.2.17/src/lib.rs",
       "edition": "2018",
@@ -1326,11 +1297,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 42,
+          "crate": 41,
           "name": "crossbeam_epoch"
         },
         {
-          "crate": 43,
+          "crate": 42,
           "name": "crossbeam_utils"
         }
       ],
@@ -1356,7 +1327,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 43,
+          "crate": 42,
           "name": "crossbeam_utils"
         }
       ],
@@ -1403,11 +1374,11 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 52,
+          "crate": 50,
           "name": "generic_array"
         },
         {
-          "crate": 117,
+          "crate": 113,
           "name": "typenum"
         }
       ],
@@ -1435,23 +1406,23 @@
           "name": "cfg_if"
         },
         {
-          "crate": 43,
+          "crate": 42,
           "name": "crossbeam_utils"
         },
         {
-          "crate": 54,
+          "crate": 52,
           "name": "hashbrown"
         },
         {
-          "crate": 70,
+          "crate": 67,
           "name": "lock_api"
         },
         {
-          "crate": 78,
+          "crate": 75,
           "name": "once_cell"
         },
         {
-          "crate": 79,
+          "crate": 76,
           "name": "parking_lot_core"
         }
       ],
@@ -1480,7 +1451,7 @@
           "name": "block_buffer"
         },
         {
-          "crate": 44,
+          "crate": 43,
           "name": "crypto_common"
         }
       ],
@@ -1582,31 +1553,12 @@
       "is_proc_macro": false
     },
     {
-      "display_name": "foldhash-0.1.5",
-      "root_module": "third-party/vendor/foldhash-0.1.5/src/lib.rs",
-      "edition": "2021",
-      "deps": [],
-      "is_workspace_member": false,
-      "source": {
-        "include_dirs": [
-          "third-party/vendor/foldhash-0.1.5/src"
-        ],
-        "exclude_dirs": []
-      },
-      "cfg": [
-        "test",
-        "debug_assertions"
-      ],
-      "env": {},
-      "is_proc_macro": false
-    },
-    {
       "display_name": "generic-array-0.14.7",
       "root_module": "third-party/vendor/generic-array-0.14.7/src/lib.rs",
       "edition": "2015",
       "deps": [
         {
-          "crate": 117,
+          "crate": 113,
           "name": "typenum"
         }
       ],
@@ -1679,44 +1631,6 @@
       "is_proc_macro": false
     },
     {
-      "display_name": "hashbrown-0.15.5",
-      "root_module": "third-party/vendor/hashbrown-0.15.5/src/lib.rs",
-      "edition": "2021",
-      "deps": [
-        {
-          "crate": 28,
-          "name": "allocator_api2"
-        },
-        {
-          "crate": 48,
-          "name": "equivalent"
-        },
-        {
-          "crate": 51,
-          "name": "foldhash"
-        }
-      ],
-      "is_workspace_member": false,
-      "source": {
-        "include_dirs": [
-          "third-party/vendor/hashbrown-0.15.5/src"
-        ],
-        "exclude_dirs": []
-      },
-      "cfg": [
-        "test",
-        "debug_assertions",
-        "feature=\"allocator-api2\"",
-        "feature=\"default\"",
-        "feature=\"default-hasher\"",
-        "feature=\"equivalent\"",
-        "feature=\"inline-more\"",
-        "feature=\"raw-entry\""
-      ],
-      "env": {},
-      "is_proc_macro": false
-    },
-    {
       "display_name": "hashbrown-0.16.1",
       "root_module": "third-party/vendor/hashbrown-0.16.1/src/lib.rs",
       "edition": "2021",
@@ -1741,11 +1655,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 48,
+          "crate": 47,
           "name": "equivalent"
         },
         {
-          "crate": 56,
+          "crate": 53,
           "name": "hashbrown"
         }
       ],
@@ -1812,11 +1726,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 45,
+          "crate": 44,
           "name": "dashmap"
         },
         {
-          "crate": 54,
+          "crate": 52,
           "name": "hashbrown"
         }
       ],
@@ -1862,11 +1776,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 63,
+          "crate": 60,
           "name": "lexarg_error"
         },
         {
-          "crate": 64,
+          "crate": 61,
           "name": "lexarg_parser"
         }
       ],
@@ -1891,7 +1805,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 64,
+          "crate": 61,
           "name": "lexarg_parser"
         }
       ],
@@ -1957,7 +1871,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 59,
+          "crate": 56,
           "name": "json_write"
         }
       ],
@@ -1983,11 +1897,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 62,
+          "crate": 59,
           "name": "lexarg"
         },
         {
-          "crate": 63,
+          "crate": 60,
           "name": "lexarg_error"
         }
       ],
@@ -2020,19 +1934,19 @@
           "name": "anstyle"
         },
         {
-          "crate": 63,
+          "crate": 60,
           "name": "lexarg_error"
         },
         {
-          "crate": 64,
+          "crate": 61,
           "name": "lexarg_parser"
         },
         {
-          "crate": 66,
+          "crate": 63,
           "name": "libtest_json"
         },
         {
-          "crate": 67,
+          "crate": 64,
           "name": "libtest_lexarg"
         }
       ],
@@ -2059,11 +1973,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 66,
+          "crate": 63,
           "name": "libtest_json"
         },
         {
-          "crate": 68,
+          "crate": 65,
           "name": "libtest2_harness"
         }
       ],
@@ -2090,7 +2004,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 95,
+          "crate": 92,
           "name": "scopeguard"
         }
       ],
@@ -2168,27 +2082,27 @@
           "name": "beef"
         },
         {
-          "crate": 50,
+          "crate": 49,
           "name": "fnv"
         },
         {
-          "crate": 61,
+          "crate": 58,
           "name": "lazy_static"
         },
         {
-          "crate": 82,
+          "crate": 79,
           "name": "proc_macro2"
         },
         {
-          "crate": 85,
+          "crate": 82,
           "name": "quote"
         },
         {
-          "crate": 93,
+          "crate": 90,
           "name": "regex_syntax"
         },
         {
-          "crate": 104,
+          "crate": 100,
           "name": "syn"
         }
       ],
@@ -2212,7 +2126,7 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 92,
+          "crate": 89,
           "name": "regex_automata"
         }
       ],
@@ -2359,7 +2273,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 124,
+          "crate": 119,
           "name": "zerocopy"
         }
       ],
@@ -2385,7 +2299,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 119,
+          "crate": 115,
           "name": "unicode_ident"
         }
       ],
@@ -2423,35 +2337,35 @@
           "name": "bitflags"
         },
         {
-          "crate": 77,
+          "crate": 74,
           "name": "num_traits"
         },
         {
-          "crate": 86,
+          "crate": 83,
           "name": "rand"
         },
         {
-          "crate": 87,
+          "crate": 84,
           "name": "rand_chacha"
         },
         {
-          "crate": 89,
+          "crate": 86,
           "name": "rand_xorshift"
         },
         {
-          "crate": 93,
+          "crate": 90,
           "name": "regex_syntax"
         },
         {
-          "crate": 94,
+          "crate": 91,
           "name": "rusty_fork"
         },
         {
-          "crate": 105,
+          "crate": 101,
           "name": "tempfile"
         },
         {
-          "crate": 118,
+          "crate": 114,
           "name": "unarray"
         }
       ],
@@ -2502,7 +2416,7 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 82,
+          "crate": 79,
           "name": "proc_macro2"
         }
       ],
@@ -2528,7 +2442,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 88,
+          "crate": 85,
           "name": "rand_core"
         }
       ],
@@ -2555,11 +2469,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 81,
+          "crate": 78,
           "name": "ppv_lite86"
         },
         {
-          "crate": 88,
+          "crate": 85,
           "name": "rand_core"
         }
       ],
@@ -2584,7 +2498,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 53,
+          "crate": 51,
           "name": "getrandom"
         }
       ],
@@ -2610,7 +2524,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 88,
+          "crate": 85,
           "name": "rand_core"
         }
       ],
@@ -2634,11 +2548,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 47,
+          "crate": 46,
           "name": "either"
         },
         {
-          "crate": 91,
+          "crate": 88,
           "name": "rayon_core"
         }
       ],
@@ -2662,11 +2576,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 41,
+          "crate": 40,
           "name": "crossbeam_deque"
         },
         {
-          "crate": 43,
+          "crate": 42,
           "name": "crossbeam_utils"
         }
       ],
@@ -2694,11 +2608,11 @@
           "name": "aho_corasick"
         },
         {
-          "crate": 75,
+          "crate": 72,
           "name": "memchr"
         },
         {
-          "crate": 93,
+          "crate": 90,
           "name": "regex_syntax"
         }
       ],
@@ -2775,19 +2689,19 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 50,
+          "crate": 49,
           "name": "fnv"
         },
         {
-          "crate": 84,
+          "crate": 81,
           "name": "quick_error"
         },
         {
-          "crate": 105,
+          "crate": 101,
           "name": "tempfile"
         },
         {
-          "crate": 122,
+          "crate": 117,
           "name": "wait_timeout"
         }
       ],
@@ -2836,7 +2750,7 @@
           "name": "serde_derive"
         },
         {
-          "crate": 97,
+          "crate": 94,
           "name": "serde_core"
         }
       ],
@@ -2885,19 +2799,19 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 58,
+          "crate": 55,
           "name": "itoa"
         },
         {
-          "crate": 75,
+          "crate": 72,
           "name": "memchr"
         },
         {
-          "crate": 97,
+          "crate": 94,
           "name": "serde_core"
         },
         {
-          "crate": 125,
+          "crate": 120,
           "name": "zmij"
         }
       ],
@@ -2923,7 +2837,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 96,
+          "crate": 93,
           "name": "serde"
         }
       ],
@@ -2952,11 +2866,11 @@
           "name": "cfg_if"
         },
         {
-          "crate": 40,
+          "crate": 39,
           "name": "cpufeatures"
         },
         {
-          "crate": 46,
+          "crate": 45,
           "name": "digest"
         }
       ],
@@ -2980,7 +2894,7 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 61,
+          "crate": 58,
           "name": "lazy_static"
         }
       ],
@@ -3018,39 +2932,20 @@
       "is_proc_macro": false
     },
     {
-      "display_name": "stacker-0.1.22",
-      "root_module": "third-party/vendor/stacker-0.1.22/src/lib.rs",
-      "edition": "2021",
-      "deps": [],
-      "is_workspace_member": false,
-      "source": {
-        "include_dirs": [
-          "third-party/vendor/stacker-0.1.22/src"
-        ],
-        "exclude_dirs": []
-      },
-      "cfg": [
-        "test",
-        "debug_assertions"
-      ],
-      "env": {},
-      "is_proc_macro": false
-    },
-    {
       "display_name": "syn-2.0.111",
       "root_module": "third-party/vendor/syn-2.0.111/src/lib.rs",
       "edition": "2021",
       "deps": [
         {
-          "crate": 82,
+          "crate": 79,
           "name": "proc_macro2"
         },
         {
-          "crate": 85,
+          "crate": 82,
           "name": "quote"
         },
         {
-          "crate": 119,
+          "crate": 115,
           "name": "unicode_ident"
         }
       ],
@@ -3154,19 +3049,19 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 96,
+          "crate": 93,
           "name": "serde"
         },
         {
-          "crate": 99,
+          "crate": 96,
           "name": "serde_spanned"
         },
         {
-          "crate": 109,
+          "crate": 105,
           "name": "toml_datetime"
         },
         {
-          "crate": 110,
+          "crate": 106,
           "name": "toml_edit"
         }
       ],
@@ -3193,7 +3088,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 96,
+          "crate": 93,
           "name": "serde"
         }
       ],
@@ -3218,27 +3113,27 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 57,
+          "crate": 54,
           "name": "indexmap"
         },
         {
-          "crate": 96,
+          "crate": 93,
           "name": "serde"
         },
         {
-          "crate": 99,
+          "crate": 96,
           "name": "serde_spanned"
         },
         {
-          "crate": 109,
+          "crate": 105,
           "name": "toml_datetime"
         },
         {
-          "crate": 111,
+          "crate": 107,
           "name": "toml_write"
         },
         {
-          "crate": 123,
+          "crate": 118,
           "name": "winnow"
         }
       ],
@@ -3291,11 +3186,11 @@
           "name": "tracing_attributes"
         },
         {
-          "crate": 80,
+          "crate": 77,
           "name": "pin_project_lite"
         },
         {
-          "crate": 113,
+          "crate": 109,
           "name": "tracing_core"
         }
       ],
@@ -3323,7 +3218,7 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 78,
+          "crate": 75,
           "name": "once_cell"
         }
       ],
@@ -3350,15 +3245,15 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 71,
+          "crate": 68,
           "name": "log"
         },
         {
-          "crate": 78,
+          "crate": 75,
           "name": "once_cell"
         },
         {
-          "crate": 113,
+          "crate": 109,
           "name": "tracing_core"
         }
       ],
@@ -3384,11 +3279,11 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 96,
+          "crate": 93,
           "name": "serde"
         },
         {
-          "crate": 113,
+          "crate": 109,
           "name": "tracing_core"
         }
       ],
@@ -3412,55 +3307,55 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 74,
+          "crate": 71,
           "name": "matchers"
         },
         {
-          "crate": 76,
+          "crate": 73,
           "name": "nu_ansi_term"
         },
         {
-          "crate": 78,
+          "crate": 75,
           "name": "once_cell"
         },
         {
-          "crate": 92,
+          "crate": 89,
           "name": "regex_automata"
         },
         {
-          "crate": 96,
+          "crate": 93,
           "name": "serde"
         },
         {
-          "crate": 98,
+          "crate": 95,
           "name": "serde_json"
         },
         {
-          "crate": 101,
+          "crate": 98,
           "name": "sharded_slab"
         },
         {
-          "crate": 102,
+          "crate": 99,
           "name": "smallvec"
         },
         {
-          "crate": 107,
+          "crate": 103,
           "name": "thread_local"
         },
         {
-          "crate": 112,
+          "crate": 108,
           "name": "tracing"
         },
         {
-          "crate": 113,
+          "crate": 109,
           "name": "tracing_core"
         },
         {
-          "crate": 114,
+          "crate": 110,
           "name": "tracing_log"
         },
         {
-          "crate": 115,
+          "crate": 111,
           "name": "tracing_serde"
         }
       ],
@@ -3544,25 +3439,6 @@
       "source": {
         "include_dirs": [
           "third-party/vendor/unicode-ident-1.0.22/src"
-        ],
-        "exclude_dirs": []
-      },
-      "cfg": [
-        "test",
-        "debug_assertions"
-      ],
-      "env": {},
-      "is_proc_macro": false
-    },
-    {
-      "display_name": "unicode-segmentation-1.12.0",
-      "root_module": "third-party/vendor/unicode-segmentation-1.12.0/src/lib.rs",
-      "edition": "2018",
-      "deps": [],
-      "is_workspace_member": false,
-      "source": {
-        "include_dirs": [
-          "third-party/vendor/unicode-segmentation-1.12.0/src"
         ],
         "exclude_dirs": []
       },

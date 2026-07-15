@@ -22,10 +22,8 @@ the raw JSON contains both leaf passes and their aggregate parents:
     |- parse_file                   <- aggregate, repeated for every file
     |  |- lexer                     <- leaf
     |  `- parser                    <- aggregate
-    |     |- parser setup leaves
-    |     |- parser_worker          <- aggregate
-    |     |  |- graph construction  <- leaf
-    |     |  `- grammar execution   <- leaf
+    |     |- nesting/state setup    <- leaves
+    |     |- grammar execution      <- leaf
     |     `- directive validation   <- leaf
     `- compile_pipeline             <- post-discovery aggregate
        `- semantic/codegen leaves
@@ -83,12 +81,9 @@ CANONICAL_LEAF_ORDER = [
     "parse_file",  # schema-v1 combined lexer/parser leaf
     "lexer",
     "parser",  # pre-RUE-892 parser leaf
-    "parser_token_adaptation",
     "parser_nesting_scan",
     "parser_state_setup",
-    "parser_graph_construction",
     "parser_grammar_execution",
-    "parser_error_conversion",
     "parser_directive_validation",
     "definition_snapshot",
     "merge_" + "symbols",  # historical schema-v1 name
@@ -125,11 +120,7 @@ def default_corpus(root: Path):
         ("arithmetic_heavy", "large", [st / "arithmetic_heavy.rue"]),
         ("control_flow", "large", [st / "control_flow.rue"]),
         ("register_pressure", "large", [st / "register_pressure.rue"]),
-        # NOTE: benchmarks/stress/deep_nesting.rue is deliberately NOT in the
-        # default corpus. Its parser stage is superlinear in block-nesting
-        # depth (lexing ~20ms, but `--emit ast` exceeds a minute), so it hangs
-        # the harness. See docs/process/perf-baseline.md ("Known pathology").
-        # Add it back once that is fixed, or run it directly with --timeout.
+        ("deep_nesting", "large", [st / "deep_nesting.rue"]),
     ]
 
 

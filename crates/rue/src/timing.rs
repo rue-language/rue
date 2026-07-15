@@ -747,12 +747,9 @@ mod tests {
             "direct parse edges: {direct_edges:?}"
         );
         for expected in [
-            ("parser", "parser_token_adaptation"),
             ("parser", "parser_nesting_scan"),
             ("parser", "parser_state_setup"),
-            ("parser", "parser_worker"),
-            ("parser_worker", "parser_graph_construction"),
-            ("parser_worker", "parser_grammar_execution"),
+            ("parser", "parser_grammar_execution"),
             ("parser", "parser_directive_validation"),
         ] {
             assert!(
@@ -867,11 +864,8 @@ mod tests {
         assert_eq!(parser.root_invocations, 0);
         assert_eq!(parser.leaf_invocations, 0);
         for phase in [
-            "parser_token_adaptation",
             "parser_nesting_scan",
             "parser_state_setup",
-            "parser_worker",
-            "parser_graph_construction",
             "parser_grammar_execution",
             "parser_directive_validation",
         ] {
@@ -908,10 +902,8 @@ mod tests {
 
         let parse_error_edges = capture("fn main( {");
         assert!(
-            parse_error_edges.contains(&(
-                "parser_worker".to_owned(),
-                "parser_error_conversion".to_owned()
-            )),
+            parse_error_edges
+                .contains(&("parser".to_owned(), "parser_grammar_execution".to_owned())),
             "parse-error edges: {parse_error_edges:?}"
         );
         assert!(
@@ -930,10 +922,8 @@ mod tests {
             "validation-error edges: {validation_edges:?}"
         );
         assert!(
-            !validation_edges
-                .iter()
-                .any(|(_, child)| child == "parser_error_conversion"),
-            "parse-error conversion must not run after grammar success: {validation_edges:?}"
+            validation_edges
+                .contains(&("parser".to_owned(), "parser_grammar_execution".to_owned()))
         );
     }
 

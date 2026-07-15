@@ -1,6 +1,6 @@
 # Multi-file error attribution (RUE-115, RUE-175).
 #
-# Parse errors produced by the chumsky error-conversion path used to drop the
+# Parse errors produced by the parser used to drop the
 # FileId (defaulting to FileId::DEFAULT), so in a multi-file compile the
 # diagnostic renderer fell back to an ARBITRARY source file: the error could be
 # rendered with a caret on perfectly valid code in the wrong file. These cases
