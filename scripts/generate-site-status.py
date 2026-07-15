@@ -29,6 +29,12 @@ import sys
 from pathlib import Path
 
 from benchmark_history import latest_comparable_segment, load_history
+from benchmark_annotations import (
+    DEFAULT_ANNOTATIONS,
+    GitCommitResolver,
+    load_annotations,
+    normalized_annotations,
+)
 from benchmark_metrics import derive_history_metrics
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -87,7 +93,7 @@ def spec_case_count() -> int:
     )
 
 
-def sparkline_data(runs: list[dict]) -> dict | None:
+def sparkline_data(runs: list[dict], annotations: list[dict] | None = None) -> dict | None:
     comparable_segment = latest_comparable_segment(runs)
     runs = comparable_segment[-SPARKLINE_RUNS:]
     totals = []
@@ -124,6 +130,7 @@ def sparkline_data(runs: list[dict]) -> dict | None:
         result["performance_index"] = latest["performance_index"]
         result["previous_comparison"] = latest["previous"]
         result["baseline_comparison"] = latest["rolling_baseline"]
+    result["annotations"] = annotations or []
     return result
 
 
@@ -138,7 +145,13 @@ def bench_sparkline() -> dict | None:
     except (OSError, json.JSONDecodeError, ValueError):
         return None
 
-    return sparkline_data(history.get("runs", []))
+    runs = history.get("runs", [])
+    annotations = normalized_annotations(
+        runs,
+        load_annotations(DEFAULT_ANNOTATIONS),
+        GitCommitResolver(REPO_ROOT),
+    )
+    return sparkline_data(runs, annotations)
 
 
 def main() -> int:
