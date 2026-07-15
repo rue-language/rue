@@ -292,6 +292,17 @@ pub struct CfgConstructionWork {
     pub optimized_level_attempts: usize,
     pub cfg_warnings_emitted: usize,
     pub implicit_destructor_targets_emitted: usize,
+    pub cfg_reuse_candidates: usize,
+    pub cfg_import_attempts: usize,
+    pub cfg_import_successes: usize,
+    pub cfg_import_failures: usize,
+    pub cfg_reuses: usize,
+    pub cfg_fallbacks: usize,
+    pub cfg_warnings_reused: usize,
+    pub implicit_destructor_targets_reused: usize,
+    pub cfg_export_attempts: usize,
+    pub cfg_export_successes: usize,
+    pub cfg_export_rejections: usize,
 }
 
 /// The semantic phase that prevented publication of request artifacts.
@@ -409,6 +420,7 @@ pub struct CanonicalSemanticOutput {
     named_value_const_dependencies_complete: bool,
     implicit_named_destructor_dependencies: Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
     implicit_named_destructor_dependencies_complete: bool,
+    durable_cfgs: Arc<[crate::queries::DurableCfgArtifact]>,
 }
 
 impl CanonicalSemanticOutput {
@@ -517,6 +529,9 @@ impl CanonicalSemanticOutput {
     pub fn implicit_named_destructor_dependencies_complete(&self) -> bool {
         self.implicit_named_destructor_dependencies_complete
     }
+    pub(crate) fn durable_cfgs(&self) -> &Arc<[crate::queries::DurableCfgArtifact]> {
+        &self.durable_cfgs
+    }
     /// Stable definition identities when requested for this run.
     pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
         self.bound_definitions.as_ref()
@@ -576,6 +591,7 @@ pub(crate) fn analyze_canonical_program(
         CanonicalDeclarationReuseWork::default(),
         Vec::new(),
         Vec::new(),
+        Arc::from([]),
         crate::DurableBodyWork::default(),
         info_span!("sema").entered(),
     )
@@ -594,6 +610,7 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
     reuse_plan: CanonicalDeclarationReuseWork,
     body_candidates: Vec<PreparedDurableBodyCandidate>,
     specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
+    durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
     body_work: crate::DurableBodyWork,
 ) -> Result<CanonicalOrdinaryAnalysis, CanonicalSemanticFailure> {
     let input = CodegenInputDescriptor {
@@ -643,6 +660,7 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
         },
         body_candidates,
         specialized_body_candidates,
+        durable_cfg_candidates,
         body_work,
         sema_span,
     )?;
@@ -667,6 +685,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     durable: &[DurableDeclarationSemantic],
     body_candidates: Vec<PreparedDurableBodyCandidate>,
     specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
+    durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
     body_work: crate::DurableBodyWork,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
     let input = CodegenInputDescriptor {
@@ -796,6 +815,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         reuse,
         body_candidates,
         specialized_body_candidates,
+        durable_cfg_candidates,
         body_work,
         sema_span,
     )
@@ -834,6 +854,7 @@ fn finish_canonical_analysis(
     declaration_reuse: CanonicalDeclarationReuseWork,
     durable_body_candidates: Vec<PreparedDurableBodyCandidate>,
     durable_specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
+    durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
     mut durable_body_reuse_work: crate::DurableBodyWork,
     sema_span: tracing::span::EnteredSpan,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
@@ -1154,11 +1175,98 @@ fn finish_canonical_analysis(
     let named_const_dependencies = sema_output.named_const_dependencies.clone();
     let named_value_const_dependencies_complete =
         sema_output.named_value_const_dependencies_complete;
+    let mut stable_cfg_inputs = Vec::new();
+    for function in &sema_output.functions {
+        let selected = if let Some(token) = function.ordinary_owner {
+            authoritative_definitions
+                .key_for_body_token(token)
+                .ok()
+                .and_then(|key| {
+                    durable_ordinary_body_payloads
+                        .iter()
+                        .find(|payload| &payload.owner == key)
+                        .and_then(|payload| {
+                            authoritative_definitions
+                                .definition_by_key(key)
+                                .and_then(|record| record.body_span())
+                                .map(|span| (span, payload.clone(), None))
+                        })
+                })
+        } else if let Some(rue_air::ImplicitDropDependencySourceEvent::Specialization {
+            identity,
+        }) = &function.implicit_drop_source
+        {
+            crate::durable_body::convert_specialization_identity(
+                identity,
+                merged,
+                &authoritative_definitions,
+                &mut durable_body_work,
+            )
+            .ok()
+            .and_then(|identity| {
+                durable_specialized_body_payloads
+                    .iter()
+                    .find(|payload| payload.identity == identity)
+                    .and_then(|payload| {
+                        authoritative_definitions
+                            .definition_by_key(&identity.base)
+                            .map(|record| {
+                                (
+                                    record.declaration_span(),
+                                    payload.body.clone(),
+                                    Some(identity.clone()),
+                                )
+                            })
+                    })
+            })
+        } else {
+            None
+        };
+        if let Some((body_span, body, specialization)) = selected {
+            let Ok(type_dependencies) = crate::durable_cfg::transitive_body_type_dependencies(
+                &body,
+                &sema_output.type_pool,
+                &authoritative_definitions,
+            ) else {
+                continue;
+            };
+            let type_inputs = type_dependencies
+                .into_iter()
+                .map(|key| {
+                    authoritative_definitions
+                        .definition_by_key(&key)
+                        .ok_or(())
+                        .and_then(|record| {
+                            crate::session::stable_definition_input_fingerprint(
+                                merged.definitions().source_snapshot(),
+                                record,
+                            )
+                            .map_err(|_| ())
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .ok();
+            let Some(type_inputs) = type_inputs else {
+                continue;
+            };
+            stable_cfg_inputs.push(crate::durable_cfg::StableCfgInput {
+                identity: Arc::from(function.name.as_str()),
+                body_span,
+                body,
+                specialization,
+                type_inputs: type_inputs.into(),
+            });
+        }
+    }
+    stable_cfg_inputs.sort_by(|left, right| left.identity.cmp(&right.identity));
     drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
         options.opt_level,
+        options.target,
         rir.semantic_symbols().interner(),
+        &durable_cfg_candidates,
+        &stable_cfg_inputs,
     )
     .map_err(|failure| {
         let work = CanonicalSemanticWork {
@@ -1258,6 +1366,7 @@ fn finish_canonical_analysis(
         implicit_named_destructor_dependencies: cfg.implicit_named_destructor_dependencies,
         implicit_named_destructor_dependencies_complete: cfg
             .implicit_named_destructor_dependencies_complete,
+        durable_cfgs: cfg.durable_cfgs,
     })
 }
 

@@ -1150,6 +1150,7 @@ pub struct CompilerSession {
     invalidation_plan_cache: VecDeque<InvalidationPlanCacheEntry>,
     durable_declaration_cache: Option<DurableDeclarationCache>,
     last_successful_body_cache: Option<DurableOrdinaryBodyCache>,
+    last_successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
 }
 
 #[derive(Debug)]
@@ -2197,6 +2198,8 @@ impl CompilerSession {
             self.work.semantic.reuses += 1;
             if entry.result.is_ok() {
                 self.last_successful_body_cache = entry.successful_body_cache.clone();
+                self.last_successful_cfg_cache =
+                    Some(entry.result.as_ref().unwrap().durable_cfgs().clone());
             }
             let result = entry.result.clone();
             let source = self
@@ -2370,6 +2373,9 @@ impl CompilerSession {
                     &durable,
                     durable_body_candidates,
                     durable_specialized_body_candidates,
+                    self.last_successful_cfg_cache
+                        .clone()
+                        .unwrap_or_else(|| Arc::from([])),
                     durable_body_work,
                 )
             } else {
@@ -2381,6 +2387,9 @@ impl CompilerSession {
                     reuse_plan,
                     durable_body_candidates,
                     durable_specialized_body_candidates,
+                    self.last_successful_cfg_cache
+                        .clone()
+                        .unwrap_or_else(|| Arc::from([])),
                     durable_body_work,
                 )
                 .map(|analysis| {
@@ -2398,6 +2407,7 @@ impl CompilerSession {
             .unwrap_or_else(|failure| failure.failure.work);
         let result = analysis.map(Arc::new).map_err(|failure| failure.errors);
         if let Ok(output) = &result {
+            self.last_successful_cfg_cache = Some(output.durable_cfgs().clone());
             debug_assert_eq!(output.input(), &input);
             debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
             debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
@@ -4904,6 +4914,276 @@ mod tests {
         assert_eq!(
             format!("{:?}", reused.warnings()),
             format!("{:?}", ordinary.warnings())
+        );
+    }
+
+    #[test]
+    fn cfg_reuse_is_per_function_and_preserves_exact_build_work() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn a() -> i32 { 1 }\nfn b() -> i32 { 2 }\nfn main() -> i32 { a() + b() }",
+            )],
+            1,
+        );
+        let second = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn a() -> i32 { 1 }\nfn b() -> i32 { 3 }\nfn main() -> i32 { a() + b() }",
+            )],
+            1,
+        );
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        let cold = session.semantic(&options).unwrap();
+        assert_eq!(cold.work().cfg.cfg_builds_attempted, 3);
+        assert_eq!(cold.work().cfg.optimization_attempts, 3);
+        session.update(&second).into_result().unwrap();
+        let warm = session.semantic(&options).unwrap();
+        assert_eq!(warm.work().cfg.cfg_reuses, 2);
+        assert_eq!(warm.work().cfg.cfg_import_successes, 2);
+        assert_eq!(warm.work().cfg.cfg_builds_attempted, 1);
+        assert_eq!(warm.work().cfg.optimization_attempts, 1);
+        assert_eq!(warm.work().cfg.optimized_level_attempts, 1);
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let fresh = fresh.semantic(&options).unwrap();
+        assert_eq!(
+            format!("{:?}", warm.functions()),
+            format!("{:?}", fresh.functions())
+        );
+        assert_eq!(
+            format!("{:?}", warm.warnings()),
+            format!("{:?}", fresh.warnings())
+        );
+    }
+
+    #[test]
+    fn specialized_cfg_reuse_is_stable_and_malformed_import_falls_back_atomically() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn choose(comptime n: i32) -> i32 { n }\nfn b() -> i32 { 2 }\nfn main() -> i32 { choose(40) + b() }",
+            )],
+            1,
+        );
+        let second = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn choose(comptime n: i32) -> i32 { n }\nfn b() -> i32 { 3 }\nfn main() -> i32 { choose(40) + b() }",
+            )],
+            1,
+        );
+        let third = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn choose(comptime n: i32) -> i32 { n }\nfn b() -> i32 { 4 }\nfn main() -> i32 { choose(40) + b() }",
+            )],
+            1,
+        );
+        let options = CompileOptions {
+            opt_level: OptLevel::O0,
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.semantic(&options).unwrap();
+        let cache = Arc::make_mut(session.last_successful_cfg_cache.as_mut().unwrap());
+        let specialization = cache
+            .iter_mut()
+            .find(|candidate| candidate.input.specialization.is_some())
+            .unwrap();
+        specialization.schema_version = u32::MAX;
+        session.update(&second).into_result().unwrap();
+        let warm = session.semantic(&options).unwrap();
+        assert_eq!(warm.work().cfg.cfg_import_failures, 2);
+        assert_eq!(warm.work().cfg.cfg_fallbacks, 2);
+        assert_eq!(warm.work().cfg.cfg_reuses, 0);
+        assert_eq!(warm.work().cfg.cfg_builds_attempted, 3);
+        assert_eq!(warm.work().cfg.optimization_attempts, 3);
+        assert_eq!(warm.work().cfg.optimized_level_attempts, 0);
+        session.update(&third).into_result().unwrap();
+        let repaired = session.semantic(&options).unwrap();
+        assert_eq!(repaired.work().cfg.cfg_reuses, 1);
+        assert_eq!(repaired.work().cfg.cfg_builds_attempted, 2);
+    }
+
+    #[test]
+    fn cfg_reuse_rejects_target_and_callable_identity_changes() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn old() -> i32 { 1 }\nfn stable() -> i32 { 2 }\nfn main() -> i32 { old() + stable() }",
+            )],
+            1,
+        );
+        let renamed = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn new() -> i32 { 1 }\nfn stable() -> i32 { 2 }\nfn main() -> i32 { new() + stable() }",
+            )],
+            1,
+        );
+        let host = Target::host().unwrap();
+        let other = if host == Target::Aarch64Linux {
+            Target::X86_64Linux
+        } else {
+            Target::Aarch64Linux
+        };
+        let first_options = CompileOptions {
+            target: host,
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let other_options = CompileOptions {
+            target: other,
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.semantic(&first_options).unwrap();
+        let cross_target = session.semantic(&other_options).unwrap();
+        assert_eq!(cross_target.work().cfg.cfg_reuses, 0);
+        assert_eq!(cross_target.work().cfg.cfg_builds_attempted, 3);
+        assert!(cross_target.work().cfg.cfg_import_failures >= 2);
+        session.update(&renamed).into_result().unwrap();
+        let changed = session.semantic(&other_options).unwrap();
+        assert_eq!(changed.work().cfg.cfg_reuses, 1);
+        assert_eq!(changed.work().cfg.cfg_builds_attempted, 2);
+        assert_eq!(changed.work().cfg.cfg_import_failures, 1);
+        let mut fresh = CompilerSession::new();
+        fresh.update(&renamed).into_result().unwrap();
+        let fresh = fresh.semantic(&other_options).unwrap();
+        assert_eq!(
+            format!("{:?}", changed.functions()),
+            format!("{:?}", fresh.functions())
+        );
+    }
+
+    #[test]
+    fn nested_layout_change_invalidates_only_layout_consumers() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Inner { a: i32 }\nstruct Outer { inner: Inner }\nfn consume(value: Outer) -> i32 { value.inner.a }\nfn unaffected() -> i32 { 7 }\nfn main() -> i32 { consume(Outer { inner: Inner { a: 1 } }) + unaffected() }",
+            )],
+            1,
+        );
+        let second = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Inner { a: i32, b: i32 }\nstruct Outer { inner: Inner }\nfn consume(value: Outer) -> i32 { value.inner.a }\nfn unaffected() -> i32 { 7 }\nfn main() -> i32 { consume(Outer { inner: Inner { a: 1, b: 2 } }) + unaffected() }",
+            )],
+            1,
+        );
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.semantic(&options).unwrap();
+        session.update(&second).into_result().unwrap();
+        let warm = session.semantic(&options).unwrap();
+        assert_eq!(warm.work().cfg.cfg_reuses, 1);
+        assert!(warm.work().cfg.cfg_import_failures >= 1);
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let fresh = fresh.semantic(&options).unwrap();
+        assert_eq!(
+            format!("{:?}", warm.functions()),
+            format!("{:?}", fresh.functions())
+        );
+    }
+
+    #[test]
+    fn pointer_only_consumer_ignores_pointee_layout_but_field_consumer_rebuilds() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Foo { a: i32 }\nfn pointer_only(value: ptr const Foo) -> i32 { 7 }\nfn field(value: Foo) -> i32 { value.a }\nfn main() -> i32 { let value = Foo { a: 1 }; checked { pointer_only(@raw(value)) + field(value) } }",
+            )],
+            1,
+        );
+        let second = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Foo { a: i32, b: i32 }\nfn pointer_only(value: ptr const Foo) -> i32 { 7 }\nfn field(value: Foo) -> i32 { value.a }\nfn main() -> i32 { let value = Foo { a: 1, b: 2 }; checked { pointer_only(@raw(value)) + field(value) } }",
+            )],
+            1,
+        );
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.semantic(&options).unwrap();
+        session.update(&second).into_result().unwrap();
+        let warm = session.semantic(&options).unwrap();
+        assert_eq!(warm.work().cfg.cfg_reuses, 1);
+        assert!(warm.work().cfg.cfg_import_failures >= 1);
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let fresh = fresh.semantic(&options).unwrap();
+        assert_eq!(
+            format!("{:?}", warm.functions()),
+            format!("{:?}", fresh.functions())
+        );
+    }
+
+    #[test]
+    fn incomplete_optimized_cfg_projection_is_rejected_at_export() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn choose(value: bool) -> i32 { if value { 1 } else { 2 } }\nfn main() -> i32 { choose(true) }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let output = session
+            .semantic(&CompileOptions {
+                opt_level: OptLevel::O0,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(output.work().cfg.cfg_export_attempts, 2);
+        assert!(output.work().cfg.cfg_export_rejections >= 1);
+        assert_eq!(
+            output.work().cfg.cfg_export_attempts,
+            output.work().cfg.cfg_export_successes + output.work().cfg.cfg_export_rejections
         );
     }
 

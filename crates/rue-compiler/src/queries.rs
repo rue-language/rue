@@ -126,6 +126,21 @@ pub(crate) struct CfgFrontendOutput {
         Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
     pub(crate) implicit_named_destructor_dependencies_complete: bool,
     pub(crate) work: canonical_semantic::CfgConstructionWork,
+    pub(crate) durable_cfgs: std::sync::Arc<[DurableCfgArtifact]>,
+}
+
+const DURABLE_CFG_SCHEMA_VERSION: u32 = 1;
+
+/// Last-good, fail-closed CFG candidate retained between semantic requests.
+///
+#[derive(Debug, Clone)]
+pub(crate) struct DurableCfgArtifact {
+    pub(crate) schema_version: u32,
+    pub(crate) input: crate::durable_cfg::StableCfgInput,
+    opt_level: OptLevel,
+    target: Target,
+    cfg: Cfg,
+    domains: crate::durable_cfg::CfgDomainProjection,
 }
 
 pub(crate) struct CfgConstructionFailure {
@@ -141,7 +156,10 @@ pub(crate) struct CfgConstructionFailure {
 pub(crate) fn build_functions_and_cfgs(
     sema_output: SemaOutput,
     opt_level: OptLevel,
+    target: Target,
     interner: &ThreadedRodeo,
+    durable_candidates: &[DurableCfgArtifact],
+    stable_inputs: &[crate::durable_cfg::StableCfgInput],
 ) -> Result<CfgFrontendOutput, CfgConstructionFailure> {
     let SemaOutput {
         functions,
@@ -181,11 +199,59 @@ pub(crate) fn build_functions_and_cfgs(
         .into_par_iter()
         .map(|func| {
             let dependency_source = func.implicit_drop_source.clone();
-            let mut function_work = canonical_semantic::CfgConstructionWork {
-                cfg_builds_attempted: 1,
-                air_instructions_consumed: func.air.instructions().len(),
-                ..Default::default()
-            };
+            let stable_input = stable_inputs
+                .binary_search_by(|input| input.identity.as_ref().cmp(&func.name))
+                .ok()
+                .map(|index| &stable_inputs[index]);
+            let projection = stable_input.and_then(|input| {
+                crate::durable_cfg::CfgDomainProjection::from_body(&func, input, &strings).ok()
+            });
+            let candidate = durable_candidates
+                .binary_search_by(|candidate| candidate.input.identity.as_ref().cmp(&func.name))
+                .ok()
+                .map(|index| &durable_candidates[index]);
+            let mut function_work = canonical_semantic::CfgConstructionWork::default();
+            if let Some(candidate) = candidate {
+                function_work.cfg_reuse_candidates = 1;
+                function_work.cfg_import_attempts = 1;
+                if candidate.schema_version == DURABLE_CFG_SCHEMA_VERSION
+                    && candidate.opt_level == opt_level
+                    && candidate.target == target
+                    && stable_input.is_some_and(|input| {
+                        input.body == candidate.input.body
+                            && input.specialization == candidate.input.specialization
+                            && input.type_inputs == candidate.input.type_inputs
+                    })
+                    && let Some(projection) = projection.as_ref()
+                    && let Ok(imported) = crate::durable_cfg::CfgDomainProjection::import_cfg(
+                        &candidate.domains,
+                        projection,
+                        &candidate.cfg,
+                        stable_input.unwrap().body_span,
+                    )
+                {
+                    function_work.cfg_import_successes = 1;
+                    function_work.cfg_reuses = 1;
+                    let artifact = candidate.clone();
+                    return Ok((
+                        (
+                            FunctionWithCfg {
+                                analyzed: func,
+                                cfg: imported,
+                            },
+                            Vec::new(),
+                            Vec::new(),
+                            true,
+                            Some(artifact),
+                        ),
+                        function_work,
+                    ));
+                }
+                function_work.cfg_import_failures = 1;
+                function_work.cfg_fallbacks = 1;
+            }
+            function_work.cfg_builds_attempted = 1;
+            function_work.air_instructions_consumed = func.air.instructions().len();
             let cfg_output = CfgBuilder::build(
                 &func.air,
                 func.num_locals,
@@ -260,6 +326,24 @@ pub(crate) fn build_functions_and_cfgs(
                 }
             }
 
+            function_work.cfg_export_attempts = usize::from(stable_input.is_some());
+            let artifact = stable_input.zip(projection).and_then(|(input, domains)| {
+                (cfg_output.warnings.is_empty()
+                    && implicit_edges.is_empty()
+                    && complete
+                    && domains.validate_cfg(&cfg, input.body_span).is_ok())
+                .then(|| DurableCfgArtifact {
+                    schema_version: DURABLE_CFG_SCHEMA_VERSION,
+                    input: input.clone(),
+                    opt_level,
+                    target,
+                    cfg: cfg.clone(),
+                    domains,
+                })
+            });
+            function_work.cfg_export_successes = usize::from(artifact.is_some());
+            function_work.cfg_export_rejections =
+                function_work.cfg_export_attempts - function_work.cfg_export_successes;
             Ok((
                 (
                     FunctionWithCfg {
@@ -269,6 +353,7 @@ pub(crate) fn build_functions_and_cfgs(
                     cfg_output.warnings,
                     implicit_edges,
                     complete,
+                    artifact,
                 ),
                 function_work,
             ))
@@ -278,6 +363,7 @@ pub(crate) fn build_functions_and_cfgs(
     let mut functions = Vec::with_capacity(results.len());
     let mut implicit_named_destructor_dependencies = Vec::new();
     let mut implicit_named_destructor_dependencies_complete = true;
+    let mut durable_cfgs = Vec::new();
     let mut first_errors = None;
     for result in results {
         let (output, function_work) = match result {
@@ -299,11 +385,23 @@ pub(crate) fn build_functions_and_cfgs(
         work.cfg_warnings_emitted += function_work.cfg_warnings_emitted;
         work.implicit_destructor_targets_emitted +=
             function_work.implicit_destructor_targets_emitted;
-        if let Some((func, func_warnings, mut implicit_edges, complete)) = output {
+        work.cfg_reuse_candidates += function_work.cfg_reuse_candidates;
+        work.cfg_import_attempts += function_work.cfg_import_attempts;
+        work.cfg_import_successes += function_work.cfg_import_successes;
+        work.cfg_import_failures += function_work.cfg_import_failures;
+        work.cfg_reuses += function_work.cfg_reuses;
+        work.cfg_fallbacks += function_work.cfg_fallbacks;
+        work.cfg_warnings_reused += function_work.cfg_warnings_reused;
+        work.implicit_destructor_targets_reused += function_work.implicit_destructor_targets_reused;
+        work.cfg_export_attempts += function_work.cfg_export_attempts;
+        work.cfg_export_successes += function_work.cfg_export_successes;
+        work.cfg_export_rejections += function_work.cfg_export_rejections;
+        if let Some((func, func_warnings, mut implicit_edges, complete, artifact)) = output {
             functions.push(func);
             warnings.extend(func_warnings);
             implicit_named_destructor_dependencies.append(&mut implicit_edges);
             implicit_named_destructor_dependencies_complete &= complete;
+            durable_cfgs.extend(artifact);
         }
     }
     if let Some(errors) = first_errors {
@@ -325,6 +423,7 @@ pub(crate) fn build_functions_and_cfgs(
         implicit_named_destructor_dependencies,
         implicit_named_destructor_dependencies_complete,
         work,
+        durable_cfgs: durable_cfgs.into(),
     })
 }
 
@@ -551,7 +650,14 @@ mod failure_work_tests {
     fn malformed_air_retains_deterministic_work_from_every_cfg_builder() {
         let run = || {
             let (output, interner) = malformed_cfg_input();
-            match build_functions_and_cfgs(output, OptLevel::O1, &interner) {
+            match build_functions_and_cfgs(
+                output,
+                OptLevel::O1,
+                Target::host().unwrap(),
+                &interner,
+                &[],
+                &[],
+            ) {
                 Ok(_) => panic!("malformed AIR unexpectedly built a CFG"),
                 Err(failure) => failure,
             }
