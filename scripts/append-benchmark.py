@@ -86,6 +86,10 @@ def main() -> int:
             "iteration_policy": {"kind": "fixed", "iterations": result.get("iterations")},
             "platform": args.platform,
             "runner": {"image": runner_image, "host": result.get("host")},
+            "metric_semantics": {
+                "measurement_family": result.get("measurement_family", "compiler"),
+                "scenario_family": result.get("scenario_family", "cold_compilation"),
+            },
             "trigger_reason": args.reason,
             "coverage": coverage,
         }

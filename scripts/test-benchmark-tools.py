@@ -33,6 +33,7 @@ collection = load_module("benchmark_collection", "scripts/benchmark_collection.p
 charts = load_module("generate_charts", "scripts/generate-charts.py")
 site_status = load_module("generate_site_status", "scripts/generate-site-status.py")
 history_tools = load_module("benchmark_history", "scripts/benchmark_history.py")
+metrics = load_module("benchmark_metrics", "scripts/benchmark_metrics.py")
 perf_baseline = load_module("perf_baseline", "scripts/perf-baseline.py")
 
 
@@ -722,6 +723,13 @@ class BenchmarkValidationTests(unittest.TestCase):
             self.assertEqual(published[0]["version"], 3)
             self.assertEqual(published[0]["publication"]["trigger_reason"], "push")
             self.assertEqual(published[0]["publication"]["coverage"]["represented_commits"], ["probe"])
+            self.assertEqual(
+                published[0]["publication"]["metric_semantics"],
+                {
+                    "measurement_family": "compiler",
+                    "scenario_family": "cold_compilation",
+                },
+            )
 
 
 class DurableBenchmarkHistoryTests(unittest.TestCase):
@@ -912,6 +920,154 @@ class DurableBenchmarkHistoryTests(unittest.TestCase):
         sparkline = site_status.sparkline_data(runs)
         self.assertEqual(sparkline["n_runs"], 2)
         self.assertEqual(sparkline["latest_ms"], 20)
+
+
+class BenchmarkMetricSemanticsTests(unittest.TestCase):
+    @staticmethod
+    def sample_run(commit, values, regime="same", scenario="cold_compilation"):
+        benchmarks = []
+        for name, samples in values.items():
+            benchmarks.append({
+                "name": name,
+                "samples_ms": samples,
+                "mean_ms": sum(samples) / len(samples),
+                "source_metrics": {"lines": 100, "tokens": 200},
+                "peak_memory_bytes": 1024,
+                "binary_size_bytes": 2048,
+            })
+        return {
+            "commit": commit,
+            "measurement_family": "compiler",
+            "scenario_family": scenario,
+            "publication": {
+                "comparable": True,
+                "regime_id": regime,
+                "coverage": {"skipped_commits": [], "gap_unknown": False},
+                "metric_semantics": {
+                    "measurement_family": "compiler",
+                    "scenario_family": scenario,
+                },
+            },
+            "benchmarks": benchmarks,
+        }
+
+    def test_previous_delta_variation_and_classification_use_samples(self):
+        reference = self.sample_run("a", {"probe": [99, 100, 101]})
+        stable = self.sample_run("b", {"probe": [100, 101, 102]})
+        regression = self.sample_run("c", {"probe": [109.9, 110, 110.1]})
+        improvement = self.sample_run("d", {"probe": [89.9, 90, 90.1]})
+
+        stable_result = metrics.compare_runs(stable, reference)
+        self.assertEqual(stable_result["status"], "comparable")
+        self.assertEqual(stable_result["headline"]["classification"], "stable")
+        self.assertAlmostEqual(stable_result["workloads"]["probe"]["delta_pct"], 1.0)
+        self.assertGreater(stable_result["workloads"]["probe"]["variation_pct"], 1.0)
+        self.assertEqual(
+            metrics.compare_runs(regression, reference)["headline"]["classification"],
+            "regressed",
+        )
+        self.assertEqual(
+            metrics.compare_runs(improvement, reference)["headline"]["classification"],
+            "improved",
+        )
+
+    def test_rolling_baseline_is_robust_and_requires_three_runs(self):
+        current = self.sample_run("d", {"probe": [109.9, 110, 110.1]})
+        preceding = [
+            self.sample_run("a", {"probe": [99.9, 100, 100.1]}),
+            self.sample_run("b", {"probe": [100.9, 101, 101.1]}),
+            self.sample_run("c", {"probe": [98.9, 99, 99.1]}),
+        ]
+        self.assertEqual(
+            metrics.compare_to_rolling_baseline(current, preceding[:2])["status"],
+            "insufficient_data",
+        )
+        result = metrics.compare_to_rolling_baseline(current, preceding)
+        self.assertEqual(result["headline"]["classification"], "regressed")
+        self.assertEqual(result["workloads"]["probe"]["reference_median_ms"], 100)
+        self.assertEqual(result["workloads"]["probe"]["baseline_run_count"], 3)
+
+    def test_missing_samples_are_insufficient_data(self):
+        result = metrics.compare_runs(
+            self.sample_run("b", {"probe": [100, 101]}),
+            self.sample_run("a", {"probe": [100, 100, 100]}),
+        )
+        self.assertEqual(result["headline"]["classification"], "insufficient_data")
+
+    def test_workload_and_regime_changes_are_non_comparable_rebases(self):
+        baseline = self.sample_run("a", {"one": [100, 100, 100]})
+        composition = self.sample_run("b", {"one": [100, 100, 100], "two": [50, 50, 50]})
+        regime = self.sample_run("c", {"one": [100, 100, 100]}, regime="new")
+        self.assertEqual(metrics.compare_runs(composition, baseline)["reason"], "workload_composition_changed")
+        self.assertEqual(metrics.performance_index(composition, baseline)["status"], "rebase")
+        self.assertEqual(metrics.compare_runs(regime, baseline)["reason"], "regime_boundary")
+        self.assertEqual(metrics.performance_index(regime, baseline)["reason"], "regime_changed")
+
+        derived = metrics.derive_history_metrics([baseline, composition])
+        self.assertEqual(derived["points"][1]["performance_index"]["status"], "rebase")
+        self.assertEqual(
+            derived["points"][1]["performance_index"]["reason"],
+            "workload_composition_changed",
+        )
+
+    def test_performance_index_is_geometric_mean_with_baseline_one_hundred(self):
+        baseline = self.sample_run("a", {
+            "one": [100, 100, 100],
+            "two": [400, 400, 400],
+        })
+        current = self.sample_run("b", {
+            "one": [50, 50, 50],
+            "two": [800, 800, 800],
+        })
+        result = metrics.performance_index(current, baseline)
+        self.assertEqual(result["status"], "comparable")
+        self.assertAlmostEqual(result["value"], 100.0)
+        self.assertEqual(metrics.performance_index(baseline, baseline)["value"], 100.0)
+
+    def test_scenario_mixing_is_rejected(self):
+        cold = self.sample_run("a", {"probe": [100, 100, 100]})
+        reused = self.sample_run(
+            "b", {"probe": [50, 50, 50]}, scenario="reused_session_query"
+        )
+        with self.assertRaisesRegex(ValueError, "cannot mix"):
+            metrics.compare_runs(reused, cold)
+        with self.assertRaisesRegex(ValueError, "cannot mix"):
+            metrics.performance_index(reused, cold)
+
+    def test_metric_products_remain_separate_families(self):
+        run = self.sample_run("a", {"probe": [10, 10, 10]})
+        families = metrics.metric_families(run)
+        self.assertEqual(
+            set(families),
+            {"latency_ms", "throughput", "memory_bytes", "binary_size_bytes"},
+        )
+        self.assertEqual(families["latency_ms"]["probe"], 10)
+        self.assertEqual(families["throughput"]["probe"]["lines"], 10000)
+        self.assertEqual(families["memory_bytes"]["probe"], 1024)
+        self.assertEqual(families["binary_size_bytes"]["probe"], 2048)
+
+    def test_dashboard_summary_routes_latency_through_canonical_policy(self):
+        reference = self.sample_run("a", {"probe": [99.9, 100, 100.1]})
+        current = self.sample_run("b", {"probe": [109.9, 110, 110.1]})
+        summary = charts.generate_summary_data([reference, current])
+        self.assertEqual(summary["time_comparison"]["headline"]["classification"], "regressed")
+        self.assertAlmostEqual(summary["time_delta_pct"], 10.0)
+        self.assertEqual(summary["time_delta_str"], "↑ 10.0%")
+
+    def test_status_index_uses_full_segment_when_sparkline_is_truncated(self):
+        runs = [
+            self.sample_run(
+                f"commit-{index}",
+                {"probe": [100 + index, 100 + index, 100 + index]},
+            )
+            for index in range(25)
+        ]
+        status = site_status.sparkline_data(runs)
+        self.assertEqual(status["n_runs"], site_status.SPARKLINE_RUNS)
+        self.assertAlmostEqual(
+            status["performance_index"]["value"],
+            100 * 100 / 124,
+        )
 
 
 class BenchmarkCollectionTests(unittest.TestCase):

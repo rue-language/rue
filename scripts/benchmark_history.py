@@ -208,6 +208,8 @@ def regime_metadata(result: dict, platform: str, runner_image: str, corpus: dict
         "build_mode": result.get("build_mode"),
         "iteration_policy": {"kind": "fixed", "iterations": result.get("iterations")},
         "runner_image": runner_image,
+        "measurement_family": result.get("measurement_family", "compiler"),
+        "scenario_family": result.get("scenario_family", "cold_compilation"),
     }
     encoded = json.dumps(regime, sort_keys=True, separators=(",", ":")).encode()
     return {"id": hashlib.sha256(encoded).hexdigest(), "dimensions": regime}
@@ -245,7 +247,7 @@ def validate_publication(run: dict) -> list[str]:
     publication = run.get("publication")
     if not isinstance(publication, dict):
         return ["publication metadata must be an object"]
-    required = ("schema_version", "comparable", "regime_id", "regime", "corpus", "timing_schema_versions", "build_mode", "compiler", "iteration_policy", "platform", "runner", "trigger_reason", "coverage")
+    required = ("schema_version", "comparable", "regime_id", "regime", "corpus", "timing_schema_versions", "build_mode", "compiler", "iteration_policy", "platform", "runner", "trigger_reason", "coverage", "metric_semantics")
     for name in required:
         if name not in publication:
             errors.append(f"publication metadata missing {name}")
@@ -289,6 +291,12 @@ def validate_publication(run: dict) -> list[str]:
     timing_versions = publication.get("timing_schema_versions")
     if not isinstance(timing_versions, list) or not timing_versions or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in timing_versions):
         errors.append("publication timing schema metadata is malformed")
+    semantics = publication.get("metric_semantics")
+    if not isinstance(semantics, dict) or semantics != {
+        "measurement_family": run.get("measurement_family", "compiler"),
+        "scenario_family": run.get("scenario_family", "cold_compilation"),
+    } or any(not isinstance(value, str) or not value for value in semantics.values()):
+        errors.append("publication metric semantics are malformed")
     if isinstance(regime, dict):
         expected_dimensions = {
             "platform": publication.get("platform"),
@@ -298,6 +306,8 @@ def validate_publication(run: dict) -> list[str]:
             "build_mode": publication.get("build_mode"),
             "iteration_policy": publication.get("iteration_policy"),
             "runner_image": runner.get("image") if isinstance(runner, dict) else None,
+            "measurement_family": semantics.get("measurement_family") if isinstance(semantics, dict) else None,
+            "scenario_family": semantics.get("scenario_family") if isinstance(semantics, dict) else None,
         }
         if regime != expected_dimensions:
             errors.append("publication fields do not match regime dimensions")

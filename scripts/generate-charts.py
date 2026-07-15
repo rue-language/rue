@@ -38,6 +38,7 @@ from benchmark_history import (
     load_history,
     run_regime,
 )
+from benchmark_metrics import derive_history_metrics
 
 # Chart dimensions
 TIMELINE_WIDTH = 800
@@ -217,6 +218,13 @@ def calculate_delta(current: float, previous: float) -> tuple[float, str]:
         return pct, "→ 0%"
     arrow = "↑" if pct > 0 else "↓"
     return pct, f"{arrow} {abs(pct):.1f}%"
+
+
+def format_delta_pct(pct: float) -> str:
+    """Format an already-computed canonical percentage without reclassifying it."""
+    if pct == 0:
+        return "→ 0%"
+    return f"{'↑' if pct > 0 else '↓'} {abs(pct):.1f}%"
 
 
 def escape_xml(s: str) -> str:
@@ -1067,11 +1075,19 @@ def generate_summary_data(runs: list[dict], platform: Optional[str] = None) -> d
     latest_commit = short_commit(latest.get("commit", "")) if latest else ""
 
     # Calculate deltas
-    prev_time = get_total_time(previous) if previous else 0
     prev_memory = get_peak_memory(previous) if previous else 0
     prev_binary = get_binary_size(previous) if previous else 0
 
-    time_delta_pct, time_delta_str = calculate_delta(latest_time, prev_time)
+    derived = derive_history_metrics(runs)
+    time_comparison = derived["points"][-1]["previous"]
+    canonical_headline = time_comparison.get("headline", {})
+    time_delta_pct = canonical_headline.get("delta_pct", 0)
+    time_delta_str = (
+        format_delta_pct(time_delta_pct)
+        if time_comparison.get("status") == "comparable"
+        and canonical_headline.get("classification") != "insufficient_data"
+        else ""
+    )
     memory_delta_pct, memory_delta_str = calculate_delta(latest_memory, prev_memory)
     binary_delta_pct, binary_delta_str = calculate_delta(latest_binary, prev_binary)
 
@@ -1091,6 +1107,7 @@ def generate_summary_data(runs: list[dict], platform: Optional[str] = None) -> d
         "latest_binary_kb": round(latest_binary, 2),
         "time_delta_pct": round(time_delta_pct, 2),
         "time_delta_str": time_delta_str,
+        "time_comparison": time_comparison,
         "memory_delta_pct": round(memory_delta_pct, 2),
         "memory_delta_str": memory_delta_str,
         "binary_delta_pct": round(binary_delta_pct, 2),
@@ -1211,6 +1228,7 @@ def generate_platform_charts(history_path: Path, output_dir: Path, platform: Opt
         "latest_benchmarks": latest_benchmarks,
         "coverage": coverage,
         "regimes": regime_summary(runs),
+        "metric_semantics": derive_history_metrics(runs),
     }
     if platform:
         metadata["platform"] = platform
