@@ -15,7 +15,7 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 /// This matches the convention used by Rust's test harness and the Rue runtime.
 /// When a Rue program encounters a runtime error, it exits with this code.
 pub const RUNTIME_ERROR_EXIT_CODE: i32 = 101;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read as IoRead, Write};
 use std::path::{Path, PathBuf};
@@ -1371,38 +1371,92 @@ pub fn validate_nonempty_case_corpus(
     ))
 }
 
-/// Recursively collect all files with the given extension from a directory.
-pub fn collect_files_by_ext(dir: &Path, ext: &str, files: &mut Vec<PathBuf>) {
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
+/// Recursively discover files with the given extension.
+///
+/// The result is sorted by path. Every filesystem error is returned: callers
+/// must never run a partial corpus merely because one directory entry could
+/// not be inspected.
+pub fn discover_files(dir: &Path, ext: &str) -> std::io::Result<Vec<PathBuf>> {
+    fn visit(
+        dir: &Path,
+        ext: &str,
+        files: &mut Vec<PathBuf>,
+        visited_dirs: &mut BTreeSet<PathBuf>,
+    ) -> std::io::Result<()> {
+        let canonical_dir = fs::canonicalize(dir).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("failed to resolve directory {}: {error}", dir.display()),
+            )
+        })?;
+        if !visited_dirs.insert(canonical_dir) {
+            return Ok(());
+        }
+        let read_dir = fs::read_dir(dir).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("failed to read directory {}: {error}", dir.display()),
+            )
+        })?;
+        let mut entries = Vec::new();
+        for entry in read_dir {
+            let entry = entry.map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("failed to read an entry in {}: {error}", dir.display()),
+                )
+            })?;
             let path = entry.path();
-            if path.is_dir() {
-                collect_files_by_ext(&path, ext, files);
-            } else if path.extension().is_some_and(|e| e == ext) {
+            let file_type = entry.file_type().map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("failed to inspect {}: {error}", path.display()),
+                )
+            })?;
+            entries.push((path, file_type));
+        }
+        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        for (path, file_type) in entries {
+            if file_type.is_dir() {
+                visit(&path, ext, files, visited_dirs)?;
+            } else if file_type.is_symlink() {
+                let target = fs::metadata(&path).map_err(|error| {
+                    std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "failed to inspect symlink target {}: {error}",
+                            path.display()
+                        ),
+                    )
+                })?;
+                if target.is_dir() {
+                    visit(&path, ext, files, visited_dirs)?;
+                } else if target.is_file()
+                    && path.extension().is_some_and(|candidate| candidate == ext)
+                {
+                    files.push(path);
+                }
+            } else if file_type.is_file()
+                && path.extension().is_some_and(|candidate| candidate == ext)
+            {
                 files.push(path);
             }
         }
+        Ok(())
     }
-}
 
-/// Recursively collect all TOML files from a directory.
-///
-/// This is a convenience wrapper around [`collect_files_by_ext`].
-pub fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
-    collect_files_by_ext(dir, "toml", files);
+    let mut files = Vec::new();
+    let mut visited_dirs = BTreeSet::new();
+    visit(dir, ext, &mut files, &mut visited_dirs)?;
+    Ok(files)
 }
 
 /// Load all test files from a directory (including subdirectories).
 ///
-/// This function validates that all preview feature names in tests are known.
-/// If any unknown preview features are found, an error is printed for each
-/// invalid feature and the function panics with a summary.
-///
-/// # Panics
-///
-/// Panics if any test uses an unknown preview feature name. This prevents
-/// tests from being silently skipped due to typos in feature names.
-pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
+/// This function validates test metadata and returns every discovery, read,
+/// parse, or validation failure instead of silently running a partial corpus.
+pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, String> {
     let mut specs = Vec::new();
     let mut preview_errors: Vec<UnknownPreviewFeatureError> = Vec::new();
     let mut platform_errors: Vec<UnknownPlatformError> = Vec::new();
@@ -1410,17 +1464,12 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
     let mut bare_compile_fail: Vec<BareCompileFailError> = Vec::new();
     let mut compile_fail_exit_codes: Vec<CompileFailExitCodeError> = Vec::new();
 
-    if !cases_dir.exists() {
-        eprintln!(
-            "Warning: cases directory not found: {}",
+    let toml_files = discover_files(cases_dir, "toml").map_err(|error| {
+        format!(
+            "failed to discover test files under {}: {error}",
             cases_dir.display()
-        );
-        return specs;
-    }
-
-    // Collect all TOML files recursively
-    let mut toml_files = Vec::new();
-    collect_toml_files(cases_dir, &mut toml_files);
+        )
+    })?;
 
     let mut load_errors: Vec<String> = Vec::new();
     for path in toml_files {
@@ -1474,107 +1523,81 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
     // A case file that fails to load must fail the suite: silently skipping it
     // would silently remove every test it contains. (RUE-132)
     if !load_errors.is_empty() {
-        eprintln!(
-            "
-Error: {} test file(s) failed to load:",
-            load_errors.len()
-        );
-        for error in &load_errors {
-            eprintln!("  - {}", error);
-        }
-        panic!(
-            "Test loading failed: {} file(s) unreadable or unparsable.              See errors above for details.",
-            load_errors.len()
-        );
+        return Err(format!(
+            "{} test file(s) failed to load:\n  - {}",
+            load_errors.len(),
+            load_errors.join("\n  - ")
+        ));
     }
 
     // Report all preview feature errors and fail if any were found
     if !preview_errors.is_empty() {
-        eprintln!(
-            "\nError: Found {} unknown preview feature name(s):",
-            preview_errors.len()
-        );
-        for error in &preview_errors {
-            eprintln!("  - {}", error);
-        }
-        panic!(
-            "Test loading failed: {} test(s) use unknown preview feature names. \
-             See errors above for details.",
-            preview_errors.len()
-        );
+        return Err(format!(
+            "{} test(s) use unknown preview feature names:\n  - {}",
+            preview_errors.len(),
+            preview_errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ));
     }
 
     // Report unknown only_on platform names and fail if any were found
     if !platform_errors.is_empty() {
-        eprintln!(
-            "\nError: Found {} unknown only_on platform name(s):",
-            platform_errors.len()
-        );
-        for error in &platform_errors {
-            eprintln!("  - {}", error);
-        }
-        panic!(
-            "Test loading failed: {} case(s) use unknown only_on platform names \
-             (the case would run on NO platform). See errors above for details.",
-            platform_errors.len()
-        );
+        return Err(format!(
+            "{} case(s) use unknown only_on platform names:\n  - {}",
+            platform_errors.len(),
+            platform_errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ));
     }
 
     // Report stray compile-error assertions and fail if any were found
     if !stray_error_assertions.is_empty() {
-        eprintln!(
-            "\nError: Found {} case(s) with a compile-error assertion but no `compile_fail`:",
-            stray_error_assertions.len()
-        );
-        for error in &stray_error_assertions {
-            eprintln!("  - {}", error);
-        }
-        panic!(
-            "Test loading failed: {} case(s) set `error_contains`/`expected_error` without \
-             `compile_fail`. See errors above for details.",
-            stray_error_assertions.len()
-        );
+        return Err(format!(
+            "{} case(s) set a compile-error assertion without `compile_fail`:\n  - {}",
+            stray_error_assertions.len(),
+            stray_error_assertions
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ));
     }
 
     // Report bare compile_fail cases and fail if any were found
     if !bare_compile_fail.is_empty() {
-        eprintln!(
-            "\nError: Found {} `compile_fail` case(s) with no error assertion:",
-            bare_compile_fail.len()
-        );
-        for error in &bare_compile_fail {
-            eprintln!("  - {}", error);
-        }
-        panic!(
-            "Test loading failed: {} `compile_fail` case(s) declare neither \
-             `error_contains` nor `expected_error`, so they pass on any rejection. \
-             See errors above for details.",
-            bare_compile_fail.len()
-        );
+        return Err(format!(
+            "{} `compile_fail` case(s) have no error assertion:\n  - {}",
+            bare_compile_fail.len(),
+            bare_compile_fail
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ));
     }
 
     // Report runtime exit-code assertions that compile-fail cases cannot check.
     if !compile_fail_exit_codes.is_empty() {
-        eprintln!(
-            "\nError: Found {} `compile_fail` case(s) with an ignored `exit_code`:",
-            compile_fail_exit_codes.len()
-        );
-        for error in &compile_fail_exit_codes {
-            eprintln!("  - {}", error);
-        }
-        panic!(
-            concat!(
-                "Test loading failed: {} `compile_fail` case(s) declare `exit_code`, ",
-                "which is only checked after successful compilation. ",
-                "See errors above for details."
-            ),
-            compile_fail_exit_codes.len()
-        );
+        return Err(format!(
+            "{} `compile_fail` case(s) declare an ignored `exit_code`:\n  - {}",
+            compile_fail_exit_codes.len(),
+            compile_fail_exit_codes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ));
     }
 
     // Sort by identifier for deterministic ordering
     specs.sort_by(|a, b| a.0.cmp(&b.0));
-    specs
+    Ok(specs)
 }
 
 /// Normalize a string for golden test comparison.
@@ -2404,6 +2427,97 @@ pub fn find_rue_binary() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const VALID_TEST_FILE: &str = r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "valid"
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+"#;
+
+    #[test]
+    fn discovery_is_recursive_and_deterministic() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("b")).unwrap();
+        fs::create_dir(directory.path().join("a")).unwrap();
+        fs::write(directory.path().join("b/z.toml"), "").unwrap();
+        fs::write(directory.path().join("a/y.toml"), "").unwrap();
+        fs::write(directory.path().join("a/ignored.md"), "").unwrap();
+
+        let discovered = discover_files(directory.path(), "toml").unwrap();
+        assert_eq!(
+            discovered,
+            vec![
+                directory.path().join("a/y.toml"),
+                directory.path().join("b/z.toml")
+            ]
+        );
+    }
+
+    #[test]
+    fn discovery_rejects_a_missing_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        assert!(discover_files(&missing, "toml").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_rejects_an_unreadable_root() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = discover_files(&root, "toml");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn malformed_file_cannot_hide_behind_a_valid_sibling() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("a-valid.toml"), VALID_TEST_FILE).unwrap();
+        fs::write(directory.path().join("b-malformed.toml"), "not = [valid").unwrap();
+
+        let error = load_test_files(directory.path()).unwrap_err();
+        assert!(error.contains("b-malformed.toml"), "{error}");
+        assert!(error.contains("failed to load"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_subdirectory_fails_discovery() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let unreadable = directory.path().join("unreadable");
+        fs::create_dir(&unreadable).unwrap();
+        fs::write(unreadable.join("hidden.toml"), VALID_TEST_FILE).unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = discover_files(directory.path(), "toml");
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_test_file_fails_loading() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let unreadable = directory.path().join("unreadable.toml");
+        fs::write(&unreadable, VALID_TEST_FILE).unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = load_test_files(directory.path());
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(result.is_err());
+    }
 
     #[cfg(unix)]
     fn fake_compiler(script: &str) -> (tempfile::TempDir, PathBuf) {

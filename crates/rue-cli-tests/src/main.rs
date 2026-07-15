@@ -959,9 +959,13 @@ fn unknown_only_on_targets(case: &Case) -> Vec<&str> {
 }
 
 fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
-    let mut toml_files = Vec::new();
-    rue_test_runner::collect_toml_files(cases_dir, &mut toml_files);
-    toml_files.sort();
+    let toml_files = rue_test_runner::discover_files(cases_dir, "toml").unwrap_or_else(|error| {
+        eprintln!(
+            "error: failed to discover CLI test files under {}: {error}",
+            cases_dir.display()
+        );
+        std::process::exit(1);
+    });
 
     let mut out = Vec::new();
     for path in toml_files {

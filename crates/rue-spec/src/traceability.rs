@@ -54,7 +54,7 @@
 //! }
 //! ```
 
-use rue_test_runner::collect_files_by_ext;
+use rue_test_runner::{discover_files, load_test_files};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -513,53 +513,90 @@ impl TraceabilityReport {
     }
 }
 
-/// Extract a quoted shortcode argument (`name = "value"`), tolerating
-/// whitespace around `=`. Zola accepts `id = "x"` and renders it identically
-/// to `id="x"`, so the checker must too. Otherwise a spaced `cat` can demote a
-/// rule to informative and a spaced `id` can hide it, silently weakening
-/// coverage enforcement.
-fn find_shortcode_arg(line: &str, name: &str) -> Option<String> {
-    let mut search_from = 0;
-    while let Some(rel) = line[search_from..].find(name) {
-        let pos = search_from + rel;
-        let after = line[pos + name.len()..].trim_start();
-        if let Some(rest) = after.strip_prefix('=') {
-            let rest = rest.trim_start();
-            if let Some(rest) = rest.strip_prefix('"') {
-                if let Some(end) = rest.find('"') {
-                    return Some(rest[..end].to_string());
-                }
-            }
-        }
-        search_from = pos + name.len();
-    }
-    None
-}
-
 /// Parse a spec marker from a line.
 /// Format: {{ rule(id="X.Y:Z") }} or {{ rule(id="X.Y:Z", cat="category") }} (Zola shortcode)
 /// Category can be: normative, informative, syntax, example
 /// Default category (no cat) is informative.
 /// Returns (id, category) if found.
-fn parse_spec_comment(line: &str) -> Option<(String, String)> {
+fn parse_spec_comment(line: &str) -> Result<Option<(String, String)>, String> {
     let line = line.trim();
 
-    // Zola shortcode format: {{ rule(id="X.Y:Z") }} or {{ rule(id="X.Y:Z", cat="category") }}
-    if !(line.starts_with("{{") && line.contains("rule(")) {
-        return None;
+    if !line
+        .strip_prefix("{{")
+        .is_some_and(|body| body.trim_start().starts_with("rule"))
+    {
+        return Ok(None);
     }
-    let id = find_shortcode_arg(line, "id")?;
-    // Validate that the ID contains a colon (required format: X.Y:Z)
-    if !id.contains(':') {
-        return None;
+    let body = line
+        .strip_prefix("{{")
+        .and_then(|body| body.strip_suffix("}}"))
+        .map(str::trim)
+        .and_then(|body| body.strip_prefix("rule("))
+        .and_then(|body| body.strip_suffix(')'))
+        .ok_or_else(|| "malformed rule marker".to_string())?;
+
+    let mut id = None;
+    let mut category = None;
+    for argument in body.split(',') {
+        let (name, value) = argument
+            .trim()
+            .split_once('=')
+            .ok_or_else(|| "malformed rule marker argument".to_string())?;
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .filter(|value| !value.contains('"'))
+            .ok_or_else(|| {
+                format!(
+                    "rule marker argument `{}` must be a quoted string",
+                    name.trim()
+                )
+            })?
+            .to_string();
+        let slot = match name.trim() {
+            "id" => &mut id,
+            "cat" => &mut category,
+            other => return Err(format!("unknown rule marker argument `{other}`")),
+        };
+        if slot.replace(value).is_some() {
+            return Err(format!("duplicate rule marker argument `{}`", name.trim()));
+        }
     }
-    let category = find_shortcode_arg(line, "cat").unwrap_or_else(|| "informative".to_string());
-    Some((id, category))
+
+    let id = id.ok_or_else(|| "rule marker is missing `id`".to_string())?;
+    let valid_id = id.split_once(':').is_some_and(|(section, paragraph)| {
+        section.contains('.')
+            && section
+                .split('.')
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric()))
+            && !paragraph.is_empty()
+            && paragraph.chars().all(|c| c.is_ascii_alphanumeric())
+    });
+    if !valid_id {
+        return Err(format!("invalid rule id `{id}` (expected X.Y:Z)"));
+    }
+    let category = category.unwrap_or_else(|| "informative".to_string());
+    const CATEGORIES: &[&str] = &[
+        "normative",
+        "legality-rule",
+        "dynamic-semantics",
+        "syntax",
+        "undefined-behavior",
+        "example",
+        "informative",
+    ];
+    if !CATEGORIES.contains(&category.as_str()) {
+        return Err(format!("unknown rule category `{category}`"));
+    }
+    Ok(Some((id, category)))
 }
 
 /// Check if a line is a spec marker (Zola shortcode format).
 fn is_spec_marker(line: &str) -> bool {
-    line.starts_with("{{") && line.contains("rule(")
+    line.trim()
+        .strip_prefix("{{")
+        .is_some_and(|body| body.trim_start().starts_with("rule"))
 }
 
 /// Parse spec paragraphs from a markdown file. A rule id that was already
@@ -571,19 +608,16 @@ fn parse_spec_file(
     path: &Path,
     paragraphs: &mut BTreeMap<String, SpecParagraph>,
     duplicates: &mut Vec<String>,
-) {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error reading spec file {}: {}", path.display(), e);
-            return;
-        }
-    };
+) -> Result<(), String> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read spec file {}: {error}", path.display()))?;
 
     let lines: Vec<&str> = content.lines().collect();
 
     for (i, line) in lines.iter().enumerate() {
-        if let Some((id, category)) = parse_spec_comment(line) {
+        let marker = parse_spec_comment(line)
+            .map_err(|error| format!("{}:{}: {error}", path.display(), i + 1))?;
+        if let Some((id, category)) = marker {
             // Get the next non-empty line as the paragraph text
             let mut text = String::new();
             for j in (i + 1)..lines.len() {
@@ -620,6 +654,7 @@ fn parse_spec_file(
             }
         }
     }
+    Ok(())
 }
 
 /// Parses all specification paragraphs from markdown files in a directory.
@@ -637,217 +672,24 @@ fn parse_spec_file(
 /// list of DUPLICATE rule ids (an id defined more than once across the spec).
 /// Duplicates fail the traceability gate: with last-writer-wins insertion, a
 /// duplicate can silently replace a normative rule with an informative one.
-pub fn parse_spec_paragraphs(spec_dir: &Path) -> (BTreeMap<String, SpecParagraph>, Vec<String>) {
+pub fn parse_spec_paragraphs(
+    spec_dir: &Path,
+) -> Result<(BTreeMap<String, SpecParagraph>, Vec<String>), String> {
     let mut paragraphs = BTreeMap::new();
     let mut duplicates = Vec::new();
 
-    let mut md_files = Vec::new();
-    collect_files_by_ext(spec_dir, "md", &mut md_files);
+    let md_files = discover_files(spec_dir, "md").map_err(|error| {
+        format!(
+            "failed to discover specification files under {}: {error}",
+            spec_dir.display()
+        )
+    })?;
 
     for path in md_files {
-        parse_spec_file(&path, &mut paragraphs, &mut duplicates);
+        parse_spec_file(&path, &mut paragraphs, &mut duplicates)?;
     }
 
-    (paragraphs, duplicates)
-}
-
-/// A parsed test specification file.
-///
-/// Each TOML file in the test cases directory represents a section of tests.
-/// This struct holds the parsed metadata and test cases from one such file.
-pub struct TestFile {
-    /// The section identifier from the TOML file (e.g., "expressions.arithmetic").
-    pub section_id: String,
-    /// All test cases defined in this file.
-    pub cases: Vec<TestCase>,
-}
-
-/// A single test case with its specification references.
-///
-/// For parameterized tests, this represents one expanded instance with
-/// any `spec_extra` references merged into the base `spec` references.
-pub struct TestCase {
-    /// The test case name (expanded with parameter values for parameterized tests).
-    pub name: String,
-    /// Specification paragraph IDs that this test covers (e.g., ["3.1:5", "3.1:6"]).
-    pub spec_refs: Vec<String>,
-    /// Whether this case actually *runs* and so can satisfy coverage.
-    ///
-    /// A rule's behavior is only exercised by a test that runs and is required
-    /// to pass. A case does **not** count as coverage if it is `skip = true`, or
-    /// if it is a preview-feature test that is allowed to fail (`preview` set
-    /// without `preview_should_pass`). Such a case's spec references still count
-    /// for orphan detection — a dangling reference is broken whether or not the
-    /// case runs — but they do not mark a normative paragraph as covered
-    /// (RUE-132).
-    pub counts_as_coverage: bool,
-}
-
-/// Parses test files and extracts specification references.
-///
-/// Recursively searches for `.toml` files in the cases directory and parses
-/// each one to extract test cases and their spec references.
-///
-/// # Parameterized Tests
-///
-/// For parameterized tests (those with a `params` array), this function expands
-/// each parameter set into a separate [`TestCase`], substituting placeholders
-/// in the test name and merging any `spec_extra` references with the base `spec` array.
-///
-/// # Arguments
-///
-/// * `cases_dir` - Path to the test cases directory (e.g., `crates/rue-spec/cases`)
-///
-/// # Returns
-///
-/// A list of [`TestFile`] structs, one per TOML file found.
-pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
-    let mut test_files = Vec::new();
-
-    let mut toml_files = Vec::new();
-    collect_files_by_ext(cases_dir, "toml", &mut toml_files);
-
-    for path in toml_files {
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Error reading test file {}: {}", path.display(), e);
-                continue;
-            }
-        };
-
-        // Parse the TOML file
-        let table: toml::Table = match toml::from_str(&content) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("Error parsing test file {}: {}", path.display(), e);
-                continue;
-            }
-        };
-
-        // Get section ID
-        let section_id = table
-            .get("section")
-            .and_then(|s| s.get("id"))
-            .and_then(|id| id.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        // Get cases
-        let case_array_opt = table.get("case").and_then(|c| c.as_array());
-        let mut cases = Vec::new();
-        if let Some(case_array) = case_array_opt {
-            for case in case_array {
-                let base_name = case
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("unnamed")
-                    .to_string();
-
-                let base_spec_refs: Vec<String> = case
-                    .get("spec")
-                    .and_then(|s| s.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                // A case only counts as coverage if it actually runs and is
-                // required to pass (RUE-132): a `skip = true` case never runs,
-                // and a preview-feature test without `preview_should_pass` is
-                // allowed to fail, so neither exercises the rule it references.
-                let base_skip = case.get("skip").and_then(|s| s.as_bool()).unwrap_or(false);
-                let is_preview = case
-                    .get("preview")
-                    .and_then(|p| p.as_str())
-                    .is_some_and(|s| !s.is_empty());
-                let preview_should_pass = case
-                    .get("preview_should_pass")
-                    .and_then(|p| p.as_bool())
-                    .unwrap_or(false);
-                let preview_allowed_to_fail = is_preview && !preview_should_pass;
-
-                // Check if this is a parameterized test
-                if let Some(params_array) = case.get("params").and_then(|p| p.as_array()) {
-                    // Expand parameterized test - each param set becomes a test case
-                    for param_set in params_array {
-                        let param_table = match param_set.as_table() {
-                            Some(t) => t,
-                            None => continue,
-                        };
-
-                        // Substitute placeholders in name
-                        let mut expanded_name = base_name.clone();
-                        for (key, value) in param_table {
-                            let placeholder = format!("{{{}}}", key);
-                            let replacement = match value {
-                                toml::Value::String(s) => s.clone(),
-                                toml::Value::Integer(i) => i.to_string(),
-                                other => other.to_string(),
-                            };
-                            expanded_name = expanded_name.replace(&placeholder, &replacement);
-                        }
-
-                        // Merge base spec refs with spec_extra from params
-                        let mut spec_refs = base_spec_refs.clone();
-                        if let Some(spec_extra) = param_table.get("spec_extra") {
-                            if let Some(arr) = spec_extra.as_array() {
-                                for item in arr {
-                                    if let Some(s) = item.as_str() {
-                                        spec_refs.push(s.to_string());
-                                    }
-                                }
-                            }
-                        }
-
-                        // A per-param `skip = true` override also disqualifies
-                        // just that instance from counting as coverage.
-                        let param_skip = param_table
-                            .get("skip")
-                            .and_then(|s| s.as_bool())
-                            .unwrap_or(false);
-                        // Per-param `preview`/`preview_should_pass` overrides
-                        // mirror the runner's expand_case: an instance the
-                        // runner allows to fail must not count as coverage,
-                        // even when the BASE case has no preview (RUE-132).
-                        let param_is_preview = param_table
-                            .get("preview")
-                            .and_then(|p| p.as_str())
-                            .map(|s| !s.is_empty());
-                        let param_should_pass = param_table
-                            .get("preview_should_pass")
-                            .and_then(|p| p.as_bool());
-                        let effective_preview = param_is_preview.unwrap_or(is_preview);
-                        let effective_should_pass =
-                            param_should_pass.unwrap_or(preview_should_pass);
-                        let param_preview_allowed_to_fail =
-                            effective_preview && !effective_should_pass;
-                        let counts_as_coverage =
-                            !base_skip && !param_skip && !param_preview_allowed_to_fail;
-
-                        cases.push(TestCase {
-                            name: expanded_name,
-                            spec_refs,
-                            counts_as_coverage,
-                        });
-                    }
-                } else {
-                    // Non-parameterized test
-                    cases.push(TestCase {
-                        name: base_name,
-                        spec_refs: base_spec_refs,
-                        counts_as_coverage: !base_skip && !preview_allowed_to_fail,
-                    });
-                }
-            }
-        }
-
-        test_files.push(TestFile { section_id, cases });
-    }
-
-    test_files
+    Ok((paragraphs, duplicates))
 }
 
 /// Generates a complete traceability report linking specification to tests.
@@ -874,12 +716,13 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
 /// let report = generate_report(Path::new("docs/spec/src"), Path::new("crates/rue-spec/cases"));
 /// report.print_summary();
 /// ```
-pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> TraceabilityReport {
+pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> Result<TraceabilityReport, String> {
     // Parse spec paragraphs
-    let (paragraphs, duplicate_rule_ids) = parse_spec_paragraphs(spec_dir);
+    let (paragraphs, duplicate_rule_ids) = parse_spec_paragraphs(spec_dir)?;
 
-    // Parse test files
-    let test_files = parse_test_files(cases_dir);
+    // Use the runner's typed deserialization and parameter expansion so the
+    // traceability view cannot accept metadata the executable suite rejects.
+    let test_files = load_test_files(cases_dir)?;
 
     // Build coverage map
     let mut coverage: BTreeMap<String, Vec<TestReference>> = BTreeMap::new();
@@ -891,17 +734,19 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> TraceabilityReport 
     }
 
     // Process test files
-    for test_file in &test_files {
-        for case in &test_file.cases {
-            let test_name = format!("{}::{}", test_file.section_id, case.name);
+    for (_, test_file) in &test_files {
+        for case in &test_file.case {
+            let test_name = format!("{}::{}", test_file.section.id, case.name);
+            let counts_as_coverage =
+                !case.skip && (case.preview.is_none() || case.preview_should_pass);
 
-            for spec_ref in &case.spec_refs {
+            for spec_ref in &case.spec {
                 if let Some(tests) = coverage.get_mut(spec_ref) {
                     // A skipped or preview-allowed-to-fail case never exercises
                     // the rule, so it must not mark the paragraph as covered
                     // (RUE-132). Its reference is still valid, so it is not an
                     // orphan — it simply doesn't contribute coverage.
-                    if case.counts_as_coverage {
+                    if counts_as_coverage {
                         tests.push(TestReference {
                             test_name: test_name.clone(),
                         });
@@ -913,12 +758,12 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> TraceabilityReport 
         }
     }
 
-    TraceabilityReport {
+    Ok(TraceabilityReport {
         paragraphs,
         coverage,
         orphan_references,
         duplicate_rule_ids,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -928,26 +773,131 @@ mod tests {
     #[test]
     fn test_parse_spec_comment() {
         // Simple shortcode without category defaults to informative
-        let (id, cat) = parse_spec_comment("{{ rule(id=\"3.1:1\") }}").unwrap();
+        let (id, cat) = parse_spec_comment("{{ rule(id=\"3.1:1\") }}")
+            .unwrap()
+            .unwrap();
         assert_eq!(id, "3.1:1");
         assert_eq!(cat, "informative");
 
         // Shortcode with explicit normative category
-        let (id, cat) = parse_spec_comment("{{ rule(id=\"4.2:3\", cat=\"normative\") }}").unwrap();
+        let (id, cat) = parse_spec_comment("{{ rule(id=\"4.2:3\", cat=\"normative\") }}")
+            .unwrap()
+            .unwrap();
         assert_eq!(id, "4.2:3");
         assert_eq!(cat, "normative");
 
         // Shortcode with explicit syntax category
-        let (id, cat) = parse_spec_comment("{{ rule(id=\"2.1:1\", cat=\"syntax\") }}").unwrap();
+        let (id, cat) = parse_spec_comment("{{ rule(id=\"2.1:1\", cat=\"syntax\") }}")
+            .unwrap()
+            .unwrap();
         assert_eq!(id, "2.1:1");
         assert_eq!(cat, "syntax");
 
         // Invalid: no colon in ID
-        assert!(parse_spec_comment("{{ rule(id=\"3.1.1\") }}").is_none());
+        assert!(parse_spec_comment("{{ rule(id=\"3.1.1\") }}").is_err());
 
         // Invalid formats
-        assert!(parse_spec_comment("not a spec comment").is_none());
-        assert!(parse_spec_comment("<!-- not spec -->").is_none());
+        assert!(parse_spec_comment("not a spec comment").unwrap().is_none());
+        assert!(parse_spec_comment("<!-- not spec -->").unwrap().is_none());
+        assert!(
+            parse_spec_comment("{{ note(text=\"rule\") }}")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn malformed_markers_and_unknown_categories_are_rejected() {
+        assert!(parse_spec_comment("{{ rule(id=\"1.1:1\" }}").is_err());
+        assert!(parse_spec_comment("{{ rule(cat=\"normative\") }}").is_err());
+        assert!(
+            parse_spec_comment("{{ rule(id=\"1.1:1\", cat=\"typo\") }}")
+                .unwrap_err()
+                .contains("unknown rule category")
+        );
+    }
+
+    #[test]
+    fn malformed_test_file_fails_report_even_with_valid_sibling() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            spec_dir.path().join("spec.md"),
+            "{{ rule(id=\"1.1:1\", cat=\"normative\") }}\nRule.",
+        )
+        .unwrap();
+        let cases_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            cases_dir.path().join("valid.toml"),
+            r#"
+[section]
+id = "test.section"
+name = "Test"
+[[case]]
+name = "valid"
+source = "fn main() -> i32 { 0 }"
+spec = ["1.1:1"]
+exit_code = 0
+"#,
+        )
+        .unwrap();
+        fs::write(cases_dir.path().join("malformed.toml"), "case = [").unwrap();
+
+        let error = generate_report(spec_dir.path(), cases_dir.path()).unwrap_err();
+        assert!(error.contains("malformed.toml"), "{error}");
+    }
+
+    #[test]
+    fn traceability_uses_runner_parameter_expansion() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            spec_dir.path().join("spec.md"),
+            concat!(
+                "{{ rule(id=\"1.1:1\", cat=\"normative\") }}\nBase.\n",
+                "{{ rule(id=\"1.1:2\", cat=\"normative\") }}\nExtra.\n"
+            ),
+        )
+        .unwrap();
+        let cases_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            cases_dir.path().join("params.toml"),
+            r#"
+[section]
+id = "test.section"
+name = "Test"
+[[case]]
+name = "case_{kind}"
+source = "fn main() -> i32 { 0 }"
+spec = ["1.1:1"]
+exit_code = 0
+params = [{ kind = "expanded", spec_extra = ["1.1:2"] }]
+"#,
+        )
+        .unwrap();
+
+        let report = generate_report(spec_dir.path(), cases_dir.path()).unwrap();
+        assert_eq!(
+            report.coverage["1.1:1"][0].test_name,
+            "test.section::case_expanded"
+        );
+        assert_eq!(
+            report.coverage["1.1:2"][0].test_name,
+            "test.section::case_expanded"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_spec_file_fails_report() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let spec_dir = tempfile::tempdir().unwrap();
+        let spec = spec_dir.path().join("unreadable.md");
+        fs::write(&spec, "{{ rule(id=\"1.1:1\") }}\nRule.").unwrap();
+        fs::set_permissions(&spec, fs::Permissions::from_mode(0o000)).unwrap();
+        let cases_dir = tempfile::tempdir().unwrap();
+        let result = generate_report(spec_dir.path(), cases_dir.path());
+        fs::set_permissions(&spec, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(result.is_err());
     }
 
     #[test]
@@ -971,7 +921,7 @@ Another paragraph.
 
         let mut paragraphs = BTreeMap::new();
         let mut duplicates = Vec::new();
-        parse_spec_file(&file_path, &mut paragraphs, &mut duplicates);
+        parse_spec_file(&file_path, &mut paragraphs, &mut duplicates).unwrap();
         assert!(duplicates.is_empty());
 
         assert_eq!(paragraphs.len(), 2);
@@ -985,7 +935,9 @@ Another paragraph.
     #[test]
     fn test_default_category_is_informative() {
         // Rules without explicit category default to informative
-        let (id, cat) = parse_spec_comment("{{ rule(id=\"1.1:1\") }}").unwrap();
+        let (id, cat) = parse_spec_comment("{{ rule(id=\"1.1:1\") }}")
+            .unwrap()
+            .unwrap();
         assert_eq!(id, "1.1:1");
         assert_eq!(cat, "informative");
     }
@@ -1005,7 +957,7 @@ fn main() { }
 
         let mut paragraphs = BTreeMap::new();
         let mut duplicates = Vec::new();
-        parse_spec_file(&file_path, &mut paragraphs, &mut duplicates);
+        parse_spec_file(&file_path, &mut paragraphs, &mut duplicates).unwrap();
         assert!(duplicates.is_empty());
 
         assert_eq!(paragraphs.len(), 1);
@@ -1096,14 +1048,14 @@ exit_code = 0
 [[case]]
 name = "preview_may_fail"
 spec = ["1.1:3"]
-preview = "some_feature"
+preview = "raw_bytes"
 source = "fn main() -> i32 { 0 }"
 exit_code = 0
 
 [[case]]
 name = "preview_must_pass"
 spec = ["1.1:4"]
-preview = "some_feature"
+preview = "raw_bytes"
 preview_should_pass = true
 source = "fn main() -> i32 { 0 }"
 exit_code = 0
@@ -1113,7 +1065,7 @@ exit_code = 0
         let cases_dir = tempfile::tempdir().unwrap();
         fs::write(cases_dir.path().join("c.toml"), cases).unwrap();
 
-        let report = generate_report(spec_dir.path(), cases_dir.path());
+        let report = generate_report(spec_dir.path(), cases_dir.path()).unwrap();
 
         // Only 1.1:1 and 1.1:4 are exercised by a running, must-pass test.
         assert!(!report.coverage["1.1:1"].is_empty(), "normal test covers");
