@@ -48,10 +48,17 @@
                 <span class="v">x86-64 · arm64 · macOS</span></li>
         </ul>
         {% if status.bench %}
-        <div class="sparkline-block">
-            <div class="spark-label"><b>compiler performance</b><span>{{ status.bench.platform }} · 30-day comparable trend</span></div>
+        <div class="sparkline-block performance-snapshot">
+            <div class="spark-label"><b>compiler health</b><span>{{ status.bench.platform_label }}</span></div>
+            <p class="performance-verdict performance-{{ status.bench.state.kind }}">{{ status.bench.state.label }}</p>
+            {% if status.bench.latest_suite_ms %}
+            <p class="performance-reading"><strong>{{ status.bench.latest_suite_ms | round(precision=1) }} ms</strong> for the benchmark suite</p>
+            {% else %}
+            <p class="performance-reading"><strong>Absolute time unavailable</strong> for the latest measurement</p>
+            {% endif %}
+            <p class="performance-context">{{ status.bench.state.summary }} · {{ status.bench.freshness.label }}</p>
             <svg viewBox="0 0 300 52" preserveAspectRatio="none" role="img"
-                 aria-label="Thirty-day normalized compiler performance trend; {{ status.bench.state.label }}">
+                 aria-label="Absolute suite compilation time across the last {{ status.bench.n_trend_points }} measured commits; lower is better">
                 <polyline fill="none" stroke="var(--color-border-dark)" stroke-width="1" points="0,46 300,46"/>
                 {% if status.bench.points and status.bench.n_trend_points > 1 %}
                 <polyline fill="none" stroke="var(--color-olive)" stroke-width="1.6"
@@ -61,30 +68,8 @@
                 <circle cx="{{ status.bench.last_x }}" cy="{{ status.bench.last_y }}" r="3" fill="var(--color-gold)"/>
                 {% endif %}
             </svg>
-            <div class="spark-label"><span>{{ status.bench.state.label }}</span><span>
-                {% if status.bench.state.kind == "baseline_reset" %}
-                    comparison reset · {{ status.bench.state.reason }}
-                {% elif status.bench.state.kind == "insufficient_data" %}
-                    no trustworthy percentage · {{ status.bench.state.reason }}
-                {% else %}
-                    rolling baseline Δ {{ status.bench.state.delta_pct | round(precision=2) }}% · variation {{ status.bench.state.variation_pct | round(precision=2) }}%
-                {% endif %}
-                {% if status.bench.latest_index %} · index {{ status.bench.latest_index | round(precision=2) }}{% endif %}
-            </span></div>
-            <div class="spark-label"><span>freshness</span><span>{{ status.bench.freshness.kind }} · measured {{ status.bench.freshness.measured_at }}</span></div>
-            <div class="spark-label"><span>coverage</span><span>
-                {% if status.bench.coverage.gap_unknown %}
-                    commit coverage is unknown
-                {% elif status.bench.coverage.skipped_commits | length > 0 %}
-                    measured {{ status.bench.coverage.measured_commit }} · {{ status.bench.coverage.skipped_commits | length }} known skipped commit(s)
-                {% else %}
-                    measured {{ status.bench.coverage.measured_commit }} · no known skipped commits
-                {% endif %}
-            </span></div>
-            {% if status.bench.annotation %}
-            <div class="spark-label"><span>recent event</span><span><a href="{{ status.bench.annotation.dashboard_url }}">{{ status.bench.annotation.title }} →</a></span></div>
-            {% endif %}
-            <div class="spark-label"><span></span><span><a href="{{ status.bench.dashboard_url }}">open this 30-day dashboard range →</a></span></div>
+            <div class="spark-label"><span>last {{ status.bench.n_trend_points }} measured commits</span><span>lower is better</span></div>
+            <a class="performance-details-link" href="{{ status.bench.dashboard_url }}">Investigate compiler performance →</a>
         </div>
         {% else %}
         <p class="observed">benchmark data unavailable</p>
@@ -92,7 +77,7 @@
         {% else %}
         <p class="observed">status data is generated at build time</p>
         {% endif %}
-        <p class="report-foot">coverage and freshness are reported from durable measurements — <a href="{{ get_url(path='performance') }}">full dashboard →</a></p>
+        <p class="report-foot">Measurements are collected from trunk on dedicated CI runners.</p>
     </aside>
 </section>
 
