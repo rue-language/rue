@@ -741,6 +741,17 @@ pre:not(.z-code) {
 .chart-key span { display: inline-block; width: 1.4rem; border-top: 2px solid var(--color-olive); vertical-align: middle; margin-right: 0.35rem; }
 .chart-key i { display: inline-block; width: 1.4rem; border-top: 1px dashed var(--color-border-dark); vertical-align: middle; margin-right: 0.35rem; }
 
+.performance-reading-guide {
+  margin: 0.8rem 1.25rem 0.25rem;
+  border-left: 3px solid var(--color-gold);
+  background: var(--color-surface-deep);
+  color: var(--color-muted);
+  padding: 0.65rem 0.8rem;
+  font-size: 0.9rem;
+}
+
+.performance-reading-guide strong { color: var(--color-fg); }
+
 .diagnostic-chart { padding: 0.25rem 0.6rem 0.8rem; overflow: hidden; }
 .diagnostic-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
 .chart-grid { stroke: var(--color-border); stroke-width: 1; }
