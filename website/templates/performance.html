@@ -193,6 +193,9 @@
             }
 
             function renderEvolutionWorkspace(model, allPlatforms) {
+                const deepLink = new URLSearchParams(window.location.search);
+                const annotationTargetId = id => 'evolution-annotation-' + encodeURIComponent(String(id))
+                    .replace(/%/g, '-').replace(/[^A-Za-z0-9_.:-]/g, '_');
                 evolutionSection.style.display = 'block';
                 evolutionRangeControls.replaceChildren();
                 evolutionPlatformSelect.replaceChildren();
@@ -204,6 +207,8 @@
                     evolutionPlatformSelect.appendChild(option);
                 });
                 evolutionPlatformSelect.value = allPlatforms ? '*' : model.platform_options[0];
+                const requestedPlatform = deepLink.get('platform');
+                if (model.platform_options.includes(requestedPlatform)) evolutionPlatformSelect.value = requestedPlatform;
                 model.workload_options.forEach(workload => {
                     const option = node('option', workload === 'all' ? 'All workloads (canonical index)' : `Workload: ${workload}`);
                     option.value = `workload:${workload}`; evolutionWorkloadSelect.appendChild(option);
@@ -213,7 +218,8 @@
                     option.value = `family:${family.id}`; evolutionWorkloadSelect.appendChild(option);
                 });
 
-                let activeRange = model.default_range;
+                const requestedRange = deepLink.get('range');
+                let activeRange = model.range_options.includes(requestedRange) ? requestedRange : model.default_range;
                 const render = () => {
                     const platform = evolutionPlatformSelect.value;
                     const filter = evolutionWorkloadSelect.value;
@@ -329,10 +335,26 @@
                         const list = node('ul');
                         events.forEach(event => {
                             const item = node('li'); const link = node('a', `${event.category}: ${event.title}`);
+                            item.id = annotationTargetId(event.id);
+                            if (event.id === deepLink.get('annotation')) {
+                                item.className = 'evolution-deep-linked-annotation';
+                                item.tabIndex = -1;
+                                item.dataset.deepLinked = 'true';
+                                item.style.outline = '2px solid var(--color-accent)';
+                                item.style.outlineOffset = '3px';
+                            }
                             link.href = event.link; item.appendChild(link);
                             item.appendChild(document.createTextNode(` — ${event.explanation}; ${JSON.stringify(event.location)}`));
                             list.appendChild(item);
                         }); evolutionAnnotations.appendChild(list);
+                        const requestedAnnotation = deepLink.get('annotation');
+                        const target = requestedAnnotation
+                            ? document.getElementById(annotationTargetId(requestedAnnotation))
+                            : null;
+                        if (target) {
+                            target.scrollIntoView({ block: 'center' });
+                            target.focus({ preventScroll: true });
+                        }
                     }
                     const table = node('table', undefined, 'w-full text-sm');
                     table.appendChild(node('caption', 'Authoritative raw benchmark history for the selected calendar range', 'sr-only'));
