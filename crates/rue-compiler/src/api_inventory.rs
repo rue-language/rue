@@ -34,6 +34,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("source_metadata", include_str!("source_metadata.rs")),
     ("source_snapshot", include_str!("source_snapshot.rs")),
     ("syntax", include_str!("syntax.rs")),
+    ("typed_query_store", include_str!("typed_query_store.rs")),
 ];
 
 fn code_identifiers(source: &str) -> Vec<&str> {
