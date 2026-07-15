@@ -36,3 +36,19 @@ rust_test(
     crate_root = "tests/public_api.rs",
     deps = [":rue-compiler"],
 )
+
+# A bounded, deterministic corpus comparing a long-lived session with
+# step-matched fresh sessions. Keeping this separate gives local and CI callers
+# a focused regression target for incremental correctness.
+rust_test(
+    name = "rue-compiler-differential-oracle-test",
+    srcs = ["tests/differential_oracle.rs"],
+    crate_root = "tests/differential_oracle.rs",
+    deps = [
+        ":rue-compiler",
+        "//crates/rue-cfg:rue-cfg",
+        "//crates/rue-span:rue-span",
+        "//crates/rue-target:rue-target",
+        "//third-party:sha2",
+    ],
+)
