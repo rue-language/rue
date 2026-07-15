@@ -260,7 +260,7 @@ pub struct CanonicalSemanticWork {
     pub body_owner_tokens: BodyOwnerTokenWork,
     /// Demand-driven function-body analysis work.
     pub body_analysis: BodyAnalysisWork,
-    /// Observational durable ordinary-body boundary work. Reuse remains zero.
+    /// Durable body comparison, import, export, reuse, and fallback work.
     pub durable_bodies: crate::DurableBodyWork,
     /// Drop-glue, CFG construction, and optimization work.
     pub cfg: CfgConstructionWork,
