@@ -1,14 +1,7 @@
 //! Parser and AST for the Rue programming language.
-//!
-//! Uses chumsky for parser combinators with Pratt parsing for expressions.
 
 pub mod ast;
-mod chumsky_parser;
-// RUE-904: the handwritten candidate is deliberately test-only. Keeping the
-// module behind cfg(test) prevents it from becoming a selectable production
-// frontend while its parity and performance are evaluated.
-#[cfg(test)]
-mod handwritten_parser;
+mod parser;
 mod parser_policy;
 mod validate;
 
@@ -66,4 +59,4 @@ pub use ast::{
     UnaryOp,
     WhileExpr,
 };
-pub use chumsky_parser::ChumskyParser as Parser;
+pub use parser::Parser;

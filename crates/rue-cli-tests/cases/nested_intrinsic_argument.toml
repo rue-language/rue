@@ -1,7 +1,7 @@
 # Regression pin for RUE-343: a bare intrinsic call CAN be a direct argument to
 # another intrinsic. `@dbg(@size_of(i32))` was reported (2026-07-03) to fail to
 # parse, but it does not reproduce — the intrinsic-argument grammar
-# (`intrinsic_arg` in rue-parser/src/chumsky_parser.rs) has accepted a full
+# (`intrinsic` in rue-parser/src/parser.rs) has accepted a full
 # expression, including a nested intrinsic-call atom, since the intrinsics
 # landed (Dec 2025). These cases lock that behavior in against regression:
 # nested intrinsic-call expressions compose in every value-argument position,

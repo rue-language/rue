@@ -7,7 +7,7 @@ template = "spec/page.html"
 # Appendix A: Grammar
 
 This appendix contains the complete EBNF grammar for Rue. It is maintained by
-hand against the parser in `crates/rue-parser/src/chumsky_parser.rs`; when the
+hand against the parser in `crates/rue-parser/src/parser.rs`; when the
 parser changes, this appendix must be updated in the same change.
 
 This grammar is **normative**: it is the authoritative syntactic definition of

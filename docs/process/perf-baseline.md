@@ -44,13 +44,9 @@ compile                 <- canonical discovery parsing + compiler work
 ├─ parse_file           <- aggregate, repeated for each canonical module
 │  ├─ lexer             <- leaf
 │  └─ parser            <- aggregate
-│     ├─ parser_token_adaptation   <- leaf
 │     ├─ parser_nesting_scan       <- leaf
 │     ├─ parser_state_setup        <- leaf
-│     ├─ parser_worker             <- thread-lifecycle aggregate
-│     │  ├─ parser_graph_construction <- leaf
-│     │  └─ parser_grammar_execution   <- leaf
-│     │     (parser_error_conversion is a failure-only sibling leaf)
+│     ├─ parser_grammar_execution   <- leaf
 │     └─ parser_directive_validation <- leaf after grammar success
 └─ compile_pipeline     <- post-discovery query/backend aggregate
    ├─ semantic_astgen   <- aggregate: canonical semantic AST -> RIR
@@ -114,11 +110,13 @@ per-workload medians, not the accounting for a single run.
 relative profile (which passes dominate), not a hard threshold.**
 
 This historical table predates schema v2, the canonical parsed-module frontend,
-`definition_snapshot_modules`, and `rir_declaration_index`. It therefore shows
-the retired symbol-merge span and the then-combined `parse_file` leaf rather
-than separate `lexer` and `parser` rows. Its totals were already taken from the
-old `compile` row, not the inflated old `total_ms`, and remain valid as
-compiler-pipeline measurements.
+`definition_snapshot_modules`, `rir_declaration_index`, and the RUE-905 parser
+replacement. It measured the former Chumsky parser, so its parser timings are a
+pre-replacement baseline rather than measurements of the current handwritten
+parser. It therefore shows the retired symbol-merge span and the then-combined
+`parse_file` leaf rather than separate `lexer` and `parser` rows. Its totals
+were already taken from the old `compile` row, not the inflated old `total_ms`,
+and remain valid as historical compiler-pipeline measurements.
 
 - Host: Intel Core i9-14900K, Linux x86-64 (WSL2), 32 logical CPUs.
 - Build: the buck2 **DEFAULT** profile as produced by `scripts/rue-bin`
@@ -167,12 +165,13 @@ compiler-pipeline measurements.
 1. **`parse_file` is the dominant cost — by a wide margin.** It is 62% of total
    corpus time and rises to **48–79% of a single large compile**. Lexing itself
    is cheap (measured ~20 ms for the 12k-line `deep_nesting.rue`); the cost is
-   in the recursive-descent **parser** and AST construction. This is the first
-   place to look for a speedup. It is also a good future parallelization
-   candidate, but files do **not** parse in parallel today: the compiler parses
-   them sequentially with a shared interner. Per-file parser throughput is the
-   immediate target; parse parallelism would also require interner merging and
-   AST symbol remapping.
+   in the former Chumsky parser and AST construction. RUE-276 had already
+   removed the nested-block exponential path, and RUE-891 later removed the
+   remaining continued-block and slice-type exponential paths. RUE-905 replaced
+   that already-linearized parser; fresh measurements are required before
+   treating parsing as the current dominant cost. Files still parse
+   sequentially with a shared interner, so parse parallelism would require
+   interner merging and AST symbol remapping.
 
 2. **`codegen` is second (~17%)**, concentrated where there is a lot of code to
    emit (`many_functions`, `large_structs`). This covers MIR lowering, register
@@ -193,21 +192,19 @@ compiler-pipeline measurements.
 
 ### What would speed the hot passes up
 
-- **parser:** the now-separated lexer/parser rows confirm lexing is cheap.
-  Profile parser internals, reduce per-token allocation and re-scanning, and
-  fix the exponential blowup below (the extreme tail of "parsing is
-  expensive"). Split parser sub-phases only where that profile shows another
-  broad boundary hiding the cost.
+- **parser (historical):** the baseline confirmed lexing was cheap relative to
+  the former parser. RUE-905 replaced that implementation; profile the current
+  parser before choosing further parser work.
 - **codegen:** add per-sub-phase spans (lower / regalloc / emit) to see which
   dominates before touching it; regalloc is the usual suspect under pressure.
 - **sema:** watch for quadratic scans over symbols/types as programs grow.
 
-## Known pathology: exponential parse time on nested blocks
+## Resolved historical pathology: exponential parse time on nested blocks
 
-`benchmarks/stress/deep_nesting.rue` is **excluded from the default corpus**
-because the parser is **exponential in block-nesting depth**. Lexing is fine
-(~20 ms), but `--emit ast` never completes in reasonable time. A controlled
-measurement (plain `{ … }` blocks nested N deep, DEFAULT build, this host):
+An early version of the former Chumsky parser was **exponential in
+block-nesting depth**. The following controlled measurement (plain `{ … }`
+blocks nested N deep, DEFAULT build, this host) predates the fix and is retained
+only as historical evidence:
 
 | nesting depth | parse (`--emit ast`) |
 |---|---|
@@ -218,13 +215,13 @@ measurement (plain `{ … }` blocks nested N deep, DEFAULT build, this host):
 | 18 | 6.94 s |
 | 20 | > 30 s (killed) |
 
-Each added level roughly **doubles** parse time — i.e. **O(2^depth)**. That
-means `deep_nesting.rue` (nests ~40 levels) cannot be parsed. `bench.sh` logs
-and drops failed benchmark iterations, but result validation now rejects any
-run that does not contain the manifest's exact benchmark set, so this failure
-cannot silently enter benchmark history. This is a real parser bug, filed
-separately; it is out of scope for this measurement-only change. Once fixed,
-add `deep_nesting` back to `default_corpus()` in `scripts/perf-baseline.py`.
+Each added level roughly doubled parse time — i.e. **O(2^depth)**. RUE-276
+fixed the nested-block path in commit `b2197fd9`; RUE-891 later fixed the
+remaining continued-block and slice-type paths in commit `2de9f67a`. RUE-905
+replaced an already-linearized parser and preserves these guarantees with
+current implementation regressions; it was not the original complexity fix.
+Current benchmark manifests include `deep_nesting`, and this table must not be
+used to characterize the replacement parser.
 
 ## Build profile (release vs. DEFAULT)
 

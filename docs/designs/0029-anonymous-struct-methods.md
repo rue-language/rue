@@ -209,7 +209,7 @@ Epic: rue-nj40 (historical bd ID, pre-Linear; the `.N` suffixes below are its su
 ### Phase 1: Parser & AST (historical bd ID rue-nj40.1, pre-Linear) ✅
 
 - [x] Add `methods: Vec<Method>` to `TypeExpr::AnonymousStruct` in AST
-- [x] Update Chumsky parser to accept `fn` inside `struct { ... }`
+- [x] Update the parser to accept `fn` inside `struct { ... }`
 - [x] Add `Self` as a special type name in anonymous struct context
 - [x] Add `SelfType` token to lexer and `Self { ... }` struct literal expression
 - [x] Add preview gate `anon_struct_methods`

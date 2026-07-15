@@ -1,8 +1,7 @@
 //! Post-parse AST validation.
 //!
-//! Checks that need the interner (resolving names to strings for the
-//! diagnostic) and therefore can't easily run inside the chumsky
-//! combinators, which only carry pre-interned symbols in their state.
+//! Checks that need the interner to resolve names for diagnostics and are
+//! clearer as whole-AST policy than as token grammar decisions.
 //!
 //! Currently this validates @-directive names, arguments, and placement: an
 //! unknown directive such as `@important fn main() ...` used to be silently
