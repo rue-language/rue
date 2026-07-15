@@ -176,6 +176,7 @@ pub use rue_span::{FileId, Span};
 pub use rue_target::{Arch, Target};
 
 // Internal phase vocabulary. These are intentionally not part of the facade.
+#[cfg(test)]
 pub(crate) use canonical_lower::lower_canonical_rir;
 #[cfg(test)]
 pub(crate) use canonical_merge::merge_parsed_modules;

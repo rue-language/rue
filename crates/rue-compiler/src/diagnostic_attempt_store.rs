@@ -116,7 +116,7 @@ pub(crate) struct DiagnosticRetentionMetrics {
     pub source_bytes: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct IndexedDiagnosticAttempt {
     id: u64,
     snapshot: Arc<FrontendDiagnosticSnapshot>,
@@ -128,7 +128,7 @@ struct IndexedDiagnosticAttempt {
 /// batch has exactly one store-owned history entry; producer caches can retain
 /// the same origin `Arc` so reuse can restore it after index eviction, and
 /// caller-owned `Arc`s remain outside the store's retention policy.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct DiagnosticAttemptStore {
     entries: VecDeque<IndexedDiagnosticAttempt>,
     next_id: u64,

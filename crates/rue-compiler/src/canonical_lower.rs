@@ -3,7 +3,9 @@
 use std::cell::RefCell;
 use std::ops::Range;
 
-use rue_error::{CompileError, CompileResult};
+use rue_error::CompileError;
+#[cfg(test)]
+use rue_error::CompileResult;
 use rue_rir::{AstGen, InstRef, Rir};
 use rue_span::FileId;
 
@@ -97,13 +99,21 @@ impl CanonicalRirOutput {
 }
 
 /// Lower canonical module views in stable `ModuleId` order into one RIR.
+#[cfg(test)]
 pub fn lower_canonical_rir(merged: &CanonicalMergedProgram) -> CompileResult<CanonicalRirOutput> {
+    lower_canonical_rir_with_work(merged).map_err(|(error, _)| error)
+}
+
+pub(crate) fn lower_canonical_rir_with_work(
+    merged: &CanonicalMergedProgram,
+) -> Result<CanonicalRirOutput, (CompileError, CanonicalRirWork)> {
     let ast = merged.ast();
     let symbols = SemanticSymbolUniverse::from_modules(ast.modules());
     let current_view = RefCell::<Option<crate::parsed_modules::ParsedAstView>>::new(None);
     let first_error = RefCell::<Option<CompileError>>::new(None);
 
     let mut module_ranges = Vec::with_capacity(ast.modules().len());
+    let mut work = CanonicalRirWork::default();
     let rir = {
         let mut generator = AstGen::with_symbol_normalizer(symbols.interner(), |local| {
             let view = current_view.borrow();
@@ -127,7 +137,17 @@ pub fn lower_canonical_rir(merged: &CanonicalMergedProgram) -> CompileResult<Can
         });
 
         for view in ast.ast_views() {
-            ast.validate_view(&view)?;
+            if let Err(error) = ast.validate_view(&view) {
+                drop(generator);
+                let translation = symbols.work();
+                work.symbol_fields_translated = translation.local_symbol_resolutions;
+                work.semantic_intern_attempts = translation.semantic_intern_attempts;
+                work.unique_semantic_strings = translation.unique_semantic_strings;
+                work.semantic_strings_retained = symbols.interner().len();
+                return Err((error, work));
+            }
+            work.modules_visited += 1;
+            work.items_visited += view.module().ast().items.len();
             *current_view.borrow_mut() = Some(view.clone());
             let instruction_start = generator.instruction_len() as u32;
             let extra_start = generator.extra_len() as u32;
@@ -138,26 +158,23 @@ pub fn lower_canonical_rir(merged: &CanonicalMergedProgram) -> CompileResult<Can
                 extra: extra_start..generator.extra_len() as u32,
             });
             if let Some(error) = first_error.borrow_mut().take() {
-                return Err(error);
+                drop(generator);
+                let translation = symbols.work();
+                work.symbol_fields_translated = translation.local_symbol_resolutions;
+                work.semantic_intern_attempts = translation.semantic_intern_attempts;
+                work.unique_semantic_strings = translation.unique_semantic_strings;
+                work.semantic_strings_retained = symbols.interner().len();
+                return Err((error, work));
             }
         }
         generator.finish()
     };
 
     let translation = symbols.work();
-    let work = CanonicalRirWork {
-        modules_visited: ast.modules().len(),
-        items_visited: ast
-            .modules()
-            .iter()
-            .map(|module| module.ast().items.len())
-            .sum(),
-        symbol_fields_translated: translation.local_symbol_resolutions,
-        semantic_intern_attempts: translation.semantic_intern_attempts,
-        unique_semantic_strings: translation.unique_semantic_strings,
-        semantic_strings_retained: symbols.interner().len(),
-        ..CanonicalRirWork::default()
-    };
+    work.symbol_fields_translated = translation.local_symbol_resolutions;
+    work.semantic_intern_attempts = translation.semantic_intern_attempts;
+    work.unique_semantic_strings = translation.unique_semantic_strings;
+    work.semantic_strings_retained = symbols.interner().len();
     Ok(CanonicalRirOutput {
         source_revision: ast.source_revision().clone(),
         rir,
