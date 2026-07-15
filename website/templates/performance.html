@@ -35,8 +35,14 @@
                     <h2 id="diagnostic-title">Compilation time by measured commit</h2>
                     <p>Absolute milliseconds. Lower is better. Select a point or choose two commits below.</p>
                 </div>
-                <div class="chart-key"><span class="key-total"></span> compilation time<br><i></i> comparison boundary</div>
+                <div class="chart-key"><span class="key-total"></span> compilation time<br><i></i> new measurement segment</div>
             </div>
+            <aside class="performance-reading-guide" aria-label="How to read the compilation-time chart">
+                <strong>How to read this chart.</strong> Within one connected line, downward means the compiler
+                got faster and upward means it got slower. A dashed marker starts a new measurement segment because
+                benchmark conditions changed or commits were not measured continuously. The marker is not a compiler
+                result, and the line stops because a change across it would not be a trustworthy performance comparison.
+            </aside>
             <div id="latency-chart" class="diagnostic-chart" aria-live="polite"></div>
 
             <div class="performance-section-heading phase-heading">
@@ -72,7 +78,7 @@
                 <div class="performance-section-heading">
                     <div>
                         <h2 id="evolution-title">Long-term performance evolution</h2>
-                        <p>Calendar-scaled normalized performance. Faint points are measurements; solid daily or weekly trends include observed variation and stop at every gap or regime change.</p>
+                        <p>This view shows normalized compile speed, not milliseconds. The first measurement in each connected machine segment is assigned 100, and higher is faster: roughly, 105 means compile speed is 5% above that segment’s baseline. Faint points are measurements; solid daily or weekly trends include observed variation. Compare direction only within a connected segment. Do not rank machines by their indexes or interpret a change across a disconnected measurement boundary.</p>
                     </div>
                 </div>
                 <div class="evolution-controls">
@@ -131,7 +137,7 @@
         <section class="prose methodology">
             <h2>Methodology</h2>
             <p>Benchmarks run automatically against trunk on Linux x86-64, Linux ARM64, and macOS ARM64 runners. Each point represents a measured commit. When commits land faster than a run completes, an in-flight run may be cancelled in favor of the newest commit.</p>
-            <p>The primary charts use absolute time on one machine. Comparisons only cross points that the benchmark model marks comparable, and their classification accounts for observed variation. Normalized indexes are reserved for the cross-platform view because absolute timings from unlike machines should not be overlaid.</p>
+            <p>The primary charts use absolute time on one machine. Comparisons only cross points that the benchmark model marks comparable, and their classification accounts for observed variation. A disconnected line begins a new baseline; it does not imply that compiler performance jumped. Normalized indexes are reserved for comparing the direction of change within each machine because absolute timings from unlike machines should not be overlaid.</p>
         </section>
     </div>
 </article>
@@ -171,6 +177,18 @@
     }
     function short(commit) { return commit ? commit.slice(0, 8) : 'unknown'; }
     function pointLabel(point) { return `${short(point.commit)} — ${point.subject || 'subject unavailable'}`; }
+    function measurementBoundaryReason(reason) {
+        const explanations = {
+            history_start: 'first recorded measurement',
+            regime_changed: 'benchmark conditions changed',
+            regime_boundary: 'benchmark conditions or measurement coverage changed',
+            scenario_changed: 'the measured compiler scenario changed',
+            workload_composition_changed: 'the benchmark workload set changed',
+            comparison_boundary: 'measurement coverage changed',
+            baseline_boundary: 'measurement coverage changed'
+        };
+        return explanations[reason] || 'measurement conditions or coverage changed';
+    }
     function appendLink(parent, label, href) {
         if (!href) { parent.appendChild(document.createTextNode(label)); return; }
         const link = node('a', label); link.href = href; parent.appendChild(link);
@@ -631,7 +649,7 @@
             fields.append(labeledField('Represented commits', point.coverage.represented_commits.length ? point.coverage.represented_commits.map(short).join(', ') : 'none recorded'));
             fields.append(labeledField('Skipped commits', point.coverage.skipped_commits.length ? point.coverage.skipped_commits.map(short).join(', ') : 'none recorded'));
             fields.append(labeledField('Coverage gap', point.coverage.gap_unknown ? 'unknown' : 'known'));
-            fields.append(labeledField('Comparison status', point.comparability.status === 'comparable' ? 'comparable with previous measurement' : `new boundary: ${String(point.comparability.reason).replaceAll('_', ' ')}`));
+            fields.append(labeledField('Measurement continuity', point.comparability.status === 'comparable' ? 'continuous with the previous measurement' : `new segment: ${measurementBoundaryReason(point.comparability.reason)}`));
             const headline = point.comparability.headline;
             fields.append(labeledField('Absolute suite', fmt(point.suite_ms, 2)));
             fields.append(labeledField('Relative result', headline && headline.classification !== 'insufficient_data' ? `${headline.classification}; ${headline.delta_pct >= 0 ? '+' : ''}${headline.delta_pct.toFixed(2)}%; variation ${headline.variation_pct.toFixed(2)}%` : 'not classified'));
