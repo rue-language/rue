@@ -46,6 +46,7 @@ mod import_graph;
 mod linking;
 mod parsed_modules;
 mod queries;
+mod query_graph;
 mod semantic_symbols;
 mod session;
 mod source_identity;
@@ -100,7 +101,7 @@ pub use queries::{
 };
 pub use session::{
     CanonicalImportGraphOutput, CompilerSession, CompilerSessionUpdate, CompilerSessionWork,
-    DefinitionQueryRecord, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
+    DefinitionQueryRecord, DifferentialOracleFault, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
     FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT, FrontendDiagnosticSnapshot,
     FrontendDiagnosticStage, FrontendQueryWork, FrontendRetentionMetrics,
     ImportDiagnosticInputDescriptor, ImportDiscoveryRevisionArtifact,
@@ -189,7 +190,7 @@ pub(crate) use import_graph::validate_canonical_import_graph;
 pub(crate) use linking::{
     parse_runtime_archive, runtime_for_target, runtime_for_target_with_host, validate_runtime,
 };
-pub(crate) use parsed_modules::{CanonicalParseSession, CanonicalParseUpdate};
+pub(crate) use parsed_modules::CanonicalParseUpdate;
 pub(crate) use queries::build_functions_and_cfgs;
 #[cfg(test)]
 pub(crate) use rue_parser::Item;

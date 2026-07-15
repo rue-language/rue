@@ -28,6 +28,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("linking", include_str!("linking.rs")),
     ("parsed_modules", include_str!("parsed_modules.rs")),
     ("queries", include_str!("queries.rs")),
+    ("query_graph", include_str!("query_graph.rs")),
     ("semantic_symbols", include_str!("semantic_symbols.rs")),
     ("session", include_str!("session.rs")),
     ("source_identity", include_str!("source_identity.rs")),
@@ -155,6 +156,33 @@ fn removed_parallel_entry_points_cannot_return() {
             "removed compiler entry point returned: {removed}"
         );
     }
+}
+
+#[test]
+fn query_attempts_have_one_family_owned_representation() {
+    let production = PRODUCTION_MODULES
+        .iter()
+        .map(|(_, source)| *source)
+        .collect::<String>();
+    for peer in [
+        ["QueryAttempt", "Ledger"].concat(),
+        ["QueryAttempt", "Work"].concat(),
+        ["QueryAttempt", "Identity"].concat(),
+        ["attempt_", "origin"].concat(),
+        ["origins: Vec", "Deque<Arc<FrontendDiagnosticSnapshot>>"].concat(),
+        ["SyntaxParse", "Producer"].concat(),
+        ["CanonicalParse", "Session"].concat(),
+        ["QueryPublication", "Snapshot"].concat(),
+    ] {
+        assert!(
+            !production.contains(&peer),
+            "parallel query-attempt ownership returned: {peer}"
+        );
+    }
+    assert!(
+        production.contains("attempt: Arc<dyn AttemptView>"),
+        "diagnostic and metrics indexes must retain the family-owned attempt Arc"
+    );
 }
 
 #[test]

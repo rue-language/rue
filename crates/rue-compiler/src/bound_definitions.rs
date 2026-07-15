@@ -194,7 +194,7 @@ pub struct BoundDefinitionRecord {
 
 /// Parser-authored boundaries for hashing a declaration without treating its
 /// executable payload as part of its signature.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BoundDefinitionInputPartition {
     Body { signature: Span, body: Span },
     Initializer { signature: Span, initializer: Span },
@@ -251,6 +251,23 @@ pub struct BoundDefinitionSet {
 }
 
 impl BoundDefinitionSet {
+    pub(crate) fn structurally_eq(&self, other: &Self) -> bool {
+        self.source_revision == other.source_revision
+            && self.manifest_work == other.manifest_work
+            && self.definitions.len() == other.definitions.len()
+            && self
+                .definitions
+                .iter()
+                .zip(other.definitions.iter())
+                .all(|(left, right)| {
+                    left.stable_key() == right.stable_key()
+                        && left.occurrence == right.occurrence
+                        && left.declaration_span == right.declaration_span
+                        && left.visibility == right.visibility
+                        && left.input_partition == right.input_partition
+                })
+    }
+
     pub fn source_revision(&self) -> &SourceRevision {
         &self.source_revision
     }

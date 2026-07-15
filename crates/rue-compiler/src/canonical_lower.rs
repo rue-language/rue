@@ -6,6 +6,7 @@ use std::ops::Range;
 use rue_error::CompileError;
 #[cfg(test)]
 use rue_error::CompileResult;
+use rue_rir::RirPrinter;
 use rue_rir::{AstGen, InstRef, Rir};
 use rue_span::FileId;
 
@@ -50,6 +51,22 @@ pub struct CanonicalRirPresentationOrder {
 }
 
 impl CanonicalRirOutput {
+    pub(crate) fn structurally_eq(&self, other: &Self) -> bool {
+        self.source_revision == other.source_revision
+            && RirPrinter::new(&self.rir, self.symbols.interner()).to_string()
+                == RirPrinter::new(&other.rir, other.symbols.interner()).to_string()
+            && self.module_ranges.len() == other.module_ranges.len()
+            && self
+                .module_ranges
+                .iter()
+                .zip(other.module_ranges.iter())
+                .all(|(left, right)| {
+                    left.file_id == right.file_id
+                        && left.instructions == right.instructions
+                        && left.extra == right.extra
+                })
+    }
+
     pub fn into_parts(self) -> (Rir, SemanticSymbolUniverse) {
         (self.rir, self.symbols)
     }

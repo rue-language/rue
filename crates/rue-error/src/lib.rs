@@ -623,7 +623,7 @@ pub type PreviewFeatures = HashSet<PreviewFeature>;
 ///
 /// Labels appear as additional annotations in the source snippet,
 /// helping users understand the relationship between different parts of code.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Label {
     /// The message explaining this location's relevance.
     pub message: String,
@@ -645,7 +645,7 @@ impl Label {
 ///
 /// Notes appear as footer messages and explain why something happened
 /// or provide additional context about the diagnostic.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note(pub String);
 
 impl Note {
@@ -665,7 +665,7 @@ impl std::fmt::Display for Note {
 ///
 /// Helps appear as footer messages and suggest specific actions
 /// the user can take to resolve the issue.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Help(pub String);
 
 impl Help {
@@ -732,7 +732,7 @@ impl std::fmt::Display for Applicability {
 ///
 /// Suggestions provide machine-readable fix information that IDEs and
 /// tools can use to offer quick-fix actions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Suggestion {
     /// Human-readable description of what the suggestion does.
     pub message: String,
@@ -808,7 +808,7 @@ impl Suggestion {
 ///
 /// This struct collects all supplementary information that can be
 /// attached to a diagnostic message.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Diagnostic {
     /// Secondary labels pointing to related code locations.
     pub labels: Vec<Label>,
@@ -854,7 +854,7 @@ impl Diagnostic {
 ///     .with_note("types must match exactly")
 ///     .with_help("consider adding a type conversion")
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "compiler diagnostics should not be ignored"]
 pub struct DiagnosticWrapper<K> {
     /// The specific kind of diagnostic.
@@ -1822,7 +1822,7 @@ pub type CompileResult<T> = Result<T, CompileError>;
 /// - An empty `CompileErrors` represents no errors (not a failure)
 /// - A non-empty `CompileErrors` represents one or more compilation failures
 /// - When converted to a single `CompileError`, the first error is used
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompileErrors {
     errors: Vec<CompileError>,
 }
