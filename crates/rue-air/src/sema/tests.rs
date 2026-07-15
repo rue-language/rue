@@ -532,6 +532,29 @@ mod tests {
     }
 
     #[test]
+    fn non_string_tail_in_str_function_is_rejected_during_sema() {
+        let errors = compile_to_air(
+            r#"
+                fn choose(c: bool) -> str {
+                    if c { "hello" } else { "world" } == choose(true)
+                }
+                fn main() -> i32 {
+                    let s: str = "hello";
+                    if s == choose(true) { 0 } else { 1 }
+                }
+            "#,
+        )
+        .expect_err("a bool tail cannot satisfy a str return type");
+
+        assert!(matches!(
+            &errors.iter().next().unwrap().kind,
+            ErrorKind::TypeMismatch { expected, found }
+                if expected == "bool" && found == "str"
+                    || expected == "str" && found == "bool"
+        ));
+    }
+
+    #[test]
     fn specialization_work_separates_unique_and_duplicate_requests() {
         let output = compile_to_air(
             "fn identity(comptime T: type, value: T) -> T { value }\nfn main() -> i32 { identity(i32, 1) + identity(i32, 2) }",
