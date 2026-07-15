@@ -30,6 +30,7 @@ def load_module(name: str, relative_path: str):
 
 validator = load_module("validate_benchmark", "scripts/validate-benchmark.py")
 collection = load_module("benchmark_collection", "scripts/benchmark_collection.py")
+annotations = load_module("benchmark_annotations", "scripts/benchmark_annotations.py")
 charts = load_module("generate_charts", "scripts/generate-charts.py")
 site_status = load_module("generate_site_status", "scripts/generate-site-status.py")
 history_tools = load_module("benchmark_history", "scripts/benchmark_history.py")
@@ -1068,6 +1069,218 @@ class BenchmarkMetricSemanticsTests(unittest.TestCase):
             status["performance_index"]["value"],
             100 * 100 / 124,
         )
+
+
+class TestBenchmarkAnnotations(unittest.TestCase):
+    class Resolver:
+        def __init__(self, commits=("aaaaaaa", "bbbbbbb", "ccccccc")):
+            self.commits = {commit: commit[0] * 40 for commit in commits}
+
+        def canonical(self, commit):
+            if commit not in self.commits and commit not in self.commits.values():
+                raise ValueError(f"unknown annotation commit: {commit}")
+            return self.commits.get(commit, commit)
+
+        def is_ancestor(self, start, end):
+            order = list(self.commits.values())
+            return order.index(start) <= order.index(end)
+
+        def timestamp(self, commit):
+            values = list(self.commits.values())
+            if commit not in values:
+                raise ValueError("unknown")
+            return values.index(commit) + 1
+
+    @staticmethod
+    def authored(commit="aaaaaaa", category="optimization", title="Useful optimization"):
+        return {
+            "commit": commit,
+            "category": category,
+            "title": title,
+            "explanation": "This is a concise explanation of the benchmark event.",
+            "link": "https://github.com/rue-language/rue/pull/123",
+            "scope": {
+                "metrics": ["latency"],
+                "workloads": ["probe"],
+                "platforms": ["x86-64-linux"],
+            },
+        }
+
+    @staticmethod
+    def sample_run(commit, regime=None):
+        publication = {"comparable": True, "regime_id": "regime"}
+        if regime is not None:
+            publication["regime"] = regime
+        return {"commit": commit, "publication": publication, "benchmarks": []}
+
+    def test_commit_ranges_and_same_commit_events_normalize_deterministically(self):
+        resolver = self.Resolver()
+        first = self.authored("bbbbbbb", title="Zulu")
+        second = self.authored("bbbbbbb", category="repair", title="Alpha")
+        ranged = {
+            **self.authored(title="Range"),
+            "start_commit": "aaaaaaa",
+            "end_commit": "ccccccc",
+        }
+        del ranged["commit"]
+        stream = annotations.normalized_annotations([], [first, ranged, second], resolver)
+        self.assertEqual([event["title"] for event in stream], ["Range", "Zulu", "Alpha"])
+        self.assertEqual(stream[0]["location"]["kind"], "range")
+        self.assertEqual(len({event["id"] for event in stream}), 3)
+
+    def test_invalid_categories_commits_links_scopes_and_fields_are_rejected(self):
+        resolver = self.Resolver()
+        mutations = [
+            (lambda event: event.update(category="invalid"), "invalid category"),
+            (lambda event: event.update(commit="ddddddd"), "unknown annotation commit"),
+            (lambda event: event.update(link="https://example.com/123"), "must link"),
+            (lambda event: event["scope"].update(metrics=["seconds_plus_bytes"]), "invalid metric"),
+            (lambda event: event["scope"].update(workloads=[" probe"]), "unique string list"),
+            (lambda event: event["scope"].update(platforms=["linux/x86"]), "unique string list"),
+            (lambda event: event["scope"].update(workloads=["*", "probe"]), "cannot combine"),
+            (lambda event: event["scope"].update(metrics=["*", "latency"]), "cannot combine"),
+            (lambda event: event.update(typo=True), "unknown fields"),
+            (lambda event: event.update(title=""), "title must be"),
+        ]
+        for mutate, message in mutations:
+            with self.subTest(message=message):
+                event = self.authored()
+                mutate(event)
+                with self.assertRaisesRegex(ValueError, message):
+                    annotations.normalized_annotations([], [event], resolver)
+
+    def test_duplicate_and_conflicting_events_are_rejected(self):
+        resolver = self.Resolver()
+        event = self.authored()
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            annotations.normalized_annotations([], [event, dict(event)], resolver)
+        conflict = {**event, "explanation": "A different explanation."}
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            annotations.normalized_annotations([], [event, conflict], resolver)
+
+    def test_invalid_or_incomplete_ranges_are_rejected(self):
+        resolver = self.Resolver()
+        reversed_range = {
+            **self.authored(),
+            "start_commit": "ccccccc",
+            "end_commit": "aaaaaaa",
+        }
+        del reversed_range["commit"]
+        with self.assertRaisesRegex(ValueError, "ancestor"):
+            annotations.normalized_annotations([], [reversed_range], resolver)
+        incomplete = {**self.authored(), "start_commit": "aaaaaaa"}
+        del incomplete["commit"]
+        with self.assertRaisesRegex(ValueError, "commit keys"):
+            annotations.normalized_annotations([], [incomplete], resolver)
+
+    def test_every_measurement_identity_change_is_derived_with_all_dimensions(self):
+        before = {
+            "platform": "x86-64-linux",
+            "corpus_sha256": "old",
+            "timing_schema_versions": [1],
+            "build_mode": "release",
+            "iteration_policy": {"kind": "fixed", "iterations": 5},
+            "runner_image": "old-image",
+            "scenario_family": "cold_compilation",
+        }
+        after = {
+            **before,
+            "corpus_sha256": "new",
+            "timing_schema_versions": [2],
+            "runner_image": "new-image",
+        }
+        events = annotations.derived_identity_annotations(
+            [
+                self.sample_run("a" * 40, before),
+                self.sample_run("b" * 40, after),
+            ],
+            self.Resolver(),
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["changed_dimensions"],
+            ["corpus_sha256", "runner_image", "timing_schema_versions"],
+        )
+        self.assertEqual(events[0]["dimension_changes"]["corpus_sha256"], {
+            "before": "old", "after": "new"
+        })
+        self.assertEqual(events[0]["identity_change"]["before"]["status"], "explicit")
+        self.assertEqual(events[0]["identity_change"]["after"]["status"], "explicit")
+        self.assertEqual(events[0]["category"], "measurement_infrastructure")
+
+    def test_legacy_to_explicit_transition_is_automatically_annotated(self):
+        regime = {"platform": "x86-64-linux", "runner_image": "image"}
+        events = annotations.derived_identity_annotations(
+            [
+                self.sample_run("a" * 40),
+                self.sample_run("b" * 40, regime),
+            ],
+            self.Resolver(),
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["location"]["commit"], "b" * 40)
+        self.assertEqual(events[0]["identity_change"]["before"], {
+            "status": "unknown", "dimensions": None
+        })
+        self.assertEqual(events[0]["identity_change"]["after"], {
+            "status": "explicit", "dimensions": regime
+        })
+
+    def test_explicit_to_legacy_transition_is_automatically_annotated(self):
+        regime = {"platform": "x86-64-linux", "runner_image": "image"}
+        events = annotations.derived_identity_annotations(
+            [
+                self.sample_run("a" * 40, regime),
+                self.sample_run("b" * 40),
+            ],
+            self.Resolver(),
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["identity_change"]["before"]["status"], "explicit")
+        self.assertEqual(events[0]["identity_change"]["after"], {
+            "status": "unknown", "dimensions": None
+        })
+
+    def test_derived_transition_rejects_unknown_run_commit(self):
+        with self.assertRaisesRegex(ValueError, "unknown annotation commit"):
+            annotations.derived_identity_annotations(
+                [
+                    self.sample_run("a" * 40, {"platform": "one"}),
+                    self.sample_run("d" * 40, {"platform": "two"}),
+                ],
+                self.Resolver(),
+            )
+
+    def test_commit_order_resolution_errors_are_not_silenced(self):
+        resolver = self.Resolver()
+        with mock.patch.object(
+            resolver, "timestamp", side_effect=ValueError("timestamp failure")
+        ):
+            with self.assertRaisesRegex(ValueError, "timestamp failure"):
+                annotations.normalized_annotations(
+                    [], [self.authored()], resolver
+                )
+
+    def test_legacy_history_and_missing_annotation_file_are_supported(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.assertEqual(
+                annotations.load_annotations(Path(temp_dir) / "missing.toml"), []
+            )
+        self.assertEqual(
+            annotations.normalized_annotations(
+                [self.sample_run("legacy")], [], self.Resolver()
+            ),
+            [],
+        )
+
+    def test_recent_status_receives_the_canonical_stream_unchanged(self):
+        run = BenchmarkMetricSemanticsTests.sample_run(
+            "a" * 40, {"probe": [10, 10, 10]}
+        )
+        stream = annotations.normalized_annotations(
+            [run], [self.authored()], self.Resolver()
+        )
+        self.assertEqual(site_status.sparkline_data([run], stream)["annotations"], stream)
 
 
 class BenchmarkCollectionTests(unittest.TestCase):

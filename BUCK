@@ -102,6 +102,7 @@ filegroup(
     srcs = glob(["benchmarks/**"]) + [
         "scripts/append-benchmark.py",
         "scripts/benchmark_collection.py",
+        "scripts/benchmark_annotations.py",
         "scripts/benchmark_history.py",
         "scripts/benchmark_metrics.py",
         "scripts/benchmark_validation.py",

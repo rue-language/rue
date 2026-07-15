@@ -38,7 +38,16 @@ from benchmark_history import (
     load_history,
     run_regime,
 )
+from benchmark_annotations import (
+    DEFAULT_ANNOTATIONS,
+    GitCommitResolver,
+    load_annotations,
+    normalized_annotation_stream,
+    normalized_annotations,
+)
 from benchmark_metrics import derive_history_metrics
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Chart dimensions
 TIMELINE_WIDTH = 800
@@ -1229,6 +1238,11 @@ def generate_platform_charts(history_path: Path, output_dir: Path, platform: Opt
         "coverage": coverage,
         "regimes": regime_summary(runs),
         "metric_semantics": derive_history_metrics(runs),
+        "annotations": normalized_annotations(
+            runs,
+            load_annotations(DEFAULT_ANNOTATIONS),
+            GitCommitResolver(REPO_ROOT),
+        ),
     }
     if platform:
         metadata["platform"] = platform
@@ -1294,7 +1308,12 @@ def generate_comparison_charts(history_files: list[Path], output_dir: Path):
     # Generate comparison metadata
     metadata = {
         "platforms": platform_info_list,
-        "default_platform": platform_info_list[0]["id"] if platform_info_list else None
+        "default_platform": platform_info_list[0]["id"] if platform_info_list else None,
+        "annotations": normalized_annotation_stream(
+            list(platform_data.values()),
+            load_annotations(DEFAULT_ANNOTATIONS),
+            GitCommitResolver(REPO_ROOT),
+        ),
     }
     metadata_path = output_dir / "metadata.json"
     with open(metadata_path, "w") as f:

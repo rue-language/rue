@@ -12,6 +12,8 @@ on:
       - 'website/**'
       - 'scripts/generate-charts.py'
       - 'scripts/generate-site-status.py'
+      - 'scripts/benchmark_annotations.py'
+      - 'benchmarks/annotations.toml'
       - '.github/workflows/deploy-website.yml'
   # PRs still build (no deploy — that's trunk-only) on spec changes too, so a
   # spec edit that breaks the website build is caught before merge.
@@ -22,6 +24,8 @@ on:
       - 'docs/spec/**'
       - 'scripts/generate-charts.py'
       - 'scripts/generate-site-status.py'
+      - 'scripts/benchmark_annotations.py'
+      - 'benchmarks/annotations.toml'
       - '.github/workflows/deploy-website.yml'
   # Daily refresh so the published spec, benchmark sparkline, and status board
   # don't drift more than ~24 hours behind trunk.
@@ -47,6 +51,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # Annotation commit/range validation needs the authoritative history.
+          fetch-depth: 0
 
       - name: Setup dotslash
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
