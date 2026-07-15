@@ -1,141 +1,126 @@
 # Compiler session invalidation benchmark
 
-This opt-in benchmark characterizes `CompilerSession` without starting
-a compiler process per query. It uses generated source held in memory, performs
-no filesystem discovery during measured updates, and stops before backend code
-generation or linking.
+This opt-in benchmark is the canonical structural workload for
+`CompilerSession`. It runs entirely in process over owned `SourceSnapshot`
+values. Its measured semantic scenarios stop before backend emission; bounded
+cold-versus-reused parity checks additionally run the canonical backend and
+linker and require byte-identical executables.
 
-Run the full deterministic workload with:
+Run the deterministic N=128 workload with:
 
 ```sh
 ./buck2 run //crates/rue-compiler-session-bench:rue-compiler-session-bench -- \
   --modules 128 --warmup 3 --iterations 10 > session-invalidation.json
 ```
 
-The defaults are the values shown above. Setup constructs every `SourceSnapshot`
-before warmup starts. Each measured iteration creates fresh sessions and runs
-cold parse through semantic analysis, an exact no-op, a reachable root body edit,
-a module identity change, a failed syntax edit and recovery, then cold and reused
-stable definition queries. The semantic cold path performs one declaration bind
-and exports its durable baseline from that same bind. For supported named
-declarations, the reachable root body edit installs durable declaration payloads
-into a fresh AIR epoch, then analyzes current bodies and builds current CFGs. A
-second persistent session measures cold, exact-noop, reachable-root-body-edit,
-and module-identity-change dependency-manifest and semantic-invalidation-plan
-workloads.
+The historical `--modules` spelling is retained for command compatibility. In
+the RUE-720 completion scenarios N is the exact number of reachable analyzed
+bodies: `main` plus N-1 generated functions. One additional unreachable
+function is present solely to make an unrelated source edit execute the
+semantic query without changing the reachable program.
 
-The JSON contains nanosecond wall-time observations and structural work for each
-scenario. Treat structural counters as correctness gates: the driver aborts if
-reuse and invalidation do not match the scenario. Wall time is observational;
-compare repeated runs on the same otherwise-idle machine and do not impose a
-regression threshold without collecting a stable baseline first. The existing
-`bench.sh` history schema describes whole compiler invocations and binary output,
-so these stateful session samples intentionally use a separate schema rather
-than silently changing dashboard meaning.
+## Contract
 
-Schema version 2 added dependency-manifest and invalidation-plan query counters,
-separate manifest/plan timings, fingerprint comparisons, dependency/closure
-visits, and result cardinalities. At that historical stage production graphs
-were incomplete and plans conservatively reported full invalidation. Schema
-version 3 exercises complete supported graphs: exact no-op and reachable-root
-edits produce incremental plans with reusable declarations, while unsupported
-surfaces and global semantic-input changes still fail closed. Planning itself
-must run no RIR query or RIR instruction scan.
+Every iteration runs the original parse, declaration, diagnostic-retention,
+dependency-manifest, and invalidation-plan scenarios, followed by these
+supported body/CFG scenarios:
 
-At N=128 the structural gates require the supported reachable-root-body-edit
-workload to reuse and atomically install all 128 durable declaration records,
-skip ordinary declaration resolution, and perform no population export. Cold
-compilation performs one ordinary bind and exports the durable baseline from
-that bind. This is a measured declaration-resolution saving, not whole-pipeline
-incremental compilation: program merge/RIR and current body/CFG work still run.
-Constants, module values, function aliases, generic named methods, and anonymous
-structural owners currently fail closed to ordinary declaration resolution with
-zero partial installs. Persistent cache formats and LSP consumers remain
-deliberately out of scope.
+- `completion_cold_n`: one cold analysis of exactly N reachable bodies;
+- `completion_exact_noop`: whole-query reuse with no semantic execution;
+- `completion_unrelated_edit`: all N body and CFG artifacts import;
+- `completion_changed_reachable_body`: the edited leaf and its direct reverse
+  caller are reanalyzed while the other N-2 bodies import;
+- `completion_reverse_closure`: an N-dependent call chain proves exact
+  transitive reverse invalidation;
+- `completion_cfg_o0` and `completion_cfg_o1`: all N CFGs import and perform no
+  construction or optimization at either optimization level;
+- `completion_specialization_reuse`: stable specialization identity imports a
+  specialized body and its CFG after an unrelated edit;
+- `completion_failed_semantic` and `completion_failure_recovery`: a failed
+  request is retained as work evidence but cannot replace the last-good body or
+  CFG baseline.
 
-Schema version 3 adds the exact declaration-reuse ledger under
-`semantic_work.declaration_reuse`: plans, durable comparisons and reuse,
-skipped ordinary resolution, installs, fallbacks, semantic/index/shell epochs,
-population exports, and fallback epochs. Cold and successful declaration-reuse
-scenarios are hard-gated to one epoch/index/shell-predeclaration each. Cold
-reports one export; reuse reports none and no fallback epoch.
+The executable aborts on any structural mismatch. Wall time is observational;
+compare it only across repeated runs on an otherwise idle machine. The
+structural counters, not elapsed time, are the correctness gates.
 
-The ordinary test suite runs only a four-module, single-iteration structural
-smoke test through
-`//crates/rue-compiler-session-bench:rue-compiler-session-bench-test`; the
-128-module timing workload remains opt-in.
+For every reused completion scenario, a fresh session compiles the same source.
+The benchmark exact-compares the public canonical semantic/CFG artifacts,
+ordered type-pool entries, strings, warnings, stable definition keys,
+specialized durable-body payloads, body-owner and dependency records, retained
+diagnostics, and every non-work field exposed by the stable dependency manifest,
+including its durable ordinary bodies. The session-private retained CFG cache
+is not exposed as a comparison API; parity for it is established through the
+public remapped CFGs, exact import counters, and emitted output rather than an
+inaccessible cache-object claim. The benchmark closes the same canonical
+import-discovery revision in each session and requires byte-identical emitted
+executables and equal backend warnings. Successful comparisons are recorded as
+`differential_parity`; counter expectations remain scenario-specific because
+reuse is supposed to perform less work than cold compilation. Each parity
+record also serializes the fresh session's complete `cold_semantic_work` beside
+the scenario's reused `semantic_work`, and both sides are covered by exact
+structural gates. Exact no-op runs the same differential parity check even
+though its semantic output is a whole-query reuse.
 
-The
-[body-analysis and CFG incrementality audit](../notes/body-analysis-cfg-incrementality-audit.md)
-requires this ledger before body or CFG reuse is introduced. Counters describe
-actual operations, and parallel CFG counters reduce deterministic per-function
-values rather than timing-dependent shared state.
+## Work ledger
 
-Schema version 4 adds value-only body and CFG work. Top-level
-`semantic_work` records body attempts/successes/failures, AIR and local-string
-production, string remapping, specialization scans/calls/unique and duplicate
-requests/rewrites/rounds, specialization-driver failures, and specialized-body
-attempts/successes/failures.
-`semantic_work.cfg` records synthesized glue, functions considered and
-filtered, CFG attempts/successes/failures, AIR consumed, optimization attempts
-and completions (including non-O0 attempts), warnings, and implicit destructor
-targets. Counts describe both successful and failed semantic executions.
+Schema version 11 contains the complete body and CFG ledgers. Every field is a
+direct operation count reduced deterministically from value-owned records;
+none is inferred from timing.
 
-Schema version 5 adds `manifest_work.body_owner_events_translated`,
-`body_named_events_translated`, and `body_dependency_records_built`. The
-manifest now publishes one ordered stable input record for each supported
-ordinary body analyzed in the existing semantic pass, and the benchmark
-hard-gates zero extra RIR traversal.
-`semantic_work.body_dependency_air_instructions_observed` records the explicit
-post-emission type observation needed for already-resolved inferred/comptime
-nominal types; it is bounded by produced AIR and is not a second RIR pass.
+`semantic_work.durable_bodies` contains:
 
-Schema version 6 adds `semantic_work.body_owner_tokens`, with exact provisional,
-authoritative, validated, installed, and failed-validation counts. Ordinary and
-durable-fallback semantic epochs each receive a fresh issuer; the benchmark
-continues to claim no AIR or CFG retention or reuse.
+- candidate comparisons and fallbacks;
+- stable specialization-map attempts, successes, and failures;
+- export attempts, successes, rejections, and exported instruction/place/string
+  counts;
+- durable conversions, completions, failures, and stable-key joins;
+- finalization and projection attempts, completions, failures, and projected
+  instruction/place/string counts;
+- atomic import attempts, successes, failures, installed entities, and atomic
+  discards;
+- bodies reused and ordinary body analyses skipped.
 
-Schema version 7 adds `semantic_work.durable_bodies`. It counts ordinary-body
-export attempts, successful publications and fail-closed rejections; emitted
-instructions, places and strings; compiler-owned durable conversions and
-stable-key joins; projections into AIR's neutral import DTO; atomic fresh-epoch
-imports and installed contents. `reused_bodies` and `skipped_body_analyses` are
-zero on a cold request. Supported warning-free, non-generic ordinary free
-functions are retained only from the last fully successful semantic request.
-A later request uses the canonical stable-key invalidation plan plus exact
-owner and dependency fingerprints to project and atomically import candidates
-into the live AIR epoch. The counters record only bodies actually consumed by
-the existing reachability worklist; rejected or unreachable imports never
-claim avoided analysis. Warning-producing bodies and dependency surfaces owned
-by later incremental slices remain fail-closed ordinary fallbacks.
+`semantic_work.cfg` contains:
 
-Schema version 8 adds a `retention` object to every scenario. It reports current
-session-owned diagnostic entries, distinct diagnostic source attempts and
-bytes, unique dependency manifests, and invalidation plans. Structural gates
-enforce the production caps (16 diagnostics and eight plans, with no more than
-two plan-owned manifests per plan plus the current manifest). These gauges do
-not count diagnostic `Arc`s pinned by benchmark callers: ownership of those
-artifacts has intentionally left the session. Compiler unit stress tests run a
-32-round syntax-failure, semantic-failure, recovery, and edit sequence and a
-plan workload beyond the eviction cap, pinning bounded bytes, deterministic
-FIFO recomputation, last-good recovery, and clean-session parity.
+- drop-glue synthesis, functions considered and comptime functions filtered;
+- CFG builds attempted/succeeded/failed and AIR instructions consumed;
+- optimization attempts/completions and non-O0 level attempts;
+- warnings and implicit destructor targets emitted;
+- reuse candidates, import attempts/successes/failures, reuses, and fallbacks;
+- warnings and implicit destructor targets reused;
+- durable CFG export attempts/successes/rejections.
 
-Schema version 9 removes the obsolete population-binding query field. The
-authoritative `semantic_work.bind_invocations` and
-`semantic_work.declaration_reuse.durable_cache_population_exports` counters
-continue to gate the single-bind export path directly.
+All body, specialization, and CFG fields include work performed by failed
+semantic requests. Attempts are incremented before their fallible operation.
+Parallel CFG builders return per-function values which are reduced in canonical
+machine-symbol order.
 
-Schema version 10 adds explicit failed semantic-request accounting.
-`semantic_work.failed_requests` counts retained failure envelopes and
-`semantic_work.failure_phases` splits declaration, body-analysis, and CFG
-construction failures. All ordinary body, specialization, and CFG fields now
-include deterministic work performed before a failed request was discarded.
-Declaration failures likewise retain each counter completed before their exact
-fallible boundary, including declaration-index, binding, manifest, recovery
-body, and durable-reuse work when those stages were reached.
-Declaration binding distinguishes resolution invocations, resolution failures,
-and successful body-readiness finalizations, so a rejected declaration epoch
-does not masquerade as an unattempted or completed one.
-The `failed_semantic_edit` scenario hard-gates attempted/failed body work, and
-`semantic_recovery` proves that a failure did not replace the last-good durable
-declaration baseline.
+The cold N scenario requires exactly N body analyses, N durable body exports,
+and N CFG builds. It also requires exactly one declaration-cache population
+export from that same semantic epoch, proving that cold cache population does
+not run a duplicate binder or body-analysis pass. Exact no-op requires query
+reuse and zero semantic execution. Unrelated edit requires N imported bodies,
+N skipped analyses, N imported CFGs, zero body fallback, zero CFG build, and
+zero optimization.
+
+## Schema history and test coverage
+
+Schemas 2-3 introduced manifest/planner work and declaration reuse. Schema 4
+added body, specialization, and CFG work. Schemas 5-7 added body dependency
+records, stable owner tokens, and durable-body conversion/import accounting.
+Schema 8 added bounded diagnostic/manifest/plan retention. Schema 9 removed an
+obsolete population-binding field. Schema 10 added failed-request phase and
+partial-work accounting. Schema 11 adds the RUE-720 completion workloads, the
+remaining body and CFG counters, exact structural reuse gates, and bounded
+cold-versus-reused artifact/diagnostic/executable parity.
+
+The ordinary suite runs an N=4 structural smoke test through
+`//crates/rue-compiler-session-bench:rue-compiler-session-bench-test`. The full
+N=128 timing workload remains opt-in, but it executes the same assertions.
+
+This benchmark is deliberately bounded to synthetic, supported programs.
+[RUE-813](https://linear.app/steve-klabnik/issue/RUE-813) tracks a reusable,
+broader differential oracle. [RUE-901](https://linear.app/steve-klabnik/issue/RUE-901)
+tracks realistic multi-module cold/reused projects and performance baselines.
+Neither gap weakens the exact structural completion evidence recorded here.
