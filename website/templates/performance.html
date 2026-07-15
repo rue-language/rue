@@ -266,7 +266,10 @@
         if (series.length > 1) {
             const legend = node('div', undefined, 'phase-legend');
             series.forEach((item, index) => {
-                const entry = node('span'); entry.appendChild(node('i', undefined, `series-${index}`)); entry.appendChild(document.createTextNode(item.label)); legend.appendChild(entry);
+                const entry = node('span');
+                const swatch = svgElement('svg', {viewBox: '0 0 28 8', 'aria-hidden': 'true'});
+                swatch.appendChild(svgElement('line', {x1: 0, x2: 28, y1: 4, y2: 4, class: `chart-line series-${index}`}));
+                entry.appendChild(swatch); entry.appendChild(document.createTextNode(item.label)); legend.appendChild(entry);
             });
             container.appendChild(legend);
         }
@@ -539,10 +542,12 @@
         render(els.authored, groups.filter(item => item.source === 'authored'), 'No authored performance notes in this measurement window.');
         render(els.derived, groups.filter(item => item.source !== 'authored'), 'No measurement identity changes in this history.');
     }
-    function loadSvg(container, path) {
+    function loadChartImage(container, path, label) {
         container.replaceChildren(node('p', 'Loading…', 'chart-empty'));
-        fetch(path).then(response => { if (!response.ok) throw new Error(); return response.text(); })
-            .then(text => { container.innerHTML = text; }).catch(() => container.replaceChildren(node('p', 'Chart unavailable.', 'chart-empty')));
+        const image = node('img'); image.alt = label;
+        image.addEventListener('load', () => container.replaceChildren(image));
+        image.addEventListener('error', () => container.replaceChildren(node('p', 'Chart unavailable.', 'chart-empty')));
+        image.src = path;
     }
     function renderMetrics() {
         els.metrics.replaceChildren();
@@ -690,7 +695,9 @@
         els.machine.textContent = info?.name || platform;
         fetch(`/benchmarks/platforms/${platform}/metadata.json`).then(response => { if (!response.ok) throw new Error(); return response.json(); }).then(data => {
             metadata = data; model = data.recent_workspace; windowSize = model.default_window; configureWorkloads(); configureWindows(); renderAll();
-            const base = `/benchmarks/platforms/${platform}`; loadSvg(els.memory, `${base}/memory.svg`); loadSvg(els.binary, `${base}/binary_size.svg`);
+            const base = `/benchmarks/platforms/${platform}`;
+            loadChartImage(els.memory, `${base}/memory.svg`, 'Peak memory by workload');
+            loadChartImage(els.binary, `${base}/binary_size.svg`, 'Combined output binary size by workload');
         }).catch(() => {
             els.latency.replaceChildren(node('p', 'Benchmark data for this machine could not be loaded.', 'chart-empty'));
         });
