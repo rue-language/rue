@@ -105,11 +105,13 @@ filegroup(
         "scripts/benchmark_annotations.py",
         "scripts/benchmark_history.py",
         "scripts/benchmark_metrics.py",
+        "scripts/benchmark_recent.py",
         "scripts/benchmark_validation.py",
         "scripts/generate-charts.py",
         "scripts/generate-site-status.py",
         "scripts/perf-baseline.py",
         "scripts/validate-benchmark.py",
+        "website/templates/performance.html",
     ],
 )
 

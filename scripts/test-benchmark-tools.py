@@ -4,6 +4,7 @@
 import importlib.util
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -35,6 +36,7 @@ charts = load_module("generate_charts", "scripts/generate-charts.py")
 site_status = load_module("generate_site_status", "scripts/generate-site-status.py")
 history_tools = load_module("benchmark_history", "scripts/benchmark_history.py")
 metrics = load_module("benchmark_metrics", "scripts/benchmark_metrics.py")
+recent = load_module("benchmark_recent", "scripts/benchmark_recent.py")
 perf_baseline = load_module("perf_baseline", "scripts/perf-baseline.py")
 
 
@@ -1281,6 +1283,205 @@ class TestBenchmarkAnnotations(unittest.TestCase):
             [run], [self.authored()], self.Resolver()
         )
         self.assertEqual(site_status.sparkline_data([run], stream)["annotations"], stream)
+
+
+class TestRecentRegressionWorkspace(unittest.TestCase):
+    class Resolver:
+        def metadata(self, commit):
+            index = int(commit[0], 16)
+            return {
+                "commit": commit,
+                "subject": f"RUE-{900 + index}: measured change {index}",
+                "date": f"2026-07-{index + 1:02d}",
+                "links": {
+                    "commit": f"https://github.com/rue-language/rue/commit/{commit}",
+                    "issues": [{
+                        "id": f"RUE-{900 + index}",
+                        "url": f"https://linear.app/steve-klabnik/issue/RUE-{900 + index}",
+                    }],
+                    "pull_requests": [],
+                },
+            }
+
+        def is_ancestor(self, start, end):
+            return int(start[0], 16) <= int(end[0], 16)
+
+    @staticmethod
+    def sample_run(index, probe_samples, other_samples, skipped=()):
+        commit = f"{index:x}" * 40
+        def bench(name, samples, parser):
+            return {
+                "name": name,
+                "mean_ms": sum(samples) / len(samples),
+                "samples_ms": samples,
+                "passes": {
+                    "parser": {"mean_ms": parser},
+                    "codegen": {"mean_ms": 2.0},
+                },
+                "peak_memory_bytes": 1000 + index * 10,
+                "binary_size_bytes": 2000 + index * 5,
+            }
+        return {
+            "commit": commit,
+            "timestamp": f"2026-07-{index + 1:02d}T00:00:00Z",
+            "publication": {
+                "comparable": True,
+                "regime_id": "same",
+                "regime": {"platform": "x86-64-linux"},
+                "coverage": {
+                    "measured_commit": commit,
+                    "represented_commits": [commit],
+                    "skipped_commits": list(skipped),
+                    "gap_unknown": False,
+                },
+            },
+            "benchmarks": [
+                bench("probe", probe_samples, 5.0 if index < 4 else 20.0),
+                bench("other", other_samples, 3.0 if index < 4 else 4.0),
+            ],
+        }
+
+    def test_fixture_distinguishes_noise_regression_annotation_and_gap(self):
+        skipped = "a" * 40
+        runs = [
+            self.sample_run(1, [99.9, 100, 100.1], [49.9, 50, 50.1]),
+            self.sample_run(2, [90, 100, 110], [49.9, 50, 50.1]),
+            self.sample_run(3, [99.9, 100, 100.1], [49.9, 50, 50.1], [skipped]),
+            self.sample_run(4, [119.9, 120, 120.1], [50.9, 51, 51.1]),
+        ]
+        capability = {
+            "id": "capability",
+            "source": "authored",
+            "location": {"kind": "commit", "commit": "4" * 40},
+            "category": "capability",
+            "title": "Queryable compiler",
+            "explanation": "Compiler queries are now available.",
+            "link": "https://github.com/rue-language/rue/pull/1",
+            "scope": {"metrics": ["latency"], "workloads": ["*"], "platforms": ["*"]},
+        }
+        model = recent.recent_workspace(
+            runs,
+            [capability],
+            self.Resolver(),
+            "x86-64-linux",
+            as_of=datetime(2026, 7, 5, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(model["window_options"], [20, 50, 100])
+        self.assertEqual(model["points"][1]["comparability"]["headline"]["classification"], "stable")
+        self.assertGreater(model["points"][1]["comparability"]["headline"]["variation_pct"], 0)
+        self.assertEqual(model["points"][2]["comparability"]["status"], "non_comparable")
+        self.assertEqual(model["points"][2]["coverage"]["represented_commits"], ["3" * 40])
+        self.assertEqual(model["points"][2]["coverage"]["skipped_commits"], [skipped])
+        self.assertEqual(model["points"][3]["comparability"]["headline"]["classification"], "regressed")
+        self.assertEqual(model["points"][3]["annotations"][0]["category"], "capability")
+        self.assertFalse(model["points"][3]["freshness"]["stale"])
+        self.assertTrue(model["points"][0]["freshness"]["stale"])
+        self.assertGreater(model["points"][0]["freshness"]["wall_clock_age_seconds"], 0)
+        self.assertGreater(model["points"][0]["freshness"]["age_from_latest_seconds"], 0)
+        self.assertEqual(model["default_selection"], {"before": "3" * 40, "after": "4" * 40})
+        self.assertFalse(any(
+            item["before"] == "2" * 40 and item["after"] == "4" * 40
+            for item in model["comparisons"]
+        ))
+
+        explanation = model["comparisons"][-1]["explanation"]
+        self.assertEqual(explanation["dominant_workload"]["name"], "probe")
+        self.assertEqual(explanation["dominant_pass"]["name"], "parser")
+        parser = next(item for item in explanation["passes"] if item["name"] == "parser")
+        self.assertEqual(parser["delta_ms"], parser["after_ms"] - parser["before_ms"])
+        self.assertTrue(explanation["memory_bytes"])
+        self.assertTrue(explanation["binary_size_bytes"])
+        probe = next(item for item in model["small_multiples"] if item["workload"] == "probe")
+        self.assertTrue(probe["points"][2]["comparison_boundary"])
+
+    def test_workspace_caps_payload_at_one_hundred_points(self):
+        runs = [self.sample_run(index % 15 + 1, [10, 10, 10], [5, 5, 5]) for index in range(105)]
+        model = recent.recent_workspace(
+            runs, [], self.Resolver(), "x86-64-linux",
+            as_of=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(len(model["points"]), 100)
+
+    def test_every_ordered_pair_inside_one_segment_is_selectable(self):
+        runs = [
+            self.sample_run(index, [10 + index] * 3, [5 + index] * 3)
+            for index in (1, 2, 3)
+        ]
+        model = recent.recent_workspace(
+            runs, [], self.Resolver(), "x86-64-linux",
+            as_of=datetime(2026, 7, 4, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            {(item["before"], item["after"]) for item in model["comparisons"]},
+            {
+                ("1" * 40, "2" * 40),
+                ("1" * 40, "3" * 40),
+                ("2" * 40, "3" * 40),
+            },
+        )
+
+    def test_insufficient_pair_is_explicit_but_not_preferred_over_evidence(self):
+        runs = [
+            self.sample_run(1, [10, 10], [5, 5]),
+            self.sample_run(2, [11, 11, 11], [6, 6, 6]),
+            self.sample_run(3, [12, 12, 12], [7, 7, 7]),
+        ]
+        model = recent.recent_workspace(
+            runs, [], self.Resolver(), "x86-64-linux",
+            as_of=datetime(2026, 7, 4, tzinfo=timezone.utc),
+        )
+        insufficient = next(item for item in model["comparisons"] if item["before"] == "1" * 40)
+        self.assertEqual(
+            insufficient["explanation"]["headline"]["classification"],
+            "insufficient_data",
+        )
+        self.assertEqual(model["default_selection"], {
+            "before": "2" * 40, "after": "3" * 40
+        })
+
+    def test_missing_pass_is_not_treated_as_zero_measurement(self):
+        before = self.sample_run(1, [10, 10, 10], [5, 5, 5])
+        after = self.sample_run(2, [11, 11, 11], [6, 6, 6])
+        del after["benchmarks"][0]["passes"]["codegen"]
+        explanation = metrics.comparison_explanation(after, before)
+        self.assertNotIn(
+            "codegen",
+            {item["name"] for item in explanation["passes"]},
+        )
+
+    def test_git_metadata_uses_real_linear_form_and_only_discovered_prs(self):
+        completed = subprocess.CompletedProcess(
+            [], 0,
+            "a" * 40 + "\0RUE-897: workspace (#1648)\0" + "2026-07-14\0body\n",
+            "",
+        )
+        with mock.patch.object(recent.subprocess, "run", return_value=completed):
+            metadata = recent.GitRecentResolver(Path(".")).metadata("a" * 40)
+        self.assertEqual(
+            metadata["links"]["issues"],
+            [{
+                "id": "RUE-897",
+                "url": "https://linear.app/steve-klabnik/issue/RUE-897",
+            }],
+        )
+        self.assertEqual(
+            metadata["links"]["pull_requests"],
+            [{
+                "id": "PR #1648",
+                "url": "https://github.com/rue-language/rue/pull/1648",
+            }],
+        )
+
+    def test_recent_template_keeps_semantics_server_side_and_guards_insufficient_data(self):
+        template = (INPUT_ROOT / "website" / "templates" / "performance.html").read_text()
+        self.assertIn("insufficient data for a delta", template)
+        self.assertIn("point.coverage.skipped_commits.join", template)
+        self.assertIn("annotationLink.href = item.link", template)
+        self.assertIn("value.before_ms.toFixed", template)
+        self.assertIn("headline.classification === 'insufficient_data'", template)
+        self.assertIn("populateComparisons(points)", template)
+        self.assertNotIn("function calculateDelta", template)
 
 
 class BenchmarkCollectionTests(unittest.TestCase):

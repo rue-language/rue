@@ -24,6 +24,23 @@
             </div>
         </section>
 
+        <section id="recent-workspace" class="mb-12" aria-labelledby="recent-workspace-title">
+            <h2 id="recent-workspace-title" class="section-title">Recent regression workspace</h2>
+            <div class="flex flex-wrap items-center gap-3 mb-4">
+                <span class="text-sm font-medium">Recent window:</span>
+                <div id="recent-window-controls" class="flex gap-2" role="group" aria-label="Recent benchmark window"></div>
+                <label for="recent-before" class="text-sm font-medium">Before:</label>
+                <select id="recent-before" class="bg-surface border border-themed rounded px-2 py-1 text-sm"></select>
+                <label for="recent-after" class="text-sm font-medium">After:</label>
+                <select id="recent-after" class="bg-surface border border-themed rounded px-2 py-1 text-sm"></select>
+            </div>
+            <div id="recent-comparison" class="bg-surface border border-themed rounded-lg p-4 mb-6" aria-live="polite"></div>
+            <h3>Per-workload recent measurements</h3>
+            <div id="recent-small-multiples" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6"></div>
+            <h3>Measured commits</h3>
+            <div id="recent-points" class="overflow-x-auto"></div>
+        </section>
+
         <!-- Summary Stats: single-platform mode shows latest/avg/best + delta;
              comparison mode shows one row per platform (populated by JS) -->
         <section id="summary-stats" class="mb-12">
@@ -50,17 +67,6 @@
                 Total compilation time across the last 20 commits. Lower is better.
             </p>
             <div id="timeline-chart-container" class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4">
-                <p class="text-muted text-center py-8">Loading chart...</p>
-            </div>
-        </section>
-
-        <!-- Timeline Chart (Per-Program) - Only shown for single platform -->
-        <section id="timeline-by-program-section" class="mb-12">
-            <h2 class="section-title">Compilation Time by Program</h2>
-            <p class="text-muted mb-4">
-                Each benchmark program shown as a separate line to identify which programs regress.
-            </p>
-            <div id="timeline-by-program-container" class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4">
                 <p class="text-muted text-center py-8">Loading chart...</p>
             </div>
         </section>
@@ -124,8 +130,13 @@
             const platformInfo = document.getElementById('platform-info');
             const benchmarkSelect = document.getElementById('benchmark-select');
             const timelineContainer = document.getElementById('timeline-chart-container');
-            const timelineByProgramSection = document.getElementById('timeline-by-program-section');
-            const timelineByProgramContainer = document.getElementById('timeline-by-program-container');
+            const recentSection = document.getElementById('recent-workspace');
+            const recentWindowControls = document.getElementById('recent-window-controls');
+            const recentBefore = document.getElementById('recent-before');
+            const recentAfter = document.getElementById('recent-after');
+            const recentComparison = document.getElementById('recent-comparison');
+            const recentSmallMultiples = document.getElementById('recent-small-multiples');
+            const recentPoints = document.getElementById('recent-points');
             const breakdownSection = document.getElementById('breakdown-section');
             const breakdownContainer = document.getElementById('breakdown-chart-container');
             const memorySection = document.getElementById('memory-section');
@@ -137,6 +148,151 @@
 
             let currentPlatform = 'comparison';
             let platformMetadata = null;
+
+            function node(tag, text, className) {
+                const value = document.createElement(tag);
+                if (text !== undefined) value.textContent = text;
+                if (className) value.className = className;
+                return value;
+            }
+
+            function escapeHtml(value) {
+                return String(value).replace(/[&<>"']/g, character => ({
+                    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+                })[character]);
+            }
+
+            function renderRecentWorkspace(model) {
+                recentWindowControls.replaceChildren();
+                const renderWindow = (size) => {
+                    const points = model.points.slice(-size);
+                    recentPoints.replaceChildren();
+                    const table = node('table', undefined, 'w-full text-sm');
+                    const caption = node('caption', `Last ${points.length} measured points on ${model.platform}`, 'sr-only');
+                    table.appendChild(caption);
+                    const head = node('thead');
+                    const headRow = node('tr');
+                    ['Commit', 'Subject / date', 'Result', 'Coverage', 'Annotations', 'Raw values and uncertainty'].forEach(label => {
+                        const th = node('th', label, 'text-left p-2'); th.scope = 'col'; headRow.appendChild(th);
+                    });
+                    head.appendChild(headRow); table.appendChild(head);
+                    const body = node('tbody');
+                    points.forEach(point => {
+                        const row = node('tr', undefined, 'border-b border-themed');
+                        const commitCell = node('td', undefined, 'p-2');
+                        const link = node('a', point.commit.slice(0, 8)); link.href = point.links.commit; commitCell.appendChild(link);
+                        point.links.issues.forEach(item => {
+                            commitCell.appendChild(document.createTextNode(' '));
+                            const issue = node('a', item.id); issue.href = item.url; commitCell.appendChild(issue);
+                        });
+                        (point.links.pull_requests || []).forEach(item => {
+                            commitCell.appendChild(document.createTextNode(' '));
+                            const pull = node('a', item.id); pull.href = item.url; commitCell.appendChild(pull);
+                        });
+                        const relativeFreshness = point.freshness.latest ? 'latest measurement' : `${point.freshness.age_from_latest_seconds}s older than latest`;
+                        const wallFreshness = point.freshness.stale ? `stale (${point.freshness.wall_clock_age_seconds ?? 'unknown'}s old)` : `current (${point.freshness.wall_clock_age_seconds}s old)`;
+                        const subject = node('td', `${point.subject} (${point.date}); measured ${point.measured_at || 'unknown'}; ${relativeFreshness}; ${wallFreshness}`, 'p-2');
+                        const headline = point.comparability.headline;
+                        const resultText = !headline ? point.comparability.reason
+                            : headline.classification === 'insufficient_data' ? 'insufficient data'
+                            : `${headline.classification}; Δ ${headline.delta_pct.toFixed(2)}%, variation ${headline.variation_pct.toFixed(2)}%`;
+                        const result = node('td', resultText, 'p-2');
+                        const represented = point.coverage.represented_commits.length ? point.coverage.represented_commits.join(', ') : 'none';
+                        const skipped = point.coverage.skipped_commits.length ? point.coverage.skipped_commits.join(', ') : 'none';
+                        const coverage = node('td', `Measured: ${point.coverage.measured_commit || 'unknown'}; represented: ${represented}; skipped: ${skipped}; unknown gap: ${point.coverage.gap_unknown}`, 'p-2');
+                        const annotation = node('td', undefined, 'p-2');
+                        if (point.annotations.length === 0) {
+                            annotation.textContent = 'None';
+                        } else {
+                            point.annotations.forEach((item, index) => {
+                                if (index) annotation.appendChild(document.createTextNode('; '));
+                                const annotationLink = node('a', `${item.category}: ${item.title}`);
+                                annotationLink.href = item.link;
+                                annotation.appendChild(annotationLink);
+                                annotation.appendChild(document.createTextNode(` — ${item.explanation}`));
+                            });
+                        }
+                        const raw = node('td', point.workloads.map(item => item.uncertainty ? `${item.name}: ${item.uncertainty.center.toFixed(2)}ms, ±${item.uncertainty.relative_variation_pct.toFixed(2)}%, samples [${item.raw_samples_ms.join(', ')}]` : `${item.name}: insufficient data`).join('; '), 'p-2');
+                        [commitCell, subject, result, coverage, annotation, raw].forEach(cell => row.appendChild(cell));
+                        body.appendChild(row);
+                    });
+                    table.appendChild(body); recentPoints.appendChild(table);
+
+                    recentSmallMultiples.replaceChildren();
+                    model.small_multiples.forEach(multiple => {
+                        const visible = multiple.points.filter(point => points.some(item => item.commit === point.commit));
+                        const card = node('div', undefined, 'bg-surface border border-themed rounded-lg p-3');
+                        const smallTable = node('table', undefined, 'w-full text-xs');
+                        smallTable.appendChild(node('caption', multiple.workload, 'font-medium text-left mb-2'));
+                        visible.forEach(point => {
+                            const row = node('tr');
+                            row.appendChild(node('th', point.commit.slice(0, 8) + (point.comparison_boundary ? ' (boundary)' : ''), 'text-left p-1'));
+                            row.appendChild(node('td', `${point.median_ms.toFixed(2)}ms ±${point.variation_pct.toFixed(2)}%`, 'text-right p-1'));
+                            smallTable.appendChild(row);
+                        });
+                        card.appendChild(smallTable); recentSmallMultiples.appendChild(card);
+                    });
+                    populateComparisons(points);
+                };
+
+                model.window_options.forEach(size => {
+                    const button = node('button', String(size), 'border border-themed rounded px-2 py-1 text-sm');
+                    button.type = 'button'; button.setAttribute('aria-pressed', size === model.default_window ? 'true' : 'false');
+                    button.addEventListener('click', () => {
+                        recentWindowControls.querySelectorAll('button').forEach(item => item.setAttribute('aria-pressed', item === button ? 'true' : 'false'));
+                        renderWindow(size);
+                    });
+                    recentWindowControls.appendChild(button);
+                });
+
+                let activeByBefore = new Map();
+                const renderComparison = () => {
+                    const item = model.comparisons.find(value => value.before === recentBefore.value && value.after === recentAfter.value);
+                    recentComparison.replaceChildren();
+                    if (!item) { recentComparison.appendChild(node('p', 'Select exactly two comparable measured commits.')); return; }
+                    const explanation = item.explanation;
+                    if (explanation.headline.classification === 'insufficient_data') {
+                        recentComparison.appendChild(node('p', `Before ${item.before.slice(0, 8)} → after ${item.after.slice(0, 8)}: insufficient data for a delta or uncertainty classification.`));
+                    } else {
+                        recentComparison.appendChild(node('p', `Before ${item.before.slice(0, 8)} → after ${item.after.slice(0, 8)}: ${explanation.headline.classification}; Δ ${explanation.headline.delta_pct.toFixed(2)}%, observed variation ${explanation.headline.variation_pct.toFixed(2)}%.`));
+                    }
+                    recentComparison.appendChild(node('p', `Dominant workload: ${explanation.dominant_workload?.name || 'none'} (${explanation.dominant_workload?.delta_ms?.toFixed(2) || '0'}ms). Dominant pass: ${explanation.dominant_pass?.name || 'none'} (${explanation.dominant_pass?.delta_ms?.toFixed(2) || '0'}ms).`));
+                    const list = node('ul');
+                    explanation.workloads.forEach(value => list.appendChild(node('li', `${value.name}: ${value.reference_median_ms?.toFixed(2)}ms → ${value.current_median_ms?.toFixed(2)}ms (${value.classification}, ±${value.variation_pct?.toFixed(2)}%)`)));
+                    explanation.passes.forEach(value => list.appendChild(node('li', `${value.name} pass: ${value.before_ms.toFixed(2)}ms → ${value.after_ms.toFixed(2)}ms; contribution ${value.delta_ms >= 0 ? '+' : ''}${value.delta_ms.toFixed(2)}ms`)));
+                    explanation.memory_bytes.forEach(value => list.appendChild(node('li', `${value.name} memory: ${value.before} → ${value.after} bytes (${value.delta >= 0 ? '+' : ''}${value.delta})`)));
+                    explanation.binary_size_bytes.forEach(value => list.appendChild(node('li', `${value.name} binary: ${value.before} → ${value.after} bytes (${value.delta >= 0 ? '+' : ''}${value.delta})`)));
+                    recentComparison.appendChild(list);
+                };
+                const updateAfter = () => {
+                    const previousAfter = recentAfter.value;
+                    recentAfter.replaceChildren();
+                    (activeByBefore.get(recentBefore.value) || []).forEach(item => { const option = node('option', item.after.slice(0, 8)); option.value = item.after; recentAfter.appendChild(option); });
+                    if ([...recentAfter.options].some(option => option.value === previousAfter)) recentAfter.value = previousAfter;
+                    renderComparison();
+                };
+                function populateComparisons(points) {
+                    const visible = new Set(points.map(point => point.commit));
+                    const comparisons = model.comparisons.filter(item => visible.has(item.before) && visible.has(item.after));
+                    activeByBefore = new Map();
+                    comparisons.forEach(item => {
+                        if (!activeByBefore.has(item.before)) activeByBefore.set(item.before, []);
+                        activeByBefore.get(item.before).push(item);
+                    });
+                    const preferred = comparisons.find(item => model.default_selection && item.before === model.default_selection.before && item.after === model.default_selection.after)
+                        || [...comparisons].reverse().find(item => item.explanation.headline.classification !== 'insufficient_data')
+                        || comparisons[comparisons.length - 1];
+                    recentBefore.replaceChildren();
+                    activeByBefore.forEach((_, commit) => { const option = node('option', commit.slice(0, 8)); option.value = commit; recentBefore.appendChild(option); });
+                    if (preferred) recentBefore.value = preferred.before;
+                    updateAfter();
+                    if (preferred) recentAfter.value = preferred.after;
+                    renderComparison();
+                }
+                recentBefore.onchange = updateAfter;
+                recentAfter.onchange = renderComparison;
+                renderWindow(model.default_window);
+            }
 
             // Fetch an SVG and insert it into a container
             function loadSvg(container, path) {
@@ -163,7 +319,7 @@
 
             function fmtDelta(str, pct) {
                 if (!str) return '';
-                return ` <span class="text-sm" style="color: ${pct > 0 ? WORSE : BETTER}">${str}</span>`;
+                return ` <span class="text-sm" style="color: ${pct > 0 ? WORSE : BETTER}">${escapeHtml(str)}</span>`;
             }
 
             // Single-platform mode: big latest value + delta + sub-line
@@ -184,7 +340,7 @@
                     `<div class="text-xs text-muted mt-1">Avg: ${s.avg_memory_mb ? s.avg_memory_mb.toFixed(1) + 'MB' : '--'}</div>`;
                 statBodies.binary.innerHTML =
                     `<div class="flex items-baseline gap-2"><span class="text-2xl font-semibold">${s.latest_binary_kb ? s.latest_binary_kb.toFixed(1) + 'KB' : '--'}</span>${fmtDelta(s.binary_delta_str, s.binary_delta_pct)}</div>` +
-                    `<div class="text-xs text-muted mt-1">Commit: ${s.latest_commit || '--'}</div>`;
+                    `<div class="text-xs text-muted mt-1">Commit: ${escapeHtml(s.latest_commit || '--')}</div>`;
             }
 
             // Comparison mode: one compact row per platform in each card
@@ -195,8 +351,8 @@
                 }
                 const row = (name, val) =>
                     `<div class="flex justify-between items-baseline py-0.5 text-sm">` +
-                    `<span class="text-muted">${name}</span>` +
-                    `<span style="font-family: var(--font-mono); font-size: 0.82rem; font-variant-numeric: tabular-nums;">${val}</span></div>`;
+                    `<span class="text-muted">${escapeHtml(name)}</span>` +
+                    `<span style="font-family: var(--font-mono); font-size: 0.82rem; font-variant-numeric: tabular-nums;">${escapeHtml(val)}</span></div>`;
                 statBodies.time.innerHTML = metas.map(m =>
                     row(m.name, m.summary?.latest_time_ms ? m.summary.latest_time_ms.toFixed(1) + 'ms' : '--')).join('');
                 statBodies.memory.innerHTML = metas.map(m =>
@@ -227,7 +383,7 @@
 
                 benchmarks.forEach(b => {
                     html += '<tr class="border-b border-themed">';
-                    html += `<td class="p-2 font-medium">${b.name}</td>`;
+                    html += `<td class="p-2 font-medium">${escapeHtml(b.name)}</td>`;
                     html += `<td class="p-2 text-right">${b.mean_ms?.toFixed(2) || '-'}</td>`;
                     html += `<td class="p-2 text-right">${b.source_metrics?.lines?.toLocaleString() || '-'}</td>`;
                     html += `<td class="p-2 text-right">${b.source_metrics?.tokens?.toLocaleString() || '-'}</td>`;
@@ -249,7 +405,7 @@
                 if (platform === 'comparison') {
                     // Comparison mode: show cross-platform timeline, hide per-program charts
                     platformInfo.textContent = 'Showing all platforms';
-                    timelineByProgramSection.style.display = 'none';
+                    recentSection.style.display = 'none';
                     breakdownSection.style.display = 'none';
                     memorySection.style.display = 'none';
                     binarySection.style.display = 'none';
@@ -269,7 +425,7 @@
                     // Single platform mode: show all charts
                     const platformName = platformMetadata?.platforms?.find(p => p.id === platform)?.name || platform;
                     platformInfo.textContent = `${platformName}`;
-                    timelineByProgramSection.style.display = 'block';
+                    recentSection.style.display = 'block';
                     breakdownSection.style.display = 'block';
                     memorySection.style.display = 'block';
                     binarySection.style.display = 'block';
@@ -278,7 +434,6 @@
                     const basePath = `/benchmarks/platforms/${platform}`;
 
                     loadSvg(timelineContainer, `${basePath}/timeline.svg`);
-                    loadSvg(timelineByProgramContainer, `${basePath}/timeline_by_program.svg`);
                     loadSvg(breakdownContainer, `${basePath}/breakdown.svg`);
                     loadSvg(memoryContainer, `${basePath}/memory.svg`);
                     loadSvg(binaryContainer, `${basePath}/binary_size.svg`);
@@ -289,6 +444,7 @@
                         .then(data => {
                             updateStats(data.summary);
                             updateMetricsTable(data.latest_benchmarks);
+                            renderRecentWorkspace(data.recent_workspace);
 
                             // Populate benchmark dropdown
                             benchmarkSelect.innerHTML = '<option value="">All (aggregate)</option>';
@@ -327,10 +483,11 @@
                         });
                     }
 
-                    // Load comparison view by default, or first platform with data
+                    // Detailed performance defaults to the first platform with data.
                     const defaultPlatform = data.default_platform || 'comparison';
                     if (data.platforms?.some(p => p.has_data)) {
-                        loadPlatformData('comparison');
+                        platformSelect.value = defaultPlatform;
+                        loadPlatformData(defaultPlatform);
                     } else {
                         platformInfo.textContent = 'No benchmark data available yet';
                         timelineContainer.innerHTML = '<p class="text-muted text-center py-8">No benchmark data available</p>';
@@ -339,14 +496,13 @@
                 .catch(() => {
                     // Fallback to legacy mode (single history.json)
                     platformSelect.parentElement.parentElement.style.display = 'none';
-                    timelineByProgramSection.style.display = 'block';
+                    recentSection.style.display = 'none';
                     breakdownSection.style.display = 'block';
                     memorySection.style.display = 'block';
                     binarySection.style.display = 'block';
                     metricsSection.style.display = 'block';
 
                     loadSvg(timelineContainer, '/benchmarks/timeline.svg');
-                    loadSvg(timelineByProgramContainer, '/benchmarks/timeline_by_program.svg');
                     loadSvg(breakdownContainer, '/benchmarks/breakdown.svg');
                     loadSvg(memoryContainer, '/benchmarks/memory.svg');
                     loadSvg(binaryContainer, '/benchmarks/binary_size.svg');

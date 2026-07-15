@@ -13,6 +13,7 @@ on:
       - 'scripts/generate-charts.py'
       - 'scripts/generate-site-status.py'
       - 'scripts/benchmark_annotations.py'
+      - 'scripts/benchmark_recent.py'
       - 'benchmarks/annotations.toml'
       - '.github/workflows/deploy-website.yml'
   # PRs still build (no deploy — that's trunk-only) on spec changes too, so a
@@ -25,6 +26,7 @@ on:
       - 'scripts/generate-charts.py'
       - 'scripts/generate-site-status.py'
       - 'scripts/benchmark_annotations.py'
+      - 'scripts/benchmark_recent.py'
       - 'benchmarks/annotations.toml'
       - '.github/workflows/deploy-website.yml'
   # Daily refresh so the published spec, benchmark sparkline, and status board
