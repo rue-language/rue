@@ -35,7 +35,7 @@
         <p class="observed">as of trunk, {{ status.commit_date | default(value="today") | date(format="%-d %B %Y") }}</p>
         <ul class="report-rows">
             <li><span class="k">trunk</span><span class="leader"></span>
-                <span class="v">{{ status.commit | default(value="—") }} · commit {{ status.commit_count | default(value="—") }}</span></li>
+                <span class="v">{{ status.commit | default(value="—") }}{% if status.history_complete and status.commit_count %} · commit {{ status.commit_count }}{% else %} · history count unavailable{% endif %}</span></li>
             {% if status.spec_rules %}
             <li><span class="k">spec rules traced</span><span class="leader"></span>
                 <span class="v"><span class="ok">{{ status.spec_rules }} / {{ status.spec_rules }}</span></span></li>
@@ -49,23 +49,50 @@
         </ul>
         {% if status.bench %}
         <div class="sparkline-block">
-            <div class="spark-label"><b>compile time</b><span>benchmark suite · total ms{% if status.bench.n_runs > 1 %} · last {{ status.bench.n_runs }} runs{% endif %}</span></div>
+            <div class="spark-label"><b>compiler performance</b><span>{{ status.bench.platform }} · 30-day comparable trend</span></div>
             <svg viewBox="0 0 300 52" preserveAspectRatio="none" role="img"
-                 aria-label="Compile time trend; latest total {{ status.bench.latest_ms }} milliseconds">
+                 aria-label="Thirty-day normalized compiler performance trend; {{ status.bench.state.label }}">
                 <polyline fill="none" stroke="var(--color-border-dark)" stroke-width="1" points="0,46 300,46"/>
-                {% if status.bench.n_runs > 1 %}
+                {% if status.bench.points and status.bench.n_trend_points > 1 %}
                 <polyline fill="none" stroke="var(--color-olive)" stroke-width="1.6"
                           stroke-linejoin="round" points="{{ status.bench.points }}"/>
                 {% endif %}
+                {% if status.bench.n_trend_points > 0 %}
                 <circle cx="{{ status.bench.last_x }}" cy="{{ status.bench.last_y }}" r="3" fill="var(--color-gold)"/>
+                {% endif %}
             </svg>
-            <div class="spark-label"><span></span><span>latest: <b style="color: var(--color-fg);">{{ status.bench.latest_ms }} ms</b></span></div>
+            <div class="spark-label"><span>{{ status.bench.state.label }}</span><span>
+                {% if status.bench.state.kind == "baseline_reset" %}
+                    comparison reset · {{ status.bench.state.reason }}
+                {% elif status.bench.state.kind == "insufficient_data" %}
+                    no trustworthy percentage · {{ status.bench.state.reason }}
+                {% else %}
+                    rolling baseline Δ {{ status.bench.state.delta_pct | round(precision=2) }}% · variation {{ status.bench.state.variation_pct | round(precision=2) }}%
+                {% endif %}
+                {% if status.bench.latest_index %} · index {{ status.bench.latest_index | round(precision=2) }}{% endif %}
+            </span></div>
+            <div class="spark-label"><span>freshness</span><span>{{ status.bench.freshness.kind }} · measured {{ status.bench.freshness.measured_at }}</span></div>
+            <div class="spark-label"><span>coverage</span><span>
+                {% if status.bench.coverage.gap_unknown %}
+                    commit coverage is unknown
+                {% elif status.bench.coverage.skipped_commits | length > 0 %}
+                    measured {{ status.bench.coverage.measured_commit }} · {{ status.bench.coverage.skipped_commits | length }} known skipped commit(s)
+                {% else %}
+                    measured {{ status.bench.coverage.measured_commit }} · no known skipped commits
+                {% endif %}
+            </span></div>
+            {% if status.bench.annotation %}
+            <div class="spark-label"><span>recent event</span><span><a href="{{ status.bench.annotation.dashboard_url }}">{{ status.bench.annotation.title }} →</a></span></div>
+            {% endif %}
+            <div class="spark-label"><span></span><span><a href="{{ status.bench.dashboard_url }}">open this 30-day dashboard range →</a></span></div>
         </div>
+        {% else %}
+        <p class="observed">benchmark data unavailable</p>
         {% endif %}
         {% else %}
         <p class="observed">status data is generated at build time</p>
         {% endif %}
-        <p class="report-foot">measurements taken on every commit — <a href="{{ get_url(path='performance') }}">full dashboard →</a></p>
+        <p class="report-foot">coverage and freshness are reported from durable measurements — <a href="{{ get_url(path='performance') }}">full dashboard →</a></p>
     </aside>
 </section>
 

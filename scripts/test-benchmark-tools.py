@@ -906,24 +906,25 @@ class DurableBenchmarkHistoryTests(unittest.TestCase):
         self.assertEqual(charts.generate_comparison_timeline_chart({"probe": runs}).count("<path d="), 2)
 
     def test_summary_and_homepage_use_only_latest_comparable_segment(self):
-        def run(commit, total, regime="new", gap=False):
+        def run(commit, total, day, regime="new", gap=False):
             return {
                 "commit": commit,
+                "timestamp": f"2026-07-{day:02d}T00:00:00Z",
                 "publication": {
                     "comparable": True, "regime_id": regime,
-                    "coverage": {"skipped_commits": [], "gap_unknown": gap},
+                    "coverage": {"measured_commit": commit, "represented_commits": [commit], "skipped_commits": [], "gap_unknown": gap},
                 },
-                "benchmarks": [{"name": "probe", "mean_ms": total}],
+                "benchmarks": [{"name": "probe", "mean_ms": total, "samples_ms": [total] * 3}],
             }
 
-        runs = [run("old", 1, "old"), run("new-1", 10), run("new-2", 20)]
+        runs = [run("old", 1, 1, "old"), run("new-1", 10, 2), run("new-2", 20, 3)]
         summary = charts.generate_summary_data(runs)
         self.assertEqual(summary["avg_time_ms"], 15)
         self.assertEqual(summary["best_time_ms"], 10)
         self.assertEqual(summary["comparable_run_count"], 2)
         sparkline = site_status.sparkline_data(runs)
         self.assertEqual(sparkline["n_runs"], 2)
-        self.assertEqual(sparkline["latest_ms"], 20)
+        self.assertEqual(sparkline["state"]["kind"], "insufficient_data")
 
 
 class BenchmarkMetricSemanticsTests(unittest.TestCase):
@@ -1058,20 +1059,168 @@ class BenchmarkMetricSemanticsTests(unittest.TestCase):
         self.assertAlmostEqual(summary["time_delta_pct"], 10.0)
         self.assertEqual(summary["time_delta_str"], "↑ 10.0%")
 
-    def test_status_index_uses_full_segment_when_sparkline_is_truncated(self):
+    def test_status_index_uses_full_thirty_day_segment(self):
         runs = [
-            self.sample_run(
+            {
+                **self.sample_run(
                 f"commit-{index}",
                 {"probe": [100 + index, 100 + index, 100 + index]},
-            )
+                ),
+                "timestamp": f"2026-07-{index + 1:02d}T00:00:00Z",
+            }
             for index in range(25)
         ]
         status = site_status.sparkline_data(runs)
-        self.assertEqual(status["n_runs"], site_status.SPARKLINE_RUNS)
+        self.assertEqual(status["n_runs"], 25)
         self.assertAlmostEqual(
-            status["performance_index"]["value"],
+            status["latest_index"],
             100 * 100 / 124,
         )
+
+
+class HomepageBenchmarkStatusTests(unittest.TestCase):
+    class Resolver:
+        def is_ancestor(self, start, end):
+            return start == end
+
+    @staticmethod
+    def sample_run(index, center, regime="same", workloads=None, day=None):
+        values = workloads or {"probe": center}
+        run = BenchmarkMetricSemanticsTests.sample_run(
+            f"{index:040x}",
+            {name: [value - 0.1, value, value + 0.1] for name, value in values.items()},
+            regime=regime,
+        )
+        run["timestamp"] = f"2026-07-{day or index:02d}T00:00:00Z"
+        run["publication"]["coverage"] = {
+            "measured_commit": run["commit"],
+            "represented_commits": [run["commit"]],
+            "skipped_commits": [],
+            "gap_unknown": False,
+        }
+        return run
+
+    def status(self, runs, annotations=None, as_of=None):
+        return site_status.sparkline_data(
+            runs,
+            annotations or [],
+            resolver=self.Resolver(),
+            as_of=as_of or datetime(2026, 7, 10, tzinfo=timezone.utc),
+        )
+
+    def test_stable_improved_regressed_and_insufficient_states(self):
+        preceding = [self.sample_run(1, 100), self.sample_run(2, 101), self.sample_run(3, 99)]
+        self.assertEqual(self.status(preceding + [self.sample_run(4, 100)])["state"]["kind"], "stable")
+        self.assertEqual(self.status(preceding + [self.sample_run(4, 80)])["state"]["kind"], "improved")
+        regressed = self.status(preceding + [self.sample_run(4, 120)])
+        self.assertEqual(regressed["state"]["kind"], "regressed")
+        self.assertGreater(regressed["state"]["delta_pct"], regressed["state"]["variation_pct"])
+        self.assertEqual(self.status(preceding[:2])["state"]["kind"], "insufficient_data")
+
+    def test_regime_and_corpus_changes_are_explicit_resets_without_percentage(self):
+        runs = [self.sample_run(1, 100), self.sample_run(2, 100), self.sample_run(3, 100)]
+        regime = self.status(runs + [self.sample_run(4, 120, regime="runner-b")])
+        self.assertEqual(regime["state"]["kind"], "baseline_reset")
+        self.assertNotIn("delta_pct", regime["state"])
+
+        corpus_a = self.status(runs + [self.sample_run(4, 120, workloads={"probe": 120, "new": 1})])
+        corpus_b = self.status(runs + [self.sample_run(4, 120, workloads={"probe": 120, "new": 10000})])
+        self.assertEqual(corpus_a["state"], corpus_b["state"])
+        self.assertEqual(corpus_a["state"]["kind"], "baseline_reset")
+
+    def test_capability_annotation_freshness_coverage_and_deep_link(self):
+        runs = [self.sample_run(1, 100), self.sample_run(2, 100), self.sample_run(3, 100), self.sample_run(4, 120)]
+        event = {
+            "id": "capability-cost",
+            "source": "authored",
+            "location": {"kind": "commit", "commit": runs[-1]["commit"]},
+            "category": "capability",
+            "title": "Intentional capability cost",
+            "explanation": "Accepted cost for a language feature.",
+            "link": "https://github.com/rue-language/rue/pull/1",
+            "scope": {"metrics": ["latency"], "workloads": ["*"], "platforms": ["*"]},
+        }
+        status = self.status(
+            runs, [event], as_of=datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
+        )
+        self.assertEqual(status["state"]["kind"], "regressed")
+        self.assertEqual(status["freshness"]["kind"], "stale")
+        self.assertEqual(status["annotation"]["title"], "Intentional capability cost")
+        self.assertIn("range=30d", status["annotation"]["dashboard_url"])
+        self.assertIn("annotation=capability-cost", status["annotation"]["dashboard_url"])
+        self.assertFalse(status["coverage"]["gap_unknown"])
+        self.assertEqual(status["coverage"]["represented_commits"], [runs[-1]["commit"]])
+
+    def test_missing_or_malformed_time_data_is_not_presented(self):
+        self.assertIsNone(self.status([]))
+        run = self.sample_run(1, 100)
+        del run["timestamp"]
+        self.assertIsNone(self.status([run]))
+
+    def test_insufficient_legacy_samples_do_not_fabricate_endpoint(self):
+        run = self.sample_run(1, 100)
+        run["benchmarks"][0]["samples_ms"] = [100, 100]
+        status = self.status([run])
+        self.assertEqual(status["state"]["kind"], "insufficient_data")
+        self.assertEqual(status["n_trend_points"], 0)
+        self.assertEqual(status["points"], "")
+        self.assertNotIn("last_x", status)
+        self.assertNotIn("last_y", status)
+
+    def test_thirty_day_window_uses_calendar_time_and_latest_segment(self):
+        runs = [
+            self.sample_run(1, 100, day=1),
+            self.sample_run(2, 100, day=2),
+            self.sample_run(3, 100, day=3),
+            self.sample_run(4, 100, day=4),
+        ]
+        runs[0]["timestamp"] = "2026-05-01T00:00:00Z"
+        status = self.status(runs)
+        self.assertEqual(status["window"], "30d")
+        self.assertEqual(status["n_runs"], 3)
+
+    def test_sparkline_x_coordinates_use_calendar_spacing(self):
+        runs = [
+            self.sample_run(1, 100, day=1),
+            self.sample_run(2, 90, day=2),
+            self.sample_run(3, 80, day=30),
+        ]
+        status = self.status(runs)
+        coordinates = [point.split(",") for point in status["points"].split()]
+        self.assertEqual([int(point[0]) for point in coordinates], [10, 20, 300])
+
+    def test_shallow_checkout_omits_misleading_commit_count(self):
+        def fake_git(*args):
+            responses = {
+                ("rev-parse", "--short", "HEAD"): "abc123",
+                ("log", "-1", "--format=%cs"): "2026-07-01",
+                ("rev-parse", "--is-shallow-repository"): "true",
+            }
+            if args == ("rev-list", "--count", "HEAD"):
+                self.fail("shallow checkout must not count the truncated history")
+            return responses[args]
+        with mock.patch.object(site_status, "git", side_effect=fake_git):
+            status = site_status.commit_info()
+        self.assertFalse(status["history_complete"])
+        self.assertNotIn("commit_count", status)
+
+    def test_homepage_template_reports_honest_states(self):
+        template = (INPUT_ROOT / "website" / "templates" / "index.html").read_text()
+        self.assertIn("30-day comparable trend", template)
+        self.assertIn("no trustworthy percentage", template)
+        self.assertIn("history count unavailable", template)
+        self.assertIn("commit coverage is unknown", template)
+        self.assertIn("benchmark data unavailable", template)
+        self.assertIn("{% if status.bench.n_trend_points > 0 %}", template)
+        self.assertNotIn("measurements taken on every commit", template)
+        performance = (INPUT_ROOT / "website" / "templates" / "performance.html").read_text()
+        self.assertIn("deepLink.get('range')", performance)
+        self.assertIn("evolution-deep-linked-annotation", performance)
+        self.assertIn("annotationTargetId(requestedAnnotation)", performance)
+        self.assertIn("target.scrollIntoView", performance)
+        self.assertIn("target.focus", performance)
+        self.assertIn("item.dataset.deepLinked = 'true'", performance)
+        self.assertIn("item.style.outline", performance)
 
 
 class TestBenchmarkAnnotations(unittest.TestCase):
@@ -1280,10 +1429,15 @@ class TestBenchmarkAnnotations(unittest.TestCase):
         run = BenchmarkMetricSemanticsTests.sample_run(
             "a" * 40, {"probe": [10, 10, 10]}
         )
+        run["timestamp"] = "2026-07-01T00:00:00Z"
         stream = annotations.normalized_annotations(
             [run], [self.authored()], self.Resolver()
         )
-        self.assertEqual(site_status.sparkline_data([run], stream)["annotations"], stream)
+        status = site_status.sparkline_data(
+            [run], stream, resolver=self.Resolver(),
+            as_of=datetime(2026, 7, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(status["annotation"]["id"], stream[0]["id"])
 
 
 class TestRecentRegressionWorkspace(unittest.TestCase):

@@ -113,6 +113,7 @@ filegroup(
         "scripts/perf-baseline.py",
         "scripts/validate-benchmark.py",
         "website/templates/performance.html",
+        "website/templates/index.html",
     ],
 )
 
