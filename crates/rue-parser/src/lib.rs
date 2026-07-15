@@ -4,6 +4,7 @@
 
 pub mod ast;
 mod chumsky_parser;
+mod parser_policy;
 mod validate;
 
 pub use validate::KNOWN_DIRECTIVES;

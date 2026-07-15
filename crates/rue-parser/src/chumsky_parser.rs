@@ -14,13 +14,14 @@ use crate::ast::{
     StructLitExpr, TryExpr, TypeExpr, TypeLitExpr, UnaryExpr, UnaryOp, UnitLit, Visibility,
     WhileExpr,
 };
+use crate::parser_policy::{condition, diagnostics, nesting, recovery};
 use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
 use chumsky::prelude::*;
 use chumsky::recovery::via_parser;
 use lasso::{Spur, ThreadedRodeo};
-use rue_error::{CompileError, CompileErrors, ErrorKind, MAX_NESTING_DEPTH, MultiErrorResult};
-use rue_lexer::TokenKind;
+use rue_error::{CompileError, CompileErrors, ErrorKind, MultiErrorResult};
+use rue_lexer::{Token, TokenKind};
 use rue_span::{FileId, Span};
 use std::borrow::Cow;
 use tracing::{info, info_span};
@@ -1207,131 +1208,6 @@ where
     choice((int_lit, string_lit, bool_true, bool_false, unit_lit))
 }
 
-fn empty_body_from_reclaimed_struct_lit(lit: &StructLitExpr) -> BlockExpr {
-    let span = Span::with_file(lit.span.file_id, lit.name.span.end, lit.span.end);
-    BlockExpr {
-        statements: Vec::new(),
-        expr: Box::new(Expr::Unit(UnitLit { span })),
-        span,
-    }
-}
-
-/// Reclaim the *head* of a struct literal that greedily swallowed a
-/// restricted-position brace group (`if`/`while`/`for`/`match` head), ignoring
-/// its fields. Returns the expression the head denotes, or `None` for a form
-/// that is not reclaimable (a qualified inline type-constructor head).
-fn reclaim_struct_lit_head(
-    base: Option<Box<Expr>>,
-    name: Ident,
-    ctor_args: Option<Vec<CallArg>>,
-    span: Span,
-) -> Option<Expr> {
-    Some(match (base, ctor_args) {
-        // `F(args) {}` used as a restricted-position head (`if`/`while`/`for`)
-        // reclaims to the constructor call `F(args)`; the braces are the block
-        // body, exactly as `if F(args) {}` parsed before the inline
-        // type-constructor struct-literal head existed (RUE-596). Only the
-        // unqualified form is reclaimable here.
-        (None, Some(args)) => Expr::Call(CallExpr { name, args, span }),
-        (Some(_), Some(_)) => return None,
-        (None, None) => Expr::Ident(name),
-        (Some(base), None) => {
-            let span = base.span().extend_to(name.span.end);
-            Expr::Field(FieldExpr {
-                base,
-                field: name,
-                span,
-            })
-        }
-    })
-}
-
-fn reclaim_empty_struct_lit_head(lit: StructLitExpr) -> Option<Expr> {
-    if !lit.fields.is_empty() {
-        return None;
-    }
-    reclaim_struct_lit_head(lit.base, lit.name, lit.ctor_args, lit.span)
-}
-
-/// Does the condition end (on its right spine) in a struct literal that greedily
-/// swallowed a restricted-position brace group? Used only to choose between the
-/// "struct literal in bare condition" and "expected block" diagnostics once
-/// reclamation has already failed.
-fn cond_tail_is_struct_lit(cond: &Expr) -> bool {
-    match cond {
-        Expr::StructLit(_) => true,
-        Expr::Binary(b) => cond_tail_is_struct_lit(&b.right),
-        Expr::Unary(u) => cond_tail_is_struct_lit(&u.operand),
-        _ => false,
-    }
-}
-
-/// Reclaim a condition expression whose trailing brace group was greedily parsed
-/// as a struct literal back into a `(condition, body)` pair for `if`/`while`/`for`.
-///
-/// The brace group is what should have been the block body; a struct literal is
-/// never permitted unparenthesized as a bare condition (spec 4.6:13 / 4.7:28), so
-/// its braces are reclaimed as the block. Two shapes are reclaimable:
-///
-/// - A top-level `Head {}` → head plus an *empty* body (the pre-existing
-///   zero-field case; only ever arises at the top level).
-/// - A single field-init-shorthand field `Head { ident }` (RUE-613) → head plus
-///   the block `{ ident }`. Because the shorthand makes `{ ident }` look like
-///   both a block and a struct literal, this can appear not only at the top level
-///   but nested on the condition's right spine — e.g. `if a < b { a }` parses as
-///   `a < (b { a })`, so the struct literal must be peeled off the right operand.
-///   `{ a, b }` and `{ a: 1 }` are not blocks, so they remain non-reclaimable and
-///   fall through to the bare-condition error.
-fn reclaim_struct_lit_as_cond_and_body(cond: Expr) -> Option<(Expr, BlockExpr)> {
-    // Top-level empty `Head {}` reclaims to an empty body. (Empty literals are
-    // only reclaimed at the top level; a nested `a < b {}` keeps erroring as a
-    // bare-condition struct literal, unchanged from before RUE-613.)
-    if let Expr::StructLit(lit) = &cond {
-        if lit.fields.is_empty() {
-            let body = empty_body_from_reclaimed_struct_lit(lit);
-            let Expr::StructLit(lit) = cond else {
-                unreachable!("matched StructLit by ref immediately above")
-            };
-            let head = reclaim_struct_lit_head(lit.base, lit.name, lit.ctor_args, lit.span)?;
-            return Some((head, body));
-        }
-    }
-    reclaim_trailing_shorthand_struct_lit(cond)
-}
-
-/// Peel a single-field-init-shorthand struct literal (`Head { ident }`, RUE-613)
-/// off the right spine of `cond`, returning the reclaimed head expression and the
-/// `{ ident }` block. Recurses through binary and unary operators because the
-/// dangling brace group attaches to the right-most operand.
-fn reclaim_trailing_shorthand_struct_lit(cond: Expr) -> Option<(Expr, BlockExpr)> {
-    match cond {
-        Expr::StructLit(lit) if lit.fields.len() == 1 && lit.fields[0].shorthand => {
-            let body = BlockExpr {
-                statements: Vec::new(),
-                expr: Box::new(Expr::Ident(lit.fields[0].name.clone())),
-                span: Span::with_file(lit.span.file_id, lit.name.span.end, lit.span.end),
-            };
-            let head = reclaim_struct_lit_head(lit.base, lit.name, lit.ctor_args, lit.span)?;
-            Some((head, body))
-        }
-        Expr::Binary(mut b) => {
-            let (new_right, body) = reclaim_trailing_shorthand_struct_lit(*b.right)?;
-            let new_right = Box::new(new_right);
-            b.span = b.left.span().extend_to(new_right.span().end);
-            b.right = new_right;
-            Some((Expr::Binary(b), body))
-        }
-        Expr::Unary(mut u) => {
-            let (new_operand, body) = reclaim_trailing_shorthand_struct_lit(*u.operand)?;
-            let new_operand = Box::new(new_operand);
-            u.span = u.span.extend_to(new_operand.span().end);
-            u.operand = new_operand;
-            Some((Expr::Unary(u), body))
-        }
-        _ => None,
-    }
-}
-
 /// Parser for control flow expressions: break, continue, return, if, while, loop, match
 ///
 /// `block_like` is the standalone block-like-statement parser threaded down to
@@ -1417,7 +1293,7 @@ where
                 match then_block {
                     // A block after a struct-literal-tailed condition is the
                     // illegal bare struct-literal condition (`if Foo {} {..}`).
-                    Some(_) if cond_tail_is_struct_lit(&cond) => Err(Rich::custom(
+                    Some(_) if condition::tail_is_struct_lit(&cond) => Err(Rich::custom(
                         e.span(),
                         "struct literals are not allowed as a bare if condition; \
                          wrap the condition in parentheses",
@@ -1431,8 +1307,8 @@ where
                     // No block parsed: the condition greedily swallowed the
                     // then-block braces as a struct literal. Reclaim them.
                     None => {
-                        let tail_is_struct = cond_tail_is_struct_lit(&cond);
-                        match reclaim_struct_lit_as_cond_and_body(cond) {
+                        let tail_is_struct = condition::tail_is_struct_lit(&cond);
+                        match condition::reclaim_as_condition_and_body(cond) {
                             Some((cond, then_block)) => Ok(Expr::If(IfExpr {
                                 cond: Box::new(cond),
                                 then_block,
@@ -1469,7 +1345,7 @@ where
         .try_map_with(|(cond, body), e| {
             let span = span_from_extra(e);
             match body {
-                Some(_) if cond_tail_is_struct_lit(&cond) => Err(Rich::custom(
+                Some(_) if condition::tail_is_struct_lit(&cond) => Err(Rich::custom(
                     e.span(),
                     "struct literals are not allowed as a bare while condition; \
                      wrap the condition in parentheses",
@@ -1480,8 +1356,8 @@ where
                     span,
                 })),
                 None => {
-                    let tail_is_struct = cond_tail_is_struct_lit(&cond);
-                    match reclaim_struct_lit_as_cond_and_body(cond) {
+                    let tail_is_struct = condition::tail_is_struct_lit(&cond);
+                    match condition::reclaim_as_condition_and_body(cond) {
                         Some((cond, body)) => Ok(Expr::While(WhileExpr {
                             cond: Box::new(cond),
                             body,
@@ -1526,7 +1402,7 @@ where
         .try_map_with(|((binder, iterable), body), e| {
             let span = span_from_extra(e);
             match body {
-                Some(_) if cond_tail_is_struct_lit(&iterable) => Err(Rich::custom(
+                Some(_) if condition::tail_is_struct_lit(&iterable) => Err(Rich::custom(
                     e.span(),
                     "struct literals are not allowed as a bare for iterable; \
                      wrap the iterable in parentheses",
@@ -1538,8 +1414,8 @@ where
                     span,
                 })),
                 None => {
-                    let tail_is_struct = cond_tail_is_struct_lit(&iterable);
-                    match reclaim_struct_lit_as_cond_and_body(iterable) {
+                    let tail_is_struct = condition::tail_is_struct_lit(&iterable);
+                    match condition::reclaim_as_condition_and_body(iterable) {
                         Some((iterable, body)) => Ok(Expr::For(ForExpr {
                             binder,
                             iterable: Box::new(iterable),
@@ -1592,7 +1468,7 @@ where
                 // type-constructor head, RUE-596). A qualified head (`mod.Type`)
                 // is not reclaimable and falls to the error arm below.
                 (Expr::StructLit(lit), None) if lit.fields.is_empty() => {
-                    match reclaim_empty_struct_lit_head(lit) {
+                    match condition::reclaim_empty_struct_lit_head(lit) {
                         Some(scrutinee) => Ok(Expr::Match(MatchExpr {
                             scrutinee: Box::new(scrutinee),
                             arms: Vec::new(),
@@ -3170,18 +3046,13 @@ fn item_start<'src, I>() -> impl Parser<'src, I, (), ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    choice((
-        just(TokenKind::Fn).ignored(),
-        just(TokenKind::Struct).ignored(),
-        just(TokenKind::Enum).ignored(),
-        just(TokenKind::Drop).ignored(),
-        just(TokenKind::Const).ignored(),
-        just(TokenKind::Pub).ignored(),
-        just(TokenKind::Linear).ignored(),
-        just(TokenKind::Unchecked).ignored(),
-        just(TokenKind::At).ignored(), // For @directives
-    ))
-    .rewind() // Peek without consuming
+    any()
+        .filter(|token| {
+            recovery::item_recovery_action(recovery::ItemRecoveryPosition::AfterProgress, token)
+                == recovery::ItemRecoveryAction::Synchronize
+        })
+        .ignored()
+        .rewind() // Peek without consuming
 }
 
 /// Recovery parser that skips tokens until finding an item start.
@@ -3193,6 +3064,10 @@ where
 {
     // Skip at least one token to make progress, capturing the span
     any()
+        .filter(|token| {
+            recovery::item_recovery_action(recovery::ItemRecoveryPosition::Initial, token)
+                == recovery::ItemRecoveryAction::Consume
+        })
         .map_with(|_, extra| extra.span())
         // Then skip any more tokens that don't start an item
         .then(
@@ -3351,192 +3226,9 @@ fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId) -> CompileError {
     error
 }
 
-/// Drop byte-for-byte duplicate parse errors.
-///
-/// chumsky can surface the *same* diagnostic more than once when several parse
-/// alternatives fail at the same token — e.g. `self` in non-receiver position
-/// fails both the self-parameter and the regular-parameter branch, producing
-/// the identical E0100 twice for one span. Two errors are considered duplicates
-/// only when their kind (code + message payload) and span match exactly, so
-/// genuinely distinct problems at the same location are preserved. (RUE-19)
-fn dedupe_parse_errors(errors: &mut Vec<CompileError>) {
-    // Error lists are tiny, so a linear "seen" scan is cheaper than hashing.
-    let mut seen: Vec<(Option<Span>, ErrorKind)> = Vec::new();
-    errors.retain(|e| {
-        let key = (e.span(), e.kind.clone());
-        if seen.contains(&key) {
-            false
-        } else {
-            seen.push(key);
-            true
-        }
-    });
-}
-
-/// Scan the token stream for excessive syntactic nesting, returning an error
-/// if the input would nest deeper than [`MAX_NESTING_DEPTH`].
-///
-/// Deeply nested input can overflow the stack in three distinct places, and
-/// this single pre-pass guards all of them (RUE-42):
-///
-/// 1. **The parser itself.** chumsky's recursive combinators descend one native
-///    stack frame per level of bracketed expression (`(`/`[`/`{`), nested type
-///    (`[T; N]`, `ptr const T`), and `else if` chain.
-/// 2. **AstGen.** Lowering walks the AST recursively, so a deep tree — even one
-///    built iteratively by the Pratt parser, like `1 + 1 + ... + 1` or
-///    `a.b.c...` — overflows during lowering.
-/// 3. **`Drop`.** The AST's boxed children drop recursively, so merely *holding*
-///    a deep tree and letting it fall out of scope overflows.
-///
-/// Because it runs *before* the tokens reach chumsky, rejecting here means no
-/// pass (parse, lower, or drop) ever sees a tree deep enough to crash.
-///
-/// The scan maintains one operator/wrap counter per open bracket level. The
-/// tracked value `(levels.len() - 1) + sum(levels)` is a sound upper bound on
-/// the depth of the AST that would be produced: every construct that adds a
-/// level of AST nesting — an opening bracket, a prefix/infix operator, a
-/// postfix `.`/`[`/`?`, an `else`, or a `ptr` — bumps it by at least one. Counters
-/// reset at expression separators (`;`, `,`, `=>`, `=`, `:`, `->`) so that a
-/// long *sequence* of shallow expressions (many statements, many call
-/// arguments, many match arms) is not mistaken for deep nesting. The bound can
-/// still over-count some shapes, which only makes the guard slightly more
-/// conservative — never less sound. A postfix index `[` and an array
-/// type/literal `[` are distinguished by the preceding token so that nested
-/// array types (`[[..T..]]`) count once per level, honoring the 256-level
-/// minimum instead of rejecting at 128 (RUE-533).
-fn check_nesting_depth(
-    tokens: &[(TokenKind, SimpleSpan)],
-    file_id: FileId,
-) -> Option<CompileError> {
-    // Per-bracket-level operator/wrap counters; `levels[0]` is the top level.
-    let mut levels: Vec<usize> = vec![0];
-    // Running sum of `levels`, maintained incrementally so the depth check is
-    // O(1) per token rather than O(n).
-    let mut total_ops: usize = 0;
-
-    // Current upper bound on AST depth given the open brackets and pending
-    // operators/wraps.
-    macro_rules! depth {
-        () => {
-            (levels.len() - 1) + total_ops
-        };
-    }
-
-    // The previous significant token, so a `[` can be classified as either a
-    // postfix index (`expr[i]`) or an array wrap/open (`[T; N]`, `[a, b]`).
-    // Only a `[` that follows a value-producing token is a postfix index
-    // (RUE-533).
-    let mut prev: Option<&TokenKind> = None;
-    macro_rules! reject_if_too_deep {
-        ($span:expr) => {
-            if depth!() > MAX_NESTING_DEPTH {
-                return Some(CompileError::new(
-                    ErrorKind::NestingLimitExceeded {
-                        limit: MAX_NESTING_DEPTH,
-                    },
-                    to_rue_span_with_file(*$span, file_id),
-                ));
-            }
-        };
-    }
-
-    for (kind, span) in tokens {
-        match kind {
-            // Grouping / call / block / struct-literal open: one new nesting
-            // level.
-            TokenKind::LParen | TokenKind::LBrace => {
-                levels.push(0);
-                reject_if_too_deep!(span);
-            }
-            // `[` opens a new nested level for the expression/type inside it.
-            // It ALSO wraps the current level in one AST node ONLY when it is a
-            // postfix index (`expr[i]` → an Index node); an array type or
-            // literal (`[T; N]`, `[a, b]`) in value/type position adds just the
-            // one nested level. Counting the wrap unconditionally double-counts
-            // array nesting and halved the effective limit for `[[..T..]]`,
-            // rejecting at 128 levels despite the 256 minimum (RUE-533). A `[`
-            // is a postfix index exactly when it follows a value-producing
-            // token.
-            TokenKind::LBracket => {
-                let is_postfix_index = matches!(
-                    prev,
-                    Some(
-                        TokenKind::Ident(_)
-                            | TokenKind::Int(_)
-                            | TokenKind::String(_)
-                            | TokenKind::True
-                            | TokenKind::False
-                            | TokenKind::SelfValue
-                            | TokenKind::RParen
-                            | TokenKind::RBracket
-                            | TokenKind::RBrace
-                    )
-                );
-                if is_postfix_index {
-                    *levels.last_mut().unwrap() += 1;
-                    total_ops += 1;
-                }
-                levels.push(0);
-                reject_if_too_deep!(span);
-            }
-            TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => {
-                if levels.len() > 1 {
-                    total_ops -= levels.pop().unwrap();
-                }
-            }
-            // Expression / statement / clause separators: the sub-expression at
-            // the current level is complete, so its operators no longer
-            // contribute to depth.
-            TokenKind::Semi
-            | TokenKind::Comma
-            | TokenKind::FatArrow
-            | TokenKind::Eq
-            | TokenKind::Colon
-            | TokenKind::Arrow => {
-                total_ops -= *levels.last().unwrap();
-                *levels.last_mut().unwrap() = 0;
-            }
-            // Prefix / infix operators, postfix field access, `else if` chains,
-            // and pointer types each wrap the surrounding expression/type in one
-            // more AST node.
-            TokenKind::Plus
-            | TokenKind::Minus
-            | TokenKind::Star
-            | TokenKind::Slash
-            | TokenKind::Percent
-            | TokenKind::EqEq
-            | TokenKind::BangEq
-            | TokenKind::Lt
-            | TokenKind::Gt
-            | TokenKind::LtEq
-            | TokenKind::GtEq
-            | TokenKind::AmpAmp
-            | TokenKind::PipePipe
-            | TokenKind::Amp
-            | TokenKind::Pipe
-            | TokenKind::Caret
-            | TokenKind::Tilde
-            | TokenKind::LtLt
-            | TokenKind::GtGt
-            | TokenKind::Bang
-            | TokenKind::Dot
-            | TokenKind::Question
-            | TokenKind::Else
-            | TokenKind::Ptr => {
-                *levels.last_mut().unwrap() += 1;
-                total_ops += 1;
-                reject_if_too_deep!(span);
-            }
-            _ => {}
-        }
-        prev = Some(kind);
-    }
-    None
-}
-
 /// Chumsky-based parser that converts tokens into an AST.
 pub struct ChumskyParser {
-    tokens: Vec<(TokenKind, SimpleSpan)>,
+    tokens: Vec<Token>,
     input_token_count: usize,
     source_len: usize,
     interner: ThreadedRodeo,
@@ -3547,7 +3239,6 @@ pub struct ChumskyParser {
 impl ChumskyParser {
     /// Create a new parser from tokens and an interner produced by the lexer.
     pub fn new(tokens: Vec<rue_lexer::Token>, interner: ThreadedRodeo) -> Self {
-        let _span = info_span!("parser_token_adaptation").entered();
         let input_token_count = tokens.len();
         let source_len = tokens.last().map(|t| t.span.end as usize).unwrap_or(0);
         // Extract file_id from the first token (all tokens in a file have the same file_id)
@@ -3556,18 +3247,8 @@ impl ChumskyParser {
             .map(|t| t.span.file_id)
             .unwrap_or(FileId::DEFAULT);
 
-        let spanned_tokens: Vec<(TokenKind, SimpleSpan)> = tokens
-            .into_iter()
-            .filter(|t| t.kind != TokenKind::Eof) // Remove EOF, chumsky handles end differently
-            .map(|t| {
-                (
-                    t.kind,
-                    SimpleSpan::new(t.span.start as usize, t.span.end as usize),
-                )
-            })
-            .collect();
         Self {
-            tokens: spanned_tokens,
+            tokens,
             input_token_count,
             source_len,
             interner,
@@ -3598,13 +3279,17 @@ impl ChumskyParser {
         // tree deep enough to overflow the stack (RUE-42).
         let nesting_error = {
             let _span = info_span!("parser_nesting_scan").entered();
-            check_nesting_depth(&self.tokens, self.file_id)
+            nesting::check_nesting_depth(&self.tokens)
         };
         if let Some(err) = nesting_error {
             info!(
                 outcome = "nesting_error",
                 input_token_count = self.input_token_count,
-                parser_token_count = self.tokens.len(),
+                parser_token_count = self
+                    .tokens
+                    .iter()
+                    .filter(|token| token.kind != TokenKind::Eof)
+                    .count(),
                 ast_item_count = 0,
                 raw_parse_error_count = 0,
                 parse_error_count = 0,
@@ -3626,7 +3311,19 @@ impl ChumskyParser {
         // (tens of KB per nesting level), so a 256-deep parse would blow the
         // default thread stack. The nesting pre-scan above caps the depth; the
         // roomy stack here ensures the capped depth parses cleanly.
-        let tokens = std::mem::take(&mut self.tokens);
+        let tokens = {
+            let _span = info_span!("parser_token_adaptation").entered();
+            std::mem::take(&mut self.tokens)
+                .into_iter()
+                .filter(|token| token.kind != TokenKind::Eof)
+                .map(|token| {
+                    (
+                        token.kind,
+                        SimpleSpan::new(token.span.start as usize, token.span.end as usize),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
         let parser_token_count = tokens.len();
         let source_len = self.source_len;
         let file_id = self.file_id;
@@ -3647,8 +3344,7 @@ impl ChumskyParser {
                         let mut state = SimpleState(parser_state);
 
                         // Create a stream from the token iterator
-                        let token_iter = tokens.iter().cloned();
-                        let stream = Stream::from_iter(token_iter);
+                        let stream = Stream::from_iter(tokens.iter().cloned());
 
                         // Map the stream to split (Token, Span) tuples
                         let eoi: SimpleSpan = (source_len..source_len).into();
@@ -3672,7 +3368,7 @@ impl ChumskyParser {
                                         .into_iter()
                                         .map(|err| convert_error(err, file_id))
                                         .collect();
-                                    dedupe_parse_errors(&mut errors);
+                                    diagnostics::dedupe_parse_errors(&mut errors);
                                     errors
                                 };
                                 let error_count = errors.len();
@@ -3746,6 +3442,7 @@ impl ChumskyParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_error::MAX_NESTING_DEPTH;
     use rue_lexer::Lexer;
 
     /// Result type for parsing that includes both the AST and interner.
@@ -3800,6 +3497,69 @@ mod tests {
             Item::Error(_) => panic!("parse_expr helper should only be used with functions"),
         };
         Ok(ExprResult { expr, interner })
+    }
+
+    #[test]
+    fn item_recovery_preserves_following_item_prefixes_and_makes_progress() {
+        let source = "fn ; fn bare() {} fn ; pub unchecked fn modified() {} fn ; \
+                      @allow(unused_variable) fn directed() {}";
+        let lexer = Lexer::new(source);
+        let (tokens, mut interner) = lexer.tokenize().unwrap();
+        let file_id = tokens.first().unwrap().span.file_id;
+        let source_len = tokens.last().unwrap().span.end as usize;
+        let stream = Stream::from_iter(
+            tokens
+                .into_iter()
+                .filter(|token| token.kind != TokenKind::Eof)
+                .map(|token| {
+                    (
+                        token.kind,
+                        SimpleSpan::new(token.span.start as usize, token.span.end as usize),
+                    )
+                }),
+        );
+        let eoi: SimpleSpan = (source_len..source_len).into();
+        let mapped = stream.map(eoi, |(token, span)| (token, span));
+        let syms = PrimitiveTypeSpurs::new(&mut interner);
+        let mut state = SimpleState(ParserState::new(syms, file_id));
+
+        let (ast, errors) = ast_parser()
+            .parse_with_state(mapped, &mut state)
+            .into_output_errors();
+        let ast = ast.expect("recovery should retain a partial AST");
+
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert_eq!(
+            ast.items
+                .iter()
+                .filter(|item| matches!(item, Item::Error(_)))
+                .count(),
+            3
+        );
+        let names = ast
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Function(function) => Some(interner.resolve(&function.name.name)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["bare", "modified", "directed"]);
+
+        // Recovery begins on an item-start token (`fn`) but must consume it
+        // before synchronizing, otherwise the parser would retry forever.
+        let first_error = ast
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Error(span) => Some(*span),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            &source[first_error.start as usize..first_error.end as usize],
+            "fn"
+        );
     }
 
     #[test]
