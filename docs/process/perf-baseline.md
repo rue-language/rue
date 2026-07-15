@@ -24,6 +24,15 @@ it. It is separate from `bench.sh` (which feeds the
 historical website dashboard); this one is a quick, self-contained snapshot
 with no history/network side effects.
 
+The current corpus includes the exact 12,198-line
+`benchmarks/stress/deep_nesting.rue`: 120 nested-control functions (50 block,
+50 if, and 20 while) with locals through `v39` / 40 nesting levels, plus 30
+deep-expression helpers. Each warmup and measured compile of this workload has
+an isolated 10-second ceiling, even when the harness-wide `--timeout` remains
+at its 60-second default. JSON output records the effective timeout on every
+workload result. This ceiling is a baseline safety bound; the depth-60 CLI case
+described below is the focused executable complexity regression.
+
 Every workload invocation explicitly uses Rue program optimization level
 `-O0`, so changes in the compiler's optimization policy do not silently change
 the amount of generated-program optimization being measured. `--release`
@@ -122,10 +131,10 @@ and remain valid as historical compiler-pipeline measurements.
 - Build: the buck2 **DEFAULT** profile as produced by `scripts/rue-bin`
   (unoptimized — see "Build caveat" below). Numbers on an optimized build
   would be smaller, but the *pass profile* (parse-dominated) holds.
-- Corpus: `examples/` (small/medium) + `benchmarks/stress/` (large) + a
-  synthesized 3-file import graph (discovery + multi-file merge paths).
-  `deep_nesting.rue` is
-  excluded — see "Known pathology".
+- Historical corpus: `examples/` (small/medium) + `benchmarks/stress/` (large) +
+  a synthesized 3-file import graph (discovery + multi-file merge paths).
+  This 2026-07-03 table excluded `deep_nesting.rue`; the current harness has
+  restored it under the isolated budget documented above.
 - 7 fresh compiler processes after one host-cache warmup, median.
 
 ### Small / medium programs (ms)
@@ -222,6 +231,16 @@ replaced an already-linearized parser and preserves these guarantees with
 current implementation regressions; it was not the original complexity fix.
 Current benchmark manifests include `deep_nesting`, and this table must not be
 used to characterize the replacement parser.
+
+Two current gates cover different failure modes:
+
+- `scripts/perf-baseline.py` compiles the complete 12,198-line corpus under its
+  workload-local 10-second ceiling, so routine baseline runs cannot hang behind
+  the more generous global timeout.
+- `crates/rue-cli-tests/cases/deep_nesting.toml` compiles a 60-level nested
+  block under an explicit `timeout_ms = 10000`. The historical exponential
+  algorithm exceeded 30 seconds by depth 20, so this case catches recurrence
+  as a timeout rather than merely recording a slower elapsed measurement.
 
 ## Build profile (release vs. DEFAULT)
 
