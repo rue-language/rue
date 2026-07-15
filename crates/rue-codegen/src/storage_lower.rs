@@ -23,8 +23,8 @@ pub(crate) trait StorageLowerBackend: PlaceLowerBackend {
 
 /// Lower a local allocation and its initializer.
 pub(crate) fn lower_alloc<B: StorageLowerBackend>(b: &mut B, slot: u32, init: CfgValue) {
-    let init_type = b.ctx().cfg.get_inst(init).ty;
-    if b.ctx().is_strbuf(init_type) {
+    let init_plan = crate::value_plan::ValuePlan::for_value(b.ctx(), init);
+    if init_plan.is_strbuf {
         // StrBuf is always the ptr/len/cap three-slot fat pointer. Keep this
         // before generic aggregates so a layout drift fails loudly.
         let field_vregs = agg_slots::require_aggregate_slots(b, init);
@@ -34,11 +34,11 @@ pub(crate) fn lower_alloc<B: StorageLowerBackend>(b: &mut B, slot: u32, init: Cf
             "string should have 3 fields (ptr, len, cap)"
         );
         agg_slots::store_slots(b, &field_vregs, slot);
-    } else if b.ctx().is_multislot_aggregate(init_type) {
+    } else if init_plan.shape.requires_complete_slots() {
         // Every multi-slot aggregate initializer has one vreg per logical slot.
         let scalar_vregs = agg_slots::require_aggregate_slots(b, init);
         agg_slots::store_slots(b, &scalar_vregs, slot);
-    } else if init_type.is_array() {
+    } else if b.ctx().cfg.get_inst(init).ty.is_array() {
         // Zero- and one-slot arrays use their scalar/ZST representation.
         let scalar_vregs = b.collect_array_scalars(init);
         agg_slots::store_slots(b, &scalar_vregs, slot);
@@ -50,15 +50,15 @@ pub(crate) fn lower_alloc<B: StorageLowerBackend>(b: &mut B, slot: u32, init: Cf
 
 /// Lower a local load, including flattened aggregate cache bookkeeping.
 pub(crate) fn lower_load<B: StorageLowerBackend>(b: &mut B, value: CfgValue, slot: u32) {
-    let load_type = b.ctx().cfg.get_inst(value).ty;
+    let load_plan = crate::value_plan::ValuePlan::for_value(b.ctx(), value);
 
-    if b.ctx().is_strbuf(load_type) {
+    if load_plan.is_strbuf {
         let slot_vregs = agg_slots::load_slots_at_low(b, slot + 2, 3);
         let ptr_vreg = slot_vregs[0];
         b.slot_cache().insert(value, slot_vregs);
         b.map_value(value, ptr_vreg);
-    } else if load_type.is_array() || b.ctx().is_multislot_aggregate(load_type) {
-        let slot_count = b.ctx().type_slot_count(load_type);
+    } else if load_plan.shape.requires_complete_slots() {
+        let slot_count = load_plan.shape.slot_count();
         let slot_vregs = if slot_count > 0 {
             agg_slots::load_slots_at_low(b, slot + slot_count - 1, slot_count)
         } else {
@@ -81,10 +81,10 @@ pub(crate) fn lower_load<B: StorageLowerBackend>(b: &mut B, value: CfgValue, slo
 
 /// Lower a store to either a local frame slot or a by-ref parameter's pointee.
 pub(crate) fn lower_store<B: StorageLowerBackend>(b: &mut B, slot: u32, value: CfgValue) {
-    let value_type = b.ctx().cfg.get_inst(value).ty;
-    let aggregate_vregs = b
-        .ctx()
-        .is_multislot_aggregate(value_type)
+    let value_plan = crate::value_plan::ValuePlan::for_value(b.ctx(), value);
+    let aggregate_vregs = value_plan
+        .shape
+        .requires_complete_slots()
         .then(|| agg_slots::require_aggregate_slots(b, value));
 
     if let Some(slot_vregs) = aggregate_vregs {
@@ -115,10 +115,10 @@ pub(crate) fn lower_param_store<B: StorageLowerBackend>(
         panic!("ParamStore used on non-writable param slot {}", param_slot);
     }
 
-    let value_type = b.ctx().cfg.get_inst(value).ty;
-    let aggregate_vregs = b
-        .ctx()
-        .is_multislot_aggregate(value_type)
+    let value_plan = crate::value_plan::ValuePlan::for_value(b.ctx(), value);
+    let aggregate_vregs = value_plan
+        .shape
+        .requires_complete_slots()
         .then(|| agg_slots::require_aggregate_slots(b, value));
 
     let ptr = b.ensure_by_ref_param_ptr(param_slot);

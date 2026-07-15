@@ -224,11 +224,14 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
 /// invariant in release builds.
 pub fn require_aggregate_slots<B: SlotBackend>(b: &mut B, value: CfgValue) -> Vec<VReg> {
     let ty = b.ctx().cfg.get_inst(value).ty;
+    let plan = crate::value_plan::ValuePlan::for_value(b.ctx(), value);
     assert!(
-        b.ctx().is_multislot_aggregate(ty),
-        "aggregate slot materialization requires a multi-slot aggregate value: {value}"
+        plan.shape.requires_complete_slots(),
+        "aggregate slot materialization requires a multi-slot aggregate value: {value} (type={ty:?}, shape={:?}, kind={:?})",
+        plan.shape,
+        plan.kind
     );
-    let expected = b.ctx().type_slot_count(ty) as usize;
+    let expected = plan.shape.slot_count() as usize;
     let slots = get_or_compute_field_vregs(b, value).unwrap_or_else(|| match expected {
         // A zero-slot aggregate's empty representation is complete. Producers
         // intentionally have no slot-cache entry because there are no vregs to

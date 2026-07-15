@@ -193,10 +193,8 @@ impl<'a> CfgLower<'a> {
     /// flow begins, so the function-wide cache only contains definitions that
     /// dominate every block which may reuse them.
     fn preload_by_ref_param_ptrs(&mut self) {
-        for param_slot in 0..self.ctx.num_params {
-            if self.ctx.cfg.is_param_by_ref(param_slot) {
-                self.ensure_by_ref_param_ptr(param_slot);
-            }
+        for param_slot in crate::value_plan::by_ref_param_slots(&self.ctx) {
+            self.ensure_by_ref_param_ptr(param_slot);
         }
     }
 
@@ -311,9 +309,14 @@ impl<'a> CfgLower<'a> {
     /// For 32-bit-and-narrower types the compares run at 32-bit width:
     /// sub-word values are kept sign-extended in the low 32 bits of their
     /// registers, so comparing against the type's MIN there is exact.
-    fn emit_signed_div_overflow_check(&mut self, ty: Type, lhs_vreg: VReg, rhs_vreg: VReg) {
+    fn emit_signed_div_overflow_check(
+        &mut self,
+        width: crate::value_plan::IntegerWidth,
+        lhs_vreg: VReg,
+        rhs_vreg: VReg,
+    ) {
         let ok_label = self.new_label();
-        if ty.is_64_bit() {
+        if width.bits == 64 {
             // divisor == -1?
             self.mir.push(X86Inst::Cmp64RI {
                 src: Operand::Virtual(rhs_vreg),
@@ -331,7 +334,7 @@ impl<'a> CfgLower<'a> {
                 src2: Operand::Virtual(min_vreg),
             });
         } else {
-            let (min_val, _) = Self::type_range(ty);
+            let (min_val, _) = crate::value_plan::integer_range(width);
             // divisor == -1?
             self.mir.push(X86Inst::CmpRI {
                 src: Operand::Virtual(rhs_vreg),
@@ -397,9 +400,13 @@ impl<'a> CfgLower<'a> {
         let dst = Operand::Virtual(vreg);
         let src = Operand::Virtual(vreg);
         match Self::type_bits(ty) {
-            8 if ty.is_signed() => self.mir.push(X86Inst::Movsx8To64 { dst, src }),
+            8 if crate::value_plan::type_is_signed(ty) => {
+                self.mir.push(X86Inst::Movsx8To64 { dst, src })
+            }
             8 => self.mir.push(X86Inst::Movzx8To64 { dst, src }),
-            16 if ty.is_signed() => self.mir.push(X86Inst::Movsx16To64 { dst, src }),
+            16 if crate::value_plan::type_is_signed(ty) => {
+                self.mir.push(X86Inst::Movsx16To64 { dst, src })
+            }
             16 => self.mir.push(X86Inst::Movzx16To64 { dst, src }),
             _ => {}
         }
@@ -612,7 +619,7 @@ impl<'a> CfgLower<'a> {
     fn get_lowering_rationale(&self, data: &CfgInstData, ty: Type) -> Option<String> {
         match data {
             CfgInstData::Add(_, _) | CfgInstData::Sub(_, _) | CfgInstData::Mul(_, _) => {
-                if matches!(ty.kind(), TypeKind::I64 | TypeKind::U64) {
+                if crate::value_plan::is_64_bit(ty) {
                     Some("64-bit operation with 64-bit overflow check".to_string())
                 } else if matches!(
                     ty.kind(),
@@ -747,8 +754,25 @@ impl<'a> CfgLower<'a> {
             return;
         }
 
+        // Decide scalar-vs-complete-slot shape, storage root, comparison
+        // preparation, and integer width in the shared policy layer before any
+        // target instruction is selected.  The backend match below is an
+        // instruction-selection adapter; it must not make a competing shape
+        // decision.
+        let value_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, value);
+
         let inst = self.ctx.cfg.get_inst(value);
         let ty = inst.ty;
+        let plan_is_64 = value_plan
+            .integer_width
+            .is_some_and(|width| width.bits == 64);
+        let plan_is_signed = value_plan.integer_width.is_some_and(|width| width.signed);
+
+        assert_eq!(
+            value_plan.kind,
+            crate::value_plan::kind(&inst.data),
+            "backend value dispatch must consume the shared ValueKind"
+        );
 
         match &inst.data {
             CfgInstData::Const(v) => {
@@ -802,7 +826,7 @@ impl<'a> CfgLower<'a> {
                 });
 
                 let mut slot_vregs = vec![ptr_vreg, len_vreg];
-                if self.ctx.type_slot_count(ty) >= 3 {
+                if value_plan.shape.slot_count() >= 3 {
                     let cap_vreg = self.mir.alloc_vreg();
                     self.mir.push(X86Inst::StringConstCap {
                         dst: Operand::Virtual(cap_vreg),
@@ -817,7 +841,10 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Param { index } => {
                 // Check if this parameter is physically passed by reference.
-                let is_by_ref = self.ctx.cfg.is_param_by_ref(*index);
+                let is_by_ref = matches!(
+                    value_plan.storage,
+                    crate::value_plan::StoragePolicy::ParameterSlot { by_ref: true, .. }
+                );
 
                 // The prologue copies every ABI arg slot — register- and
                 // stack-passed alike — into the contiguous frame param area
@@ -848,8 +875,7 @@ impl<'a> CfgLower<'a> {
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
 
-                    let param_ty = self.ctx.cfg.get_inst(value).ty;
-                    let count = self.ctx.type_slot_count(param_ty).max(1);
+                    let count = value_plan.shape.slot_count().max(1);
                     let slot = self.ctx.num_locals + *index + count - 1;
                     let offset = self.ctx.local_offset(slot);
                     self.mir.push(X86Inst::MovRM {
@@ -877,7 +903,10 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Use 64-bit add for 64-bit types to get correct overflow detection
-                if matches!(ty.kind(), TypeKind::I64 | TypeKind::U64) {
+                if value_plan
+                    .integer_width
+                    .is_some_and(|width| width.bits == 64)
+                {
                     self.mir.push(X86Inst::AddRR64 {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Virtual(rhs_vreg),
@@ -890,7 +919,12 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Overflow check - use appropriate flag based on signedness
-                self.emit_overflow_check(ty, vreg);
+                self.emit_overflow_check(
+                    value_plan
+                        .integer_width
+                        .expect("arithmetic plan must include integer width"),
+                    vreg,
+                );
             }
 
             CfgInstData::Sub(lhs, rhs) => {
@@ -906,7 +940,10 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Use 64-bit sub for 64-bit types to get correct overflow detection
-                if matches!(ty.kind(), TypeKind::I64 | TypeKind::U64) {
+                if value_plan
+                    .integer_width
+                    .is_some_and(|width| width.bits == 64)
+                {
                     self.mir.push(X86Inst::SubRR64 {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Virtual(rhs_vreg),
@@ -919,7 +956,12 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Overflow check - use appropriate flag based on signedness
-                self.emit_overflow_check(ty, vreg);
+                self.emit_overflow_check(
+                    value_plan
+                        .integer_width
+                        .expect("arithmetic plan must include integer width"),
+                    vreg,
+                );
             }
 
             CfgInstData::Mul(lhs, rhs) => {
@@ -936,10 +978,9 @@ impl<'a> CfgLower<'a> {
                 //
                 // Future optimization: x * 2 could use `add x, x` instead of `shl x, 1`
                 // (same latency but potentially better for some microarchitectures).
-                let is_word_or_larger = matches!(
-                    ty.kind(),
-                    TypeKind::I32 | TypeKind::I64 | TypeKind::U32 | TypeKind::U64
-                );
+                let is_word_or_larger = value_plan
+                    .integer_width
+                    .is_some_and(|width| width.bits >= 32);
                 let shift_amount = if is_word_or_larger {
                     self.try_power_of_two_shift(*rhs)
                         .or_else(|| self.try_power_of_two_shift(*lhs))
@@ -962,7 +1003,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Emit shift left
-                    if ty.is_64_bit() {
+                    if plan_is_64 {
                         self.mir.push(X86Inst::ShlRI {
                             dst: Operand::Virtual(vreg),
                             imm: shift,
@@ -983,8 +1024,8 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Use arithmetic shift (SAR) for signed, logical shift (SHR) for unsigned
-                    if ty.is_signed() {
-                        if ty.is_64_bit() {
+                    if plan_is_signed {
+                        if plan_is_64 {
                             self.mir.push(X86Inst::SarRI {
                                 dst: Operand::Virtual(check_vreg),
                                 imm: shift,
@@ -995,7 +1036,7 @@ impl<'a> CfgLower<'a> {
                                 imm: shift,
                             });
                         }
-                    } else if ty.is_64_bit() {
+                    } else if plan_is_64 {
                         self.mir.push(X86Inst::ShrRI {
                             dst: Operand::Virtual(check_vreg),
                             imm: shift,
@@ -1008,7 +1049,7 @@ impl<'a> CfgLower<'a> {
                     }
 
                     // Compare with original value
-                    if ty.is_64_bit() {
+                    if plan_is_64 {
                         self.mir.push(X86Inst::Cmp64RR {
                             src1: Operand::Virtual(check_vreg),
                             src2: Operand::Virtual(src_vreg),
@@ -1028,7 +1069,7 @@ impl<'a> CfgLower<'a> {
                     let symbol_id = self.intern_symbol("__rue_overflow");
                     self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label });
-                } else if matches!(ty.kind(), TypeKind::U32 | TypeKind::U64) {
+                } else if !plan_is_signed && is_word_or_larger {
                     // Unsigned 32/64-bit: two-operand IMUL's OF/CF report
                     // *signed* overflow, which both misses real unsigned
                     // overflows and falsely fires on valid products with the
@@ -1042,7 +1083,7 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Physical(Reg::Rax),
                         src: Operand::Virtual(lhs_vreg),
                     });
-                    self.mir.push(if ty.is_64_bit() {
+                    self.mir.push(if plan_is_64 {
                         X86Inst::Mul64R {
                             src: Operand::Virtual(rhs_vreg),
                         }
@@ -1058,7 +1099,12 @@ impl<'a> CfgLower<'a> {
 
                     // MOV does not modify flags, so MUL's CF still drives the
                     // JAE check here.
-                    self.emit_overflow_check(ty, vreg);
+                    self.emit_overflow_check(
+                        value_plan
+                            .integer_width
+                            .expect("arithmetic plan must include integer width"),
+                        vreg,
+                    );
                 } else {
                     // Fall back to IMUL for non-power-of-2 constants
                     let rhs_vreg = self.get_vreg(*rhs);
@@ -1069,7 +1115,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Use 64-bit mul for 64-bit types to get correct overflow detection
-                    if matches!(ty.kind(), TypeKind::I64 | TypeKind::U64) {
+                    if plan_is_64 {
                         self.mir.push(X86Inst::ImulRR64 {
                             dst: Operand::Virtual(vreg),
                             src: Operand::Virtual(rhs_vreg),
@@ -1088,7 +1134,12 @@ impl<'a> CfgLower<'a> {
                     // exact product mod 2^32, and emit_overflow_check
                     // range-checks that value against the type's bounds.
                     // (u32/u64 take the one-operand MUL branch above.)
-                    self.emit_overflow_check(ty, vreg);
+                    self.emit_overflow_check(
+                        value_plan
+                            .integer_width
+                            .expect("arithmetic plan must include integer width"),
+                        vreg,
+                    );
                 }
             }
 
@@ -1103,7 +1154,10 @@ impl<'a> CfgLower<'a> {
                 // 64-bit — a 32-bit test would only look at the low half and
                 // falsely trap (or fail to trap) when the high bits differ
                 // (RUE-26).
-                let is_64 = ty.is_64_bit();
+                let width = value_plan
+                    .integer_width
+                    .expect("division plan must include integer width");
+                let is_64 = width.bits == 64;
                 let ok_label = self.new_label();
                 if is_64 {
                     self.mir.push(X86Inst::Test64RR {
@@ -1122,8 +1176,14 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Label { id: ok_label });
 
                 // Signed MIN / -1 overflows; trap it explicitly (RUE-30).
-                if ty.is_signed() {
-                    self.emit_signed_div_overflow_check(ty, lhs_vreg, rhs_vreg);
+                if width.signed {
+                    self.emit_signed_div_overflow_check(
+                        value_plan
+                            .integer_width
+                            .expect("division plan must include integer width"),
+                        lhs_vreg,
+                        rhs_vreg,
+                    );
                 }
 
                 self.mir.push(X86Inst::MovRR {
@@ -1134,7 +1194,7 @@ impl<'a> CfgLower<'a> {
                 // Use signed division (CDQ/CQO + IDIV) for signed types,
                 // unsigned division (XOR EDX,EDX + DIV) for unsigned types,
                 // selecting 64-bit forms for 64-bit operands (RUE-26).
-                self.emit_div_core(is_64, ty.is_signed(), rhs_vreg);
+                self.emit_div_core(is_64, width.signed, rhs_vreg);
 
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
@@ -1149,7 +1209,10 @@ impl<'a> CfgLower<'a> {
                 let lhs_vreg = self.get_vreg(*lhs);
                 let rhs_vreg = self.get_vreg(*rhs);
 
-                let is_64 = ty.is_64_bit();
+                let width = value_plan
+                    .integer_width
+                    .expect("modulo plan must include integer width");
+                let is_64 = width.bits == 64;
                 let ok_label = self.new_label();
                 if is_64 {
                     self.mir.push(X86Inst::Test64RR {
@@ -1169,8 +1232,14 @@ impl<'a> CfgLower<'a> {
 
                 // Signed MIN % -1 overflows like MIN / -1 (the implied
                 // quotient -MIN is unrepresentable); trap it (RUE-30).
-                if ty.is_signed() {
-                    self.emit_signed_div_overflow_check(ty, lhs_vreg, rhs_vreg);
+                if width.signed {
+                    self.emit_signed_div_overflow_check(
+                        value_plan
+                            .integer_width
+                            .expect("modulo plan must include integer width"),
+                        lhs_vreg,
+                        rhs_vreg,
+                    );
                 }
 
                 self.mir.push(X86Inst::MovRR {
@@ -1181,7 +1250,7 @@ impl<'a> CfgLower<'a> {
                 // Use signed division (CDQ/CQO + IDIV) for signed types,
                 // unsigned division (XOR EDX,EDX + DIV) for unsigned types,
                 // selecting 64-bit forms for 64-bit operands (RUE-26).
-                self.emit_div_core(is_64, ty.is_signed(), rhs_vreg);
+                self.emit_div_core(is_64, width.signed, rhs_vreg);
 
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
@@ -1201,7 +1270,7 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Use 64-bit neg for 64-bit types to get correct overflow detection
-                if matches!(ty.kind(), TypeKind::I64 | TypeKind::U64) {
+                if plan_is_64 {
                     self.mir.push(X86Inst::Neg64 {
                         dst: Operand::Virtual(vreg),
                     });
@@ -1216,7 +1285,12 @@ impl<'a> CfgLower<'a> {
                 // For unsigned types: NEG sets CF for all non-zero values,
                 // but we only care about -0 = 0 (no overflow). Since negation
                 // of any non-zero unsigned value would wrap (0 - x), we check CF.
-                self.emit_overflow_check(ty, vreg);
+                self.emit_overflow_check(
+                    value_plan
+                        .integer_width
+                        .expect("arithmetic plan must include integer width"),
+                    vreg,
+                );
             }
 
             CfgInstData::Not(operand) => {
@@ -1247,7 +1321,7 @@ impl<'a> CfgLower<'a> {
                 });
                 // 64-bit operands need a REX.W `not`; the 32-bit form would
                 // zero the high 32 bits of the result (RUE-59).
-                self.mir.push(if ty.is_64_bit() {
+                self.mir.push(if plan_is_64 {
                     X86Inst::Not64R {
                         dst: Operand::Virtual(vreg),
                     }
@@ -1275,7 +1349,7 @@ impl<'a> CfgLower<'a> {
                 });
                 // 64-bit operands need a REX.W `and`; a 32-bit `and` would zero
                 // the high 32 bits of the result (RUE-58).
-                self.mir.push(if ty.is_64_bit() {
+                self.mir.push(if plan_is_64 {
                     X86Inst::And64RR {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Virtual(rhs_vreg),
@@ -1299,7 +1373,7 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(if ty.is_64_bit() {
+                self.mir.push(if plan_is_64 {
                     X86Inst::Or64RR {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Virtual(rhs_vreg),
@@ -1323,7 +1397,7 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(if ty.is_64_bit() {
+                self.mir.push(if plan_is_64 {
                     X86Inst::Xor64RR {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Virtual(rhs_vreg),
@@ -1357,7 +1431,7 @@ impl<'a> CfgLower<'a> {
                 let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
                     let imm = (*shift_amount & count_mask) as u8;
-                    if ty.is_64_bit() {
+                    if plan_is_64 {
                         self.mir.push(X86Inst::ShlRI {
                             dst: Operand::Virtual(vreg),
                             imm,
@@ -1375,7 +1449,7 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Physical(Reg::Rcx),
                         src: Operand::Virtual(count_vreg),
                     });
-                    if ty.is_64_bit() {
+                    if plan_is_64 {
                         self.mir.push(X86Inst::ShlRCl {
                             dst: Operand::Virtual(vreg),
                         });
@@ -1411,17 +1485,17 @@ impl<'a> CfgLower<'a> {
                     let imm = (*shift_amount & count_mask) as u8;
                     // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
                     // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                    if ty.is_64_bit() && ty.is_signed() {
+                    if plan_is_64 && plan_is_signed {
                         self.mir.push(X86Inst::SarRI {
                             dst: Operand::Virtual(vreg),
                             imm,
                         });
-                    } else if ty.is_64_bit() {
+                    } else if plan_is_64 {
                         self.mir.push(X86Inst::ShrRI {
                             dst: Operand::Virtual(vreg),
                             imm,
                         });
-                    } else if ty.is_signed() {
+                    } else if plan_is_signed {
                         self.mir.push(X86Inst::Sar32RI {
                             dst: Operand::Virtual(vreg),
                             imm,
@@ -1442,15 +1516,15 @@ impl<'a> CfgLower<'a> {
 
                     // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
                     // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                    if ty.is_64_bit() && ty.is_signed() {
+                    if plan_is_64 && plan_is_signed {
                         self.mir.push(X86Inst::SarRCl {
                             dst: Operand::Virtual(vreg),
                         });
-                    } else if ty.is_64_bit() {
+                    } else if plan_is_64 {
                         self.mir.push(X86Inst::ShrRCl {
                             dst: Operand::Virtual(vreg),
                         });
-                    } else if ty.is_signed() {
+                    } else if plan_is_signed {
                         self.mir.push(X86Inst::Sar32RCl {
                             dst: Operand::Virtual(vreg),
                         });
@@ -1465,12 +1539,18 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Eq(lhs, rhs) => {
                 let lhs_ty = self.ctx.cfg.get_inst(*lhs).ty;
 
-                if self.ctx.is_string_like_for_equality(lhs_ty) {
+                if matches!(
+                    value_plan.comparison,
+                    Some(crate::value_plan::ComparisonPreparation::StringContent { .. })
+                ) {
                     // String-like equality compares byte content, not the
                     // pointer/len/cap fields structurally.
                     let vreg = self.emit_builtin_eq_call(*lhs, *rhs, "__rue_str_eq");
                     self.value_map.insert(value, vreg);
-                } else if lhs_ty == Type::UNIT {
+                } else if matches!(
+                    value_plan.comparison,
+                    Some(crate::value_plan::ComparisonPreparation::Unit)
+                ) {
                     // Unit equality: () == () is always true
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
@@ -1478,7 +1558,10 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(vreg),
                         imm: 1,
                     });
-                } else if self.ctx.is_multislot_aggregate(lhs_ty) {
+                } else if matches!(
+                    value_plan.comparison,
+                    Some(crate::value_plan::ComparisonPreparation::Aggregate { .. })
+                ) {
                     // Structural equality: compare every slot (struct fields,
                     // array elements, or an enum's tag + payload). (RUE-285)
                     self.emit_aggregate_equality(value, *lhs, *rhs, lhs_ty, false);
@@ -1494,7 +1577,10 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Ne(lhs, rhs) => {
                 let lhs_ty = self.ctx.cfg.get_inst(*lhs).ty;
 
-                if self.ctx.is_string_like_for_equality(lhs_ty) {
+                if matches!(
+                    value_plan.comparison,
+                    Some(crate::value_plan::ComparisonPreparation::StringContent { .. })
+                ) {
                     // String-like inequality is the inverse of byte-content
                     // equality.
                     let vreg = self.emit_builtin_eq_call(*lhs, *rhs, "__rue_str_eq");
@@ -1503,7 +1589,10 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(vreg),
                         imm: 1,
                     });
-                } else if lhs_ty == Type::UNIT {
+                } else if matches!(
+                    value_plan.comparison,
+                    Some(crate::value_plan::ComparisonPreparation::Unit)
+                ) {
                     // Unit inequality: () != () is always false
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
@@ -1511,7 +1600,10 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(vreg),
                         imm: 0,
                     });
-                } else if self.ctx.is_multislot_aggregate(lhs_ty) {
+                } else if matches!(
+                    value_plan.comparison,
+                    Some(crate::value_plan::ComparisonPreparation::Aggregate { .. })
+                ) {
                     // Structural inequality: compare every slot, invert result.
                     // (RUE-285)
                     self.emit_aggregate_equality(value, *lhs, *rhs, lhs_ty, true);
@@ -1525,7 +1617,12 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Lt(lhs, rhs) => {
-                let is_unsigned = self.is_unsigned_comparison(*lhs);
+                let is_unsigned = matches!(
+                    value_plan.comparison,
+                    Some(crate::value_plan::ComparisonPreparation::Scalar {
+                        width: crate::value_plan::IntegerWidth { signed: false, .. }
+                    })
+                );
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
                     if is_unsigned {
                         mir.push(X86Inst::Setb {
@@ -1540,7 +1637,12 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Gt(lhs, rhs) => {
-                let is_unsigned = self.is_unsigned_comparison(*lhs);
+                let is_unsigned = matches!(
+                    value_plan.comparison,
+                    Some(crate::value_plan::ComparisonPreparation::Scalar {
+                        width: crate::value_plan::IntegerWidth { signed: false, .. }
+                    })
+                );
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
                     if is_unsigned {
                         mir.push(X86Inst::Seta {
@@ -1555,7 +1657,12 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Le(lhs, rhs) => {
-                let is_unsigned = self.is_unsigned_comparison(*lhs);
+                let is_unsigned = matches!(
+                    value_plan.comparison,
+                    Some(crate::value_plan::ComparisonPreparation::Scalar {
+                        width: crate::value_plan::IntegerWidth { signed: false, .. }
+                    })
+                );
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
                     if is_unsigned {
                         mir.push(X86Inst::Setbe {
@@ -1570,7 +1677,12 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Ge(lhs, rhs) => {
-                let is_unsigned = self.is_unsigned_comparison(*lhs);
+                let is_unsigned = matches!(
+                    value_plan.comparison,
+                    Some(crate::value_plan::ComparisonPreparation::Scalar {
+                        width: crate::value_plan::IntegerWidth { signed: false, .. }
+                    })
+                );
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
                     if is_unsigned {
                         mir.push(X86Inst::Setae {
@@ -2229,7 +2341,10 @@ impl<'a> CfgLower<'a> {
                     });
                     let ext_dst = Operand::Virtual(offset_vreg);
                     let ext_src = Operand::Virtual(offset_vreg);
-                    match (Self::type_bits(offset_ty), offset_ty.is_signed()) {
+                    match (
+                        Self::type_bits(offset_ty),
+                        crate::value_plan::type_is_signed(offset_ty),
+                    ) {
                         (8, true) => self.mir.push(X86Inst::Movsx8To64 {
                             dst: ext_dst,
                             src: ext_src,
@@ -2624,8 +2739,7 @@ impl<'a> CfgLower<'a> {
                 payload_len,
                 ..
             } => {
-                let vty = self.ctx.cfg.get_inst(value).ty;
-                if *payload_len == 0 && self.ctx.type_slot_count(vty) <= 1 {
+                if matches!(value_plan.shape, crate::value_plan::ValueShape::Scalar) {
                     // Discriminant-only (C-like) enum: a single-slot scalar
                     // holding the variant index.
                     let vreg = self.mir.alloc_vreg();
@@ -2651,8 +2765,7 @@ impl<'a> CfgLower<'a> {
                 let (enum_id, variant_index, field_index) =
                     (*enum_id, *variant_index, *field_index);
                 let base = *base;
-                let vty = self.ctx.cfg.get_inst(value).ty;
-                let field_slots = self.ctx.type_slot_count(vty) as usize;
+                let field_slots = value_plan.shape.slot_count() as usize;
                 let offset = types::enum_payload_slot_offset(
                     self.ctx.type_pool,
                     enum_id,
@@ -2690,26 +2803,30 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::IntCast {
                 value: src_value,
-                from_ty,
+                from_ty: _,
             } => {
                 // Integer cast with runtime range check
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
                 let src_vreg = self.get_vreg(*src_value);
-                let to_ty = self.ctx.cfg.get_inst(value).ty;
-
                 // Emit range check and panic if out of bounds
-                self.emit_int_cast_check(src_vreg, *from_ty, to_ty);
+                let from_width = value_plan
+                    .source_integer_width
+                    .expect("integer cast plan must include source width");
+                let to_width = value_plan
+                    .integer_width
+                    .expect("integer cast plan must include destination width");
+                self.emit_int_cast_check(src_vreg, from_width, to_width);
 
                 // Move the value to the result vreg. A signed source widened to a
                 // larger type must be SIGN-extended into the high bits — a plain
                 // 64-bit copy would carry the source's zero-extended high bits,
                 // turning e.g. i32 -5 into 4294967291 (RUE-88). The value is held
                 // zero-extended in the register, so emit an explicit movsx.
-                let from_bits = Self::type_bits(*from_ty);
-                let to_bits = Self::type_bits(to_ty);
-                if from_ty.is_signed() && to_bits > from_bits {
+                let from_bits = from_width.bits;
+                let to_bits = to_width.bits;
+                if from_width.signed && to_bits > from_bits {
                     let dst = Operand::Virtual(vreg);
                     let src = Operand::Virtual(src_vreg);
                     match from_bits {
@@ -2745,7 +2862,9 @@ impl<'a> CfgLower<'a> {
                     // Multi-slot structs use the complete aggregate
                     // representation. Zero- and one-slot structs use their
                     // scalar/ZST flattening.
-                    let field_vregs = if self.ctx.is_multislot_aggregate(dropped_ty) {
+                    let dropped_plan =
+                        crate::value_plan::ValuePlan::for_value(&self.ctx, *dropped_value);
+                    let field_vregs = if dropped_plan.shape.requires_complete_slots() {
                         self.require_aggregate_slots(*dropped_value)
                     } else {
                         self.collect_struct_scalar_vregs(*dropped_value)
@@ -2810,7 +2929,9 @@ impl<'a> CfgLower<'a> {
                     // slot counts past the argument registers go on the stack
                     // via emit_call_with_slot_args — e.g. [String; 3] is 9
                     // slots, RUE-193)
-                    let mut element_vregs = if self.ctx.is_multislot_aggregate(dropped_ty) {
+                    let dropped_plan =
+                        crate::value_plan::ValuePlan::for_value(&self.ctx, *dropped_value);
+                    let mut element_vregs = if dropped_plan.shape.requires_complete_slots() {
                         self.require_aggregate_slots(*dropped_value)
                     } else {
                         self.collect_array_scalar_vregs(*dropped_value)
@@ -2878,14 +2999,14 @@ impl<'a> CfgLower<'a> {
                 // A multi-slot aggregate value (struct, String, array, or
                 // payload enum) has one vreg per logical slot; PlaceWrite must
                 // store that complete representation. (RUE-118, RUE-23)
-                let val_type = self.ctx.cfg.get_inst(*val).ty;
+                let val_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, *val);
                 // A zero-sized value has no bytes to store (RUE-577): writing
                 // the dummy vreg CFG carries for unit would clobber a
                 // neighboring slot, and a ZST destination's origin shift
                 // underflows. Nothing to do.
-                let vals = if self.ctx.is_multislot_aggregate(val_type) {
+                let vals = if val_plan.shape.requires_complete_slots() {
                     self.require_aggregate_slots(*val)
-                } else if self.ctx.type_slot_count(val_type) == 0 {
+                } else if val_plan.shape.slot_count() == 0 {
                     Vec::new()
                 } else {
                     vec![self.get_vreg(*val)]
@@ -2893,13 +3014,16 @@ impl<'a> CfgLower<'a> {
                 crate::place_lower::lower_place_write(self, place, &vals);
             }
         }
-    }
 
-    /// Check if a comparison should use unsigned comparison instructions.
-    ///
-    /// Sema guarantees both operands have the same signedness, so we only need to check one.
-    fn is_unsigned_comparison(&self, lhs: CfgValue) -> bool {
-        self.ctx.cfg.get_inst(lhs).ty.is_unsigned()
+        if matches!(
+            value_plan.requirement,
+            crate::value_plan::MaterializationRequirement::CompleteSlots
+        ) {
+            let slots = crate::agg_slots::require_aggregate_slots(self, value);
+            crate::value_plan::assert_slot_policy(value_plan, slots.len());
+        } else if let Some(slots) = self.struct_slot_vregs.get(&value) {
+            crate::value_plan::assert_slot_policy(value_plan, slots.len());
+        }
     }
 
     /// Try to extract a power-of-two shift amount from a constant value.
@@ -2938,20 +3062,20 @@ impl<'a> CfgLower<'a> {
     ///
     /// For sub-word types (8/16-bit), the arithmetic is done in 32/64-bit registers,
     /// so we need to check if the result fits in the original type's range.
-    fn emit_overflow_check(&mut self, ty: Type, result_vreg: VReg) {
+    fn emit_overflow_check(&mut self, width: crate::value_plan::IntegerWidth, result_vreg: VReg) {
         let ok_label = self.new_label();
 
-        match ty.kind() {
+        match (width.bits, width.signed) {
             // 32-bit and 64-bit unsigned: check carry flag
-            TypeKind::U32 | TypeKind::U64 => {
+            (32 | 64, false) => {
                 self.mir.push(X86Inst::Jae { label: ok_label });
             }
             // 32-bit and 64-bit signed: check overflow flag
-            TypeKind::I32 | TypeKind::I64 => {
+            (32 | 64, true) => {
                 self.mir.push(X86Inst::Jno { label: ok_label });
             }
             // Sub-word unsigned types: check if result fits in range [0, max]
-            TypeKind::U8 => {
+            (8, false) => {
                 // Result must be <= 255
                 self.mir.push(X86Inst::CmpRI {
                     src: Operand::Virtual(result_vreg),
@@ -2960,7 +3084,7 @@ impl<'a> CfgLower<'a> {
                 // Jump if below or equal (unsigned)
                 self.mir.push(X86Inst::Jbe { label: ok_label });
             }
-            TypeKind::U16 => {
+            (16, false) => {
                 // Result must be <= 65535
                 let max_vreg = self.mir.alloc_vreg();
                 self.mir.push(X86Inst::MovRI32 {
@@ -2975,7 +3099,7 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Jbe { label: ok_label });
             }
             // Sub-word signed types: check if result fits in range [min, max]
-            TypeKind::I8 => {
+            (8, true) => {
                 // For i8: result must be in [-128, 127]
                 // Sign-extend to 64-bit and compare with original
                 // If they differ, overflow occurred
@@ -2997,7 +3121,7 @@ impl<'a> CfgLower<'a> {
                 });
                 self.mir.push(X86Inst::Jz { label: ok_label });
             }
-            TypeKind::I16 => {
+            (16, true) => {
                 // For i16: result must be in [-32768, 32767]
                 // Sign-extend to 64-bit and compare with original
                 let sext_vreg = self.mir.alloc_vreg();
@@ -3060,12 +3184,16 @@ impl<'a> CfgLower<'a> {
     ///
     /// Checks if the source value can be represented in the target type.
     /// Panics via `__rue_intcast_overflow` if the value is out of range.
-    fn emit_int_cast_check(&mut self, src_vreg: VReg, from_ty: Type, to_ty: Type) {
-        // Get type properties
-        let from_signed = from_ty.is_signed();
-        let to_signed = to_ty.is_signed();
-        let from_bits = Self::type_bits(from_ty);
-        let to_bits = Self::type_bits(to_ty);
+    fn emit_int_cast_check(
+        &mut self,
+        src_vreg: VReg,
+        from_width: crate::value_plan::IntegerWidth,
+        to_width: crate::value_plan::IntegerWidth,
+    ) {
+        let from_signed = from_width.signed;
+        let to_signed = to_width.signed;
+        let from_bits = from_width.bits;
+        let to_bits = to_width.bits;
 
         // If casting to a larger or equal-sized type with compatible signedness,
         // and source is unsigned or both are signed, no check needed
@@ -3086,7 +3214,7 @@ impl<'a> CfgLower<'a> {
         let ok_label = self.new_label();
 
         // Calculate the min and max values for the target type
-        let (min_val, max_val) = Self::type_range(to_ty);
+        let (min_val, max_val) = crate::value_plan::integer_range(to_width);
 
         if from_signed {
             // Source is signed - need to check both min and max
@@ -3253,28 +3381,7 @@ impl<'a> CfgLower<'a> {
 
     /// Get the bit width of an integer type.
     fn type_bits(ty: Type) -> u32 {
-        match ty.kind() {
-            TypeKind::I8 | TypeKind::U8 => 8,
-            TypeKind::I16 | TypeKind::U16 => 16,
-            TypeKind::I32 | TypeKind::U32 => 32,
-            TypeKind::I64 | TypeKind::U64 => 64,
-            _ => panic!("type_bits called on non-integer type: {:?}", ty),
-        }
-    }
-
-    /// Get the min and max values for an integer type.
-    fn type_range(ty: Type) -> (i64, i64) {
-        match ty.kind() {
-            TypeKind::I8 => (i8::MIN as i64, i8::MAX as i64),
-            TypeKind::I16 => (i16::MIN as i64, i16::MAX as i64),
-            TypeKind::I32 => (i32::MIN as i64, i32::MAX as i64),
-            TypeKind::I64 => (i64::MIN, i64::MAX),
-            TypeKind::U8 => (0, u8::MAX as i64),
-            TypeKind::U16 => (0, u16::MAX as i64),
-            TypeKind::U32 => (0, u32::MAX as i64),
-            TypeKind::U64 => (0, i64::MAX), // Can't represent u64::MAX in i64, but we use unsigned compare
-            _ => panic!("type_range called on non-integer type: {:?}", ty),
-        }
+        crate::value_plan::type_bits(ty)
     }
 
     /// Emit a comparison instruction.
@@ -3288,9 +3395,12 @@ impl<'a> CfgLower<'a> {
         let lhs_vreg = self.get_vreg(lhs);
         let rhs_vreg = self.get_vreg(rhs);
 
-        // Use 64-bit compare for i64/u64 types
-        let lhs_ty = self.ctx.cfg.get_inst(lhs).ty;
-        if matches!(lhs_ty.kind(), TypeKind::I64 | TypeKind::U64) {
+        // The shared comparison plan selects the compare width; this helper
+        // only chooses the x86 encoding for that decided width.
+        let compare_bits = crate::value_plan::ValuePlan::for_value(&self.ctx, value)
+            .comparison_width()
+            .bits;
+        if compare_bits == 64 {
             self.mir.push(X86Inst::Cmp64RR {
                 src1: Operand::Virtual(lhs_vreg),
                 src2: Operand::Virtual(rhs_vreg),
@@ -3526,7 +3636,8 @@ impl<'a> CfgLower<'a> {
                 // 64-bit scrutinee must be compared at 64-bit width; a 32-bit cmp
                 // would match on only the low 32 bits (RUE-27). Sub-64-bit
                 // scrutinees keep the 32-bit compare (correct at their width).
-                let scrutinee_is_64 = self.ctx.cfg.get_inst(*scrutinee).ty.is_64_bit();
+                let scrutinee_ty = self.ctx.cfg.get_inst(*scrutinee).ty;
+                let scrutinee_is_64 = crate::value_plan::is_64_bit(scrutinee_ty);
 
                 // Generate comparison and jump for each case
                 let cases = self.ctx.cfg.get_switch_cases(*cases_start, *cases_len);
