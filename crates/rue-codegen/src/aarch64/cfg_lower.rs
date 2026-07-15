@@ -2578,11 +2578,10 @@ impl<'a> CfgLower<'a> {
                 // the dummy vreg CFG carries for unit would clobber a
                 // neighboring slot, and a ZST destination's origin shift
                 // underflows. Nothing to do.
-                if self.ctx.type_slot_count(val_type) == 0 {
-                    return;
-                }
                 let vals = if self.ctx.is_multislot_aggregate(val_type) {
                     self.require_aggregate_slots(*val)
+                } else if self.ctx.type_slot_count(val_type) == 0 {
+                    Vec::new()
                 } else {
                     vec![self.get_vreg(*val)]
                 };
@@ -4010,7 +4009,11 @@ impl crate::allocation::ScaleBackend for CfgLower<'_> {
                     }
                 }
             },
-            _ => panic!("invalid shared scaling plan: {plan:?}"),
+            (ScalePurpose::IndexOffset, OverflowBehavior::Trap)
+            | (ScalePurpose::PointerOffset, OverflowBehavior::Trap)
+            | (ScalePurpose::AllocationSize, OverflowBehavior::Wrap) => {
+                panic!("invalid shared scaling plan: {plan:?}")
+            }
         }
     }
 }

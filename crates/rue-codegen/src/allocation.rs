@@ -64,10 +64,9 @@ pub struct SlotWidth {
 impl SlotWidth {
     #[inline]
     pub const fn from_slots(slots: u32) -> Self {
-        Self {
-            slots,
-            bytes: slots as u64 * SLOT_BYTES,
-        }
+        let bytes = checked_byte_size(slots as u64, SLOT_BYTES)
+            .expect("canonical slot width must fit in a 64-bit byte size");
+        Self { slots, bytes }
     }
 }
 
@@ -128,10 +127,6 @@ pub fn pointer_offset_scale_plan(type_pool: &FrozenTypeInternPool, ptr_ty: Type)
 #[inline]
 pub fn allocation_size_scale_plan(type_pool: &FrozenTypeInternPool, ptr_ty: Type) -> ScalePlan {
     let width = pointer_element_width(type_pool, ptr_ty);
-    debug_assert!(
-        checked_byte_size(1, width.bytes).is_some(),
-        "canonical slot width must fit in a 64-bit byte size"
-    );
     ScalePlan {
         kind: scale_kind(width.bytes),
         purpose: ScalePurpose::AllocationSize,

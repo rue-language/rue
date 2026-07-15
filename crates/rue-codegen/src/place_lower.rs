@@ -74,16 +74,22 @@ enum ProjectedAccess {
 /// Lower a scalar [`Place`] read, including projection bounds checks and
 /// address formation.
 pub fn lower_place_read<B: PlaceLowerBackend>(b: &mut B, dst: VReg, place: &Place, ty: Type) {
+    // Even a zero-sized indexed place has a valid language-level access that
+    // must reject an out-of-range index. There is no address to form or load
+    // for the zero-sized value, but the bounds edge still has to be emitted.
+    let projections = b.ctx().cfg.get_place_projections(place).to_vec();
     // This guard must precede root-origin arithmetic: a zero-slot root would
     // underflow at `root_count - 1`, and there are no bytes to load (RUE-577).
     if b.ctx().type_slot_count(ty) == 0 {
+        if !projections.is_empty() {
+            analyze_projections(b, &projections, true);
+        }
         b.emit_zero_sized_place(dst);
         return;
     }
 
     // Clone the compact projection slice so generic emission can mutably
     // borrow the backend without retaining a borrow through its CFG context.
-    let projections = b.ctx().cfg.get_place_projections(place).to_vec();
     if projections.is_empty() {
         match place.base {
             PlaceBase::Local(slot) => b.emit_load_slot(dst, slot),
@@ -113,14 +119,18 @@ pub fn lower_place_read<B: PlaceLowerBackend>(b: &mut B, dst: VReg, place: &Plac
 /// Lower a [`Place`] write. `vals` contains one vreg per logical value slot,
 /// with slot zero first.
 pub fn lower_place_write<B: PlaceLowerBackend>(b: &mut B, place: &Place, vals: &[VReg]) {
+    let projections = b.ctx().cfg.get_place_projections(place).to_vec();
     // A zero-sized value has no storage to update. Current CFG callers filter
-    // these writes before reaching codegen, but keeping the shared boundary
-    // total avoids forming an address for a value with no storage.
+    // these writes before reaching codegen, but the index still needs its
+    // language-level bounds edge. Keeping this boundary total avoids forming
+    // an address for a value with no storage.
     if vals.is_empty() {
+        if !projections.is_empty() {
+            analyze_projections(b, &projections, true);
+        }
         return;
     }
 
-    let projections = b.ctx().cfg.get_place_projections(place).to_vec();
     if projections.is_empty() {
         match place.base {
             PlaceBase::Local(slot) => agg_slots::store_slots(b, vals, slot),
@@ -353,12 +363,17 @@ mod tests {
             fn read_borrow(borrow value: i32) -> i32 { value }
             fn read_inout(inout value: i32) -> i32 { value }
             fn read_unit(value: Empty) -> () { value.unit }
+            fn read_unit_index(borrow arr: [Empty; 2], i: u64) -> () { arr[i].unit }
+            fn write_unit_index(inout arr: [Empty; 2], i: u64) { arr[i] = Empty { unit: () }; }
             fn main() -> i32 {
                 let mut scalar = 7;
                 let _borrow_read = read_borrow(borrow scalar);
                 let _scalar_read = read_inout(inout scalar);
                 let empty = Empty { unit: () };
                 read_unit(empty);
+                let mut empty_values: [Empty; 2] = [Empty { unit: () }, Empty { unit: () }];
+                read_unit_index(borrow empty_values, 0);
+                write_unit_index(inout empty_values, 0);
                 let mut grid = Grid { pad: 9, cells: [[10, 20], [30, 40]] };
                 let i: u64 = 1;
                 let j: u64 = 0;
@@ -526,5 +541,46 @@ mod tests {
             unit_arm.instructions(),
             [Aarch64Inst::MovImm { imm: 0, .. }, Aarch64Inst::Ret]
         ));
+
+        // A zero-sized indexed place has no load/store, but it still has a
+        // language-level bounds check. Both the value and address paths must
+        // retain the shared trap edge even though they materialize no bytes.
+        let unit_index_cfg = build_cfg("read_unit_index");
+        let unit_index_x86 = X86CfgLower::new(&unit_index_cfg, &output.type_pool, &interner)
+            .lower()
+            .expect("x86 indexed ZST fixture should lower");
+        let unit_index_arm = Aarch64CfgLower::new(
+            &unit_index_cfg,
+            &output.type_pool,
+            &interner,
+            Target::Aarch64Linux,
+        )
+        .lower()
+        .expect("AArch64 indexed ZST fixture should lower");
+        assert!(unit_index_x86.instructions().iter().any(|inst| {
+            matches!(inst, X86Inst::CallRel { symbol_id } if unit_index_x86.get_symbol(*symbol_id) == "__rue_bounds_check")
+        }));
+        assert!(unit_index_arm.instructions().iter().any(|inst| {
+            matches!(inst, Aarch64Inst::Bl { symbol_id } if unit_index_arm.get_symbol(*symbol_id) == "__rue_bounds_check")
+        }));
+
+        let unit_write_cfg = build_cfg("write_unit_index");
+        let unit_write_x86 = X86CfgLower::new(&unit_write_cfg, &output.type_pool, &interner)
+            .lower()
+            .expect("x86 indexed ZST write fixture should lower");
+        let unit_write_arm = Aarch64CfgLower::new(
+            &unit_write_cfg,
+            &output.type_pool,
+            &interner,
+            Target::Aarch64Linux,
+        )
+        .lower()
+        .expect("AArch64 indexed ZST write fixture should lower");
+        assert!(unit_write_x86.instructions().iter().any(|inst| {
+            matches!(inst, X86Inst::CallRel { symbol_id } if unit_write_x86.get_symbol(*symbol_id) == "__rue_bounds_check")
+        }));
+        assert!(unit_write_arm.instructions().iter().any(|inst| {
+            matches!(inst, Aarch64Inst::Bl { symbol_id } if unit_write_arm.get_symbol(*symbol_id) == "__rue_bounds_check")
+        }));
     }
 }
