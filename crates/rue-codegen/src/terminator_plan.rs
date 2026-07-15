@@ -532,7 +532,7 @@ pub fn lower_cfg<A: CfgLowerAdapter>(
             }
         }
 
-        let plan = plan_terminator(&ctx, adapter, block, ctx.cfg.fn_name(), ret_reg_budget);
+        let plan = plan_terminator(ctx, adapter, block, ctx.cfg.fn_name(), ret_reg_budget);
         let term_start = adapter.instruction_count();
         adapter.emit_terminator(plan.clone());
         let term_end = adapter.instruction_count();
