@@ -103,6 +103,7 @@ filegroup(
         "scripts/append-benchmark.py",
         "scripts/benchmark_collection.py",
         "scripts/benchmark_history.py",
+        "scripts/benchmark_metrics.py",
         "scripts/benchmark_validation.py",
         "scripts/generate-charts.py",
         "scripts/generate-site-status.py",

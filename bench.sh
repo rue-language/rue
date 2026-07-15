@@ -358,6 +358,8 @@ runner_image="${RUE_BENCH_RUNNER_IMAGE:-local:${host}}"
 # Build final JSON
 cat > "$RESULTS_FILE" << EOF
 {
+  "measurement_family": "compiler",
+  "scenario_family": "cold_compilation",
   "version": 1,
   "timestamp": "$timestamp",
   "commit": "$commit",

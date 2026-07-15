@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 
 from benchmark_history import latest_comparable_segment, load_history
+from benchmark_metrics import derive_history_metrics
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -87,7 +88,8 @@ def spec_case_count() -> int:
 
 
 def sparkline_data(runs: list[dict]) -> dict | None:
-    runs = latest_comparable_segment(runs)[-SPARKLINE_RUNS:]
+    comparable_segment = latest_comparable_segment(runs)
+    runs = comparable_segment[-SPARKLINE_RUNS:]
     totals = []
     for run in runs:
         benches = run.get("benchmarks", [])
@@ -107,13 +109,22 @@ def sparkline_data(runs: list[dict]) -> dict | None:
         y = SPARK_Y_MIN + (SPARK_Y_MAX - SPARK_Y_MIN) * (total - lo) / span
         points.append(f"{x:.0f},{y:.1f}")
 
-    return {
+    result = {
         "latest_ms": round(totals[-1]),
         "n_runs": len(totals),
         "points": " ".join(points),
         "last_x": points[-1].split(",")[0],
         "last_y": points[-1].split(",")[1],
     }
+    # The visual is deliberately bounded, but the index remains anchored to
+    # the beginning of the full comparable segment.
+    derived = derive_history_metrics(comparable_segment)
+    if derived["points"]:
+        latest = derived["points"][-1]
+        result["performance_index"] = latest["performance_index"]
+        result["previous_comparison"] = latest["previous"]
+        result["baseline_comparison"] = latest["rolling_baseline"]
+    return result
 
 
 def bench_sparkline() -> dict | None:
