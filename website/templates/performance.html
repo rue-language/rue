@@ -101,6 +101,12 @@
             </details>
 
             <details>
+                <summary>Representative compiler build/query scenarios</summary>
+                <p class="details-intro">Cold root builds and fixed <code>CompilerSession</code> edits use one tracked multi-module project. They measure compiler work, not generated-program runtime, and remain separate from phase probes and scaling diagnostics.</p>
+                <div id="scenario-diagnostics" class="scaling-diagnostics"></div>
+            </details>
+
+            <details>
                 <summary>Measurement records, coverage, provenance, and raw samples</summary>
                 <p class="details-intro">Technical evidence for reproducing or auditing a point. Fields are labeled; raw samples remain available without exposing serialized objects.</p>
                 <div id="measurement-records"></div>
@@ -125,6 +131,7 @@
         comparison: $('comparison-card'), authored: $('authored-annotations'), derived: $('derived-annotations'),
         multiples: $('workload-multiples'), memory: $('memory-chart'), binary: $('binary-chart'),
         normalized: $('normalized-chart'), metrics: $('metrics-table'), scaling: $('scaling-diagnostics'),
+        scenarios: $('scenario-diagnostics'),
         records: $('measurement-records')
     };
     let rootMetadata = null;
@@ -405,6 +412,44 @@
             els.scaling.appendChild(card);
         });
     }
+    function renderScenarios() {
+        els.scenarios.replaceChildren();
+        const publication = metadata.latest_scenarios;
+        if (!publication?.families?.length) {
+            els.scenarios.appendChild(node('p', 'No representative compiler scenarios are available for this measurement.', 'chart-empty'));
+            return;
+        }
+        publication.families.forEach(family => {
+            const card = node('article', undefined, 'scaling-card');
+            card.appendChild(node('h3', family.name.replaceAll('_', ' ')));
+            card.appendChild(node('p', `${family.interpretation} ${family.not_runtime}`, 'details-intro'));
+            const scroll = node('div', undefined, 'table-scroll');
+            const table = node('table');
+            table.appendChild(node('caption', `${family.name.replaceAll('_', ' ')}: compiler latency and authoritative required/reused work`));
+            const head = node('tr');
+            ['Scenario', 'Mean latency', 'Required / reused', 'Parity evidence'].forEach(label => {
+                const cell = node('th', label); cell.setAttribute('scope', 'col'); head.appendChild(cell);
+            });
+            table.appendChild(head);
+            family.scenarios.forEach(scenario => {
+                const work = scenario.required_vs_reused_work;
+                const workText = work
+                    ? Object.entries(work).map(([name, counts]) => `${name.replaceAll('_', ' ')} ${counts.required}/${counts.reused}`).join('; ')
+                    : 'fresh batch build';
+                const parity = scenario.diagnostic_parity
+                    ? 'exact fresh diagnostics; last-good preserved'
+                    : scenario.differential_parity
+                        ? 'exact fresh-session artifacts and output'
+                        : scenario.emitted_output?.parity === 'byte_exact'
+                            ? 'byte-exact emitted output'
+                            : 'not reported';
+                const row = node('tr');
+                [scenario.name.replaceAll('_', ' '), fmt(scenario.mean_ms, 3), workText, parity].forEach(value => row.appendChild(node('td', value)));
+                table.appendChild(row);
+            });
+            scroll.appendChild(table); card.appendChild(scroll); els.scenarios.appendChild(card);
+        });
+    }
     function labeledField(term, value) { const row = node('div'); row.appendChild(node('dt', term)); row.appendChild(node('dd', value)); return row; }
     function renderRecords() {
         els.records.replaceChildren();
@@ -443,7 +488,7 @@
     }
 
     function renderAll() {
-        renderPrimaryCharts(); populateComparisons(); renderWorkloads(); renderAnnotations(); renderMetrics(); renderScaling(); renderRecords();
+        renderPrimaryCharts(); populateComparisons(); renderWorkloads(); renderAnnotations(); renderMetrics(); renderScaling(); renderScenarios(); renderRecords();
     }
     function configureWorkloads() {
         const previous = els.workload.value; els.workload.replaceChildren();

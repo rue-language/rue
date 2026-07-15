@@ -1,9 +1,49 @@
-schema_version = 2
+schema_version = 3
 
 # This is a suite of synthetic compiler diagnostics, not an application suite.
 # Generator definitions participate in the canonical corpus hash automatically.
 [corpus]
-definition_paths = ["../scripts/scaling_workloads.py"]
+definition_paths = [
+  "../scripts/scaling_workloads.py",
+  "../scripts/benchmark_scenarios.py",
+  "../crates/rue/src/main.rs",
+  "../crates/rue-compiler-session-bench/src/main.rs",
+  "../crates/rue-compiler-session-bench/src/representative.rs",
+  "scenarios/representative/main.rue",
+  "scenarios/representative/model.rue",
+  "scenarios/representative/worker.rue",
+  "scenarios/representative/report.rue",
+  "scenarios/representative/labels.rue",
+  "scenarios/representative/labels_alt.rue",
+  "scenarios/representative/std/_std.rue",
+  "scenarios/representative/std/math.rue",
+]
+
+[[scenario_family]]
+name = "cold_batch_root_compiler"
+runner = "cold_batch_root_compiler"
+fixture = "scenarios/representative/main.rue"
+measurement_family = "compiler_build_and_query_performance"
+interpretation = "Fresh real-driver compilations of the representative root module and its transitive import graph."
+not_runtime = "Measures compiler build/query latency and emitted-output parity, not generated-program runtime."
+target = "host-default"
+
+[[scenario_family]]
+name = "reused_compiler_session"
+runner = "reused_compiler_session"
+fixture = "scenarios/representative/main.rue"
+measurement_family = "compiler_build_and_query_performance"
+interpretation = "Fixed edits queried through the canonical CompilerSession graph, with fresh-session parity and authoritative structural work counters."
+not_runtime = "Measures compiler build/query latency and cache behavior, not generated-program runtime."
+target = "host-default"
+scenarios = [
+  { name = "no_change_query", modules = [0, 7], semantic_bodies = [0, 0], cfgs = [0, 0], semantic_queries = [0, 1] },
+  { name = "leaf_edit", modules = [1, 6], semantic_bodies = [6, 0], cfgs = [6, 0], semantic_queries = [1, 0] },
+  { name = "widely_depended_definition_edit", modules = [1, 6], semantic_bodies = [6, 0], cfgs = [6, 0], semantic_queries = [1, 0] },
+  { name = "import_change", modules = [2, 5], semantic_bodies = [6, 0], cfgs = [6, 0], semantic_queries = [1, 0] },
+  { name = "diagnostic_error_edit", modules = [1, 6], semantic_bodies = [5, 0], cfgs = [0, 0], semantic_queries = [1, 0] },
+  { name = "diagnostic_recovery", modules = [2, 5], semantic_bodies = [6, 0], cfgs = [6, 0], semantic_queries = [1, 0] },
+]
 
 [[benchmark]]
 name = "many_functions"

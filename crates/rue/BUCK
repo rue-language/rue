@@ -1,5 +1,11 @@
 load("//crates:defs.bzl", "rue_binary")
 
+export_file(
+    name = "benchmark-definition",
+    src = "src/main.rs",
+    visibility = ["PUBLIC"],
+)
+
 rue_binary(
     name = "rue",
     deps = [
@@ -9,6 +15,7 @@ rue_binary(
         "//third-party:libc",
         "//third-party:serde",
         "//third-party:serde_json",
+        "//third-party:sha2",
         "//third-party:tracing",
         "//third-party:tracing-subscriber",
     ],

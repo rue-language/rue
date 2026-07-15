@@ -1,9 +1,10 @@
 # Rue Compiler Benchmarks
 
-This directory contains synthetic compiler phase probes. They are diagnostic
+This directory contains synthetic compiler phase probes plus one tracked
+representative compiler fixture. The phase probes are diagnostic
 inputs, not representative Rue applications, and they do not measure the
-runtime performance of compiled programs. Representative scenarios are a
-separate RUE-901 concern and must not be mixed into this aggregate.
+runtime performance of compiled programs. The representative cold/reused
+scenario families are published separately and never enter this aggregate.
 
 ## Structure
 
@@ -71,7 +72,9 @@ The benchmark runner:
 6. Publishes latency, peak memory, robust median/scaled-MAD variation,
    source/pass structural counters, adjacent size-normalized growth bounds,
    and evidence classifications as JSON
-7. Appends to partitioned website history (unless `--no-history`)
+7. Runs the representative root through the real cold batch driver and a fixed
+   edit sequence through canonical `CompilerSession` queries
+8. Appends to partitioned website history (unless `--no-history`)
 
 Scaling tiers have bounded per-compile timeouts plus adjacent-tier latency/unit
 and memory/unit budgets. A violation requires the conservative lower growth
@@ -82,6 +85,17 @@ Both proven violations and indeterminate evidence fail enforcement and are not
 publishable. Passing a loose bound is not a claim of linear complexity.
 Absolute time is shown but is not the complexity budget. The scaling section
 is separate from the static phase-probe aggregate.
+
+`scenarios/representative` is a deterministic multi-module root/import graph
+with control flow, typed functions, strings, and an adjacent minimal standard
+library. Every session variant contains only its root's actual transitive
+closure; the import edit removes one leaf and adds its replacement. Cold
+samples require byte-identical raw compiler output both across iterations and
+against the exact fresh/reused `CompilerSession` base executable. Reused-session
+samples require exact fresh-session artifact/diagnostic/output parity and
+publish direct required/reused module, semantic-body, CFG, and semantic-query
+counters. Unsupported durable conversions fail closed and are reported as
+rebuilds; elapsed time is never used to infer reuse.
 
 ### Running Individual Benchmarks
 

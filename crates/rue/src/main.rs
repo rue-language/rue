@@ -1051,20 +1051,28 @@ fn print_timing_output(
     benchmark_json: bool,
     target: &Target,
     source_metrics: Option<timing::SourceMetrics>,
+    emitted_output: Option<&[u8]>,
 ) {
     if let Some(timing) = timing_data {
         if benchmark_json {
             // JSON output goes to stdout for easy capture
             // Include metadata and source metrics for historical analysis
-            println!(
-                "{}",
-                timing.to_json_with_metrics(
+            let mut payload: serde_json::Value =
+                serde_json::from_str(&timing.to_json_with_metrics(
                     &target.to_string(),
                     VERSION,
                     source_metrics,
                     get_peak_memory_bytes(),
-                )
-            );
+                ))
+                .unwrap();
+            if let Some(bytes) = emitted_output {
+                use sha2::{Digest, Sha256};
+                payload["emitted_output"] = serde_json::json!({
+                    "sha256": format!("{:x}", Sha256::digest(bytes)),
+                    "size_bytes": bytes.len(),
+                });
+            }
+            println!("{payload}");
         } else if time_passes {
             // Human-readable output goes to stderr
             eprintln!("{}", timing.report());
@@ -1940,6 +1948,7 @@ fn main() {
             options.benchmark_json,
             &options.target,
             None,
+            None,
         );
         return;
     }
@@ -1990,6 +1999,7 @@ fn main() {
             options.time_passes,
             options.benchmark_json,
             &options.target,
+            None,
             None,
         );
         return;
@@ -2113,6 +2123,7 @@ fn main() {
                         tokens: source_stats.tokens,
                     }
                 }),
+                options.benchmark_json.then_some(output.elf.as_slice()),
             );
         }
         Err(errors) => {
