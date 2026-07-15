@@ -52,6 +52,7 @@ mod source_identity;
 mod source_metadata;
 mod source_snapshot;
 mod syntax;
+mod typed_query_store;
 
 #[cfg(test)]
 mod test_support;

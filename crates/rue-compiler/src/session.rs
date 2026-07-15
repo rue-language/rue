@@ -32,6 +32,10 @@ pub use crate::diagnostic_attempt_store::{
     FRONTEND_DIAGNOSTIC_RETENTION_LIMIT, FrontendDiagnosticSnapshot, FrontendDiagnosticStage,
     ImportDiagnosticInputDescriptor,
 };
+use crate::typed_query_store::{
+    QUERY_TERMINAL_RETENTION_LIMIT, TerminalKind, TypedQueryFamily, TypedQueryStore,
+    TypedSecondaryLookupFamily,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrontendQueryWork {
@@ -48,6 +52,18 @@ pub struct FrontendQueryWork {
 /// session's eviction policy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrontendRetentionMetrics {
+    /// Retained direct import-diagnostic query terminals.
+    pub import_query_entries: usize,
+    /// Lifetime direct import-diagnostic query evictions.
+    pub import_query_evictions: usize,
+    /// Retained semantic query terminals.
+    pub semantic_query_entries: usize,
+    /// Lifetime semantic query evictions.
+    pub semantic_query_evictions: usize,
+    /// Retained stable-definition query terminals.
+    pub definition_query_entries: usize,
+    /// Lifetime stable-definition query evictions.
+    pub definition_query_evictions: usize,
     /// Diagnostic attempts indexed by the bounded diagnostic store.
     ///
     /// Producer caches may also retain the same origin `Arc`; those bounded or
@@ -1065,7 +1081,7 @@ pub struct CompilerSession {
     discovery_staging_active: bool,
     discovery_attempt: Option<Arc<ImportDiscoveryRevisionArtifact>>,
     committed_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
-    direct_import_diagnostics: Option<DirectImportDiagnosticCacheEntry>,
+    direct_import_diagnostics: TypedQueryStore<ImportDiagnosticQuery>,
     #[cfg(test)]
     supplied_test_import_graph: Option<CanonicalImportGraph>,
     published: Option<Arc<ParsedProgram>>,
@@ -1074,8 +1090,8 @@ pub struct CompilerSession {
     merge_cache: Option<MergeCacheEntry>,
     definition_shard_baseline: Option<crate::DefinitionSnapshot>,
     rir_cache: Option<Arc<CanonicalRirOutput>>,
-    semantic_cache: Vec<SemanticCacheEntry>,
-    definition_cache: Vec<DefinitionCacheEntry>,
+    semantic_cache: TypedQueryStore<SemanticQuery>,
+    definition_cache: TypedQueryStore<DefinitionQuery>,
     work: CompilerSessionWork,
     diagnostics: DiagnosticAttemptStore,
     dependency_manifest_cache: Vec<Arc<SemanticDependencyInputManifest>>,
@@ -1209,24 +1225,204 @@ struct MergeCacheEntry {
 
 #[derive(Debug)]
 struct DirectImportDiagnosticCacheEntry {
-    input: ImportDiagnosticInputDescriptor,
+    key: ImportDiagnosticInputDescriptor,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
 }
 
 #[derive(Debug)]
-struct SemanticCacheEntry {
+struct ImportDiagnosticQuery;
+
+impl TypedQueryFamily for ImportDiagnosticQuery {
+    type Key = ImportDiagnosticInputDescriptor;
+    type Record = DirectImportDiagnosticCacheEntry;
+    const MAX_TERMINALS: usize = QUERY_TERMINAL_RETENTION_LIMIT;
+
+    fn key(record: &Self::Record) -> &Self::Key {
+        &record.key
+    }
+
+    fn terminal_kind(record: &Self::Record) -> TerminalKind {
+        if record.diagnostics.is_success() {
+            TerminalKind::Success
+        } else {
+            TerminalKind::Failure
+        }
+    }
+
+    fn record_is_consistent(record: &Self::Record) -> bool {
+        record.diagnostics.source_revision() == record.key.source_revision()
+            && record.diagnostics.stage() == &FrontendDiagnosticStage::Import(record.key.clone())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemanticQueryKey {
     input: CodegenInputDescriptor,
     imports: CanonicalImportGraph,
+}
+
+/// Complete semantic binding identity shared by every optimization variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemanticBindingLookupKey {
+    input: SemanticInputDescriptor,
+    imports: CanonicalImportGraph,
+}
+
+#[derive(Debug)]
+struct SemanticCacheEntry {
+    key: SemanticQueryKey,
     result: Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
     successful_body_cache: Option<DurableOrdinaryBodyCache>,
 }
 
 #[derive(Debug)]
-struct DefinitionCacheEntry {
+struct SemanticQuery;
+
+impl TypedQueryFamily for SemanticQuery {
+    type Key = SemanticQueryKey;
+    type Record = SemanticCacheEntry;
+    const MAX_TERMINALS: usize = QUERY_TERMINAL_RETENTION_LIMIT;
+
+    fn key(record: &Self::Record) -> &Self::Key {
+        &record.key
+    }
+
+    fn terminal_kind(record: &Self::Record) -> TerminalKind {
+        if record.result.is_ok() {
+            TerminalKind::Success
+        } else {
+            TerminalKind::Failure
+        }
+    }
+
+    fn record_is_consistent(record: &Self::Record) -> bool {
+        let artifact_matches = match &record.result {
+            Ok(output) => output.input() == &record.key.input,
+            Err(_) => true,
+        };
+        let expected_stage = FrontendDiagnosticStage::Semantic(semantic_diagnostic_input(
+            &record.key.input,
+            record.key.imports.clone(),
+        ));
+        record.key.input.semantic.sources.root() == record.key.imports.root()
+            && artifact_matches
+            && record.diagnostics.source_revision() == &record.key.input.semantic.sources
+            && record.diagnostics.stage() == &expected_stage
+    }
+}
+
+impl TypedSecondaryLookupFamily for SemanticQuery {
+    type SecondaryKey = SemanticBindingLookupKey;
+
+    fn matches_secondary(record: &Self::Record, key: &Self::SecondaryKey) -> bool {
+        record.result.is_ok()
+            && record.key.input.semantic == key.input
+            && record.key.imports == key.imports
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefinitionQueryKey {
     input: SemanticInputDescriptor,
     imports: CanonicalImportGraph,
+}
+
+#[derive(Debug)]
+struct DefinitionCacheEntry {
+    key: DefinitionQueryKey,
+    output: DefinitionQueryOutput,
+}
+
+/// Immutable output produced at the stable-definition computation boundary.
+///
+/// The provenance is reconstructed from the arguments actually passed to the
+/// phase rather than supplied by the cache publisher. This lets the typed store
+/// reject publication under a different query key.
+#[derive(Debug, Clone)]
+struct DefinitionQueryOutput {
+    provenance: DefinitionQueryKey,
     result: Result<Arc<BoundDefinitionSet>, CompileErrors>,
+}
+
+#[derive(Debug)]
+struct DefinitionComputation {
+    output: DefinitionQueryOutput,
+    binding: DeclarationBindingWork,
+    manifest: SemanticBindingManifestWork,
+    issuance: BoundDefinitionWork,
+}
+
+#[derive(Debug)]
+struct DefinitionQuery;
+
+impl TypedQueryFamily for DefinitionQuery {
+    type Key = DefinitionQueryKey;
+    type Record = DefinitionCacheEntry;
+    const MAX_TERMINALS: usize = QUERY_TERMINAL_RETENTION_LIMIT;
+
+    fn key(record: &Self::Record) -> &Self::Key {
+        &record.key
+    }
+
+    fn terminal_kind(record: &Self::Record) -> TerminalKind {
+        if record.output.result.is_ok() {
+            TerminalKind::Success
+        } else {
+            TerminalKind::Failure
+        }
+    }
+
+    fn record_is_consistent(record: &Self::Record) -> bool {
+        record.key == record.output.provenance
+            && record.key.input.sources.root() == record.key.imports.root()
+            && match &record.output.result {
+                Ok(definitions) => definitions.source_revision() == &record.key.input.sources,
+                Err(_) => true,
+            }
+    }
+}
+
+fn compute_stable_definitions(
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    options: &CompileOptions,
+    imports: &CanonicalImportGraph,
+) -> DefinitionComputation {
+    let provenance = DefinitionQueryKey {
+        input: SemanticInputDescriptor::new(
+            merged.definitions().source_snapshot(),
+            options.target,
+            &options.preview_features,
+        ),
+        imports: imports.clone(),
+    };
+    let query = bind_canonical_definitions_with_work(
+        merged,
+        rir,
+        options.preview_features.clone(),
+        options.target,
+        imports,
+    );
+    let (result, binding, manifest, issuance) = match query {
+        Ok((definitions, binding)) => {
+            let manifest = definitions.manifest_work();
+            let issuance = definitions.work();
+            (Ok(Arc::new(definitions)), binding, manifest, issuance)
+        }
+        Err(errors) => (
+            Err(errors),
+            DeclarationBindingWork::default(),
+            SemanticBindingManifestWork::default(),
+            BoundDefinitionWork::default(),
+        ),
+    };
+    DefinitionComputation {
+        output: DefinitionQueryOutput { provenance, result },
+        binding,
+        manifest,
+        issuance,
+    }
 }
 
 impl CompilerSession {
@@ -1360,8 +1556,7 @@ impl CompilerSession {
             };
             if let Some(cached) = self
                 .direct_import_diagnostics
-                .as_ref()
-                .filter(|entry| entry.input == input)
+                .get(&input)
                 .map(|entry| entry.diagnostics.clone())
             {
                 self.work.import_diagnostics.reuses += 1;
@@ -1376,10 +1571,11 @@ impl CompilerSession {
                     Some(&errors),
                     &[],
                 );
-                self.direct_import_diagnostics = Some(DirectImportDiagnosticCacheEntry {
-                    input,
-                    diagnostics: diagnostics.clone(),
-                });
+                self.direct_import_diagnostics
+                    .insert(DirectImportDiagnosticCacheEntry {
+                        key: input,
+                        diagnostics: diagnostics.clone(),
+                    });
                 diagnostics
             }
         };
@@ -1901,6 +2097,12 @@ impl CompilerSession {
             manifests.insert(Arc::as_ptr(&entry.current) as usize);
         }
         self.work.retention = FrontendRetentionMetrics {
+            import_query_entries: self.direct_import_diagnostics.len(),
+            import_query_evictions: self.direct_import_diagnostics.evictions(),
+            semantic_query_entries: self.semantic_cache.len(),
+            semantic_query_evictions: self.semantic_cache.evictions(),
+            definition_query_entries: self.definition_cache.len(),
+            definition_query_evictions: self.definition_cache.evictions(),
             diagnostic_entries: diagnostics.entries,
             diagnostic_source_attempts: diagnostics.source_attempts,
             diagnostic_source_bytes: diagnostics.source_bytes,
@@ -2044,7 +2246,7 @@ impl CompilerSession {
                         self.work.downstream_invalidations += 1;
                     }
                     self.merge_cache = None;
-                    self.direct_import_diagnostics = None;
+                    self.direct_import_diagnostics.clear();
                     self.rir_cache = None;
                     self.work.semantic_entries_invalidated += self.semantic_cache.len();
                     self.semantic_cache.clear();
@@ -2257,11 +2459,12 @@ impl CompilerSession {
             ),
             opt_level: options.opt_level.into(),
         };
-        if let Some((result, diagnostics, successful_body_cache)) = self
-            .semantic_cache
-            .iter()
-            .find(|entry| entry.input == input && entry.imports == imports)
-            .map(|entry| {
+        let key = SemanticQueryKey {
+            input: input.clone(),
+            imports: imports.clone(),
+        };
+        if let Some((result, diagnostics, successful_body_cache)) =
+            self.semantic_cache.get(&key).map(|entry| {
                 (
                     entry.result.clone(),
                     entry.diagnostics.clone(),
@@ -2552,9 +2755,8 @@ impl CompilerSession {
                 .map(|output| output.warnings())
                 .unwrap_or(&[]),
         );
-        self.semantic_cache.push(SemanticCacheEntry {
-            input: input.clone(),
-            imports,
+        self.semantic_cache.insert(SemanticCacheEntry {
+            key,
             result: result.clone(),
             diagnostics,
             successful_body_cache: result
@@ -2569,6 +2771,7 @@ impl CompilerSession {
             failure,
             failed: result.is_err(),
         });
+        self.refresh_retention_metrics();
         result
     }
 
@@ -2599,12 +2802,13 @@ impl CompilerSession {
 
         // Body validity is independent of opt/linker. Reuse any ordinary
         // semantic result with the same binding inputs before doing ID work.
+        let semantic_binding_key = SemanticBindingLookupKey {
+            input: input.clone(),
+            imports: imports.clone(),
+        };
         if let Some(validation) = self
             .semantic_cache
-            .iter()
-            .find(|entry| {
-                entry.input.semantic == input && entry.imports == imports && entry.result.is_ok()
-            })
+            .get_secondary(&semantic_binding_key)
             .map(|entry| entry.result.clone())
         {
             validation?;
@@ -2612,48 +2816,30 @@ impl CompilerSession {
             self.semantic(options)?;
         }
 
-        if let Some(entry) = self
-            .definition_cache
-            .iter()
-            .find(|entry| entry.input == input && entry.imports == imports)
-        {
+        let key = DefinitionQueryKey {
+            input: input.clone(),
+            imports: imports.clone(),
+        };
+        if let Some(entry) = self.definition_cache.get(&key) {
             self.work.definitions.reuses += 1;
-            return entry.result.clone();
+            return entry.output.result.clone();
         }
         self.work.definitions.executions += 1;
-        let query = bind_canonical_definitions_with_work(
-            &merged,
-            &rir,
-            options.preview_features.clone(),
-            options.target,
-            &imports,
-        );
-        let (result, binding, manifest, issuance) = match query {
-            Ok((definitions, binding)) => {
-                let manifest = definitions.manifest_work();
-                let issuance = definitions.work();
-                (Ok(Arc::new(definitions)), binding, manifest, issuance)
-            }
-            Err(errors) => (
-                Err(errors),
-                DeclarationBindingWork::default(),
-                SemanticBindingManifestWork::default(),
-                BoundDefinitionWork::default(),
-            ),
-        };
-        self.definition_cache.push(DefinitionCacheEntry {
-            input: input.clone(),
-            imports,
-            result: result.clone(),
+        let computation = compute_stable_definitions(&merged, &rir, options, &imports);
+        let result = computation.output.result.clone();
+        self.definition_cache.insert(DefinitionCacheEntry {
+            key,
+            output: computation.output,
         });
         self.work.definition_entries = self.definition_cache.len();
         self.work.definition_records.push(DefinitionQueryRecord {
             input,
-            binding,
-            manifest,
-            issuance,
+            binding: computation.binding,
+            manifest: computation.manifest,
+            issuance: computation.issuance,
             failed: result.is_err(),
         });
+        self.refresh_retention_metrics();
         result
     }
 
@@ -6368,6 +6554,45 @@ mod tests {
     }
 
     #[test]
+    fn semantic_store_eviction_recomputes_then_reuses_with_exact_metrics() {
+        let source = base();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let variants = (0..=QUERY_TERMINAL_RETENTION_LIMIT)
+            .map(|mask| CompileOptions {
+                preview_features: PreviewFeature::all()
+                    .iter()
+                    .enumerate()
+                    .filter(|(bit, _)| mask & (1 << bit) != 0)
+                    .map(|(_, feature)| *feature)
+                    .collect(),
+                ..CompileOptions::default()
+            })
+            .collect::<Vec<_>>();
+
+        for options in &variants {
+            session.semantic(options).unwrap();
+        }
+        assert_eq!(session.work().semantic.executions, variants.len());
+        assert_eq!(session.work().semantic.reuses, 0);
+        assert_eq!(
+            session.work().retention.semantic_query_entries,
+            QUERY_TERMINAL_RETENTION_LIMIT
+        );
+        assert_eq!(session.work().retention.semantic_query_evictions, 1);
+
+        session.semantic(&variants[0]).unwrap();
+        assert_eq!(session.work().semantic.executions, variants.len() + 1);
+        assert_eq!(session.work().semantic.reuses, 0);
+        assert_eq!(session.work().retention.semantic_query_evictions, 2);
+
+        session.semantic(&variants[0]).unwrap();
+        assert_eq!(session.work().semantic.executions, variants.len() + 1);
+        assert_eq!(session.work().semantic.reuses, 1);
+        assert_eq!(session.work().retention.semantic_query_evictions, 2);
+    }
+
+    #[test]
     fn semantic_cache_invalidates_on_edit_but_survives_failed_parse() {
         let source = base();
         let edited = snapshot(
@@ -6898,9 +7123,22 @@ mod tests {
         session.update(&source).into_result().unwrap();
         session.semantic(&options).unwrap();
 
-        let mut failed_input = session.semantic_cache[0].input.clone();
+        let imports = session.accepted_semantic_import_graph().unwrap();
+        let successful_key = SemanticQueryKey {
+            input: CodegenInputDescriptor {
+                semantic: SemanticInputDescriptor::new(
+                    &source,
+                    options.target,
+                    &options.preview_features,
+                ),
+                opt_level: options.opt_level.into(),
+            },
+            imports,
+        };
+        let successful = session.semantic_cache.get(&successful_key).unwrap();
+        let mut failed_input = successful.key.input.clone();
         failed_input.opt_level = crate::StableOptLevel::O1;
-        let failed_imports = session.semantic_cache[0].imports.clone();
+        let failed_imports = successful.key.imports.clone();
         let failed_errors = CompileErrors::from(CompileError::without_span(
             ErrorKind::InvalidCompilerInput("synthetic prior failed opt variant".to_string()),
         ));
@@ -6914,16 +7152,15 @@ mod tests {
             Some(&failed_errors),
             &[],
         );
-        session.semantic_cache.insert(
-            0,
-            SemanticCacheEntry {
+        session.semantic_cache.insert(SemanticCacheEntry {
+            key: SemanticQueryKey {
                 input: failed_input,
                 imports: failed_imports,
-                result: Err(failed_errors),
-                diagnostics: failed_diagnostics,
-                successful_body_cache: None,
             },
-        );
+            result: Err(failed_errors),
+            diagnostics: failed_diagnostics,
+            successful_body_cache: None,
+        });
 
         let definitions = session
             .stable_definitions(&CompileOptions {
@@ -8721,6 +8958,99 @@ mod tests {
     }
 
     #[test]
+    fn definition_store_eviction_recomputes_then_reuses_with_exact_metrics() {
+        let source = base();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let variants = (0..=QUERY_TERMINAL_RETENTION_LIMIT)
+            .map(|mask| CompileOptions {
+                preview_features: PreviewFeature::all()
+                    .iter()
+                    .enumerate()
+                    .filter(|(bit, _)| mask & (1 << bit) != 0)
+                    .map(|(_, feature)| *feature)
+                    .collect(),
+                ..CompileOptions::default()
+            })
+            .collect::<Vec<_>>();
+
+        for options in &variants {
+            session.stable_definitions(options).unwrap();
+        }
+        assert_eq!(session.work().definitions.executions, variants.len());
+        assert_eq!(session.work().definitions.reuses, 0);
+        assert_eq!(
+            session.work().retention.definition_query_entries,
+            QUERY_TERMINAL_RETENTION_LIMIT
+        );
+        assert_eq!(session.work().retention.definition_query_evictions, 1);
+
+        session.stable_definitions(&variants[0]).unwrap();
+        assert_eq!(session.work().definitions.executions, variants.len() + 1);
+        assert_eq!(session.work().definitions.reuses, 0);
+        assert_eq!(session.work().retention.definition_query_evictions, 2);
+
+        session.stable_definitions(&variants[0]).unwrap();
+        assert_eq!(session.work().definitions.executions, variants.len() + 1);
+        assert_eq!(session.work().definitions.reuses, 1);
+        assert_eq!(session.work().retention.definition_query_evictions, 2);
+    }
+
+    fn definition_query_fixture() -> (DefinitionQueryKey, DefinitionQueryOutput) {
+        let source = base();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.stable_definitions(&options).unwrap();
+        let imports = session.accepted_semantic_import_graph().unwrap();
+        let key = DefinitionQueryKey {
+            input: SemanticInputDescriptor::new(&source, options.target, &options.preview_features),
+            imports: imports.clone(),
+        };
+        let output = session
+            .definition_cache
+            .get(&key)
+            .expect("definition computation was published")
+            .output
+            .clone();
+        (key, output)
+    }
+
+    #[test]
+    #[should_panic(expected = "typed query record key does not match")]
+    fn definition_store_rejects_foreign_option_provenance() {
+        let (original_key, output) = definition_query_fixture();
+        let mut foreign_key = original_key;
+        foreign_key.input.preview_features =
+            StablePreviewFeatures::new(&PreviewFeatures::from([PreviewFeature::TestInfra]));
+        let mut store = TypedQueryStore::<DefinitionQuery>::default();
+        store.insert(DefinitionCacheEntry {
+            key: foreign_key,
+            output,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "typed query record key does not match")]
+    fn definition_store_rejects_foreign_import_provenance() {
+        let (original_key, output) = definition_query_fixture();
+        let mut foreign_key = original_key;
+        foreign_key.imports = CanonicalImportGraph::from_discovery_records(
+            foreign_key.imports.root().clone(),
+            vec![crate::CanonicalImportRecord::new(
+                foreign_key.imports.root().clone(),
+                "foreign.rue",
+                CanonicalImportResolution::Missing,
+            )],
+        );
+        let mut store = TypedQueryStore::<DefinitionQuery>::default();
+        store.insert(DefinitionCacheEntry {
+            key: foreign_key,
+            output,
+        });
+    }
+
+    #[test]
     fn definition_keys_ignore_opt_linker_relocation_file_ids_and_order() {
         let original = snapshot(
             &[
@@ -9077,6 +9407,8 @@ mod tests {
         assert!(Arc::ptr_eq(&reused, &origin));
         assert_eq!(session.work().import_diagnostics.executions, 1);
         assert_eq!(session.work().import_diagnostics.reuses, 1);
+        assert_eq!(session.work().retention.import_query_entries, 1);
+        assert_eq!(session.work().retention.import_query_evictions, 0);
         assert_eq!(session.work().diagnostic_publications, publications);
         assert!(Arc::ptr_eq(
             session
