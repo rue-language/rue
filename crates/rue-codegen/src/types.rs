@@ -66,6 +66,13 @@ pub fn type_slot_count(type_pool: &FrozenTypeInternPool, ty: Type) -> u32 {
     type_pool.abi_slot_count(ty)
 }
 
+/// Whether `ty` needs a complete aggregate slot representation rather than a
+/// single primary vreg. Discriminant-only enums remain scalar values.
+pub fn is_multislot_aggregate(type_pool: &FrozenTypeInternPool, ty: Type) -> bool {
+    matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
+        || (ty.is_enum() && type_slot_count(type_pool, ty) > 1)
+}
+
 /// Return the `(Some, None)` discriminant values for an `Option`-shaped enum
 /// type, i.e. the variant indices of its `Some` and `None` variants.
 ///

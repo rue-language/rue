@@ -140,7 +140,7 @@ impl CallInputs {
                     value: arg.value,
                     mode: arg.mode,
                     slot_count: types::type_slot_count(type_pool, arg_ty),
-                    is_multislot_aggregate: is_multislot_aggregate(type_pool, arg_ty),
+                    is_multislot_aggregate: types::is_multislot_aggregate(type_pool, arg_ty),
                 }
             })
             .collect();
@@ -283,18 +283,11 @@ pub fn return_plan(type_pool: &FrozenTypeInternPool, ty: Type, ret_reg_budget: u
             slot_count,
             storage_bytes: align_up(slot_count * 8, 16),
         }
-    } else if is_multislot_aggregate(type_pool, ty) {
+    } else if types::is_multislot_aggregate(type_pool, ty) {
         ReturnPlan::Registers { slot_count }
     } else {
         ReturnPlan::Scalar
     }
-}
-
-fn is_multislot_aggregate(type_pool: &FrozenTypeInternPool, ty: Type) -> bool {
-    matches!(
-        ty.kind(),
-        rue_air::TypeKind::Struct(_) | rue_air::TypeKind::Array(_)
-    ) || (ty.is_enum() && types::type_slot_count(type_pool, ty) > 1)
 }
 
 const fn align_up(value: u32, alignment: u32) -> u32 {
