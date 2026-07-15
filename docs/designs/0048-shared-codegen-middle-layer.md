@@ -16,7 +16,7 @@ relates: ["RUE-250", "RUE-819", "RUE-820", "RUE-821", "RUE-822", "RUE-823", "RUE
 ## Status
 
 Accepted as the M3 shared-backend policy design by RUE-819, 2026-07-15. This
-ADR is a design-only increment. It authorizes the dependency-ordered
+ADR is a design-only increment. It authorizes the dependency-defined
 implementation slices below; it does not implement any of them.
 
 ## Summary
@@ -35,18 +35,19 @@ responsibilities in the same methods:
 3. instruction selection (MIR variants, flags, immediates, scratch registers,
    and target encodings).
 
-M3 makes the first responsibility single-copy and makes the boundary between
-the first two and the third explicit. The shared layer produces normalized
-lowering plans. An x86-64 or AArch64 adapter consumes those plans and selects
-instructions. There is no target-independent instruction set, register enum,
-or third generic backend.
+M3 makes the language/CFG responsibility single-copy and makes logical ABI
+planning explicit; physical ABI facts remain in the adapters. The shared layer
+produces normalized lowering plans. An x86-64 or AArch64 adapter consumes those
+plans and selects instructions. There is no target-independent instruction set,
+register enum, or third generic backend.
 
 ## Current source audit
 
 The current source, rather than the historical RUE-250 design pass, is the
 authority for this decision. The shared top-level codegen modules currently
-contain 7,571 lines including tests. The backend files currently measure as
-follows; `code` stops immediately before each file's `#[cfg(test)]` module.
+contain 8,404 lines including tests (`crates/rue-codegen/src/*.rs`). The backend
+files currently measure as follows; `code` stops immediately before each file's
+`#[cfg(test)]` module.
 
 | Backend file | x86-64 total/code | AArch64 total/code | Current classification |
 | --- | ---: | ---: | --- |
@@ -125,7 +126,7 @@ The non-paired functions are evidence for the boundary, not missing work:
 | `liveness::{analyze, analyze_debug, analyze_loops}` | x86-64 `liveness.rs:63-73`; AArch64 `liveness.rs:63-73` | Thin target wrappers over shared analysis. `get_label`, `get_successors`, `uses`, `defs`, and `clobbers` remain per instruction set. |
 | `schedule::{schedule}` and `SchedulerAdapter` forwarding methods | x86-64 `schedule.rs:34-68,653`; AArch64 `schedule.rs:34-68,535` | Thin wrappers over `schedule_core`. `get_latency`, memory classification, register reads/writes, and FLAGS/NZCV facts remain per target. |
 | `RegAlloc::{new, allocate, allocate_with_spills, allocate_with_debug, assign_registers, assign_registers_with_debug, rewrite_instructions, rewrite_inst, load_operand, get_allocation}` plus shared-shape helpers `emit_binop`, `emit_unop`, `emit_unop_imm` (x86-64) and `emit_binop`, `emit_ternop`, `emit_binop_imm` (AArch64) | x86-64 `regalloc.rs:65-221,996`; AArch64 `regalloc.rs:68-209,1051` | Shared linear scan, coalescing, spill-slot allocation, and cost model stay in `regalloc.rs`. The target driver may remain thin; `ALLOCATABLE_REGS`, operand rewriting, scratch registers, and spill/reload MIR remain local. |
-| `X86Mir`/`Aarch64Mir` container methods (`new`, `push`, `alloc_vreg`, `alloc_label`, `instructions`, `instructions_mut`, `into_instructions`, counts) | x86-64 `mir.rs:761-903`; AArch64 `mir.rs:1162-1325` | A generic `Mir<Inst>` container may be extracted only after CFG plans are stable. `Inst`, `Reg`, `Cond`, operand encodings, and target display remain local. |
+| `X86Mir`/`Aarch64Mir` container methods (`new`, `push`, `alloc_vreg`, `alloc_label`, `instructions`, `instructions_mut`, `into_instructions`, counts) | x86-64 `mir.rs:761-903`; AArch64 `mir.rs:1162-1325` | Defer outside M3. The current container duplication is recorded for audit only; `Inst`, `Reg`, `Cond`, operand encodings, and target display remain local. |
 | `peephole::optimize` and helpers | x86-64 `peephole.rs:44-301`; AArch64 `peephole.rs:44-267` | Keep completely per target. The two passes do not have the same flag semantics: x86 FLAGS and AArch64 NZCV are materially different. |
 | `emit::{emit, emit_all}` and all encoder helpers | x86-64 `emit.rs:346-355`; AArch64 `emit.rs:457-466` | Keep completely per target. ModRM/REX, fixed-width AArch64 words, relocations, prologues, epilogues, and native ABI entry are not middle-layer policy. |
 
@@ -142,11 +143,15 @@ index/vreg types. It owns:
 - `CfgInstData` classification and dependency ordering;
 - scalar versus complete aggregate slot representation;
 - block-parameter routing and ascending logical slot order;
-- place bounds-check ordering and by-reference parameter classification;
+- edge-local value/cleanup work and deterministic successor order;
+- place bounds-check ordering, address-versus-value decisions, and by-reference
+  parameter classification;
 - the language-level overflow, narrowing, division, comparison, and shift
   *requirements*;
 - logical call and return plans, including flattened arguments, by-ref
   pointers, sret selection, stack-slot counts, and alignment requirements;
+- allocation assignment, spill-slot selection, rewrite bookkeeping, and
+  before/after spill insertion order;
 - the one-shot pass and debug-plan sequencing; and
 - shared invariants and diagnostics when a CFG or slot vector is malformed.
 
@@ -180,18 +185,34 @@ target instruction, or raw CFG reference. Existing `SlotBackend`,
 the narrow leaf interfaces for memory and aggregate operations; they are not
 expanded to accept CFG policy.
 
-The adapter may allocate vregs/labels and append target MIR, consult its
-register file and instruction set, choose immediates, model flags, and emit
-target ABI instructions. It may not inspect `Cfg`, recompute type slot counts,
-choose sret versus register return, reorder aggregate slots, classify an
-argument as by-reference, or implement a second terminator/value dispatcher.
-Those operations are only valid in the core. A backend adapter that needs a
-new semantic fact must extend the shared plan, not read the CFG again.
+The six operations are separate domain events, not one catch-all event enum:
+`emit_value` covers the exhaustive `CfgValue`/aggregate materialization tree;
+`emit_call` covers a fully classified logical call; `emit_terminator` covers
+block topology, branches, returns, fallthrough, and edge work;
+`emit_intrinsic` covers normalized runtime/intrinsic operations;
+`emit_checked_arithmetic` covers arithmetic with its already-decided width,
+signedness, and checked-overflow requirement; and `emit_trap` covers the
+normalized trap selected by shared policy. Each plan is exhaustively matched
+within its own operation, so adding a language-level case changes the shared
+dispatcher and both adapters without creating a target-neutral instruction
+enum.
 
-This boundary is deliberately not a `Backend` trait with a generic `Inst`.
-There are two concrete adapters—x86-64 and AArch64—and their MIR enums remain
-the instruction-selection endpoint. A future third architecture can implement
-the same plans without requiring a third generic backend in the core.
+The adapter may allocate target virtual registers and target label handles,
+append target MIR, consult its register file and instruction set, choose
+immediates, model flags, and emit target ABI instructions. The core owns the
+logical labels, topology, vreg/slot identity, and event order; adapter-local
+handles cannot create new CFG edges or reorder logical slots. An adapter may
+not inspect `Cfg`, recompute type slot counts, choose sret versus register
+return, reorder aggregate slots, classify an argument as by-reference, or
+implement a second terminator/value dispatcher. Those operations are only
+valid in the core. A backend adapter that needs a new semantic fact must extend
+the shared plan, not read the CFG again.
+
+This boundary is deliberately not a `Backend` trait with a generic `Inst`, nor
+a single target-neutral instruction/event enum. There are two concrete
+adapters—x86-64 and AArch64—and their MIR enums remain the instruction-selection
+endpoint. A future third architecture can implement the same plans without
+requiring a third generic backend in the core.
 
 ### Invariants at the boundary
 
@@ -217,21 +238,23 @@ Every migration slice must preserve these invariants:
    views observe the same plan and do not invoke a presentation-specific
    lowerer.
 
-## Dependency-ordered M3 migration
+## M3 migration slices and dependencies
 
-The issue titles are not recorded in this repository, so the mapping below
-uses the dependency order and acceptance scope supplied by RUE-819. Before
-each implementation PR, its issue description must be reconciled with the
-slice name here; the dependency order is normative.
+RUE-820, RUE-821, RUE-822, RUE-823, and RUE-824 are parallel implementation
+slices. Each depends on RUE-819 and may proceed independently; none is a
+precondition for another. RUE-825 depends on all five and is the final
+convergence slice. The issue titles and scopes below are the canonical Linear
+scopes, mirrored here so an implementation cannot silently drift into a
+different slice.
 
-| Order | Issue | Migration slice and endpoint | Required review/test gate |
-| ---: | --- | --- | --- |
-| 1 | RUE-820 | Introduce the target-neutral plan types, adapter contract, and invariant tests. Wire no new semantic behavior yet. Establish a before/after lowering-dump corpus for both backends. | Unit-test plan validation and slot/label invariants. Existing codegen unit tests and the full lowering corpus must remain unchanged. Review rejects any plan carrying raw CFG, `Reg`, `Cond`, or target MIR. |
-| 2 | RUE-821 | Move `lower_block`, `lower_value` routing, `lower_terminator`, `get_vreg`, and block-param/aggregate routing into `CfgLowerCore`. Backend files become plan consumers plus instruction selection. | Native x86-64 and native AArch64 compile/run coverage; cross-target lowering and assembly dumps; differential oracle; release-mode compiler. Review verifies one core dispatcher and no duplicate CFG terminator match. |
-| 3 | RUE-822 | Move call/return, sret, by-ref, aggregate flattening, bounds-check ordering, and intrinsic-size policy into shared `CallPlan`/`ReturnPlan`/`IntrinsicPlan` construction. Keep register/stack marshalling and overflow sequences in adapters. | ABI CLI cases, aggregate and `StrBuf` cases, by-ref/inout cases, sret spill cases, runtime entry cases, native execution on x86-64 and AArch64, plus cross-target assembly/encoding assertions. Review checks `type_uses_sret_return` and slot order have one call path. |
-| 4 | RUE-823 | Extract the duplicated MIR container plumbing behind `Mir<Inst>` if the plan migration leaves it mechanically identical. Keep `Inst`, `Reg`, `Cond`, display, encodings, and target operands separate. | MIR construction/display unit tests, exact lowering and regalloc dumps, both encoder suites, and cross-target assembly/encoding tests. Review rejects a generic instruction enum or target facts hidden in the container. |
-| 5 | RUE-824 | Remove residual duplicated post-lowering policy: use the existing shared liveness/scheduling/regalloc algorithms and `prepare_mir` pipeline through thin target fact adapters. Do not merge target fact tables or peephole passes. | Liveness, regalloc, scheduling, spill, and stack-frame tests; oracle-diff; release-mode suite; native x86-64 and AArch64 execution; cross-target assembly/encoding. Review re-runs the full inventory and classifies every remaining backend function. |
-| 6 | RUE-825 | Endpoint audit and cleanup: delete superseded wrappers, refresh architecture/code-review documentation, and record measured ownership. This is the completion ticket, not a place to add new abstractions. | Full `scripts/rue test`, documentation/index validation, formatting, both native target CI matrices, and cross-target assembly/encoding CI. The endpoint criteria below must be demonstrated in the PR description. |
+| Issue | Linear scope and endpoint | Required review/test gate |
+| --- | --- | --- |
+| RUE-820 — Share allocation sizing, index scaling, and bounds-check lowering | One shared algorithm decides allocation element/aggregate slot sizing, constant/dynamic index scaling, checked arithmetic, bounds conditions/trap edges, zero-width/overflow handling, and address-versus-value decisions. Backend hooks emit arithmetic, compare, and branch instructions only. | Array, string, pointer, zero-sized, maximum-length, and overflow tests on both backends; exhaustive hook removal must fail to compile; slot/index invariants, cross-target lowering/assembly, and differential oracle coverage. |
+| RUE-821 — Share call ABI slot planning and argument materialization | One target-independent `CallPlan`/`ReturnPlan` covers hidden sret storage, argument modes and logical slots, zero-width/multi-slot values, address/value materialization, ordering, and return reconstruction. Physical registers, moves, stack offsets, and target ABI instructions remain local. Both backends consume the same plan and assert that every slot is handled. | Ordinary, method, intrinsic, runtime, by-ref, inout, aggregate, zero-sized, and stack-spill ABI cases on both backends; native execution plus cross-target assembly/encoding assertions. |
+| RUE-822 — Share scalar and aggregate CFG value materialization | One exhaustive decision tree covers `CfgValue`, constants/coercions, loads/stores, flattened aggregate collection/reconstruction, by-reference preloads, comparison preparation, and width/signedness. Adapters retain target MIR and flags behavior and cannot choose slot counts or aggregate widths. | Cross-backend MIR/debug traces for every CFG value variant, aggregate and `StrBuf` cases, no-single-slot fallback assertions, native x86-64 and AArch64 execution, and cross-target lowering tests. |
+| RUE-823 — Share CFG control-flow and terminator lowering | One shared path owns block/label mapping, conditional/unconditional branches, switch planning, return/trap/fallthrough, edge-local value/cleanup work, and deterministic order. Branch instructions, flags, and fixups remain local. | Diamond, loop, switch, trap, cleanup, and multi-return topology/trace comparisons on both backends, with identical successor topology before encoding; native execution and cross-target assembly/encoding tests. |
+| RUE-824 — Consolidate register-allocation rewrite and spill orchestration | One implementation owns assignment, spill-slot allocation, rewrite bookkeeping, and before/after spill insertion sequencing. Hooks provide operand constraints, physical/scratch registers, implicit uses/defs, and concrete load/store instructions. | High-pressure, fixed-register, call-clobber, loop, and spill-heavy tests on both backends; liveness/regalloc/scheduling/stack-frame tests, deterministic debug output with intentional golden updates where needed, oracle-diff, release-mode, and native execution. |
+| RUE-825 — Final convergence after RUE-820–824 | Move the remaining shared traversal/dispatch shell into the accepted layer, make each hook a documented target fact, remove superseded wrappers, and refresh the contribution checklist. Do not add MIR-container or other new abstractions here. | Full `scripts/rue test`, ADR/index validation, formatting, complete native x86-64 and AArch64 matrices, cross-target assembly/encoding CI, and the endpoint criteria below. |
 
 No slice may change language semantics, the established Rue ABI, or the target
 matrix as a refactor convenience. If a plan cannot express a behavior without
@@ -259,9 +282,10 @@ The following remain per backend by design:
   macOS behavior.
 
 M3 does not attempt to make the backend files equal in line count, share
-encoding code, introduce LLVM or another code generator, redesign the Rue
-ABI, unify peephole optimizers, or create a third generic backend. It also does
-not turn debug presentation into a second semantic pipeline.
+encoding code, genericize the MIR containers, introduce LLVM or another code
+generator, redesign the Rue ABI, unify peephole optimizers, or create a third
+generic backend. It also does not turn debug presentation into a second
+semantic pipeline.
 
 ## Test and review obligations
 
@@ -301,8 +325,9 @@ current source and its tests:
    specified above, exposes no generic target instruction or register type,
    and accepts normalized plans rather than raw CFG references.
 4. The backend CFG lowerers consist of adapter state/leaf plumbing and target
-   instruction selection; their remaining duplicated methods are the thin
-   liveness/scheduling/regalloc/container wrappers explicitly classified here.
+   instruction selection; their remaining duplicated methods are justified by
+   the target facts explicitly classified here. MIR-container genericization is
+   not an RUE-825 completion requirement.
 5. Native x86-64, native AArch64, cross-target assembly/encoding, oracle, and
    release-mode gates are green for the final source, and the documentation
    and generated ADR index validate.
@@ -319,8 +344,7 @@ one backend into a plan. The required native, cross-target, oracle, golden,
 and release-mode gates are mandatory because a compile-only check cannot prove
 the ABI and flag obligations.
 
-The repository does not contain the titles or comments for RUE-820 through
-RUE-825. This ADR therefore names the dependency-ordered slices from the
-RUE-819 acceptance brief rather than guessing external issue prose. The
-coordinating maintainer should reconcile those labels before implementation;
-the ownership boundary and completion criteria remain the design decision.
+Linear is the canonical source for the RUE-820 through RUE-825 titles,
+descriptions, and dependency edges. This ADR mirrors those scopes and records
+the shared ownership boundary; implementation PRs must keep their changes
+within the corresponding Linear slice.
