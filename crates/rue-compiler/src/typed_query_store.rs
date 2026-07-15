@@ -29,7 +29,7 @@ pub(crate) enum TerminalStamp {
 
 pub(crate) trait TypedQueryFamily {
     type Key: Eq;
-    type Record: std::fmt::Debug;
+    type Record: std::fmt::Debug + Clone;
     const MAX_TERMINALS: usize;
 
     fn key(record: &Self::Record) -> &Self::Key;
@@ -53,6 +53,15 @@ struct TerminalAttempt<F: TypedQueryFamily> {
     record: F::Record,
 }
 
+impl<F: TypedQueryFamily> Clone for TerminalAttempt<F> {
+    fn clone(&self) -> Self {
+        Self {
+            stamp: self.stamp,
+            record: self.record.clone(),
+        }
+    }
+}
+
 impl<F: TypedQueryFamily> TerminalAttempt<F> {
     fn record(&self) -> &F::Record {
         debug_assert_eq!(
@@ -71,6 +80,17 @@ pub(crate) struct TypedQueryStore<F: TypedQueryFamily> {
     next_publication: u64,
     evictions: usize,
     family: PhantomData<fn() -> F>,
+}
+
+impl<F: TypedQueryFamily> Clone for TypedQueryStore<F> {
+    fn clone(&self) -> Self {
+        Self {
+            attempts: self.attempts.clone(),
+            next_publication: self.next_publication,
+            evictions: self.evictions,
+            family: PhantomData,
+        }
+    }
 }
 
 impl<F: TypedQueryFamily> Default for TypedQueryStore<F> {
@@ -119,6 +139,10 @@ impl<F: TypedQueryFamily> TypedQueryStore<F> {
         self.attempts.len()
     }
 
+    pub(crate) fn records(&self) -> impl Iterator<Item = &F::Record> {
+        self.attempts.iter().map(TerminalAttempt::record)
+    }
+
     pub(crate) fn clear(&mut self) {
         self.attempts.clear();
     }
@@ -149,7 +173,7 @@ impl<F: TypedSecondaryLookupFamily> TypedQueryStore<F> {
 mod tests {
     use super::*;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     struct TestRecord {
         key: u32,
         artifact_revision: u32,
