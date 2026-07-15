@@ -1475,12 +1475,12 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     );
 
     let noop = get("exact_noop");
-    assert_eq!(count(noop, &["parse", "modules_reused"]), modules as u64);
     assert_reuse_parse_is_all_zero(noop);
     assert_query_executions(noop, 0, 0, 0, 0);
     assert_eq!(count(noop, &["queries", "merge_reuses"]), 1);
-    // The explicit RIR query reuses once, then semantic validation asks for it again.
-    assert_eq!(count(noop, &["queries", "rir_reuses"]), 2);
+    // Semantic validates through its recorded RIR dependency, so the explicit
+    // RIR request is the only query-store lookup on an exact no-op.
+    assert_eq!(count(noop, &["queries", "rir_reuses"]), 1);
     assert_eq!(count(noop, &["queries", "semantic_reuses"]), 1);
 
     let root_edit = get("reachable_root_body_edit");
@@ -1572,15 +1572,11 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     assert_eq!(count(failed, &["parse", "parser_invocations"]), 1);
     assert_query_executions(failed, 0, 0, 0, 0);
     assert_eq!(count(failed, &["queries", "merge_reuses"]), 1);
-    assert_eq!(count(failed, &["queries", "rir_reuses"]), 2);
+    assert_eq!(count(failed, &["queries", "rir_reuses"]), 1);
     assert_eq!(count(failed, &["queries", "downstream_invalidations"]), 0);
     assert_eq!(count(failed, &["queries", "semantic_reuses"]), 1);
 
     let recovery = get("syntax_recovery");
-    assert_eq!(
-        count(recovery, &["parse", "modules_reused"]),
-        modules as u64
-    );
     assert_reuse_parse_is_all_zero(recovery);
     assert_query_executions(recovery, 0, 0, 0, 0);
     assert_eq!(count(recovery, &["queries", "semantic_reuses"]), 1);
@@ -1612,7 +1608,8 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     );
 
     let semantic_recovery = get("semantic_recovery");
-    assert_query_executions(semantic_recovery, 1, 1, 1, 0);
+    assert_query_executions(semantic_recovery, 0, 0, 0, 0);
+    assert_eq!(count(semantic_recovery, &["queries", "semantic_reuses"]), 1);
     assert_eq!(
         count(
             semantic_recovery,
@@ -1622,8 +1619,8 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
                 "ordinary_declaration_resolutions_skipped"
             ]
         ),
-        1,
-        "failed semantic requests must not replace the last-good durable baseline"
+        0,
+        "recovery must restore the retained exact terminal without executing semantics"
     );
 
     let stable_cold = get("stable_definitions_cold");

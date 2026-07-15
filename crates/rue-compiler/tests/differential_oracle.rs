@@ -4,21 +4,20 @@
 //! by deletion to a locally minimal sequence before it is reported, so CI logs
 //! identify the shortest reproducer rather than the full seed corpus.
 //!
-//! The emitted-output comparison hashes actual per-function assembly. That is
-//! the strongest public, platform-stable boundary before linking: object bytes
-//! are crate-private, while the public executable query folds in target object
-//! format, the embedded runtime archive, and linker layout. Exercising that
-//! boundary here would add link/runtime fragility to a frontend reuse oracle.
+//! The emitted-output comparison covers both per-function assembly and the
+//! final internal-linker executable bytes. This keeps the oracle on real
+//! production query paths through backend emission and object/link layout.
 
 use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 
 use rue_cfg::OptLevel;
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
-    DiscoverySourceAssembler, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
+    DifferentialOracleFault, DiscoverySourceAssembler, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
     FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT, FileMetadataFingerprint,
     FrontendDiagnosticSnapshot, ImportDiscoveryContext, ImportObservation, ImportObservationLedger,
-    PhysicalFileIdentity, SourceMetadata, SourceSnapshot, generate_emitted_asm,
+    PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
+    generate_emitted_asm,
 };
 use rue_span::FileId;
 use rue_target::Target;
@@ -44,16 +43,10 @@ struct Observation {
     diagnostics: String,
     semantic: String,
     semantic_hash: String,
+    executable_hash: String,
     identities: String,
     manifest: String,
     imports: String,
-}
-
-#[derive(Clone, Copy)]
-enum InjectedFault {
-    Semantic,
-    Diagnostic,
-    ImportCache,
 }
 
 fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -187,7 +180,24 @@ fn close_discovery(session: &mut CompilerSession, step: &Step) -> String {
     }
 }
 
-fn observe(session: &mut CompilerSession, step: &Step) -> Observation {
+fn render_selected_import(session: &CompilerSession) -> String {
+    let artifact = session
+        .discovery_attempt()
+        .expect("injected import fault retains a selected closure artifact");
+    format!(
+        "status={:?};input={:?};reads={:?};ledger={:?}",
+        artifact.status(),
+        artifact.graph().map(|graph| graph.input()),
+        artifact.accepted_read_manifest(),
+        artifact.ledger()
+    )
+}
+
+fn observe_with_fault(
+    session: &mut CompilerSession,
+    step: &Step,
+    fault: Option<DifferentialOracleFault>,
+) -> Observation {
     let update = if step.discovery.is_some() {
         "discovery".to_owned()
     } else {
@@ -198,9 +208,13 @@ fn observe(session: &mut CompilerSession, step: &Step) -> Observation {
             update.diagnostics().errors()
         )
     };
-    let imports = close_discovery(session, step);
+    let mut imports = close_discovery(session, step);
+    if fault == Some(DifferentialOracleFault::Semantic) {
+        let _ = session.semantic(&step.options);
+        assert!(session.inject_stale_query_for_oracle(DifferentialOracleFault::Semantic));
+    }
     let semantic = session.semantic(&step.options);
-    let (semantic, semantic_hash, identities) = match semantic {
+    let (semantic, semantic_hash, executable_hash, identities) = match semantic {
         Ok(output) => {
             let artifact = format!(
                 "functions={:?};strings={:?};warnings={:?}",
@@ -224,9 +238,14 @@ fn observe(session: &mut CompilerSession, step: &Step) -> Observation {
                 writeln!(&mut emitted, "{}:\n{}", function.analyzed.name, assembly).unwrap();
             }
             let hash = format!("{:x}", Sha256::digest(emitted.as_bytes()));
+            let executable_hash = match session.oracle_executable(&step.snapshot, &step.options) {
+                Ok(executable) => format!("{:x}", Sha256::digest(&executable.elf)),
+                Err(errors) => format!("error:{errors:?}"),
+            };
             (
                 artifact,
                 hash,
+                executable_hash,
                 format!(
                     "source={:?};codegen={:?}",
                     step.snapshot.source_revision(),
@@ -237,13 +256,15 @@ fn observe(session: &mut CompilerSession, step: &Step) -> Observation {
         Err(errors) => (
             format!("error:{errors:?}"),
             "not-emitted".to_owned(),
+            "not-linked".to_owned(),
             format!("source={:?}", step.snapshot.source_revision()),
         ),
     };
-    // Capture the diagnostic artifact belonging to the semantic request before
-    // asking for its dependency manifest. The manifest query may internally
-    // consult import diagnostics, but that is query work rather than the
-    // semantic result being compared here.
+    if fault == Some(DifferentialOracleFault::Diagnostic) {
+        assert!(session.inject_stale_query_for_oracle(DifferentialOracleFault::Diagnostic));
+    }
+    // Capture the semantic request's selected batch before the manifest query
+    // performs its own supporting diagnostic work.
     let diagnostics = normalize_diagnostics(session.latest_diagnostics());
     let manifest = match session.semantic_dependency_inputs(&step.options, None) {
         Ok(manifest) => format!(
@@ -267,38 +288,24 @@ fn observe(session: &mut CompilerSession, step: &Step) -> Observation {
         ),
         Err(errors) => format!("error:{errors:?}"),
     };
+    if fault == Some(DifferentialOracleFault::Import) {
+        assert!(session.inject_stale_query_for_oracle(DifferentialOracleFault::Import));
+        imports = render_selected_import(session);
+    }
     Observation {
         update,
         diagnostics,
         semantic,
         semantic_hash,
+        executable_hash,
         identities,
         manifest,
         imports,
     }
 }
 
-fn inject_stale(observation: &mut Observation, previous: &Observation, fault: InjectedFault) {
-    match fault {
-        InjectedFault::Semantic => {
-            assert_ne!(observation.semantic, previous.semantic);
-            assert_ne!(observation.semantic_hash, previous.semantic_hash);
-            assert_ne!(observation.identities, previous.identities);
-            observation.semantic.clone_from(&previous.semantic);
-            observation
-                .semantic_hash
-                .clone_from(&previous.semantic_hash);
-            observation.identities.clone_from(&previous.identities);
-        }
-        InjectedFault::Diagnostic => {
-            assert_ne!(observation.diagnostics, previous.diagnostics);
-            observation.diagnostics.clone_from(&previous.diagnostics);
-        }
-        InjectedFault::ImportCache => {
-            assert_ne!(observation.imports, previous.imports);
-            observation.imports.clone_from(&previous.imports);
-        }
-    }
+fn observe(session: &mut CompilerSession, step: &Step) -> Observation {
+    observe_with_fault(session, step, None)
 }
 
 fn differing_fields(left: &Observation, right: &Observation) -> Vec<&'static str> {
@@ -310,6 +317,10 @@ fn differing_fields(left: &Observation, right: &Observation) -> Vec<&'static str
             left.semantic_hash != right.semantic_hash,
             "emitted-assembly-hash",
         ),
+        (
+            left.executable_hash != right.executable_hash,
+            "executable-hash",
+        ),
         (left.identities != right.identities, "stable-identities"),
         (left.manifest != right.manifest, "dependency-manifest"),
         (left.imports != right.imports, "import-discovery"),
@@ -319,27 +330,20 @@ fn differing_fields(left: &Observation, right: &Observation) -> Vec<&'static str
     .collect()
 }
 
-fn first_mismatch(steps: &[Step], fault: Option<InjectedFault>) -> Option<(usize, String)> {
+fn first_mismatch(
+    steps: &[Step],
+    fault: Option<DifferentialOracleFault>,
+) -> Option<(usize, String)> {
     let mut reused = CompilerSession::new();
     let mut last_good = None;
-    let mut previous_warm = None;
     for (index, step) in steps.iter().enumerate() {
         let before_failure = last_good.clone();
-        let mut warm = observe(&mut reused, step);
+        let injected = (index + 1 == steps.len() && index > 0)
+            .then_some(fault)
+            .flatten();
+        let warm = observe_with_fault(&mut reused, step, injected);
         let mut fresh_session = CompilerSession::new();
         let fresh = observe(&mut fresh_session, step);
-        if let Some(fault) = fault
-            && index + 1 == steps.len()
-            && index > 0
-        {
-            inject_stale(
-                &mut warm,
-                previous_warm
-                    .as_ref()
-                    .expect("stale injection requires an earlier reused-session result"),
-                fault,
-            );
-        }
         if warm != fresh {
             let mut difference = String::new();
             write!(
@@ -369,12 +373,11 @@ fn first_mismatch(steps: &[Step], fault: Option<InjectedFault>) -> Option<(usize
             );
             last_good = current;
         }
-        previous_warm = Some(warm);
     }
     None
 }
 
-fn minimized_failure(steps: &[Step], fault: Option<InjectedFault>) -> Option<String> {
+fn minimized_failure(steps: &[Step], fault: Option<DifferentialOracleFault>) -> Option<String> {
     first_mismatch(steps, fault)?;
     let mut reduced = steps.to_vec();
     let mut chunk = reduced.len() / 2;
@@ -429,10 +432,17 @@ fn corpus() -> Vec<Step> {
     let mut options_change = target_change.clone();
     options_change.name = "options-change";
     options_change.options.opt_level = OptLevel::O1;
+    let mut preview_change = options_change.clone();
+    preview_change.name = "preview-change";
+    preview_change.options.preview_features = PreviewFeatures::from([PreviewFeature::TestInfra]);
 
     vec![
         step(
             "base",
+            snapshot(&[(7, "/p/main.rue", "main.rue", base_source)], 7),
+        ),
+        step(
+            "base-noop",
             snapshot(&[(7, "/p/main.rue", "main.rue", base_source)], 7),
         ),
         step(
@@ -467,6 +477,7 @@ fn corpus() -> Vec<Step> {
         ),
         target_change,
         options_change,
+        preview_change,
         step(
             "semantic-failure",
             snapshot(
@@ -512,6 +523,48 @@ fn bounded_corpus_matches_stepwise_fresh_sessions() {
             .manifest
             .contains("complete=false")
     );
+}
+
+#[test]
+fn option_leaves_reuse_source_terminals_and_restore_exact_semantic_variants() {
+    let source = snapshot(
+        &[(
+            7,
+            "/p/main.rue",
+            "main.rue",
+            "fn helper() -> i32 { 1 } fn main() -> i32 { helper() }",
+        )],
+        7,
+    );
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+    let default = CompileOptions::default();
+    let first = session.semantic(&default).unwrap();
+    let target = CompileOptions {
+        target: *Target::all()
+            .iter()
+            .find(|&&target| target != default.target)
+            .unwrap(),
+        ..default.clone()
+    };
+    let optimized = CompileOptions {
+        opt_level: OptLevel::O1,
+        ..default.clone()
+    };
+    let preview = CompileOptions {
+        preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
+        ..default.clone()
+    };
+    session.semantic(&target).unwrap();
+    session.semantic(&optimized).unwrap();
+    session.semantic(&preview).unwrap();
+
+    assert_eq!(session.work().merge.executions, 1);
+    assert_eq!(session.work().rir.executions, 1);
+    assert_eq!(session.work().semantic.executions, 4);
+    assert!(Arc::ptr_eq(&first, &session.semantic(&default).unwrap()));
+    assert_eq!(session.work().semantic.executions, 4);
+    assert_eq!(session.work().semantic.reuses, 1);
 }
 
 #[test]
@@ -562,18 +615,18 @@ fn fault_injection_proves_semantic_diagnostic_and_import_cache_detection() {
     let corpus = corpus();
     for (steps, fault, affected) in [
         (
-            &corpus[0..2],
-            InjectedFault::Semantic,
-            "affected fields: semantic, emitted-assembly-hash, stable-identities",
+            &corpus[1..3],
+            DifferentialOracleFault::Semantic,
+            "affected fields: semantic, emitted-assembly-hash, executable-hash, stable-identities",
         ),
         (
-            &corpus[7..9],
-            InjectedFault::Diagnostic,
+            &corpus[9..11],
+            DifferentialOracleFault::Diagnostic,
             "affected fields: diagnostics",
         ),
         (
             &corpus[corpus.len() - 2..],
-            InjectedFault::ImportCache,
+            DifferentialOracleFault::Import,
             "affected fields: import-discovery",
         ),
     ] {

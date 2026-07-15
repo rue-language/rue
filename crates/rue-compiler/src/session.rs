@@ -10,12 +10,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     BoundDefinitionSet, BoundDefinitionWork, CanonicalImportGraph, CanonicalImportGraphValidation,
-    CanonicalImportResolution, CanonicalMergeWork, CanonicalMergedProgram, CanonicalParseSession,
-    CanonicalRirOutput, CanonicalRirWork, CanonicalSemanticOutput, CanonicalSemanticWork,
-    CodegenInputDescriptor, CompileError, CompileErrors, CompileOptions, CompileWarning,
-    DurableDeclarationSemantic, ErrorKind, ModuleResolutionInputs, ParseInvalidationSummary,
-    ParsedModulesWork, SemanticInputDescriptor, SourceRevision, SourceSnapshot,
-    StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace, StablePreviewFeatures,
+    CanonicalImportResolution, CanonicalMergeWork, CanonicalMergedProgram, CanonicalRirOutput,
+    CanonicalRirWork, CanonicalSemanticOutput, CanonicalSemanticWork, CodegenInputDescriptor,
+    CompileError, CompileErrors, CompileOptions, CompileWarning, DurableDeclarationSemantic,
+    ErrorKind, ModuleResolutionInputs, ParseInvalidationSummary, ParsedModulesWork,
+    SemanticInputDescriptor, SourceRevision, SourceSnapshot, StableDefinitionKey,
+    StableDefinitionKind, StableDefinitionNamespace, StableOptLevel, StablePreviewFeatures,
     bound_definitions::bind_canonical_definitions_with_work,
     canonical_lower::lower_canonical_rir_with_work,
     canonical_merge::merge_parsed_modules_reusing_definitions,
@@ -23,7 +23,10 @@ use crate::{
         analyze_prepared_canonical_program_reusing_declarations,
         analyze_prepared_canonical_program_with_durable_export, prepare_canonical_declarations,
     },
-    parsed_modules::ParsedProgram,
+    parsed_modules::{
+        ParsedProgram, adopt_exact_parsed_program, classify_invalidation, parse_canonical_snapshot,
+        parse_presentation_snapshot,
+    },
     validate_canonical_import_graph,
 };
 
@@ -33,8 +36,9 @@ pub use crate::diagnostic_attempt_store::{
     ImportDiagnosticInputDescriptor,
 };
 use crate::typed_query_store::{
-    QUERY_TERMINAL_RETENTION_LIMIT, TerminalKind, TypedQueryFamily, TypedQueryStore,
-    TypedSecondaryLookupFamily,
+    AbortedQueryReason, AttemptExecution as QueryAttemptExecution, AttemptView,
+    QUERY_TERMINAL_RETENTION_LIMIT, TerminalHandle, TerminalKind, TypedEquivalentLookupFamily,
+    TypedQueryFamily, TypedQueryStore, TypedSecondaryLookupFamily,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -52,6 +56,21 @@ pub struct FrontendQueryWork {
 /// session's eviction policy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrontendRetentionMetrics {
+    /// Retained terminal artifacts across all typed query families.
+    pub retained_query_records: usize,
+    /// Constant-size selected and last-good terminal protection.
+    pub protected_query_records: usize,
+    /// Retained terminals currently referenced by reverse dependency edges.
+    pub dependency_pins: usize,
+    /// Bounded validation stamps whose artifacts have been evicted.
+    pub validation_tombstones: usize,
+    /// Disappeared graph nodes pinned by retained reverse dependency edges
+    /// after their family tombstones have left bounded store retention.
+    pub graph_retained_disappeared_nodes: usize,
+    /// Lifetime artifact evictions across all typed query families.
+    pub query_evictions: usize,
+    /// Bounded canceled, duplicate, and cyclic query-attempt history.
+    pub aborted_query_attempts: usize,
     /// Retained direct import-diagnostic query terminals.
     pub import_query_entries: usize,
     /// Lifetime direct import-diagnostic query evictions.
@@ -117,45 +136,21 @@ pub struct CompilerSessionWork {
     pub retention: FrontendRetentionMetrics,
 }
 
-/// Query identity used by the session-owned metrics aggregate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum FrontendQueryFamily {
-    Imports,
-    ImportDiagnostics,
-    Merge,
-    Rir,
-    Semantic,
-    Definitions,
-    DependencyManifests,
-    InvalidationPlans,
+trait SessionQueryMetricsFamily {
+    const NAME: &'static str;
+    fn projection(work: &mut CompilerSessionWork) -> &mut FrontendQueryWork;
 }
 
-/// How one immutable query attempt satisfied its request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QueryAttemptExecution {
-    Computed,
-    Reused,
-    /// Reused a terminal adopted from an owning producer outside this query
-    /// ledger (for example committed import discovery).
-    Adopted,
-    /// The family could not execute because an input query failed.
-    Rejected,
-}
-
-/// Terminal lifecycle state of one immutable query attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QueryAttemptOutcome {
-    Success,
-    Failure,
-    Canceled,
-}
+#[derive(Debug)]
+struct ImportsMetricsQuery;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct AttemptId(u64);
+pub(crate) struct AttemptId(pub(crate) u64);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum QueryStructuralWork {
+pub(crate) enum QueryStructuralWork {
     None,
+    Parse(ParsedModulesWork),
     Merge(CanonicalMergeWork),
     Rir(CanonicalRirWork),
     Semantic(Box<SemanticQueryRecord>),
@@ -164,58 +159,39 @@ enum QueryStructuralWork {
     Invalidation(SemanticInvalidationWork),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum QueryAttemptIdentity {
-    Unavailable,
-    ImportDiagnostics(ImportDiagnosticInputDescriptor),
-    ImportGraph(ImportGraphInputDescriptor),
-    Merge {
-        source: SourceRevision,
-        presentation: Option<Arc<[crate::ModuleId]>>,
-    },
-    Rir(SourceRevision),
-    Semantic(Box<SemanticQueryKey>),
-    Definition(Box<DefinitionQueryKey>),
-    DependencyManifest {
-        input: SemanticInputDescriptor,
-        imports: Box<CanonicalImportGraph>,
-    },
-    Invalidation {
-        previous: SemanticInputDescriptor,
-        current: SemanticInputDescriptor,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct QueryAttemptWork {
-    id: AttemptId,
-    family: FrontendQueryFamily,
-    identity: QueryAttemptIdentity,
-    execution: QueryAttemptExecution,
-    outcome: QueryAttemptOutcome,
-    reuse_origin: Option<AttemptId>,
-    structural: QueryStructuralWork,
+#[derive(Debug, Clone)]
+struct IndexedAttempt {
+    family: &'static str,
+    attempt: Arc<dyn AttemptView>,
 }
 
 const QUERY_ATTEMPT_RETENTION_LIMIT: usize = 256;
 
 #[derive(Debug, Default)]
-struct QueryAttemptLedger {
+struct QueryAttemptIndex {
     next_id: u64,
-    retained: VecDeque<QueryAttemptWork>,
+    retained: VecDeque<IndexedAttempt>,
     pinned_origins: BTreeSet<AttemptId>,
-    evicted_projection: BTreeMap<FrontendQueryFamily, FrontendQueryWork>,
+    evicted_projection: BTreeMap<&'static str, FrontendQueryWork>,
+    projections: BTreeMap<&'static str, fn(&mut CompilerSessionWork) -> &mut FrontendQueryWork>,
 }
 
-impl QueryAttemptLedger {
+impl QueryAttemptIndex {
     fn allocate(&mut self) -> AttemptId {
         let id = AttemptId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
         id
     }
 
-    fn publish(&mut self, attempt: QueryAttemptWork) {
-        self.retained.push_back(attempt);
+    fn index(&mut self, family: &'static str, attempt: Arc<dyn AttemptView>) {
+        if self
+            .retained
+            .iter()
+            .any(|indexed| indexed.attempt.id() == attempt.id())
+        {
+            return;
+        }
+        self.retained.push_back(IndexedAttempt { family, attempt });
         if self.retained.len() > QUERY_ATTEMPT_RETENTION_LIMIT {
             // Keep every origin named by a retained reuse. The oldest
             // unreferenced request is evicted instead, preserving immutable
@@ -223,27 +199,28 @@ impl QueryAttemptLedger {
             let mut referenced = self
                 .retained
                 .iter()
-                .filter_map(|attempt| attempt.reuse_origin)
+                .map(|indexed| indexed.attempt.origin_id())
                 .collect::<BTreeSet<_>>();
             referenced.extend(self.pinned_origins.iter().copied());
             let index = self
                 .retained
                 .iter()
-                .position(|attempt| !referenced.contains(&attempt.id))
+                .position(|indexed| !referenced.contains(&indexed.attempt.id()))
                 .unwrap_or(0);
             if let Some(evicted) = self.retained.remove(index) {
                 project_lifecycle(
                     self.evicted_projection.entry(evicted.family).or_default(),
-                    &evicted,
+                    evicted.attempt.as_ref(),
                 );
             }
         }
     }
 }
 
-fn project_lifecycle(work: &mut FrontendQueryWork, attempt: &QueryAttemptWork) {
+fn project_lifecycle(work: &mut FrontendQueryWork, attempt: &dyn AttemptView) {
+    let _ = (attempt.outcome(), attempt.dependencies(), attempt.work());
     work.calls += 1;
-    match attempt.execution {
+    match attempt.execution() {
         QueryAttemptExecution::Computed => work.executions += 1,
         QueryAttemptExecution::Reused | QueryAttemptExecution::Adopted => work.reuses += 1,
         QueryAttemptExecution::Rejected => {}
@@ -254,28 +231,40 @@ fn project_lifecycle(work: &mut FrontendQueryWork, attempt: &QueryAttemptWork) {
 /// borrow and publishes a canceled record if computation unwinds or returns
 /// before an explicit terminal is frozen.
 struct QueryComputationGuard {
-    sink: Arc<Mutex<QueryAttemptLedger>>,
+    sink: Arc<Mutex<QueryAttemptIndex>>,
     id: AttemptId,
-    family: FrontendQueryFamily,
-    identity: QueryAttemptIdentity,
-    execution: QueryAttemptExecution,
-    reuse_origin: Option<AttemptId>,
+    family: &'static str,
+    attempt: Option<Arc<dyn AttemptView>>,
+    dependencies: Vec<crate::query_graph::ObservedDependency>,
+    diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
     structural: QueryStructuralWork,
     cancel_requested: bool,
-    published: bool,
 }
 
 impl QueryComputationGuard {
-    fn started(&mut self) {
-        self.execution = QueryAttemptExecution::Computed;
-    }
-
-    fn identify(&mut self, identity: QueryAttemptIdentity) {
-        self.identity = identity;
-    }
+    fn started(&mut self) {}
 
     fn accrue(&mut self, structural: QueryStructuralWork) {
         self.structural = structural;
+    }
+
+    fn structural(&self) -> QueryStructuralWork {
+        self.structural.clone()
+    }
+
+    fn bind(&mut self, attempt: Arc<dyn AttemptView>) {
+        self.attempt = Some(attempt);
+    }
+
+    fn observe(
+        &mut self,
+        dependencies: impl IntoIterator<Item = crate::query_graph::ObservedDependency>,
+    ) {
+        self.dependencies.extend(dependencies);
+    }
+
+    fn attach_diagnostics(&mut self, diagnostics: Arc<FrontendDiagnosticSnapshot>) {
+        self.diagnostics = Some(diagnostics);
     }
 
     fn request_cancel(&mut self) {
@@ -283,52 +272,19 @@ impl QueryComputationGuard {
     }
 
     fn finish<T, E>(
-        mut self,
-        execution: QueryAttemptExecution,
-        reuse_origin: Option<AttemptId>,
-        result: &Result<T, E>,
-        structural: QueryStructuralWork,
+        self,
+        _execution: QueryAttemptExecution,
+        _reuse_origin: Option<AttemptId>,
+        _result: &Result<T, E>,
+        _structural: QueryStructuralWork,
     ) -> AttemptId {
-        self.execution = execution;
-        self.reuse_origin = reuse_origin;
-        self.structural = structural;
-        self.publish(if self.cancel_requested {
-            QueryAttemptOutcome::Canceled
-        } else if result.is_ok() {
-            QueryAttemptOutcome::Success
-        } else {
-            QueryAttemptOutcome::Failure
-        });
-        self.id
-    }
-
-    fn publish(&mut self, outcome: QueryAttemptOutcome) {
-        if self.published {
-            return;
+        if let Some(attempt) = self.attempt {
+            self.sink
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .index(self.family, attempt);
         }
-        self.sink
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .publish(QueryAttemptWork {
-                id: self.id,
-                family: self.family,
-                identity: self.identity.clone(),
-                execution: self.execution,
-                outcome,
-                reuse_origin: self.reuse_origin,
-                structural: self.structural.clone(),
-            });
-        self.published = true;
-    }
-
-    fn cancel(&mut self) {
-        self.publish(QueryAttemptOutcome::Canceled);
-    }
-}
-
-impl Drop for QueryComputationGuard {
-    fn drop(&mut self) {
-        self.publish(QueryAttemptOutcome::Canceled);
+        self.id
     }
 }
 
@@ -339,32 +295,61 @@ impl Drop for QueryComputationGuard {
 /// with a no-op cannot affect query results or control flow.
 #[derive(Debug, Default, Clone)]
 struct CompilerSessionMetrics {
-    attempts: Arc<Mutex<QueryAttemptLedger>>,
+    attempts: Arc<Mutex<QueryAttemptIndex>>,
     projected_attempts: BTreeSet<AttemptId>,
     aggregate: CompilerSessionWork,
+    projected_semantic_invalidations: usize,
+    projected_definition_invalidations: usize,
 }
 
 impl CompilerSessionMetrics {
+    fn allocate_attempt_id(&self) -> AttemptId {
+        self.attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .allocate()
+    }
+
     fn work(&self) -> &CompilerSessionWork {
         &self.aggregate
     }
 
-    fn begin(&self, family: FrontendQueryFamily) -> QueryComputationGuard {
-        let id = self
+    fn begin<Q: SessionQueryMetricsFamily>(&self) -> QueryComputationGuard {
+        let mut ledger = self
             .attempts
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .allocate();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger.projections.insert(Q::NAME, Q::projection);
+        let id = ledger.allocate();
+        drop(ledger);
+        QueryComputationGuard {
+            sink: self.attempts.clone(),
+            id,
+            family: Q::NAME,
+            attempt: None,
+            dependencies: Vec::new(),
+            diagnostics: None,
+            structural: QueryStructuralWork::None,
+            cancel_requested: false,
+        }
+    }
+
+    fn begin_unprojected(&self, family: &'static str) -> QueryComputationGuard {
+        let mut ledger = self
+            .attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let id = ledger.allocate();
+        drop(ledger);
         QueryComputationGuard {
             sink: self.attempts.clone(),
             id,
             family,
-            identity: QueryAttemptIdentity::Unavailable,
-            execution: QueryAttemptExecution::Rejected,
-            reuse_origin: None,
+            attempt: None,
+            dependencies: Vec::new(),
+            diagnostics: None,
             structural: QueryStructuralWork::None,
             cancel_requested: false,
-            published: false,
         }
     }
 
@@ -383,53 +368,43 @@ impl CompilerSessionMetrics {
         let new_attempts = ledger
             .retained
             .iter()
-            .filter(|attempt| !self.projected_attempts.contains(&attempt.id))
+            .filter(|indexed| !self.projected_attempts.contains(&indexed.attempt.id()))
             .cloned()
             .collect::<Vec<_>>();
         let mut projected = ledger.evicted_projection.clone();
         for attempt in &ledger.retained {
-            project_lifecycle(projected.entry(attempt.family).or_default(), attempt);
+            project_lifecycle(
+                projected.entry(attempt.family).or_default(),
+                attempt.attempt.as_ref(),
+            );
         }
-        for family in [
-            FrontendQueryFamily::Imports,
-            FrontendQueryFamily::ImportDiagnostics,
-            FrontendQueryFamily::Merge,
-            FrontendQueryFamily::Rir,
-            FrontendQueryFamily::Semantic,
-            FrontendQueryFamily::Definitions,
-            FrontendQueryFamily::DependencyManifests,
-            FrontendQueryFamily::InvalidationPlans,
-        ] {
-            let work = match family {
-                FrontendQueryFamily::Imports => &mut self.aggregate.imports,
-                FrontendQueryFamily::ImportDiagnostics => &mut self.aggregate.import_diagnostics,
-                FrontendQueryFamily::Merge => &mut self.aggregate.merge,
-                FrontendQueryFamily::Rir => &mut self.aggregate.rir,
-                FrontendQueryFamily::Semantic => &mut self.aggregate.semantic,
-                FrontendQueryFamily::Definitions => &mut self.aggregate.definitions,
-                FrontendQueryFamily::DependencyManifests => {
-                    &mut self.aggregate.dependency_manifests
-                }
-                FrontendQueryFamily::InvalidationPlans => &mut self.aggregate.invalidation_plans,
-            };
-            *work = projected.remove(&family).unwrap_or_default();
+        for (family, projection) in &ledger.projections {
+            *projection(&mut self.aggregate) = projected.remove(family).unwrap_or_default();
         }
-        self.projected_attempts
-            .retain(|id| ledger.retained.iter().any(|attempt| attempt.id == *id));
+        self.projected_attempts.retain(|id| {
+            ledger
+                .retained
+                .iter()
+                .any(|indexed| indexed.attempt.id() == *id)
+        });
         drop(ledger);
         for attempt in new_attempts {
-            self.project_structural_attempt(&attempt);
-            self.projected_attempts.insert(attempt.id);
+            self.project_structural_attempt(attempt.attempt.as_ref());
+            self.projected_attempts.insert(attempt.attempt.id());
         }
     }
 
-    fn project_structural_attempt(&mut self, attempt: &QueryAttemptWork) {
-        match &attempt.structural {
-            QueryStructuralWork::None => {}
-            QueryStructuralWork::Merge(work) if attempt.outcome == QueryAttemptOutcome::Success => {
+    fn project_structural_attempt(&mut self, attempt: &dyn AttemptView) {
+        match attempt.work() {
+            QueryStructuralWork::None | QueryStructuralWork::Parse(_) => {}
+            QueryStructuralWork::Merge(work)
+                if attempt.outcome() == crate::typed_query_store::AttemptOutcomeKind::Success =>
+            {
                 self.aggregate.last_merge = *work;
             }
-            QueryStructuralWork::Rir(work) if attempt.outcome == QueryAttemptOutcome::Success => {
+            QueryStructuralWork::Rir(work)
+                if attempt.outcome() == crate::typed_query_store::AttemptOutcomeKind::Success =>
+            {
                 self.aggregate.last_rir = *work;
             }
             QueryStructuralWork::Semantic(record) => {
@@ -460,7 +435,7 @@ impl CompilerSessionMetrics {
     }
 
     #[cfg(test)]
-    fn attempts(&self) -> Vec<QueryAttemptWork> {
+    fn attempts(&self) -> Vec<IndexedAttempt> {
         self.attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -476,17 +451,22 @@ impl CompilerSessionMetrics {
         self.aggregate.last_invalidation = invalidation;
     }
 
-    fn invalidate_downstream(
+    fn project_dependency_invalidations(
         &mut self,
+        graph: &crate::query_graph::QueryGraph,
         changed_existing_revision: bool,
-        semantic_entries: usize,
-        definition_entries: usize,
     ) {
         if changed_existing_revision {
             self.aggregate.downstream_invalidations += 1;
         }
-        self.aggregate.semantic_entries_invalidated += semantic_entries;
-        self.aggregate.definition_entries_invalidated += definition_entries;
+        let semantic = graph.invalidation_count::<SemanticQuery>();
+        let definitions = graph.invalidation_count::<DefinitionQuery>();
+        self.aggregate.semantic_entries_invalidated +=
+            semantic.saturating_sub(self.projected_semantic_invalidations);
+        self.aggregate.definition_entries_invalidated +=
+            definitions.saturating_sub(self.projected_definition_invalidations);
+        self.projected_semantic_invalidations = semantic;
+        self.projected_definition_invalidations = definitions;
         self.aggregate.last_merge = CanonicalMergeWork::default();
         self.aggregate.last_rir = CanonicalRirWork::default();
         self.aggregate.semantic_entries = 0;
@@ -1149,7 +1129,7 @@ impl SemanticDependencyBlocker {
 ///
 /// Construction is centralized here so the retained slice is the one
 /// canonical value used for planning, accessors, and presentation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NonEmptySemanticDependencyBlockers {
     blockers: Arc<[SemanticDependencyBlocker]>,
 }
@@ -1168,7 +1148,7 @@ impl NonEmptySemanticDependencyBlockers {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum DurableBodyCandidateState {
     Complete,
     Incomplete(NonEmptySemanticDependencyBlockers),
@@ -1190,7 +1170,7 @@ impl DurableBodyCandidateState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SemanticDependencyGraphState {
     Complete,
     Incomplete(NonEmptySemanticDependencyBlockers),
@@ -1251,7 +1231,7 @@ impl SemanticDependencyGraphState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NonEmptyDefinitionFailures {
     failures: Arc<[rue_error::CompileError]>,
 }
@@ -1268,18 +1248,18 @@ impl NonEmptyDefinitionFailures {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SemanticDefinitionUniverseIncompleteReason {
     StableDefinitionsFailed(NonEmptyDefinitionFailures),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SemanticDefinitionUniverseState {
     Complete,
     Incomplete(SemanticDefinitionUniverseIncompleteReason),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SemanticDependencyInputManifest {
     input: SemanticInputDescriptor,
     imports: CanonicalImportGraph,
@@ -1485,7 +1465,7 @@ pub enum SemanticInvalidationScope {
     Incremental,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticInvalidationPlan {
     scope: SemanticInvalidationScope,
     added: Arc<[StableDefinitionKey]>,
@@ -1579,6 +1559,16 @@ pub enum ImportDiscoveryRevisionStatus {
     ClosedValid,
 }
 
+/// Deliberate retained-state corruptions used only to prove the differential
+/// oracle detects missing dependency edges and stale reuse.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DifferentialOracleFault {
+    Semantic,
+    Diagnostic,
+    Import,
+}
+
 #[derive(Debug, Clone)]
 pub struct ImportDiscoveryRevisionArtifact {
     status: ImportDiscoveryRevisionStatus,
@@ -1662,12 +1652,10 @@ impl CompilerSessionUpdate {
 
 #[derive(Debug, Default)]
 pub struct CompilerSession {
-    parse: SyntaxParseProducer,
-    discovery_parse: CanonicalParseSession,
-    discovery_staging_active: bool,
-    discovery_attempt: Option<Arc<ImportDiscoveryRevisionArtifact>>,
-    committed_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
-    direct_import_diagnostics: TypedQueryStore<ImportDiagnosticQuery>,
+    /// Protocol context only while the typed import-closure query is open.
+    /// Closed attempts live exclusively in their plan or closure terminal.
+    open_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
+    queries: FrontendQueryDatabase,
     #[cfg(test)]
     supplied_test_import_graph: Option<CanonicalImportGraph>,
     #[cfg(test)]
@@ -1677,127 +1665,96 @@ pub struct CompilerSession {
     published: Option<Arc<ParsedProgram>>,
     published_snapshot: Option<SourceSnapshot>,
     batch_diagnostic_order: Option<Vec<crate::ModuleId>>,
-    merge_cache: Option<MergeCacheEntry>,
     definition_shard_baseline: Option<crate::DefinitionSnapshot>,
-    rir_cache: Option<RirCacheEntry>,
-    semantic_cache: TypedQueryStore<SemanticQuery>,
-    definition_cache: TypedQueryStore<DefinitionQuery>,
     metrics: CompilerSessionMetrics,
     diagnostics: DiagnosticAttemptStore,
-    dependency_manifest_cache: Vec<DependencyManifestCacheEntry>,
-    invalidation_plan_cache: VecDeque<InvalidationPlanCacheEntry>,
+    #[cfg(test)]
     durable_declaration_cache: Option<DurableDeclarationCache>,
+    #[cfg(test)]
     last_successful_body_cache: Option<DurableOrdinaryBodyCache>,
+    #[cfg(test)]
     last_successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
 }
 
-#[derive(Clone)]
-struct QueryPublicationSnapshot {
-    direct_import_diagnostics: TypedQueryStore<ImportDiagnosticQuery>,
-    merge_cache: Option<MergeCacheEntry>,
-    definition_shard_baseline: Option<crate::DefinitionSnapshot>,
-    rir_cache: Option<RirCacheEntry>,
-    semantic_cache: TypedQueryStore<SemanticQuery>,
-    definition_cache: TypedQueryStore<DefinitionQuery>,
-    metrics: CompilerSessionMetrics,
-    diagnostics: DiagnosticAttemptStore,
-    dependency_manifest_cache: Vec<DependencyManifestCacheEntry>,
-    invalidation_plan_cache: VecDeque<InvalidationPlanCacheEntry>,
-    durable_declaration_cache: Option<DurableDeclarationCache>,
-    last_successful_body_cache: Option<DurableOrdinaryBodyCache>,
-    last_successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
-}
-
-/// The canonical parse producer and the diagnostic origins attached to its
-/// currently reusable successful baseline.
+/// The single typed frontend query database owned by `CompilerSession`.
 ///
-/// Presentation variants share the same parsed program, so their origins are
-/// retained in a small bounded FIFO beside that producer. Replacing any parse
-/// artifact clears the origins atomically. Failed parses do not advance this
-/// producer and are therefore not retained here.
-#[derive(Debug, Default)]
-struct SyntaxParseProducer {
-    session: CanonicalParseSession,
-    origins: VecDeque<Arc<FrontendDiagnosticSnapshot>>,
-}
-
+/// Query algorithms stay in the session; this value owns terminals and their
+/// dependency/reverse-dependency state only.
 #[derive(Debug)]
-struct SyntaxProducerUpdate {
-    parse: crate::CanonicalParseUpdate,
-    origin: Option<Arc<FrontendDiagnosticSnapshot>>,
+struct FrontendQueryDatabase {
+    parse: TypedQueryStore<ParseQuery>,
+    import_plans: TypedQueryStore<ImportPlanQuery>,
+    import_closures: TypedQueryStore<ImportClosureQuery>,
+    import_diagnostics: TypedQueryStore<ImportDiagnosticQuery>,
+    merge: TypedQueryStore<MergeQuery>,
+    rir: TypedQueryStore<RirQuery>,
+    semantic: TypedQueryStore<SemanticQuery>,
+    definitions: TypedQueryStore<DefinitionQuery>,
+    manifests: TypedQueryStore<DependencyManifestQuery>,
+    invalidation_plans: TypedQueryStore<InvalidationPlanQuery>,
+    graph: crate::query_graph::QueryGraph,
+    parse_inputs: crate::query_graph::TypedLeafStore<ExactSourceInput>,
+    import_plan_inputs: crate::query_graph::TypedLeafStore<ImportPlanQueryKey>,
+    import_closure_inputs: crate::query_graph::TypedLeafStore<ImportClosureQueryKey>,
+    source_inputs: crate::query_graph::TypedLeafStore<ExactSourceInput>,
+    import_inputs: crate::query_graph::TypedLeafStore<CanonicalImportGraph>,
+    target_inputs: crate::query_graph::TypedLeafStore<crate::Target>,
+    preview_inputs: crate::query_graph::TypedLeafStore<StablePreviewFeatures>,
+    optimization_inputs: crate::query_graph::TypedLeafStore<StableOptLevel>,
 }
 
-impl SyntaxParseProducer {
-    fn update(
-        &mut self,
-        snapshot: &SourceSnapshot,
-        provenance: &DiagnosticAttemptProvenance,
-    ) -> SyntaxProducerUpdate {
-        let origin = self.origin(snapshot, provenance);
-        let parse = self.session.update(snapshot);
-        self.finish_attempt(parse, origin)
-    }
-
-    fn update_for_batch(
-        &mut self,
-        snapshot: &SourceSnapshot,
-        provenance: &DiagnosticAttemptProvenance,
-    ) -> SyntaxProducerUpdate {
-        let origin = self.origin(snapshot, provenance);
-        let parse = self.session.update_for_batch(snapshot);
-        self.finish_attempt(parse, origin)
-    }
-
-    fn adopt_exact(
-        &mut self,
-        snapshot: &SourceSnapshot,
-        program: Arc<ParsedProgram>,
-        work: ParsedModulesWork,
-        provenance: &DiagnosticAttemptProvenance,
-    ) -> SyntaxProducerUpdate {
-        let origin = self.origin(snapshot, provenance);
-        let parse = self.session.adopt_exact(snapshot, program, work);
-        self.finish_attempt(parse, origin)
-    }
-
-    fn origin(
-        &self,
-        snapshot: &SourceSnapshot,
-        provenance: &DiagnosticAttemptProvenance,
-    ) -> Option<Arc<FrontendDiagnosticSnapshot>> {
-        self.origins
-            .iter()
-            .rev()
-            .find(|origin| {
-                origin.matches_exact_attempt(snapshot, &FrontendDiagnosticStage::Syntax, provenance)
-            })
-            .cloned()
-    }
-
-    fn finish_attempt(
-        &mut self,
-        parse: crate::CanonicalParseUpdate,
-        origin: Option<Arc<FrontendDiagnosticSnapshot>>,
-    ) -> SyntaxProducerUpdate {
-        let origin = origin.filter(|_| parse.exactly_reused_baseline());
-        if parse.succeeded() && !parse.exactly_reused_baseline() {
-            self.origins.clear();
+impl Default for FrontendQueryDatabase {
+    fn default() -> Self {
+        Self {
+            parse: TypedQueryStore::default(),
+            import_plans: TypedQueryStore::default(),
+            import_closures: TypedQueryStore::default(),
+            import_diagnostics: TypedQueryStore::default(),
+            merge: TypedQueryStore::default(),
+            rir: TypedQueryStore::default(),
+            semantic: TypedQueryStore::default(),
+            definitions: TypedQueryStore::default(),
+            manifests: TypedQueryStore::default(),
+            invalidation_plans: TypedQueryStore::default(),
+            graph: crate::query_graph::QueryGraph::default(),
+            parse_inputs: crate::query_graph::TypedLeafStore::new(QUERY_TERMINAL_RETENTION_LIMIT),
+            import_plan_inputs: crate::query_graph::TypedLeafStore::new(
+                QUERY_TERMINAL_RETENTION_LIMIT,
+            ),
+            import_closure_inputs: crate::query_graph::TypedLeafStore::new(
+                QUERY_TERMINAL_RETENTION_LIMIT,
+            ),
+            source_inputs: crate::query_graph::TypedLeafStore::new(QUERY_TERMINAL_RETENTION_LIMIT),
+            import_inputs: crate::query_graph::TypedLeafStore::new(QUERY_TERMINAL_RETENTION_LIMIT),
+            target_inputs: crate::query_graph::TypedLeafStore::new(QUERY_TERMINAL_RETENTION_LIMIT),
+            preview_inputs: crate::query_graph::TypedLeafStore::new(QUERY_TERMINAL_RETENTION_LIMIT),
+            optimization_inputs: crate::query_graph::TypedLeafStore::new(
+                QUERY_TERMINAL_RETENTION_LIMIT,
+            ),
         }
-        SyntaxProducerUpdate { parse, origin }
+    }
+}
+
+impl FrontendQueryDatabase {
+    fn publish_source(&mut self, source: ExactSourceInput) -> bool {
+        let previous = self.source_inputs.selected(&self.graph);
+        let current = self.source_inputs.publish(&mut self.graph, source);
+        previous.is_some_and(|previous| previous != current)
     }
 
-    fn attach_origin(&mut self, origin: Arc<FrontendDiagnosticSnapshot>) {
-        if self
-            .origins
-            .iter()
-            .any(|retained| Arc::ptr_eq(retained, &origin))
-        {
-            return;
-        }
-        self.origins.push_back(origin);
-        while self.origins.len() > FRONTEND_DIAGNOSTIC_RETENTION_LIMIT {
-            self.origins.pop_front();
-        }
+    fn publish_import_graph(&mut self, imports: CanonicalImportGraph) {
+        self.import_inputs.publish(&mut self.graph, imports);
+    }
+
+    fn publish_request_inputs(&mut self, options: &CompileOptions) {
+        self.target_inputs
+            .publish_retained(&mut self.graph, options.target);
+        self.preview_inputs.publish_retained(
+            &mut self.graph,
+            StablePreviewFeatures::new(&options.preview_features),
+        );
+        self.optimization_inputs
+            .publish_retained(&mut self.graph, options.opt_level.into());
     }
 }
 
@@ -1818,37 +1775,409 @@ struct DurableOrdinaryBodyCache {
 }
 
 #[derive(Debug, Clone)]
-struct InvalidationPlanCacheEntry {
+struct InvalidationPlanQueryKey {
     previous: Arc<SemanticDependencyInputManifest>,
     current: Arc<SemanticDependencyInputManifest>,
+}
+
+impl PartialEq for InvalidationPlanQueryKey {
+    fn eq(&self, other: &Self) -> bool {
+        (Arc::ptr_eq(&self.previous, &other.previous) || self.previous == other.previous)
+            && (Arc::ptr_eq(&self.current, &other.current) || self.current == other.current)
+    }
+}
+
+impl Eq for InvalidationPlanQueryKey {}
+
+#[derive(Debug, Clone)]
+struct InvalidationPlanCacheEntry {
+    key: InvalidationPlanQueryKey,
     plan: Arc<SemanticInvalidationPlan>,
-    attempt_origin: AttemptId,
 }
 
 #[derive(Debug, Clone)]
 struct DependencyManifestCacheEntry {
-    manifest: Arc<SemanticDependencyInputManifest>,
-    attempt_origin: AttemptId,
+    key: DependencyManifestQueryKey,
+    result: Result<Arc<SemanticDependencyInputManifest>, CompileErrors>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParseQueryKey {
+    source: ExactSourceInput,
+    presentation: DiagnosticAttemptProvenance,
+}
+
+#[derive(Debug, Clone)]
+struct ParseQueryRecord {
+    key: ParseQueryKey,
+    snapshot: SourceSnapshot,
+    result: Result<Arc<ParsedProgram>, CompileErrors>,
+    diagnostics: Arc<FrontendDiagnosticSnapshot>,
+}
+
+#[derive(Debug)]
+struct ParseQuery;
+
+impl TypedQueryFamily for ParseQuery {
+    type Key = ParseQueryKey;
+    type Record = ParseQueryRecord;
+    const MAX_TERMINALS: usize = QUERY_TERMINAL_RETENTION_LIMIT;
+
+    fn key(record: &Self::Record) -> &Self::Key {
+        &record.key
+    }
+
+    fn terminal_kind(record: &Self::Record) -> TerminalKind {
+        if record.result.is_ok() {
+            TerminalKind::Success
+        } else {
+            TerminalKind::Failure
+        }
+    }
+
+    fn outcome_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        match (&left.result, &right.result) {
+            // The complete key contains exact source bytes, metadata, and
+            // presentation provenance. Parsing is deterministic, so equal
+            // keys prove equal typed syntax even across distinct allocations.
+            (Ok(left), Ok(right)) => left.source_revision() == right.source_revision(),
+            (Err(left), Err(right)) => compile_errors_equal(left, right),
+            _ => false,
+        }
+    }
+
+    fn diagnostics_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        diagnostic_batches_equal(&left.diagnostics, &right.diagnostics)
+    }
+
+    fn diagnostics(record: &Self::Record) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        Some(&record.diagnostics)
+    }
+
+    fn record_is_consistent(record: &Self::Record) -> bool {
+        record.snapshot.source_revision() == &record.key.source.revision
+            && record.snapshot.metadata() == &record.key.source.metadata
+            && match &record.result {
+                Ok(program) => program.source_revision() == &record.key.source.revision,
+                Err(_) => true,
+            }
+            && record.diagnostics.source_revision() == &record.key.source.revision
+            && record.diagnostics.stage() == &FrontendDiagnosticStage::Syntax
+            && record.diagnostics.provenance == record.key.presentation
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedProgramLookup {
+    source: ExactSourceInput,
+    program: Arc<ParsedProgram>,
+}
+
+impl PartialEq for ParsedProgramLookup {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source && Arc::ptr_eq(&self.program, &other.program)
+    }
+}
+
+impl Eq for ParsedProgramLookup {}
+
+impl TypedSecondaryLookupFamily for ParseQuery {
+    type SecondaryKey = ParsedProgramLookup;
+
+    fn matches_secondary(record: &Self::Record, key: &Self::SecondaryKey) -> bool {
+        record.key.source == key.source
+            && record
+                .result
+                .as_ref()
+                .is_ok_and(|program| Arc::ptr_eq(program, &key.program))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImportPlanQueryKey {
+    source: ExactSourceInput,
+    context: crate::ImportDiscoveryContext,
+    policy_version: u32,
+    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    carried_ledger: crate::ImportObservationLedger,
+}
+
+#[derive(Debug, Clone)]
+struct ImportPlanQueryRecord {
+    key: ImportPlanQueryKey,
+    result: Result<crate::ImportDiscoveryPlan, CompileErrors>,
+    diagnostics: Arc<FrontendDiagnosticSnapshot>,
+    attempted_artifact: Option<Arc<ImportDiscoveryRevisionArtifact>>,
+}
+
+#[derive(Debug)]
+struct ImportPlanQuery;
+
+impl TypedQueryFamily for ImportPlanQuery {
+    type Key = ImportPlanQueryKey;
+    type Record = ImportPlanQueryRecord;
+    const MAX_TERMINALS: usize = QUERY_TERMINAL_RETENTION_LIMIT;
+
+    fn key(record: &Self::Record) -> &Self::Key {
+        &record.key
+    }
+
+    fn terminal_kind(record: &Self::Record) -> TerminalKind {
+        if record.result.is_ok() {
+            TerminalKind::Success
+        } else {
+            TerminalKind::Failure
+        }
+    }
+
+    fn outcome_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        left.result == right.result
+    }
+
+    fn diagnostics_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        diagnostic_batches_equal(&left.diagnostics, &right.diagnostics)
+    }
+
+    fn diagnostics(record: &Self::Record) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        Some(&record.diagnostics)
+    }
+
+    fn record_is_consistent(record: &Self::Record) -> bool {
+        record.diagnostics.source_revision() == &record.key.source.revision
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImportClosureQueryKey {
+    source: ExactSourceInput,
+    context: crate::ImportDiscoveryContext,
+    policy_version: u32,
+    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    plan: crate::ImportDiscoveryPlan,
+    ledger: crate::ImportObservationLedger,
+}
+
+#[derive(Debug, Clone)]
+struct ImportClosureQueryRecord {
+    key: ImportClosureQueryKey,
+    result: Result<Arc<CanonicalImportGraphOutput>, CompileErrors>,
+    artifact: Arc<ImportDiscoveryRevisionArtifact>,
+    diagnostics: Arc<FrontendDiagnosticSnapshot>,
+}
+
+#[derive(Debug)]
+struct ImportClosureQuery;
+
+impl TypedQueryFamily for ImportClosureQuery {
+    type Key = ImportClosureQueryKey;
+    type Record = ImportClosureQueryRecord;
+    const MAX_TERMINALS: usize = QUERY_TERMINAL_RETENTION_LIMIT;
+
+    fn key(record: &Self::Record) -> &Self::Key {
+        &record.key
+    }
+
+    fn terminal_kind(record: &Self::Record) -> TerminalKind {
+        if record.result.is_ok() {
+            TerminalKind::Success
+        } else {
+            TerminalKind::Failure
+        }
+    }
+
+    fn outcome_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        match (&left.result, &right.result) {
+            (Ok(left), Ok(right)) => left.input() == right.input() && left.graph() == right.graph(),
+            (Err(left), Err(right)) => compile_errors_equal(left, right),
+            _ => false,
+        }
+    }
+
+    fn diagnostics_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        diagnostic_batches_equal(&left.diagnostics, &right.diagnostics)
+    }
+
+    fn diagnostics(record: &Self::Record) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        Some(&record.diagnostics)
+    }
+
+    fn record_is_consistent(record: &Self::Record) -> bool {
+        record.artifact.snapshot().source_revision() == &record.key.source.revision
+            && record.diagnostics.source_revision() == &record.key.source.revision
+            && match &record.result {
+                Ok(graph) => graph.input().sources == record.key.source.revision,
+                Err(_) => true,
+            }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct MergeCacheEntry {
+    key: MergeQueryKey,
     result: Result<Arc<CanonicalMergedProgram>, CompileErrors>,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
-    attempt_origin: AttemptId,
 }
 
 #[derive(Debug, Clone)]
 struct RirCacheEntry {
-    output: Arc<CanonicalRirOutput>,
-    attempt_origin: AttemptId,
+    key: RirQueryKey,
+    result: Result<Arc<CanonicalRirOutput>, CompileErrors>,
+    merged: Option<Arc<CanonicalMergedProgram>>,
+    diagnostics: Arc<FrontendDiagnosticSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MergeQueryKey {
+    source: ExactSourceInput,
+    presentation: Option<Arc<[crate::ModuleId]>>,
+}
+
+#[derive(Debug)]
+struct MergeQuery;
+
+fn compile_errors_equal(left: &CompileErrors, right: &CompileErrors) -> bool {
+    left.iter().eq(right.iter())
+}
+
+fn query_control_error<T>(error: crate::typed_query_store::BeginSelectedError) -> T {
+    std::panic::panic_any(error)
+}
+
+fn diagnostic_batches_equal(
+    left: &FrontendDiagnosticSnapshot,
+    right: &FrontendDiagnosticSnapshot,
+) -> bool {
+    left.stage == right.stage
+        && left.provenance == right.provenance
+        && left.errors == right.errors
+        && left.warnings == right.warnings
+}
+
+impl TypedQueryFamily for MergeQuery {
+    type Key = MergeQueryKey;
+    type Record = MergeCacheEntry;
+    const MAX_TERMINALS: usize = QUERY_TERMINAL_RETENTION_LIMIT;
+
+    fn key(record: &Self::Record) -> &Self::Key {
+        &record.key
+    }
+
+    fn terminal_kind(record: &Self::Record) -> TerminalKind {
+        if record.result.is_ok() {
+            TerminalKind::Success
+        } else {
+            TerminalKind::Failure
+        }
+    }
+
+    fn outcome_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        match (&left.result, &right.result) {
+            // Exact source bytes and metadata plus presentation order are the
+            // complete deterministic merge input. Work counters and compact
+            // allocation identities are intentionally not part of equality.
+            (Ok(_), Ok(_)) => left.key == right.key,
+            (Err(left), Err(right)) => compile_errors_equal(left, right),
+            _ => false,
+        }
+    }
+
+    fn diagnostics_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        diagnostic_batches_equal(&left.diagnostics, &right.diagnostics)
+    }
+
+    fn diagnostics(record: &Self::Record) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        Some(&record.diagnostics)
+    }
+
+    fn record_is_consistent(record: &Self::Record) -> bool {
+        let artifact_matches = match &record.result {
+            Ok(merged) => merged.ast().source_revision() == &record.key.source.revision,
+            Err(_) => true,
+        };
+        artifact_matches
+            && record.diagnostics.source_revision() == &record.key.source.revision
+            && record.diagnostics.stage() == &FrontendDiagnosticStage::Merge
+    }
+}
+
+impl TypedSecondaryLookupFamily for MergeQuery {
+    type SecondaryKey = SourceRevision;
+
+    fn matches_secondary(record: &Self::Record, key: &Self::SecondaryKey) -> bool {
+        &record.key.source.revision == key
+    }
+}
+
+impl TypedEquivalentLookupFamily for MergeQuery {
+    fn rekey_equivalent(record: &Self::Record, key: Self::Key) -> Option<Self::Record> {
+        if record.result.is_err() || !record.diagnostics.is_success() {
+            return None;
+        }
+        let mut record = record.clone();
+        record.key = key;
+        Some(record)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RirQueryKey {
+    source: SourceRevision,
+}
+
+#[derive(Debug)]
+struct RirQuery;
+
+impl TypedQueryFamily for RirQuery {
+    type Key = RirQueryKey;
+    type Record = RirCacheEntry;
+    const MAX_TERMINALS: usize = QUERY_TERMINAL_RETENTION_LIMIT;
+
+    fn key(record: &Self::Record) -> &Self::Key {
+        &record.key
+    }
+
+    fn terminal_kind(record: &Self::Record) -> TerminalKind {
+        if record.result.is_ok() {
+            TerminalKind::Success
+        } else {
+            TerminalKind::Failure
+        }
+    }
+
+    fn outcome_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        match (&left.result, &right.result) {
+            (Ok(left), Ok(right)) => Arc::ptr_eq(left, right) || left.structurally_eq(right),
+            (Err(left), Err(right)) => compile_errors_equal(left, right),
+            _ => false,
+        }
+    }
+
+    fn diagnostics_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        diagnostic_batches_equal(&left.diagnostics, &right.diagnostics)
+    }
+
+    fn diagnostics(record: &Self::Record) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        Some(&record.diagnostics)
+    }
+
+    fn record_is_consistent(record: &Self::Record) -> bool {
+        (match &record.result {
+            Ok(output) => output.source_revision() == &record.key.source,
+            Err(_) => true,
+        }) && record.diagnostics.source_revision() == &record.key.source
+            && record.diagnostics.stage()
+                == &FrontendDiagnosticStage::Rir(record.key.source.clone())
+            && record
+                .merged
+                .as_ref()
+                .is_none_or(|merged| merged.ast().source_revision() == &record.key.source)
+    }
 }
 
 #[derive(Debug, Clone)]
 struct DirectImportDiagnosticCacheEntry {
     key: ImportDiagnosticInputDescriptor,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
-    attempt_origin: AttemptId,
 }
 
 #[derive(Debug)]
@@ -1869,6 +2198,20 @@ impl TypedQueryFamily for ImportDiagnosticQuery {
         } else {
             TerminalKind::Failure
         }
+    }
+
+    fn outcome_equal(_left: &Self::Record, _right: &Self::Record) -> bool {
+        // This projection's value is unit; its entire observable answer is the
+        // attached diagnostic batch.
+        true
+    }
+
+    fn diagnostics_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        diagnostic_batches_equal(&left.diagnostics, &right.diagnostics)
+    }
+
+    fn diagnostics(record: &Self::Record) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        Some(&record.diagnostics)
     }
 
     fn record_is_consistent(record: &Self::Record) -> bool {
@@ -1896,7 +2239,9 @@ struct SemanticCacheEntry {
     result: Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
     successful_body_cache: Option<DurableOrdinaryBodyCache>,
-    attempt_origin: AttemptId,
+    durable_declaration_cache: Option<DurableDeclarationCache>,
+    successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
+    oracle_injected: bool,
 }
 
 #[derive(Debug)]
@@ -1919,6 +2264,25 @@ impl TypedQueryFamily for SemanticQuery {
         }
     }
 
+    fn outcome_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        match (&left.result, &right.result) {
+            // Semantic analysis is deterministic over the complete typed key.
+            // This is an exhaustive equality proof and excludes request-local
+            // compact indices, allocation identity, and work observations.
+            (Ok(_), Ok(_)) => left.key == right.key,
+            (Err(left), Err(right)) => compile_errors_equal(left, right),
+            _ => false,
+        }
+    }
+
+    fn diagnostics_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        diagnostic_batches_equal(&left.diagnostics, &right.diagnostics)
+    }
+
+    fn diagnostics(record: &Self::Record) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        Some(&record.diagnostics)
+    }
+
     fn record_is_consistent(record: &Self::Record) -> bool {
         let artifact_matches = match &record.result {
             Ok(output) => output.input() == &record.key.input,
@@ -1929,7 +2293,7 @@ impl TypedQueryFamily for SemanticQuery {
             record.key.imports.clone(),
         ));
         record.key.input.semantic.sources.root() == record.key.imports.root()
-            && artifact_matches
+            && (artifact_matches || record.oracle_injected)
             && record.diagnostics.source_revision() == &record.key.input.semantic.sources
             && record.diagnostics.stage() == &expected_stage
     }
@@ -1955,7 +2319,6 @@ struct DefinitionQueryKey {
 struct DefinitionCacheEntry {
     key: DefinitionQueryKey,
     output: DefinitionQueryOutput,
-    attempt_origin: AttemptId,
 }
 
 /// Immutable output produced at the stable-definition computation boundary.
@@ -1997,6 +2360,18 @@ impl TypedQueryFamily for DefinitionQuery {
         }
     }
 
+    fn outcome_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        match (&left.output.result, &right.output.result) {
+            (Ok(left), Ok(right)) => Arc::ptr_eq(left, right) || left.structurally_eq(right),
+            (Err(left), Err(right)) => compile_errors_equal(left, right),
+            _ => false,
+        }
+    }
+
+    fn diagnostics_equal(_left: &Self::Record, _right: &Self::Record) -> bool {
+        true
+    }
+
     fn record_is_consistent(record: &Self::Record) -> bool {
         record.key == record.output.provenance
             && record.key.input.sources.root() == record.key.imports.root()
@@ -2004,6 +2379,132 @@ impl TypedQueryFamily for DefinitionQuery {
                 Ok(definitions) => definitions.source_revision() == &record.key.input.sources,
                 Err(_) => true,
             }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DependencyManifestQueryKey {
+    input: SemanticInputDescriptor,
+    imports: CanonicalImportGraph,
+}
+
+#[derive(Debug)]
+struct DependencyManifestQuery;
+
+impl TypedQueryFamily for DependencyManifestQuery {
+    type Key = DependencyManifestQueryKey;
+    type Record = DependencyManifestCacheEntry;
+    const MAX_TERMINALS: usize = QUERY_TERMINAL_RETENTION_LIMIT;
+
+    fn key(record: &Self::Record) -> &Self::Key {
+        &record.key
+    }
+
+    fn terminal_kind(record: &Self::Record) -> TerminalKind {
+        if record.result.is_ok() {
+            TerminalKind::Success
+        } else {
+            TerminalKind::Failure
+        }
+    }
+
+    fn outcome_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        match (&left.result, &right.result) {
+            (Ok(left), Ok(right)) => Arc::ptr_eq(left, right) || left == right,
+            (Err(left), Err(right)) => compile_errors_equal(left, right),
+            _ => false,
+        }
+    }
+
+    fn diagnostics_equal(_left: &Self::Record, _right: &Self::Record) -> bool {
+        true
+    }
+
+    fn record_is_consistent(record: &Self::Record) -> bool {
+        match &record.result {
+            Ok(manifest) => {
+                manifest.input == record.key.input && manifest.imports == record.key.imports
+            }
+            Err(_) => true,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct InvalidationPlanQuery;
+
+impl TypedQueryFamily for InvalidationPlanQuery {
+    type Key = InvalidationPlanQueryKey;
+    type Record = InvalidationPlanCacheEntry;
+    const MAX_TERMINALS: usize = FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT;
+
+    fn key(record: &Self::Record) -> &Self::Key {
+        &record.key
+    }
+
+    fn terminal_kind(_record: &Self::Record) -> TerminalKind {
+        TerminalKind::Success
+    }
+
+    fn outcome_equal(left: &Self::Record, right: &Self::Record) -> bool {
+        Arc::ptr_eq(&left.plan, &right.plan) || left.plan == right.plan
+    }
+
+    fn diagnostics_equal(_left: &Self::Record, _right: &Self::Record) -> bool {
+        true
+    }
+
+    fn record_is_consistent(_record: &Self::Record) -> bool {
+        true
+    }
+}
+
+macro_rules! session_query_metrics_family {
+    ($query:ty, $name:literal, $field:ident) => {
+        impl SessionQueryMetricsFamily for $query {
+            const NAME: &'static str = $name;
+
+            fn projection(work: &mut CompilerSessionWork) -> &mut FrontendQueryWork {
+                &mut work.$field
+            }
+        }
+    };
+}
+
+session_query_metrics_family!(ImportsMetricsQuery, "imports", imports);
+session_query_metrics_family!(
+    ImportDiagnosticQuery,
+    "import-diagnostics",
+    import_diagnostics
+);
+session_query_metrics_family!(MergeQuery, "merge", merge);
+session_query_metrics_family!(RirQuery, "rir", rir);
+session_query_metrics_family!(SemanticQuery, "semantic", semantic);
+session_query_metrics_family!(DefinitionQuery, "definitions", definitions);
+session_query_metrics_family!(
+    DependencyManifestQuery,
+    "dependency-manifests",
+    dependency_manifests
+);
+session_query_metrics_family!(
+    InvalidationPlanQuery,
+    "invalidation-plans",
+    invalidation_plans
+);
+
+/// Explicit compiler inputs read by a terminal attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExactSourceInput {
+    revision: SourceRevision,
+    metadata: crate::SourceMetadata,
+}
+
+impl ExactSourceInput {
+    fn new(snapshot: &SourceSnapshot) -> Self {
+        Self {
+            revision: snapshot.source_revision().clone(),
+            metadata: snapshot.metadata().clone(),
+        }
     }
 }
 
@@ -2050,42 +2551,89 @@ fn compute_stable_definitions(
 }
 
 impl CompilerSession {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    fn query_publication_snapshot(&self) -> QueryPublicationSnapshot {
-        QueryPublicationSnapshot {
-            direct_import_diagnostics: self.direct_import_diagnostics.clone(),
-            merge_cache: self.merge_cache.clone(),
-            definition_shard_baseline: self.definition_shard_baseline.clone(),
-            rir_cache: self.rir_cache.clone(),
-            semantic_cache: self.semantic_cache.clone(),
-            definition_cache: self.definition_cache.clone(),
-            metrics: self.metrics.clone(),
-            diagnostics: self.diagnostics.clone(),
-            dependency_manifest_cache: self.dependency_manifest_cache.clone(),
-            invalidation_plan_cache: self.invalidation_plan_cache.clone(),
-            durable_declaration_cache: self.durable_declaration_cache.clone(),
-            last_successful_body_cache: self.last_successful_body_cache.clone(),
-            last_successful_cfg_cache: self.last_successful_cfg_cache.clone(),
+    /// Corrupt actual retained/selectable query state for the differential
+    /// oracle. This is deliberately typed and narrow; production callers have
+    /// no reason to use it.
+    #[doc(hidden)]
+    pub fn inject_stale_query_for_oracle(&mut self, fault: DifferentialOracleFault) -> bool {
+        match fault {
+            DifferentialOracleFault::Semantic => {
+                let records = self.queries.semantic.records().cloned().collect::<Vec<_>>();
+                let Some(current) = records.last().cloned() else {
+                    return false;
+                };
+                let Some(stale) = records
+                    .iter()
+                    .rev()
+                    .skip(1)
+                    .find(|record| record.result.is_ok() && record.key != current.key)
+                else {
+                    return false;
+                };
+                let mut injected = current;
+                injected.result = stale.result.clone();
+                injected.successful_body_cache = stale.successful_body_cache.clone();
+                injected.durable_declaration_cache = stale.durable_declaration_cache.clone();
+                injected.successful_cfg_cache = stale.successful_cfg_cache.clone();
+                injected.oracle_injected = true;
+                self.queries.semantic.insert_with_dependencies(
+                    &mut self.queries.graph,
+                    injected,
+                    [],
+                );
+                true
+            }
+            DifferentialOracleFault::Diagnostic => {
+                let Some(latest) = self.diagnostics.latest().cloned() else {
+                    return false;
+                };
+                let stale = self
+                    .queries
+                    .semantic
+                    .records()
+                    .map(|record| record.diagnostics.clone())
+                    .find(|diagnostics| {
+                        !Arc::ptr_eq(diagnostics, &latest)
+                            && !diagnostic_batches_equal(diagnostics, &latest)
+                    });
+                let Some(stale) = stale else {
+                    return false;
+                };
+                self.diagnostics.select_snapshot(&stale);
+                true
+            }
+            DifferentialOracleFault::Import => {
+                let Some(current) = self
+                    .queries
+                    .import_closures
+                    .selected_record(&self.queries.graph)
+                    .cloned()
+                else {
+                    return false;
+                };
+                let stale = self
+                    .queries
+                    .import_closures
+                    .records()
+                    .find(|record| {
+                        record.key != current.key
+                            && record.artifact.source_revision()
+                                != current.artifact.source_revision()
+                    })
+                    .map(|record| record.key.clone());
+                let Some(stale) = stale else {
+                    return false;
+                };
+                self.queries
+                    .import_closures
+                    .select(&mut self.queries.graph, stale);
+                true
+            }
         }
     }
 
-    fn restore_query_publication(&mut self, snapshot: QueryPublicationSnapshot) {
-        self.direct_import_diagnostics = snapshot.direct_import_diagnostics;
-        self.merge_cache = snapshot.merge_cache;
-        self.definition_shard_baseline = snapshot.definition_shard_baseline;
-        self.rir_cache = snapshot.rir_cache;
-        self.semantic_cache = snapshot.semantic_cache;
-        self.definition_cache = snapshot.definition_cache;
-        self.metrics = snapshot.metrics;
-        self.diagnostics = snapshot.diagnostics;
-        self.dependency_manifest_cache = snapshot.dependency_manifest_cache;
-        self.invalidation_plan_cache = snapshot.invalidation_plan_cache;
-        self.durable_declaration_cache = snapshot.durable_declaration_cache;
-        self.last_successful_body_cache = snapshot.last_successful_body_cache;
-        self.last_successful_cfg_cache = snapshot.last_successful_cfg_cache;
+    pub fn new() -> Self {
+        Self::default()
     }
 
     fn resume_canceled_query(
@@ -2093,7 +2641,112 @@ impl CompilerSession {
         guard: &mut QueryComputationGuard,
         payload: Box<dyn std::any::Any + Send>,
     ) -> ! {
-        guard.cancel();
+        let reason = if let Some(reason) = payload
+            .downcast_ref::<crate::typed_query_store::BeginSelectedError>()
+            .copied()
+        {
+            match reason {
+                crate::typed_query_store::BeginSelectedError::DuplicateInFlight => {
+                    AbortedQueryReason::DuplicateInFlight
+                }
+                crate::typed_query_store::BeginSelectedError::DependencyCycle => {
+                    AbortedQueryReason::DependencyCycle
+                }
+                crate::typed_query_store::BeginSelectedError::KeyNotSelected
+                | crate::typed_query_store::BeginSelectedError::AlreadyTerminal => {
+                    AbortedQueryReason::Canceled
+                }
+            }
+        } else {
+            AbortedQueryReason::Canceled
+        };
+        let work = guard.structural();
+        let dependencies = guard.dependencies.clone();
+        let diagnostics = guard.diagnostics.clone();
+        let attempt = match guard.family {
+            "import-diagnostics" => self.queries.import_diagnostics.computing_key().map(|key| {
+                self.queries.import_diagnostics.record_aborted_attempt(
+                    &mut self.queries.graph,
+                    key,
+                    guard.id.0,
+                    reason,
+                    work.clone(),
+                    dependencies.clone(),
+                    diagnostics.clone(),
+                )
+            }),
+            "merge" => self.queries.merge.computing_key().map(|key| {
+                self.queries.merge.record_aborted_attempt(
+                    &mut self.queries.graph,
+                    key,
+                    guard.id.0,
+                    reason,
+                    work.clone(),
+                    dependencies.clone(),
+                    diagnostics.clone(),
+                )
+            }),
+            "rir" => self.queries.rir.computing_key().map(|key| {
+                self.queries.rir.record_aborted_attempt(
+                    &mut self.queries.graph,
+                    key,
+                    guard.id.0,
+                    reason,
+                    work.clone(),
+                    dependencies.clone(),
+                    diagnostics.clone(),
+                )
+            }),
+            "semantic" => self.queries.semantic.computing_key().map(|key| {
+                self.queries.semantic.record_aborted_attempt(
+                    &mut self.queries.graph,
+                    key,
+                    guard.id.0,
+                    reason,
+                    work.clone(),
+                    dependencies.clone(),
+                    diagnostics.clone(),
+                )
+            }),
+            "definitions" => self.queries.definitions.computing_key().map(|key| {
+                self.queries.definitions.record_aborted_attempt(
+                    &mut self.queries.graph,
+                    key,
+                    guard.id.0,
+                    reason,
+                    work.clone(),
+                    dependencies.clone(),
+                    diagnostics.clone(),
+                )
+            }),
+            "dependency-manifests" => self.queries.manifests.computing_key().map(|key| {
+                self.queries.manifests.record_aborted_attempt(
+                    &mut self.queries.graph,
+                    key,
+                    guard.id.0,
+                    reason,
+                    work.clone(),
+                    dependencies.clone(),
+                    diagnostics.clone(),
+                )
+            }),
+            "invalidation-plans" => self.queries.invalidation_plans.computing_key().map(|key| {
+                self.queries.invalidation_plans.record_aborted_attempt(
+                    &mut self.queries.graph,
+                    key,
+                    guard.id.0,
+                    reason,
+                    work,
+                    dependencies,
+                    diagnostics,
+                )
+            }),
+            "imports" | "parse" => None,
+            family => unreachable!("unknown query guard family {family}"),
+        };
+        if let Some(attempt) = attempt {
+            guard.bind(attempt);
+        }
         self.metrics.synchronize();
         std::panic::resume_unwind(payload)
     }
@@ -2113,7 +2766,7 @@ impl CompilerSession {
     /// reconstruct resolved imports from paths or environment state.
     fn accepted_semantic_import_graph(&self) -> Result<CanonicalImportGraph, CompileErrors> {
         let program = self.published.as_ref().ok_or_else(no_published_program)?;
-        if !program.import_directives().is_empty() {
+        let graph = if !program.import_directives().is_empty() {
             #[cfg(test)]
             if let Some(graph) = &self.supplied_test_import_graph {
                 return Ok(graph.clone());
@@ -2126,28 +2779,30 @@ impl CompilerSession {
                     ),
                 )));
             }
-            return Ok(committed.graph().clone());
-        }
-
-        let inputs = ModuleResolutionInputs::new(
-            program.root().clone(),
-            program
-                .modules()
-                .iter()
-                .map(|module| crate::ModuleResolutionInput {
-                    module: module.module_id().clone(),
-                    physical_path: Arc::from(module.physical_path()),
-                })
-                .collect(),
-        )
-        .map_err(CompileErrors::from)?;
-        CanonicalImportGraph::from_supplied(program.root().clone(), Vec::new(), &inputs).map_err(
-            |validation| {
-                CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
-                    format!("invalid import-free semantic graph: {validation:?}"),
-                )))
-            },
-        )
+            committed.graph().clone()
+        } else {
+            let inputs = ModuleResolutionInputs::new(
+                program.root().clone(),
+                program
+                    .modules()
+                    .iter()
+                    .map(|module| crate::ModuleResolutionInput {
+                        module: module.module_id().clone(),
+                        physical_path: Arc::from(module.physical_path()),
+                    })
+                    .collect(),
+            )
+            .map_err(CompileErrors::from)?;
+            CanonicalImportGraph::from_supplied(program.root().clone(), Vec::new(), &inputs)
+                .map_err(|validation| {
+                    CompileErrors::from(CompileError::without_span(
+                        ErrorKind::InvalidCompilerInput(format!(
+                            "invalid import-free semantic graph: {validation:?}"
+                        )),
+                    ))
+                })?
+        };
+        Ok(graph)
     }
     pub fn published(&self) -> Option<&Arc<ParsedProgram>> {
         self.published.as_ref()
@@ -2174,10 +2829,26 @@ impl CompilerSession {
         crate::ImportDiscoveryPlan::new(program, context)
     }
     pub fn discovery_attempt(&self) -> Option<&Arc<ImportDiscoveryRevisionArtifact>> {
-        self.discovery_attempt.as_ref()
+        self.open_discovery
+            .as_ref()
+            .or_else(|| {
+                self.queries
+                    .import_plans
+                    .selected_record(&self.queries.graph)
+                    .and_then(|record| record.attempted_artifact.as_ref())
+            })
+            .or_else(|| {
+                self.queries
+                    .import_closures
+                    .selected_record(&self.queries.graph)
+                    .map(|record| &record.artifact)
+            })
     }
     pub fn last_good_discovery(&self) -> Option<&Arc<ImportDiscoveryRevisionArtifact>> {
-        self.committed_import_discovery()
+        self.queries
+            .import_closures
+            .last_good_record()
+            .map(|record| &record.artifact)
     }
 
     /// The exact closed-valid discovery revision adopted by this session.
@@ -2186,13 +2857,18 @@ impl CompilerSession {
     /// delegate to it), rather than reconstructing import or standard-library
     /// resolution from the source snapshot alone.
     pub fn committed_import_discovery(&self) -> Option<&Arc<ImportDiscoveryRevisionArtifact>> {
-        self.committed_discovery.as_ref()
+        let source = self.published.as_ref()?.source_revision();
+        self.queries
+            .import_closures
+            .selected_record(&self.queries.graph)
+            .filter(|record| record.result.is_ok() && record.artifact.source_revision() == source)
+            .map(|record| &record.artifact)
     }
 
     /// Return the canonical graph and captured resolution context adopted for
     /// the current compiler revision.
     pub fn committed_import_graph(&self) -> Result<Arc<CanonicalImportGraphOutput>, CompileErrors> {
-        let committed = self.committed_discovery.as_ref().ok_or_else(|| {
+        let committed = self.committed_import_discovery().ok_or_else(|| {
             CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
                 "no closed-valid import discovery revision is committed".into(),
             )))
@@ -2208,8 +2884,7 @@ impl CompilerSession {
     /// memoized `Arc`. Direct no-I/O sessions use the same query for parser
     /// shape preflight; ordinary open discovery work has no publishable batch.
     pub fn import_diagnostics(&mut self) -> Result<Arc<FrontendDiagnosticSnapshot>, CompileErrors> {
-        let mut guard = self.metrics.begin(FrontendQueryFamily::ImportDiagnostics);
-        let publication = self.query_publication_snapshot();
+        let mut guard = self.metrics.begin::<ImportDiagnosticQuery>();
         let attempt_id = guard.id;
         let mut execution = QueryAttemptExecution::Rejected;
         let mut origin = None;
@@ -2218,16 +2893,8 @@ impl CompilerSession {
         }));
         let result = match result {
             Ok(result) => result,
-            Err(payload) => {
-                self.restore_query_publication(publication);
-                self.resume_canceled_query(&mut guard, payload)
-            }
+            Err(payload) => self.resume_canceled_query(&mut guard, payload),
         };
-        if let Ok(snapshot) = &result
-            && let FrontendDiagnosticStage::Import(input) = snapshot.stage()
-        {
-            guard.identify(QueryAttemptIdentity::ImportDiagnostics(input.clone()));
-        }
         if execution == QueryAttemptExecution::Reused && origin.is_none() {
             execution = QueryAttemptExecution::Adopted;
         }
@@ -2243,7 +2910,7 @@ impl CompilerSession {
         execution: &mut QueryAttemptExecution,
         origin: &mut Option<AttemptId>,
     ) -> Result<Arc<FrontendDiagnosticSnapshot>, CompileErrors> {
-        let diagnostics = if let Some(attempt) = self.discovery_attempt.as_ref() {
+        let diagnostics = if let Some(attempt) = self.discovery_attempt() {
             let diagnostics = attempt.diagnostic_snapshot.as_ref().ok_or_else(|| {
                 CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
                     "open import discovery work has no canonical diagnostic batch".into(),
@@ -2263,15 +2930,17 @@ impl CompilerSession {
                 ledger: crate::ImportObservationLedger::default(),
                 accepted_reads: Arc::from([]),
             };
-            guard.identify(QueryAttemptIdentity::ImportDiagnostics(input.clone()));
-            if let Some((cached, cached_origin)) = self
-                .direct_import_diagnostics
-                .get(&input)
-                .map(|entry| (entry.diagnostics.clone(), entry.attempt_origin))
+            if let Some((cached, handle)) = self
+                .queries
+                .import_diagnostics
+                .request_selected(&mut self.queries.graph, input.clone(), attempt_id.0)
+                .unwrap_or_else(query_control_error)
             {
                 *execution = QueryAttemptExecution::Reused;
-                *origin = Some(cached_origin);
-                cached
+                *origin = Some(handle.origin_attempt_id());
+                self.diagnostics.select(handle.as_view());
+                guard.bind(handle.as_view());
+                cached.diagnostics.clone()
             } else {
                 let program = self.published.as_ref().ok_or_else(no_published_program)?;
                 let errors = crate::ImportDiscoveryPlan::shape_diagnostics(program);
@@ -2283,16 +2952,29 @@ impl CompilerSession {
                     Some(&errors),
                     &[],
                 );
-                self.direct_import_diagnostics
-                    .insert(DirectImportDiagnosticCacheEntry {
-                        key: input,
-                        diagnostics: diagnostics.clone(),
-                        attempt_origin: attempt_id,
-                    });
+                let source_dependency = self
+                    .queries
+                    .source_inputs
+                    .selected(&self.queries.graph)
+                    .expect("import diagnostics retain their exact source input");
+                let handle = self
+                    .queries
+                    .import_diagnostics
+                    .publish_selected(
+                        &mut self.queries.graph,
+                        DirectImportDiagnosticCacheEntry {
+                            key: input,
+                            diagnostics: diagnostics.clone(),
+                        },
+                        [source_dependency],
+                    )
+                    .unwrap_or_else(query_control_error);
+                self.diagnostics.select(handle.as_view());
+                guard.bind(handle.as_view());
                 diagnostics
             }
         };
-        self.diagnostics.select(diagnostics.clone());
+        self.diagnostics.select_snapshot(&diagnostics);
         self.refresh_retention_metrics();
         Ok(diagnostics)
     }
@@ -2315,21 +2997,29 @@ impl CompilerSession {
         accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
         carried_ledger: crate::ImportObservationLedger,
     ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
-        let mut parse_work = self
-            .discovery_attempt
-            .as_deref()
-            .filter(|attempt| {
-                continues_discovery_lifecycle(
-                    attempt,
-                    snapshot,
-                    &context,
-                    &accepted_reads,
-                    &carried_ledger,
-                )
-            })
-            .map_or_else(ParsedModulesWork::default, |attempt| attempt.parse_work);
-        self.discovery_staging_active = true;
+        let continuation = self.open_discovery.as_deref().filter(|attempt| {
+            continues_discovery_lifecycle(
+                attempt,
+                snapshot,
+                &context,
+                &accepted_reads,
+                &carried_ledger,
+            )
+        });
+        let mut parse_work =
+            continuation.map_or_else(ParsedModulesWork::default, |attempt| attempt.parse_work);
+        // From this point the selected typed plan terminal owns any closed
+        // failure. Reinstall protocol context only if staging reaches Open.
+        self.open_discovery = None;
         let source_revision = snapshot.source_revision().clone();
+        let plan_key = ImportPlanQueryKey {
+            source: ExactSourceInput::new(snapshot),
+            context: context.clone(),
+            policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
+            accepted_reads: accepted_reads.clone(),
+            carried_ledger: carried_ledger.clone(),
+        };
+        let (plan_dependency, publish_plan) = self.select_import_plan_query(plan_key.clone());
         if let Err(errors) = validate_accepted_read_manifest(snapshot, &accepted_reads) {
             let diagnostic_snapshot = self.publish_import_diagnostics(
                 snapshot,
@@ -2339,7 +3029,7 @@ impl CompilerSession {
                 accepted_reads.clone(),
                 &errors,
             );
-            self.discovery_attempt = Some(Arc::new(ImportDiscoveryRevisionArtifact {
+            let attempted_artifact = Arc::new(ImportDiscoveryRevisionArtifact {
                 status: ImportDiscoveryRevisionStatus::ClosedAttempted,
                 source_revision: source_revision.clone(),
                 context: context.clone(),
@@ -2352,12 +3042,24 @@ impl CompilerSession {
                 graph: None,
                 diagnostics: errors.clone(),
                 diagnostic_snapshot: Some(diagnostic_snapshot),
-            }));
+            });
+            self.publish_import_plan_query(
+                plan_key,
+                Err(errors.clone()),
+                attempted_artifact
+                    .diagnostic_snapshot
+                    .as_ref()
+                    .unwrap()
+                    .clone(),
+                Some(attempted_artifact),
+                plan_dependency,
+                publish_plan,
+            );
             return Err(errors);
         }
-        let parse_update = self.discovery_parse.update(snapshot);
-        parse_work.accumulate(parse_update.work());
-        let program = match parse_update.into_result() {
+        let (parse_result, staged_work) = self.parse_staging_snapshot(snapshot);
+        parse_work.accumulate(staged_work);
+        let program = match parse_result {
             Ok(program) => program,
             Err(errors) => {
                 let diagnostic_snapshot = self.publish_import_diagnostics(
@@ -2368,7 +3070,7 @@ impl CompilerSession {
                     accepted_reads.clone(),
                     &errors,
                 );
-                self.discovery_attempt = Some(Arc::new(ImportDiscoveryRevisionArtifact {
+                let attempted_artifact = Arc::new(ImportDiscoveryRevisionArtifact {
                     status: ImportDiscoveryRevisionStatus::ClosedAttempted,
                     source_revision: source_revision.clone(),
                     context: context.clone(),
@@ -2381,7 +3083,19 @@ impl CompilerSession {
                     graph: None,
                     diagnostics: errors.clone(),
                     diagnostic_snapshot: Some(diagnostic_snapshot),
-                }));
+                });
+                self.publish_import_plan_query(
+                    plan_key,
+                    Err(errors.clone()),
+                    attempted_artifact
+                        .diagnostic_snapshot
+                        .as_ref()
+                        .unwrap()
+                        .clone(),
+                    Some(attempted_artifact),
+                    plan_dependency,
+                    publish_plan,
+                );
                 return Err(errors);
             }
         };
@@ -2397,7 +3111,7 @@ impl CompilerSession {
                     accepted_reads.clone(),
                     &errors,
                 );
-                self.discovery_attempt = Some(Arc::new(ImportDiscoveryRevisionArtifact {
+                let attempted_artifact = Arc::new(ImportDiscoveryRevisionArtifact {
                     status: ImportDiscoveryRevisionStatus::ClosedAttempted,
                     source_revision: source_revision.clone(),
                     context: context.clone(),
@@ -2410,11 +3124,52 @@ impl CompilerSession {
                     graph: None,
                     diagnostics: errors.clone(),
                     diagnostic_snapshot: Some(diagnostic_snapshot),
-                }));
+                });
+                self.publish_import_plan_query(
+                    plan_key,
+                    Err(errors.clone()),
+                    attempted_artifact
+                        .diagnostic_snapshot
+                        .as_ref()
+                        .unwrap()
+                        .clone(),
+                    Some(attempted_artifact),
+                    plan_dependency,
+                    publish_plan,
+                );
                 return Err(errors);
             }
         };
-        self.discovery_attempt = Some(Arc::new(ImportDiscoveryRevisionArtifact {
+        let plan_diagnostics = if publish_plan {
+            let shape_diagnostics = crate::ImportDiscoveryPlan::shape_diagnostics(&program);
+            self.publish_import_diagnostics(
+                snapshot,
+                Some(context.clone()),
+                Some(plan.clone()),
+                carried_ledger.clone(),
+                accepted_reads.clone(),
+                &shape_diagnostics,
+            )
+        } else {
+            let diagnostics = self
+                .queries
+                .import_plans
+                .selected_record(&self.queries.graph)
+                .expect("selected terminal import plan retains diagnostics")
+                .diagnostics
+                .clone();
+            self.reuse_diagnostics(diagnostics.clone());
+            diagnostics
+        };
+        self.publish_import_plan_query(
+            plan_key,
+            Ok(plan.clone()),
+            plan_diagnostics,
+            None,
+            plan_dependency,
+            publish_plan,
+        );
+        self.open_discovery = Some(Arc::new(ImportDiscoveryRevisionArtifact {
             status: ImportDiscoveryRevisionStatus::Open,
             source_revision: program.source_revision().clone(),
             context,
@@ -2439,7 +3194,7 @@ impl CompilerSession {
         ledger: crate::ImportObservationLedger,
     ) -> Result<Arc<ImportDiscoveryRevisionArtifact>, CompileErrors> {
         let open = self
-            .discovery_attempt
+            .open_discovery
             .as_deref()
             .filter(|artifact| artifact.status == ImportDiscoveryRevisionStatus::Open)
             .ok_or_else(|| CompileErrors::from(no_published_program()))?
@@ -2543,7 +3298,7 @@ impl CompilerSession {
         };
         let validation = validate_canonical_import_graph(&reduced, &input.resolution);
         let graph = Arc::new(CanonicalImportGraphOutput {
-            input,
+            input: input.clone(),
             graph: reduced,
             validation,
         });
@@ -2597,6 +3352,8 @@ impl CompilerSession {
             );
             return Err(errors);
         }
+        let (closure_key, closure_dependencies, publish_closure) =
+            self.select_import_closure_query(&open, &plan, &ledger);
         let diagnostic_snapshot = self.publish_import_diagnostics(
             &open.snapshot,
             Some(open.context.clone()),
@@ -2608,14 +3365,19 @@ impl CompilerSession {
         let artifact = Arc::new(ImportDiscoveryRevisionArtifact {
             status: ImportDiscoveryRevisionStatus::ClosedValid,
             ledger,
-            graph: Some(graph),
+            graph: Some(graph.clone()),
             diagnostics,
             diagnostic_snapshot: Some(diagnostic_snapshot),
             ..open
         });
-        self.discovery_attempt = Some(artifact.clone());
-        self.committed_discovery = Some(artifact.clone());
-        self.discovery_staging_active = false;
+        self.publish_import_closure_query(
+            closure_key,
+            Ok(graph),
+            artifact.clone(),
+            closure_dependencies,
+            publish_closure,
+        );
+        self.open_discovery = None;
         Ok(artifact)
     }
 
@@ -2629,6 +3391,8 @@ impl CompilerSession {
         errors: &CompileErrors,
     ) -> Arc<ImportDiscoveryRevisionArtifact> {
         debug_assert_ne!(status, ImportDiscoveryRevisionStatus::ClosedValid);
+        let (closure_key, closure_dependencies, publish_closure) =
+            self.select_import_closure_query(&open, &plan, &ledger);
         let diagnostic_snapshot = self.publish_import_diagnostics(
             &open.snapshot,
             Some(open.context.clone()),
@@ -2645,17 +3409,21 @@ impl CompilerSession {
             diagnostic_snapshot: Some(diagnostic_snapshot),
             ..open
         });
-        self.discovery_attempt = Some(artifact.clone());
-        self.discovery_staging_active = status == ImportDiscoveryRevisionStatus::Open;
+        self.publish_import_closure_query(
+            closure_key,
+            Err(errors.clone()),
+            artifact.clone(),
+            closure_dependencies,
+            publish_closure,
+        );
+        self.open_discovery = None;
         artifact
     }
 
     fn require_closed_discovery(&self) -> Result<(), CompileErrors> {
-        if self.discovery_staging_active
-            || self
-                .discovery_attempt
-                .as_ref()
-                .is_some_and(|attempt| attempt.status != ImportDiscoveryRevisionStatus::ClosedValid)
+        if self
+            .discovery_attempt()
+            .is_some_and(|attempt| attempt.status != ImportDiscoveryRevisionStatus::ClosedValid)
         {
             return Err(CompileErrors::from(CompileError::without_span(
                 ErrorKind::InvalidCompilerInput(
@@ -2735,9 +3503,9 @@ impl CompilerSession {
                     DiagnosticAttemptProvenance::Presentation(order.clone().into())
                 }),
             FrontendDiagnosticStage::Merge => DiagnosticAttemptProvenance::Canonical,
-            FrontendDiagnosticStage::Import(_) | FrontendDiagnosticStage::Semantic(_) => {
-                DiagnosticAttemptProvenance::Canonical
-            }
+            FrontendDiagnosticStage::Import(_)
+            | FrontendDiagnosticStage::Rir(_)
+            | FrontendDiagnosticStage::Semantic(_) => DiagnosticAttemptProvenance::Canonical,
         };
         if let Some(existing) = self
             .diagnostics
@@ -2745,7 +3513,7 @@ impl CompilerSession {
             .cloned()
         {
             self.metrics.diagnostic_reuse();
-            self.diagnostics.select(existing.clone());
+            self.diagnostics.select_snapshot(&existing);
             self.refresh_retention_metrics();
             return existing;
         }
@@ -2761,14 +3529,13 @@ impl CompilerSession {
             warnings: warnings.to_vec().into(),
         });
         self.metrics.diagnostic_publication(invalidated_previous);
-        self.diagnostics.insert(snapshot.clone());
         self.refresh_retention_metrics();
         snapshot
     }
 
     fn reuse_diagnostics(&mut self, snapshot: Arc<FrontendDiagnosticSnapshot>) {
         self.metrics.diagnostic_reuse();
-        self.diagnostics.select(snapshot);
+        self.diagnostics.select_snapshot(&snapshot);
         self.refresh_retention_metrics();
     }
 
@@ -2799,56 +3566,74 @@ impl CompilerSession {
     fn refresh_retention_metrics(&mut self) {
         let diagnostics = self.diagnostics.retention_metrics();
 
-        let mut attempt_origins = BTreeSet::new();
-        attempt_origins.extend(
-            self.direct_import_diagnostics
-                .records()
-                .map(|entry| entry.attempt_origin),
-        );
-        attempt_origins.extend(
-            self.semantic_cache
-                .records()
-                .map(|entry| entry.attempt_origin),
-        );
-        attempt_origins.extend(
-            self.definition_cache
-                .records()
-                .map(|entry| entry.attempt_origin),
-        );
-        attempt_origins.extend(self.merge_cache.iter().map(|entry| entry.attempt_origin));
-        attempt_origins.extend(self.rir_cache.iter().map(|entry| entry.attempt_origin));
-        attempt_origins.extend(
-            self.dependency_manifest_cache
-                .iter()
-                .map(|entry| entry.attempt_origin),
-        );
-        attempt_origins.extend(
-            self.invalidation_plan_cache
-                .iter()
-                .map(|entry| entry.attempt_origin),
-        );
-        self.metrics.set_pinned_origins(attempt_origins);
+        let stores = [
+            self.queries.parse.retention(&self.queries.graph),
+            self.queries.import_plans.retention(&self.queries.graph),
+            self.queries.import_closures.retention(&self.queries.graph),
+            self.queries
+                .import_diagnostics
+                .retention(&self.queries.graph),
+            self.queries.merge.retention(&self.queries.graph),
+            self.queries.rir.retention(&self.queries.graph),
+            self.queries.semantic.retention(&self.queries.graph),
+            self.queries.definitions.retention(&self.queries.graph),
+            self.queries.manifests.retention(&self.queries.graph),
+            self.queries
+                .invalidation_plans
+                .retention(&self.queries.graph),
+        ];
+
+        let mut pinned_attempts = BTreeSet::new();
+        pinned_attempts.extend(self.queries.parse.origin_attempt_ids());
+        pinned_attempts.extend(self.queries.import_plans.origin_attempt_ids());
+        pinned_attempts.extend(self.queries.import_closures.origin_attempt_ids());
+        pinned_attempts.extend(self.queries.import_diagnostics.origin_attempt_ids());
+        pinned_attempts.extend(self.queries.merge.origin_attempt_ids());
+        pinned_attempts.extend(self.queries.rir.origin_attempt_ids());
+        pinned_attempts.extend(self.queries.semantic.origin_attempt_ids());
+        pinned_attempts.extend(self.queries.definitions.origin_attempt_ids());
+        pinned_attempts.extend(self.queries.manifests.origin_attempt_ids());
+        pinned_attempts.extend(self.queries.invalidation_plans.origin_attempt_ids());
+        self.metrics.set_pinned_origins(pinned_attempts);
 
         let mut manifests = BTreeSet::new();
-        for entry in &self.dependency_manifest_cache {
-            manifests.insert(Arc::as_ptr(&entry.manifest) as usize);
+        for entry in self.queries.manifests.records() {
+            if let Ok(manifest) = &entry.result {
+                manifests.insert(Arc::as_ptr(manifest) as usize);
+            }
         }
-        for entry in &self.invalidation_plan_cache {
-            manifests.insert(Arc::as_ptr(&entry.previous) as usize);
-            manifests.insert(Arc::as_ptr(&entry.current) as usize);
+        for entry in self.queries.invalidation_plans.records() {
+            manifests.insert(Arc::as_ptr(&entry.key.previous) as usize);
+            manifests.insert(Arc::as_ptr(&entry.key.current) as usize);
         }
         self.metrics.set_retention(FrontendRetentionMetrics {
-            import_query_entries: self.direct_import_diagnostics.len(),
-            import_query_evictions: self.direct_import_diagnostics.evictions(),
-            semantic_query_entries: self.semantic_cache.len(),
-            semantic_query_evictions: self.semantic_cache.evictions(),
-            definition_query_entries: self.definition_cache.len(),
-            definition_query_evictions: self.definition_cache.evictions(),
+            retained_query_records: stores.iter().map(|store| store.retained).sum(),
+            protected_query_records: stores.iter().map(|store| store.protected).sum(),
+            dependency_pins: stores.iter().map(|store| store.pinned).sum(),
+            validation_tombstones: stores.iter().map(|store| store.tombstones).sum(),
+            graph_retained_disappeared_nodes: self.queries.graph.retained_disappeared_count(),
+            query_evictions: stores.iter().map(|store| store.evictions).sum(),
+            aborted_query_attempts: self.queries.parse.aborted_len()
+                + self.queries.import_plans.aborted_len()
+                + self.queries.import_closures.aborted_len()
+                + self.queries.import_diagnostics.aborted_len()
+                + self.queries.merge.aborted_len()
+                + self.queries.rir.aborted_len()
+                + self.queries.semantic.aborted_len()
+                + self.queries.definitions.aborted_len()
+                + self.queries.manifests.aborted_len()
+                + self.queries.invalidation_plans.aborted_len(),
+            import_query_entries: self.queries.import_diagnostics.len(),
+            import_query_evictions: self.queries.import_diagnostics.evictions(),
+            semantic_query_entries: self.queries.semantic.len(),
+            semantic_query_evictions: self.queries.semantic.evictions(),
+            definition_query_entries: self.queries.definitions.len(),
+            definition_query_evictions: self.queries.definitions.evictions(),
             diagnostic_entries: diagnostics.entries,
             diagnostic_source_attempts: diagnostics.source_attempts,
             diagnostic_source_bytes: diagnostics.source_bytes,
             dependency_manifests: manifests.len(),
-            invalidation_plans: self.invalidation_plan_cache.len(),
+            invalidation_plans: self.queries.invalidation_plans.len(),
         });
     }
 
@@ -2859,8 +3644,9 @@ impl CompilerSession {
         }
         self.select_diagnostic_presentation(None);
         let provenance = self.syntax_diagnostic_provenance();
-        let update = self.parse.update(snapshot, &provenance);
-        self.finish_update(snapshot, update)
+        let (key, dependency, publish) = self.select_parse_query(snapshot, &provenance);
+        let update = self.prepare_parse_update(snapshot, &publish, parse_canonical_snapshot);
+        self.finish_update(snapshot, update, key, dependency, publish)
     }
 
     /// Publish a snapshot while retaining its caller-selected presentation order.
@@ -2880,8 +3666,9 @@ impl CompilerSession {
                 .collect(),
         ));
         let provenance = self.syntax_diagnostic_provenance();
-        let update = self.parse.update_for_batch(snapshot, &provenance);
-        self.finish_update(snapshot, update)
+        let (key, dependency, publish) = self.select_parse_query(snapshot, &provenance);
+        let update = self.prepare_parse_update(snapshot, &publish, parse_presentation_snapshot);
+        self.finish_update(snapshot, update, key, dependency, publish)
     }
 
     fn adopt_discovery_program_for_presentation(
@@ -2901,8 +3688,47 @@ impl CompilerSession {
                 .collect(),
         ));
         let provenance = self.syntax_diagnostic_provenance();
-        let update = self.parse.adopt_exact(snapshot, program, work, &provenance);
-        self.finish_update(snapshot, update)
+        let (key, dependency, publish) = self.select_parse_query(snapshot, &provenance);
+        let update = if let Some((record, _)) = &publish {
+            crate::CanonicalParseUpdate::reused(
+                record.result.clone(),
+                self.parse_invalidation(snapshot),
+            )
+        } else {
+            let baseline = self.parse_baseline();
+            adopt_exact_parsed_program(snapshot, baseline.as_deref(), program, work)
+        };
+        self.finish_update(snapshot, update, key, dependency, publish)
+    }
+
+    fn prepare_parse_update(
+        &self,
+        snapshot: &SourceSnapshot,
+        reused: &Option<(ParseQueryRecord, TerminalHandle<ParseQuery>)>,
+        parse: fn(&SourceSnapshot, Option<&ParsedProgram>) -> crate::CanonicalParseUpdate,
+    ) -> crate::CanonicalParseUpdate {
+        if let Some((record, _)) = reused {
+            crate::CanonicalParseUpdate::reused(
+                record.result.clone(),
+                self.parse_invalidation(snapshot),
+            )
+        } else {
+            let baseline = self.parse_baseline();
+            parse(snapshot, baseline.as_deref())
+        }
+    }
+
+    fn parse_baseline(&self) -> Option<Arc<ParsedProgram>> {
+        self.queries
+            .parse
+            .last_good_record()
+            .and_then(|record| record.result.as_ref().ok())
+            .cloned()
+    }
+
+    fn parse_invalidation(&self, snapshot: &SourceSnapshot) -> ParseInvalidationSummary {
+        let baseline = self.parse_baseline();
+        classify_invalidation(snapshot, baseline.as_deref())
     }
 
     fn syntax_diagnostic_provenance(&self) -> DiagnosticAttemptProvenance {
@@ -2914,38 +3740,55 @@ impl CompilerSession {
     }
 
     fn select_diagnostic_presentation(&mut self, order: Option<Vec<crate::ModuleId>>) {
-        if self.batch_diagnostic_order != order
-            && self
-                .merge_cache
-                .as_ref()
-                .is_some_and(|entry| entry.result.is_err())
-        {
-            // A failed merge's ordered batch is presentation-keyed. Successful
-            // merge artifacts are canonical and remain reusable across a pure
-            // presentation change.
-            self.merge_cache = None;
-            self.refresh_retention_metrics();
-        }
         self.batch_diagnostic_order = order;
     }
 
-    fn finish_update(
+    fn select_parse_query(
         &mut self,
         snapshot: &SourceSnapshot,
-        update: SyntaxProducerUpdate,
-    ) -> CompilerSessionUpdate {
-        let SyntaxProducerUpdate {
-            parse: update,
-            origin,
-        } = update;
-        let parse_work = update.work();
-        let invalidation = update.invalidation().clone();
-        self.metrics.update(parse_work, invalidation.clone());
+        presentation: &DiagnosticAttemptProvenance,
+    ) -> (
+        ParseQueryKey,
+        crate::query_graph::ObservedDependency,
+        Option<(ParseQueryRecord, TerminalHandle<ParseQuery>)>,
+    ) {
+        let source = ExactSourceInput::new(snapshot);
+        let dependency = self
+            .queries
+            .parse_inputs
+            .publish_retained(&mut self.queries.graph, source.clone());
+        let key = ParseQueryKey {
+            source,
+            presentation: presentation.clone(),
+        };
+        let attempt_id = self.metrics.allocate_attempt_id();
+        let reused = self
+            .queries
+            .parse
+            .request_selected(&mut self.queries.graph, key.clone(), attempt_id.0)
+            .unwrap_or_else(query_control_error);
+        (key, dependency, reused)
+    }
+
+    fn parse_staging_snapshot(
+        &mut self,
+        snapshot: &SourceSnapshot,
+    ) -> (Result<Arc<ParsedProgram>, CompileErrors>, ParsedModulesWork) {
+        let mut guard = self.metrics.begin_unprojected("parse");
+        let order = snapshot
+            .files()
+            .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
+            .collect::<Vec<_>>();
+        self.select_diagnostic_presentation(Some(order.clone()));
+        let presentation = DiagnosticAttemptProvenance::Presentation(order.into());
+        let (key, dependency, reused) = self.select_parse_query(snapshot, &presentation);
+        guard.started();
+        let update = self.prepare_parse_update(snapshot, &reused, parse_presentation_snapshot);
+        let work = update.work();
         let result = update.into_result();
-        let succeeded = result.is_ok();
-        let diagnostics = if let Some(origin) = origin.filter(|_| succeeded) {
-            self.reuse_diagnostics(origin.clone());
-            origin
+        let diagnostics = if let Some((record, _)) = &reused {
+            self.reuse_diagnostics(record.diagnostics.clone());
+            record.diagnostics.clone()
         } else {
             self.publish_diagnostics(
                 snapshot,
@@ -2954,26 +3797,239 @@ impl CompilerSession {
                 &[],
             )
         };
-        if succeeded {
-            self.parse.attach_origin(diagnostics.clone());
+        guard.observe([dependency]);
+        guard.attach_diagnostics(diagnostics.clone());
+        if let Some((_, handle)) = reused {
+            self.diagnostics.select(handle.as_view());
+            guard.bind(handle.as_view());
+        } else {
+            let handle = self
+                .queries
+                .parse
+                .publish_selected_with_work(
+                    &mut self.queries.graph,
+                    ParseQueryRecord {
+                        key,
+                        snapshot: snapshot.clone(),
+                        result: result.clone(),
+                        diagnostics,
+                    },
+                    [dependency],
+                    QueryStructuralWork::Parse(work),
+                )
+                .unwrap_or_else(query_control_error);
+            self.diagnostics.select(handle.as_view());
+            guard.bind(handle.as_view());
         }
+        guard.finish(
+            QueryAttemptExecution::Computed,
+            None,
+            &result,
+            QueryStructuralWork::None,
+        );
+        self.metrics.synchronize();
+        (result, work)
+    }
+
+    fn select_import_plan_query(
+        &mut self,
+        key: ImportPlanQueryKey,
+    ) -> (crate::query_graph::ObservedDependency, bool) {
+        let dependency = self
+            .queries
+            .import_plan_inputs
+            .publish_retained(&mut self.queries.graph, key.clone());
+        let attempt_id = self.metrics.allocate_attempt_id();
+        let reused = self
+            .queries
+            .import_plans
+            .request_selected(&mut self.queries.graph, key, attempt_id.0)
+            .unwrap_or_else(query_control_error);
+        if let Some((_, handle)) = &reused {
+            self.diagnostics.select(handle.as_view());
+        }
+        let publish = reused.is_none();
+        (dependency, publish)
+    }
+
+    fn publish_import_plan_query(
+        &mut self,
+        key: ImportPlanQueryKey,
+        result: Result<crate::ImportDiscoveryPlan, CompileErrors>,
+        diagnostics: Arc<FrontendDiagnosticSnapshot>,
+        attempted_artifact: Option<Arc<ImportDiscoveryRevisionArtifact>>,
+        dependency: crate::query_graph::ObservedDependency,
+        publish: bool,
+    ) {
+        if publish {
+            let handle = self
+                .queries
+                .import_plans
+                .publish_selected(
+                    &mut self.queries.graph,
+                    ImportPlanQueryRecord {
+                        key,
+                        result,
+                        diagnostics,
+                        attempted_artifact,
+                    },
+                    [dependency],
+                )
+                .unwrap_or_else(query_control_error);
+            self.diagnostics.select(handle.as_view());
+        }
+    }
+
+    fn select_import_closure_query(
+        &mut self,
+        open: &ImportDiscoveryRevisionArtifact,
+        plan: &crate::ImportDiscoveryPlan,
+        ledger: &crate::ImportObservationLedger,
+    ) -> (
+        ImportClosureQueryKey,
+        Vec<crate::query_graph::ObservedDependency>,
+        bool,
+    ) {
+        let plan_key = ImportPlanQueryKey {
+            source: ExactSourceInput::new(&open.snapshot),
+            context: open.context.clone(),
+            policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
+            accepted_reads: open.accepted_reads.clone(),
+            carried_ledger: open.ledger.clone(),
+        };
+        let plan_dependency = self
+            .queries
+            .import_plans
+            .handle(&plan_key)
+            .expect("an open discovery revision retains its typed plan terminal")
+            .observed();
+        let key = ImportClosureQueryKey {
+            source: plan_key.source,
+            context: open.context.clone(),
+            policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
+            accepted_reads: open.accepted_reads.clone(),
+            plan: plan.clone(),
+            ledger: ledger.clone(),
+        };
+        let input_dependency = self
+            .queries
+            .import_closure_inputs
+            .publish_retained(&mut self.queries.graph, key.clone());
+        let attempt_id = self.metrics.allocate_attempt_id();
+        let reused = self
+            .queries
+            .import_closures
+            .request_selected(&mut self.queries.graph, key.clone(), attempt_id.0)
+            .unwrap_or_else(query_control_error);
+        if let Some((_, handle)) = &reused {
+            self.diagnostics.select(handle.as_view());
+        }
+        let publish = reused.is_none();
+        (key, vec![plan_dependency, input_dependency], publish)
+    }
+
+    fn publish_import_closure_query(
+        &mut self,
+        key: ImportClosureQueryKey,
+        result: Result<Arc<CanonicalImportGraphOutput>, CompileErrors>,
+        artifact: Arc<ImportDiscoveryRevisionArtifact>,
+        dependencies: Vec<crate::query_graph::ObservedDependency>,
+        publish: bool,
+    ) {
+        if publish {
+            let diagnostics = artifact
+                .diagnostic_snapshot
+                .as_ref()
+                .expect("closed discovery terminals retain diagnostics")
+                .clone();
+            let handle = self
+                .queries
+                .import_closures
+                .publish_selected(
+                    &mut self.queries.graph,
+                    ImportClosureQueryRecord {
+                        key,
+                        result,
+                        artifact,
+                        diagnostics,
+                    },
+                    dependencies,
+                )
+                .unwrap_or_else(query_control_error);
+            self.diagnostics.select(handle.as_view());
+        }
+    }
+
+    fn finish_update(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        update: crate::CanonicalParseUpdate,
+        key: ParseQueryKey,
+        dependency: crate::query_graph::ObservedDependency,
+        reused: Option<(ParseQueryRecord, TerminalHandle<ParseQuery>)>,
+    ) -> CompilerSessionUpdate {
+        let mut guard = self.metrics.begin_unprojected("parse");
+        guard.started();
+        let parse_work = update.work();
+        let invalidation = update.invalidation().clone();
+        self.metrics.update(parse_work, invalidation.clone());
+        let result = update.into_result();
+        let diagnostics = if let Some((record, _)) = &reused {
+            self.reuse_diagnostics(record.diagnostics.clone());
+            record.diagnostics.clone()
+        } else {
+            self.publish_diagnostics(
+                snapshot,
+                FrontendDiagnosticStage::Syntax,
+                result.as_ref().err(),
+                &[],
+            )
+        };
+        guard.observe([dependency]);
+        guard.attach_diagnostics(diagnostics.clone());
+        if let Some((_, handle)) = reused {
+            self.diagnostics.select(handle.as_view());
+            guard.bind(handle.as_view());
+        } else {
+            let handle = self
+                .queries
+                .parse
+                .publish_selected_with_work(
+                    &mut self.queries.graph,
+                    ParseQueryRecord {
+                        key,
+                        snapshot: snapshot.clone(),
+                        result: result.clone(),
+                        diagnostics: diagnostics.clone(),
+                    },
+                    [dependency],
+                    QueryStructuralWork::Parse(parse_work),
+                )
+                .unwrap_or_else(query_control_error);
+            self.diagnostics.select(handle.as_view());
+            guard.bind(handle.as_view());
+        }
+        guard.finish(
+            QueryAttemptExecution::Computed,
+            None,
+            &result,
+            QueryStructuralWork::None,
+        );
+        self.metrics.synchronize();
         match result {
             Ok(candidate) => {
-                if self.discovery_attempt.as_deref().is_some_and(|artifact| {
+                if self.open_discovery.as_deref().is_some_and(|artifact| {
                     artifact.source_revision != *candidate.source_revision()
                 }) {
-                    self.discovery_attempt = None;
-                }
-                if self.committed_discovery.as_deref().is_some_and(|artifact| {
-                    artifact.source_revision != *candidate.source_revision()
-                }) {
-                    self.committed_discovery = None;
+                    self.open_discovery = None;
                 }
                 let exact = self.published.as_deref().is_some_and(|published| {
                     programs_are_pointer_equivalent(published, &candidate)
                 });
                 let downstream_invalidated = self.published.is_some() && !exact;
                 if exact {
+                    let changed = self.queries.publish_source(ExactSourceInput::new(snapshot));
+                    debug_assert!(!changed);
                     CompilerSessionUpdate {
                         result: Ok(self.published.as_ref().unwrap().clone()),
                         work: parse_work,
@@ -2982,22 +4038,14 @@ impl CompilerSession {
                         diagnostics,
                     }
                 } else {
-                    self.merge_cache = None;
-                    self.direct_import_diagnostics.clear();
-                    self.rir_cache = None;
-                    let semantic_entries = self.semantic_cache.len();
-                    self.semantic_cache.clear();
-                    let definition_entries = self.definition_cache.len();
-                    self.definition_cache.clear();
-                    self.metrics.invalidate_downstream(
+                    self.queries.publish_source(ExactSourceInput::new(snapshot));
+                    self.metrics.project_dependency_invalidations(
+                        &self.queries.graph,
                         downstream_invalidated,
-                        semantic_entries,
-                        definition_entries,
                     );
-                    self.dependency_manifest_cache.clear();
-                    self.refresh_retention_metrics();
                     self.published = Some(candidate.clone());
                     self.published_snapshot = Some(snapshot.clone());
+                    self.refresh_retention_metrics();
                     CompilerSessionUpdate {
                         result: Ok(candidate),
                         work: parse_work,
@@ -3025,21 +4073,17 @@ impl CompilerSession {
         &mut self,
         std_dir: Option<&str>,
     ) -> Result<Arc<CanonicalImportGraphOutput>, CompileErrors> {
-        let mut guard = self.metrics.begin(FrontendQueryFamily::Imports);
-        let publication = self.query_publication_snapshot();
+        let mut guard = self.metrics.begin::<ImportsMetricsQuery>();
         let mut execution = QueryAttemptExecution::Rejected;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.import_graph_attempt(std_dir, &mut guard, &mut execution)
         }));
         let result = match result {
             Ok(result) => result,
-            Err(payload) => {
-                self.restore_query_publication(publication);
-                self.resume_canceled_query(&mut guard, payload)
-            }
+            Err(payload) => self.resume_canceled_query(&mut guard, payload),
         };
         if let Ok(output) = &result {
-            guard.identify(QueryAttemptIdentity::ImportGraph(output.input().clone()));
+            self.queries.publish_import_graph(output.graph().clone());
         }
         if execution == QueryAttemptExecution::Reused {
             execution = QueryAttemptExecution::Adopted;
@@ -3056,7 +4100,7 @@ impl CompilerSession {
         execution: &mut QueryAttemptExecution,
     ) -> Result<Arc<CanonicalImportGraphOutput>, CompileErrors> {
         self.require_closed_discovery()?;
-        if let Some(committed) = self.committed_discovery.as_ref() {
+        if let Some(committed) = self.committed_import_discovery() {
             let graph = committed
                 .graph()
                 .expect("closed-valid discovery revisions retain their canonical graph");
@@ -3143,8 +4187,7 @@ impl CompilerSession {
     }
 
     pub fn merge(&mut self) -> Result<Arc<CanonicalMergedProgram>, CompileErrors> {
-        let mut guard = self.metrics.begin(FrontendQueryFamily::Merge);
-        let publication = self.query_publication_snapshot();
+        let mut guard = self.metrics.begin::<MergeQuery>();
         let attempt_id = guard.id;
         let mut execution = QueryAttemptExecution::Rejected;
         let mut origin = None;
@@ -3160,14 +4203,28 @@ impl CompilerSession {
         }));
         let result = match result {
             Ok(result) => result,
-            Err(payload) => {
-                self.restore_query_publication(publication);
-                self.resume_canceled_query(&mut guard, payload)
-            }
+            Err(payload) => self.resume_canceled_query(&mut guard, payload),
         };
         let structural = attempt_work
             .map(QueryStructuralWork::Merge)
             .unwrap_or(QueryStructuralWork::None);
+        if guard.cancel_requested {
+            let key = self
+                .queries
+                .merge
+                .computing_key()
+                .expect("canceled merge retains its computing key");
+            let attempt = self.queries.merge.record_aborted_attempt(
+                &mut self.queries.graph,
+                key,
+                attempt_id.0,
+                AbortedQueryReason::Canceled,
+                structural.clone(),
+                guard.dependencies.clone(),
+                guard.diagnostics.clone(),
+            );
+            guard.bind(attempt);
+        }
         guard.finish(execution, origin, &result, structural);
         self.metrics.synchronize();
         result
@@ -3182,25 +4239,83 @@ impl CompilerSession {
         attempt_work: &mut Option<CanonicalMergeWork>,
     ) -> Result<Arc<CanonicalMergedProgram>, CompileErrors> {
         self.require_closed_discovery()?;
-        if let Some(parsed) = self.published.as_deref() {
-            guard.identify(QueryAttemptIdentity::Merge {
-                source: parsed.source_revision().clone(),
-                presentation: self.batch_diagnostic_order.clone().map(Arc::from),
-            });
-        }
-        if let Some((result, diagnostics, cached_origin)) = self.merge_cache.as_ref().map(|entry| {
-            (
-                entry.result.clone(),
-                entry.diagnostics.clone(),
-                entry.attempt_origin,
-            )
-        }) {
+        let parsed = self.published.clone().ok_or_else(no_published_program)?;
+        let key = MergeQueryKey {
+            source: ExactSourceInput::new(
+                self.published_snapshot
+                    .as_ref()
+                    .expect("a published parsed program retains its exact source snapshot"),
+            ),
+            presentation: self.batch_diagnostic_order.clone().map(Arc::from),
+        };
+        if let Some((entry, handle)) = self
+            .queries
+            .merge
+            .request_selected(&mut self.queries.graph, key.clone(), attempt_id.0)
+            .unwrap_or_else(query_control_error)
+        {
+            let result = entry.result.clone();
+            let diagnostics = entry.diagnostics.clone();
+            let cached_origin = handle.origin_attempt_id();
             *execution = QueryAttemptExecution::Reused;
             *origin = Some(cached_origin);
+            self.diagnostics.select(handle.as_view());
+            guard.bind(handle.as_view());
+            guard.observe(
+                self.queries
+                    .graph
+                    .direct_dependencies::<MergeQuery>(handle.observed().node),
+            );
+            guard.attach_diagnostics(diagnostics.clone());
             self.reuse_diagnostics(diagnostics);
             return result;
         }
-        let parsed = self.published.clone().ok_or_else(no_published_program)?;
+        let source_dependency = self
+            .queries
+            .source_inputs
+            .selected(&self.queries.graph)
+            .expect("merge retains its exact source input");
+        let parse_lookup = ParsedProgramLookup {
+            source: ExactSourceInput::new(
+                self.published_snapshot
+                    .as_ref()
+                    .expect("a published parsed program retains its exact source snapshot"),
+            ),
+            program: parsed.clone(),
+        };
+        let parse_dependency = self
+            .queries
+            .parse
+            .get_secondary_with_handle(&parse_lookup)
+            .map(|(_, handle)| handle.observed())
+            .expect("merge consumes the successful parse terminal for its published source");
+        guard.observe([source_dependency, parse_dependency]);
+        if let Some(entry) = self.queries.merge.publish_selected_equivalent(
+            &mut self.queries.graph,
+            key.clone(),
+            &key.source.revision,
+            [source_dependency, parse_dependency],
+        ) {
+            *execution = QueryAttemptExecution::Reused;
+            *origin = Some(
+                self.queries
+                    .merge
+                    .handle(&key)
+                    .expect("equivalent merge publication retains its origin")
+                    .origin_attempt_id(),
+            );
+            let handle = self
+                .queries
+                .merge
+                .handle(&key)
+                .expect("equivalent merge publication retains its attempt");
+            self.diagnostics.select(handle.as_view());
+            guard.bind(handle.as_view());
+            guard.observe([source_dependency, parse_dependency]);
+            guard.attach_diagnostics(entry.diagnostics.clone());
+            self.reuse_diagnostics(entry.diagnostics.clone());
+            return entry.result;
+        }
         *execution = QueryAttemptExecution::Computed;
         guard.started();
         // Freeze the traversal work before the fallible duplicate/definition
@@ -3255,18 +4370,30 @@ impl CompilerSession {
             merged.as_ref().err(),
             &[],
         );
-        self.merge_cache = Some(MergeCacheEntry {
-            result: merged.clone(),
-            diagnostics,
-            attempt_origin: attempt_id,
-        });
+        guard.attach_diagnostics(diagnostics.clone());
+        let handle = self
+            .queries
+            .merge
+            .publish_selected_attempt(
+                &mut self.queries.graph,
+                MergeCacheEntry {
+                    key,
+                    result: merged.clone(),
+                    diagnostics,
+                },
+                [source_dependency, parse_dependency],
+                guard.structural(),
+                *execution,
+            )
+            .unwrap_or_else(query_control_error);
+        self.diagnostics.select(handle.as_view());
+        guard.bind(handle.as_view());
         self.refresh_retention_metrics();
         merged
     }
 
     pub fn rir(&mut self) -> Result<Arc<CanonicalRirOutput>, CompileErrors> {
-        let mut guard = self.metrics.begin(FrontendQueryFamily::Rir);
-        let publication = self.query_publication_snapshot();
+        let mut guard = self.metrics.begin::<RirQuery>();
         let attempt_id = guard.id;
         let mut execution = QueryAttemptExecution::Rejected;
         let mut origin = None;
@@ -3282,10 +4409,7 @@ impl CompilerSession {
         }));
         let result = match result {
             Ok(result) => result,
-            Err(payload) => {
-                self.restore_query_publication(publication);
-                self.resume_canceled_query(&mut guard, payload)
-            }
+            Err(payload) => self.resume_canceled_query(&mut guard, payload),
         };
         let structural = attempt_work
             .map(QueryStructuralWork::Rir)
@@ -3304,35 +4428,100 @@ impl CompilerSession {
         attempt_work: &mut Option<CanonicalRirWork>,
     ) -> Result<Arc<CanonicalRirOutput>, CompileErrors> {
         self.require_successful_import_diagnostics()?;
-        if let Some(cached) = &self.rir_cache {
-            *execution = QueryAttemptExecution::Reused;
-            *origin = Some(cached.attempt_origin);
-            return Ok(cached.output.clone());
-        }
-        let merged = self.merge()?;
-        guard.identify(QueryAttemptIdentity::Rir(
-            merged.ast().source_revision().clone(),
-        ));
-        *execution = QueryAttemptExecution::Computed;
-        guard.started();
-        let rir = match lower_canonical_rir_with_work(&merged) {
-            Ok(rir) => Arc::new(rir),
-            Err((error, work)) => {
-                *attempt_work = Some(work);
-                guard.accrue(QueryStructuralWork::Rir(work));
-                let errors = CompileErrors::from(error);
-                return Err(errors);
-            }
+        let source = self
+            .published
+            .as_ref()
+            .ok_or_else(no_published_program)?
+            .source_revision()
+            .clone();
+        let key = RirQueryKey {
+            source: source.clone(),
         };
-        debug_assert_eq!(rir.source_revision(), merged.ast().source_revision());
-        *attempt_work = Some(rir.work());
-        guard.accrue(QueryStructuralWork::Rir(rir.work()));
-        self.rir_cache = Some(RirCacheEntry {
-            output: rir.clone(),
-            attempt_origin: attempt_id,
+        if let Some((cached, handle)) = self
+            .queries
+            .rir
+            .request_selected(&mut self.queries.graph, key.clone(), attempt_id.0)
+            .unwrap_or_else(query_control_error)
+        {
+            *execution = QueryAttemptExecution::Reused;
+            *origin = Some(handle.origin_attempt_id());
+            self.diagnostics.select(handle.as_view());
+            guard.bind(handle.as_view());
+            guard.observe(
+                self.queries
+                    .graph
+                    .direct_dependencies::<RirQuery>(handle.observed().node),
+            );
+            guard.attach_diagnostics(cached.diagnostics.clone());
+            self.reuse_diagnostics(cached.diagnostics.clone());
+            return cached.result;
+        }
+        let merged = self.merge();
+        let result = match &merged {
+            Ok(merged) => {
+                *execution = QueryAttemptExecution::Computed;
+                guard.started();
+                match lower_canonical_rir_with_work(merged) {
+                    Ok(rir) => {
+                        let rir = Arc::new(rir);
+                        *attempt_work = Some(rir.work());
+                        guard.accrue(QueryStructuralWork::Rir(rir.work()));
+                        Ok(rir)
+                    }
+                    Err((error, work)) => {
+                        *attempt_work = Some(work);
+                        guard.accrue(QueryStructuralWork::Rir(work));
+                        Err(CompileErrors::from(error))
+                    }
+                }
+            }
+            Err(errors) => Err(errors.clone()),
+        };
+        if let Ok(rir) = &result {
+            debug_assert_eq!(rir.source_revision(), &source);
+        }
+        let source_snapshot = self
+            .published_snapshot
+            .clone()
+            .expect("RIR query retains its exact source snapshot");
+        let diagnostics = Arc::new(FrontendDiagnosticSnapshot {
+            source: source_snapshot,
+            stage: FrontendDiagnosticStage::Rir(source.clone()),
+            provenance: DiagnosticAttemptProvenance::Canonical,
+            errors: result
+                .as_ref()
+                .err()
+                .map_or_else(|| Arc::from([]), |errors| errors.as_slice().to_vec().into()),
+            warnings: Arc::from([]),
         });
+        let merge_dependency = self
+            .queries
+            .merge
+            .selected_handle(&self.queries.graph)
+            .expect("RIR query observes the current merge terminal")
+            .observed();
+        guard.observe([merge_dependency]);
+        guard.attach_diagnostics(diagnostics.clone());
+        let handle = self
+            .queries
+            .rir
+            .publish_selected_attempt(
+                &mut self.queries.graph,
+                RirCacheEntry {
+                    key,
+                    result: result.clone(),
+                    merged: merged.ok(),
+                    diagnostics,
+                },
+                [merge_dependency],
+                guard.structural(),
+                *execution,
+            )
+            .unwrap_or_else(query_control_error);
+        self.diagnostics.select(handle.as_view());
+        guard.bind(handle.as_view());
         self.refresh_retention_metrics();
-        Ok(rir)
+        result
     }
 
     /// Analyze the current published revision without issuing stable definition IDs.
@@ -3340,8 +4529,7 @@ impl CompilerSession {
         &mut self,
         options: &CompileOptions,
     ) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
-        let mut guard = self.metrics.begin(FrontendQueryFamily::Semantic);
-        let mut publication = Some(self.query_publication_snapshot());
+        let mut guard = self.metrics.begin::<SemanticQuery>();
         let attempt_id = guard.id;
         let mut execution = QueryAttemptExecution::Rejected;
         let mut origin = None;
@@ -3358,21 +4546,32 @@ impl CompilerSession {
         }));
         let result = match result {
             Ok(result) => result,
-            Err(payload) => {
-                self.restore_query_publication(publication.take().unwrap());
-                self.resume_canceled_query(&mut guard, payload)
-            }
+            Err(payload) => self.resume_canceled_query(&mut guard, payload),
         };
-        if guard.cancel_requested {
-            self.restore_query_publication(publication.take().unwrap());
-        }
         let structural = attempt_record
             .clone()
             .map(Box::new)
             .map(QueryStructuralWork::Semantic)
             .unwrap_or(QueryStructuralWork::None);
+        if guard.cancel_requested {
+            let key = self
+                .queries
+                .semantic
+                .computing_key()
+                .expect("canceled semantic query retains its computing key");
+            let attempt = self.queries.semantic.record_aborted_attempt(
+                &mut self.queries.graph,
+                key,
+                attempt_id.0,
+                AbortedQueryReason::Canceled,
+                structural.clone(),
+                guard.dependencies.clone(),
+                guard.diagnostics.clone(),
+            );
+            guard.bind(attempt);
+        }
         guard.finish(execution, origin, &result, structural);
-        self.metrics.publish_semantic(self.semantic_cache.len());
+        self.metrics.publish_semantic(self.queries.semantic.len());
         self.metrics.synchronize();
         result
     }
@@ -3388,15 +4587,15 @@ impl CompilerSession {
     ) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
         self.require_successful_import_diagnostics()?;
         let imports = self.accepted_semantic_import_graph()?;
-        let rir = self.rir()?;
-        let merged = match self.merge_cache.as_ref().map(|entry| &entry.result) {
-            Some(Ok(merged)) => merged.clone(),
-            Some(Err(errors)) => return Err(errors.clone()),
-            None => unreachable!("successful RIR query retains its merge input"),
-        };
+        self.queries.publish_import_graph(imports.clone());
+        self.queries.publish_request_inputs(options);
+        let source = self
+            .published_snapshot
+            .clone()
+            .expect("semantic query retains its exact source snapshot");
         let input = CodegenInputDescriptor {
             semantic: SemanticInputDescriptor::new(
-                merged.definitions().source_snapshot(),
+                &source,
                 options.target,
                 &options.preview_features,
             ),
@@ -3406,27 +4605,118 @@ impl CompilerSession {
             input: input.clone(),
             imports: imports.clone(),
         };
-        guard.identify(QueryAttemptIdentity::Semantic(Box::new(key.clone())));
-        if let Some((result, diagnostics, successful_body_cache, cached_origin)) =
-            self.semantic_cache.get(&key).map(|entry| {
-                (
-                    entry.result.clone(),
-                    entry.diagnostics.clone(),
-                    entry.successful_body_cache.clone(),
-                    entry.attempt_origin,
-                )
-            })
+        if let Some((entry, handle)) = self
+            .queries
+            .semantic
+            .request_selected(&mut self.queries.graph, key.clone(), attempt_id.0)
+            .unwrap_or_else(query_control_error)
         {
+            let result = entry.result.clone();
             *execution = QueryAttemptExecution::Reused;
-            *origin = Some(cached_origin);
-            if let Ok(output) = &result {
-                self.last_successful_body_cache = successful_body_cache;
-                self.last_successful_cfg_cache = Some(output.durable_cfgs().clone());
+            *origin = Some(handle.origin_attempt_id());
+            self.diagnostics.select(handle.as_view());
+            guard.bind(handle.as_view());
+            guard.observe(
+                self.queries
+                    .graph
+                    .direct_dependencies::<SemanticQuery>(handle.observed().node),
+            );
+            guard.attach_diagnostics(entry.diagnostics.clone());
+            #[cfg(test)]
+            if result.is_ok() {
+                self.last_successful_body_cache = entry.successful_body_cache.clone();
+                self.last_successful_cfg_cache = entry.successful_cfg_cache.clone();
+                self.durable_declaration_cache = entry.durable_declaration_cache.clone();
             }
-            self.reuse_diagnostics(diagnostics);
+            self.reuse_diagnostics(entry.diagnostics.clone());
             return result;
         }
+        let durable_baseline = self.queries.semantic.last_good_record().cloned();
+        let previous_body_cache = durable_baseline
+            .as_ref()
+            .and_then(|entry| entry.successful_body_cache.clone());
+        let previous_declaration_cache = durable_baseline
+            .as_ref()
+            .and_then(|entry| entry.durable_declaration_cache.clone());
+        #[cfg(test)]
+        let previous_declaration_cache = self
+            .durable_declaration_cache
+            .clone()
+            .or(previous_declaration_cache);
+        let previous_cfg_cache = durable_baseline
+            .as_ref()
+            .and_then(|entry| entry.successful_cfg_cache.clone())
+            .unwrap_or_else(|| Arc::from([]));
+        #[cfg(test)]
+        let previous_body_cache = self
+            .last_successful_body_cache
+            .clone()
+            .or(previous_body_cache);
+        #[cfg(test)]
+        let previous_cfg_cache = self
+            .last_successful_cfg_cache
+            .clone()
+            .unwrap_or(previous_cfg_cache);
 
+        let rir = match self.rir() {
+            Ok(rir) => rir,
+            Err(errors) => {
+                let record = SemanticQueryRecord {
+                    input: input.clone(),
+                    work: CanonicalSemanticWork::default(),
+                    failure: None,
+                    failed: true,
+                };
+                guard.accrue(QueryStructuralWork::Semantic(Box::new(record.clone())));
+                *attempt_record = Some(record);
+                let diagnostics = self.publish_diagnostics(
+                    &source,
+                    FrontendDiagnosticStage::Semantic(semantic_diagnostic_input(
+                        &input,
+                        imports.clone(),
+                    )),
+                    Some(&errors),
+                    &[],
+                );
+                let dependency = self
+                    .queries
+                    .rir
+                    .selected_handle(&self.queries.graph)
+                    .expect("semantic rejection observes a deterministic RIR failure")
+                    .observed();
+                guard.observe([dependency]);
+                guard.attach_diagnostics(diagnostics.clone());
+                let handle = self
+                    .queries
+                    .semantic
+                    .publish_selected_attempt(
+                        &mut self.queries.graph,
+                        SemanticCacheEntry {
+                            key,
+                            result: Err(errors.clone()),
+                            diagnostics,
+                            successful_body_cache: None,
+                            durable_declaration_cache: None,
+                            successful_cfg_cache: None,
+                            oracle_injected: false,
+                        },
+                        [dependency],
+                        guard.structural(),
+                        *execution,
+                    )
+                    .unwrap_or_else(query_control_error);
+                self.diagnostics.select(handle.as_view());
+                guard.bind(handle.as_view());
+                self.refresh_retention_metrics();
+                return Err(errors);
+            }
+        };
+        let merged = self
+            .queries
+            .rir
+            .selected_record(&self.queries.graph)
+            .and_then(|entry| entry.merged.clone())
+            .expect("successful RIR terminal retains its exact merge input");
         *execution = QueryAttemptExecution::Computed;
         guard.started();
         let mut prepared = prepare_canonical_declarations(&merged, &rir, options, &imports);
@@ -3449,7 +4739,7 @@ impl CompilerSession {
         let mut durable_body_candidates = Vec::new();
         let mut durable_specialized_body_candidates = Vec::new();
         if let (Some(previous), Ok(fingerprints), Ok(prepared_definitions)) = (
-            self.last_successful_body_cache.as_ref(),
+            previous_body_cache.as_ref(),
             current_fingerprints.as_ref(),
             prepared.as_ref(),
         ) {
@@ -3546,7 +4836,7 @@ impl CompilerSession {
             }
         }
         let mut reuse_plan = crate::canonical_semantic::CanonicalDeclarationReuseWork::default();
-        let reusable = self.durable_declaration_cache.as_ref().and_then(|cache| {
+        let reusable = previous_declaration_cache.as_ref().and_then(|cache| {
             reuse_plan.plan_executions = 1;
             if cache.root != *merged.ast().root()
                 || cache.target != options.target
@@ -3581,9 +4871,7 @@ impl CompilerSession {
                     &durable,
                     durable_body_candidates,
                     durable_specialized_body_candidates,
-                    self.last_successful_cfg_cache
-                        .clone()
-                        .unwrap_or_else(|| Arc::from([])),
+                    previous_cfg_cache.clone(),
                     durable_body_work,
                 )
             } else {
@@ -3595,9 +4883,7 @@ impl CompilerSession {
                     reuse_plan,
                     durable_body_candidates,
                     durable_specialized_body_candidates,
-                    self.last_successful_cfg_cache
-                        .clone()
-                        .unwrap_or_else(|| Arc::from([])),
+                    previous_cfg_cache.clone(),
                     durable_body_work,
                 )
                 .map(|analysis| {
@@ -3622,8 +4908,11 @@ impl CompilerSession {
         };
         guard.accrue(QueryStructuralWork::Semantic(Box::new(record.clone())));
         *attempt_record = Some(record);
+        let mut published_declaration_cache = previous_declaration_cache;
+        let mut published_body_cache = None;
+        let mut published_cfg_cache = None;
         if let Ok(output) = &result {
-            self.last_successful_cfg_cache = Some(output.durable_cfgs().clone());
+            published_cfg_cache = Some(output.durable_cfgs().clone());
             #[cfg(test)]
             if std::mem::take(&mut self.cancel_semantic_after_first_mutation) {
                 guard.request_cancel();
@@ -3655,7 +4944,7 @@ impl CompilerSession {
                         })
                         .collect::<Result<Vec<_>, _>>()
                     {
-                        self.durable_declaration_cache = Some(DurableDeclarationCache {
+                        published_declaration_cache = Some(DurableDeclarationCache {
                             root: merged.ast().root().clone(),
                             target: options.target,
                             preview_features: options.preview_features.clone(),
@@ -3664,13 +4953,12 @@ impl CompilerSession {
                         });
                     }
                 }
-            } else if let (Some(cache), Ok(fingerprints)) = (
-                self.durable_declaration_cache.as_mut(),
-                current_fingerprints,
-            ) {
+            } else if let (Some(cache), Ok(fingerprints)) =
+                (published_declaration_cache.as_mut(), current_fingerprints)
+            {
                 cache.fingerprints = fingerprints.into();
             }
-            self.last_successful_body_cache = build_supported_ordinary_body_cache(
+            published_body_cache = build_supported_ordinary_body_cache(
                 output,
                 merged.definitions().source_snapshot(),
                 options.target,
@@ -3698,10 +4986,6 @@ impl CompilerSession {
             })
             .ok();
         }
-        let source = self
-            .published_snapshot
-            .clone()
-            .expect("semantic query retains source snapshot");
         let diagnostic_input = semantic_diagnostic_input(&input, imports.clone());
         let diagnostics = self.publish_diagnostics(
             &source,
@@ -3712,16 +4996,66 @@ impl CompilerSession {
                 .map(|output| output.warnings())
                 .unwrap_or(&[]),
         );
-        self.semantic_cache.insert(SemanticCacheEntry {
-            key,
-            result: result.clone(),
-            diagnostics,
-            successful_body_cache: result
-                .is_ok()
-                .then(|| self.last_successful_body_cache.clone())
-                .flatten(),
-            attempt_origin: attempt_id,
-        });
+        let rir_key = RirQueryKey {
+            source: rir.source_revision().clone(),
+        };
+        let rir_dependency = self
+            .queries
+            .rir
+            .handle(&rir_key)
+            .expect("semantic publication retains its RIR terminal")
+            .observed();
+        let dependencies = [
+            rir_dependency,
+            self.queries
+                .import_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+            self.queries
+                .target_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+            self.queries
+                .preview_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+            self.queries
+                .optimization_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+        ];
+        guard.observe(dependencies);
+        guard.attach_diagnostics(diagnostics.clone());
+        #[cfg(test)]
+        if result.is_ok() {
+            self.last_successful_body_cache = published_body_cache.clone();
+            self.last_successful_cfg_cache = published_cfg_cache.clone();
+            self.durable_declaration_cache = published_declaration_cache.clone();
+        }
+        let handle = self
+            .queries
+            .semantic
+            .publish_selected_attempt(
+                &mut self.queries.graph,
+                SemanticCacheEntry {
+                    key,
+                    result: result.clone(),
+                    diagnostics,
+                    successful_body_cache: result.is_ok().then_some(published_body_cache).flatten(),
+                    durable_declaration_cache: result
+                        .is_ok()
+                        .then_some(published_declaration_cache)
+                        .flatten(),
+                    successful_cfg_cache: result.is_ok().then_some(published_cfg_cache).flatten(),
+                    oracle_injected: false,
+                },
+                dependencies,
+                guard.structural(),
+                *execution,
+            )
+            .unwrap_or_else(query_control_error);
+        self.diagnostics.select(handle.as_view());
+        guard.bind(handle.as_view());
         self.refresh_retention_metrics();
         result
     }
@@ -3736,8 +5070,7 @@ impl CompilerSession {
         &mut self,
         options: &CompileOptions,
     ) -> Result<Arc<BoundDefinitionSet>, CompileErrors> {
-        let mut guard = self.metrics.begin(FrontendQueryFamily::Definitions);
-        let publication = self.query_publication_snapshot();
+        let mut guard = self.metrics.begin::<DefinitionQuery>();
         let attempt_id = guard.id;
         let mut execution = QueryAttemptExecution::Rejected;
         let mut origin = None;
@@ -3754,10 +5087,7 @@ impl CompilerSession {
         }));
         let result = match result {
             Ok(result) => result,
-            Err(payload) => {
-                self.restore_query_publication(publication);
-                self.resume_canceled_query(&mut guard, payload)
-            }
+            Err(payload) => self.resume_canceled_query(&mut guard, payload),
         };
         let structural = attempt_record
             .clone()
@@ -3765,7 +5095,8 @@ impl CompilerSession {
             .map(QueryStructuralWork::Definition)
             .unwrap_or(QueryStructuralWork::None);
         guard.finish(execution, origin, &result, structural);
-        self.metrics.publish_definition(self.definition_cache.len());
+        self.metrics
+            .publish_definition(self.queries.definitions.len());
         self.metrics.synchronize();
         result
     }
@@ -3781,17 +5112,75 @@ impl CompilerSession {
     ) -> Result<Arc<BoundDefinitionSet>, CompileErrors> {
         self.require_successful_import_diagnostics()?;
         let imports = self.accepted_semantic_import_graph()?;
-        let rir = self.rir()?;
-        let merged = match self.merge_cache.as_ref().map(|entry| &entry.result) {
-            Some(Ok(merged)) => merged.clone(),
-            Some(Err(errors)) => return Err(errors.clone()),
-            None => unreachable!("successful RIR query retains merge input"),
+        self.queries.publish_import_graph(imports.clone());
+        self.queries.publish_request_inputs(options);
+        let snapshot = self
+            .published_snapshot
+            .clone()
+            .expect("definition query retains its exact source snapshot");
+        let input =
+            SemanticInputDescriptor::new(&snapshot, options.target, &options.preview_features);
+        let key = DefinitionQueryKey {
+            input: input.clone(),
+            imports: imports.clone(),
         };
-        let input = SemanticInputDescriptor::new(
-            merged.definitions().source_snapshot(),
-            options.target,
-            &options.preview_features,
-        );
+        if let Some((entry, handle)) = self
+            .queries
+            .definitions
+            .request_selected(&mut self.queries.graph, key.clone(), attempt_id.0)
+            .unwrap_or_else(query_control_error)
+        {
+            *execution = QueryAttemptExecution::Reused;
+            *origin = Some(handle.origin_attempt_id());
+            guard.bind(handle.as_view());
+            return entry.output.result;
+        }
+        let rir = match self.rir() {
+            Ok(rir) => rir,
+            Err(errors) => {
+                let record = DefinitionQueryRecord {
+                    input: input.clone(),
+                    binding: DeclarationBindingWork::default(),
+                    manifest: SemanticBindingManifestWork::default(),
+                    issuance: BoundDefinitionWork::default(),
+                    failed: true,
+                };
+                guard.accrue(QueryStructuralWork::Definition(Box::new(record.clone())));
+                *attempt_record = Some(record);
+                let dependency = self
+                    .queries
+                    .rir
+                    .selected_handle(&self.queries.graph)
+                    .expect("definition rejection observes a deterministic RIR failure")
+                    .observed();
+                let handle = self
+                    .queries
+                    .definitions
+                    .publish_selected_attempt(
+                        &mut self.queries.graph,
+                        DefinitionCacheEntry {
+                            key: key.clone(),
+                            output: DefinitionQueryOutput {
+                                provenance: key,
+                                result: Err(errors.clone()),
+                            },
+                        },
+                        [dependency],
+                        guard.structural(),
+                        *execution,
+                    )
+                    .unwrap_or_else(query_control_error);
+                guard.bind(handle.as_view());
+                self.refresh_retention_metrics();
+                return Err(errors);
+            }
+        };
+        let merged = self
+            .queries
+            .rir
+            .selected_record(&self.queries.graph)
+            .and_then(|entry| entry.merged.clone())
+            .expect("successful RIR terminal retains its exact merge input");
 
         // Body validity is independent of opt/linker. Reuse any ordinary
         // semantic result with the same binding inputs before doing ID work.
@@ -3799,25 +5188,81 @@ impl CompilerSession {
             input: input.clone(),
             imports: imports.clone(),
         };
-        if let Some(validation) = self
-            .semantic_cache
-            .get_secondary(&semantic_binding_key)
-            .map(|entry| entry.result.clone())
+        let semantic_terminal = self
+            .queries
+            .semantic
+            .get_secondary_with_handle(&semantic_binding_key)
+            .map(|(entry, handle)| (handle, entry.result.clone()));
+        if let Some((handle, validation)) = semantic_terminal
+            && handle.is_valid(&mut self.queries.graph)
         {
-            validation?;
-        } else {
-            self.semantic(options)?;
-        }
-
-        let key = DefinitionQueryKey {
-            input: input.clone(),
-            imports: imports.clone(),
-        };
-        guard.identify(QueryAttemptIdentity::Definition(Box::new(key.clone())));
-        if let Some(entry) = self.definition_cache.get(&key) {
-            *execution = QueryAttemptExecution::Reused;
-            *origin = Some(entry.attempt_origin);
-            return entry.output.result.clone();
+            if let Err(errors) = validation {
+                let record = DefinitionQueryRecord {
+                    input: input.clone(),
+                    binding: DeclarationBindingWork::default(),
+                    manifest: SemanticBindingManifestWork::default(),
+                    issuance: BoundDefinitionWork::default(),
+                    failed: true,
+                };
+                guard.accrue(QueryStructuralWork::Definition(Box::new(record.clone())));
+                *attempt_record = Some(record);
+                let terminal = self
+                    .queries
+                    .definitions
+                    .publish_selected_attempt(
+                        &mut self.queries.graph,
+                        DefinitionCacheEntry {
+                            key: key.clone(),
+                            output: DefinitionQueryOutput {
+                                provenance: key,
+                                result: Err(errors.clone()),
+                            },
+                        },
+                        [handle.observed()],
+                        guard.structural(),
+                        *execution,
+                    )
+                    .unwrap_or_else(query_control_error);
+                guard.bind(terminal.as_view());
+                self.refresh_retention_metrics();
+                return Err(errors);
+            }
+        } else if let Err(errors) = self.semantic(options) {
+            let dependency = self
+                .queries
+                .semantic
+                .selected_handle(&self.queries.graph)
+                .expect("definition rejection observes a deterministic semantic failure")
+                .observed();
+            let record = DefinitionQueryRecord {
+                input: input.clone(),
+                binding: DeclarationBindingWork::default(),
+                manifest: SemanticBindingManifestWork::default(),
+                issuance: BoundDefinitionWork::default(),
+                failed: true,
+            };
+            guard.accrue(QueryStructuralWork::Definition(Box::new(record.clone())));
+            *attempt_record = Some(record);
+            let handle = self
+                .queries
+                .definitions
+                .publish_selected_attempt(
+                    &mut self.queries.graph,
+                    DefinitionCacheEntry {
+                        key: key.clone(),
+                        output: DefinitionQueryOutput {
+                            provenance: key,
+                            result: Err(errors.clone()),
+                        },
+                    },
+                    [dependency],
+                    guard.structural(),
+                    *execution,
+                )
+                .unwrap_or_else(query_control_error);
+            guard.bind(handle.as_view());
+            self.refresh_retention_metrics();
+            return Err(errors);
         }
         *execution = QueryAttemptExecution::Computed;
         guard.started();
@@ -3832,11 +5277,52 @@ impl CompilerSession {
         };
         guard.accrue(QueryStructuralWork::Definition(Box::new(record.clone())));
         *attempt_record = Some(record);
-        self.definition_cache.insert(DefinitionCacheEntry {
-            key,
-            output: computation.output,
-            attempt_origin: attempt_id,
-        });
+        let rir_key = RirQueryKey {
+            source: rir.source_revision().clone(),
+        };
+        let rir_dependency = self
+            .queries
+            .rir
+            .handle(&rir_key)
+            .expect("definition publication retains its RIR terminal")
+            .observed();
+        let semantic_dependency = self
+            .queries
+            .semantic
+            .get_secondary_with_handle(&semantic_binding_key)
+            .map(|(_, handle)| handle.observed())
+            .expect("definition publication retains a successful semantic terminal");
+        let dependencies = [
+            rir_dependency,
+            semantic_dependency,
+            self.queries
+                .import_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+            self.queries
+                .target_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+            self.queries
+                .preview_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+        ];
+        let handle = self
+            .queries
+            .definitions
+            .publish_selected_attempt(
+                &mut self.queries.graph,
+                DefinitionCacheEntry {
+                    key,
+                    output: computation.output,
+                },
+                dependencies,
+                guard.structural(),
+                *execution,
+            )
+            .unwrap_or_else(query_control_error);
+        guard.bind(handle.as_view());
         self.refresh_retention_metrics();
         result
     }
@@ -3853,8 +5339,7 @@ impl CompilerSession {
         options: &CompileOptions,
         std_dir: Option<&str>,
     ) -> Result<Arc<SemanticDependencyInputManifest>, CompileErrors> {
-        let mut guard = self.metrics.begin(FrontendQueryFamily::DependencyManifests);
-        let publication = self.query_publication_snapshot();
+        let mut guard = self.metrics.begin::<DependencyManifestQuery>();
         let attempt_id = guard.id;
         let mut execution = QueryAttemptExecution::Rejected;
         let mut origin = None;
@@ -3872,11 +5357,39 @@ impl CompilerSession {
         }));
         let result = match result {
             Ok(result) => result,
-            Err(payload) => {
-                self.restore_query_publication(publication);
-                self.resume_canceled_query(&mut guard, payload)
-            }
+            Err(payload) => self.resume_canceled_query(&mut guard, payload),
         };
+        if let Err(errors) = &result
+            && let Some(key) = self.queries.manifests.computing_key()
+        {
+            let mut dependencies = Vec::new();
+            if let Some(handle) = self.queries.semantic.selected_handle(&self.queries.graph) {
+                dependencies.push(handle.observed());
+            }
+            if let Some(handle) = self
+                .queries
+                .definitions
+                .selected_handle(&self.queries.graph)
+            {
+                dependencies.push(handle.observed());
+            }
+            let handle = self
+                .queries
+                .manifests
+                .publish_selected_attempt(
+                    &mut self.queries.graph,
+                    DependencyManifestCacheEntry {
+                        key,
+                        result: Err(errors.clone()),
+                    },
+                    dependencies,
+                    guard.structural(),
+                    execution,
+                )
+                .unwrap_or_else(query_control_error);
+            guard.bind(handle.as_view());
+            self.refresh_retention_metrics();
+        }
         let structural = attempt_work
             .map(Box::new)
             .map(QueryStructuralWork::DependencyManifest)
@@ -3904,16 +5417,20 @@ impl CompilerSession {
             .clone();
         let input =
             SemanticInputDescriptor::new(&snapshot, options.target, &options.preview_features);
-        guard.identify(QueryAttemptIdentity::DependencyManifest {
+        let key = DependencyManifestQueryKey {
             input: input.clone(),
-            imports: Box::new(imports.graph().clone()),
-        });
-        if let Some(cached) = self.dependency_manifest_cache.iter().find(|entry| {
-            entry.manifest.input == input && entry.manifest.imports == *imports.graph()
-        }) {
+            imports: imports.graph().clone(),
+        };
+        if let Some((cached, handle)) = self
+            .queries
+            .manifests
+            .request_selected(&mut self.queries.graph, key.clone(), attempt_id.0)
+            .unwrap_or_else(query_control_error)
+        {
             *execution = QueryAttemptExecution::Reused;
-            *origin = Some(cached.attempt_origin);
-            return Ok(cached.manifest.clone());
+            *origin = Some(handle.origin_attempt_id());
+            guard.bind(handle.as_view());
+            return cached.result;
         }
         *execution = QueryAttemptExecution::Computed;
         guard.started();
@@ -4558,6 +6075,18 @@ impl CompilerSession {
         body_dependency_blockers.sort();
         body_dependency_blockers.dedup();
         let mut durable_body_work = crate::DurableBodyWork::default();
+        let durable_declarations = self
+            .queries
+            .semantic
+            .last_good_record()
+            .and_then(|entry| entry.durable_declaration_cache.as_ref())
+            .map(|cache| cache.semantics.clone());
+        #[cfg(test)]
+        let durable_declarations = self
+            .durable_declaration_cache
+            .as_ref()
+            .map(|cache| cache.semantics.clone())
+            .or(durable_declarations);
         let durable_ordinary_bodies = match &semantic {
             Ok(semantic) => match crate::finalize_durable_ordinary_bodies(
                 semantic.durable_ordinary_body_payloads(),
@@ -4565,11 +6094,7 @@ impl CompilerSession {
                 &mut durable_body_work,
             ) {
                 Ok(candidates) if candidates.is_empty() => candidates,
-                Ok(candidates) => match self
-                    .durable_declaration_cache
-                    .as_ref()
-                    .map(|cache| cache.semantics.clone())
-                {
+                Ok(candidates) => match durable_declarations {
                     None => {
                         durable_body_work.atomic_discards += 1;
                         Arc::from([])
@@ -4755,7 +6280,7 @@ impl CompilerSession {
             SemanticDependencyIncompleteReason::ConstEndpointUnavailable,
         );
         let manifest = Arc::new(SemanticDependencyInputManifest {
-            input,
+            input: input.clone(),
             imports: imports.graph().clone(),
             definitions: keys.into(),
             definition_fingerprints: definition_fingerprints.into(),
@@ -4779,14 +6304,63 @@ impl CompilerSession {
             definition_universe_state,
             work,
         });
-        self.dependency_manifest_cache
-            .push(DependencyManifestCacheEntry {
-                manifest: manifest.clone(),
-                attempt_origin: attempt_id,
-            });
-        while self.dependency_manifest_cache.len() > QUERY_TERMINAL_RETENTION_LIMIT {
-            self.dependency_manifest_cache.remove(0);
+        let semantic_key = SemanticQueryKey {
+            input: CodegenInputDescriptor {
+                semantic: input.clone(),
+                opt_level: options.opt_level.into(),
+            },
+            imports: imports.graph().clone(),
+        };
+        let definition_key = DefinitionQueryKey {
+            input: input.clone(),
+            imports: imports.graph().clone(),
+        };
+        let mut dependencies = vec![
+            self.queries
+                .source_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+            self.queries
+                .import_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+            self.queries
+                .target_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+            self.queries
+                .preview_inputs
+                .selected(&self.queries.graph)
+                .unwrap(),
+        ];
+        if let Some((_, semantic_handle)) = self.queries.semantic.get_with_handle(&semantic_key) {
+            dependencies.push(semantic_handle.observed());
+        } else if let Some((_, merge_handle)) =
+            self.queries.merge.get_secondary_with_handle(&input.sources)
+        {
+            // Semantic requests rejected by merge/RIR do not publish a
+            // semantic terminal. Retain the actual failing upstream terminal
+            // read by this incomplete manifest instead.
+            dependencies.push(merge_handle.observed());
         }
+        if let Some(definition_handle) = self.queries.definitions.handle(&definition_key) {
+            dependencies.push(definition_handle.observed());
+        }
+        let handle = self
+            .queries
+            .manifests
+            .publish_selected_attempt(
+                &mut self.queries.graph,
+                DependencyManifestCacheEntry {
+                    key,
+                    result: Ok(manifest.clone()),
+                },
+                dependencies,
+                guard.structural(),
+                *execution,
+            )
+            .unwrap_or_else(query_control_error);
+        guard.bind(handle.as_view());
         self.refresh_retention_metrics();
         Ok(manifest)
     }
@@ -4801,21 +6375,24 @@ impl CompilerSession {
         previous: &Arc<SemanticDependencyInputManifest>,
         current: &Arc<SemanticDependencyInputManifest>,
     ) -> Arc<SemanticInvalidationPlan> {
-        let mut guard = self.metrics.begin(FrontendQueryFamily::InvalidationPlans);
-        let publication = self.query_publication_snapshot();
-        guard.identify(QueryAttemptIdentity::Invalidation {
-            previous: previous.input.clone(),
-            current: current.input.clone(),
-        });
+        let mut guard = self.metrics.begin::<InvalidationPlanQuery>();
         let attempt_id = guard.id;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Some(entry) = self.invalidation_plan_cache.iter().find(|entry| {
-                Arc::ptr_eq(&entry.previous, previous) && Arc::ptr_eq(&entry.current, current)
-            }) {
+            let key = InvalidationPlanQueryKey {
+                previous: previous.clone(),
+                current: current.clone(),
+            };
+            if let Some((entry, handle)) = self
+                .queries
+                .invalidation_plans
+                .request_selected(&mut self.queries.graph, key.clone(), attempt_id.0)
+                .expect("invalidation planning cannot recursively request itself")
+            {
+                guard.bind(handle.as_view());
                 return (
                     entry.plan.clone(),
                     QueryAttemptExecution::Reused,
-                    Some(entry.attempt_origin),
+                    Some(handle.origin_attempt_id()),
                     QueryStructuralWork::None,
                 );
             }
@@ -4823,25 +6400,37 @@ impl CompilerSession {
             let plan = Arc::new(plan_semantic_invalidation(previous, current));
             let structural = QueryStructuralWork::Invalidation(plan.work());
             guard.accrue(structural.clone());
-            self.invalidation_plan_cache
-                .push_back(InvalidationPlanCacheEntry {
-                    previous: previous.clone(),
-                    current: current.clone(),
-                    plan: plan.clone(),
-                    attempt_origin: attempt_id,
-                });
-            while self.invalidation_plan_cache.len() > FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT {
-                self.invalidation_plan_cache.pop_front();
+            let mut dependencies = Vec::new();
+            for manifest in [previous, current] {
+                let manifest_key = DependencyManifestQueryKey {
+                    input: manifest.input.clone(),
+                    imports: manifest.imports.clone(),
+                };
+                if let Some(handle) = self.queries.manifests.handle(&manifest_key) {
+                    dependencies.push(handle.observed());
+                }
             }
+            let handle = self
+                .queries
+                .invalidation_plans
+                .publish_selected_attempt(
+                    &mut self.queries.graph,
+                    InvalidationPlanCacheEntry {
+                        key,
+                        plan: plan.clone(),
+                    },
+                    dependencies,
+                    guard.structural(),
+                    QueryAttemptExecution::Computed,
+                )
+                .unwrap_or_else(query_control_error);
+            guard.bind(handle.as_view());
             self.refresh_retention_metrics();
             (plan, QueryAttemptExecution::Computed, None, structural)
         }));
         let (plan, execution, origin, structural) = match result {
             Ok(result) => result,
-            Err(payload) => {
-                self.restore_query_publication(publication);
-                self.resume_canceled_query(&mut guard, payload)
-            }
+            Err(payload) => self.resume_canceled_query(&mut guard, payload),
         };
         guard.finish(execution, origin, &Ok::<(), ()>(()), structural);
         self.metrics.synchronize();
@@ -6489,65 +8078,42 @@ mod tests {
     }
 
     #[test]
-    fn production_query_guard_publishes_exactly_one_canceled_attempt() {
-        let mut metrics = CompilerSessionMetrics::default();
-        {
-            let mut guard = metrics.begin(FrontendQueryFamily::Merge);
-            guard.started();
-            guard.accrue(QueryStructuralWork::Merge(CanonicalMergeWork {
-                modules_visited: 1,
-                items_visited: 2,
-                ..CanonicalMergeWork::default()
-            }));
-            drop(guard);
-        }
-        metrics.synchronize();
-        let attempts = metrics.attempts();
-        assert_eq!(attempts.len(), 1);
-        assert_eq!(attempts[0].family, FrontendQueryFamily::Merge);
-        assert_eq!(attempts[0].outcome, QueryAttemptOutcome::Canceled);
-        assert_eq!(attempts[0].execution, QueryAttemptExecution::Computed);
-        let QueryStructuralWork::Merge(work) = attempts[0].structural else {
-            panic!("canceled merge must freeze accrued work");
-        };
-        assert_eq!(work.modules_visited, 1);
-        assert_eq!(work.items_visited, 2);
-        assert_eq!(metrics.work().merge.calls, 1);
-        assert_eq!(metrics.work().merge.executions, 1);
-    }
-
-    #[test]
     fn caught_session_cancellation_is_immediately_observable_and_commits_no_cache() {
         let mut session = CompilerSession::new();
         session.update(&base()).into_result().unwrap();
         session.cancel_merge_before_commit = true;
         let canceled = session.merge();
         assert!(canceled.is_err());
-        assert!(session.merge_cache.is_none());
+        assert_eq!(session.queries.merge.len(), 0);
         assert_eq!(session.work().merge.calls, 1);
         assert_eq!(session.work().merge.executions, 1);
         let attempt = session
             .metrics
             .attempts()
             .into_iter()
-            .find(|attempt| attempt.family == FrontendQueryFamily::Merge)
+            .find(|attempt| attempt.family == "merge")
             .unwrap();
-        assert_eq!(attempt.outcome, QueryAttemptOutcome::Canceled);
-        assert_eq!(attempt.execution, QueryAttemptExecution::Computed);
-        let QueryStructuralWork::Merge(work) = attempt.structural else {
+        assert_eq!(
+            attempt.attempt.outcome(),
+            crate::typed_query_store::AttemptOutcomeKind::Aborted(AbortedQueryReason::Canceled)
+        );
+        assert_eq!(attempt.attempt.execution(), QueryAttemptExecution::Computed);
+        assert_eq!(attempt.attempt.dependencies().len(), 2);
+        assert!(attempt.attempt.diagnostics().is_none());
+        let QueryStructuralWork::Merge(work) = attempt.attempt.work() else {
             panic!("canceled merge must retain exact prefix work");
         };
         assert_eq!(work.modules_visited, 2);
         assert_eq!(work.items_visited, 2);
 
         session.merge().unwrap();
-        assert!(session.merge_cache.is_some());
+        assert_eq!(session.queries.merge.len(), 1);
         assert_eq!(session.work().merge.calls, 2);
         assert_eq!(session.work().merge.executions, 2);
     }
 
     #[test]
-    fn semantic_cancellation_after_mutation_rolls_back_every_publication_field() {
+    fn semantic_cancellation_preserves_completed_dependencies_and_last_good() {
         let mut session = CompilerSession::new();
         session.update(&base()).into_result().unwrap();
         let default = CompileOptions::default();
@@ -6559,17 +8125,48 @@ mod tests {
             .as_ref()
             .map(|cache| cache.manifest.clone());
         let cfgs = session.last_successful_cfg_cache.clone().unwrap();
-        assert_eq!(session.semantic_cache.len(), 1);
+        let edited = snapshot(
+            &[
+                (7, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }"),
+                (2, "/p/a.rue", "a.rue", "fn a() {}"),
+            ],
+            7,
+        );
+        session.update(&edited).into_result().unwrap();
+        let merge_terminals = session.queries.merge.len();
+        let rir_terminals = session.queries.rir.len();
+        let rir_attempts = session
+            .metrics
+            .attempts()
+            .into_iter()
+            .filter(|attempt| attempt.family == "rir")
+            .count();
+        assert_eq!(session.queries.semantic.len(), 1);
 
         let mut variant = default.clone();
         variant.opt_level = OptLevel::O1;
         session.cancel_semantic_after_first_mutation = true;
         assert!(session.semantic(&variant).is_err());
-        assert_eq!(session.semantic_cache.len(), 1);
-        assert!(Arc::ptr_eq(
+        assert_eq!(session.queries.semantic.len(), 1);
+        assert!(!Arc::ptr_eq(
             session.latest_diagnostics().unwrap(),
             &diagnostics
         ));
+        assert!(matches!(
+            session.latest_diagnostics().unwrap().stage(),
+            FrontendDiagnosticStage::Rir(_)
+        ));
+        assert!(session.queries.merge.len() > merge_terminals);
+        assert!(session.queries.rir.len() > rir_terminals);
+        assert!(
+            session
+                .metrics
+                .attempts()
+                .into_iter()
+                .filter(|attempt| attempt.family == "rir")
+                .count()
+                > rir_attempts
+        );
         assert!(Arc::ptr_eq(
             session.last_good_semantic_diagnostics().unwrap(),
             &last_good
@@ -6582,7 +8179,7 @@ mod tests {
                 assert!(Arc::ptr_eq(&current.manifest, previous));
             }
             (None, None) => {}
-            _ => panic!("body baseline presence changed across rollback"),
+            _ => panic!("body baseline presence changed across cancellation"),
         }
         assert!(Arc::ptr_eq(
             session.last_successful_cfg_cache.as_ref().unwrap(),
@@ -6596,71 +8193,25 @@ mod tests {
             .attempts()
             .into_iter()
             .rev()
-            .find(|attempt| attempt.family == FrontendQueryFamily::Semantic)
+            .find(|attempt| attempt.family == "semantic")
             .unwrap();
-        assert_eq!(canceled.outcome, QueryAttemptOutcome::Canceled);
+        assert_eq!(
+            canceled.attempt.outcome(),
+            crate::typed_query_store::AttemptOutcomeKind::Aborted(AbortedQueryReason::Canceled)
+        );
         assert!(matches!(
-            canceled.structural,
+            canceled.attempt.work(),
             QueryStructuralWork::Semantic(_)
         ));
 
         let recomputed = session.semantic(&variant).unwrap();
-        assert_eq!(session.semantic_cache.len(), 2);
+        assert_eq!(session.queries.semantic.len(), 2);
         assert!(Arc::ptr_eq(
             &session.semantic(&variant).unwrap(),
             &recomputed
         ));
         assert_eq!(session.work().semantic.executions, 3);
         assert_eq!(session.work().semantic.reuses, 1);
-    }
-
-    #[test]
-    fn attempt_retention_rollover_preserves_lifetime_projection_boundedly() {
-        let mut metrics = CompilerSessionMetrics::default();
-        for _ in 0..(QUERY_ATTEMPT_RETENTION_LIMIT + 44) {
-            let guard = metrics.begin(FrontendQueryFamily::Imports);
-            guard.finish(
-                QueryAttemptExecution::Computed,
-                None,
-                &Ok::<(), ()>(()),
-                QueryStructuralWork::None,
-            );
-            metrics.synchronize();
-        }
-        assert_eq!(
-            metrics.work().imports.calls,
-            QUERY_ATTEMPT_RETENTION_LIMIT + 44
-        );
-        assert_eq!(
-            metrics.work().imports.executions,
-            QUERY_ATTEMPT_RETENTION_LIMIT + 44
-        );
-        assert_eq!(metrics.attempts().len(), QUERY_ATTEMPT_RETENTION_LIMIT);
-        assert!(metrics.projected_attempts.len() <= QUERY_ATTEMPT_RETENTION_LIMIT);
-    }
-
-    #[test]
-    fn failed_and_canceled_manifest_attempts_project_partial_lifetime_work() {
-        let mut metrics = CompilerSessionMetrics::default();
-        let partial = SemanticDependencyManifestWork {
-            definition_records_visited: 2,
-            import_records_visited: 3,
-            ..SemanticDependencyManifestWork::default()
-        };
-        let mut canceled = metrics.begin(FrontendQueryFamily::DependencyManifests);
-        canceled.started();
-        canceled.accrue(QueryStructuralWork::DependencyManifest(Box::new(partial)));
-        drop(canceled);
-        let failed = metrics.begin(FrontendQueryFamily::DependencyManifests);
-        failed.finish(
-            QueryAttemptExecution::Computed,
-            None,
-            &Err::<(), ()>(()),
-            QueryStructuralWork::DependencyManifest(Box::new(partial)),
-        );
-        metrics.synchronize();
-        assert_eq!(metrics.work().dependency_manifest_records_visited, 4);
-        assert_eq!(metrics.work().dependency_manifest_import_records_visited, 6);
     }
 
     fn evict_diagnostic_index(session: &mut CompilerSession) {
@@ -6674,7 +8225,14 @@ mod tests {
                 )],
                 91,
             );
-            session.publish_diagnostics(&source, FrontendDiagnosticStage::Syntax, None, &[]);
+            let snapshot = Arc::new(FrontendDiagnosticSnapshot {
+                source,
+                stage: FrontendDiagnosticStage::Syntax,
+                provenance: DiagnosticAttemptProvenance::Canonical,
+                errors: Arc::from([]),
+                warnings: Arc::from([]),
+            });
+            session.diagnostics.select_test_snapshot(snapshot);
         }
     }
 
@@ -7684,24 +9242,40 @@ mod tests {
             .metrics
             .attempts()
             .into_iter()
-            .filter(|attempt| attempt.family == FrontendQueryFamily::Merge)
+            .filter(|attempt| attempt.family == "merge")
             .collect::<Vec<_>>();
-        assert_eq!(merge_attempts.len(), 4);
-        assert_eq!(merge_attempts[0].execution, QueryAttemptExecution::Computed);
-        assert_eq!(merge_attempts[0].outcome, QueryAttemptOutcome::Failure);
-        let QueryStructuralWork::Merge(failed_work) = merge_attempts[0].structural else {
+        // The failed RIR terminal observes the failed merge stamp, so the
+        // semantic rejection reuses that deterministic failure without a
+        // fourth merge request.
+        assert_eq!(merge_attempts.len(), 3);
+        assert_eq!(
+            merge_attempts[0].attempt.execution(),
+            QueryAttemptExecution::Computed
+        );
+        assert_eq!(
+            merge_attempts[0].attempt.outcome(),
+            crate::typed_query_store::AttemptOutcomeKind::Failure
+        );
+        let QueryStructuralWork::Merge(failed_work) = merge_attempts[0].attempt.work() else {
             panic!("failed merge must retain typed structural work");
         };
         assert_eq!(failed_work.modules_visited, 1);
         assert_eq!(failed_work.items_visited, 3);
-        assert_eq!(merge_attempts[1].execution, QueryAttemptExecution::Reused);
-        assert_eq!(merge_attempts[1].reuse_origin, Some(merge_attempts[0].id));
-        assert_eq!(merge_attempts[1].structural, QueryStructuralWork::None);
+        assert_eq!(
+            merge_attempts[1].attempt.execution(),
+            QueryAttemptExecution::Reused
+        );
+        assert_eq!(
+            merge_attempts[1].attempt.origin_id(),
+            merge_attempts[0].attempt.id()
+        );
+        assert_eq!(merge_attempts[1].attempt.work(), &QueryStructuralWork::None);
         assert!(merge_attempts[1..].iter().all(|attempt| {
-            attempt.execution == QueryAttemptExecution::Reused
-                && attempt.outcome == QueryAttemptOutcome::Failure
-                && attempt.reuse_origin == Some(merge_attempts[0].id)
-                && attempt.structural == QueryStructuralWork::None
+            attempt.attempt.execution() == QueryAttemptExecution::Reused
+                && attempt.attempt.outcome()
+                    == crate::typed_query_store::AttemptOutcomeKind::Failure
+                && attempt.attempt.origin_id() == merge_attempts[0].attempt.id()
+                && attempt.attempt.work() == &QueryStructuralWork::None
         }));
 
         let update = session.update(&fixed);
@@ -7752,17 +9326,15 @@ mod tests {
         session.merge().unwrap_err();
 
         let identities = session
-            .metrics
-            .attempts()
-            .into_iter()
-            .filter_map(|attempt| match attempt.identity {
-                QueryAttemptIdentity::Merge {
-                    source,
-                    presentation,
-                } if attempt.execution == QueryAttemptExecution::Computed => {
-                    Some((source, presentation.unwrap()))
-                }
-                _ => None,
+            .queries
+            .merge
+            .attempt_history()
+            .filter(|attempt| attempt.execution == QueryAttemptExecution::Computed)
+            .map(|attempt| {
+                (
+                    attempt.key.source.revision.clone(),
+                    attempt.key.presentation.clone().unwrap(),
+                )
             })
             .collect::<Vec<_>>();
         assert_eq!(identities.len(), 2);
@@ -7934,14 +9506,23 @@ mod tests {
             .metrics
             .attempts()
             .into_iter()
-            .filter(|attempt| attempt.family == FrontendQueryFamily::Semantic)
+            .filter(|attempt| attempt.family == "semantic")
             .collect::<Vec<_>>();
         assert_eq!(attempts.len(), 3);
-        assert_eq!(attempts[0].execution, QueryAttemptExecution::Computed);
-        assert_eq!(attempts[1].execution, QueryAttemptExecution::Computed);
-        assert_eq!(attempts[2].execution, QueryAttemptExecution::Reused);
-        assert_eq!(attempts[2].reuse_origin, Some(attempts[0].id));
-        assert_ne!(attempts[2].reuse_origin, Some(attempts[1].id));
+        assert_eq!(
+            attempts[0].attempt.execution(),
+            QueryAttemptExecution::Computed
+        );
+        assert_eq!(
+            attempts[1].attempt.execution(),
+            QueryAttemptExecution::Computed
+        );
+        assert_eq!(
+            attempts[2].attempt.execution(),
+            QueryAttemptExecution::Reused
+        );
+        assert_eq!(attempts[2].attempt.origin_id(), attempts[0].attempt.id());
+        assert_ne!(attempts[2].attempt.origin_id(), attempts[1].attempt.id());
     }
 
     #[test]
@@ -7955,22 +9536,27 @@ mod tests {
             .metrics
             .attempts()
             .into_iter()
-            .find(|attempt| attempt.family == FrontendQueryFamily::Semantic)
+            .find(|attempt| attempt.family == "semantic")
             .unwrap()
-            .id;
+            .attempt
+            .id();
         for _ in 0..(QUERY_ATTEMPT_RETENTION_LIMIT + 44) {
             session.import_graph(None).unwrap();
         }
         session.semantic(&options).unwrap();
         let attempts = session.metrics.attempts();
-        assert!(attempts.iter().any(|attempt| attempt.id == origin));
+        assert!(
+            attempts
+                .iter()
+                .any(|attempt| attempt.attempt.id() == origin)
+        );
         let reused = attempts
             .iter()
             .rev()
-            .find(|attempt| attempt.family == FrontendQueryFamily::Semantic)
+            .find(|attempt| attempt.family == "semantic")
             .unwrap();
-        assert_eq!(reused.execution, QueryAttemptExecution::Reused);
-        assert_eq!(reused.reuse_origin, Some(origin));
+        assert_eq!(reused.attempt.execution(), QueryAttemptExecution::Reused);
+        assert_eq!(reused.attempt.origin_id(), origin);
     }
 
     #[test]
@@ -7993,7 +9579,7 @@ mod tests {
             session.semantic_dependency_inputs(options, None).unwrap();
         }
         assert_eq!(
-            session.dependency_manifest_cache.len(),
+            session.queries.manifests.len(),
             QUERY_TERMINAL_RETENTION_LIMIT
         );
         assert_eq!(
@@ -8090,6 +9676,58 @@ mod tests {
     }
 
     #[test]
+    fn dependency_edges_preserve_noops_and_restore_exact_retained_terminals() {
+        let source = base();
+        let edited = snapshot(
+            &[
+                (7, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }"),
+                (2, "/p/a.rue", "a.rue", "fn a() {}"),
+            ],
+            7,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let first = session.semantic(&options).unwrap();
+        let original_key = session
+            .queries
+            .semantic
+            .records()
+            .next()
+            .unwrap()
+            .key
+            .clone();
+        let original_handle = session.queries.semantic.handle(&original_key).unwrap();
+
+        let noop = session.update(&source);
+        assert!(!noop.downstream_invalidated());
+        assert!(Arc::ptr_eq(&first, &session.semantic(&options).unwrap()));
+        assert_eq!(session.work().semantic.executions, 1);
+        assert_eq!(session.work().semantic.reuses, 1);
+
+        let changed = session.update(&edited);
+        assert!(changed.downstream_invalidated());
+        changed.into_result().unwrap();
+        assert!(!original_handle.is_valid(&mut session.queries.graph));
+        assert!(original_handle.invalidation_cause_count(&session.queries.graph) > 0);
+        assert_eq!(session.work().semantic_entries_invalidated, 1);
+        let second = session.semantic(&options).unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+
+        session.update(&source).into_result().unwrap();
+        assert!(original_handle.is_valid(&mut session.queries.graph));
+        assert_eq!(
+            original_handle.invalidation_cause_count(&session.queries.graph),
+            0
+        );
+        assert!(Arc::ptr_eq(&first, &session.semantic(&options).unwrap()));
+        assert_eq!(session.work().semantic.executions, 2);
+        assert_eq!(session.work().semantic.reuses, 2);
+        assert_eq!(session.work().merge.executions, 2);
+        assert_eq!(session.work().rir.executions, 2);
+    }
+
+    #[test]
     fn semantic_errors_are_memoized_and_recovery_reexecutes() {
         let invalid = snapshot(
             &[(
@@ -8117,17 +9755,15 @@ mod tests {
             .metrics
             .attempts()
             .into_iter()
-            .filter(|attempt| attempt.family == FrontendQueryFamily::Semantic)
+            .filter(|attempt| attempt.family == "semantic")
             .collect::<Vec<_>>();
         assert_eq!(semantic_attempts.len(), 2);
-        assert!(
-            semantic_attempts
-                .iter()
-                .all(|attempt| attempt.outcome == QueryAttemptOutcome::Failure)
-        );
+        assert!(semantic_attempts.iter().all(|attempt| {
+            attempt.attempt.outcome() == crate::typed_query_store::AttemptOutcomeKind::Failure
+        }));
         assert_eq!(
-            semantic_attempts[1].reuse_origin,
-            Some(semantic_attempts[0].id)
+            semantic_attempts[1].attempt.origin_id(),
+            semantic_attempts[0].attempt.id()
         );
         assert_eq!(session.work().semantic_records.len(), 1);
         assert!(session.work().semantic_records[0].failed);
@@ -8138,7 +9774,7 @@ mod tests {
         assert_eq!(session.work().semantic.calls, 3);
         assert_eq!(session.work().semantic.executions, 2);
         assert_eq!(session.work().semantic.reuses, 1);
-        assert_eq!(session.work().semantic_entries, 1);
+        assert_eq!(session.work().semantic_entries, 2);
         assert_eq!(session.work().semantic_entries_invalidated, 1);
         assert!(retained_failed_work.body_analysis.bodies_failed > 0);
     }
@@ -8161,7 +9797,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        let baseline = session.semantic(&options).unwrap();
 
         session.update(&invalid).into_result().unwrap();
         let first = session.semantic(&options).unwrap_err();
@@ -8178,16 +9814,10 @@ mod tests {
         assert_eq!(record.work.cfg.cfg_builds_attempted, 0);
 
         session.update(&valid).into_result().unwrap();
-        session.semantic(&options).unwrap();
-        let recovered = session.work().semantic_records.last().unwrap();
-        assert!(recovered.failure.is_none());
-        assert_eq!(
-            recovered
-                .work
-                .declaration_reuse
-                .ordinary_declaration_resolutions_skipped,
-            1,
-            "the failed request must not replace the last-good durable baseline"
+        let recovered = session.semantic(&options).unwrap();
+        assert!(
+            Arc::ptr_eq(&recovered, &baseline),
+            "restoring the exact source leaf must reinstate its retained terminal"
         );
     }
 
@@ -8389,7 +10019,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        let baseline = session.semantic(&options).unwrap();
 
         session.update(&changed).into_result().unwrap();
         crate::canonical_semantic::with_test_cfg_failure_injection(|| {
@@ -8407,16 +10037,10 @@ mod tests {
         assert_eq!(failed.work.cfg.optimization_attempts, 0);
 
         session.update(&valid).into_result().unwrap();
-        session.semantic(&options).unwrap();
-        let recovered = session.work().semantic_records.last().unwrap();
-        assert!(recovered.failure.is_none());
-        assert_eq!(
-            recovered
-                .work
-                .declaration_reuse
-                .ordinary_declaration_resolutions_skipped,
-            1,
-            "the CFG failure must not replace the last-good durable baseline"
+        let recovered = session.semantic(&options).unwrap();
+        assert!(
+            Arc::ptr_eq(&recovered, &baseline),
+            "restoring the exact source leaf must reinstate its retained terminal"
         );
     }
 
@@ -8621,7 +10245,7 @@ mod tests {
             },
             imports,
         };
-        let successful = session.semantic_cache.get(&successful_key).unwrap();
+        let successful = session.queries.semantic.get(&successful_key).unwrap();
         let mut failed_input = successful.key.input.clone();
         failed_input.opt_level = crate::StableOptLevel::O1;
         let failed_imports = successful.key.imports.clone();
@@ -8638,16 +10262,28 @@ mod tests {
             Some(&failed_errors),
             &[],
         );
-        session.semantic_cache.insert(SemanticCacheEntry {
-            key: SemanticQueryKey {
-                input: failed_input,
-                imports: failed_imports,
+        let failed_key = SemanticQueryKey {
+            input: failed_input,
+            imports: failed_imports,
+        };
+        let source_dependency = session
+            .queries
+            .source_inputs
+            .selected(&session.queries.graph)
+            .unwrap();
+        session.queries.semantic.insert_with_dependencies(
+            &mut session.queries.graph,
+            SemanticCacheEntry {
+                key: failed_key,
+                result: Err(failed_errors),
+                diagnostics: failed_diagnostics,
+                successful_body_cache: None,
+                durable_declaration_cache: None,
+                successful_cfg_cache: None,
+                oracle_injected: false,
             },
-            result: Err(failed_errors),
-            diagnostics: failed_diagnostics,
-            successful_body_cache: None,
-            attempt_origin: AttemptId(0),
-        });
+            [source_dependency],
+        );
 
         let definitions = session
             .stable_definitions(&CompileOptions {
@@ -10601,7 +12237,8 @@ mod tests {
             imports: imports.clone(),
         };
         let output = session
-            .definition_cache
+            .queries
+            .definitions
             .get(&key)
             .expect("definition computation was published")
             .output
@@ -10620,7 +12257,6 @@ mod tests {
         store.insert(DefinitionCacheEntry {
             key: foreign_key,
             output,
-            attempt_origin: AttemptId(0),
         });
     }
 
@@ -10641,7 +12277,6 @@ mod tests {
         store.insert(DefinitionCacheEntry {
             key: foreign_key,
             output,
-            attempt_origin: AttemptId(0),
         });
     }
 
@@ -10733,13 +12368,16 @@ mod tests {
         let second = session.stable_definitions(&options).unwrap_err();
         assert_eq!(format!("{first:?}"), format!("{second:?}"));
         assert_eq!(session.work().definitions.executions, 1);
-        assert_eq!(session.work().definition_entries, 0);
+        // Current failure and the separately retained last-good definition
+        // artifact are both bounded typed terminals.
+        assert_eq!(session.work().definition_entries, 2);
         assert_eq!(session.work().semantic_records.len(), 1);
         assert!(session.work().semantic_records[0].failed);
 
         session.update(&valid).into_result().unwrap();
         assert!(session.stable_definitions(&options).is_ok());
-        assert_eq!(session.work().definitions.executions, 2);
+        assert_eq!(session.work().definitions.executions, 1);
+        assert_eq!(session.work().definitions.reuses, 3);
     }
 
     #[test]
@@ -10885,7 +12523,7 @@ mod tests {
     }
 
     #[test]
-    fn syntax_producer_reselects_canonical_origin_after_diagnostic_index_eviction() {
+    fn parse_family_reselects_canonical_origin_after_diagnostic_index_eviction() {
         let source = base();
         let mut session = CompilerSession::new();
         let origin = session.update(&source).diagnostics().clone();
@@ -10900,10 +12538,12 @@ mod tests {
         let invalidations = session.work().diagnostic_invalidations;
         let reuses = session.work().diagnostic_reuses;
 
+        crate::parsed_modules::reset_parse_operation_entries();
         let exact = session.update(&source);
 
         assert!(Arc::ptr_eq(exact.diagnostics(), &origin));
-        assert_eq!(exact.work().syntax.parser_invocations, 0);
+        assert_eq!(exact.work(), ParsedModulesWork::default());
+        assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
         assert_eq!(session.work().diagnostic_publications, publications);
         assert_eq!(session.work().diagnostic_invalidations, invalidations);
         assert_eq!(session.work().diagnostic_reuses, reuses + 1);
@@ -10916,7 +12556,7 @@ mod tests {
     }
 
     #[test]
-    fn syntax_producer_reselects_presentation_origin_after_diagnostic_index_eviction() {
+    fn parse_family_reselects_presentation_origin_after_diagnostic_index_eviction() {
         let source = base();
         let mut session = CompilerSession::new();
         let origin = session
@@ -10934,10 +12574,12 @@ mod tests {
         let invalidations = session.work().diagnostic_invalidations;
         let reuses = session.work().diagnostic_reuses;
 
+        crate::parsed_modules::reset_parse_operation_entries();
         let exact = session.update_for_presentation(&source);
 
         assert!(Arc::ptr_eq(exact.diagnostics(), &origin));
-        assert_eq!(exact.work().syntax.parser_invocations, 0);
+        assert_eq!(exact.work(), ParsedModulesWork::default());
+        assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
         assert_eq!(session.work().diagnostic_publications, publications);
         assert_eq!(session.work().diagnostic_invalidations, invalidations);
         assert_eq!(session.work().diagnostic_reuses, reuses + 1);
@@ -10947,6 +12589,41 @@ mod tests {
                 .unwrap(),
             &origin
         ));
+    }
+
+    #[test]
+    fn reselected_parse_terminal_is_the_only_baseline_for_the_next_miss() {
+        let a = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (2, "/p/helper.rue", "helper.rue", "fn helper() -> i32 { 0 }"),
+            ],
+            1,
+        );
+        let b = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }"),
+                (2, "/p/helper.rue", "helper.rue", "fn helper() -> i32 { 0 }"),
+            ],
+            1,
+        );
+        let c = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+                (2, "/p/helper.rue", "helper.rue", "fn helper() -> i32 { 2 }"),
+            ],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&a).into_result().unwrap();
+        session.update(&b).into_result().unwrap();
+
+        let reselected = session.update(&a);
+        assert_eq!(reselected.work(), ParsedModulesWork::default());
+
+        let next = session.update(&c);
+        assert_eq!(next.work().modules_reused, 1);
+        assert_eq!(next.work().modules_reparsed, 1);
     }
 
     #[test]
@@ -11139,7 +12816,7 @@ fn main() -> i32 { selected.value() }"#,
         let mut session = CompilerSession::new();
         session.update(&initial).into_result().unwrap();
         session.semantic(&options).unwrap();
-        assert_eq!(session.work().retention.diagnostic_entries, 4);
+        assert_eq!(session.work().retention.diagnostic_entries, 5);
         assert_eq!(session.work().retention.diagnostic_source_attempts, 1);
         assert_eq!(
             session.work().retention.diagnostic_source_bytes,
@@ -11234,7 +12911,7 @@ fn main() -> i32 { selected.value() }"#,
     }
 
     #[test]
-    fn invalidation_plan_retention_is_fifo_bounded_with_strong_manifest_ownership() {
+    fn invalidation_plan_keys_coalesce_structurally_equal_manifest_values() {
         let source = snapshot(
             &[(7, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
             7,
@@ -11254,29 +12931,17 @@ fn main() -> i32 { selected.value() }"#,
             last = planner.semantic_invalidation_plan(&pair[0], &pair[1]);
         }
 
-        assert_eq!(
-            planner.work().retention.invalidation_plans,
-            FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT
-        );
-        assert_eq!(
-            planner.work().retention.dependency_manifests,
-            FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT + 1
-        );
+        assert_eq!(planner.work().retention.invalidation_plans, 1);
+        assert_eq!(planner.work().retention.dependency_manifests, 2);
         let executions = planner.work().invalidation_plans.executions;
         let recomputed = planner.semantic_invalidation_plan(&manifests[0], &manifests[1]);
-        assert!(!Arc::ptr_eq(&first, &recomputed));
-        assert_eq!(planner.work().invalidation_plans.executions, executions + 1);
+        assert!(Arc::ptr_eq(&first, &recomputed));
+        assert_eq!(planner.work().invalidation_plans.executions, executions);
         let reused = planner
             .semantic_invalidation_plan(&manifests[manifests.len() - 2], manifests.last().unwrap());
         assert!(Arc::ptr_eq(&last, &reused));
-        assert_eq!(
-            planner.work().retention.invalidation_plans,
-            FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT
-        );
-        assert_eq!(
-            planner.work().retention.dependency_manifests,
-            FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT + 2
-        );
+        assert_eq!(planner.work().retention.invalidation_plans, 1);
+        assert_eq!(planner.work().retention.dependency_manifests, 2);
     }
 
     #[test]
@@ -12276,10 +13941,14 @@ fn main() -> i32 { selected.value() }"#,
         );
         assert!(
             session
-                .rir_cache
+                .queries
+                .rir
+                .records()
+                .last()
+                .unwrap()
+                .result
                 .as_ref()
                 .unwrap()
-                .output
                 .semantic_symbols()
                 .interner()
                 .get("Value::spare")
@@ -12287,10 +13956,14 @@ fn main() -> i32 { selected.value() }"#,
             "declaration completion must pre-intern unreachable callable symbols"
         );
         let symbols_before = session
-            .rir_cache
+            .queries
+            .rir
+            .records()
+            .last()
+            .unwrap()
+            .result
             .as_ref()
             .unwrap()
-            .output
             .semantic_symbols()
             .interner()
             .len();
@@ -12346,10 +14019,14 @@ fn main() -> i32 { selected.value() }"#,
         assert_eq!(actual.work().body_analysis.bodies_attempted, 1);
         assert_eq!(
             session
-                .rir_cache
+                .queries
+                .rir
+                .records()
+                .last()
+                .unwrap()
+                .result
                 .as_ref()
                 .unwrap()
-                .output
                 .semantic_symbols()
                 .interner()
                 .len(),
@@ -12362,10 +14039,14 @@ fn main() -> i32 { selected.value() }"#,
         assert_eq!(
             symbols_before,
             fresh_session
-                .rir_cache
+                .queries
+                .rir
+                .records()
+                .last()
+                .unwrap()
+                .result
                 .as_ref()
                 .unwrap()
-                .output
                 .semantic_symbols()
                 .interner()
                 .len()

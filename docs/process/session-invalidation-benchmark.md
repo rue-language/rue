@@ -52,7 +52,8 @@ supported body/CFG scenarios:
   specialized body and its CFG after an unrelated edit;
 - `completion_failed_semantic` and `completion_failure_recovery`: a failed
   request is retained as work evidence but cannot replace the last-good body or
-  CFG baseline.
+  CFG baseline, and recovery restores the retained exact semantic terminal
+  without re-execution.
 
 The executable aborts on any structural mismatch. Wall time is observational;
 compare it only across repeated runs on an otherwise idle machine. The

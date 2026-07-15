@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use crate::typed_query_store::AttemptView;
 use crate::{
     CompileError, CompileWarning, ImportDiscoveryContext, ImportDiscoveryPlan,
     ImportObservationLedger, ModuleId, ResolvedCodegenRevision, SourceRevision, SourceSnapshot,
@@ -25,6 +26,7 @@ pub enum FrontendDiagnosticStage {
     Syntax,
     Import(ImportDiagnosticInputDescriptor),
     Merge,
+    Rir(SourceRevision),
     Semantic(ResolvedCodegenRevision),
 }
 
@@ -96,17 +98,6 @@ impl FrontendDiagnosticSnapshot {
     pub fn is_success(&self) -> bool {
         self.errors.is_empty()
     }
-
-    pub(crate) fn matches_exact_attempt(
-        &self,
-        source: &SourceSnapshot,
-        stage: &FrontendDiagnosticStage,
-        provenance: &DiagnosticAttemptProvenance,
-    ) -> bool {
-        snapshot_matches_source_attempt(self, source)
-            && self.stage() == stage
-            && &self.provenance == provenance
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -119,7 +110,15 @@ pub(crate) struct DiagnosticRetentionMetrics {
 #[derive(Debug, Clone)]
 struct IndexedDiagnosticAttempt {
     id: u64,
-    snapshot: Arc<FrontendDiagnosticSnapshot>,
+    attempt: Arc<dyn AttemptView>,
+}
+
+impl IndexedDiagnosticAttempt {
+    fn snapshot(&self) -> &Arc<FrontendDiagnosticSnapshot> {
+        self.attempt
+            .diagnostics()
+            .expect("only diagnostic-bearing attempts are indexed")
+    }
 }
 
 /// Bounded index and explicit selectors for immutable diagnostic attempts.
@@ -131,7 +130,6 @@ struct IndexedDiagnosticAttempt {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct DiagnosticAttemptStore {
     entries: VecDeque<IndexedDiagnosticAttempt>,
-    next_id: u64,
     latest: Option<u64>,
     latest_successful: Option<u64>,
     last_good_semantic: Option<u64>,
@@ -146,16 +144,16 @@ impl DiagnosticAttemptStore {
         self.latest
             .and_then(|latest| self.entries.iter().find(|entry| entry.id == latest))
             .filter(|entry| {
-                snapshot_matches_source_attempt(&entry.snapshot, source)
-                    && entry.snapshot.stage() == stage
+                snapshot_matches_source_attempt(entry.snapshot(), source)
+                    && entry.snapshot().stage() == stage
             })
             .or_else(|| {
                 self.entries.iter().rev().find(|entry| {
-                    snapshot_matches_source_attempt(&entry.snapshot, source)
-                        && entry.snapshot.stage() == stage
+                    snapshot_matches_source_attempt(entry.snapshot(), source)
+                        && entry.snapshot().stage() == stage
                 })
             })
-            .map(|entry| &entry.snapshot)
+            .map(IndexedDiagnosticAttempt::snapshot)
     }
 
     pub fn find_exact(
@@ -168,11 +166,11 @@ impl DiagnosticAttemptStore {
             .iter()
             .rev()
             .find(|entry| {
-                snapshot_matches_source_attempt(&entry.snapshot, source)
-                    && entry.snapshot.stage() == stage
-                    && &entry.snapshot.provenance == provenance
+                snapshot_matches_source_attempt(entry.snapshot(), source)
+                    && entry.snapshot().stage() == stage
+                    && &entry.snapshot().provenance == provenance
             })
-            .map(|entry| &entry.snapshot)
+            .map(IndexedDiagnosticAttempt::snapshot)
     }
 
     pub fn latest(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
@@ -189,26 +187,46 @@ impl DiagnosticAttemptStore {
 
     /// Select a reused origin batch, restoring its bounded index entry if a
     /// caller or another attempt kept it alive beyond earlier index eviction.
-    pub fn select(&mut self, snapshot: Arc<FrontendDiagnosticSnapshot>) {
+    pub(crate) fn select(&mut self, attempt: Arc<dyn AttemptView>) {
+        let snapshot = attempt
+            .diagnostics()
+            .expect("selected diagnostic attempt owns a batch");
         let id = self
             .entries
             .iter()
-            .find(|entry| Arc::ptr_eq(&entry.snapshot, &snapshot))
+            .find(|entry| Arc::ptr_eq(entry.snapshot(), snapshot))
             .map(|entry| entry.id)
-            .unwrap_or_else(|| self.push(snapshot));
+            .unwrap_or_else(|| self.push(attempt));
         self.select_id(id);
         self.evict();
     }
 
+    pub(crate) fn select_snapshot(&mut self, snapshot: &Arc<FrontendDiagnosticSnapshot>) -> bool {
+        let Some(id) = self
+            .entries
+            .iter()
+            .find(|entry| Arc::ptr_eq(entry.snapshot(), snapshot))
+            .map(|entry| entry.id)
+        else {
+            return false;
+        };
+        self.select_id(id);
+        true
+    }
+
     /// Index a newly frozen producer batch. The caller must have checked that
     /// its exact source-attempt/stage key is not already present.
-    pub fn insert(&mut self, snapshot: Arc<FrontendDiagnosticSnapshot>) {
+    #[cfg(test)]
+    pub(crate) fn insert(&mut self, attempt: Arc<dyn AttemptView>) {
+        let snapshot = attempt
+            .diagnostics()
+            .expect("indexed diagnostic attempt owns a batch");
         debug_assert!(
             self.find_exact(snapshot.source(), snapshot.stage(), &snapshot.provenance)
                 .is_none(),
             "diagnostic attempt keys are published once"
         );
-        let id = self.push(snapshot);
+        let id = self.push(attempt);
         self.select_id(id);
         self.evict();
     }
@@ -217,7 +235,7 @@ impl DiagnosticAttemptStore {
         let mut attempts: Vec<&SourceSnapshot> = Vec::new();
         let mut source_bytes = 0;
         for entry in &self.entries {
-            let source = entry.snapshot.source();
+            let source = entry.snapshot().source();
             if attempts
                 .iter()
                 .any(|attempt| same_source_attempt(attempt, source))
@@ -234,21 +252,20 @@ impl DiagnosticAttemptStore {
         }
     }
 
-    fn push(&mut self, snapshot: Arc<FrontendDiagnosticSnapshot>) -> u64 {
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
+    fn push(&mut self, attempt: Arc<dyn AttemptView>) -> u64 {
+        let id = attempt.id().0;
         self.entries
-            .push_back(IndexedDiagnosticAttempt { id, snapshot });
+            .push_back(IndexedDiagnosticAttempt { id, attempt });
         id
     }
 
     fn select_id(&mut self, id: u64) {
-        let snapshot = &self
+        let snapshot = self
             .entries
             .iter()
             .find(|entry| entry.id == id)
             .expect("selected diagnostic attempt is indexed")
-            .snapshot;
+            .snapshot();
         self.latest = Some(id);
         if snapshot.is_success() {
             self.latest_successful = Some(id);
@@ -263,7 +280,7 @@ impl DiagnosticAttemptStore {
         self.entries
             .iter()
             .find(|entry| entry.id == id)
-            .map(|entry| &entry.snapshot)
+            .map(IndexedDiagnosticAttempt::snapshot)
     }
 
     fn evict(&mut self) {
@@ -279,6 +296,53 @@ impl DiagnosticAttemptStore {
             self.entries.remove(evict);
         }
         debug_assert!(self.entries.len() <= FRONTEND_DIAGNOSTIC_RETENTION_LIMIT);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn select_test_snapshot(&mut self, snapshot: Arc<FrontendDiagnosticSnapshot>) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1 << 63);
+        self.select(Arc::new(TestDiagnosticAttempt {
+            id: crate::session::AttemptId(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
+            snapshot,
+        }));
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestDiagnosticAttempt {
+    id: crate::session::AttemptId,
+    snapshot: Arc<FrontendDiagnosticSnapshot>,
+}
+
+#[cfg(test)]
+impl AttemptView for TestDiagnosticAttempt {
+    fn id(&self) -> crate::session::AttemptId {
+        self.id
+    }
+    fn execution(&self) -> crate::typed_query_store::AttemptExecution {
+        crate::typed_query_store::AttemptExecution::Computed
+    }
+    fn outcome(&self) -> crate::typed_query_store::AttemptOutcomeKind {
+        if self.snapshot.is_success() {
+            crate::typed_query_store::AttemptOutcomeKind::Success
+        } else {
+            crate::typed_query_store::AttemptOutcomeKind::Failure
+        }
+    }
+    fn origin_id(&self) -> crate::session::AttemptId {
+        self.id
+    }
+    fn dependencies(&self) -> &[crate::query_graph::ObservedDependency] {
+        &[]
+    }
+    fn work(&self) -> &crate::session::QueryStructuralWork {
+        &crate::session::QueryStructuralWork::None
+    }
+    fn diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        Some(&self.snapshot)
     }
 }
 
@@ -311,11 +375,54 @@ fn snapshot_matches_source_attempt(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use rue_span::FileId;
 
     use super::*;
     use crate::{CanonicalImportGraph, SourceMetadata, StableOptLevel};
+
+    #[derive(Debug)]
+    struct FakeAttempt {
+        id: crate::session::AttemptId,
+        diagnostics: Arc<FrontendDiagnosticSnapshot>,
+    }
+
+    impl AttemptView for FakeAttempt {
+        fn id(&self) -> crate::session::AttemptId {
+            self.id
+        }
+        fn execution(&self) -> crate::typed_query_store::AttemptExecution {
+            crate::typed_query_store::AttemptExecution::Computed
+        }
+        fn outcome(&self) -> crate::typed_query_store::AttemptOutcomeKind {
+            if self.diagnostics.is_success() {
+                crate::typed_query_store::AttemptOutcomeKind::Success
+            } else {
+                crate::typed_query_store::AttemptOutcomeKind::Failure
+            }
+        }
+        fn origin_id(&self) -> crate::session::AttemptId {
+            self.id
+        }
+        fn dependencies(&self) -> &[crate::query_graph::ObservedDependency] {
+            &[]
+        }
+        fn work(&self) -> &crate::session::QueryStructuralWork {
+            &crate::session::QueryStructuralWork::None
+        }
+        fn diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+            Some(&self.diagnostics)
+        }
+    }
+
+    fn indexed(snapshot: Arc<FrontendDiagnosticSnapshot>) -> Arc<dyn AttemptView> {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Arc::new(FakeAttempt {
+            id: crate::session::AttemptId(NEXT.fetch_add(1, Ordering::Relaxed)),
+            diagnostics: snapshot,
+        })
+    }
 
     fn source(text: &str) -> SourceSnapshot {
         let root = FileId::new(1);
@@ -385,9 +492,9 @@ mod tests {
         let failure_source = source("fn main( {");
         let failure = snapshot(&failure_source, FrontendDiagnosticStage::Syntax, false);
         let mut store = DiagnosticAttemptStore::default();
-        store.insert(syntax.clone());
-        store.insert(semantic.clone());
-        store.insert(failure.clone());
+        store.insert(indexed(syntax.clone()));
+        store.insert(indexed(semantic.clone()));
+        store.insert(indexed(failure.clone()));
 
         assert!(Arc::ptr_eq(store.latest().unwrap(), &failure));
         assert!(Arc::ptr_eq(store.latest_successful().unwrap(), &semantic));
@@ -405,10 +512,14 @@ mod tests {
         let mut store = DiagnosticAttemptStore::default();
         let pinned_source = source("fn main() -> i32 { 0 }");
         let pinned = snapshot(&pinned_source, FrontendDiagnosticStage::Syntax, true);
-        store.insert(pinned.clone());
+        store.insert(indexed(pinned.clone()));
         for revision in 0..=FRONTEND_DIAGNOSTIC_RETENTION_LIMIT {
             let current = source(&format!("fn main() -> i32 {{ {revision} }}"));
-            store.insert(snapshot(&current, FrontendDiagnosticStage::Merge, true));
+            store.insert(indexed(snapshot(
+                &current,
+                FrontendDiagnosticStage::Merge,
+                true,
+            )));
         }
         assert!(store.retention_metrics().entries <= FRONTEND_DIAGNOSTIC_RETENTION_LIMIT);
         assert!(
@@ -417,7 +528,7 @@ mod tests {
                 .is_none()
         );
 
-        store.select(pinned.clone());
+        store.select(indexed(pinned.clone()));
         assert!(Arc::ptr_eq(store.latest().unwrap(), &pinned));
         assert!(Arc::ptr_eq(
             store
@@ -480,11 +591,11 @@ mod tests {
         );
         let canonical_attempt = attempt(&reverse, DiagnosticAttemptProvenance::Canonical);
         let mut store = DiagnosticAttemptStore::default();
-        store.insert(forward_attempt.clone());
-        store.insert(reverse_attempt.clone());
-        store.insert(canonical_attempt);
+        store.insert(indexed(forward_attempt.clone()));
+        store.insert(indexed(reverse_attempt.clone()));
+        store.insert(indexed(canonical_attempt));
 
-        store.select(reverse_attempt.clone());
+        store.select(indexed(reverse_attempt.clone()));
 
         assert!(Arc::ptr_eq(
             store

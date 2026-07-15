@@ -484,6 +484,18 @@ pub fn compile_snapshot(
 /// This preserves the compiler-owned import graph and captured discovery
 /// context instead of reconstructing a peer frontend from source bytes.
 impl CompilerSession {
+    /// Run the fresh backend tail for the exact published snapshot used by the
+    /// cold-versus-reused differential oracle, including direct no-discovery
+    /// sessions. Production filesystem callers use [`Self::executable`].
+    #[doc(hidden)]
+    pub fn oracle_executable(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        options: &CompileOptions,
+    ) -> MultiErrorResult<CompileOutput> {
+        compile_with_session(self, snapshot, options)
+    }
+
     /// Produce an executable from this session's closed-valid discovery revision.
     pub fn executable(&mut self, options: &CompileOptions) -> MultiErrorResult<CompileOutput> {
         let snapshot = self.committed_snapshot_for_executable()?;

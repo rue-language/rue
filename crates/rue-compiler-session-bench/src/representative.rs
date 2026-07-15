@@ -331,7 +331,10 @@ fn assert_structure(scenarios: &[Value]) {
             .unwrap()
     };
     let expected = [
-        ("no_change_query", [0, 7, 0, 0, 0, 0, 0, 1]),
+        // An exact parse-family terminal hit invokes no parser or adoption
+        // producer, so module reuse is represented by the query reuse below
+        // rather than synthetic per-module work.
+        ("no_change_query", [0, 0, 0, 0, 0, 0, 0, 1]),
         ("leaf_edit", [1, 6, 6, 0, 6, 0, 1, 0]),
         ("widely_depended_definition_edit", [1, 6, 6, 0, 6, 0, 1, 0]),
         ("import_change", [2, 5, 6, 0, 6, 0, 1, 0]),

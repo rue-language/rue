@@ -1823,6 +1823,7 @@ mod tests {
             .program()
             .unwrap()
             .clone();
+        crate::parsed_modules::reset_parse_operation_entries();
         let closed = session
             .close_import_discovery(ImportObservationLedger::default())
             .unwrap();
@@ -1831,11 +1832,16 @@ mod tests {
         assert!(Arc::ptr_eq(session.published().unwrap(), &staged));
         assert_eq!(closed.parse_work().syntax.lexer_invocations, 1);
         assert_eq!(closed.parse_work().syntax.parser_invocations, 1);
-        assert_eq!(session.work().last_parse, closed.parse_work());
+        assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
+        assert_eq!(
+            session.work().last_parse,
+            crate::ParsedModulesWork::default()
+        );
 
         let exact = session.update_for_presentation(&source);
         assert_eq!(exact.work().syntax.lexer_invocations, 0);
         assert_eq!(exact.work().syntax.parser_invocations, 0);
+        assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
         assert!(Arc::ptr_eq(exact.result().unwrap(), &staged));
     }
 
@@ -1866,7 +1872,7 @@ mod tests {
         assert!(session.published().is_none());
 
         let direct = session.update_for_presentation(&source);
-        assert_eq!(direct.work().syntax.parser_invocations, 1);
+        assert_eq!(direct.work(), crate::ParsedModulesWork::default());
         direct.into_result().unwrap();
     }
 
@@ -1899,6 +1905,7 @@ mod tests {
             1
         );
 
+        crate::parsed_modules::reset_parse_operation_entries();
         session
             .stage_import_discovery(
                 &original,
@@ -1908,9 +1915,8 @@ mod tests {
             )
             .unwrap();
         let changed_context = session.discovery_attempt().unwrap().parse_work();
-        assert_eq!(changed_context.syntax.parser_invocations, 0);
-        assert_eq!(changed_context.modules_considered, 1);
-        assert_eq!(changed_context.modules_reused, 1);
+        assert_eq!(changed_context, crate::ParsedModulesWork::default());
+        assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
 
         session
             .stage_import_discovery(
@@ -1996,8 +2002,7 @@ mod tests {
         assert_eq!(work.modules_reused, 1);
 
         let exact = session.update_for_presentation(&complete);
-        assert_eq!(exact.work().syntax.parser_invocations, 0);
-        assert_eq!(exact.work().modules_reused, 2);
+        assert_eq!(exact.work(), crate::ParsedModulesWork::default());
         assert!(Arc::ptr_eq(exact.result().unwrap(), &staged));
 
         let broken_in_presentation_order = snapshot(
@@ -2639,6 +2644,39 @@ mod tests {
                 "wrong end for {call}"
             );
         }
+    }
+
+    #[test]
+    fn staged_malformed_import_retains_its_failed_plan_diagnostics() {
+        let source =
+            SourceSnapshot::single("/project/main.rue", "fn main() { let bad = @import(1); }")
+                .unwrap();
+        let mut session = crate::CompilerSession::new();
+        let plan = session
+            .stage_import_discovery(
+                &source,
+                crate::ImportDiscoveryContext::new(1, "/project", Some("/project/std"), "all")
+                    .unwrap(),
+                accepted_reads(&source),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        assert!(
+            plan.pending_requests(&ImportObservationLedger::default())
+                .is_empty()
+        );
+        session
+            .close_import_discovery(ImportObservationLedger::default())
+            .unwrap_err();
+        let diagnostics = session.import_diagnostics().unwrap();
+        assert!(
+            matches!(
+                diagnostics.errors()[0].kind,
+                ErrorKind::ImportRequiresStringLiteral
+            ),
+            "unexpected staged diagnostics: {:?}",
+            diagnostics.errors()
+        );
     }
 
     #[test]

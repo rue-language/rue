@@ -8,6 +8,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 #[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
 use lasso::Key;
 use lasso::{RodeoResolver, Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
@@ -534,11 +537,20 @@ pub struct CanonicalParseUpdate {
     result: Result<Arc<ParsedProgram>, CompileErrors>,
     work: ParsedModulesWork,
     invalidation: ParseInvalidationSummary,
-    #[cfg_attr(not(test), allow(dead_code))]
-    baseline_advanced: bool,
 }
 
 impl CanonicalParseUpdate {
+    pub(crate) fn reused(
+        result: Result<Arc<ParsedProgram>, CompileErrors>,
+        invalidation: ParseInvalidationSummary,
+    ) -> Self {
+        Self {
+            result,
+            work: ParsedModulesWork::default(),
+            invalidation,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn result(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
         self.result.as_ref()
@@ -555,139 +567,88 @@ impl CanonicalParseUpdate {
     pub fn invalidation(&self) -> &ParseInvalidationSummary {
         &self.invalidation
     }
+}
 
-    pub(crate) fn succeeded(&self) -> bool {
-        self.result.is_ok()
-    }
+/// Parse one snapshot against an explicit family-owned successful baseline.
+pub(crate) fn parse_canonical_snapshot(
+    snapshot: &SourceSnapshot,
+    baseline: Option<&ParsedProgram>,
+) -> CanonicalParseUpdate {
+    parse_snapshot_in_order(snapshot, baseline, DiagnosticOrder::Canonical)
+}
 
-    /// Whether this update reused the complete current baseline without
-    /// rebinding or replacing any producer artifact.
-    pub(crate) fn exactly_reused_baseline(&self) -> bool {
-        self.result.is_ok()
-            && !self.invalidation.exact_reused.is_empty()
-            && self.invalidation.payload_rebound.is_empty()
-            && self.invalidation.reparsed.is_empty()
-            && self.invalidation.added.is_empty()
-            && self.invalidation.removed.is_empty()
-    }
+/// Parse one snapshot while preserving its presentation diagnostic order.
+pub(crate) fn parse_presentation_snapshot(
+    snapshot: &SourceSnapshot,
+    baseline: Option<&ParsedProgram>,
+) -> CanonicalParseUpdate {
+    parse_snapshot_in_order(snapshot, baseline, DiagnosticOrder::Snapshot)
+}
 
-    #[cfg(test)]
-    pub(crate) fn baseline_advanced(&self) -> bool {
-        self.baseline_advanced
+fn parse_snapshot_in_order(
+    snapshot: &SourceSnapshot,
+    baseline: Option<&ParsedProgram>,
+    diagnostic_order: DiagnosticOrder,
+) -> CanonicalParseUpdate {
+    record_parse_operation_entry();
+    let invalidation = classify_invalidation(snapshot, baseline);
+    let outcome =
+        parse_source_snapshot_modules_reusing_with_work(snapshot, baseline, diagnostic_order);
+    CanonicalParseUpdate {
+        result: outcome.result.map(Arc::new),
+        work: outcome.work,
+        invalidation,
     }
 }
 
-/// In-process immutable canonical parse baseline for tooling queries.
-#[derive(Debug, Default)]
-pub struct CanonicalParseSession {
-    baseline: Option<Arc<ParsedProgram>>,
-}
-
-impl CanonicalParseSession {
-    #[cfg(test)]
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    /// Seed a session only with a program belonging to this exact snapshot revision.
-    #[cfg(test)]
-    pub(crate) fn from_baseline(
-        snapshot: &SourceSnapshot,
-        baseline: Arc<ParsedProgram>,
-    ) -> CompileResult<Self> {
-        if !baseline.belongs_to_exact_snapshot(snapshot) {
-            return Err(invalid_input(
-                "parse-session baseline belongs to a foreign source snapshot",
-            ));
-        }
-        Ok(Self {
-            baseline: Some(baseline),
-        })
-    }
-
-    /// Adopt an already parsed exact-snapshot program as this session's baseline.
-    ///
-    /// This performs no syntax work. The caller supplies work already performed
-    /// by the bounded operation that produced `program`; foreign revisions are
-    /// rejected without advancing the baseline.
-    pub(crate) fn adopt_exact(
-        &mut self,
-        snapshot: &SourceSnapshot,
-        program: Arc<ParsedProgram>,
-        work: ParsedModulesWork,
-    ) -> CanonicalParseUpdate {
-        let invalidation = classify_invalidation(snapshot, self.baseline.as_deref());
-        if !program.belongs_to_exact_snapshot(snapshot) {
-            return CanonicalParseUpdate {
-                result: Err(CompileErrors::from(invalid_input(
-                    "adopted parsed program belongs to a foreign source snapshot",
-                ))),
-                work,
-                invalidation,
-                baseline_advanced: false,
-            };
-        }
-        self.baseline = Some(program.clone());
-        CanonicalParseUpdate {
-            result: Ok(program),
-            work,
-            invalidation,
-            baseline_advanced: true,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn baseline(&self) -> Option<&Arc<ParsedProgram>> {
-        self.baseline.as_ref()
-    }
-
-    /// Update from an immutable snapshot, publishing only successful results.
-    /// Syntax diagnostics are complete and ordered by canonical `ModuleId`.
-    /// On failure, invalidations are still relative to the last successful
-    /// baseline and that baseline is not advanced.
-    pub fn update(&mut self, snapshot: &SourceSnapshot) -> CanonicalParseUpdate {
-        self.update_in_order(snapshot, DiagnosticOrder::Canonical)
-    }
-
-    /// One-shot batch adapter preserving the caller's established diagnostic
-    /// order while publishing the same canonical parsed artifacts.
-    pub(crate) fn update_for_batch(&mut self, snapshot: &SourceSnapshot) -> CanonicalParseUpdate {
-        self.update_in_order(snapshot, DiagnosticOrder::Snapshot)
-    }
-
-    fn update_in_order(
-        &mut self,
-        snapshot: &SourceSnapshot,
-        diagnostic_order: DiagnosticOrder,
-    ) -> CanonicalParseUpdate {
-        let invalidation = classify_invalidation(snapshot, self.baseline.as_deref());
-        let outcome = parse_source_snapshot_modules_reusing_with_work(
-            snapshot,
-            self.baseline.as_deref(),
-            diagnostic_order,
-        );
-        match outcome.result {
-            Ok(program) => {
-                let program = Arc::new(program);
-                self.baseline = Some(program.clone());
-                CanonicalParseUpdate {
-                    result: Ok(program),
-                    work: outcome.work,
-                    invalidation,
-                    baseline_advanced: true,
-                }
-            }
-            Err(errors) => CanonicalParseUpdate {
-                result: Err(errors),
-                work: outcome.work,
-                invalidation,
-                baseline_advanced: false,
-            },
-        }
+/// Validate an externally produced exact-snapshot program without retaining it
+/// outside the typed parse family.
+pub(crate) fn adopt_exact_parsed_program(
+    snapshot: &SourceSnapshot,
+    baseline: Option<&ParsedProgram>,
+    program: Arc<ParsedProgram>,
+    work: ParsedModulesWork,
+) -> CanonicalParseUpdate {
+    record_parse_operation_entry();
+    let invalidation = classify_invalidation(snapshot, baseline);
+    let result = if program.belongs_to_exact_snapshot(snapshot) {
+        Ok(program)
+    } else {
+        Err(CompileErrors::from(invalid_input(
+            "adopted parsed program belongs to a foreign source snapshot",
+        )))
+    };
+    CanonicalParseUpdate {
+        result,
+        work,
+        invalidation,
     }
 }
 
-fn classify_invalidation(
+#[cfg(test)]
+thread_local! {
+    static PARSE_OPERATION_ENTRIES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_parse_operation_entry() {
+    PARSE_OPERATION_ENTRIES.with(|entries| entries.set(entries.get() + 1));
+}
+
+#[cfg(not(test))]
+fn record_parse_operation_entry() {}
+
+#[cfg(test)]
+pub(crate) fn reset_parse_operation_entries() {
+    PARSE_OPERATION_ENTRIES.with(|entries| entries.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn parse_operation_entries() -> usize {
+    PARSE_OPERATION_ENTRIES.with(Cell::get)
+}
+
+pub(crate) fn classify_invalidation(
     snapshot: &SourceSnapshot,
     baseline: Option<&ParsedProgram>,
 ) -> ParseInvalidationSummary {
@@ -2008,9 +1969,8 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn parse_session_noop_reuses_exact_arcs_and_publishes_send_sync_result() {
+    fn explicit_parse_baseline_reuses_exact_arcs_and_publishes_send_sync_result() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<CanonicalParseSession>();
         assert_send_sync::<CanonicalParseUpdate>();
         assert_send_sync::<ParseInvalidationSummary>();
         assert_send_sync::<ParsedProgram>();
@@ -2022,9 +1982,10 @@ fn main() -> i32 {
             ],
             7,
         );
-        let mut session = CanonicalParseSession::new();
-        let first = session.update(&source).into_result().unwrap();
-        let second_update = session.update(&source);
+        let first = parse_canonical_snapshot(&source, None)
+            .into_result()
+            .unwrap();
+        let second_update = parse_canonical_snapshot(&source, Some(&first));
         let work = second_update.work();
         let second = second_update.into_result().unwrap();
 
@@ -2059,7 +2020,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn parse_session_one_edit_among_128_parses_once() {
+    fn explicit_parse_baseline_one_edit_among_128_parses_once() {
         let make = |edited: bool| {
             let physical = (0..128)
                 .map(|index| (FileId::new(index), format!("/p/m{index}.rue")))
@@ -2082,9 +2043,10 @@ fn main() -> i32 {
             )
             .unwrap()
         };
-        let mut session = CanonicalParseSession::new();
-        session.update(&make(false)).into_result().unwrap();
-        let update = session.update(&make(true));
+        let baseline = parse_canonical_snapshot(&make(false), None)
+            .into_result()
+            .unwrap();
+        let update = parse_canonical_snapshot(&make(true), Some(&baseline));
         let work = update.work();
 
         assert_eq!(work.previous_modules_indexed, 128);
@@ -2098,7 +2060,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn parse_session_distinguishes_relocation_file_ids_and_stable_renames() {
+    fn explicit_parse_baseline_distinguishes_relocation_file_ids_and_stable_renames() {
         let base = snapshot(
             &[
                 (1, "/old/a.rue", "a.rue", "fn a() {}"),
@@ -2120,13 +2082,12 @@ fn main() -> i32 {
             ],
             11,
         );
-        let mut session = CanonicalParseSession::new();
-        session.update(&base).into_result().unwrap();
-        let moved = session.update(&relocated);
+        let base = parse_canonical_snapshot(&base, None).into_result().unwrap();
+        let moved = parse_canonical_snapshot(&relocated, Some(&base));
         assert_eq!(moved.work().modules_rebound, 2);
         assert_eq!(moved.invalidation().payload_rebound.len(), 2);
-        moved.into_result().unwrap();
-        let ids = session.update(&reassigned);
+        let moved = moved.into_result().unwrap();
+        let ids = parse_canonical_snapshot(&reassigned, Some(&moved));
         assert_eq!(ids.work().modules_reparsed, 2);
         assert_eq!(ids.invalidation().reparsed.len(), 2);
 
@@ -2137,8 +2098,8 @@ fn main() -> i32 {
             ],
             11,
         );
-        ids.into_result().unwrap();
-        let update = session.update(&renamed);
+        let ids = ids.into_result().unwrap();
+        let update = parse_canonical_snapshot(&renamed, Some(&ids));
         assert_eq!(update.work().modules_rebound, 1);
         assert_eq!(update.work().modules_reparsed, 1);
         assert_eq!(update.invalidation().added.len(), 2);
@@ -2147,7 +2108,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn failed_session_update_keeps_successful_baseline_for_recovery() {
+    fn caller_keeps_successful_parse_baseline_for_recovery() {
         let good = snapshot(
             &[
                 (1, "/p/a.rue", "a.rue", "fn a() {}"),
@@ -2172,33 +2133,19 @@ fn main() -> i32 {
             ],
             1,
         );
-        let mut session = CanonicalParseSession::new();
-        let baseline = session.update(&good).into_result().unwrap();
-        let failed = session.update(&broken);
+        let baseline = parse_canonical_snapshot(&good, None).into_result().unwrap();
+        let failed = parse_canonical_snapshot(&broken, Some(&baseline));
         assert!(failed.result().is_err());
-        assert!(!failed.baseline_advanced());
         assert_eq!(failed.work().modules_reused, 2);
-        assert!(Arc::ptr_eq(session.baseline().unwrap(), &baseline));
 
-        let recovered = session.update(&recovered);
+        let recovered = parse_canonical_snapshot(&recovered, Some(&baseline));
         assert_eq!(recovered.work().modules_reused, 2);
         assert_eq!(recovered.work().modules_reparsed, 1);
-        assert!(recovered.baseline_advanced());
         recovered.into_result().unwrap();
     }
 
     #[test]
-    fn parse_session_rejects_foreign_baseline_and_keeps_canonical_error_order() {
-        let first = snapshot(&[(1, "/a.rue", "a.rue", "fn a() {}")], 1);
-        let foreign = snapshot(&[(9, "/z.rue", "z.rue", "fn z() {}")], 9);
-        let parsed = Arc::new(parse_source_snapshot_modules(&first).unwrap());
-        assert_eq!(
-            CanonicalParseSession::from_baseline(&foreign, parsed)
-                .unwrap_err()
-                .to_string(),
-            "invalid compiler input: parse-session baseline belongs to a foreign source snapshot"
-        );
-
+    fn stateless_parse_keeps_canonical_error_order() {
         let broken = snapshot(
             &[
                 (9, "/z.rue", "z.rue", "fn z( {"),
@@ -2206,8 +2153,7 @@ fn main() -> i32 {
             ],
             2,
         );
-        let mut session = CanonicalParseSession::new();
-        let update = session.update(&broken);
+        let update = parse_canonical_snapshot(&broken, None);
         let direct = parse_source_snapshot_modules(&broken).unwrap_err();
         assert_eq!(
             error_fingerprint(update.result().unwrap_err()),
@@ -2216,7 +2162,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn exact_adoption_rejects_relocated_snapshot_without_advancing_baseline() {
+    fn exact_adoption_rejects_relocated_snapshot() {
         let original = snapshot(&[(1, "/a.rue", "a.rue", "fn a() {}")], 1);
         let relocated = snapshot(&[(9, "/moved/a.rue", "a.rue", "fn a() {}")], 9);
         assert_eq!(original.source_revision(), relocated.source_revision());
@@ -2226,11 +2172,8 @@ fn main() -> i32 {
             modules_reparsed: 1,
             ..ParsedModulesWork::default()
         };
-        let mut session = CanonicalParseSession::new();
-        let update = session.adopt_exact(&relocated, parsed, work);
+        let update = adopt_exact_parsed_program(&relocated, None, parsed, work);
         assert!(update.result().is_err());
         assert_eq!(update.work(), work);
-        assert!(!update.baseline_advanced());
-        assert!(session.baseline().is_none());
     }
 }
