@@ -449,8 +449,7 @@ impl<'a> CfgLowerContext<'a> {
     /// deliberately excluded so it keeps its existing scalar codegen path
     /// (RUE-221).
     pub fn is_multislot_aggregate(&self, ty: Type) -> bool {
-        matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
-            || (ty.is_enum() && self.type_slot_count(ty) > 1)
+        types::is_multislot_aggregate(self.type_pool, ty)
     }
 
     /// Calculate the slot count for a single element of an array type.
