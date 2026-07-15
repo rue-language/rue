@@ -527,7 +527,7 @@ mod tests {
                 .air
                 .return_type()
                 .safe_name_with_pool(Some(epoch.type_pool())),
-            make_type.safe_name_with_pool(Some(&output.type_pool))
+            make_type.safe_name_with_frozen_pool(Some(&output.type_pool))
         );
     }
 
@@ -602,7 +602,7 @@ mod tests {
                 && function
                     .air
                     .return_type()
-                    .safe_name_with_pool(Some(&output.type_pool))
+                    .safe_name_with_frozen_pool(Some(&output.type_pool))
                     == "[i32; 3]"
         }));
     }
@@ -1362,7 +1362,9 @@ mod tests {
             .find_map(|(_, inst)| matches!(inst.data, AirInstData::StringConst(_)).then_some(inst))
             .expect("main must materialize its literal");
         assert_eq!(
-            literal.ty.safe_name_with_pool(Some(&output.type_pool)),
+            literal
+                .ty
+                .safe_name_with_frozen_pool(Some(&output.type_pool)),
             "str"
         );
         assert_eq!(output.type_pool.abi_slot_count(literal.ty), 2);
@@ -1419,9 +1421,9 @@ mod tests {
             .collect();
         assert_eq!(literal_types.len(), 7);
         assert!(literal_types.iter().all(|&ty| {
-            ty.safe_name_with_pool(Some(&output.type_pool)) == "str"
+            ty.safe_name_with_frozen_pool(Some(&output.type_pool)) == "str"
                 && output.type_pool.abi_slot_count(ty) == 2
-                && ty.is_copy_in_pool(&output.type_pool)
+                && ty.is_copy_in_frozen_pool(&output.type_pool)
         }));
     }
 
@@ -1511,7 +1513,7 @@ mod tests {
             .iter()
             .flat_map(|function| function.air.iter())
             .filter(|(_, inst)| matches!(inst.data, AirInstData::StringConst(_)))
-            .map(|(_, inst)| inst.ty.safe_name_with_pool(Some(&output.type_pool)))
+            .map(|(_, inst)| inst.ty.safe_name_with_frozen_pool(Some(&output.type_pool)))
             .collect();
 
         // Comparison operands and a discarded loop-body value have no buffer
@@ -1657,7 +1659,7 @@ mod tests {
                 .air
                 .get(stored_value)
                 .ty
-                .safe_name_with_pool(Some(&output.type_pool)),
+                .safe_name_with_frozen_pool(Some(&output.type_pool)),
             "Str(8)"
         );
 
@@ -2078,8 +2080,7 @@ mod tests {
             output
                 .type_pool
                 .all_struct_ids()
-                .iter()
-                .map(|id| output.type_pool.struct_def(*id))
+                .map(|id| output.type_pool.struct_def(id))
                 .any(|s| s.name == "Point" && s.is_copy)
         );
     }
@@ -2145,8 +2146,7 @@ mod tests {
             !output
                 .type_pool
                 .all_struct_ids()
-                .iter()
-                .map(|id| output.type_pool.struct_def(*id))
+                .map(|id| output.type_pool.struct_def(id))
                 .any(|s| s.name == "StrBuf")
         );
     }

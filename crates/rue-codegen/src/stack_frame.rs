@@ -5,7 +5,7 @@
 //! calling convention bugs, and understanding how values are laid out on the stack.
 
 use lasso::ThreadedRodeo;
-use rue_air::TypeInternPool;
+use rue_air::FrozenTypeInternPool;
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
 use rue_target::{Arch, Target};
@@ -254,7 +254,7 @@ impl std::fmt::Display for StackFrameInfo {
 pub fn generate_stack_frame_info(
     cfg: &Cfg,
     function_name: &str,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
@@ -272,7 +272,7 @@ pub fn generate_stack_frame_info(
 fn generate_x86_64_stack_frame(
     cfg: &Cfg,
     function_name: &str,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
@@ -420,7 +420,7 @@ fn generate_x86_64_stack_frame(
 fn generate_aarch64_stack_frame(
     cfg: &Cfg,
     function_name: &str,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
@@ -595,11 +595,11 @@ fn generate_aarch64_stack_frame(
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
-    use rue_air::{Air, AirInst, AirInstData, Type, TypeInternPool};
+    use rue_air::{Air, AirInst, AirInstData, FrozenTypeInternPool, Type};
     use rue_cfg::CfgBuilder;
     use rue_span::Span;
 
-    fn create_simple_cfg() -> (rue_cfg::Cfg, TypeInternPool, ThreadedRodeo) {
+    fn create_simple_cfg() -> (rue_cfg::Cfg, FrozenTypeInternPool, ThreadedRodeo) {
         let mut air = Air::new(Type::I32);
 
         let const_ref = air.add_inst(AirInst {
@@ -615,7 +615,7 @@ mod tests {
         });
 
         let interner = ThreadedRodeo::new();
-        let type_pool = TypeInternPool::new();
+        let type_pool = FrozenTypeInternPool::new();
         let cfg_output =
             CfgBuilder::build(&air, 0, 0, "test", &type_pool, vec![], &interner, false);
         (cfg_output.cfg, type_pool, interner)

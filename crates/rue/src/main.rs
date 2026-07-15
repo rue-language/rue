@@ -21,13 +21,13 @@ use rue_compiler::{
     AcceptedImportSource, Ast, CanonicalRirOutput, CanonicalSemanticOutput, CompileError,
     CompileErrors, CompileOptions, CompileWarning, CompilerSession, DependencyEnvelope,
     DependencyEnvelopeStatus, DiscoverySourceAssembler, ErrorKind, FileId, FileMetadataFingerprint,
-    ImportDiscoveryContext, ImportDiscoveryRevisionArtifact, ImportDiscoveryRevisionStatus,
-    ImportObservation, ImportObservationLedger, ImportObservationStatus, Lexer, LinkerMode,
-    MultiFileFormatter, MultiFileJsonFormatter, OptLevel, PhysicalFileIdentity, PipelineWork,
-    PreviewFeature, PreviewFeatures, SourceInfo, SourceMetadata, SourceSnapshot, Token,
-    TypeInternPool, configure_thread_pool, generate_emitted_asm, generate_liveness_info,
-    generate_lowering_info, generate_mir, generate_regalloc_info, generate_stack_frame_info,
-    parse_source_snapshot_for_ast_presentation,
+    FrozenTypeInternPool, ImportDiscoveryContext, ImportDiscoveryRevisionArtifact,
+    ImportDiscoveryRevisionStatus, ImportObservation, ImportObservationLedger,
+    ImportObservationStatus, Lexer, LinkerMode, MultiFileFormatter, MultiFileJsonFormatter,
+    OptLevel, PhysicalFileIdentity, PipelineWork, PreviewFeature, PreviewFeatures, SourceInfo,
+    SourceMetadata, SourceSnapshot, Token, configure_thread_pool, generate_emitted_asm,
+    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
+    generate_stack_frame_info, parse_source_snapshot_for_ast_presentation,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -155,7 +155,7 @@ impl EmitFrontend {
         self.semantic.functions()
     }
 
-    fn type_pool(&self) -> &TypeInternPool {
+    fn type_pool(&self) -> &FrozenTypeInternPool {
         self.semantic.type_pool()
     }
 

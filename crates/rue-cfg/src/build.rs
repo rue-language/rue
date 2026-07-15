@@ -6,7 +6,7 @@
 use lasso::ThreadedRodeo;
 use rue_air::{
     Air, AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
-    ParamSlotModes, StructId, Type, TypeInternPool, TypeKind,
+    FrozenTypeInternPool, ParamSlotModes, StructId, Type, TypeKind,
 };
 use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 
@@ -181,7 +181,7 @@ pub struct CfgBuilder<'a> {
     air: &'a Air,
     cfg: Cfg,
     /// Canonical pool for struct, enum, array, and pointer definitions.
-    type_pool: &'a TypeInternPool,
+    type_pool: &'a FrozenTypeInternPool,
     /// Interner for resolving symbols to strings
     interner: &'a ThreadedRodeo,
     /// Current block we're building
@@ -254,7 +254,7 @@ impl<'a> CfgBuilder<'a> {
         num_locals: u32,
         num_params: u32,
         fn_name: &str,
-        type_pool: &'a TypeInternPool,
+        type_pool: &'a FrozenTypeInternPool,
         param_modes: impl Into<ParamSlotModes>,
         interner: &'a ThreadedRodeo,
         allow_unreachable_code: bool,
@@ -2049,15 +2049,15 @@ impl<'a> CfgBuilder<'a> {
                         self.implicit_named_destructors.insert(struct_id);
                     }
                 }
-                for field in def.fields {
+                for field in &def.fields {
                     self.record_implicit_destructors(field.ty);
                 }
             }
             TypeKind::Enum(enum_id) => {
                 let def = self.type_pool.enum_def(enum_id);
-                for payload in def.variant_payloads {
+                for payload in &def.variant_payloads {
                     for field in payload {
-                        self.record_implicit_destructors(field);
+                        self.record_implicit_destructors(*field);
                     }
                 }
             }
@@ -3711,7 +3711,9 @@ mod tests {
 
     #[test]
     fn borrowed_computed_projection_drops_its_owner_once_after_the_consumer() {
-        use rue_air::{Air, AirInst, AirPlaceBase, AirProjection, StructDef, StructField};
+        use rue_air::{
+            Air, AirInst, AirPlaceBase, AirProjection, StructDef, StructField, TypeInternPool,
+        };
         use rue_span::{FileId, Span};
 
         for shape in ["direct", "nested", "index"] {
@@ -3760,6 +3762,7 @@ mod tests {
                 ),
             );
             let owner_ty = Type::new_struct(owner_id);
+            let type_pool = type_pool.freeze();
 
             let mut air = Air::new(Type::UNIT);
             let constant = air.add_inst(AirInst {
@@ -3942,7 +3945,7 @@ mod tests {
 
         let interner = ThreadedRodeo::default();
         let name = interner.get_or_intern("generic_fn");
-        let type_pool = TypeInternPool::new();
+        let type_pool = FrozenTypeInternPool::new();
 
         let mut air = Air::new(Type::I32);
         let call = air.add_inst(AirInst {

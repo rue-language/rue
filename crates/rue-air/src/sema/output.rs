@@ -5,7 +5,6 @@
 //! - [`SemaOutput`] - Complete output from analyzing a program
 
 use crate::inst::Air;
-use crate::intern_pool::TypeInternPool;
 use crate::{SemanticBodyExport, SemanticSpecializedBodyExport};
 use rue_error::CompileWarning;
 /// Opaque identity issued by the compiler for one supported ordinary body.
@@ -364,8 +363,8 @@ pub struct SemaOutput {
     pub strings: Vec<String>,
     /// Warnings collected during analysis.
     pub warnings: Vec<CompileWarning>,
-    /// Type intern pool (contains all types including arrays).
-    pub type_pool: TypeInternPool,
+    /// Completed immutable type metadata (contains all types including arrays).
+    pub type_pool: crate::FrozenTypeInternPool,
     /// Exact structural work performed while dispatching reachable bodies.
     pub body_analysis_work: BodyAnalysisWork,
     /// Pre-specialization durable candidates for supported ordinary bodies.

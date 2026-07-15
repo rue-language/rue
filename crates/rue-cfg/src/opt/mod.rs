@@ -25,7 +25,7 @@ mod constprop;
 mod dce;
 
 use crate::Cfg;
-use rue_air::TypeInternPool;
+use rue_air::FrozenTypeInternPool;
 
 /// Optimization level, following standard compiler conventions.
 ///
@@ -130,7 +130,7 @@ impl std::fmt::Display for OptLevel {
 /// optimize(&mut cfg, OptLevel::O1, &type_pool);
 /// // cfg is now optimized
 /// ```
-pub fn optimize(cfg: &mut Cfg, level: OptLevel, type_pool: &TypeInternPool) {
+pub fn optimize(cfg: &mut Cfg, level: OptLevel, type_pool: &FrozenTypeInternPool) {
     // Verify construction output before any pass can detach dead values or
     // erase unreachable blocks and thereby hide a malformed definition/use.
     cfg.verify_with_type_pool(type_pool);

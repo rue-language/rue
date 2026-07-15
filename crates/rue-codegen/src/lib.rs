@@ -399,11 +399,11 @@ pub use x86_64::{Operand, Reg, X86Inst, X86Mir};
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
-    use rue_air::{Air, AirInst, AirInstData, Type, TypeInternPool};
+    use rue_air::{Air, AirInst, AirInstData, FrozenTypeInternPool, Type, TypeInternPool};
     use rue_cfg::{Cfg, CfgBuilder};
     use rue_span::Span;
 
-    fn test_cfg() -> (Cfg, TypeInternPool, ThreadedRodeo) {
+    fn test_cfg() -> (Cfg, FrozenTypeInternPool, ThreadedRodeo) {
         let mut air = Air::new(Type::I32);
 
         let const_ref = air.add_inst(AirInst {
@@ -419,15 +419,16 @@ mod tests {
         });
 
         let interner = ThreadedRodeo::new();
-        let type_pool = TypeInternPool::new();
+        let type_pool = FrozenTypeInternPool::new();
         let cfg_output =
             CfgBuilder::build(&air, 0, 0, "main", &type_pool, vec![], &interner, false);
         (cfg_output.cfg, type_pool, interner)
     }
 
-    fn aggregate_cfg(len: u64) -> (Cfg, TypeInternPool, ThreadedRodeo) {
+    fn aggregate_cfg(len: u64) -> (Cfg, FrozenTypeInternPool, ThreadedRodeo) {
         let type_pool = TypeInternPool::new();
         let array_id = type_pool.intern_array_from_type(Type::I64, len);
+        let type_pool = type_pool.freeze();
         let array_ty = Type::new_array(array_id);
         let mut air = Air::new(array_ty);
         let span = Span::new(0, 2);
@@ -482,8 +483,8 @@ mod tests {
         (cfg_output.cfg, type_pool, interner)
     }
 
-    fn syscall_cfg() -> (Cfg, TypeInternPool, ThreadedRodeo) {
-        let type_pool = TypeInternPool::new();
+    fn syscall_cfg() -> (Cfg, FrozenTypeInternPool, ThreadedRodeo) {
+        let type_pool = FrozenTypeInternPool::new();
         let interner = ThreadedRodeo::new();
         let mut air = Air::new(Type::I64);
         let span = Span::new(0, 2);

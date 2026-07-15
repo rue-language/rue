@@ -114,7 +114,7 @@ mod tests {
             format!("{:?}", fresh.functions())
         );
         assert_eq!(warm.type_pool().stats(), fresh.type_pool().stats());
-        let named_types = |pool: &TypeInternPool| {
+        let named_types = |pool: &FrozenTypeInternPool| {
             (
                 pool.all_struct_ids()
                     .into_iter()

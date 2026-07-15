@@ -31,7 +31,7 @@
 //! again after all passes.
 
 use crate::inst::{BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
-use rue_air::{Type, TypeInternPool, TypeKind};
+use rue_air::{FrozenTypeInternPool, Type, TypeKind};
 
 impl Cfg {
     /// Count every operand use of `needle` across instructions and
@@ -107,7 +107,7 @@ impl Cfg {
     /// Verify with the active semantic type pool, enabling exact aggregate
     /// layouts and projection-chain validation. Production callers must use
     /// this entry point.
-    pub fn verify_with_type_pool(&self, type_pool: &TypeInternPool) {
+    pub fn verify_with_type_pool(&self, type_pool: &FrozenTypeInternPool) {
         Verifier::new(self, Some(type_pool), true).verify();
     }
 
@@ -115,7 +115,10 @@ impl Cfg {
     /// in the arena after detaching them from blocks, so attachment completeness
     /// is checked before optimization while every remaining attachment and use
     /// is checked again afterward.
-    pub(crate) fn verify_after_optimization_with_type_pool(&self, type_pool: &TypeInternPool) {
+    pub(crate) fn verify_after_optimization_with_type_pool(
+        &self,
+        type_pool: &FrozenTypeInternPool,
+    ) {
         Verifier::new(self, Some(type_pool), false).verify();
     }
 
@@ -223,7 +226,7 @@ enum Attachment {
 
 struct Verifier<'a> {
     cfg: &'a Cfg,
-    type_pool: Option<&'a TypeInternPool>,
+    type_pool: Option<&'a FrozenTypeInternPool>,
     require_complete_attachments: bool,
     attachments: Vec<Option<Attachment>>,
     reachable: Vec<bool>,
@@ -233,7 +236,7 @@ struct Verifier<'a> {
 impl<'a> Verifier<'a> {
     fn new(
         cfg: &'a Cfg,
-        type_pool: Option<&'a TypeInternPool>,
+        type_pool: Option<&'a FrozenTypeInternPool>,
         require_complete_attachments: bool,
     ) -> Self {
         Self {
@@ -1257,7 +1260,9 @@ mod tests {
     };
     use crate::{OptLevel, opt};
     use lasso::ThreadedRodeo;
-    use rue_air::{ArrayTypeId, StructDef, StructField, StructId, Type, TypeInternPool};
+    use rue_air::{
+        ArrayTypeId, FrozenTypeInternPool, StructDef, StructField, StructId, Type, TypeInternPool,
+    };
     use rue_span::Span;
 
     fn unit_cfg() -> Cfg {
@@ -1821,7 +1826,7 @@ mod tests {
                 span: Span::new(0, 0),
             },
         );
-        cfg.verify_with_type_pool(&TypeInternPool::new());
+        cfg.verify_with_type_pool(&FrozenTypeInternPool::new());
     }
 
     #[test]
@@ -1839,7 +1844,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify_with_type_pool(&TypeInternPool::new());
+        cfg.verify_with_type_pool(&FrozenTypeInternPool::new());
     }
 
     #[test]
@@ -1848,6 +1853,7 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let pair = register_struct(&pool, &interner, "Pair", &[Type::I32, Type::I32]);
+        let pool = pool.freeze();
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "wide_local".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -1868,6 +1874,7 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let pair = register_struct(&pool, &interner, "BorrowedPair", &[Type::I32, Type::I32]);
+        let pool = pool.freeze();
         let pair_ty = Type::new_struct(pair);
         let mut cfg = Cfg::new(Type::UNIT, 0, 1, "borrowed_pair".to_string(), vec![true]);
         let entry = cfg.new_block();
@@ -1895,7 +1902,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "references invalid struct id")]
     fn verify_rejects_invalid_struct_projection_id() {
-        let pool = TypeInternPool::new();
+        let pool = FrozenTypeInternPool::new();
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "invalid_struct".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -1922,7 +1929,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "references invalid array id")]
     fn verify_rejects_invalid_array_projection_id() {
-        let pool = TypeInternPool::new();
+        let pool = FrozenTypeInternPool::new();
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "invalid_array".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -1958,6 +1965,7 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let record = register_struct(&pool, &interner, "Record", &[Type::I32]);
+        let pool = pool.freeze();
         let record_ty = Type::new_struct(record);
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "bad_field".to_string(), vec![]);
         let entry = cfg.new_block();
@@ -1990,6 +1998,7 @@ mod tests {
         let inner = register_struct(&pool, &interner, "Inner", &[Type::I32]);
         let wrong = register_struct(&pool, &interner, "Wrong", &[Type::I32]);
         let outer = register_struct(&pool, &interner, "Outer", &[Type::new_struct(inner)]);
+        let pool = pool.freeze();
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "broken_chain".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -2025,6 +2034,7 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let record = register_struct(&pool, &interner, "ResultRecord", &[Type::I32]);
+        let pool = pool.freeze();
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "bad_result".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -2202,7 +2212,7 @@ mod tests {
                     value: Some(result),
                 },
             );
-            opt::optimize(&mut cfg, level, &TypeInternPool::new());
+            opt::optimize(&mut cfg, level, &FrozenTypeInternPool::new());
         }
     }
 
@@ -2231,6 +2241,6 @@ mod tests {
                 value: Some(result),
             },
         );
-        opt::optimize(&mut cfg, OptLevel::O1, &TypeInternPool::new());
+        opt::optimize(&mut cfg, OptLevel::O1, &FrozenTypeInternPool::new());
     }
 }

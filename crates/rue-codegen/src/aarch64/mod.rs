@@ -27,7 +27,7 @@ pub use mir::{Aarch64Inst, Aarch64Mir, Cond, Operand, Reg, VReg};
 pub use regalloc::RegAlloc;
 
 use lasso::ThreadedRodeo;
-use rue_air::TypeInternPool;
+use rue_air::FrozenTypeInternPool;
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
 use rue_target::Target;
@@ -40,7 +40,7 @@ pub use super::{EmittedCode, EmittedRelocation};
 
 fn prepare_backend(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<crate::codegen_pipeline::PreparedMir<Aarch64Mir, Reg>> {
@@ -60,7 +60,7 @@ fn prepare_backend(
 
 fn generate_inner<T, Emit>(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
@@ -108,7 +108,7 @@ where
 /// This is the main entry point for AArch64 code generation.
 pub fn generate(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
@@ -131,7 +131,7 @@ pub fn generate(
 /// showing the actual emitted instructions (including prologue/epilogue).
 pub fn generate_with_asm(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
@@ -155,7 +155,7 @@ pub fn generate_with_asm(
 /// including live ranges, interference, and allocation decisions.
 pub fn generate_regalloc_info(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<RegAllocDebugInfo<Reg>> {

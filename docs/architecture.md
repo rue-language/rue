@@ -42,6 +42,19 @@ can be repeated to request several views.
   verifies invariants, and runs target-independent optimizations such as
   constant folding, propagation, and dead-code elimination.
 
+Semantic analysis owns the mutable `TypeInternPool`. Its reachable-body fixed
+point includes generic specialization plus anonymous type and destructor
+discovery; only after that work completes is the pool consumed into
+`FrozenTypeInternPool`. CFG construction, optimization, and both native
+backends accept only this immutable view. Their nominal lookups borrow complete
+definitions directly and their type iteration requires neither locking nor a
+temporary ID allocation. Destructor names cross this boundary as stable
+strings; each CFG/codegen request interns them into its own symbol universe, so
+request-local `Spur` values never become durable type metadata. Private
+semantic-name indexes remain available for stable collision handling, but the
+frozen public API neither accepts nor exposes their `Spur` values or raw type
+records.
+
 Instructions and types are generally stored densely and referenced by small
 integer IDs. This avoids self-referential lifetimes, makes equality and lookup
 cheap, and keeps IR dumps deterministic. Verifiers and typed index wrappers

@@ -4,9 +4,9 @@
 //! field offsets, shared between x86_64 and aarch64 backends.
 //!
 //! Struct, enum, array, and pointer definitions are resolved through the
-//! canonical `TypeInternPool` (ADR-0024).
+//! canonical `FrozenTypeInternPool` (ADR-0024).
 
-use rue_air::{ArrayTypeId, EnumId, StructId, TypeInternPool, TypeKind};
+use rue_air::{ArrayTypeId, EnumId, FrozenTypeInternPool, StructId, TypeKind};
 use rue_cfg::{Cfg, CfgInstData, CfgValue, Type};
 use std::collections::HashMap;
 
@@ -25,7 +25,7 @@ pub fn extract_array_type_id(ty: Type) -> Option<ArrayTypeId> {
 /// Get the array type definition for an array type ID.
 ///
 /// Returns `(element_type, length)`.
-pub fn array_type_def(type_pool: &TypeInternPool, array_type_id: ArrayTypeId) -> (Type, u64) {
+pub fn array_type_def(type_pool: &FrozenTypeInternPool, array_type_id: ArrayTypeId) -> (Type, u64) {
     type_pool.array_def(array_type_id)
 }
 
@@ -33,14 +33,14 @@ pub fn array_type_def(type_pool: &TypeInternPool, array_type_id: ArrayTypeId) ->
 ///
 /// Returns `Some((element_type, length))` if the type is an array type, `None` otherwise.
 #[inline]
-pub fn array_type_def_from_type(type_pool: &TypeInternPool, ty: Type) -> Option<(Type, u64)> {
+pub fn array_type_def_from_type(type_pool: &FrozenTypeInternPool, ty: Type) -> Option<(Type, u64)> {
     extract_array_type_id(ty).map(|id| array_type_def(type_pool, id))
 }
 
 /// Get the length of an array from its Type.
 /// Returns 0 if the type is not an array.
 #[inline]
-pub fn array_length_from_type(type_pool: &TypeInternPool, ty: Type) -> u64 {
+pub fn array_length_from_type(type_pool: &FrozenTypeInternPool, ty: Type) -> u64 {
     array_type_def_from_type(type_pool, ty)
         .map(|(_element_type, length)| length)
         .unwrap_or(0)
@@ -48,7 +48,7 @@ pub fn array_length_from_type(type_pool: &TypeInternPool, ty: Type) -> u64 {
 
 /// Calculate the slot count for a single element of an array from its Type.
 #[inline]
-pub fn array_element_slot_count_from_type(type_pool: &TypeInternPool, ty: Type) -> u32 {
+pub fn array_element_slot_count_from_type(type_pool: &FrozenTypeInternPool, ty: Type) -> u32 {
     if let Some((element_type, _length)) = array_type_def_from_type(type_pool, ty) {
         type_slot_count(type_pool, element_type)
     } else {
@@ -62,7 +62,7 @@ pub fn array_element_slot_count_from_type(type_pool: &TypeInternPool, ty: Type) 
 /// For structs, this is the sum of slot counts for all fields.
 /// For nested types, this recursively calculates.
 /// Zero-sized types (unit, never, empty structs, zero-length arrays) return 0.
-pub fn type_slot_count(type_pool: &TypeInternPool, ty: Type) -> u32 {
+pub fn type_slot_count(type_pool: &FrozenTypeInternPool, ty: Type) -> u32 {
     type_pool.abi_slot_count(ty)
 }
 
@@ -74,7 +74,7 @@ pub fn type_slot_count(type_pool: &TypeInternPool, ty: Type) -> u32 {
 /// result (RUE-6, ADR-0038). Sema has already validated the result is
 /// `Option`-shaped, so both variants are present; a missing one is a compiler
 /// bug and panics (a correctness guard, RUE-45).
-pub fn option_variant_discriminants(type_pool: &TypeInternPool, ty: Type) -> (u64, u64) {
+pub fn option_variant_discriminants(type_pool: &FrozenTypeInternPool, ty: Type) -> (u64, u64) {
     let enum_id = ty
         .as_enum()
         .expect("fallible intrinsic result must be an Option enum");
@@ -120,13 +120,13 @@ pub fn slot_needs_wide_compare(ty: Type) -> bool {
 ///   a narrow value is still correct). Padding slots beyond every variant's
 ///   payload are zero and compare as narrow.
 /// - **unit / never**: zero slots (no entries)
-pub fn aggregate_leaf_types(type_pool: &TypeInternPool, ty: Type) -> Vec<Type> {
+pub fn aggregate_leaf_types(type_pool: &FrozenTypeInternPool, ty: Type) -> Vec<Type> {
     let mut out = Vec::new();
     push_leaf_types(type_pool, ty, &mut out);
     out
 }
 
-fn push_leaf_types(type_pool: &TypeInternPool, ty: Type, out: &mut Vec<Type>) {
+fn push_leaf_types(type_pool: &FrozenTypeInternPool, ty: Type, out: &mut Vec<Type>) {
     match ty.kind() {
         TypeKind::Unit | TypeKind::Never => {}
         TypeKind::Struct(struct_id) => {
@@ -176,7 +176,7 @@ fn push_leaf_types(type_pool: &TypeInternPool, ty: Type, out: &mut Vec<Type>) {
 /// accounts for the slot sizes of all preceding payload fields of the same
 /// variant (RUE-221).
 pub fn enum_payload_slot_offset(
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     enum_id: EnumId,
     variant_index: u32,
     field_index: u32,
@@ -194,7 +194,10 @@ pub fn enum_payload_slot_offset(
 }
 
 /// Calculate the slot count for a single element of an array type.
-pub fn array_element_slot_count(type_pool: &TypeInternPool, array_type_id: ArrayTypeId) -> u32 {
+pub fn array_element_slot_count(
+    type_pool: &FrozenTypeInternPool,
+    array_type_id: ArrayTypeId,
+) -> u32 {
     let (element_type, _length) = type_pool.array_def(array_type_id);
     type_slot_count(type_pool, element_type)
 }
@@ -207,7 +210,7 @@ pub fn array_element_slot_count(type_pool: &TypeInternPool, array_type_id: Array
 ///
 /// However, for simplicity and alignment purposes, all types currently use
 /// 8 bytes per slot. This function returns `slot_count * 8`.
-pub fn type_size_bytes(type_pool: &TypeInternPool, ty: Type) -> u64 {
+pub fn type_size_bytes(type_pool: &FrozenTypeInternPool, ty: Type) -> u64 {
     let slots = type_slot_count(type_pool, ty);
     (slots as u64) * 8
 }
@@ -216,7 +219,7 @@ pub fn type_size_bytes(type_pool: &TypeInternPool, ty: Type) -> u64 {
 /// `type_slot_count(Struct(struct_id))`, but reachable directly from a
 /// `StructId` (used to anchor ascending place addressing at a struct root —
 /// ADR-0040 / RUE-311).
-pub fn struct_slot_count(type_pool: &TypeInternPool, struct_id: StructId) -> u32 {
+pub fn struct_slot_count(type_pool: &FrozenTypeInternPool, struct_id: StructId) -> u32 {
     let struct_def = type_pool.struct_def(struct_id);
     let mut total = 0u32;
     for field in &struct_def.fields {
@@ -229,7 +232,7 @@ pub fn struct_slot_count(type_pool: &TypeInternPool, struct_id: StructId) -> u32
 ///
 /// This accounts for the sizes of all preceding fields.
 pub fn struct_field_slot_offset(
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     struct_id: StructId,
     field_index: u32,
 ) -> u32 {
@@ -313,14 +316,14 @@ pub fn collect_array_scalar_vregs(
 ///
 /// The name encodes the element type and length, e.g., `__rue_drop_array_String_3`.
 /// This must match the name generated by `rue_compiler::drop_glue::array_drop_glue_name`.
-pub fn array_drop_glue_name(array_id: ArrayTypeId, type_pool: &TypeInternPool) -> String {
+pub fn array_drop_glue_name(array_id: ArrayTypeId, type_pool: &FrozenTypeInternPool) -> String {
     let (element_type, length) = type_pool.array_def(array_id);
     let element_type_name = type_name(element_type, type_pool);
     format!("__rue_drop_array_{}_{}", element_type_name, length)
 }
 
 /// Get a name for a type (used for generating drop glue function names).
-fn type_name(ty: Type, type_pool: &TypeInternPool) -> String {
+fn type_name(ty: Type, type_pool: &FrozenTypeInternPool) -> String {
     match ty.kind() {
         TypeKind::I8 => "i8".to_string(),
         TypeKind::I16 => "i16".to_string(),

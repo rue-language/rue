@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
-use rue_air::{TypeInternPool, TypeKind};
+use rue_air::{FrozenTypeInternPool, TypeKind};
 use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, Terminator, Type};
 use rue_error::CompileResult;
 
@@ -78,7 +78,11 @@ pub struct CfgLower<'a> {
 
 impl<'a> CfgLower<'a> {
     /// Create a new CFG lowering pass.
-    pub fn new(cfg: &'a Cfg, type_pool: &'a TypeInternPool, interner: &'a ThreadedRodeo) -> Self {
+    pub fn new(
+        cfg: &'a Cfg,
+        type_pool: &'a FrozenTypeInternPool,
+        interner: &'a ThreadedRodeo,
+    ) -> Self {
         let num_params = cfg.num_params();
 
         // Pre-calculate capacity hints to reduce HashMap reallocations
