@@ -9,6 +9,7 @@ from pathlib import Path
 
 from benchmark_history import run_regime
 from benchmark_metrics import (
+    absolute_latency_ms,
     comparison_explanation,
     derive_history_metrics,
     sample_summary,
@@ -87,6 +88,94 @@ def _parse_timestamp(value: object) -> datetime | None:
         return None
 
 
+def _measured_workloads(run: dict) -> list[dict]:
+    """Return absolute latency and pass values ready for any renderer.
+
+    The suite value is deliberately the sum of workload medians.  It is an
+    understandable wall-time-like quantity, while comparisons still use the
+    canonical geometric/uncertainty policy in ``comparison_explanation``.
+    """
+    workloads = []
+    for bench in run.get("benchmarks", []):
+        if not isinstance(bench, dict):
+            continue
+        uncertainty = sample_summary(bench.get("samples_ms"))
+        passes = []
+        for name, measurement in sorted((bench.get("passes") or {}).items()):
+            # ``compile`` is the aggregate around all passes.  Historical
+            # ``parse`` was another aggregate; neither is a phase contribution.
+            if name in {"compile", "parse"} or not isinstance(measurement, dict):
+                continue
+            value = measurement.get("mean_ms")
+            if isinstance(value, (int, float)):
+                passes.append({"name": name, "mean_ms": float(value)})
+        absolute_ms, estimator = absolute_latency_ms(bench)
+        workloads.append({
+            "name": bench.get("name"),
+            "median_ms": absolute_ms,
+            "estimator": estimator,
+            "raw_samples_ms": bench.get("samples_ms", []),
+            "uncertainty": uncertainty,
+            "passes": passes,
+        })
+    return workloads
+
+
+def _suite_and_pass_totals(workloads: list[dict]) -> tuple[float | None, list[dict]]:
+    centers = [item["median_ms"] for item in workloads]
+    suite_ms = sum(centers) if centers and all(value is not None for value in centers) else None
+    pass_totals: dict[str, float] = {}
+    for workload in workloads:
+        for phase in workload["passes"]:
+            pass_totals[phase["name"]] = pass_totals.get(phase["name"], 0.0) + phase["mean_ms"]
+    return suite_ms, [
+        {"name": name, "mean_ms": value}
+        for name, value in sorted(pass_totals.items())
+    ]
+
+
+def _location_label(location: object) -> str:
+    if not isinstance(location, dict):
+        return "benchmark history"
+    if location.get("kind") == "commit":
+        return f"commit {str(location.get('commit', 'unknown'))[:8]}"
+    if location.get("kind") == "range":
+        start = str(location.get("start_commit", "unknown"))[:8]
+        end = str(location.get("end_commit", "unknown"))[:8]
+        return f"commits {start}–{end}"
+    return "benchmark history"
+
+
+def _group_annotations(events: list[dict]) -> list[dict]:
+    """Deduplicate derived infrastructure events without hiding provenance."""
+    groups: dict[tuple, dict] = {}
+    for event in events:
+        authored = event.get("source") == "authored"
+        key = (
+            event.get("id") if authored else None,
+            event.get("source"),
+            event.get("category"),
+            event.get("title"),
+            event.get("explanation"),
+            event.get("link"),
+        )
+        group = groups.setdefault(key, {
+            "source": event.get("source", "derived"),
+            "category": event.get("category", "measurement"),
+            "title": event.get("title", "Measurement change"),
+            "explanation": event.get("explanation", ""),
+            "link": event.get("link"),
+            "occurrences": [],
+        })
+        label = _location_label(event.get("location"))
+        if label not in group["occurrences"]:
+            group["occurrences"].append(label)
+    return sorted(
+        groups.values(),
+        key=lambda item: (item["source"] != "authored", item["title"]),
+    )
+
+
 def recent_workspace(
     runs: list[dict],
     annotations: list[dict],
@@ -141,6 +230,8 @@ def recent_workspace(
             max(0, int((as_of - measured_at).total_seconds()))
             if measured_at is not None else None
         )
+        workloads = _measured_workloads(run)
+        suite_ms, pass_totals = _suite_and_pass_totals(workloads)
         points.append({
             **metadata,
             "links": links,
@@ -164,14 +255,9 @@ def recent_workspace(
             "regime_id": run_regime(run),
             "comparability": semantic["previous"],
             "annotations": point_annotations,
-            "workloads": [
-                {
-                    "name": bench.get("name"),
-                    "raw_samples_ms": bench.get("samples_ms", []),
-                    "uncertainty": sample_summary(bench.get("samples_ms")),
-                }
-                for bench in run.get("benchmarks", [])
-            ],
+            "suite_ms": suite_ms,
+            "passes": pass_totals,
+            "workloads": workloads,
         })
 
     segments: list[list[int]] = []
@@ -192,6 +278,14 @@ def recent_workspace(
                 comparisons.append({
                     "before": points[before_index]["commit"],
                     "after": points[after_index]["commit"],
+                    "before_point": {
+                        key: points[before_index][key]
+                        for key in ("commit", "subject", "date", "links", "suite_ms")
+                    },
+                    "after_point": {
+                        key: points[after_index][key]
+                        for key in ("commit", "subject", "date", "links", "suite_ms")
+                    },
                     "explanation": explanation,
                 })
 
@@ -218,7 +312,7 @@ def recent_workspace(
             })
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "platform": platform,
         "window_options": list(WINDOWS),
         "default_window": WINDOWS[0],
@@ -233,4 +327,5 @@ def recent_workspace(
             for name, values in sorted(small_multiples.items())
         ],
         "annotations": annotations,
+        "annotation_groups": _group_annotations(annotations),
     }

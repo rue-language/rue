@@ -1673,7 +1673,7 @@ class BenchmarkMetricSemanticsTests(unittest.TestCase):
         self.assertAlmostEqual(summary["time_delta_pct"], 10.0)
         self.assertEqual(summary["time_delta_str"], "↑ 10.0%")
 
-    def test_status_index_uses_full_thirty_day_segment(self):
+    def test_status_uses_absolute_suite_time_and_last_measured_commits(self):
         runs = [
             {
                 **self.sample_run(
@@ -1685,11 +1685,10 @@ class BenchmarkMetricSemanticsTests(unittest.TestCase):
             for index in range(25)
         ]
         status = site_status.sparkline_data(runs)
-        self.assertEqual(status["n_runs"], 25)
-        self.assertAlmostEqual(
-            status["latest_index"],
-            100 * 100 / 124,
-        )
+        self.assertEqual(status["n_runs"], 12)
+        self.assertEqual(status["latest_suite_ms"], 124)
+        self.assertEqual(status["window"], "last measured commits")
+        self.assertNotIn("latest_index", status)
 
 
 class HomepageBenchmarkStatusTests(unittest.TestCase):
@@ -1742,7 +1741,7 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         self.assertEqual(corpus_a["state"], corpus_b["state"])
         self.assertEqual(corpus_a["state"]["kind"], "baseline_reset")
 
-    def test_capability_annotation_freshness_coverage_and_deep_link(self):
+    def test_homepage_omits_annotation_and_coverage_telemetry(self):
         runs = [self.sample_run(1, 100), self.sample_run(2, 100), self.sample_run(3, 100), self.sample_run(4, 120)]
         event = {
             "id": "capability-cost",
@@ -1759,11 +1758,9 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         )
         self.assertEqual(status["state"]["kind"], "regressed")
         self.assertEqual(status["freshness"]["kind"], "stale")
-        self.assertEqual(status["annotation"]["title"], "Intentional capability cost")
-        self.assertIn("range=30d", status["annotation"]["dashboard_url"])
-        self.assertIn("annotation=capability-cost", status["annotation"]["dashboard_url"])
-        self.assertFalse(status["coverage"]["gap_unknown"])
-        self.assertEqual(status["coverage"]["represented_commits"], [runs[-1]["commit"]])
+        self.assertEqual(status["freshness"]["label"], "measured 3 days ago")
+        self.assertNotIn("annotation", status)
+        self.assertNotIn("coverage", status)
 
     def test_missing_or_malformed_time_data_is_not_presented(self):
         self.assertIsNone(self.status([]))
@@ -1771,17 +1768,26 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         del run["timestamp"]
         self.assertIsNone(self.status([run]))
 
-    def test_insufficient_legacy_samples_do_not_fabricate_endpoint(self):
+    def test_legacy_mean_is_absolute_but_does_not_fabricate_classification(self):
         run = self.sample_run(1, 100)
         run["benchmarks"][0]["samples_ms"] = [100, 100]
         status = self.status([run])
         self.assertEqual(status["state"]["kind"], "insufficient_data")
-        self.assertEqual(status["n_trend_points"], 0)
-        self.assertEqual(status["points"], "")
-        self.assertNotIn("last_x", status)
-        self.assertNotIn("last_y", status)
+        self.assertEqual(status["n_trend_points"], 1)
+        self.assertEqual(status["latest_suite_ms"], 100)
+        self.assertIn("last_x", status)
+        self.assertIn("last_y", status)
 
-    def test_thirty_day_window_uses_calendar_time_and_latest_segment(self):
+    def test_legacy_root_compile_timer_wins_over_inflated_mean(self):
+        run = self.sample_run(1, 100)
+        bench = run["benchmarks"][0]
+        bench["samples_ms"] = [100, 100]
+        bench["mean_ms"] = 999
+        bench.setdefault("passes", {})["compile"] = {"mean_ms": 123}
+        status = self.status([run])
+        self.assertEqual(status["latest_suite_ms"], 123)
+
+    def test_sparkline_uses_measured_commits_in_latest_segment(self):
         runs = [
             self.sample_run(1, 100, day=1),
             self.sample_run(2, 100, day=2),
@@ -1790,10 +1796,10 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         ]
         runs[0]["timestamp"] = "2026-05-01T00:00:00Z"
         status = self.status(runs)
-        self.assertEqual(status["window"], "30d")
-        self.assertEqual(status["n_runs"], 3)
+        self.assertEqual(status["window"], "last measured commits")
+        self.assertEqual(status["n_runs"], 4)
 
-    def test_sparkline_x_coordinates_use_calendar_spacing(self):
+    def test_sparkline_x_coordinates_evenly_space_measured_commits(self):
         runs = [
             self.sample_run(1, 100, day=1),
             self.sample_run(2, 90, day=2),
@@ -1801,7 +1807,7 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         ]
         status = self.status(runs)
         coordinates = [point.split(",") for point in status["points"].split()]
-        self.assertEqual([int(point[0]) for point in coordinates], [10, 20, 300])
+        self.assertEqual([int(point[0]) for point in coordinates], [0, 150, 300])
 
     def test_shallow_checkout_omits_misleading_commit_count(self):
         def fake_git(*args):
@@ -1820,21 +1826,17 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
 
     def test_homepage_template_reports_honest_states(self):
         template = (INPUT_ROOT / "website" / "templates" / "index.html").read_text()
-        self.assertIn("30-day comparable trend", template)
-        self.assertIn("no trustworthy percentage", template)
+        self.assertIn("Absolute suite compilation time", template)
+        self.assertIn("status.bench.state.summary", template)
+        self.assertIn("status.bench.latest_suite_ms", template)
+        self.assertIn("last {{ status.bench.n_trend_points }} measured commits", template)
         self.assertIn("history count unavailable", template)
-        self.assertIn("commit coverage is unknown", template)
         self.assertIn("benchmark data unavailable", template)
         self.assertIn("{% if status.bench.n_trend_points > 0 %}", template)
-        self.assertNotIn("measurements taken on every commit", template)
-        performance = (INPUT_ROOT / "website" / "templates" / "performance.html").read_text()
-        self.assertIn("deepLink.get('range')", performance)
-        self.assertIn("evolution-deep-linked-annotation", performance)
-        self.assertIn("annotationTargetId(requestedAnnotation)", performance)
-        self.assertIn("target.scrollIntoView", performance)
-        self.assertIn("target.focus", performance)
-        self.assertIn("item.dataset.deepLinked = 'true'", performance)
-        self.assertIn("item.style.outline", performance)
+        self.assertNotIn("normalized", template.lower())
+        self.assertNotIn("variation", template.lower())
+        self.assertNotIn("coverage", template.lower())
+        self.assertNotIn("status.bench.annotation", template)
 
 
 class TestBenchmarkAnnotations(unittest.TestCase):
@@ -2039,7 +2041,7 @@ class TestBenchmarkAnnotations(unittest.TestCase):
             [],
         )
 
-    def test_recent_status_receives_the_canonical_stream_unchanged(self):
+    def test_homepage_does_not_surface_the_annotation_stream(self):
         run = BenchmarkMetricSemanticsTests.sample_run(
             "a" * 40, {"probe": [10, 10, 10]}
         )
@@ -2051,7 +2053,7 @@ class TestBenchmarkAnnotations(unittest.TestCase):
             [run], stream, resolver=self.Resolver(),
             as_of=datetime(2026, 7, 1, tzinfo=timezone.utc),
         )
-        self.assertEqual(status["annotation"]["id"], stream[0]["id"])
+        self.assertNotIn("annotation", status)
 
 
 class TestRecentRegressionWorkspace(unittest.TestCase):
@@ -2137,6 +2139,16 @@ class TestRecentRegressionWorkspace(unittest.TestCase):
         )
 
         self.assertEqual(model["window_options"], [20, 50, 100])
+        self.assertEqual(model["schema_version"], 2)
+        self.assertAlmostEqual(model["points"][3]["suite_ms"], 171)
+        self.assertEqual(
+            {item["name"] for item in model["points"][3]["passes"]},
+            {"parser", "codegen"},
+        )
+        self.assertEqual(
+            next(item for item in model["points"][3]["passes"] if item["name"] == "parser")["mean_ms"],
+            24,
+        )
         self.assertEqual(model["points"][1]["comparability"]["headline"]["classification"], "stable")
         self.assertGreater(model["points"][1]["comparability"]["headline"]["variation_pct"], 0)
         self.assertEqual(model["points"][2]["comparability"]["status"], "non_comparable")
@@ -2149,6 +2161,8 @@ class TestRecentRegressionWorkspace(unittest.TestCase):
         self.assertGreater(model["points"][0]["freshness"]["wall_clock_age_seconds"], 0)
         self.assertGreater(model["points"][0]["freshness"]["age_from_latest_seconds"], 0)
         self.assertEqual(model["default_selection"], {"before": "3" * 40, "after": "4" * 40})
+        self.assertEqual(model["comparisons"][-1]["before_point"]["subject"], "RUE-903: measured change 3")
+        self.assertEqual(model["annotation_groups"][0]["title"], "Queryable compiler")
         self.assertFalse(any(
             item["before"] == "2" * 40 and item["after"] == "4" * 40
             for item in model["comparisons"]
@@ -2159,6 +2173,12 @@ class TestRecentRegressionWorkspace(unittest.TestCase):
         self.assertEqual(explanation["dominant_pass"]["name"], "parser")
         parser = next(item for item in explanation["passes"] if item["name"] == "parser")
         self.assertEqual(parser["delta_ms"], parser["after_ms"] - parser["before_ms"])
+        probe_detail = next(item for item in explanation["workloads"] if item["name"] == "probe")
+        self.assertEqual(probe_detail["dominant_pass"]["name"], "parser")
+        self.assertEqual(
+            next(item for item in probe_detail["passes"] if item["name"] == "parser")["delta_ms"],
+            15,
+        )
         self.assertTrue(explanation["memory_bytes"])
         self.assertTrue(explanation["binary_size_bytes"])
         probe = next(item for item in model["small_multiples"] if item["workload"] == "probe")
@@ -2244,13 +2264,17 @@ class TestRecentRegressionWorkspace(unittest.TestCase):
 
     def test_recent_template_keeps_semantics_server_side_and_guards_insufficient_data(self):
         template = (INPUT_ROOT / "website" / "templates" / "performance.html").read_text()
-        self.assertIn("insufficient data for a delta", template)
-        self.assertIn("point.coverage.skipped_commits.join", template)
-        self.assertIn("annotationLink.href = item.link", template)
-        self.assertIn("value.before_ms.toFixed", template)
+        self.assertIn("Raw samples are insufficient", template)
+        self.assertIn("point.coverage.skipped_commits.map", template)
+        self.assertIn("appendLink(title, item.title, item.link)", template)
+        self.assertIn("fmt(value.before_ms)", template)
         self.assertIn("headline.classification === 'insufficient_data'", template)
-        self.assertIn("populateComparisons(points)", template)
+        self.assertIn("populateComparisons()", template)
         self.assertNotIn("function calculateDelta", template)
+        self.assertNotIn("JSON.stringify", template)
+        build = (INPUT_ROOT / "website" / "build.sh").read_text()
+        self.assertIn("'x86-64-linux' in platforms_with_data", build)
+        self.assertNotIn("'default_platform': 'comparison'", build)
 
 
 class BenchmarkEvolutionTests(unittest.TestCase):
@@ -2445,17 +2469,12 @@ class BenchmarkEvolutionTests(unittest.TestCase):
 
     def test_evolution_template_only_renders_precomputed_policy(self):
         template = (INPUT_ROOT / "website" / "templates" / "performance.html").read_text()
-        self.assertIn("series.raw_points.slice(series.ranges[activeRange].raw_start_index)", template)
-        self.assertIn("view.trend_points.forEach", template)
-        self.assertIn("point.absolute_ms.toFixed", template)
-        self.assertIn("point.boundary.skipped_commits.join", template)
-        self.assertIn("All machines (normalized, separate series)", template)
-        self.assertIn("Calendar time", template)
-        self.assertIn("Normalized performance index", template)
-        self.assertIn("evolution-boundary-marker", template)
-        self.assertIn("evolution-annotation-marker", template)
-        self.assertIn("point.boundary.regime_id", template)
-        self.assertIn("point.boundary.represented_commits.join", template)
+        self.assertIn("workspace.series.filter", template)
+        self.assertIn("item.raw_points.map", template)
+        self.assertIn("Normalized cross-platform evolution", template)
+        self.assertIn("Each machine remains a separate normalized series", template)
+        self.assertIn("drawCommitChart(els.normalized", template)
+        self.assertIn("unit: 'index'", template)
         self.assertNotIn("function calculateEvolutionIndex", template)
 
 

@@ -1332,7 +1332,11 @@ def generate_comparison_charts(history_files: list[Path], output_dir: Path):
     )
     metadata = {
         "platforms": platform_info_list,
-        "default_platform": "comparison",
+        "default_platform": (
+            "x86-64-linux"
+            if "x86-64-linux" in platform_data
+            else next(iter(platform_data))
+        ),
         "annotations": annotation_stream,
         "evolution_workspace": evolution_workspace(
             platform_data,

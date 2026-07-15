@@ -312,6 +312,25 @@ def metric_families(run: dict) -> dict:
     return families
 
 
+def absolute_latency_ms(bench: dict) -> tuple[float | None, str]:
+    """Return the best honest absolute latency available for one workload."""
+    sample = _sample_summary(bench.get("samples_ms"))
+    if sample:
+        return sample["center"], "median"
+    # Before timing schema v2, ``mean_ms`` summed nested spans.  The root
+    # ``compile`` timer retained the actual wall time and is the honest legacy
+    # fallback used by the existing chart generator.
+    compile_timer = (bench.get("passes") or {}).get("compile")
+    if isinstance(compile_timer, dict):
+        value = compile_timer.get("mean_ms")
+        if isinstance(value, (int, float)):
+            return float(value), "root_compile_mean"
+    value = bench.get("mean_ms")
+    if isinstance(value, (int, float)):
+        return float(value), "reported_mean"
+    return None, "unavailable"
+
+
 def comparison_explanation(current: dict, reference: dict) -> dict:
     """Explain one valid comparison by workload, pass, memory, and binary size."""
     comparison = compare_runs(current, reference)
@@ -331,9 +350,9 @@ def comparison_explanation(current: dict, reference: dict) -> dict:
             if current_center is not None and reference_center is not None
             else None
         )
-        workloads.append({"name": name, "delta_ms": delta_ms, **detail})
         current_passes = current_benches[name].get("passes", {})
         reference_passes = reference_benches[name].get("passes", {})
+        workload_passes = []
         if isinstance(current_passes, dict) and isinstance(reference_passes, dict):
             # A pass observed on only one side is missing evidence, not a zero.
             for pass_name in sorted(set(current_passes) & set(reference_passes)):
@@ -344,6 +363,12 @@ def comparison_explanation(current: dict, reference: dict) -> dict:
                 current_value = current_pass.get("mean_ms") if isinstance(current_pass, dict) else None
                 reference_value = reference_pass.get("mean_ms") if isinstance(reference_pass, dict) else None
                 if isinstance(current_value, (int, float)) and isinstance(reference_value, (int, float)):
+                    workload_passes.append({
+                        "name": pass_name,
+                        "before_ms": reference_value,
+                        "after_ms": current_value,
+                        "delta_ms": current_value - reference_value,
+                    })
                     totals = pass_totals.setdefault(
                         pass_name,
                         {"before_ms": 0, "after_ms": 0, "observations": 0},
@@ -351,6 +376,17 @@ def comparison_explanation(current: dict, reference: dict) -> dict:
                     totals["before_ms"] += reference_value
                     totals["after_ms"] += current_value
                     totals["observations"] += 1
+        workloads.append({
+            "name": name,
+            "delta_ms": delta_ms,
+            "passes": workload_passes,
+            "dominant_pass": max(
+                workload_passes,
+                key=lambda item: abs(item["delta_ms"]),
+                default=None,
+            ),
+            **detail,
+        })
         for field, target in (("peak_memory_bytes", memory), ("binary_size_bytes", binary)):
             current_value = current_benches[name].get(field)
             reference_value = reference_benches[name].get(field)

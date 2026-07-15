@@ -128,8 +128,12 @@ platforms.sort(key=lambda p: p['id'])
 
 metadata = {
     'platforms': platforms,
-    # The all-platform view is a normalized, machine-separated evolution view.
-    'default_platform': 'comparison' if any(p['has_data'] for p in platforms) else None
+    # Absolute time on one real machine is the public diagnostic default.
+    'default_platform': (
+        'x86-64-linux'
+        if 'x86-64-linux' in platforms_with_data
+        else platforms_with_data[0] if platforms_with_data else None
+    )
 }
 
 with open(benchmarks_dir / 'metadata.json', 'w') as f:
