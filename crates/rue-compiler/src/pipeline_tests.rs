@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[cfg(unix)]
@@ -180,6 +182,201 @@ mod tests {
         .unwrap();
         assert_eq!(output.work.parsed.syntax.parser_invocations, 0);
         assert_eq!(output.source_stats.tokens, expected_tokens);
+    }
+
+    #[test]
+    fn diagnostic_attempt_key_includes_presentation_order() {
+        let first = FileId::new(1);
+        let second = FileId::new(2);
+        let physical = HashMap::from([
+            (first, "/project/first.rue".to_owned()),
+            (second, "/project/second.rue".to_owned()),
+        ]);
+        let logical = HashMap::from([
+            (first, "first.rue".to_owned()),
+            (second, "second.rue".to_owned()),
+        ]);
+        let metadata = SourceMetadata::new(first, physical, logical).unwrap();
+        let first_text = Arc::new("fn first( {".to_owned());
+        let second_text = Arc::new("fn second( {".to_owned());
+        let forward = SourceSnapshot::new(
+            metadata.clone(),
+            vec![(first, first_text.clone()), (second, second_text.clone())],
+        )
+        .unwrap();
+        let reverse =
+            SourceSnapshot::new(metadata, vec![(second, second_text), (first, first_text)])
+                .unwrap();
+        assert_eq!(forward.source_revision(), reverse.source_revision());
+
+        let mut session = CompilerSession::new();
+        let forward_attempt = session.update_for_presentation(&forward);
+        assert_eq!(
+            forward_attempt
+                .diagnostics()
+                .errors()
+                .iter()
+                .map(|error| error.span().unwrap().file_id)
+                .collect::<Vec<_>>(),
+            [first, second]
+        );
+        let forward_diagnostics = forward_attempt.diagnostics().clone();
+
+        let reverse_attempt = session.update_for_presentation(&reverse);
+        assert_eq!(
+            reverse_attempt
+                .diagnostics()
+                .errors()
+                .iter()
+                .map(|error| error.span().unwrap().file_id)
+                .collect::<Vec<_>>(),
+            [second, first]
+        );
+        assert!(!Arc::ptr_eq(
+            &forward_diagnostics,
+            reverse_attempt.diagnostics()
+        ));
+        let reverse_diagnostics = reverse_attempt.diagnostics().clone();
+
+        let canonical_attempt = session.update(&reverse);
+        assert_eq!(
+            canonical_attempt
+                .diagnostics()
+                .errors()
+                .iter()
+                .map(|error| error.span().unwrap().file_id)
+                .collect::<Vec<_>>(),
+            [first, second]
+        );
+        assert!(!Arc::ptr_eq(
+            &reverse_diagnostics,
+            canonical_attempt.diagnostics()
+        ));
+        assert_eq!(session.work().diagnostic_publications, 3);
+
+        let repeated_reverse = session.update_for_presentation(&reverse);
+        assert!(Arc::ptr_eq(
+            &reverse_diagnostics,
+            repeated_reverse.diagnostics()
+        ));
+        assert!(Arc::ptr_eq(
+            session
+                .most_recent_diagnostics_for(&reverse, &FrontendDiagnosticStage::Syntax)
+                .unwrap(),
+            &reverse_diagnostics
+        ));
+        assert_eq!(session.work().diagnostic_publications, 3);
+    }
+
+    #[test]
+    fn successful_merge_reuse_keeps_canonical_origin_across_presentation_reordering() {
+        let first = FileId::new(1);
+        let second = FileId::new(2);
+        let metadata = SourceMetadata::new(
+            first,
+            HashMap::from([
+                (first, "/project/first.rue".to_owned()),
+                (second, "/project/second.rue".to_owned()),
+            ]),
+            HashMap::from([
+                (first, "first.rue".to_owned()),
+                (second, "second.rue".to_owned()),
+            ]),
+        )
+        .unwrap();
+        let first_text = Arc::new("fn main() -> i32 { 0 }".to_owned());
+        let second_text = Arc::new("fn helper() {}".to_owned());
+        let forward = SourceSnapshot::new(
+            metadata.clone(),
+            vec![(first, first_text.clone()), (second, second_text.clone())],
+        )
+        .unwrap();
+        let reverse =
+            SourceSnapshot::new(metadata, vec![(second, second_text), (first, first_text)])
+                .unwrap();
+
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&forward)
+            .into_result()
+            .unwrap();
+        session.merge().unwrap();
+        let origin = session.latest_diagnostics().unwrap().clone();
+        session
+            .update_for_presentation(&reverse)
+            .into_result()
+            .unwrap();
+        let publications = session.work().diagnostic_publications;
+        let reuses = session.work().diagnostic_reuses;
+
+        session.merge().unwrap();
+
+        assert!(Arc::ptr_eq(session.latest_diagnostics().unwrap(), &origin));
+        assert_eq!(session.work().merge.executions, 1);
+        assert_eq!(session.work().merge.reuses, 1);
+        assert_eq!(session.work().diagnostic_publications, publications);
+        assert_eq!(session.work().diagnostic_reuses, reuses + 1);
+    }
+
+    #[test]
+    fn failed_merge_attempt_is_recomputed_for_presentation_order() {
+        let first = FileId::new(1);
+        let second = FileId::new(2);
+        let metadata = SourceMetadata::new(
+            first,
+            HashMap::from([
+                (first, "/project/first.rue".to_owned()),
+                (second, "/project/second.rue".to_owned()),
+            ]),
+            HashMap::from([
+                (first, "first.rue".to_owned()),
+                (second, "second.rue".to_owned()),
+            ]),
+        )
+        .unwrap();
+        let first_text = Arc::new("fn duplicate() {} fn duplicate() {}".to_owned());
+        let second_text = Arc::new("fn other() {} fn other() {}".to_owned());
+        let forward = SourceSnapshot::new(
+            metadata.clone(),
+            vec![(first, first_text.clone()), (second, second_text.clone())],
+        )
+        .unwrap();
+        let reverse =
+            SourceSnapshot::new(metadata, vec![(second, second_text), (first, first_text)])
+                .unwrap();
+
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&forward)
+            .into_result()
+            .unwrap();
+        session.merge().unwrap_err();
+        let forward_diagnostics = session.latest_diagnostics().unwrap().clone();
+        assert_eq!(
+            forward_diagnostics
+                .errors()
+                .iter()
+                .map(|error| error.span().unwrap().file_id)
+                .collect::<Vec<_>>(),
+            [first, second]
+        );
+
+        session
+            .update_for_presentation(&reverse)
+            .into_result()
+            .unwrap();
+        session.merge().unwrap_err();
+        let reverse_diagnostics = session.latest_diagnostics().unwrap();
+        assert_eq!(
+            reverse_diagnostics
+                .errors()
+                .iter()
+                .map(|error| error.span().unwrap().file_id)
+                .collect::<Vec<_>>(),
+            [second, first]
+        );
+        assert!(!Arc::ptr_eq(&forward_diagnostics, reverse_diagnostics));
+        assert_eq!(session.work().merge.executions, 2);
     }
 
     #[test]

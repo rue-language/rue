@@ -15,6 +15,10 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
         include_str!("dependency_envelope.rs"),
     ),
     ("diagnostic", include_str!("diagnostic.rs")),
+    (
+        "diagnostic_attempt_store",
+        include_str!("diagnostic_attempt_store.rs"),
+    ),
     ("drop_glue", include_str!("drop_glue.rs")),
     ("durable_body", include_str!("durable_body.rs")),
     ("durable_cfg", include_str!("durable_cfg.rs")),
