@@ -545,6 +545,25 @@ impl<'a> CfgLower<'a> {
                 terminator: None,
             };
 
+            // Block parameters are preallocated before the block walk and
+            // therefore never reach `lower_value`'s MIR-emission path. Keep
+            // them in lowering debug output so the trace remains a complete
+            // CFG-to-MIR account, including intentional no-op materialization.
+            for (param_val, _) in &block.params {
+                let param_inst = self.ctx.cfg.get_inst(*param_val);
+                block_info.instructions.push(LoweringDecision {
+                    cfg_value: *param_val,
+                    cfg_inst_desc: format_cfg_inst_data_with_interner(
+                        self.ctx.cfg,
+                        &param_inst.data,
+                        self.interner,
+                    ),
+                    cfg_type: param_inst.ty.name().to_string(),
+                    mir_insts: Vec::new(),
+                    rationale: Some("Block parameter preallocated at the join".to_string()),
+                });
+            }
+
             // Emit block label (except for entry block)
             if block.id != self.ctx.cfg.entry {
                 self.mir.push(X86Inst::Label {
@@ -576,19 +595,17 @@ impl<'a> CfgLower<'a> {
                 // Generate rationale for interesting cases
                 let rationale = self.get_lowering_rationale(&inst.data, inst.ty);
 
-                if !mir_insts.is_empty() {
-                    block_info.instructions.push(LoweringDecision {
-                        cfg_value: value,
-                        cfg_inst_desc: format_cfg_inst_data_with_interner(
-                            self.ctx.cfg,
-                            &inst.data,
-                            self.interner,
-                        ),
-                        cfg_type: inst.ty.name().to_string(),
-                        mir_insts,
-                        rationale,
-                    });
-                }
+                block_info.instructions.push(LoweringDecision {
+                    cfg_value: value,
+                    cfg_inst_desc: format_cfg_inst_data_with_interner(
+                        self.ctx.cfg,
+                        &inst.data,
+                        self.interner,
+                    ),
+                    cfg_type: inst.ty.name().to_string(),
+                    mir_insts,
+                    rationale,
+                });
             }
 
             // Lower terminator with tracking
@@ -852,7 +869,19 @@ impl<'a> CfgLower<'a> {
                 // aggregate, and write paths all use uniform frame-slot loads,
                 // including ABI slots beyond the six argument registers.
                 // (RUE-13/79/91)
-                if is_by_ref {
+                if is_by_ref && value_plan.shape.requires_complete_slots() {
+                    // Aggregate parameters must materialize their complete
+                    // logical representation through the shared slot policy.
+                    // In particular, a zero-slot struct/array has no frame
+                    // load at all; `max(1)` here would read a neighboring
+                    // slot and turn a ZST into a scalar value.
+                    let slots = self.require_aggregate_slots(value);
+                    let primary = slots
+                        .first()
+                        .copied()
+                        .unwrap_or_else(|| self.mir.alloc_vreg());
+                    self.value_map.insert(value, primary);
+                } else if is_by_ref {
                     // For by-ref params, the slot contains a POINTER to the caller's memory.
                     // Load the pointer, then dereference to get the value.
                     let ptr_vreg = self.ensure_by_ref_param_ptr(*index);
@@ -866,6 +895,13 @@ impl<'a> CfgLower<'a> {
                     });
 
                     self.value_map.insert(value, val_vreg);
+                } else if value_plan.shape.requires_complete_slots() {
+                    let slots = self.require_aggregate_slots(value);
+                    let primary = slots
+                        .first()
+                        .copied()
+                        .unwrap_or_else(|| self.mir.alloc_vreg());
+                    self.value_map.insert(value, primary);
                 } else {
                     // Normal parameter: the primary vreg is the value's LOGICAL
                     // slot 0 (e.g. an enum's discriminant). Ascending layout
@@ -875,8 +911,7 @@ impl<'a> CfgLower<'a> {
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
 
-                    let count = value_plan.shape.slot_count().max(1);
-                    let slot = self.ctx.num_locals + *index + count - 1;
+                    let slot = self.ctx.num_locals + *index;
                     let offset = self.ctx.local_offset(slot);
                     self.mir.push(X86Inst::MovRM {
                         dst: Operand::Virtual(vreg),
@@ -3523,8 +3558,8 @@ impl<'a> CfgLower<'a> {
                 // Copy args to target's block params
                 let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                 for (i, &arg) in args.iter().enumerate() {
-                    let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if self.ctx.is_multislot_aggregate(arg_type) {
+                    let arg_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, arg);
+                    if arg_plan.shape.requires_complete_slots() {
                         // For aggregate args (structs, String, arrays), copy all slot vregs
                         self.copy_aggregate_to_block_param(arg, *target, i as u32);
                     } else {
@@ -3575,8 +3610,8 @@ impl<'a> CfgLower<'a> {
                 // Copy then_args to then_block's params
                 let then_args = self.ctx.cfg.get_extra(*then_args_start, *then_args_len);
                 for (i, &arg) in then_args.iter().enumerate() {
-                    let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if self.ctx.is_multislot_aggregate(arg_type) {
+                    let arg_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, arg);
+                    if arg_plan.shape.requires_complete_slots() {
                         // For aggregate args (structs, String, arrays), copy all slot vregs
                         self.copy_aggregate_to_block_param(arg, *then_block, i as u32);
                     } else {
@@ -3601,8 +3636,8 @@ impl<'a> CfgLower<'a> {
                 });
                 let else_args = self.ctx.cfg.get_extra(*else_args_start, *else_args_len);
                 for (i, &arg) in else_args.iter().enumerate() {
-                    let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if self.ctx.is_multislot_aggregate(arg_type) {
+                    let arg_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, arg);
+                    if arg_plan.shape.requires_complete_slots() {
                         // For aggregate args (structs, String, arrays), copy all slot vregs
                         self.copy_aggregate_to_block_param(arg, *else_block, i as u32);
                     } else {
@@ -3689,7 +3724,7 @@ impl<'a> CfgLower<'a> {
                     return;
                 };
 
-                let return_type = self.ctx.cfg.return_type();
+                let return_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, *value);
 
                 if self.fn_name == "main" {
                     let val_vreg = self.get_vreg(*value);
@@ -3703,7 +3738,7 @@ impl<'a> CfgLower<'a> {
                     // it 0 mod 16 at callee entry, violating SysV ABI).
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(X86Inst::CallRel { symbol_id });
-                } else if self.ctx.is_multislot_aggregate(return_type) {
+                } else if return_plan.shape.requires_complete_slots() {
                     // Return a multi-slot aggregate (struct, array, or payload
                     // enum). Every valid source has exactly `type_slot_count`
                     // materialized vregs. (RUE-118, RUE-78, RUE-237)
