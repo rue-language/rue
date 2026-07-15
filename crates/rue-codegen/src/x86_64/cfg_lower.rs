@@ -3889,7 +3889,7 @@ impl crate::allocation::ScaleBackend for CfgLower<'_> {
                     dst: Operand::Virtual(dst),
                     src: Operand::Virtual(src),
                 }),
-                ScaleKind::Constant(bytes) if bytes == 8 => {
+                ScaleKind::Constant(8) => {
                     let shift_count = self.mir.alloc_vreg();
                     self.mir.push(X86Inst::MovRI32 {
                         dst: Operand::Virtual(shift_count),
