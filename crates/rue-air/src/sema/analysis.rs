@@ -460,9 +460,6 @@ fn finalize_function_body_analysis(
         functions,
         strings: global_strings,
         warnings: all_warnings,
-        // Specialization can intern new composite types, so snapshot only
-        // after its fixed point has completed.
-        type_pool: sema.type_pool.clone(),
         body_analysis_work: sema.body_analysis_work,
         ordinary_body_exports: std::mem::take(&mut sema.ordinary_body_exports),
         specialized_body_exports: std::mem::take(&mut sema.specialized_body_exports),
@@ -552,6 +549,10 @@ fn finalize_function_body_analysis(
             sema.named_const_dependencies.clone()
         },
         named_value_const_dependencies_complete: true,
+        // Body analysis and specialization can intern composite and anonymous
+        // types. Transfer the completed pool only after every finalization
+        // consumer above has finished reading semantic state.
+        type_pool: std::mem::take(&mut sema.type_pool),
     };
 
     errors.into_result_with(output)

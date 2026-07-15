@@ -582,6 +582,63 @@ mod tests {
         )));
     }
 
+    #[test]
+    fn output_type_pool_includes_composite_type_interned_by_specialization() {
+        let output = compile_to_air(
+            "fn zeros(comptime N: i32) -> [i32; N] { [0; N] }\n\
+             fn main() -> i32 { let _values = zeros(3); 0 }",
+        )
+        .unwrap();
+
+        // The generic declaration cannot intern `[i32; N]`: its length is
+        // unknown until the reachable call specializes `N` to 3.
+        assert_eq!(output.body_analysis_work.specialized_bodies_succeeded, 1);
+        assert!(
+            output.type_pool.stats().array_count >= 1,
+            "the finalized pool must retain the array interned by specialization"
+        );
+        assert!(output.functions.iter().any(|function| {
+            function.name != "main"
+                && function
+                    .air
+                    .return_type()
+                    .safe_name_with_pool(Some(&output.type_pool))
+                    == "[i32; 3]"
+        }));
+    }
+
+    #[test]
+    fn output_type_pool_includes_late_anonymous_destructor_owner() {
+        let output = compile_to_air(
+            "fn Box(comptime T: type) -> type {\n\
+                 struct { value: T, drop fn(self) {} }\n\
+             }\n\
+             fn main() { let B = Box(i32); let _value = B { value: 1 }; }",
+        )
+        .unwrap();
+
+        let anonymous = output
+            .type_pool
+            .all_struct_ids()
+            .into_iter()
+            .find(|&id| {
+                output
+                    .type_pool
+                    .struct_def(id)
+                    .name
+                    .starts_with("__anon_struct_")
+            })
+            .expect("body-time type discovery must survive in the finalized pool");
+        let destructor_name = format!("{}.__drop", output.type_pool.struct_def(anonymous).name);
+        assert!(
+            output
+                .functions
+                .iter()
+                .any(|function| function.name == destructor_name),
+            "the anonymous destructor owner and its analyzed body must agree"
+        );
+    }
+
     fn named_method_lookup_work(irrelevant: usize) -> crate::BodyAnalysisWork {
         let mut source = String::from(
             "struct Target { fn answer() -> i32 { 42 } }\n\
