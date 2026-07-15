@@ -743,7 +743,141 @@ impl SemanticDependencyBlocker {
     }
 }
 
+/// A non-empty, sorted set of stable dependency blockers.
+///
+/// Construction is centralized here so the retained slice is the one
+/// canonical value used for planning, accessors, and presentation.
 #[derive(Debug, Clone)]
+struct NonEmptySemanticDependencyBlockers {
+    blockers: Arc<[SemanticDependencyBlocker]>,
+}
+
+impl NonEmptySemanticDependencyBlockers {
+    fn from_blockers(mut blockers: Vec<SemanticDependencyBlocker>) -> Option<Self> {
+        blockers.sort();
+        blockers.dedup();
+        (!blockers.is_empty()).then(|| Self {
+            blockers: blockers.into(),
+        })
+    }
+
+    fn as_slice(&self) -> &[SemanticDependencyBlocker] {
+        &self.blockers
+    }
+}
+
+#[derive(Debug, Clone)]
+enum DurableBodyCandidateState {
+    Complete,
+    Incomplete(NonEmptySemanticDependencyBlockers),
+}
+
+impl DurableBodyCandidateState {
+    fn from_blockers(blockers: Vec<SemanticDependencyBlocker>) -> Self {
+        match NonEmptySemanticDependencyBlockers::from_blockers(blockers) {
+            Some(blockers) => Self::Incomplete(blockers),
+            None => Self::Complete,
+        }
+    }
+
+    fn blockers(&self) -> &[SemanticDependencyBlocker] {
+        match self {
+            Self::Complete => &[],
+            Self::Incomplete(blockers) => blockers.as_slice(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum SemanticDependencyGraphState {
+    Complete,
+    Incomplete(NonEmptySemanticDependencyBlockers),
+}
+
+impl SemanticDependencyGraphState {
+    fn from_blockers(blockers: Vec<SemanticDependencyBlocker>) -> Self {
+        match NonEmptySemanticDependencyBlockers::from_blockers(blockers) {
+            Some(blockers) => Self::Incomplete(blockers),
+            None => Self::Complete,
+        }
+    }
+
+    fn blockers(&self) -> &[SemanticDependencyBlocker] {
+        match self {
+            Self::Complete => &[],
+            Self::Incomplete(blockers) => blockers.as_slice(),
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete)
+    }
+
+    fn surface_complete(&self, surface: SemanticDependencySurface) -> bool {
+        match self {
+            Self::Complete => true,
+            Self::Incomplete(blockers) => blockers
+                .as_slice()
+                .iter()
+                .all(|blocker| blocker.surface != surface),
+        }
+    }
+
+    /// Feed every incomplete surface into invalidation planning. The match on
+    /// `SemanticDependencySurface` is deliberately exhaustive: adding a new
+    /// surface cannot compile until this fold accounts for it.
+    fn fold_planning_blockers(&self, blockers: &mut BTreeSet<SemanticDependencyBlocker>) {
+        let Self::Incomplete(incomplete) = self else {
+            return;
+        };
+        for blocker in incomplete.as_slice() {
+            match blocker.surface {
+                SemanticDependencySurface::BodyOwner
+                | SemanticDependencySurface::FreeFunctionCall
+                | SemanticDependencySurface::NonGenericNamedMethodCall
+                | SemanticDependencySurface::GenericNamedMethodCall
+                | SemanticDependencySurface::NamedDestructorCall
+                | SemanticDependencySurface::ImplicitNamedDestructor
+                | SemanticDependencySurface::DeclarationType
+                | SemanticDependencySurface::DeclarationTypeCallHead
+                | SemanticDependencySurface::SupportedTypeCallHead
+                | SemanticDependencySurface::NamedValueConst => {
+                    blockers.insert(blocker.clone());
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NonEmptyDefinitionFailures {
+    failures: Arc<[rue_error::CompileError]>,
+}
+
+impl NonEmptyDefinitionFailures {
+    fn from_errors(errors: &CompileErrors) -> Self {
+        assert!(
+            !errors.is_empty(),
+            "failed stable-definition query must carry at least one error"
+        );
+        Self {
+            failures: errors.as_slice().to_vec().into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum SemanticDefinitionUniverseIncompleteReason {
+    StableDefinitionsFailed(NonEmptyDefinitionFailures),
+}
+
+#[derive(Debug, Clone)]
+enum SemanticDefinitionUniverseState {
+    Complete,
+    Incomplete(SemanticDefinitionUniverseIncompleteReason),
+}
+
+#[derive(Clone)]
 pub struct SemanticDependencyInputManifest {
     input: SemanticInputDescriptor,
     imports: CanonicalImportGraph,
@@ -760,10 +894,60 @@ pub struct SemanticDependencyInputManifest {
     named_const_dependencies: Arc<[StableNamedConstDependency]>,
     body_dependencies: Arc<[StableBodyDependencyInputRecord]>,
     durable_ordinary_bodies: Arc<[crate::DurableOrdinaryBody]>,
-    body_dependency_blockers: Arc<[SemanticDependencyBlocker]>,
-    dependency_blockers: Arc<[SemanticDependencyBlocker]>,
-    definition_universe_complete: bool,
+    /// Completeness of durable body candidates, including owner-specific
+    /// blockers. This is distinct from whole-graph invalidation completeness.
+    durable_body_candidate_state: DurableBodyCandidateState,
+    dependency_graph_state: SemanticDependencyGraphState,
+    definition_universe_state: SemanticDefinitionUniverseState,
     work: SemanticDependencyManifestWork,
+}
+
+impl std::fmt::Debug for SemanticDependencyInputManifest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SemanticDependencyInputManifest")
+            .field("input", &self.input)
+            .field("imports", &self.imports)
+            .field("definitions", &self.definitions)
+            .field("definition_fingerprints", &self.definition_fingerprints)
+            .field("module_imports", &self.module_imports)
+            .field(
+                "free_function_dependencies",
+                &self.free_function_dependencies,
+            )
+            .field("named_method_dependencies", &self.named_method_dependencies)
+            .field(
+                "named_destructor_dependencies",
+                &self.named_destructor_dependencies,
+            )
+            .field(
+                "implicit_named_destructor_dependencies",
+                &self.implicit_named_destructor_dependencies,
+            )
+            .field(
+                "declaration_type_dependencies",
+                &self.declaration_type_dependencies,
+            )
+            .field(
+                "declaration_type_call_head_dependencies",
+                &self.declaration_type_call_head_dependencies,
+            )
+            .field(
+                "builtin_type_call_head_inputs",
+                &self.builtin_type_call_head_inputs,
+            )
+            .field("named_const_dependencies", &self.named_const_dependencies)
+            .field("body_dependencies", &self.body_dependencies)
+            .field("durable_ordinary_bodies", &self.durable_ordinary_bodies)
+            .field("body_dependency_blockers", &self.body_dependency_blockers())
+            .field("dependency_blockers", &self.dependency_blockers())
+            .field(
+                "definition_universe_complete",
+                &self.definition_universe_complete(),
+            )
+            .field("work", &self.work)
+            .finish()
+    }
 }
 
 impl SemanticDependencyInputManifest {
@@ -844,29 +1028,29 @@ impl SemanticDependencyInputManifest {
         &self.durable_ordinary_bodies
     }
     pub fn body_dependency_blockers(&self) -> &[SemanticDependencyBlocker] {
-        &self.body_dependency_blockers
+        self.durable_body_candidate_state.blockers()
     }
     pub fn named_value_const_dependencies_complete(&self) -> bool {
         self.surface_complete(SemanticDependencySurface::NamedValueConst)
     }
     pub fn semantic_dependency_graph_complete(&self) -> bool {
-        self.dependency_blockers.is_empty()
+        self.dependency_graph_state.is_complete()
     }
     pub fn dependency_blockers(&self) -> &[SemanticDependencyBlocker] {
-        &self.dependency_blockers
+        self.dependency_graph_state.blockers()
     }
     pub fn definition_universe_complete(&self) -> bool {
-        self.definition_universe_complete
+        matches!(
+            self.definition_universe_state,
+            SemanticDefinitionUniverseState::Complete
+        )
     }
     pub fn work(&self) -> SemanticDependencyManifestWork {
         self.work
     }
 
     fn surface_complete(&self, surface: SemanticDependencySurface) -> bool {
-        !self
-            .dependency_blockers
-            .iter()
-            .any(|blocker| blocker.surface == surface)
+        self.dependency_graph_state.surface_complete(surface)
     }
 }
 
@@ -2875,7 +3059,14 @@ impl CompilerSession {
         self.work.dependency_manifests.executions += 1;
         let semantic = self.semantic(options);
         let definitions = self.stable_definitions(options);
-        let definition_universe_complete = definitions.is_ok();
+        let definition_universe_state = match &definitions {
+            Ok(_) => SemanticDefinitionUniverseState::Complete,
+            Err(errors) => SemanticDefinitionUniverseState::Incomplete(
+                SemanticDefinitionUniverseIncompleteReason::StableDefinitionsFailed(
+                    NonEmptyDefinitionFailures::from_errors(errors),
+                ),
+            ),
+        };
         let definition_records = definitions
             .as_ref()
             .map(|definitions| definitions.definitions())
@@ -3711,9 +3902,13 @@ impl CompilerSession {
             named_const_dependencies: named_const_dependencies.into(),
             body_dependencies: body_dependencies.into(),
             durable_ordinary_bodies,
-            body_dependency_blockers: body_dependency_blockers.into(),
-            dependency_blockers: dependency_blockers.into_iter().collect::<Vec<_>>().into(),
-            definition_universe_complete,
+            durable_body_candidate_state: DurableBodyCandidateState::from_blockers(
+                body_dependency_blockers,
+            ),
+            dependency_graph_state: SemanticDependencyGraphState::from_blockers(
+                dependency_blockers.into_iter().collect(),
+            ),
+            definition_universe_state,
             work,
         });
         self.dependency_manifest_cache.push(manifest.clone());
@@ -3804,15 +3999,27 @@ fn plan_semantic_invalidation(
     if previous.input.preview_features != current.input.preview_features {
         reasons.insert(SemanticFullInvalidationReason::PreviewFeaturesChanged);
     }
-    if !previous.definition_universe_complete || !current.definition_universe_complete {
-        reasons.insert(SemanticFullInvalidationReason::IncompleteDefinitionUniverse);
+    for state in [
+        &previous.definition_universe_state,
+        &current.definition_universe_state,
+    ] {
+        match state {
+            SemanticDefinitionUniverseState::Complete => {}
+            SemanticDefinitionUniverseState::Incomplete(reason) => match reason {
+                SemanticDefinitionUniverseIncompleteReason::StableDefinitionsFailed(failures) => {
+                    assert!(!failures.failures.is_empty());
+                    reasons.insert(SemanticFullInvalidationReason::IncompleteDefinitionUniverse);
+                }
+            },
+        }
     }
-    let dependency_blockers = previous
-        .dependency_blockers
-        .iter()
-        .chain(current.dependency_blockers.iter())
-        .cloned()
-        .collect::<BTreeSet<_>>();
+    let mut dependency_blockers = BTreeSet::new();
+    for graph in [
+        &previous.dependency_graph_state,
+        &current.dependency_graph_state,
+    ] {
+        graph.fold_planning_blockers(&mut dependency_blockers);
+    }
     if !dependency_blockers.is_empty() {
         reasons.insert(SemanticFullInvalidationReason::IncompleteDependencyGraph(
             dependency_blockers.into_iter().collect::<Vec<_>>().into(),
@@ -4891,9 +5098,9 @@ fn body_invalidation_manifest(
         named_const_dependencies: Arc::from([]),
         body_dependencies: body_dependencies.into(),
         durable_ordinary_bodies: bodies,
-        body_dependency_blockers: Arc::from([]),
-        dependency_blockers: Arc::from([]),
-        definition_universe_complete: true,
+        durable_body_candidate_state: DurableBodyCandidateState::Complete,
+        dependency_graph_state: SemanticDependencyGraphState::from_blockers(Vec::new()),
+        definition_universe_state: SemanticDefinitionUniverseState::Complete,
         work: SemanticDependencyManifestWork::default(),
     })
 }
@@ -7446,9 +7653,107 @@ mod tests {
         manifest: &SemanticDependencyInputManifest,
     ) -> Arc<SemanticDependencyInputManifest> {
         let mut manifest = manifest.clone();
-        manifest.dependency_blockers = Arc::from([]);
-        manifest.definition_universe_complete = true;
+        manifest.dependency_graph_state = SemanticDependencyGraphState::from_blockers(Vec::new());
+        manifest.definition_universe_state = SemanticDefinitionUniverseState::Complete;
         Arc::new(manifest)
+    }
+
+    #[test]
+    fn dependency_completeness_states_require_evidence_and_preserve_projection() {
+        let complete = SemanticDependencyGraphState::from_blockers(Vec::new());
+        assert!(complete.is_complete());
+        assert!(complete.blockers().is_empty());
+        assert!(complete.surface_complete(SemanticDependencySurface::FreeFunctionCall));
+
+        let blocker = SemanticDependencyBlocker {
+            owner: None,
+            surface: SemanticDependencySurface::FreeFunctionCall,
+            reason: SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
+        };
+        let incomplete =
+            SemanticDependencyGraphState::from_blockers(vec![blocker.clone(), blocker.clone()]);
+        assert!(!incomplete.is_complete());
+        assert_eq!(incomplete.blockers(), &[blocker]);
+        assert!(!incomplete.surface_complete(SemanticDependencySurface::FreeFunctionCall));
+        assert!(incomplete.surface_complete(SemanticDependencySurface::NamedValueConst));
+    }
+
+    #[test]
+    fn every_incomplete_dependency_surface_forces_full_invalidation() {
+        let source = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &source);
+        let manifest = session
+            .semantic_dependency_inputs(&CompileOptions::default(), None)
+            .unwrap();
+        let complete = synthetic_complete_manifest(&manifest);
+
+        for (surface, reason) in [
+            (
+                SemanticDependencySurface::BodyOwner,
+                SemanticDependencyIncompleteReason::AnonymousBodyOwnerUnavailable,
+            ),
+            (
+                SemanticDependencySurface::FreeFunctionCall,
+                SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
+            ),
+            (
+                SemanticDependencySurface::NonGenericNamedMethodCall,
+                SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
+            ),
+            (
+                SemanticDependencySurface::GenericNamedMethodCall,
+                SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable,
+            ),
+            (
+                SemanticDependencySurface::NamedDestructorCall,
+                SemanticDependencyIncompleteReason::DestructorEndpointUnavailable,
+            ),
+            (
+                SemanticDependencySurface::ImplicitNamedDestructor,
+                SemanticDependencyIncompleteReason::AnonymousDropOwnerUnavailable,
+            ),
+            (
+                SemanticDependencySurface::DeclarationType,
+                SemanticDependencyIncompleteReason::ResolvedTypeIdentityUnavailable,
+            ),
+            (
+                SemanticDependencySurface::DeclarationTypeCallHead,
+                SemanticDependencyIncompleteReason::TypeCallHeadIdentityUnavailable,
+            ),
+            (
+                SemanticDependencySurface::SupportedTypeCallHead,
+                SemanticDependencyIncompleteReason::UnsupportedDynamicTypeCallHead,
+            ),
+            (
+                SemanticDependencySurface::NamedValueConst,
+                SemanticDependencyIncompleteReason::ConstEndpointUnavailable,
+            ),
+        ] {
+            let blocker = SemanticDependencyBlocker {
+                owner: None,
+                surface,
+                reason,
+            };
+            let mut incomplete = (*complete).clone();
+            incomplete.dependency_graph_state =
+                SemanticDependencyGraphState::from_blockers(vec![blocker.clone()]);
+            let plan = plan_semantic_invalidation(&complete, &incomplete);
+            assert_eq!(
+                plan.scope(),
+                &SemanticInvalidationScope::Full {
+                    reasons: Arc::from([
+                        SemanticFullInvalidationReason::IncompleteDependencyGraph(Arc::from([
+                            blocker
+                        ]),)
+                    ]),
+                },
+                "surface {surface:?} must fail closed"
+            );
+        }
     }
 
     fn definition_names(keys: &[StableDefinitionKey]) -> Vec<&str> {
@@ -7952,6 +8257,14 @@ mod tests {
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
         assert!(!manifest.definition_universe_complete());
+        match &manifest.definition_universe_state {
+            SemanticDefinitionUniverseState::Complete => {
+                panic!("failed definition universe cannot be complete")
+            }
+            SemanticDefinitionUniverseState::Incomplete(
+                SemanticDefinitionUniverseIncompleteReason::StableDefinitionsFailed(failures),
+            ) => assert!(!failures.failures.is_empty()),
+        }
         assert!(!manifest.free_function_caller_dependencies_complete());
         assert!(manifest.free_function_dependencies().is_empty());
     }
