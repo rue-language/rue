@@ -116,6 +116,7 @@ filegroup(
         "scripts/perf-baseline.py",
         "scripts/scaling_workloads.py",
         "scripts/validate-benchmark.py",
+        "website/build.sh",
         "website/templates/performance.html",
         "website/templates/index.html",
     ],
