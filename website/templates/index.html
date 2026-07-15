@@ -49,7 +49,7 @@
         </ul>
         {% if status.bench %}
         <div class="sparkline-block performance-snapshot">
-            <div class="spark-label"><b>compiler health</b><span>{{ status.bench.platform_label }}</span></div>
+            <div class="spark-label"><b>compiler health</b><span>{{ status.bench.platform_label }} · 30 days</span></div>
             <p class="performance-verdict performance-{{ status.bench.state.kind }}">{{ status.bench.state.label }}</p>
             {% if status.bench.latest_suite_ms %}
             <p class="performance-reading"><strong>{{ status.bench.latest_suite_ms | round(precision=1) }} ms</strong> for the benchmark suite</p>
@@ -57,8 +57,9 @@
             <p class="performance-reading"><strong>Absolute time unavailable</strong> for the latest measurement</p>
             {% endif %}
             <p class="performance-context">{{ status.bench.state.summary }} · {{ status.bench.freshness.label }}</p>
+            <p class="performance-context">Coverage: {% if status.bench.coverage.gap_unknown %}unknown{% elif status.bench.coverage.skipped_count > 0 %}{{ status.bench.coverage.represented_count }} represented, {{ status.bench.coverage.skipped_count }} skipped{% else %}{{ status.bench.coverage.represented_count }} represented, no known skips{% endif %}</p>
             <svg viewBox="0 0 300 52" preserveAspectRatio="none" role="img"
-                 aria-label="Absolute suite compilation time across the last {{ status.bench.n_trend_points }} measured commits; lower is better">
+                 aria-label="Thirty-day comparable compiler trend across {{ status.bench.n_trend_points }} daily points; higher means faster">
                 <polyline fill="none" stroke="var(--color-border-dark)" stroke-width="1" points="0,46 300,46"/>
                 {% if status.bench.points and status.bench.n_trend_points > 1 %}
                 <polyline fill="none" stroke="var(--color-olive)" stroke-width="1.6"
@@ -68,7 +69,10 @@
                 <circle cx="{{ status.bench.last_x }}" cy="{{ status.bench.last_y }}" r="3" fill="var(--color-gold)"/>
                 {% endif %}
             </svg>
-            <div class="spark-label"><span>last {{ status.bench.n_trend_points }} measured commits</span><span>lower is better</span></div>
+            <div class="spark-label"><span>{{ status.bench.n_trend_points }} comparable daily points</span><span>higher means faster</span></div>
+            {% if status.bench.annotation %}
+            <p class="performance-context"><span class="annotation-badge category-{{ status.bench.annotation.category }}">{{ status.bench.annotation.category_label }}</span> <a href="{{ status.bench.annotation.dashboard_url }}">{{ status.bench.annotation.title }} →</a> · {{ status.bench.annotation.explanation }}</p>
+            {% endif %}
             <a class="performance-details-link" href="{{ status.bench.dashboard_url }}">Investigate compiler performance →</a>
         </div>
         {% else %}

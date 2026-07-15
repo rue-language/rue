@@ -802,6 +802,13 @@ pre:not(.z-code) {
 .annotation-note h3, .annotation-note p { margin: 0; }
 .annotation-note h3 { font-family: var(--font-display); font-size: 1.05rem; }
 .annotation-location { color: var(--color-faint); font-family: var(--font-mono); font-size: 0.72rem; }
+.annotation-badge { display: inline-block; margin: 0 0.35rem 0.2rem 0; border: 1px solid currentColor; padding: 0.08rem 0.35rem; font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.05em; text-transform: uppercase; line-height: 1.4; }
+.category-capability { color: #81511d; }
+.category-optimization { color: var(--color-good); }
+.category-benchmark_corpus { color: #6b4788; }
+.category-measurement_infrastructure { color: var(--chart-blue); }
+.category-known_regression { color: var(--chart-regression); }
+.category-repair { color: #306b68; }
 .annotation-empty { margin: 0; border-top: 1px solid var(--color-border); padding: 0.75rem 1.25rem; color: var(--color-muted); font-style: italic; }
 .performance-notes details,
 .secondary-diagnostics > details { border-top: 1px solid var(--color-border); }
@@ -810,6 +817,29 @@ pre:not(.z-code) {
 .performance-notes details[open] > summary,
 .secondary-diagnostics > details[open] > summary { border-bottom: 1px solid var(--color-border); }
 .details-intro { padding: 0.7rem 1.25rem 0; margin: 0; color: var(--color-muted); }
+
+.evolution-disclosure { margin: 0 0 2rem; border: 1px solid var(--color-border-dark); background: var(--color-surface-deep); }
+.evolution-disclosure > summary { cursor: pointer; padding: 0.8rem 1rem; font-family: var(--font-display); font-size: 1.08rem; font-weight: 520; }
+.evolution-disclosure[open] > summary { border-bottom: 1px solid var(--color-border-dark); }
+.evolution-workspace { margin: 0; border: 0; background: var(--color-surface); }
+.evolution-controls { display: grid; grid-template-columns: auto minmax(12rem, 1fr) minmax(14rem, 1fr); gap: 0.8rem 1.2rem; align-items: end; padding: 1rem 1.25rem; border-bottom: 1px solid var(--color-border); }
+.evolution-controls label, .evolution-controls fieldset { display: grid; gap: 0.22rem; margin: 0; padding: 0; border: 0; font-family: var(--font-mono); font-size: 0.69rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.evolution-controls select { width: 100%; border: 1px solid var(--color-border-dark); background: var(--color-surface); color: var(--color-fg); padding: 0.48rem; font-family: var(--font-serif); font-size: 0.92rem; letter-spacing: normal; text-transform: none; }
+.evolution-raw-point { opacity: 0.24; }
+.evolution-variation { opacity: 0.3; stroke-width: 2; }
+.evolution-annotation-marker { fill: none; stroke-width: 2.2; }
+.chart-series-label { font-family: var(--font-mono); font-size: 10px; }
+.evolution-caption { margin: 0.25rem 0.75rem; color: var(--color-faint); font-family: var(--font-mono); font-size: 0.7rem; }
+.evolution-event { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 0 0.35rem; border-top: 1px solid var(--color-border); padding: 0.7rem 1.25rem; }
+.evolution-event h3, .evolution-event p { margin: 0; }
+.evolution-event h3 { font-family: var(--font-display); font-size: 1rem; }
+.evolution-event p, .evolution-event > a { grid-column: 2; font-size: 0.84rem; }
+.evolution-event.selected-annotation { background: color-mix(in srgb, var(--color-gold) 12%, transparent); border-left: 3px solid var(--color-gold); }
+.evolution-raw { border-top: 1px solid var(--color-border); }
+.evolution-raw > summary { cursor: pointer; padding: 0.7rem 1.25rem; font-family: var(--font-display); font-weight: 520; }
+#evolution-details table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+#evolution-details th, #evolution-details td { border-bottom: 1px solid var(--color-border); padding: 0.42rem 0.5rem; text-align: left; vertical-align: top; }
+.comparison-table caption, #evolution-details caption { padding: 0.8rem 0.5rem 0.35rem; text-align: left; color: var(--color-muted); font-family: var(--font-display); font-weight: 520; }
 
 .workload-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; }
 .workload-card { min-width: 0; border-bottom: 1px solid var(--color-border); padding: 0.7rem; }
@@ -839,6 +869,7 @@ pre:not(.z-code) {
 
 @media (max-width: 720px) {
   .performance-toolbar { grid-template-columns: 1fr; align-items: stretch; }
+  .evolution-controls { grid-template-columns: 1fr; align-items: stretch; }
   .performance-toolbar-note { grid-column: 1; }
   .performance-section-heading { display: block; }
   .chart-key { margin-top: 0.6rem; }

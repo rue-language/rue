@@ -127,7 +127,9 @@ def _aggregate(points: list[dict], resolution: str) -> list[dict]:
     return result
 
 
-def _range_view(points: list[dict], start: datetime | None, resolution: str) -> dict:
+def _range_view(
+    points: list[dict], start: datetime | None, end: datetime, resolution: str
+) -> dict:
     start_index = next(
         (
             index for index, point in enumerate(points)
@@ -136,10 +138,28 @@ def _range_view(points: list[dict], start: datetime | None, resolution: str) -> 
         len(points),
     )
     selected = points[start_index:]
+    trend_points = _aggregate(selected, resolution)
+    trend_segments = []
+    for point in trend_points:
+        if not trend_segments or trend_segments[-1]["segment"] != point["segment"]:
+            trend_segments.append({"segment": point["segment"], "points": []})
+        trend_segments[-1]["points"].append(point)
     return {
         "raw_start_index": start_index,
         "rendered_raw_points": _render_subset(selected),
-        "trend_points": _aggregate(selected, resolution),
+        "trend_points": trend_points,
+        # Renderers consume these paths directly so a line can never bridge a
+        # comparison boundary by accident.
+        "trend_segments": trend_segments,
+        # Finite calendar ranges retain their requested domain even when
+        # measurements are sparse. The all-history view derives its domain
+        # from the first and last observed points in the renderer.
+        "calendar_start": (
+            start.isoformat().replace("+00:00", "Z") if start is not None else None
+        ),
+        "calendar_end": (
+            end.isoformat().replace("+00:00", "Z") if start is not None else None
+        ),
         "raw_point_count": len(selected),
         "rendered_raw_point_count": len(_render_subset(selected)),
         "resolution": resolution,
@@ -279,7 +299,7 @@ def evolution_workspace(
                     else None
                 )
                 resolution = "day" if range_id in {"30d", "90d"} else "week"
-                range_views[range_id] = _range_view(points, start, resolution)
+                range_views[range_id] = _range_view(points, start, range_end, resolution)
             all_series.append({
                 "platform": platform,
                 "workload": workload,

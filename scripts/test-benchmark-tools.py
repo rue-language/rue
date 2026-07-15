@@ -1784,7 +1784,7 @@ class BenchmarkMetricSemanticsTests(unittest.TestCase):
         self.assertAlmostEqual(summary["time_delta_pct"], 10.0)
         self.assertEqual(summary["time_delta_str"], "↑ 10.0%")
 
-    def test_status_uses_absolute_suite_time_and_last_measured_commits(self):
+    def test_status_uses_absolute_suite_time_and_thirty_calendar_days(self):
         runs = [
             {
                 **self.sample_run(
@@ -1796,9 +1796,9 @@ class BenchmarkMetricSemanticsTests(unittest.TestCase):
             for index in range(25)
         ]
         status = site_status.sparkline_data(runs)
-        self.assertEqual(status["n_runs"], 12)
+        self.assertEqual(status["n_runs"], 25)
         self.assertEqual(status["latest_suite_ms"], 124)
-        self.assertEqual(status["window"], "last measured commits")
+        self.assertEqual(status["window"], "30d")
         self.assertNotIn("latest_index", status)
 
 
@@ -1852,7 +1852,7 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         self.assertEqual(corpus_a["state"], corpus_b["state"])
         self.assertEqual(corpus_a["state"]["kind"], "baseline_reset")
 
-    def test_homepage_omits_annotation_and_coverage_telemetry(self):
+    def test_homepage_exposes_concise_annotation_coverage_and_deep_link(self):
         runs = [self.sample_run(1, 100), self.sample_run(2, 100), self.sample_run(3, 100), self.sample_run(4, 120)]
         event = {
             "id": "capability-cost",
@@ -1870,8 +1870,54 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         self.assertEqual(status["state"]["kind"], "regressed")
         self.assertEqual(status["freshness"]["kind"], "stale")
         self.assertEqual(status["freshness"]["label"], "measured 3 days ago")
+        self.assertEqual(status["annotation"]["category"], "capability")
+        self.assertEqual(status["annotation"]["title"], "Intentional capability cost")
+        self.assertEqual(status["coverage"], {
+            "measured_commit": runs[-1]["commit"],
+            "represented_count": 1,
+            "skipped_count": 0,
+            "gap_unknown": False,
+        })
+        self.assertEqual(
+            status["annotation"]["dashboard_url"],
+            "/performance/?range=30d&platform=x86-64-linux&annotation=capability-cost#evolution-workspace",
+        )
+
+    def test_homepage_excludes_events_outside_range_and_current_segment(self):
+        runs = [
+            self.sample_run(1, 100, day=1),
+            self.sample_run(2, 101, day=2),
+            self.sample_run(3, 99, day=3),
+            self.sample_run(4, 100, regime="new", day=4),
+            self.sample_run(5, 100, regime="new", day=5),
+            self.sample_run(6, 100, regime="new", day=6),
+        ]
+        runs[0]["timestamp"] = "2026-05-01T00:00:00Z"
+        def event(identifier, run):
+            return {
+                "id": identifier, "source": "authored",
+                "location": {"kind": "commit", "commit": run["commit"]},
+                "category": "optimization", "title": identifier,
+                "explanation": identifier, "link": "https://github.com/rue-language/rue/pull/1",
+                "scope": {"metrics": ["latency"], "workloads": ["*"], "platforms": ["*"]},
+            }
+        status = self.status(runs, [event("outside-range", runs[0]), event("old-segment", runs[2])])
         self.assertNotIn("annotation", status)
-        self.assertNotIn("coverage", status)
+        self.assertEqual(status["n_runs"], 3)
+
+    def test_homepage_prefers_authored_event_over_newer_derived_event(self):
+        runs = [self.sample_run(index, 100, day=index) for index in range(1, 5)]
+        def event(identifier, run, source):
+            return {
+                "id": identifier, "source": source,
+                "location": {"kind": "commit", "commit": run["commit"]},
+                "category": "optimization" if source == "authored" else "measurement_infrastructure",
+                "title": identifier, "explanation": identifier,
+                "link": "https://github.com/rue-language/rue/pull/1",
+                "scope": {"metrics": ["latency"], "workloads": ["*"], "platforms": ["*"]},
+            }
+        status = self.status(runs, [event("authored", runs[2], "authored"), event("derived", runs[3], "derived")])
+        self.assertEqual(status["annotation"]["id"], "authored")
 
     def test_missing_or_malformed_time_data_is_not_presented(self):
         self.assertIsNone(self.status([]))
@@ -1884,10 +1930,10 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         run["benchmarks"][0]["samples_ms"] = [100, 100]
         status = self.status([run])
         self.assertEqual(status["state"]["kind"], "insufficient_data")
-        self.assertEqual(status["n_trend_points"], 1)
+        self.assertEqual(status["n_trend_points"], 0)
         self.assertEqual(status["latest_suite_ms"], 100)
-        self.assertIn("last_x", status)
-        self.assertIn("last_y", status)
+        self.assertNotIn("last_x", status)
+        self.assertNotIn("last_y", status)
 
     def test_legacy_root_compile_timer_wins_over_inflated_mean(self):
         run = self.sample_run(1, 100)
@@ -1898,7 +1944,7 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         status = self.status([run])
         self.assertEqual(status["latest_suite_ms"], 123)
 
-    def test_sparkline_uses_measured_commits_in_latest_segment(self):
+    def test_sparkline_uses_thirty_days_and_latest_segment(self):
         runs = [
             self.sample_run(1, 100, day=1),
             self.sample_run(2, 100, day=2),
@@ -1907,10 +1953,10 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         ]
         runs[0]["timestamp"] = "2026-05-01T00:00:00Z"
         status = self.status(runs)
-        self.assertEqual(status["window"], "last measured commits")
-        self.assertEqual(status["n_runs"], 4)
+        self.assertEqual(status["window"], "30d")
+        self.assertEqual(status["n_runs"], 3)
 
-    def test_sparkline_x_coordinates_evenly_space_measured_commits(self):
+    def test_sparkline_x_coordinates_use_calendar_distance(self):
         runs = [
             self.sample_run(1, 100, day=1),
             self.sample_run(2, 90, day=2),
@@ -1918,7 +1964,7 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
         ]
         status = self.status(runs)
         coordinates = [point.split(",") for point in status["points"].split()]
-        self.assertEqual([int(point[0]) for point in coordinates], [0, 150, 300])
+        self.assertEqual([int(point[0]) for point in coordinates], [10, 20, 300])
 
     def test_shallow_checkout_omits_misleading_commit_count(self):
         def fake_git(*args):
@@ -1937,17 +1983,17 @@ class HomepageBenchmarkStatusTests(unittest.TestCase):
 
     def test_homepage_template_reports_honest_states(self):
         template = (INPUT_ROOT / "website" / "templates" / "index.html").read_text()
-        self.assertIn("Absolute suite compilation time", template)
+        self.assertIn("latest_suite_ms", template)
         self.assertIn("status.bench.state.summary", template)
         self.assertIn("status.bench.latest_suite_ms", template)
-        self.assertIn("last {{ status.bench.n_trend_points }} measured commits", template)
+        self.assertIn("comparable daily points", template)
         self.assertIn("history count unavailable", template)
         self.assertIn("benchmark data unavailable", template)
         self.assertIn("{% if status.bench.n_trend_points > 0 %}", template)
-        self.assertNotIn("normalized", template.lower())
-        self.assertNotIn("variation", template.lower())
-        self.assertNotIn("coverage", template.lower())
-        self.assertNotIn("status.bench.annotation", template)
+        self.assertIn("status.bench.coverage", template)
+        self.assertIn("status.bench.annotation.dashboard_url", template)
+        self.assertIn("status.bench.annotation.explanation", template)
+        self.assertNotIn("annotated capability cost", template)
 
 
 class TestBenchmarkAnnotations(unittest.TestCase):
@@ -2152,7 +2198,7 @@ class TestBenchmarkAnnotations(unittest.TestCase):
             [],
         )
 
-    def test_homepage_does_not_surface_the_annotation_stream(self):
+    def test_homepage_surfaces_the_most_relevant_annotation(self):
         run = BenchmarkMetricSemanticsTests.sample_run(
             "a" * 40, {"probe": [10, 10, 10]}
         )
@@ -2164,7 +2210,9 @@ class TestBenchmarkAnnotations(unittest.TestCase):
             [run], stream, resolver=self.Resolver(),
             as_of=datetime(2026, 7, 1, tzinfo=timezone.utc),
         )
-        self.assertNotIn("annotation", status)
+        self.assertEqual(status["annotation"]["source"], "authored")
+        self.assertEqual(status["annotation"]["category"], "optimization")
+        self.assertIn("annotation=", status["annotation"]["dashboard_url"])
 
 
 class TestRecentRegressionWorkspace(unittest.TestCase):
@@ -2274,6 +2322,15 @@ class TestRecentRegressionWorkspace(unittest.TestCase):
         self.assertEqual(model["default_selection"], {"before": "3" * 40, "after": "4" * 40})
         self.assertEqual(model["comparisons"][-1]["before_point"]["subject"], "RUE-903: measured change 3")
         self.assertEqual(model["annotation_groups"][0]["title"], "Queryable compiler")
+        point = model["points"][3]
+        for field in (
+            "commit", "date", "subject", "links", "freshness", "suite_ms", "workloads",
+            "coverage", "comparability", "annotations",
+        ):
+            self.assertIn(field, point)
+        self.assertIn("commit", point["links"])
+        self.assertIn("issues", point["links"])
+        self.assertEqual(point["annotations"][0]["category"], "capability")
         self.assertFalse(any(
             item["before"] == "2" * 40 and item["after"] == "4" * 40
             for item in model["comparisons"]
@@ -2375,12 +2432,16 @@ class TestRecentRegressionWorkspace(unittest.TestCase):
 
     def test_recent_template_keeps_semantics_server_side_and_guards_insufficient_data(self):
         template = (INPUT_ROOT / "website" / "templates" / "performance.html").read_text()
-        self.assertIn("Raw samples are insufficient", template)
-        self.assertIn("point.coverage.skipped_commits.map", template)
-        self.assertIn("appendLink(title, item.title, item.link)", template)
-        self.assertIn("fmt(value.before_ms)", template)
-        self.assertIn("headline.classification === 'insufficient_data'", template)
-        self.assertIn("populateComparisons()", template)
+        for contract in (
+            "Raw samples are insufficient", "point.coverage.skipped_commits.map",
+            "point.links?.commit", "point.date", "point.subject", "point.freshness.latest",
+            "point.comparability.headline", "point.annotations.forEach",
+            "annotationBadge(event.category)", "point.links?.pull_requests", "point.links?.issues",
+            "explanation.workloads.forEach", "explanation.memory_bytes", "explanation.binary_size_bytes",
+            "fmt(value.before_ms)", "headline.classification === 'insufficient_data'",
+            "populateComparisons()",
+        ):
+            self.assertIn(contract, template)
         self.assertNotIn("function calculateDelta", template)
         self.assertNotIn("JSON.stringify", template)
         build = (INPUT_ROOT / "website" / "build.sh").read_text()
@@ -2451,6 +2512,13 @@ class BenchmarkEvolutionTests(unittest.TestCase):
         self.assertEqual(series["ranges"]["all"]["raw_point_count"], 5)
         self.assertEqual(series["ranges"]["30d"]["resolution"], "day")
         self.assertEqual(series["ranges"]["1y"]["resolution"], "week")
+        self.assertEqual(
+            series["ranges"]["30d"]["calendar_start"],
+            (end - evolution.timedelta(days=30)).isoformat().replace("+00:00", "Z"),
+        )
+        self.assertEqual(series["ranges"]["30d"]["calendar_end"], end.isoformat().replace("+00:00", "Z"))
+        self.assertIsNone(series["ranges"]["all"]["calendar_start"])
+        self.assertIsNone(series["ranges"]["all"]["calendar_end"])
         self.assertEqual(model["raw_history_run_count"], len(runs))
         self.assertEqual(model["metric_policy"], "benchmark_metrics.derive_history_metrics")
         self.assertEqual(model["annotation_policy"], "benchmark_annotations.normalized_annotation_stream")
@@ -2470,6 +2538,15 @@ class BenchmarkEvolutionTests(unittest.TestCase):
             {point["segment"] for point in series["ranges"]["all"]["trend_points"]},
             {0, 1, 2, 3},
         )
+        self.assertEqual(model["range_options"], ["30d", "90d", "1y", "all"])
+        self.assertEqual(
+            [segment["segment"] for segment in series["ranges"]["all"]["trend_segments"]],
+            [0, 1, 2, 3],
+        )
+        self.assertTrue(all(
+            {point["segment"] for point in segment["points"]} == {segment["segment"]}
+            for segment in series["ranges"]["all"]["trend_segments"]
+        ))
         self.assertEqual(model["cross_platform_default"], "normalized_index_separate_machine_series")
         self.assertEqual(model["workload_families"][0]["source"], "identity_fallback")
 
@@ -2529,6 +2606,8 @@ class BenchmarkEvolutionTests(unittest.TestCase):
         series = next(item for item in model["series"] if item["workload"] == "all")
         self.assertEqual(series["ranges"]["1y"]["raw_point_count"], 2)
         self.assertEqual(series["ranges"]["1y"]["raw_start_index"], 1)
+        self.assertEqual(series["ranges"]["1y"]["calendar_start"], "2027-02-28T12:00:00Z")
+        self.assertEqual(series["ranges"]["1y"]["calendar_end"], "2028-02-29T12:00:00Z")
 
     def test_trend_uses_exact_canonical_median_and_scaled_mad(self):
         start = datetime(2026, 1, 5, tzinfo=timezone.utc)
@@ -2578,15 +2657,34 @@ class BenchmarkEvolutionTests(unittest.TestCase):
         self.assertIn(runs[350]["commit"], rendered)
         self.assertIn(runs[123]["commit"], rendered)
 
-    def test_evolution_template_only_renders_precomputed_policy(self):
+    def test_evolution_renderer_consumes_complete_precomputed_contract(self):
         template = (INPUT_ROOT / "website" / "templates" / "performance.html").read_text()
-        self.assertIn("workspace.series.filter", template)
-        self.assertIn("item.raw_points.map", template)
-        self.assertIn("Normalized cross-platform evolution", template)
-        self.assertIn("Each machine remains a separate normalized series", template)
-        self.assertIn("drawCommitChart(els.normalized", template)
-        self.assertIn("unit: 'index'", template)
+        for contract in (
+            "workspace.range_options", "workspace.platform_options", "workspace.workload_families",
+            "view.rendered_raw_points", "view.trend_points", "view.trend_segments",
+            "rangeView.calendar_start", "rangeView.calendar_end",
+            "point.variation", "point.boundary", "boundary.skipped_commits",
+            "point.annotation_ids", "annotationBadge(event.category)", "event.link",
+            "range=${encodeURIComponent(activeRange)}", "annotation=${encodeURIComponent(event.id)}",
+        ):
+            self.assertIn(contract, template)
+        self.assertIn("Date.parse(point.timestamp)", template)
+        self.assertIn("evolution-raw-point", template)
+        self.assertIn("evolution-trend", template)
+        self.assertIn("evolution-boundary", template)
+        self.assertIn("Raw evolution measurements with comparison boundaries and coverage", template)
+        self.assertEqual(template.count('id="evolution-workspace"'), 1)
+        self.assertNotIn('id="normalized-chart"', template)
+        self.assertNotIn("renderNormalized", template)
+        self.assertNotIn("comparability: {status: 'comparable'}", template)
+        self.assertIn("view.trend_segments.forEach", template)
         self.assertNotIn("function calculateEvolutionIndex", template)
+        css = (INPUT_ROOT / "website" / "css" / "input.css").read_text()
+        for category in (
+            "capability", "optimization", "benchmark_corpus", "measurement_infrastructure",
+            "known_regression", "repair",
+        ):
+            self.assertIn(f".category-{category}", css)
 
 
 class BenchmarkCollectionTests(unittest.TestCase):

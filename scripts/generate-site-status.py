@@ -26,8 +26,9 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from benchmark_history import load_history
 from benchmark_annotations import (
@@ -36,6 +37,7 @@ from benchmark_annotations import (
     load_annotations,
     normalized_annotations,
 )
+from benchmark_evolution import evolution_workspace
 from benchmark_metrics import absolute_latency_ms, derive_history_metrics
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -118,18 +120,21 @@ def _run_suite_ms(run: dict) -> float | None:
     return sum(values) if values else None
 
 
-def _spark_points(values: list[float]) -> tuple[str, str, str]:
+def _spark_points(
+    points: list[dict], window_start: datetime, window_end: datetime
+) -> tuple[str, str, str]:
+    values = [point["index"] for point in points]
     lo, hi = min(values), max(values)
     span = (hi - lo) or 1.0
-    points = []
-    denominator = max(1, len(values) - 1)
-    for index, value in enumerate(values):
-        # Measured commits are evenly spaced: cancelled or idle calendar time
-        # should not create a chart full of empty space.
-        x = SPARK_W * index / denominator
+    coordinates = []
+    window_seconds = max(1.0, (window_end - window_start).total_seconds())
+    for point, value in zip(points, values):
+        instant = _parse_timestamp(point.get("timestamp"))
+        x = SPARK_W * (instant - window_start).total_seconds() / window_seconds
+        x = max(0.0, min(float(SPARK_W), x))
         y = SPARK_Y_MAX - (SPARK_Y_MAX - SPARK_Y_MIN) * (value - lo) / span
-        points.append(f"{x:.0f},{y:.1f}")
-    return " ".join(points), *points[-1].split(",")
+        coordinates.append(f"{x:.0f},{y:.1f}")
+    return " ".join(coordinates), *coordinates[-1].split(",")
 
 
 def _freshness_label(age_seconds: int) -> str:
@@ -151,9 +156,27 @@ def sparkline_data(
     as_of: datetime | None = None,
     resolver=None,
 ) -> dict | None:
-    """Build a compact absolute-time homepage view from canonical semantics."""
+    """Build a compact 30-day view from canonical evolution semantics."""
     if not runs or any(_parse_timestamp(run.get("timestamp")) is None for run in runs):
         return None
+    annotations = annotations or []
+    resolver = resolver or GitCommitResolver(REPO_ROOT)
+    workspace = evolution_workspace({platform: runs}, annotations, resolver)
+    series = next(item for item in workspace["series"] if item["workload"] == "all")
+    view = series["ranges"]["30d"]
+    window_points = series["raw_points"][view["raw_start_index"]:]
+    if not window_points:
+        return None
+    latest_segment = window_points[-1]["segment"]
+    comparable_points = [point for point in window_points if point["segment"] == latest_segment]
+    trend_points = [
+        point for point in view["trend_points"]
+        if point["segment"] == latest_segment and isinstance(point["index"], (int, float))
+    ]
+    range_end = _parse_timestamp(workspace["range_end"])
+    range_start = range_end - timedelta(days=30)
+    endpoint = _spark_points(trend_points, range_start, range_end) if trend_points else None
+
     derived = derive_history_metrics(runs)
     latest_semantic = derived["points"][-1]
     baseline = latest_semantic["rolling_baseline"]
@@ -204,32 +227,54 @@ def sparkline_data(
         "label": _freshness_label(age_seconds),
     }
 
-    # Only the current comparable segment belongs in the homepage trend.
-    segment_start = 0
-    for index, semantic in enumerate(derived["points"]):
-        if semantic["previous"].get("status") != "comparable":
-            segment_start = index
-    trend_runs = runs[segment_start:][-12:]
-    trend_values = [_run_suite_ms(run) for run in trend_runs]
-    trend_values = [value for value in trend_values if value is not None]
-    endpoint = _spark_points(trend_values) if trend_values else None
     suite_ms = _run_suite_ms(latest_run)
+    publication = latest_run.get("publication", {})
+    coverage = publication.get("coverage", {}) if isinstance(publication, dict) else {}
+    coverage_status = {
+        "measured_commit": coverage.get("measured_commit", latest_run.get("commit")),
+        "represented_count": len(coverage.get("represented_commits", [])),
+        "skipped_count": len(coverage.get("skipped_commits", [])),
+        "gap_unknown": coverage.get("gap_unknown", True),
+    }
+
+    events_by_id = {event.get("id"): event for event in annotations}
+    relevant_annotation = None
+    candidates = [
+        (event.get("source") != "authored", -point_index, event.get("id", ""), event)
+        for point_index, point in enumerate(comparable_points)
+        for event_id in point["annotation_ids"]
+        if (event := events_by_id.get(event_id)) is not None
+    ]
+    if candidates:
+        candidates.sort(key=lambda item: item[:3])
+        relevant_annotation = dict(candidates[0][3])
+        annotation_id = quote(str(relevant_annotation.get("id", "")), safe="")
+        relevant_annotation["dashboard_url"] = (
+            f"/performance/?range=30d&platform={quote(platform, safe='')}"
+            f"&annotation={annotation_id}#evolution-workspace"
+        )
+        relevant_annotation["category_label"] = str(
+            relevant_annotation.get("category", "measurement_infrastructure")
+        ).replace("_", " ")
 
     result = {
         "platform": platform,
         "platform_label": "Linux x86-64",
-        "window": "last measured commits",
-        "n_runs": len(trend_values),
-        "n_trend_points": len(trend_values),
+        "window": "30d",
+        "n_runs": len(comparable_points),
+        "n_trend_points": len(trend_points),
         "points": endpoint[0] if endpoint else "",
         "latest_suite_ms": suite_ms,
         "state": state,
         "freshness": freshness,
-        "dashboard_url": "/performance/",
+        "coverage": coverage_status,
+        "dashboard_url": f"/performance/?range=30d&platform={quote(platform, safe='')}#evolution-workspace",
     }
     if endpoint:
         result["last_x"] = endpoint[1]
         result["last_y"] = endpoint[2]
+    if relevant_annotation:
+        result["annotation"] = relevant_annotation
     return result
 
 
