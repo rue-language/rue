@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
 use rue_air::{FrozenTypeInternPool, TypeKind};
-use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, Terminator, Type};
+use rue_cfg::{BlockId, Cfg, CfgInstData, CfgValue, Place, Type};
 use rue_error::CompileResult;
 use rue_target::Target;
 
@@ -259,61 +259,10 @@ impl<'a> CfgLower<'a> {
         crate::agg_slots::require_aggregate_slots(self, value)
     }
 
-    /// Copy an aggregate value's slot vregs to a block parameter's slot vregs.
-    /// Covers structs, builtin String, and fixed-size arrays — every slot must
-    /// cross the join edge, not just the primary vreg (RUE-167).
-    fn copy_aggregate_to_block_param(
-        &mut self,
-        arg: CfgValue,
-        target_block: BlockId,
-        param_idx: u32,
-    ) {
-        let target_param = self.ctx.cfg.get_block(target_block).params[param_idx as usize].0;
-
-        let src_slots = self.require_aggregate_slots(arg);
-        let dst_slots = self
-            .struct_slot_vregs
-            .get(&target_param)
-            .cloned()
-            .expect("aggregate block param should have slot vregs pre-allocated");
-
-        // Correctness guard (must run in release): a slot-count mismatch would
-        // move the wrong number of aggregate slots and silently miscompile, so
-        // this is a plain `assert!` rather than a `debug_assert!` (RUE-45).
-        assert_eq!(
-            src_slots.len(),
-            dst_slots.len(),
-            "source and destination aggregate slot counts must match"
-        );
-        for (dst_vreg, src_vreg) in dst_slots.iter().zip(src_slots.iter()) {
-            self.mir.push(Aarch64Inst::MovRR {
-                dst: Operand::Virtual(*dst_vreg),
-                src: Operand::Virtual(*src_vreg),
-            });
-        }
-    }
-
     /// Lower CFG to Aarch64Mir.
     pub fn lower(mut self) -> CompileResult<Aarch64Mir> {
-        self.preload_by_ref_param_ptrs();
-
-        // Pre-allocate vregs for block parameters
-        for block in self.ctx.cfg.blocks() {
-            for (param_idx, (param_val, ty)) in block.params.iter().enumerate() {
-                let vreg = self.mir.alloc_vreg();
-                self.block_param_vregs
-                    .insert((block.id, param_idx as u32), vreg);
-                self.value_map.insert(*param_val, vreg);
-
-                crate::agg_slots::preallocate_block_param_slots(&mut self, *param_val, *ty, vreg);
-            }
-        }
-
-        // Lower each block
-        for block in self.ctx.cfg.blocks() {
-            self.lower_block(block);
-        }
-
+        let ctx = self.ctx;
+        crate::terminator_plan::lower_cfg(&ctx, &mut self, None, RET_REGS.len() as u32);
         Ok(self.mir)
     }
 
@@ -322,123 +271,19 @@ impl<'a> CfgLower<'a> {
     /// This is like `lower()` but also captures detailed information about
     /// how each CFG instruction maps to MIR instructions.
     pub fn lower_with_debug(mut self) -> CompileResult<(Aarch64Mir, crate::LoweringDebugInfo)> {
-        use crate::cfg_lower::{format_cfg_inst_data_with_interner, format_terminator};
-        use crate::{
-            BlockLoweringInfo, LoweringDebugInfo, LoweringDecision, TerminatorLoweringDecision,
-        };
-
-        let mut debug_info = LoweringDebugInfo {
+        let mut debug_info = crate::LoweringDebugInfo {
             fn_name: self.fn_name.to_string(),
             target_arch: "aarch64".to_string(),
             blocks: Vec::new(),
         };
 
-        self.preload_by_ref_param_ptrs();
-
-        // Pre-allocate vregs for block parameters (same as lower())
-        for block in self.ctx.cfg.blocks() {
-            for (param_idx, (param_val, ty)) in block.params.iter().enumerate() {
-                let vreg = self.mir.alloc_vreg();
-                self.block_param_vregs
-                    .insert((block.id, param_idx as u32), vreg);
-                self.value_map.insert(*param_val, vreg);
-
-                crate::agg_slots::preallocate_block_param_slots(&mut self, *param_val, *ty, vreg);
-            }
-        }
-
-        // Lower each block with debug tracking
-        for block in self.ctx.cfg.blocks() {
-            let mut block_info = BlockLoweringInfo {
-                block_id: block.id,
-                instructions: Vec::new(),
-                terminator: None,
-            };
-
-            // Block parameters are preallocated before the block walk and
-            // therefore never reach `lower_value`'s MIR-emission path. Keep
-            // them in lowering debug output so the trace remains a complete
-            // CFG-to-MIR account, including intentional no-op materialization.
-            for (param_val, _) in &block.params {
-                let param_inst = self.ctx.cfg.get_inst(*param_val);
-                block_info.instructions.push(LoweringDecision {
-                    cfg_value: *param_val,
-                    cfg_inst_desc: format_cfg_inst_data_with_interner(
-                        self.ctx.cfg,
-                        &param_inst.data,
-                        self.interner,
-                    ),
-                    cfg_type: param_inst.ty.name().to_string(),
-                    mir_insts: Vec::new(),
-                    rationale: Some("Block parameter preallocated at the join".to_string()),
-                });
-            }
-
-            // Emit block label (except for entry block)
-            if block.id != self.ctx.cfg.entry {
-                self.mir.push(Aarch64Inst::Label {
-                    id: self.block_label(block.id),
-                });
-            }
-
-            // Lower each instruction with tracking
-            for &value in &block.insts {
-                // Skip if already lowered
-                if self.value_map.contains_key(&value) {
-                    continue;
-                }
-
-                let inst = self.ctx.cfg.get_inst(value);
-                let inst_before = self.mir.inst_count();
-
-                // Lower the instruction
-                self.lower_value(value);
-
-                let inst_after = self.mir.inst_count();
-
-                // Capture the generated instructions
-                let mir_insts: Vec<String> = self.mir.instructions()[inst_before..inst_after]
-                    .iter()
-                    .map(|i| format!("{}", i))
-                    .collect();
-
-                // Generate rationale for interesting cases
-                let rationale = self.get_lowering_rationale(&inst.data, inst.ty);
-
-                block_info.instructions.push(LoweringDecision {
-                    cfg_value: value,
-                    cfg_inst_desc: format_cfg_inst_data_with_interner(
-                        self.ctx.cfg,
-                        &inst.data,
-                        self.interner,
-                    ),
-                    cfg_type: inst.ty.name().to_string(),
-                    mir_insts,
-                    rationale,
-                });
-            }
-
-            // Lower terminator with tracking
-            let term_before = self.mir.inst_count();
-            self.lower_terminator(block);
-            let term_after = self.mir.inst_count();
-
-            let term_mir_insts: Vec<String> = self.mir.instructions()[term_before..term_after]
-                .iter()
-                .map(|i| format!("{}", i))
-                .collect();
-
-            let term_rationale = self.get_terminator_rationale(&block.terminator);
-
-            block_info.terminator = Some(TerminatorLoweringDecision {
-                terminator_desc: format_terminator(self.ctx.cfg, &block.terminator),
-                mir_insts: term_mir_insts,
-                rationale: term_rationale,
-            });
-
-            debug_info.blocks.push(block_info);
-        }
-
+        let ctx = self.ctx;
+        crate::terminator_plan::lower_cfg(
+            &ctx,
+            &mut self,
+            Some(&mut debug_info),
+            RET_REGS.len() as u32,
+        );
         Ok((self.mir, debug_info))
     }
 
@@ -501,43 +346,6 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Generate rationale for terminator lowering decisions.
-    fn get_terminator_rationale(&self, terminator: &Terminator) -> Option<String> {
-        match terminator {
-            Terminator::Branch { .. } => Some("Compare and branch".to_string()),
-            Terminator::Return { value } => {
-                if self.fn_name == "main" {
-                    Some("Main function: return value becomes exit code".to_string())
-                } else if value.is_some() {
-                    Some("Return value in X0 (AAPCS64)".to_string())
-                } else {
-                    None
-                }
-            }
-            Terminator::Switch { cases_len, .. } => {
-                Some(format!("Linear scan through {} cases", cases_len))
-            }
-            _ => None,
-        }
-    }
-
-    /// Lower a single basic block.
-    fn lower_block(&mut self, block: &BasicBlock) {
-        // Emit block label (except for entry block)
-        if block.id != self.ctx.cfg.entry {
-            self.mir.push(Aarch64Inst::Label {
-                id: self.block_label(block.id),
-            });
-        }
-
-        // Lower each instruction
-        for &value in &block.insts {
-            self.lower_value(value);
-        }
-
-        // Lower terminator
-        self.lower_terminator(block);
-    }
-
     /// Lower a CFG value (instruction).
     fn lower_value(&mut self, value: CfgValue) {
         // Skip if already lowered
@@ -3644,243 +3452,149 @@ impl<'a> CfgLower<'a> {
         result_vreg
     }
 
-    /// Lower a block terminator.
-    fn lower_terminator(&mut self, block: &BasicBlock) {
-        match &block.terminator {
-            Terminator::Goto {
-                target,
-                args_start,
-                args_len,
-            } => {
-                // Copy args to target's block params
-                let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                for (i, &arg) in args.iter().enumerate() {
-                    let arg_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, arg);
-                    if arg_plan.shape.requires_complete_slots() {
-                        // For any multi-slot aggregate arg (struct, String,
-                        // array, payload enum) copy all slot vregs — single
-                        // is_multislot_aggregate predicate (RUE-248).
-                        self.copy_aggregate_to_block_param(arg, *target, i as u32);
-                    } else {
-                        // For scalar args, just copy the single vreg
-                        let arg_vreg = self.get_vreg(arg);
-                        let param_vreg = self.block_param_vregs[&(*target, i as u32)];
-                        self.mir.push(Aarch64Inst::MovRR {
-                            dst: Operand::Virtual(param_vreg),
-                            src: Operand::Virtual(arg_vreg),
-                        });
-                    }
-                }
+    fn emit_terminator_plan(&mut self, plan: crate::terminator_plan::TerminatorPlan) {
+        use crate::terminator_plan::{ReturnMode, ReturnValuePlan, TerminatorPlan};
 
-                // Jump to target (unless it's the next block)
-                let next_block_id = BlockId::from_raw(block.id.as_u32() + 1);
-                if *target != next_block_id {
+        match plan {
+            TerminatorPlan::Goto { edge } => {
+                self.emit_edge_moves(&edge);
+                if !edge.fallthrough {
                     self.mir.push(Aarch64Inst::B {
-                        label: self.block_label(*target),
+                        label: self.block_label(edge.target),
                     });
                 }
             }
-
-            Terminator::Branch {
-                cond,
-                then_block,
-                then_args_start,
-                then_args_len,
-                else_block,
-                else_args_start,
-                else_args_len,
+            TerminatorPlan::Branch {
+                condition,
+                then_edge,
+                else_edge,
             } => {
-                let cond_vreg = self.get_vreg(*cond);
-
-                // Generate a unique label for the else path argument setup
-                let else_setup_label = self.mir.alloc_label();
-
-                // If zero, jump to else setup (where we copy else_args)
-                self.mir.push(Aarch64Inst::Cbz {
-                    src: Operand::Virtual(cond_vreg),
-                    label: else_setup_label,
-                });
-
-                // Copy then_args to then_block's params
-                let then_args = self.ctx.cfg.get_extra(*then_args_start, *then_args_len);
-                for (i, &arg) in then_args.iter().enumerate() {
-                    let arg_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, arg);
-                    if arg_plan.shape.requires_complete_slots() {
-                        // For any multi-slot aggregate arg (struct, String,
-                        // array, payload enum) copy all slot vregs — single
-                        // is_multislot_aggregate predicate (RUE-248).
-                        self.copy_aggregate_to_block_param(arg, *then_block, i as u32);
-                    } else {
-                        // For scalar args, just copy the single vreg
-                        let arg_vreg = self.get_vreg(arg);
-                        let param_vreg = self.block_param_vregs[&(*then_block, i as u32)];
-                        self.mir.push(Aarch64Inst::MovRR {
-                            dst: Operand::Virtual(param_vreg),
-                            src: Operand::Virtual(arg_vreg),
-                        });
-                    }
-                }
-
-                // Jump to then block
-                self.mir.push(Aarch64Inst::B {
-                    label: self.block_label(*then_block),
-                });
-
-                // Else setup: copy else_args to else_block's params
-                self.mir.push(Aarch64Inst::Label {
-                    id: else_setup_label,
-                });
-                let else_args = self.ctx.cfg.get_extra(*else_args_start, *else_args_len);
-                for (i, &arg) in else_args.iter().enumerate() {
-                    let arg_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, arg);
-                    if arg_plan.shape.requires_complete_slots() {
-                        // For any multi-slot aggregate arg (struct, String,
-                        // array, payload enum) copy all slot vregs — single
-                        // is_multislot_aggregate predicate (RUE-248).
-                        self.copy_aggregate_to_block_param(arg, *else_block, i as u32);
-                    } else {
-                        // For scalar args, just copy the single vreg
-                        let arg_vreg = self.get_vreg(arg);
-                        let param_vreg = self.block_param_vregs[&(*else_block, i as u32)];
-                        self.mir.push(Aarch64Inst::MovRR {
-                            dst: Operand::Virtual(param_vreg),
-                            src: Operand::Virtual(arg_vreg),
-                        });
-                    }
-                }
-
-                // Jump to else block (or fall through if next)
-                let next_block_id = BlockId::from_raw(block.id.as_u32() + 1);
-                if *else_block != next_block_id {
-                    self.mir.push(Aarch64Inst::B {
-                        label: self.block_label(*else_block),
+                if then_edge.fallthrough {
+                    let then_setup_label = self.mir.alloc_label();
+                    self.mir.push(Aarch64Inst::Cbnz {
+                        src: Operand::Virtual(condition),
+                        label: then_setup_label,
                     });
+                    self.emit_edge_moves(&else_edge);
+                    if !else_edge.fallthrough {
+                        self.mir.push(Aarch64Inst::B {
+                            label: self.block_label(else_edge.target),
+                        });
+                    }
+                    self.mir.push(Aarch64Inst::Label {
+                        id: then_setup_label,
+                    });
+                    self.emit_edge_moves(&then_edge);
+                } else {
+                    let else_setup_label = self.mir.alloc_label();
+                    self.mir.push(Aarch64Inst::Cbz {
+                        src: Operand::Virtual(condition),
+                        label: else_setup_label,
+                    });
+                    self.emit_edge_moves(&then_edge);
+                    if !then_edge.fallthrough {
+                        self.mir.push(Aarch64Inst::B {
+                            label: self.block_label(then_edge.target),
+                        });
+                    }
+                    self.mir.push(Aarch64Inst::Label {
+                        id: else_setup_label,
+                    });
+                    self.emit_edge_moves(&else_edge);
+                    if !else_edge.fallthrough {
+                        self.mir.push(Aarch64Inst::B {
+                            label: self.block_label(else_edge.target),
+                        });
+                    }
                 }
             }
-
-            Terminator::Switch {
+            TerminatorPlan::Switch {
                 scrutinee,
-                cases_start,
-                cases_len,
+                width,
+                cases,
                 default,
             } => {
-                let scrutinee_vreg = self.get_vreg(*scrutinee);
-                // The case value is materialized as a full 64-bit immediate, so a
-                // 64-bit scrutinee must be compared at 64-bit width; a 32-bit cmp
-                // would match on only the low 32 bits (RUE-27). Sub-64-bit
-                // scrutinees keep the 32-bit compare (correct at their width).
-                let scrutinee_ty = self.ctx.cfg.get_inst(*scrutinee).ty;
-                let scrutinee_is_64 = crate::value_plan::is_64_bit(scrutinee_ty);
-
-                // Generate comparison and jump for each case
-                let cases = self.ctx.cfg.get_switch_cases(*cases_start, *cases_len);
-                for (value, target) in cases {
-                    // Compare scrutinee with case value (supports signed values for negative patterns)
-                    let imm_vreg = self.mir.alloc_vreg();
+                for case in cases {
+                    let case_vreg = self.mir.alloc_vreg();
                     self.mir.push(Aarch64Inst::MovImm {
-                        dst: Operand::Virtual(imm_vreg),
-                        imm: *value,
+                        dst: Operand::Virtual(case_vreg),
+                        imm: case.value,
                     });
-                    if scrutinee_is_64 {
+                    if width.bits == 64 {
                         self.mir.push(Aarch64Inst::Cmp64RR {
-                            src1: Operand::Virtual(scrutinee_vreg),
-                            src2: Operand::Virtual(imm_vreg),
+                            src1: Operand::Virtual(scrutinee),
+                            src2: Operand::Virtual(case_vreg),
                         });
                     } else {
                         self.mir.push(Aarch64Inst::CmpRR {
-                            src1: Operand::Virtual(scrutinee_vreg),
-                            src2: Operand::Virtual(imm_vreg),
+                            src1: Operand::Virtual(scrutinee),
+                            src2: Operand::Virtual(case_vreg),
                         });
                     }
                     self.mir.push(Aarch64Inst::BCond {
                         cond: Cond::Eq,
-                        label: self.block_label(*target),
+                        label: self.block_label(case.target),
                     });
                 }
-
-                // Fall through to default
                 self.mir.push(Aarch64Inst::B {
-                    label: self.block_label(*default),
+                    label: self.block_label(default),
                 });
             }
-
-            Terminator::Return { value } => {
-                // Handle `return;` without expression (unit-returning functions)
-                let Some(value) = value else {
-                    if self.fn_name == "main" {
-                        // Linux enters Rue's `main` directly. Unit has no CFG
-                        // value, so pass the language-defined success status to
-                        // the non-returning runtime exit shim explicitly.
+            TerminatorPlan::Return { mode } => match mode {
+                ReturnMode::Exit { value } => {
+                    if let Some(value) = value {
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Physical(Reg::X0),
+                            src: Operand::Virtual(value),
+                        });
+                    } else {
                         self.mir.push(Aarch64Inst::MovImm {
                             dst: Operand::Physical(Reg::X0),
                             imm: 0,
                         });
-                        let symbol_id = self.intern_symbol("__rue_exit");
-                        self.mir.push(Aarch64Inst::Bl { symbol_id });
-                    } else {
-                        self.mir.push(Aarch64Inst::Ret);
                     }
-                    return;
-                };
-
-                let return_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, *value);
-
-                if self.fn_name == "main" {
-                    let val_vreg = self.get_vreg(*value);
-                    self.mir.push(Aarch64Inst::MovRR {
-                        dst: Operand::Physical(Reg::X0),
-                        src: Operand::Virtual(val_vreg),
-                    });
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(Aarch64Inst::Bl { symbol_id });
-                } else if return_plan.shape.requires_complete_slots() {
-                    // Return a multi-slot aggregate (struct, array, or payload
-                    // enum). Every valid source has exactly `type_slot_count`
-                    // materialized vregs. (RUE-118, RUE-78, RUE-237)
-                    let slot_vregs = self.require_aggregate_slots(*value);
-                    if self.ctx.uses_sret_return(RET_REGS.len() as u32) {
-                        // sret return (String always; aggregates that don't fit
-                        // the return registers): the caller passed a buffer
-                        // pointer as a hidden first argument, which the
-                        // prologue saved at the dedicated frame slot one past
-                        // the param area. Store every slot through it.
-                        crate::agg_slots::store_slots_to_sret(self, &slot_vregs);
-                    } else {
-                        for (i, slot_vreg) in slot_vregs.iter().enumerate() {
-                            if i < RET_REGS.len() {
-                                self.mir.push(Aarch64Inst::MovRR {
-                                    dst: Operand::Physical(RET_REGS[i]),
-                                    src: Operand::Virtual(*slot_vreg),
-                                });
+                }
+                ReturnMode::Function { value } => match value {
+                    ReturnValuePlan::ZeroSized => self.mir.push(Aarch64Inst::Ret),
+                    ReturnValuePlan::Scalar { value } => {
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Physical(Reg::X0),
+                            src: Operand::Virtual(value),
+                        });
+                        self.mir.push(Aarch64Inst::Ret);
+                    }
+                    ReturnValuePlan::Aggregate { slots, return_plan } => {
+                        if return_plan.uses_sret() {
+                            crate::agg_slots::store_slots_to_sret(self, &slots);
+                        } else {
+                            for (index, slot) in slots.iter().enumerate() {
+                                if index < RET_REGS.len() {
+                                    self.mir.push(Aarch64Inst::MovRR {
+                                        dst: Operand::Physical(RET_REGS[index]),
+                                        src: Operand::Virtual(*slot),
+                                    });
+                                }
                             }
                         }
+                        self.mir.push(Aarch64Inst::Ret);
                     }
-
-                    self.mir.push(Aarch64Inst::Ret);
-                } else {
-                    let val_vreg = self.get_vreg(*value);
-                    self.mir.push(Aarch64Inst::MovRR {
-                        dst: Operand::Physical(Reg::X0),
-                        src: Operand::Virtual(val_vreg),
-                    });
-                    self.mir.push(Aarch64Inst::Ret);
-                }
-            }
-
-            Terminator::Unreachable => {
-                // Defense-in-depth (RUE-208): emit a trap rather than nothing.
-                // The compiler proved this block unreachable, but if a
-                // control-flow bug ever lets execution reach it, `brk` faults
-                // (SIGTRAP) immediately instead of silently falling through into
-                // whatever code the block layout happens to place next.
-                self.mir.push(Aarch64Inst::Brk);
-            }
-
-            Terminator::None => {
-                panic!("block has no terminator");
-            }
+                },
+            },
+            TerminatorPlan::Unreachable => self.mir.push(Aarch64Inst::Brk),
         }
     }
+
+    fn emit_edge_moves(&mut self, edge: &crate::terminator_plan::EdgePlan) {
+        for movement in &edge.moves {
+            self.mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Virtual(movement.destination),
+                src: Operand::Virtual(movement.source),
+            });
+        }
+    }
+
     /// Get the vreg for a CFG value.
     fn get_vreg(&mut self, value: CfgValue) -> VReg {
         if let Some(&vreg) = self.value_map.get(&value) {
@@ -3894,6 +3608,117 @@ impl<'a> CfgLower<'a> {
             .get(&value)
             .copied()
             .expect("value should have been lowered")
+    }
+}
+
+impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
+    fn materialize_value(
+        &mut self,
+        value: CfgValue,
+        plan: crate::value_plan::ValuePlan,
+    ) -> crate::terminator_plan::MaterializedValue {
+        let primary = self.get_vreg(value);
+        let slots = if plan.shape.requires_complete_slots() {
+            self.require_aggregate_slots(value)
+        } else {
+            Vec::new()
+        };
+        crate::terminator_plan::MaterializedValue { primary, slots }
+    }
+
+    fn materialize_block_param(
+        &mut self,
+        target: BlockId,
+        param_index: u32,
+        value: CfgValue,
+        plan: crate::value_plan::ValuePlan,
+    ) -> crate::terminator_plan::MaterializedValue {
+        let primary = self.block_param_vregs[&(target, param_index)];
+        let slots = if plan.shape.requires_complete_slots() {
+            let slots = self
+                .struct_slot_vregs
+                .get(&value)
+                .cloned()
+                .expect("aggregate block parameter slots should be preallocated");
+            plan.assert_complete_slots(slots.len());
+            slots
+        } else {
+            Vec::new()
+        };
+        crate::terminator_plan::MaterializedValue { primary, slots }
+    }
+
+    fn emit_block_label(&mut self, block: BlockId) {
+        self.mir.push(Aarch64Inst::Label {
+            id: self.block_label(block),
+        });
+    }
+
+    fn emit_terminator(&mut self, plan: crate::terminator_plan::TerminatorPlan) {
+        self.emit_terminator_plan(plan);
+    }
+}
+
+impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
+    fn preload_by_ref_params(&mut self) {
+        self.preload_by_ref_param_ptrs();
+    }
+
+    fn prepare_block_param(&mut self, block: BlockId, index: u32, value: CfgValue, ty: Type) {
+        let vreg = self.mir.alloc_vreg();
+        self.block_param_vregs.insert((block, index), vreg);
+        self.value_map.insert(value, vreg);
+        crate::agg_slots::preallocate_block_param_slots(self, value, ty, vreg);
+    }
+
+    fn value_is_lowered(&self, value: CfgValue) -> bool {
+        self.value_map.contains_key(&value)
+    }
+
+    fn lower_value(&mut self, value: CfgValue) {
+        CfgLower::lower_value(self, value);
+    }
+
+    fn value_description(&self, value: CfgValue) -> String {
+        let inst = self.ctx.cfg.get_inst(value);
+        crate::format_cfg_inst_data_with_interner(self.ctx.cfg, &inst.data, self.interner)
+    }
+
+    fn instruction_count(&self) -> usize {
+        self.mir.inst_count()
+    }
+
+    fn instruction_strings(&self, range: std::ops::Range<usize>) -> Vec<String> {
+        self.mir.instructions()[range]
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    fn value_rationale(&self, data: &CfgInstData, ty: Type) -> Option<String> {
+        self.get_lowering_rationale(data, ty)
+    }
+
+    fn terminator_rationale(
+        &self,
+        plan: &crate::terminator_plan::TerminatorPlan,
+    ) -> Option<String> {
+        use crate::terminator_plan::{ReturnMode, TerminatorPlan};
+        match plan {
+            TerminatorPlan::Branch { .. } => Some("Compare and branch".to_string()),
+            TerminatorPlan::Return {
+                mode: ReturnMode::Exit { .. },
+            } => Some("Main function: return value becomes exit code".to_string()),
+            TerminatorPlan::Return {
+                mode: ReturnMode::Function { value },
+            } if !matches!(value, crate::terminator_plan::ReturnValuePlan::ZeroSized) => {
+                Some("Return value in X0 (AAPCS64)".to_string())
+            }
+            TerminatorPlan::Switch { cases, .. } => {
+                Some(format!("Linear scan through {} cases", cases.len()))
+            }
+            _ => None,
+        }
     }
 }
 

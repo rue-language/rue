@@ -894,7 +894,7 @@ bb0:
     -> mov v0, 42
     Decision: 32-bit immediate (zero-extends to 64-bit)
 
-  Terminator: return v0
+  Terminator: return exit
     -> mov rdi, v0
     -> call sym0
     Decision: Main function: return value becomes exit code
