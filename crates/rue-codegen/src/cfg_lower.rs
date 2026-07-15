@@ -49,6 +49,10 @@ pub struct TerminatorLoweringDecision {
     pub mir_insts: Vec<String>,
     /// Rationale for the lowering decision.
     pub rationale: Option<String>,
+    /// Target-independent topology and policy facts observed by both backend
+    /// debug lowerers.  MIR text is intentionally kept separate from this
+    /// trace so cross-target tests do not compare architecture spellings.
+    pub policy_trace: crate::terminator_plan::TerminatorTrace,
 }
 
 /// Debug information for a single basic block's lowering.
@@ -254,87 +258,6 @@ fn format_cfg_inst_data_impl(
     }
 }
 
-/// Format a CFG terminator as a human-readable string.
-pub fn format_terminator(cfg: &rue_cfg::Cfg, terminator: &rue_cfg::Terminator) -> String {
-    use rue_cfg::Terminator;
-
-    match terminator {
-        Terminator::Goto {
-            target,
-            args_start,
-            args_len,
-        } => {
-            let args = cfg.get_extra(*args_start, *args_len);
-            if args.is_empty() {
-                format!("goto {}", target)
-            } else {
-                let args_str = args
-                    .iter()
-                    .map(|a| format!("{}", a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("goto {}({})", target, args_str)
-            }
-        }
-        Terminator::Branch {
-            cond,
-            then_block,
-            then_args_start,
-            then_args_len,
-            else_block,
-            else_args_start,
-            else_args_len,
-        } => {
-            let then_args = cfg.get_extra(*then_args_start, *then_args_len);
-            let then_str = if then_args.is_empty() {
-                format!("{}", then_block)
-            } else {
-                let args_str = then_args
-                    .iter()
-                    .map(|a| format!("{}", a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{}({})", then_block, args_str)
-            };
-            let else_args = cfg.get_extra(*else_args_start, *else_args_len);
-            let else_str = if else_args.is_empty() {
-                format!("{}", else_block)
-            } else {
-                let args_str = else_args
-                    .iter()
-                    .map(|a| format!("{}", a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{}({})", else_block, args_str)
-            };
-            format!("branch {}, {}, {}", cond, then_str, else_str)
-        }
-        Terminator::Switch {
-            scrutinee,
-            cases_start,
-            cases_len,
-            default,
-        } => {
-            let cases = cfg.get_switch_cases(*cases_start, *cases_len);
-            let cases_str = cases
-                .iter()
-                .map(|(val, target)| format!("{} => {}", val, target))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("switch {} [{}], default: {}", scrutinee, cases_str, default)
-        }
-        Terminator::Return { value } => {
-            if let Some(val) = value {
-                format!("return {}", val)
-            } else {
-                "return".to_string()
-            }
-        }
-        Terminator::Unreachable => "unreachable".to_string(),
-        Terminator::None => "<no terminator>".to_string(),
-    }
-}
-
 // ============================================================================
 // Internal calling convention helpers
 // ============================================================================
@@ -400,6 +323,7 @@ pub fn fn_uses_sret_return(
 /// - Slot offset calculations
 ///
 /// Each backend's `CfgLower` embeds this context and delegates to its methods.
+#[derive(Clone, Copy)]
 pub struct CfgLowerContext<'a> {
     /// The CFG being lowered.
     pub cfg: &'a Cfg,
