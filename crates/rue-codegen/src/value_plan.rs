@@ -316,13 +316,14 @@ pub fn integer_width(ty: Type) -> Option<IntegerWidth> {
     })
 }
 
-/// Select the width used by a scalar comparison. Booleans are represented in
-/// the ordinary 32-bit scalar register form; every other valid scalar
-/// comparison operand must be an integer. Do not silently assign an integer
-/// width to malformed or unsupported types: doing so would let the backends
-/// choose a target-specific interpretation of the same invalid CFG.
+/// Select the width used by a scalar comparison. Booleans and discriminant-only
+/// enums are represented in the ordinary 32-bit unsigned scalar register form;
+/// every other valid scalar comparison operand must be an integer. Do not
+/// silently assign an integer width to malformed or unsupported types: doing so
+/// would let the backends choose a target-specific interpretation of the same
+/// invalid CFG.
 pub fn comparison_integer_width(ty: Type) -> IntegerWidth {
-    if ty == Type::BOOL {
+    if ty == Type::BOOL || ty.is_enum() {
         IntegerWidth {
             bits: 32,
             signed: false,
@@ -778,6 +779,72 @@ mod tests {
                 bits: 32,
                 signed: false
             }
+        );
+    }
+
+    #[test]
+    fn enum_scalar_comparison_uses_unsigned_discriminant_width() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let enum_name = interner.get_or_intern("ComparisonEnum");
+        let (enum_id, _) = pool.register_enum(
+            enum_name,
+            EnumDef {
+                name: "ComparisonEnum".to_string(),
+                variants: vec!["First".to_string(), "Second".to_string()],
+                variant_payloads: vec![vec![], vec![]],
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let pool = pool.freeze();
+        let enum_ty = Type::new_enum(enum_id);
+        let values = vec![
+            inst(CfgInstData::Const(0), enum_ty),
+            inst(CfgInstData::Const(1), enum_ty),
+            inst(
+                CfgInstData::Eq(CfgValue::from_raw(0), CfgValue::from_raw(1)),
+                Type::BOOL,
+            ),
+        ];
+        let cfg = synthetic_cfg(values, 0, 0, vec![], CfgValue::from_raw(2));
+        let ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
+        assert_eq!(
+            ValuePlan::for_value(&ctx, CfgValue::from_raw(2)).comparison,
+            Some(ComparisonPreparation::Scalar {
+                width: IntegerWidth {
+                    bits: 32,
+                    signed: false,
+                },
+            })
+        );
+
+        let x86 = X86CfgLower::new(&cfg, &pool, &interner)
+            .lower()
+            .expect("x86 enum comparison should lower");
+        assert!(
+            x86.instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, X86Inst::CmpRR { .. }))
+        );
+        assert!(
+            !x86.instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, X86Inst::Cmp64RR { .. }))
+        );
+
+        let arm = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux)
+            .lower()
+            .expect("AArch64 enum comparison should lower");
+        assert!(
+            arm.instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Aarch64Inst::CmpRR { .. }))
+        );
+        assert!(
+            !arm.instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Aarch64Inst::Cmp64RR { .. }))
         );
     }
 
