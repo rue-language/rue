@@ -97,6 +97,11 @@ def _sample_summary(samples: object) -> dict | None:
     }
 
 
+def sample_summary(samples: object) -> dict | None:
+    """Return the public robust center/uncertainty summary for raw samples."""
+    return _sample_summary(samples)
+
+
 def _classification(delta_pct: float, variation_pct: float) -> str:
     if delta_pct > variation_pct:
         return "regressed"
@@ -123,7 +128,7 @@ def _headline(per_workload: dict[str, dict]) -> dict:
 
 
 def compare_runs(current: dict, reference: dict) -> dict:
-    """Compare two adjacent points without crossing semantic boundaries."""
+    """Compare two points after the caller has preserved intervening boundaries."""
     identity = require_same_identity(reference, current)
     if run_regime(reference) != run_regime(current) or comparison_break(reference, current):
         return {"status": "non_comparable", "reason": "regime_boundary", **identity}
@@ -257,6 +262,78 @@ def metric_families(run: dict) -> dict:
         if isinstance(bench.get("binary_size_bytes"), (int, float)):
             families["binary_size_bytes"][name] = bench["binary_size_bytes"]
     return families
+
+
+def comparison_explanation(current: dict, reference: dict) -> dict:
+    """Explain one valid comparison by workload, pass, memory, and binary size."""
+    comparison = compare_runs(current, reference)
+    if comparison.get("status") != "comparable":
+        return comparison
+    current_benches, reference_benches = _benches(current), _benches(reference)
+    workloads = []
+    pass_totals: dict[str, dict[str, float]] = {}
+    memory = []
+    binary = []
+    for name in workload_names(current):
+        detail = comparison["workloads"][name]
+        current_center = detail.get("current_median_ms")
+        reference_center = detail.get("reference_median_ms")
+        delta_ms = (
+            current_center - reference_center
+            if current_center is not None and reference_center is not None
+            else None
+        )
+        workloads.append({"name": name, "delta_ms": delta_ms, **detail})
+        current_passes = current_benches[name].get("passes", {})
+        reference_passes = reference_benches[name].get("passes", {})
+        if isinstance(current_passes, dict) and isinstance(reference_passes, dict):
+            # A pass observed on only one side is missing evidence, not a zero.
+            for pass_name in sorted(set(current_passes) & set(reference_passes)):
+                if pass_name in {"compile", "parse"}:
+                    continue
+                current_pass = current_passes[pass_name]
+                reference_pass = reference_passes[pass_name]
+                current_value = current_pass.get("mean_ms") if isinstance(current_pass, dict) else None
+                reference_value = reference_pass.get("mean_ms") if isinstance(reference_pass, dict) else None
+                if isinstance(current_value, (int, float)) and isinstance(reference_value, (int, float)):
+                    totals = pass_totals.setdefault(
+                        pass_name,
+                        {"before_ms": 0, "after_ms": 0, "observations": 0},
+                    )
+                    totals["before_ms"] += reference_value
+                    totals["after_ms"] += current_value
+                    totals["observations"] += 1
+        for field, target in (("peak_memory_bytes", memory), ("binary_size_bytes", binary)):
+            current_value = current_benches[name].get(field)
+            reference_value = reference_benches[name].get(field)
+            if isinstance(current_value, (int, float)) and isinstance(reference_value, (int, float)):
+                target.append({
+                    "name": name,
+                    "before": reference_value,
+                    "after": current_value,
+                    "delta": current_value - reference_value,
+                })
+    passes = [
+        {
+            "name": name,
+            "before_ms": values["before_ms"],
+            "after_ms": values["after_ms"],
+            "delta_ms": values["after_ms"] - values["before_ms"],
+        }
+        for name, values in sorted(pass_totals.items())
+        if values["observations"] == len(workloads)
+    ]
+    comparable_workloads = [item for item in workloads if item["delta_ms"] is not None]
+    return {
+        "status": "comparable",
+        "headline": comparison["headline"],
+        "workloads": workloads,
+        "passes": passes,
+        "memory_bytes": memory,
+        "binary_size_bytes": binary,
+        "dominant_workload": max(comparable_workloads, key=lambda item: abs(item["delta_ms"]), default=None),
+        "dominant_pass": max(passes, key=lambda item: abs(item["delta_ms"]), default=None),
+    }
 
 
 def derive_history_metrics(runs: list[dict]) -> dict:

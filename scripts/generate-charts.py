@@ -46,6 +46,7 @@ from benchmark_annotations import (
     normalized_annotations,
 )
 from benchmark_metrics import derive_history_metrics
+from benchmark_recent import GitRecentResolver, recent_workspace
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -1229,6 +1230,11 @@ def generate_platform_charts(history_path: Path, output_dir: Path, platform: Opt
     coverage = calculate_coverage_metrics(runs)
 
     # Write metadata JSON for the website to consume (includes summary and detailed metrics)
+    annotation_stream = normalized_annotations(
+        runs,
+        load_annotations(DEFAULT_ANNOTATIONS),
+        GitCommitResolver(REPO_ROOT),
+    )
     metadata = {
         "benchmarks": benchmark_names,
         "run_count": len(runs),
@@ -1238,10 +1244,12 @@ def generate_platform_charts(history_path: Path, output_dir: Path, platform: Opt
         "coverage": coverage,
         "regimes": regime_summary(runs),
         "metric_semantics": derive_history_metrics(runs),
-        "annotations": normalized_annotations(
+        "annotations": annotation_stream,
+        "recent_workspace": recent_workspace(
             runs,
-            load_annotations(DEFAULT_ANNOTATIONS),
-            GitCommitResolver(REPO_ROOT),
+            annotation_stream,
+            GitRecentResolver(REPO_ROOT),
+            platform or "unknown",
         ),
     }
     if platform:

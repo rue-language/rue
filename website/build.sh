@@ -128,7 +128,7 @@ platforms.sort(key=lambda p: p['id'])
 
 metadata = {
     'platforms': platforms,
-    'default_platform': platforms[0]['id'] if platforms else None
+    'default_platform': next((p['id'] for p in platforms if p['has_data']), None)
 }
 
 with open(benchmarks_dir / 'metadata.json', 'w') as f:
