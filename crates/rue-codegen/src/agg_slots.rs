@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use rue_air::{Type, TypeKind};
 use rue_cfg::{CfgInstData, CfgValue, Place, PlaceBase, Projection};
 
+use crate::allocation::{self, BoundsCheckBackend};
 use crate::cfg_lower::CfgLowerContext;
 use crate::vreg::VReg;
 
@@ -32,7 +33,7 @@ use crate::vreg::VReg;
 /// Implementations are thin: `emit_load_slot` is a single frame-relative load
 /// instruction (`mov dst, [rbp+offset]` / `ldr dst, [fp, #offset]`); the rest
 /// expose existing lowerer state.
-pub trait SlotBackend {
+pub trait SlotBackend: BoundsCheckBackend {
     /// The shared lowering context (CFG, type pool, slot counts).
     fn ctx(&self) -> &CfgLowerContext<'_>;
 
@@ -73,9 +74,6 @@ pub trait SlotBackend {
 
     /// Emit a load of the value at `byte_offset` from pointer `ptr` into `dst`.
     fn emit_load_through_ptr(&mut self, dst: VReg, ptr: VReg, byte_offset: i32);
-
-    /// Emit a bounds check trapping when `index_vreg >= length`.
-    fn emit_bounds_check(&mut self, index_vreg: VReg, length: u64);
 
     /// Emit `dst = low-end address of the (possibly projected) place` — the
     /// backend's `lower_place_addr`. The result is the place's lowest-address
@@ -194,7 +192,10 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
                 if let Projection::Index { array_type, index } = proj {
                     let length = b.ctx().array_length(*array_type);
                     let index_vreg = b.get_vreg(*index);
-                    b.emit_bounds_check(index_vreg, length);
+                    allocation::lower_bounds_check(
+                        b,
+                        allocation::BoundsCheckPlan::new(index_vreg, length),
+                    );
                 }
             }
             let addr_vreg = b.alloc_vreg();

@@ -41,6 +41,7 @@ macro_rules! end_inst {
     };
 }
 
+mod allocation;
 mod codegen_pipeline;
 mod schedule_core;
 mod stack_frame;

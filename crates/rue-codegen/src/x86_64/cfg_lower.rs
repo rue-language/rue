@@ -33,6 +33,7 @@ use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, Terminator
 use rue_error::CompileResult;
 
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
+use crate::allocation;
 use crate::cfg_lower::CfgLowerContext;
 use crate::types;
 use crate::vreg::BLOCK_LABEL_BASE;
@@ -117,66 +118,6 @@ impl<'a> CfgLower<'a> {
         self.mir.intern_symbol(symbol)
     }
 
-    /// Per-element stride in bytes for a heap intrinsic (`@alloc`/`@free`/
-    /// `@realloc`) whose pointer type is `ty` (a `ptr mut T`/`ptr const T`):
-    /// `size_of(T)`. All Rue types are 8-byte-slotted, so this is
-    /// `slot_count(T) * 8` — the same stride `@ptr_offset` uses (RUE-1).
-    fn alloc_element_size(&self, ty: Type) -> u64 {
-        let pointee = match ty.kind() {
-            TypeKind::PtrMut(id) => self.ctx.type_pool.ptr_mut_def(id),
-            TypeKind::PtrConst(id) => self.ctx.type_pool.ptr_const_def(id),
-            // Sema guarantees a pointer type here; be defensive on error/never.
-            _ => return 8,
-        };
-        types::type_size_bytes(self.ctx.type_pool, pointee)
-    }
-
-    /// Emit `count_vreg * element_size` (a compile-time constant stride) into a
-    /// fresh vreg, trapping if the hidden byte-size computation overflows.
-    /// Mirrors the scaling used by `@ptr_offset`, but heap intrinsic sizes are
-    /// part of the runtime ABI: silently wrapping here would under-allocate or
-    /// pass the wrong size to free/realloc (RUE-345).
-    fn scale_by_size(&mut self, count_vreg: VReg, element_size: u64) -> VReg {
-        let out = self.mir.alloc_vreg();
-        if element_size == 0 {
-            self.mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(out),
-                imm: 0,
-            });
-        } else if element_size == 1 {
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Virtual(out),
-                src: Operand::Virtual(count_vreg),
-            });
-        } else {
-            let size_vreg = self.mir.alloc_vreg();
-            self.mir.push(X86Inst::MovRI64 {
-                dst: Operand::Virtual(size_vreg),
-                imm: element_size as i64,
-            });
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Physical(Reg::Rax),
-                src: Operand::Virtual(count_vreg),
-            });
-            self.mir.push(X86Inst::Mul64R {
-                src: Operand::Virtual(size_vreg),
-            });
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Virtual(out),
-                src: Operand::Physical(Reg::Rax),
-            });
-
-            // MOV does not modify flags, so MUL's carry flag still records
-            // whether the unsigned product's high half was non-zero.
-            let ok_label = self.new_label();
-            self.mir.push(X86Inst::Jae { label: ok_label });
-            let symbol_id = self.intern_symbol("__rue_overflow");
-            self.mir.push(X86Inst::CallRel { symbol_id });
-            self.mir.push(X86Inst::Label { id: ok_label });
-        }
-        out
-    }
-
     /// Recursively collect all scalar vregs from an array value.
     fn collect_array_scalar_vregs(&mut self, value: CfgValue) -> Vec<VReg> {
         let slot_vregs = self.struct_slot_vregs.clone();
@@ -230,40 +171,6 @@ impl<'a> CfgLower<'a> {
                 self.ensure_by_ref_param_ptr(param_slot);
             }
         }
-    }
-
-    /// Emit a bounds check for array indexing.
-    ///
-    /// Generates code to check that `index_vreg < length` and calls `__rue_bounds_check`
-    /// if the check fails. Uses unsigned comparison so negative indices also fail.
-    fn emit_bounds_check(&mut self, index_vreg: VReg, length: u64) {
-        // Load the array length into a temporary register
-        let length_vreg = self.mir.alloc_vreg();
-        self.mir.push(X86Inst::MovRI64 {
-            dst: Operand::Virtual(length_vreg),
-            imm: length as i64,
-        });
-
-        // Compare index (unsigned) against length. The index is a usize
-        // (64-bit) and the length is materialized as a 64-bit immediate, so the
-        // comparison MUST be 64-bit — a 32-bit cmp would ignore the high half of
-        // the index and let an out-of-range index whose low 32 bits happen to be
-        // in range bypass the check, reading out of bounds (RUE-87).
-        self.mir.push(X86Inst::Cmp64RR {
-            src1: Operand::Virtual(index_vreg),
-            src2: Operand::Virtual(length_vreg),
-        });
-
-        // If index < length (unsigned), jump to ok label; otherwise call bounds check
-        let ok_label = self.new_label();
-        self.mir.push(X86Inst::Jb { label: ok_label });
-
-        // Call the bounds check error handler (never returns)
-        let symbol_id = self.intern_symbol("__rue_bounds_check");
-        self.mir.push(X86Inst::CallRel { symbol_id });
-
-        // Continue with valid access
-        self.mir.push(X86Inst::Label { id: ok_label });
     }
 
     /// Call `symbol` passing `arg_vregs` as flattened by-value slot arguments
@@ -2344,14 +2251,9 @@ impl<'a> CfgLower<'a> {
                     let ptr_vreg = self.get_vreg(ptr_val);
                     let raw_offset_vreg = self.get_vreg(offset_val);
 
-                    // Get the pointer type to determine element size
                     let ptr_type = self.ctx.cfg.get_inst(ptr_val).ty;
-                    let pointee_type = match ptr_type.kind() {
-                        TypeKind::PtrConst(ptr_id) => self.ctx.type_pool.ptr_const_def(ptr_id),
-                        TypeKind::PtrMut(ptr_id) => self.ctx.type_pool.ptr_mut_def(ptr_id),
-                        _ => unreachable!("ptr_offset requires pointer type"),
-                    };
-                    let element_size = types::type_size_bytes(self.ctx.type_pool, pointee_type);
+                    let scale_plan =
+                        allocation::pointer_offset_scale_plan(self.ctx.type_pool, ptr_type);
 
                     // Sign-/zero-extend the index to a full 64-bit value before
                     // the 64-bit scale + add below. A narrow signed index
@@ -2398,36 +2300,8 @@ impl<'a> CfgLower<'a> {
                     // @ptr_offset adds too — they agree, and the add is uniform
                     // for every pointer origin (local array, heap, mmap,
                     // @int_to_ptr). Positive n moves toward higher addresses.
-                    // First, multiply offset by element size.
-                    let scaled_offset_vreg = self.mir.alloc_vreg();
-                    if element_size == 1 {
-                        // No multiplication needed
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Virtual(scaled_offset_vreg),
-                            src: Operand::Virtual(offset_vreg),
-                        });
-                    } else if element_size == 0 {
-                        // Zero-sized type - offset is always 0
-                        self.mir.push(X86Inst::MovRI32 {
-                            dst: Operand::Virtual(scaled_offset_vreg),
-                            imm: 0,
-                        });
-                    } else {
-                        // Multiply offset by element size
-                        let size_vreg = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRI64 {
-                            dst: Operand::Virtual(size_vreg),
-                            imm: element_size as i64,
-                        });
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Virtual(scaled_offset_vreg),
-                            src: Operand::Virtual(offset_vreg),
-                        });
-                        self.mir.push(X86Inst::ImulRR64 {
-                            dst: Operand::Virtual(scaled_offset_vreg),
-                            src: Operand::Virtual(size_vreg),
-                        });
-                    }
+                    // First, multiply offset by the shared element-width plan.
+                    let scaled_offset_vreg = allocation::lower_scale(self, offset_vreg, scale_plan);
 
                     // Add to pointer (64-bit add for addresses); see the
                     // ascending-layout note above (ADR-0040 / RUE-243).
@@ -2476,10 +2350,12 @@ impl<'a> CfgLower<'a> {
                     let count_vreg = self.get_vreg(args[0]);
 
                     let result_ty = self.ctx.cfg.get_inst(value).ty;
-                    let element_size = self.alloc_element_size(result_ty);
-
                     // size = count * element_size in RDI (first arg register).
-                    let size_vreg = self.scale_by_size(count_vreg, element_size);
+                    let size_vreg = allocation::lower_scale(
+                        self,
+                        count_vreg,
+                        allocation::allocation_size_scale_plan(self.ctx.type_pool, result_ty),
+                    );
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rdi),
                         src: Operand::Virtual(size_vreg),
@@ -2509,8 +2385,11 @@ impl<'a> CfgLower<'a> {
                     let count_vreg = self.get_vreg(count_val);
 
                     let ptr_ty = self.ctx.cfg.get_inst(ptr_val).ty;
-                    let element_size = self.alloc_element_size(ptr_ty);
-                    let size_vreg = self.scale_by_size(count_vreg, element_size);
+                    let size_vreg = allocation::lower_scale(
+                        self,
+                        count_vreg,
+                        allocation::allocation_size_scale_plan(self.ctx.type_pool, ptr_ty),
+                    );
 
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rdi),
@@ -2542,9 +2421,10 @@ impl<'a> CfgLower<'a> {
                     let new_vreg = self.get_vreg(args[2]);
 
                     let result_ty = self.ctx.cfg.get_inst(value).ty;
-                    let element_size = self.alloc_element_size(result_ty);
-                    let old_size_vreg = self.scale_by_size(old_vreg, element_size);
-                    let new_size_vreg = self.scale_by_size(new_vreg, element_size);
+                    let scale_plan =
+                        allocation::allocation_size_scale_plan(self.ctx.type_pool, result_ty);
+                    let old_size_vreg = allocation::lower_scale(self, old_vreg, scale_plan);
+                    let new_size_vreg = allocation::lower_scale(self, new_vreg, scale_plan);
 
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rdi),
@@ -3887,9 +3767,6 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
             offset: byte_offset,
         });
     }
-    fn emit_bounds_check(&mut self, index_vreg: VReg, length: u64) {
-        CfgLower::emit_bounds_check(self, index_vreg, length)
-    }
     fn emit_place_addr(&mut self, dst: VReg, place: &Place) {
         crate::place_lower::lower_place_addr(self, dst, place)
     }
@@ -3928,28 +3805,8 @@ impl crate::place_lower::PlaceLowerBackend for CfgLower<'_> {
         });
     }
 
-    fn emit_scale_index_bytes(&mut self, scaled: VReg, elem_slot_count: u32) {
-        if elem_slot_count == 1 {
-            let shift_count = self.mir.alloc_vreg();
-            self.mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(shift_count),
-                imm: 3,
-            });
-            self.mir.push(X86Inst::Shl {
-                dst: Operand::Virtual(scaled),
-                count: Operand::Virtual(shift_count),
-            });
-        } else {
-            let stride = self.mir.alloc_vreg();
-            self.mir.push(X86Inst::MovRI64 {
-                dst: Operand::Virtual(stride),
-                imm: (elem_slot_count * 8) as i64,
-            });
-            self.mir.push(X86Inst::ImulRR64 {
-                dst: Operand::Virtual(scaled),
-                src: Operand::Virtual(stride),
-            });
-        }
+    fn emit_scale_index_bytes(&mut self, scaled: VReg, plan: crate::allocation::ScalePlan) {
+        <Self as crate::allocation::ScaleBackend>::emit_scale(self, scaled, scaled, plan);
     }
 
     fn emit_zero_sized_place(&mut self, dst: VReg) {
@@ -3965,6 +3822,172 @@ impl crate::place_lower::PlaceLowerBackend for CfgLower<'_> {
             base: ptr,
             offset: 0,
         });
+    }
+}
+
+impl crate::allocation::BoundsCheckBackend for CfgLower<'_> {
+    fn alloc_bounds_length(&mut self, length: u64) -> VReg {
+        let vreg = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(vreg),
+            imm: length as i64,
+        });
+        vreg
+    }
+
+    fn emit_bounds_compare(&mut self, index: VReg, length: VReg) {
+        self.mir.push(X86Inst::Cmp64RR {
+            src1: Operand::Virtual(index),
+            src2: Operand::Virtual(length),
+        });
+    }
+
+    fn alloc_bounds_label(&mut self) -> LabelId {
+        self.new_label()
+    }
+
+    fn emit_bounds_branch(
+        &mut self,
+        condition: crate::allocation::BoundsCondition,
+        label: LabelId,
+    ) {
+        match condition {
+            crate::allocation::BoundsCondition::UnsignedIndexLessThanLength => {
+                self.mir.push(X86Inst::Jb { label });
+            }
+        }
+    }
+
+    fn emit_bounds_trap(&mut self, trap: crate::allocation::BoundsTrap) {
+        match trap {
+            crate::allocation::BoundsTrap::IndexOutOfBounds => {
+                let symbol_id = self.intern_symbol("__rue_bounds_check");
+                self.mir.push(X86Inst::CallRel { symbol_id });
+            }
+        }
+    }
+
+    fn emit_bounds_label(&mut self, label: LabelId) {
+        self.mir.push(X86Inst::Label { id: label });
+    }
+}
+
+impl crate::allocation::ScaleBackend for CfgLower<'_> {
+    fn alloc_scale_result(&mut self) -> VReg {
+        self.mir.alloc_vreg()
+    }
+
+    fn emit_scale(&mut self, dst: VReg, src: VReg, plan: crate::allocation::ScalePlan) {
+        use crate::allocation::{OverflowBehavior, ScaleKind, ScalePurpose};
+
+        match (plan.purpose, plan.overflow) {
+            (ScalePurpose::IndexOffset, OverflowBehavior::Wrap) => match plan.kind {
+                ScaleKind::Zero => self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: 0,
+                }),
+                ScaleKind::Identity => self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(src),
+                }),
+                ScaleKind::Constant(bytes) if bytes == 8 => {
+                    let shift_count = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI32 {
+                        dst: Operand::Virtual(shift_count),
+                        imm: 3,
+                    });
+                    if dst != src {
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(src),
+                        });
+                    }
+                    self.mir.push(X86Inst::Shl {
+                        dst: Operand::Virtual(dst),
+                        count: Operand::Virtual(shift_count),
+                    });
+                }
+                ScaleKind::Constant(bytes) => {
+                    let stride = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Virtual(stride),
+                        imm: bytes as i64,
+                    });
+                    if dst != src {
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(src),
+                        });
+                    }
+                    self.mir.push(X86Inst::ImulRR64 {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(stride),
+                    });
+                }
+            },
+            (ScalePurpose::PointerOffset, OverflowBehavior::Wrap) => match plan.kind {
+                ScaleKind::Zero => self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: 0,
+                }),
+                ScaleKind::Identity => self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(src),
+                }),
+                ScaleKind::Constant(bytes) => {
+                    let stride = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Virtual(stride),
+                        imm: bytes as i64,
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rax),
+                        src: Operand::Virtual(src),
+                    });
+                    self.mir.push(X86Inst::Mul64R {
+                        src: Operand::Virtual(stride),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                }
+            },
+            (ScalePurpose::AllocationSize, OverflowBehavior::Trap) => match plan.kind {
+                ScaleKind::Zero => self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: 0,
+                }),
+                ScaleKind::Identity => self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(src),
+                }),
+                ScaleKind::Constant(bytes) => {
+                    let stride = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Virtual(stride),
+                        imm: bytes as i64,
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rax),
+                        src: Operand::Virtual(src),
+                    });
+                    self.mir.push(X86Inst::Mul64R {
+                        src: Operand::Virtual(stride),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                    let ok_label = self.new_label();
+                    self.mir.push(X86Inst::Jae { label: ok_label });
+                    let symbol_id = self.intern_symbol("__rue_overflow");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
+                    self.mir.push(X86Inst::Label { id: ok_label });
+                }
+            },
+            _ => panic!("invalid shared scaling plan: {plan:?}"),
+        }
     }
 }
 

@@ -20,9 +20,9 @@
 //! address, from which aggregate slots ascend (`slot k` at `+k*8`), uniform
 //! for frame- and heap-rooted places (ADR-0040 / RUE-311).
 
-use crate::place_lower::PlaceLowerBackend;
+use crate::place_lower::{self, PlaceLowerBackend};
 use crate::vreg::VReg;
-use rue_cfg::{CfgInstData, CfgValue, Place, Projection};
+use rue_cfg::{CfgInstData, CfgValue, Place};
 
 /// Lower a by-ref (inout/borrow) call argument to the vreg holding its
 /// address.
@@ -88,14 +88,7 @@ pub fn lower_byref_arg_addr<B: PlaceLowerBackend + ?Sized>(
             // out-of-bounds index must trap at the call site (the projected
             // PlaceRead the arg expression also lowers to is a dead value —
             // its own bounds check does not protect the address).
-            let projections: Vec<Projection> = b.ctx().cfg.get_place_projections(&place).to_vec();
-            for proj in &projections {
-                if let Projection::Index { array_type, index } = proj {
-                    let length = b.ctx().array_length(*array_type);
-                    let index_vreg = b.get_vreg(*index);
-                    b.emit_bounds_check(index_vreg, length);
-                }
-            }
+            place_lower::lower_place_bounds(b, &place);
             let addr_vreg = b.alloc_vreg();
             b.emit_place_addr(addr_vreg, &place);
             addr_vreg
