@@ -800,7 +800,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// falls back to file-level `const`s and literals like [`resolve_type`]. A
     /// length that resolves to none of these (a runtime parameter) still gets a
     /// clean E0481. The specialized array type is interned into the same pool
-    /// the CFG builder later sees (the pool is cloned *after* specialization,
+    /// the CFG builder later sees (the pool is transferred *after* specialization,
     /// RUE-282), so drop analysis of a comptime-value-length local array no
     /// longer hits an out-of-bounds `ArrayTypeId`.
     ///
