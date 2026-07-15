@@ -24,6 +24,28 @@
             </div>
         </section>
 
+        <section id="evolution-workspace" class="mb-12" aria-labelledby="evolution-title">
+            <h2 id="evolution-title" class="section-title">Long-term performance evolution</h2>
+            <p class="text-muted mb-4">
+                Canonical normalized performance index (higher is better). Raw measurements are faint;
+                robust daily or weekly trends are solid. Lines stop at gaps and measurement rebases.
+            </p>
+            <div class="flex flex-wrap items-center gap-3 mb-4">
+                <span class="text-sm font-medium">Calendar range:</span>
+                <div id="evolution-range-controls" class="flex gap-2" role="group" aria-label="Evolution calendar range"></div>
+                <label for="evolution-platform-select" class="text-sm font-medium">Machine:</label>
+                <select id="evolution-platform-select" class="bg-surface border border-themed rounded px-2 py-1 text-sm"></select>
+                <label for="evolution-workload-select" class="text-sm font-medium">Workload/family:</label>
+                <select id="evolution-workload-select" class="bg-surface border border-themed rounded px-2 py-1 text-sm"></select>
+            </div>
+            <div id="evolution-chart" class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4 mb-4" aria-live="polite"></div>
+            <div id="evolution-annotations" class="mb-4"></div>
+            <details>
+                <summary>Accessible raw measurements and absolute values</summary>
+                <div id="evolution-details" class="overflow-x-auto mt-3"></div>
+            </details>
+        </section>
+
         <section id="recent-workspace" class="mb-12" aria-labelledby="recent-workspace-title">
             <h2 id="recent-workspace-title" class="section-title">Recent regression workspace</h2>
             <div class="flex flex-wrap items-center gap-3 mb-4">
@@ -61,7 +83,7 @@
         </section>
 
         <!-- Timeline Chart (Aggregate) -->
-        <section class="mb-12">
+        <section id="legacy-timeline-section" class="mb-12">
             <h2 class="section-title">Compilation Time Trend</h2>
             <p class="text-muted mb-4">
                 Total compilation time across the last 20 commits. Lower is better.
@@ -129,7 +151,15 @@
             const platformSelect = document.getElementById('platform-select');
             const platformInfo = document.getElementById('platform-info');
             const benchmarkSelect = document.getElementById('benchmark-select');
+            const evolutionSection = document.getElementById('evolution-workspace');
+            const evolutionRangeControls = document.getElementById('evolution-range-controls');
+            const evolutionPlatformSelect = document.getElementById('evolution-platform-select');
+            const evolutionWorkloadSelect = document.getElementById('evolution-workload-select');
+            const evolutionChart = document.getElementById('evolution-chart');
+            const evolutionAnnotations = document.getElementById('evolution-annotations');
+            const evolutionDetails = document.getElementById('evolution-details');
             const timelineContainer = document.getElementById('timeline-chart-container');
+            const legacyTimelineSection = document.getElementById('legacy-timeline-section');
             const recentSection = document.getElementById('recent-workspace');
             const recentWindowControls = document.getElementById('recent-window-controls');
             const recentBefore = document.getElementById('recent-before');
@@ -160,6 +190,178 @@
                 return String(value).replace(/[&<>"']/g, character => ({
                     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
                 })[character]);
+            }
+
+            function renderEvolutionWorkspace(model, allPlatforms) {
+                evolutionSection.style.display = 'block';
+                evolutionRangeControls.replaceChildren();
+                evolutionPlatformSelect.replaceChildren();
+                evolutionWorkloadSelect.replaceChildren();
+                const machineAll = node('option', 'All machines (normalized, separate series)');
+                machineAll.value = '*'; evolutionPlatformSelect.appendChild(machineAll);
+                model.platform_options.forEach(platform => {
+                    const option = node('option', platform); option.value = platform;
+                    evolutionPlatformSelect.appendChild(option);
+                });
+                evolutionPlatformSelect.value = allPlatforms ? '*' : model.platform_options[0];
+                model.workload_options.forEach(workload => {
+                    const option = node('option', workload === 'all' ? 'All workloads (canonical index)' : `Workload: ${workload}`);
+                    option.value = `workload:${workload}`; evolutionWorkloadSelect.appendChild(option);
+                });
+                model.workload_families.forEach(family => {
+                    const option = node('option', `Family: ${family.label} (${family.source.replace('_', ' ')})`);
+                    option.value = `family:${family.id}`; evolutionWorkloadSelect.appendChild(option);
+                });
+
+                let activeRange = model.default_range;
+                const render = () => {
+                    const platform = evolutionPlatformSelect.value;
+                    const filter = evolutionWorkloadSelect.value;
+                    let workloads;
+                    if (filter.startsWith('family:')) {
+                        const family = model.workload_families.find(item => item.id === filter.slice(7));
+                        workloads = new Set(family ? family.workloads : []);
+                    } else {
+                        workloads = new Set([filter.slice(9)]);
+                    }
+                    const selected = model.series.filter(series =>
+                        (platform === '*' || series.platform === platform) && workloads.has(series.workload)
+                    );
+                    evolutionChart.replaceChildren();
+                    evolutionAnnotations.replaceChildren();
+                    evolutionDetails.replaceChildren();
+                    if (!selected.length || selected.every(series => !series.ranges[activeRange].raw_point_count)) {
+                        evolutionChart.appendChild(node('p', 'No measurements in this calendar range.'));
+                        return;
+                    }
+                    const SVG = 'http://www.w3.org/2000/svg';
+                    const svg = document.createElementNS(SVG, 'svg');
+                    svg.setAttribute('viewBox', '0 0 900 360');
+                    svg.setAttribute('role', 'img');
+                    svg.setAttribute('aria-label', `${activeRange} normalized benchmark evolution; higher is better; series do not cross gaps`);
+                    const allPoints = selected.flatMap(series => series.raw_points.slice(series.ranges[activeRange].raw_start_index));
+                    const drawablePoints = allPoints.filter(point => typeof point.index === 'number');
+                    if (!drawablePoints.length) {
+                        evolutionChart.appendChild(node('p', 'Raw measurements exist, but canonical normalized indexes are unavailable. See details.'));
+                    }
+                    const times = (drawablePoints.length ? drawablePoints : allPoints).map(point => Date.parse(point.timestamp));
+                    const indexes = drawablePoints.length ? drawablePoints.map(point => point.index) : [99, 101];
+                    const minTime = Math.min(...times), maxTime = Math.max(...times);
+                    const minIndex = Math.min(...indexes), maxIndex = Math.max(...indexes);
+                    const x = value => 55 + 815 * (Date.parse(value) - minTime) / Math.max(1, maxTime - minTime);
+                    const y = value => 315 - 270 * (value - minIndex) / Math.max(1, maxIndex - minIndex);
+                    const xAxis = document.createElementNS(SVG, 'line');
+                    xAxis.setAttribute('x1', '55'); xAxis.setAttribute('x2', '870');
+                    xAxis.setAttribute('y1', '315'); xAxis.setAttribute('y2', '315');
+                    xAxis.setAttribute('stroke', 'currentColor'); svg.appendChild(xAxis);
+                    const yAxis = document.createElementNS(SVG, 'line');
+                    yAxis.setAttribute('x1', '55'); yAxis.setAttribute('x2', '55');
+                    yAxis.setAttribute('y1', '45'); yAxis.setAttribute('y2', '315');
+                    yAxis.setAttribute('stroke', 'currentColor'); svg.appendChild(yAxis);
+                    const xLabel = document.createElementNS(SVG, 'text');
+                    xLabel.setAttribute('x', '450'); xLabel.setAttribute('y', '352');
+                    xLabel.setAttribute('text-anchor', 'middle'); xLabel.textContent = 'Calendar time'; svg.appendChild(xLabel);
+                    const yLabel = document.createElementNS(SVG, 'text');
+                    yLabel.setAttribute('x', '15'); yLabel.setAttribute('y', '180');
+                    yLabel.setAttribute('transform', 'rotate(-90 15 180)'); yLabel.setAttribute('text-anchor', 'middle');
+                    yLabel.textContent = 'Normalized performance index'; svg.appendChild(yLabel);
+                    [[55, new Date(minTime).toISOString().slice(0, 10)], [870, new Date(maxTime).toISOString().slice(0, 10)]].forEach(([position, labelText]) => {
+                        const label = document.createElementNS(SVG, 'text'); label.setAttribute('x', position);
+                        label.setAttribute('y', '332'); label.setAttribute('text-anchor', position === 55 ? 'start' : 'end');
+                        label.textContent = labelText; svg.appendChild(label);
+                    });
+                    [[315, minIndex], [45, maxIndex]].forEach(([position, labelValue]) => {
+                        const label = document.createElementNS(SVG, 'text'); label.setAttribute('x', '50');
+                        label.setAttribute('y', position); label.setAttribute('text-anchor', 'end');
+                        label.textContent = Number(labelValue).toFixed(1); svg.appendChild(label);
+                    });
+                    const colors = ['#5c6b34', '#c9970e', '#a14e24', '#6b4788', '#467a88'];
+                    selected.forEach((series, seriesIndex) => {
+                        const view = series.ranges[activeRange];
+                        const color = colors[seriesIndex % colors.length];
+                        view.rendered_raw_points.filter(point => typeof point.index === 'number').forEach(point => {
+                            const circle = document.createElementNS(SVG, 'circle');
+                            circle.setAttribute('cx', x(point.timestamp)); circle.setAttribute('cy', y(point.index));
+                            circle.setAttribute('r', '2'); circle.setAttribute('fill', color); circle.setAttribute('opacity', '0.22');
+                            svg.appendChild(circle);
+                            if (point.boundary) {
+                                const marker = document.createElementNS(SVG, 'line');
+                                marker.setAttribute('class', 'evolution-boundary-marker');
+                                marker.setAttribute('x1', x(point.timestamp)); marker.setAttribute('x2', x(point.timestamp));
+                                marker.setAttribute('y1', '45'); marker.setAttribute('y2', '315');
+                                marker.setAttribute('stroke', color); marker.setAttribute('stroke-dasharray', '5 4');
+                                marker.setAttribute('stroke-width', '2'); svg.appendChild(marker);
+                            }
+                            if (point.annotation_ids.length) {
+                                const marker = document.createElementNS(SVG, 'circle');
+                                marker.setAttribute('class', 'evolution-annotation-marker');
+                                marker.setAttribute('cx', x(point.timestamp)); marker.setAttribute('cy', y(point.index));
+                                marker.setAttribute('r', '5'); marker.setAttribute('fill', 'none');
+                                marker.setAttribute('stroke', color); marker.setAttribute('stroke-width', '2'); svg.appendChild(marker);
+                            }
+                        });
+                        const groups = new Map();
+                        view.trend_points.forEach(point => {
+                            if (!groups.has(point.segment)) groups.set(point.segment, []);
+                            groups.get(point.segment).push(point);
+                            const variation = document.createElementNS(SVG, 'line');
+                            variation.setAttribute('x1', x(point.timestamp)); variation.setAttribute('x2', x(point.timestamp));
+                            variation.setAttribute('y1', y(point.index - point.variation)); variation.setAttribute('y2', y(point.index + point.variation));
+                            variation.setAttribute('stroke', color); variation.setAttribute('opacity', '0.28'); svg.appendChild(variation);
+                        });
+                        groups.forEach(points => {
+                            const line = document.createElementNS(SVG, 'polyline');
+                            line.setAttribute('points', points.map(point => `${x(point.timestamp)},${y(point.index)}`).join(' '));
+                            line.setAttribute('fill', 'none'); line.setAttribute('stroke', color); line.setAttribute('stroke-width', '2.5');
+                            svg.appendChild(line);
+                        });
+                        const label = document.createElementNS(SVG, 'text');
+                        label.setAttribute('x', 60); label.setAttribute('y', 18 + seriesIndex * 18);
+                        label.setAttribute('fill', color); label.textContent = `${series.platform} / ${series.workload}`; svg.appendChild(label);
+                    });
+                    evolutionChart.appendChild(svg);
+                    evolutionChart.appendChild(node('p', `Calendar end ${model.range_end}; ${activeRange}; ${selected[0].ranges[activeRange].resolution} robust median ± scaled MAD. Raw history retained: ${model.raw_history_run_count} runs.`, 'text-xs text-muted'));
+
+                    const eventIds = new Set(allPoints.flatMap(point => point.annotation_ids));
+                    const events = model.annotations.filter(event => eventIds.has(event.id));
+                    if (events.length) {
+                        const heading = node('h3', 'Milestones and measurement events'); evolutionAnnotations.appendChild(heading);
+                        const list = node('ul');
+                        events.forEach(event => {
+                            const item = node('li'); const link = node('a', `${event.category}: ${event.title}`);
+                            link.href = event.link; item.appendChild(link);
+                            item.appendChild(document.createTextNode(` — ${event.explanation}; ${JSON.stringify(event.location)}`));
+                            list.appendChild(item);
+                        }); evolutionAnnotations.appendChild(list);
+                    }
+                    const table = node('table', undefined, 'w-full text-sm');
+                    table.appendChild(node('caption', 'Authoritative raw benchmark history for the selected calendar range', 'sr-only'));
+                    const header = node('tr');
+                    ['Machine / workload', 'Timestamp / commit', 'Normalized index', 'Absolute latency', 'Variation', 'Raw samples (ms)', 'Gap or rebase'].forEach(text => {
+                        const th = node('th', text, 'text-left p-2'); th.scope = 'col'; header.appendChild(th);
+                    }); table.appendChild(header);
+                    selected.forEach(series => series.raw_points.slice(series.ranges[activeRange].raw_start_index).forEach(point => {
+                        const row = node('tr', undefined, 'border-b border-themed');
+                        row.appendChild(node('td', `${series.platform} / ${series.workload}`, 'p-2'));
+                        const identity = node('td', undefined, 'p-2'); identity.appendChild(document.createTextNode(`${point.timestamp} / `));
+                        const link = node('a', point.commit.slice(0, 8)); link.href = point.commit_url; identity.appendChild(link); row.appendChild(identity);
+                        row.appendChild(node('td', typeof point.index === 'number' ? point.index.toFixed(3) : 'insufficient data', 'p-2'));
+                        row.appendChild(node('td', point.absolute_ms === null ? 'unavailable' : `${point.absolute_ms.toFixed(3)}ms`, 'p-2'));
+                        row.appendChild(node('td', point.variation_pct === null ? 'aggregate index' : `${point.variation_pct.toFixed(3)}%`, 'p-2'));
+                        row.appendChild(node('td', Array.isArray(point.raw_samples_ms) ? point.raw_samples_ms.join(', ') : Object.entries(point.raw_samples_ms).map(([name, samples]) => `${name}: ${samples.join(', ')}`).join('; '), 'p-2'));
+                        row.appendChild(node('td', point.boundary ? `${point.boundary.reason}; regime: ${point.boundary.regime_id}; represented: ${point.boundary.represented_commits.join(', ') || 'none'}; skipped: ${point.boundary.skipped_commits.join(', ') || 'none'}; unknown gap: ${point.boundary.gap_unknown}` : 'continuous', 'p-2'));
+                        table.appendChild(row);
+                    })); evolutionDetails.appendChild(table);
+                };
+                model.range_options.forEach(range => {
+                    const button = node('button', range, 'border border-themed rounded px-2 py-1 text-sm'); button.type = 'button';
+                    button.setAttribute('aria-pressed', range === activeRange ? 'true' : 'false');
+                    button.onclick = () => { activeRange = range; evolutionRangeControls.querySelectorAll('button').forEach(item => item.setAttribute('aria-pressed', item === button ? 'true' : 'false')); render(); };
+                    evolutionRangeControls.appendChild(button);
+                });
+                evolutionPlatformSelect.onchange = render;
+                evolutionWorkloadSelect.onchange = render;
+                render();
             }
 
             function renderRecentWorkspace(model) {
@@ -403,15 +605,19 @@
                 currentPlatform = platform;
 
                 if (platform === 'comparison') {
-                    // Comparison mode: show cross-platform timeline, hide per-program charts
-                    platformInfo.textContent = 'Showing all platforms';
+                    // Comparison mode uses normalized, machine-separated trends.
+                    platformInfo.textContent = 'Showing normalized trends; machines remain separate';
                     recentSection.style.display = 'none';
+                    legacyTimelineSection.style.display = 'none';
                     breakdownSection.style.display = 'none';
                     memorySection.style.display = 'none';
                     binarySection.style.display = 'none';
                     metricsSection.style.display = 'none';
 
-                    loadSvg(timelineContainer, '/benchmarks/comparison/timeline.svg');
+                    fetch('/benchmarks/comparison/metadata.json')
+                        .then(r => r.json())
+                        .then(data => renderEvolutionWorkspace(data.evolution_workspace, true))
+                        .catch(() => { evolutionSection.style.display = 'none'; });
 
                     // Populate the stat cards with one row per platform
                     const withData = (platformMetadata?.platforms || []).filter(p => p.has_data);
@@ -426,6 +632,7 @@
                     const platformName = platformMetadata?.platforms?.find(p => p.id === platform)?.name || platform;
                     platformInfo.textContent = `${platformName}`;
                     recentSection.style.display = 'block';
+                    legacyTimelineSection.style.display = 'block';
                     breakdownSection.style.display = 'block';
                     memorySection.style.display = 'block';
                     binarySection.style.display = 'block';
@@ -445,6 +652,7 @@
                             updateStats(data.summary);
                             updateMetricsTable(data.latest_benchmarks);
                             renderRecentWorkspace(data.recent_workspace);
+                            renderEvolutionWorkspace(data.evolution_workspace, false);
 
                             // Populate benchmark dropdown
                             benchmarkSelect.innerHTML = '<option value="">All (aggregate)</option>';
@@ -497,6 +705,7 @@
                     // Fallback to legacy mode (single history.json)
                     platformSelect.parentElement.parentElement.style.display = 'none';
                     recentSection.style.display = 'none';
+                    evolutionSection.style.display = 'none';
                     breakdownSection.style.display = 'block';
                     memorySection.style.display = 'block';
                     binarySection.style.display = 'block';

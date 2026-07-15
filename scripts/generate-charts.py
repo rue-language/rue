@@ -46,6 +46,7 @@ from benchmark_annotations import (
     normalized_annotations,
 )
 from benchmark_metrics import derive_history_metrics
+from benchmark_evolution import evolution_workspace
 from benchmark_recent import GitRecentResolver, recent_workspace
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1251,6 +1252,11 @@ def generate_platform_charts(history_path: Path, output_dir: Path, platform: Opt
             GitRecentResolver(REPO_ROOT),
             platform or "unknown",
         ),
+        "evolution_workspace": evolution_workspace(
+            {platform or "unknown": runs},
+            annotation_stream,
+            GitRecentResolver(REPO_ROOT),
+        ),
     }
     if platform:
         metadata["platform"] = platform
@@ -1306,21 +1312,21 @@ def generate_comparison_charts(history_files: list[Path], output_dir: Path):
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate comparison timeline
-    comparison_svg = generate_comparison_timeline_chart(platform_data)
-    comparison_path = output_dir / "timeline.svg"
-    with open(comparison_path, "w") as f:
-        f.write(comparison_svg)
-    print(f"Generated {comparison_path}")
-
-    # Generate comparison metadata
+    # Cross-platform presentation is normalized and machine-separated.  The
+    # former absolute-ms overlay is intentionally not generated as a default.
+    annotation_stream = normalized_annotation_stream(
+        list(platform_data.values()),
+        load_annotations(DEFAULT_ANNOTATIONS),
+        GitCommitResolver(REPO_ROOT),
+    )
     metadata = {
         "platforms": platform_info_list,
-        "default_platform": platform_info_list[0]["id"] if platform_info_list else None,
-        "annotations": normalized_annotation_stream(
-            list(platform_data.values()),
-            load_annotations(DEFAULT_ANNOTATIONS),
-            GitCommitResolver(REPO_ROOT),
+        "default_platform": "comparison",
+        "annotations": annotation_stream,
+        "evolution_workspace": evolution_workspace(
+            platform_data,
+            annotation_stream,
+            GitRecentResolver(REPO_ROOT),
         ),
     }
     metadata_path = output_dir / "metadata.json"

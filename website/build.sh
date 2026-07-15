@@ -128,7 +128,8 @@ platforms.sort(key=lambda p: p['id'])
 
 metadata = {
     'platforms': platforms,
-    'default_platform': next((p['id'] for p in platforms if p['has_data']), None)
+    # The all-platform view is a normalized, machine-separated evolution view.
+    'default_platform': 'comparison' if any(p['has_data'] for p in platforms) else None
 }
 
 with open(benchmarks_dir / 'metadata.json', 'w') as f:
