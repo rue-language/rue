@@ -16,6 +16,12 @@ from unittest import mock
 INPUT_ROOT = Path(
     os.environ.get("RUE_BENCHMARK_TEST_ROOT", Path(__file__).resolve().parent.parent)
 )
+DEEP_NESTING_CASE = Path(
+    os.environ.get(
+        "RUE_DEEP_NESTING_CASE",
+        INPUT_ROOT / "crates/rue-cli-tests/cases/deep_nesting.toml",
+    )
+)
 sys.path.insert(0, str(INPUT_ROOT / "scripts"))
 
 
@@ -457,6 +463,69 @@ class PerfBaselineAggregationTests(unittest.TestCase):
         phase = results[0]["passes"][0]
         self.assertEqual(phase["median_percent"], 30.0)
         self.assertNotIn("percent", phase)
+
+    def test_deep_nesting_corpus_shape_and_explicit_complexity_gate(self):
+        source = (
+            INPUT_ROOT / "benchmarks" / "stress" / "deep_nesting.rue"
+        ).read_text()
+        self.assertEqual(len(source.splitlines()), 12198)
+        self.assertEqual(source.count("fn nested_blocks_"), 50)
+        self.assertEqual(source.count("fn nested_if_"), 50)
+        self.assertEqual(source.count("fn nested_while_"), 20)
+        self.assertEqual(source.count("fn deep_expr_"), 30)
+        self.assertIn("let v39 = 40;", source)
+
+        corpus = perf_baseline.default_corpus(INPUT_ROOT)
+        deep = [entry for entry in corpus if entry[0] == "deep_nesting"]
+        self.assertEqual(len(deep), 1)
+        self.assertEqual(deep[0][2], [INPUT_ROOT / "benchmarks/stress/deep_nesting.rue"])
+        self.assertEqual(
+            deep[0][3], perf_baseline.DEEP_NESTING_TIMEOUT_SECONDS
+        )
+
+        cli_case = DEEP_NESTING_CASE.read_text()
+        self.assertIn("A 60-level nested block", cli_case)
+        self.assertIn("timeout_ms = 10000", cli_case)
+
+    def test_deep_nesting_budget_is_enforced_independently_of_global_timeout(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ordinary = root / "ordinary.rue"
+            deep = root / "deep_nesting.rue"
+            ordinary.write_text("fn main() -> i32 { 0 }")
+            deep.write_text("fn main() -> i32 { 0 }")
+            seen = []
+
+            def compile_once(_rue, files, _output, timeout, _jobs):
+                seen.append((Path(files[0]).name, timeout))
+                return self.sample(10.0, 12.0)
+
+            corpus = [
+                ("ordinary", "large", [ordinary], None),
+                (
+                    "deep_nesting",
+                    "large",
+                    [deep],
+                    perf_baseline.DEEP_NESTING_TIMEOUT_SECONDS,
+                ),
+            ]
+            with mock.patch.object(perf_baseline.sys, "stderr"):
+                with mock.patch.object(
+                    perf_baseline, "compile_once", side_effect=compile_once
+                ):
+                    results = perf_baseline.run_corpus(
+                        "rue", corpus, 1, 0, temp_dir, 60.0, 1
+                    )
+
+        by_name = {result["name"]: result for result in results}
+        self.assertEqual(by_name["ordinary"]["compile_timeout_seconds"], 60.0)
+        self.assertEqual(
+            by_name["deep_nesting"]["compile_timeout_seconds"],
+            perf_baseline.DEEP_NESTING_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(by_name["multi_file"]["compile_timeout_seconds"], 60.0)
+        self.assertIn(("deep_nesting.rue", 10.0), seen)
+        self.assertIn(("ordinary.rue", 60.0), seen)
 
     def test_compile_once_sanitizes_logging_checks_artifact_and_exact_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:

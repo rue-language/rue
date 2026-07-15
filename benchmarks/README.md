@@ -9,8 +9,8 @@ benchmarks/
 ├── manifest.toml       # Benchmark metadata
 ├── README.md           # This file
 └── stress/             # Stress test programs
-    ├── many_functions.rue    # 100+ functions
-    ├── deep_nesting.rue      # Deeply nested blocks
+    ├── many_functions.rue    # 1,000 functions
+    ├── deep_nesting.rue      # 12,198-line nesting stress corpus
     ├── large_structs.rue     # Many struct types
     ├── arithmetic_heavy.rue  # Expression-heavy code
     └── control_flow.rue      # Complex if/while/match
@@ -20,10 +20,10 @@ benchmarks/
 
 | Benchmark | What it tests | Size |
 |-----------|--------------|------|
-| `many_functions` | Function handling, symbol resolution | 100 functions |
-| `deep_nesting` | Scope handling, block nesting | 10 nesting levels |
-| `large_structs` | Type definitions, field access | 50 struct types |
-| `arithmetic_heavy` | Expression parsing, codegen | ~100 expressions |
+| `many_functions` | Function handling, symbol resolution | 1,000 functions |
+| `deep_nesting` | Scope handling and parser nesting | 120 nested-control functions: 50 block + 50 if + 20 while, each up to 40 levels (`v39`); 30 deep-expression helpers; 12,198 lines |
+| `large_structs` | Type definitions, field access | 700 struct types |
+| `arithmetic_heavy` | Expression parsing, codegen | 250 long-expression functions |
 | `control_flow` | CFG construction | if/while/match mix |
 
 ## Running Benchmarks
@@ -65,6 +65,13 @@ For manual testing or debugging:
 # Get JSON timing output
 ./buck2 run //crates/rue:rue -- --benchmark-json benchmarks/stress/many_functions.rue /tmp/out
 ```
+
+The quick per-pass corpus (`scripts/rue perf`) also includes the exact
+`deep_nesting.rue` file. Each fresh compile of that workload has a fixed
+10-second ceiling even when the general harness timeout is larger. Separately,
+the depth-60 CLI regression in `crates/rue-cli-tests/cases/deep_nesting.toml`
+has its own explicit 10-second timeout; it is the executable complexity gate
+that turns renewed superlinear/exponential nesting behavior into a test failure.
 
 ## Adding Benchmarks
 

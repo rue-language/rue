@@ -12,7 +12,14 @@ description = "1000 functions to stress function handling and symbol resolution"
 [[benchmark]]
 name = "deep_nesting"
 path = "stress/deep_nesting.rue"
-description = "150 functions with deep block/if/while nesting (up to 40 levels)"
+description = "12,198 lines: 120 nested-control functions (50 block, 50 if, 20 while) up to 40 levels, plus 30 deep-expression helpers"
+source_lines = 12198
+nested_control_functions = 120
+block_functions = 50
+if_functions = 50
+while_functions = 20
+deep_expression_functions = 30
+max_nesting_levels = 40
 
 [[benchmark]]
 name = "large_structs"

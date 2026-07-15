@@ -229,6 +229,7 @@ sh_test(
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_BENCHMARK_TEST_ROOT": "$(location :benchmark-tool-inputs)",
+        "RUE_DEEP_NESTING_CASE": "$(location //crates/rue-cli-tests:deep-nesting-case)/cases/deep_nesting.toml",
     },
 )
 

@@ -21,3 +21,9 @@ filegroup(
     srcs = glob(["cases/**"]),
     visibility = ["PUBLIC"],
 )
+
+filegroup(
+    name = "deep-nesting-case",
+    srcs = ["cases/deep_nesting.toml"],
+    visibility = ["PUBLIC"],
+)

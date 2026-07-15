@@ -15,6 +15,7 @@ rather than a silent hang.
 # is `}`-terminated, so with the fix each level is parsed exactly once.
 [[case]]
 name = "deep_nested_blocks_return_value"
+timeout_ms = 10000
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { {  42  } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } }
 """ }]

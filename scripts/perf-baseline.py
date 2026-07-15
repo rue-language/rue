@@ -73,6 +73,7 @@ from pathlib import Path
 # own nesting. Schema v2 uses invocation metadata instead of this name list.
 AGGREGATE_PASSES = {"parse", "compile"}
 WALL_CLOCK_PASS = "compile"
+DEEP_NESTING_TIMEOUT_SECONDS = 10.0
 
 # Canonical leaf-pass order for deterministic, pipeline-ordered output. Any
 # leaf the compiler emits that is not listed here is appended afterwards in
@@ -102,7 +103,7 @@ def repo_root() -> Path:
 
 
 def default_corpus(root: Path):
-    """The representative corpus: (label, size-bucket, [files]).
+    """The representative corpus: (label, size-bucket, [files], budget).
 
     Small/medium come from examples/; the large programs are the generated
     stress suite (benchmarks/stress/, also used by bench.sh); the multi-file
@@ -111,16 +112,21 @@ def default_corpus(root: Path):
     ex = root / "examples"
     st = root / "benchmarks" / "stress"
     return [
-        ("hello", "small", [ex / "hello.rue"]),
-        ("fibonacci", "small", [ex / "fibonacci.rue"]),
-        ("quicksort", "medium", [ex / "quicksort.rue"]),
-        ("structs", "medium", [ex / "structs.rue"]),
-        ("many_functions", "large", [st / "many_functions.rue"]),
-        ("large_structs", "large", [st / "large_structs.rue"]),
-        ("arithmetic_heavy", "large", [st / "arithmetic_heavy.rue"]),
-        ("control_flow", "large", [st / "control_flow.rue"]),
-        ("register_pressure", "large", [st / "register_pressure.rue"]),
-        ("deep_nesting", "large", [st / "deep_nesting.rue"]),
+        ("hello", "small", [ex / "hello.rue"], None),
+        ("fibonacci", "small", [ex / "fibonacci.rue"], None),
+        ("quicksort", "medium", [ex / "quicksort.rue"], None),
+        ("structs", "medium", [ex / "structs.rue"], None),
+        ("many_functions", "large", [st / "many_functions.rue"], None),
+        ("large_structs", "large", [st / "large_structs.rue"], None),
+        ("arithmetic_heavy", "large", [st / "arithmetic_heavy.rue"], None),
+        ("control_flow", "large", [st / "control_flow.rue"], None),
+        ("register_pressure", "large", [st / "register_pressure.rue"], None),
+        (
+            "deep_nesting",
+            "large",
+            [st / "deep_nesting.rue"],
+            DEEP_NESTING_TIMEOUT_SECONDS,
+        ),
     ]
 
 
@@ -574,9 +580,14 @@ def run_corpus(rue_bin, corpus, iterations, warmup, workdir, timeout, jobs):
     # the real import graph, so fresh-process time includes module discovery.
     multi_files = [os.path.join(multi_dir, "main.rue")]
 
-    full = list(corpus) + [("multi_file", "multi", multi_files)]
+    full = list(corpus) + [("multi_file", "multi", multi_files, None)]
 
-    for label, bucket, files in full:
+    for label, bucket, files, isolated_timeout in full:
+        workload_timeout = (
+            min(timeout, isolated_timeout)
+            if isolated_timeout is not None
+            else timeout
+        )
         missing = [f for f in files if not Path(f).exists()]
         if missing:
             raise RuntimeError(f"workload {label!r} is missing source file(s): {missing}")
@@ -584,9 +595,9 @@ def run_corpus(rue_bin, corpus, iterations, warmup, workdir, timeout, jobs):
         sys.stderr.flush()
         try:
             for _ in range(warmup):
-                compile_once(rue_bin, files, out_bin, timeout, jobs)
+                compile_once(rue_bin, files, out_bin, workload_timeout, jobs)
             samples = [
-                compile_once(rue_bin, files, out_bin, timeout, jobs)
+                compile_once(rue_bin, files, out_bin, workload_timeout, jobs)
                 for _ in range(iterations)
             ]
             aggregated = aggregate(samples)
@@ -599,6 +610,7 @@ def run_corpus(rue_bin, corpus, iterations, warmup, workdir, timeout, jobs):
                 "bucket": bucket,
                 "target": aggregated["target"],
                 "compiler_version": aggregated["compiler_version"],
+                "compile_timeout_seconds": workload_timeout,
                 # Keep wall_ms as a compatibility alias for generated tables.
                 "wall_ms": aggregated["compile_ms"],
                 "compile_ms": {
