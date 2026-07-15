@@ -12,7 +12,7 @@
 /// This function is used by the sole one-shot compilation adapter.
 pub(crate) fn compile_backend(
     functions: &[FunctionWithCfg],
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     options: &CompileOptions,
@@ -46,7 +46,7 @@ pub(crate) fn compile_backend(
 /// Generate x86-64 object files for all functions.
 fn generate_x86_64_objects(
     functions: &[FunctionWithCfg],
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     options: &CompileOptions,
@@ -92,7 +92,7 @@ fn generate_x86_64_objects(
 /// Generate AArch64 object files for all functions.
 fn generate_aarch64_objects(
     functions: &[FunctionWithCfg],
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     options: &CompileOptions,
@@ -232,7 +232,7 @@ impl Mir {
 /// This returns the MIR before register allocation, with virtual registers.
 pub fn generate_mir(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<Mir> {
@@ -255,7 +255,7 @@ pub fn generate_mir(
 /// This is closer to the final assembly that will be emitted.
 pub fn generate_allocated_mir(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<Mir> {
@@ -296,7 +296,7 @@ pub fn generate_allocated_mir(
 /// Used by `--emit liveness` to visualize which values are live at each program point.
 pub fn generate_liveness_info(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<rue_codegen::LivenessDebugInfo> {
@@ -321,7 +321,7 @@ pub fn generate_liveness_info(
 /// Used by `--emit lowering` to visualize the instruction selection process.
 pub fn generate_lowering_info(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<rue_codegen::LoweringDebugInfo> {
@@ -350,7 +350,7 @@ pub fn generate_lowering_info(
 /// reflects what's in the binary.
 pub fn generate_emitted_asm(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
@@ -376,7 +376,7 @@ pub fn generate_emitted_asm(
 /// The output is formatted as a human-readable string.
 pub fn generate_regalloc_info(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<String> {

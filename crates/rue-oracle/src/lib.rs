@@ -63,7 +63,7 @@
 //! - **Deeply-nested `inout` field writes** (non-zero inner offset).
 
 use lasso::ThreadedRodeo;
-use rue_air::{Type, TypeInternPool, TypeKind, parse_array_type_syntax};
+use rue_air::{FrozenTypeInternPool, Type, TypeKind, parse_array_type_syntax};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{
     CompileErrors, CompileOptions, CompilerSession, FunctionWithCfg, PreviewFeatures,
@@ -76,7 +76,7 @@ use std::fmt;
 struct CompileState {
     interner: ThreadedRodeo,
     functions: Vec<FunctionWithCfg>,
-    type_pool: TypeInternPool,
+    type_pool: FrozenTypeInternPool,
     strings: Vec<String>,
 }
 

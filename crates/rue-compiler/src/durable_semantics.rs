@@ -1038,8 +1038,9 @@ mod tests {
             .find(|id| epoch.type_pool().struct_lang_item(*id) == Some(rue_air::LangItem::StrBuf))
             .expect("durable import should restore StrBuf language-item identity");
         assert_eq!(epoch.type_pool().struct_symbol_name(strbuf), "StrBuf");
+        let frozen_types = epoch.type_pool().clone().freeze();
         assert!(rue_codegen::cfg_lower::type_uses_sret_return(
-            epoch.type_pool(),
+            &frozen_types,
             rue_air::Type::new_struct(strbuf),
             8,
         ));

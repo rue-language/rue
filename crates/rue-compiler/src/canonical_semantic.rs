@@ -43,8 +43,8 @@ use std::cell::Cell;
 use crate::{
     BoundDefinitionSet, BoundDefinitionWork, CanonicalImportGraph, CanonicalMergedProgram,
     CanonicalRirOutput, CodegenInputDescriptor, CompileOptions, CompileWarning,
-    DurableDeclarationSemantic, FunctionWithCfg, MultiErrorResult, SemanticInputDescriptor,
-    TypeInternPool,
+    DurableDeclarationSemantic, FrozenTypeInternPool, FunctionWithCfg, MultiErrorResult,
+    SemanticInputDescriptor,
     bound_definitions::{
         configure_canonical_sema, issue_bound_definitions, issue_shell_definitions,
     },
@@ -389,7 +389,7 @@ fn declaration_resolution_failure(
 pub struct CanonicalSemanticOutput {
     input: CodegenInputDescriptor,
     functions: Vec<FunctionWithCfg>,
-    type_pool: TypeInternPool,
+    type_pool: FrozenTypeInternPool,
     strings: Vec<String>,
     warnings: Vec<CompileWarning>,
     bound_definitions: Option<BoundDefinitionSet>,
@@ -428,7 +428,7 @@ impl CanonicalSemanticOutput {
         self,
     ) -> (
         Vec<FunctionWithCfg>,
-        TypeInternPool,
+        FrozenTypeInternPool,
         Vec<String>,
         Vec<CompileWarning>,
     ) {
@@ -444,7 +444,7 @@ impl CanonicalSemanticOutput {
         &self.functions
     }
     /// Request-local type universe retained by the semantic output.
-    pub fn type_pool(&self) -> &TypeInternPool {
+    pub fn type_pool(&self) -> &FrozenTypeInternPool {
         &self.type_pool
     }
     /// String literals indexed by AIR string-constant index.

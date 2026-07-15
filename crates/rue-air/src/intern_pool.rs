@@ -30,7 +30,7 @@
 //! - Write lock for insertions (rare, during declaration gathering)
 
 use std::collections::HashMap;
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use lasso::Spur;
 use rue_span::FileId;
@@ -246,6 +246,19 @@ pub struct TypeInternPool {
     inner: RwLock<TypeInternPoolInner>,
 }
 
+/// Immutable type metadata used after semantic analysis completes.
+///
+/// Semantic analysis is the only phase allowed to extend or update the type
+/// universe. [`TypeInternPool::freeze`] consumes that mutable universe after
+/// specialization and anonymous-type/destructor discovery have reached their
+/// fixed point. CFG construction and code generation receive this type instead:
+/// nominal reads borrow definitions directly, and iteration takes no lock and
+/// allocates no temporary ID vector.
+#[derive(Debug, Clone)]
+pub struct FrozenTypeInternPool {
+    inner: Arc<TypeInternPoolInner>,
+}
+
 #[derive(Debug)]
 struct TypeInternPoolInner {
     /// All composite type data, indexed by (InternedType.0 - PRIMITIVE_COUNT).
@@ -277,6 +290,250 @@ struct TypeInternPoolInner {
     lang_item_structs: HashMap<LangItem, StructId>,
 }
 
+impl TypeInternPoolInner {
+    #[inline]
+    fn data(&self, index: u32) -> &TypeData {
+        &self.types[index as usize]
+    }
+
+    fn try_struct_def(&self, id: StructId) -> Option<&StructDef> {
+        match self.types.get(id.0 as usize)? {
+            TypeData::Struct(data) => Some(&data.def),
+            _ => None,
+        }
+    }
+
+    fn struct_def(&self, id: StructId) -> &StructDef {
+        self.try_struct_def(id)
+            .unwrap_or_else(|| panic!("Expected struct at pool index {}", id.0))
+    }
+
+    fn try_enum_def(&self, id: EnumId) -> Option<&EnumDef> {
+        match self.types.get(id.0 as usize)? {
+            TypeData::Enum(data) => Some(&data.def),
+            _ => None,
+        }
+    }
+
+    fn enum_def(&self, id: EnumId) -> &EnumDef {
+        self.try_enum_def(id)
+            .unwrap_or_else(|| panic!("Expected enum at pool index {}", id.0))
+    }
+
+    fn interned_to_type(&self, ty: InternedType) -> Type {
+        if ty.is_primitive() {
+            return match ty.0 {
+                0 => Type::I8,
+                1 => Type::I16,
+                2 => Type::I32,
+                3 => Type::I64,
+                4 => Type::U8,
+                5 => Type::U16,
+                6 => Type::U32,
+                7 => Type::U64,
+                8 => Type::BOOL,
+                9 => Type::UNIT,
+                10 => Type::NEVER,
+                11 => Type::ERROR,
+                _ => panic!("Unknown primitive index: {}", ty.0),
+            };
+        }
+
+        let index = ty.pool_index().expect("non-primitive must have pool index");
+        match self.data(index) {
+            TypeData::Struct(_) => Type::new_struct(StructId::from_pool_index(index)),
+            TypeData::Enum(_) => Type::new_enum(EnumId::from_pool_index(index)),
+            TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(index)),
+            TypeData::PtrConst { .. } => {
+                Type::new_ptr_const(PtrConstTypeId::from_pool_index(index))
+            }
+            TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index)),
+        }
+    }
+
+    fn array_def(&self, id: ArrayTypeId) -> (Type, u64) {
+        match self.data(id.0) {
+            TypeData::Array { element, len } => (self.interned_to_type(*element), *len),
+            other => panic!("Expected array at pool index {}, got {:?}", id.0, other),
+        }
+    }
+
+    fn try_array_def(&self, id: ArrayTypeId) -> Option<(Type, u64)> {
+        match self.types.get(id.0 as usize)? {
+            TypeData::Array { element, len } => Some((self.interned_to_type(*element), *len)),
+            _ => None,
+        }
+    }
+
+    fn ptr_const_def(&self, id: PtrConstTypeId) -> Type {
+        match self.data(id.pool_index()) {
+            TypeData::PtrConst { pointee } => self.interned_to_type(*pointee),
+            other => panic!(
+                "Expected ptr const at pool index {}, got {:?}",
+                id.pool_index(),
+                other
+            ),
+        }
+    }
+
+    fn ptr_mut_def(&self, id: PtrMutTypeId) -> Type {
+        match self.data(id.pool_index()) {
+            TypeData::PtrMut { pointee } => self.interned_to_type(*pointee),
+            other => panic!(
+                "Expected ptr mut at pool index {}, got {:?}",
+                id.pool_index(),
+                other
+            ),
+        }
+    }
+
+    fn abi_slot_count(&self, ty: Type) -> u32 {
+        match ty.kind() {
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64
+            | TypeKind::Bool
+            | TypeKind::Error
+            | TypeKind::PtrConst(_)
+            | TypeKind::PtrMut(_) => 1,
+            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => 0,
+            TypeKind::Struct(id) => self.struct_def(id).fields.iter().fold(0, |total, field| {
+                total.saturating_add(self.abi_slot_count(field.ty))
+            }),
+            TypeKind::Array(id) => {
+                let (element, length) = self.array_def(id);
+                let slots = u64::from(self.abi_slot_count(element));
+                u32::try_from(slots.saturating_mul(length)).unwrap_or(u32::MAX)
+            }
+            TypeKind::Enum(id) => {
+                let def = self.enum_def(id);
+                let payload = (0..def.variant_count())
+                    .map(|index| {
+                        def.variant_payload(index).iter().fold(0u32, |total, &ty| {
+                            total.saturating_add(self.abi_slot_count(ty))
+                        })
+                    })
+                    .max()
+                    .unwrap_or(0);
+                1u32.saturating_add(payload)
+            }
+        }
+    }
+
+    fn file_symbol_component(&self, file_id: FileId) -> String {
+        self.symbol_paths
+            .get(&file_id)
+            .map(|path| mangle_symbol_component(&normalize_module_path(path)))
+            .unwrap_or_else(|| file_id.index().to_string())
+    }
+
+    fn nominal_name_collides(&self, name: Spur) -> bool {
+        self.struct_by_file_name
+            .keys()
+            .chain(self.enum_by_file_name.keys())
+            .filter(|(_, existing_name)| *existing_name == name)
+            .take(2)
+            .count()
+            > 1
+    }
+
+    fn struct_symbol_name(&self, id: StructId) -> String {
+        let data = match self.data(id.0) {
+            TypeData::Struct(data) => data,
+            other => panic!("Expected struct at pool index {}, got {:?}", id.0, other),
+        };
+        if !data.def.is_builtin && self.nominal_name_collides(data.name) {
+            return format!(
+                "{}${}",
+                data.def.name,
+                self.file_symbol_component(data.def.file_id)
+            );
+        }
+        data.def.name.clone()
+    }
+
+    fn enum_symbol_name(&self, id: EnumId) -> String {
+        let data = match self.data(id.0) {
+            TypeData::Enum(data) => data,
+            other => panic!("Expected enum at pool index {}, got {:?}", id.0, other),
+        };
+        if self.nominal_name_collides(data.name) {
+            return format!(
+                "{}${}",
+                data.def.name,
+                self.file_symbol_component(data.def.file_id)
+            );
+        }
+        data.def.name.clone()
+    }
+
+    fn safe_type_name(&self, ty: Type) -> String {
+        match ty.try_kind() {
+            Some(TypeKind::Struct(id)) => self
+                .try_struct_def(id)
+                .map(|def| def.name.clone())
+                .unwrap_or_else(|| format!("<struct#{}>", id.0)),
+            Some(TypeKind::Enum(id)) => self
+                .try_enum_def(id)
+                .map(|def| def.name.clone())
+                .unwrap_or_else(|| format!("<enum#{}>", id.0)),
+            Some(TypeKind::Array(id)) => self
+                .try_array_def(id)
+                .map(|(element, len)| format!("[{}; {}]", self.safe_type_name(element), len))
+                .unwrap_or_else(|| format!("<array#{}>", id.0)),
+            Some(TypeKind::PtrConst(id)) => match self.types.get(id.pool_index() as usize) {
+                Some(TypeData::PtrConst { pointee }) => {
+                    format!(
+                        "ptr const {}",
+                        self.safe_type_name(self.interned_to_type(*pointee))
+                    )
+                }
+                _ => format!("<ptr const#{}>", id.0),
+            },
+            Some(TypeKind::PtrMut(id)) => match self.types.get(id.pool_index() as usize) {
+                Some(TypeData::PtrMut { pointee }) => {
+                    format!(
+                        "ptr mut {}",
+                        self.safe_type_name(self.interned_to_type(*pointee))
+                    )
+                }
+                _ => format!("<ptr mut#{}>", id.0),
+            },
+            Some(_) => ty.name().to_string(),
+            None => format!("<invalid type encoding: {:#x}>", ty.raw_encoding()),
+        }
+    }
+
+    fn is_copy_type(&self, ty: Type) -> bool {
+        ty.as_struct()
+            .map(|id| self.struct_def(id).is_copy)
+            .unwrap_or_else(|| ty.is_copy())
+    }
+
+    fn stats(&self) -> TypeInternPoolStats {
+        let mut stats = TypeInternPoolStats {
+            struct_count: 0,
+            enum_count: 0,
+            array_count: 0,
+            total: self.types.len(),
+        };
+        for data in &self.types {
+            match data {
+                TypeData::Struct(_) => stats.struct_count += 1,
+                TypeData::Enum(_) => stats.enum_count += 1,
+                TypeData::Array { .. } => stats.array_count += 1,
+                TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {}
+            }
+        }
+        stats
+    }
+}
+
 impl TypeInternPool {
     /// Create a new empty pool.
     pub fn new() -> Self {
@@ -295,33 +552,27 @@ impl TypeInternPool {
         }
     }
 
+    /// Consume the completed semantic type universe for backend-facing reads.
+    ///
+    /// This is the last legal mutation boundary. Request-local symbol interners
+    /// remain separate: type definitions retain stable string names rather than
+    /// storing a [`Spur`] from a CFG or codegen request.
+    pub fn freeze(self) -> FrozenTypeInternPool {
+        FrozenTypeInternPool {
+            inner: Arc::new(
+                self.inner
+                    .into_inner()
+                    .unwrap_or_else(PoisonError::into_inner),
+            ),
+        }
+    }
+
     /// Set relocation-stable source identities for type-derived symbols.
     pub(crate) fn set_symbol_paths(&self, symbol_paths: HashMap<FileId, String>) {
         self.inner
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .symbol_paths = symbol_paths;
-    }
-
-    fn file_symbol_component(inner: &TypeInternPoolInner, file_id: FileId) -> String {
-        inner
-            .symbol_paths
-            .get(&file_id)
-            .map(|path| mangle_symbol_component(&normalize_module_path(path)))
-            // Preserve the context-free pool's historical fallback. Compiler
-            // entry points install logical identities before analysis.
-            .unwrap_or_else(|| file_id.index().to_string())
-    }
-
-    fn nominal_name_collides(inner: &TypeInternPoolInner, name: Spur) -> bool {
-        inner
-            .struct_by_file_name
-            .keys()
-            .chain(inner.enum_by_file_name.keys())
-            .filter(|(_, existing_name)| *existing_name == name)
-            .take(2)
-            .count()
-            > 1
     }
 
     /// Return the flattened runtime ABI width of `ty` in eight-byte slots.
@@ -331,44 +582,10 @@ impl TypeInternPool {
     /// rejects layouts that exceed the representable slot range before they
     /// can be materialized.
     pub fn abi_slot_count(&self, ty: Type) -> u32 {
-        match ty.kind() {
-            TypeKind::I8
-            | TypeKind::I16
-            | TypeKind::I32
-            | TypeKind::I64
-            | TypeKind::U8
-            | TypeKind::U16
-            | TypeKind::U32
-            | TypeKind::U64
-            | TypeKind::Bool
-            | TypeKind::Error
-            | TypeKind::PtrConst(_)
-            | TypeKind::PtrMut(_) => 1,
-            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => 0,
-            TypeKind::Struct(struct_id) => self
-                .struct_def(struct_id)
-                .fields
-                .iter()
-                .fold(0u32, |total, field| {
-                    total.saturating_add(self.abi_slot_count(field.ty))
-                }),
-            TypeKind::Array(array_id) => {
-                let (element_type, length) = self.array_def(array_id);
-                let element_slots = u64::from(self.abi_slot_count(element_type));
-                u32::try_from(element_slots.saturating_mul(length)).unwrap_or(u32::MAX)
-            }
-            TypeKind::Enum(enum_id) => {
-                let def = self.enum_def(enum_id);
-                let mut max_payload = 0u32;
-                for index in 0..def.variant_count() {
-                    let payload = def.variant_payload(index).iter().fold(0u32, |total, &ty| {
-                        total.saturating_add(self.abi_slot_count(ty))
-                    });
-                    max_payload = max_payload.max(payload);
-                }
-                1u32.saturating_add(max_payload)
-            }
-        }
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .abi_slot_count(ty)
     }
 
     /// Register a new struct (nominal - no deduplication).
@@ -722,23 +939,13 @@ impl TypeInternPool {
     /// Panics if the StructId doesn't correspond to a struct in the pool.
     pub fn struct_def(&self, struct_id: StructId) -> StructDef {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        let pool_index = struct_id.0 as usize;
-        match &inner.types[pool_index] {
-            TypeData::Struct(data) => data.def.clone(),
-            other => panic!(
-                "Expected struct at pool index {}, got {:?}",
-                pool_index, other
-            ),
-        }
+        inner.struct_def(struct_id).clone()
     }
 
     /// Get a struct definition without panicking on an invalid or wrong-kind ID.
     pub fn try_struct_def(&self, struct_id: StructId) -> Option<StructDef> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        match inner.types.get(struct_id.0 as usize)? {
-            TypeData::Struct(data) => Some(data.def.clone()),
-            _ => None,
-        }
+        inner.try_struct_def(struct_id).cloned()
     }
 
     /// Return the stable standard-library identity carried by a nominal type.
@@ -799,23 +1006,13 @@ impl TypeInternPool {
     /// Panics if the EnumId doesn't correspond to an enum in the pool.
     pub fn enum_def(&self, enum_id: EnumId) -> EnumDef {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        let pool_index = enum_id.0 as usize;
-        match &inner.types[pool_index] {
-            TypeData::Enum(data) => data.def.clone(),
-            other => panic!(
-                "Expected enum at pool index {}, got {:?}",
-                pool_index, other
-            ),
-        }
+        inner.enum_def(enum_id).clone()
     }
 
     /// Get an enum definition without panicking on an invalid or wrong-kind ID.
     pub fn try_enum_def(&self, enum_id: EnumId) -> Option<EnumDef> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        match inner.types.get(enum_id.0 as usize)? {
-            TypeData::Enum(data) => Some(data.def.clone()),
-            _ => None,
-        }
+        inner.try_enum_def(enum_id).cloned()
     }
 
     /// The symbol-name component for functions derived from a struct —
@@ -837,22 +1034,7 @@ impl TypeInternPool {
     /// definitions and calls meet at link time.
     pub fn struct_symbol_name(&self, struct_id: StructId) -> String {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        let pool_index = struct_id.0 as usize;
-        let data = match &inner.types[pool_index] {
-            TypeData::Struct(data) => data,
-            other => panic!(
-                "Expected struct at pool index {}, got {:?}",
-                pool_index, other
-            ),
-        };
-        if !data.def.is_builtin && Self::nominal_name_collides(&inner, data.name) {
-            return format!(
-                "{}${}",
-                data.def.name,
-                Self::file_symbol_component(&inner, data.def.file_id)
-            );
-        }
-        data.def.name.clone()
+        inner.struct_symbol_name(struct_id)
     }
 
     /// The symbol-name component for an enum's drop glue (`__rue_drop_E`),
@@ -860,22 +1042,7 @@ impl TypeInternPool {
     /// See [`Self::struct_symbol_name`] (RUE-571) — same rule, same reason.
     pub fn enum_symbol_name(&self, enum_id: EnumId) -> String {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        let pool_index = enum_id.0 as usize;
-        let data = match &inner.types[pool_index] {
-            TypeData::Enum(data) => data,
-            other => panic!(
-                "Expected enum at pool index {}, got {:?}",
-                pool_index, other
-            ),
-        };
-        if Self::nominal_name_collides(&inner, data.name) {
-            return format!(
-                "{}${}",
-                data.def.name,
-                Self::file_symbol_component(&inner, data.def.file_id)
-            );
-        }
-        data.def.name.clone()
+        inner.enum_symbol_name(enum_id)
     }
 
     /// Update a struct definition in the pool.
@@ -949,29 +1116,13 @@ impl TypeInternPool {
     /// Panics if the ArrayTypeId doesn't correspond to an array in the pool.
     pub fn array_def(&self, array_id: ArrayTypeId) -> (Type, u64) {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        let pool_index = array_id.0 as usize;
-        match &inner.types[pool_index] {
-            TypeData::Array { element, len } => {
-                // Convert InternedType back to Type
-                let element_type = Self::interned_to_type_recursive(*element, &inner);
-                (element_type, *len)
-            }
-            other => panic!(
-                "Expected array at pool index {}, got {:?}",
-                pool_index, other
-            ),
-        }
+        inner.array_def(array_id)
     }
 
     /// Get an array definition without panicking on an invalid or wrong-kind ID.
     pub fn try_array_def(&self, array_id: ArrayTypeId) -> Option<(Type, u64)> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        match inner.types.get(array_id.0 as usize)? {
-            TypeData::Array { element, len } => {
-                Some((Self::interned_to_type_recursive(*element, &inner), *len))
-            }
-            _ => None,
-        }
+        inner.try_array_def(array_id)
     }
 
     /// Intern an array type from a Type element.
@@ -1039,61 +1190,13 @@ impl TypeInternPool {
     /// Get ptr const pointee type if this is a ptr const type.
     pub fn ptr_const_def(&self, ptr_id: PtrConstTypeId) -> Type {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        let pool_index = ptr_id.0 as usize;
-        match &inner.types[pool_index] {
-            TypeData::PtrConst { pointee } => Self::interned_to_type_recursive(*pointee, &inner),
-            other => panic!(
-                "Expected ptr const at pool index {}, got {:?}",
-                pool_index, other
-            ),
-        }
+        inner.ptr_const_def(ptr_id)
     }
 
     /// Get ptr mut pointee type if this is a ptr mut type.
     pub fn ptr_mut_def(&self, ptr_id: PtrMutTypeId) -> Type {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        let pool_index = ptr_id.0 as usize;
-        match &inner.types[pool_index] {
-            TypeData::PtrMut { pointee } => Self::interned_to_type_recursive(*pointee, &inner),
-            other => panic!(
-                "Expected ptr mut at pool index {}, got {:?}",
-                pool_index, other
-            ),
-        }
-    }
-
-    /// Convert InternedType to Type recursively (handles composite types).
-    ///
-    /// This is used to convert array element types from InternedType back to Type.
-    fn interned_to_type_recursive(ty: InternedType, inner: &TypeInternPoolInner) -> Type {
-        if ty.is_primitive() {
-            return match ty.0 {
-                0 => Type::I8,
-                1 => Type::I16,
-                2 => Type::I32,
-                3 => Type::I64,
-                4 => Type::U8,
-                5 => Type::U16,
-                6 => Type::U32,
-                7 => Type::U64,
-                8 => Type::BOOL,
-                9 => Type::UNIT,
-                10 => Type::NEVER,
-                11 => Type::ERROR,
-                _ => panic!("Unknown primitive index: {}", ty.0),
-            };
-        }
-
-        let pool_index = ty.pool_index().expect("non-primitive must have pool index");
-        match &inner.types[pool_index as usize] {
-            TypeData::Struct(_) => Type::new_struct(StructId::from_pool_index(pool_index)),
-            TypeData::Enum(_) => Type::new_enum(EnumId::from_pool_index(pool_index)),
-            TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(pool_index)),
-            TypeData::PtrConst { .. } => {
-                Type::new_ptr_const(PtrConstTypeId::from_pool_index(pool_index))
-            }
-            TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(pool_index)),
-        }
+        inner.ptr_mut_def(ptr_id)
     }
 
     /// Convert Type to InternedType recursively (handles composite types).
@@ -1196,27 +1299,21 @@ impl TypeInternPool {
     /// Get statistics about the pool contents.
     pub fn stats(&self) -> TypeInternPoolStats {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        let mut struct_count = 0;
-        let mut enum_count = 0;
-        let mut array_count = 0;
+        inner.stats()
+    }
 
-        for data in &inner.types {
-            match data {
-                TypeData::Struct(_) => struct_count += 1,
-                TypeData::Enum(_) => enum_count += 1,
-                TypeData::Array { .. } => array_count += 1,
-                TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {
-                    // Pointer types are not counted separately in stats
-                }
-            }
-        }
+    pub(crate) fn safe_type_name(&self, ty: Type) -> String {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .safe_type_name(ty)
+    }
 
-        TypeInternPoolStats {
-            struct_count,
-            enum_count,
-            array_count,
-            total: inner.types.len(),
-        }
+    pub(crate) fn is_copy_type(&self, ty: Type) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_copy_type(ty)
     }
 
     // ========================================================================
@@ -1285,6 +1382,154 @@ impl TypeInternPool {
     }
 }
 
+impl FrozenTypeInternPool {
+    pub fn new() -> Self {
+        TypeInternPool::new().freeze()
+    }
+
+    /// Return the flattened runtime ABI width of `ty` in eight-byte slots.
+    pub fn abi_slot_count(&self, ty: Type) -> u32 {
+        self.inner.abi_slot_count(ty)
+    }
+
+    /// Borrow a completed nominal struct definition without locking or cloning.
+    pub fn struct_def(&self, id: StructId) -> &StructDef {
+        self.inner.struct_def(id)
+    }
+
+    pub fn try_struct_def(&self, id: StructId) -> Option<&StructDef> {
+        self.inner.try_struct_def(id)
+    }
+
+    /// Borrow a completed nominal enum definition without locking or cloning.
+    pub fn enum_def(&self, id: EnumId) -> &EnumDef {
+        self.inner.enum_def(id)
+    }
+
+    pub fn try_enum_def(&self, id: EnumId) -> Option<&EnumDef> {
+        self.inner.try_enum_def(id)
+    }
+
+    pub fn array_def(&self, id: ArrayTypeId) -> (Type, u64) {
+        self.inner.array_def(id)
+    }
+
+    pub fn try_array_def(&self, id: ArrayTypeId) -> Option<(Type, u64)> {
+        self.inner.try_array_def(id)
+    }
+
+    pub fn ptr_const_def(&self, id: PtrConstTypeId) -> Type {
+        self.inner.ptr_const_def(id)
+    }
+
+    pub fn ptr_mut_def(&self, id: PtrMutTypeId) -> Type {
+        self.inner.ptr_mut_def(id)
+    }
+
+    /// Look up an already-completed mutable pointer type without modifying the pool.
+    pub fn get_ptr_mut_by_type(&self, pointee_type: Type) -> Option<PtrMutTypeId> {
+        let pointee = TypeInternPool::type_to_interned_recursive(pointee_type);
+        let interned = self.inner.ptr_mut_map.get(&pointee)?;
+        Some(PtrMutTypeId::from_pool_index(interned.pool_index()?))
+    }
+
+    pub fn struct_lang_item(&self, id: StructId) -> Option<LangItem> {
+        self.inner.struct_lang_items.get(&id).copied()
+    }
+
+    pub fn lang_item_type(&self, item: LangItem) -> Option<Type> {
+        self.inner
+            .lang_item_structs
+            .get(&item)
+            .copied()
+            .map(Type::new_struct)
+    }
+
+    pub fn is_strbuf(&self, id: StructId) -> bool {
+        self.struct_lang_item(id) == Some(LangItem::StrBuf)
+    }
+
+    pub fn struct_symbol_name(&self, id: StructId) -> String {
+        self.inner.struct_symbol_name(id)
+    }
+
+    pub fn enum_symbol_name(&self, id: EnumId) -> String {
+        self.inner.enum_symbol_name(id)
+    }
+
+    pub fn all_struct_ids(&self) -> impl Iterator<Item = StructId> + '_ {
+        self.inner
+            .types
+            .iter()
+            .enumerate()
+            .filter(|(_, data)| matches!(data, TypeData::Struct(_)))
+            .map(|(index, _)| StructId::from_pool_index(index as u32))
+    }
+
+    pub fn all_enum_ids(&self) -> impl Iterator<Item = EnumId> + '_ {
+        self.inner
+            .types
+            .iter()
+            .enumerate()
+            .filter(|(_, data)| matches!(data, TypeData::Enum(_)))
+            .map(|(index, _)| EnumId::from_pool_index(index as u32))
+    }
+
+    pub fn all_array_ids(&self) -> impl Iterator<Item = ArrayTypeId> + '_ {
+        self.inner
+            .types
+            .iter()
+            .enumerate()
+            .filter_map(|(index, data)| {
+                matches!(data, TypeData::Array { .. }).then_some(ArrayTypeId(index as u32))
+            })
+    }
+
+    pub fn all_ptr_const_ids(&self) -> impl Iterator<Item = PtrConstTypeId> + '_ {
+        self.inner
+            .types
+            .iter()
+            .enumerate()
+            .filter(|(_, data)| matches!(data, TypeData::PtrConst { .. }))
+            .map(|(index, _)| PtrConstTypeId::from_pool_index(index as u32))
+    }
+
+    pub fn all_ptr_mut_ids(&self) -> impl Iterator<Item = PtrMutTypeId> + '_ {
+        self.inner
+            .types
+            .iter()
+            .enumerate()
+            .filter(|(_, data)| matches!(data, TypeData::PtrMut { .. }))
+            .map(|(index, _)| PtrMutTypeId::from_pool_index(index as u32))
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.types.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.types.is_empty()
+    }
+
+    pub fn stats(&self) -> TypeInternPoolStats {
+        self.inner.stats()
+    }
+
+    pub(crate) fn safe_type_name(&self, ty: Type) -> String {
+        self.inner.safe_type_name(ty)
+    }
+
+    pub(crate) fn is_copy_type(&self, ty: Type) -> bool {
+        self.inner.is_copy_type(ty)
+    }
+}
+
+impl Default for FrozenTypeInternPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Default for TypeInternPool {
     fn default() -> Self {
         Self::new()
@@ -1326,6 +1571,7 @@ pub struct TypeInternPoolStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StructField;
     use lasso::ThreadedRodeo;
 
     // ========================================================================
@@ -1399,6 +1645,54 @@ mod tests {
         let pool = TypeInternPool::new();
         assert!(pool.is_empty());
         assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
+    fn freeze_preserves_complete_nominals_and_borrows_stable_definitions() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let name = declarations.get_or_intern("Owner");
+        let (owner, _) = pool.register_struct(
+            name,
+            StructDef {
+                name: "Owner".into(),
+                fields: vec![StructField {
+                    name: "value".into(),
+                    ty: Type::I64,
+                }],
+                is_copy: false,
+                is_linear: false,
+                destructor: Some("Owner.__drop".into()),
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let owner_type = Type::new_struct(owner);
+        let mutable_symbol = pool.struct_symbol_name(owner);
+        let mutable_name = owner_type.safe_name_with_pool(Some(&pool));
+        let mutable_slots = pool.abi_slot_count(owner_type);
+        let mutable_stats = pool.stats();
+
+        let frozen = pool.freeze();
+        let first = frozen.struct_def(owner);
+        let second = frozen.struct_def(owner);
+        assert!(std::ptr::eq(first, second));
+        assert_eq!(frozen.all_struct_ids().collect::<Vec<_>>(), [owner]);
+        assert_eq!(frozen.struct_symbol_name(owner), mutable_symbol);
+        assert_eq!(
+            owner_type.safe_name_with_frozen_pool(Some(&frozen)),
+            mutable_name
+        );
+        assert_eq!(frozen.abi_slot_count(owner_type), mutable_slots);
+        assert_eq!(frozen.stats(), mutable_stats);
+
+        // Destructor provenance crosses the boundary as a stable string. A
+        // backend request chooses its own symbol universe and interns it there.
+        let request_symbols = ThreadedRodeo::default();
+        let destructor = first.destructor.as_deref().unwrap();
+        let request_symbol = request_symbols.get_or_intern(destructor);
+        assert_eq!(request_symbols.resolve(&request_symbol), "Owner.__drop");
     }
 
     #[test]
@@ -2202,6 +2496,7 @@ mod tests {
     #[test]
     fn test_pool_is_send_sync() {
         assert_send_sync::<TypeInternPool>();
+        assert_send_sync::<FrozenTypeInternPool>();
     }
 
     #[test]

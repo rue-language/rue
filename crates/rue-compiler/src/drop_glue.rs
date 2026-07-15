@@ -21,13 +21,13 @@
 //! 2. Drops each element in index order (element 0 first, then 1, etc.)
 
 use rue_air::{
-    Air, AirInst, AirInstData, AirPattern, AirRef, AnalyzedFunction, EnumId, StructDef, Type,
-    TypeInternPool, TypeKind,
+    Air, AirInst, AirInstData, AirPattern, AirRef, AnalyzedFunction, EnumId, FrozenTypeInternPool,
+    StructDef, Type, TypeKind,
 };
 use rue_span::Span;
 
 /// Check if a type needs drop.
-fn type_needs_drop(ty: Type, type_pool: &TypeInternPool) -> bool {
+fn type_needs_drop(ty: Type, type_pool: &FrozenTypeInternPool) -> bool {
     match ty.kind() {
         // Primitive types are trivially droppable
         // ComptimeType is comptime-only, no runtime representation
@@ -91,7 +91,7 @@ fn type_needs_drop(ty: Type, type_pool: &TypeInternPool) -> bool {
 /// Synthesize drop glue functions for all structs and arrays that need them.
 ///
 /// Returns a list of synthesized functions that should be added to the compilation.
-pub fn synthesize_drop_glue(type_pool: &TypeInternPool) -> Vec<AnalyzedFunction> {
+pub fn synthesize_drop_glue(type_pool: &FrozenTypeInternPool) -> Vec<AnalyzedFunction> {
     let mut drop_glue_functions = Vec::new();
 
     // Create drop glue for structs
@@ -111,7 +111,7 @@ pub fn synthesize_drop_glue(type_pool: &TypeInternPool) -> Vec<AnalyzedFunction>
         }
 
         // Create drop glue function for struct
-        let func = create_struct_drop_glue_function(&struct_def, struct_id, type_pool);
+        let func = create_struct_drop_glue_function(struct_def, struct_id, type_pool);
         drop_glue_functions.push(func);
     }
 
@@ -147,7 +147,7 @@ pub fn synthesize_drop_glue(type_pool: &TypeInternPool) -> Vec<AnalyzedFunction>
 fn create_struct_drop_glue_function(
     struct_def: &StructDef,
     struct_id: rue_air::StructId,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
 ) -> AnalyzedFunction {
     // File-qualified when the struct name spans files (RUE-571) — must match
     // the call side in both codegen backends' cfg_lower.
@@ -296,7 +296,7 @@ fn create_struct_drop_glue_function(
 /// each element in index order.
 fn create_array_drop_glue_function(
     array_id: rue_air::ArrayTypeId,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
 ) -> AnalyzedFunction {
     let fn_name = array_drop_glue_name(array_id, type_pool);
     let span = Span::new(0, 0); // Synthetic span
@@ -434,7 +434,10 @@ fn create_array_drop_glue_function(
 /// each droppable payload field in declaration order. Variants whose payload
 /// needs no drop (and discriminant-only variants) fall through to a no-op
 /// wildcard default arm, so exactly the active variant's payload is dropped.
-fn create_enum_drop_glue_function(enum_id: EnumId, type_pool: &TypeInternPool) -> AnalyzedFunction {
+fn create_enum_drop_glue_function(
+    enum_id: EnumId,
+    type_pool: &FrozenTypeInternPool,
+) -> AnalyzedFunction {
     let enum_def = type_pool.enum_def(enum_id);
     let fn_name = enum_drop_glue_name(enum_id, type_pool);
     let span = Span::new(0, 0); // Synthetic span
@@ -565,7 +568,7 @@ fn create_enum_drop_glue_function(enum_id: EnumId, type_pool: &TypeInternPool) -
 ///
 /// Types share a namespace, so the enum's own name cannot collide with a
 /// struct's `__rue_drop_<name>` glue.
-pub fn enum_drop_glue_name(enum_id: EnumId, type_pool: &TypeInternPool) -> String {
+pub fn enum_drop_glue_name(enum_id: EnumId, type_pool: &FrozenTypeInternPool) -> String {
     // File-qualified when the enum name spans files (RUE-571).
     format!("__rue_drop_{}", type_pool.enum_symbol_name(enum_id))
 }
@@ -573,14 +576,17 @@ pub fn enum_drop_glue_name(enum_id: EnumId, type_pool: &TypeInternPool) -> Strin
 /// Generate the drop glue function name for an array type.
 ///
 /// The name encodes the element type and length, e.g., `__rue_drop_array_String_3`
-pub fn array_drop_glue_name(array_id: rue_air::ArrayTypeId, type_pool: &TypeInternPool) -> String {
+pub fn array_drop_glue_name(
+    array_id: rue_air::ArrayTypeId,
+    type_pool: &FrozenTypeInternPool,
+) -> String {
     let (element_type, length) = type_pool.array_def(array_id);
     let element_type_name = type_name(element_type, type_pool);
     format!("__rue_drop_array_{}_{}", element_type_name, length)
 }
 
 /// Get a name for a type (used for generating drop glue function names).
-fn type_name(ty: Type, type_pool: &TypeInternPool) -> String {
+fn type_name(ty: Type, type_pool: &FrozenTypeInternPool) -> String {
     match ty.kind() {
         TypeKind::I8 => "i8".to_string(),
         TypeKind::I16 => "i16".to_string(),
@@ -623,7 +629,7 @@ fn type_name(ty: Type, type_pool: &TypeInternPool) -> String {
 #[cfg(test)]
 mod tests {
     use lasso::ThreadedRodeo;
-    use rue_air::{EnumDef, ModuleId, StructField};
+    use rue_air::{EnumDef, ModuleId, StructField, TypeInternPool};
 
     use super::*;
 
@@ -820,8 +826,9 @@ mod tests {
             None,
         );
         let outer_ty = Type::new_struct(outer_id);
+        let type_pool = type_pool.freeze();
         let outer =
-            create_struct_drop_glue_function(&type_pool.struct_def(outer_id), outer_id, &type_pool);
+            create_struct_drop_glue_function(type_pool.struct_def(outer_id), outer_id, &type_pool);
         assert_eq!(outer.num_param_slots, type_pool.abi_slot_count(outer_ty));
         assert_eq!(outer.num_param_slots, 28);
         assert_eq!(param_indices(&outer), [20, 21, 23, 25]);

@@ -9,25 +9,19 @@ use crate::*;
 /// useful for testing semantic analysis without generating machine code.
 #[derive(Debug)]
 pub struct AirOutput {
-    /// String interner used during compilation.
-    pub interner: ThreadedRodeo,
     /// Type intern pool containing all struct and enum definitions.
-    pub type_pool: TypeInternPool,
+    pub type_pool: FrozenTypeInternPool,
     /// Warnings collected during analysis.
     pub warnings: Vec<CompileWarning>,
 }
 
 pub(crate) fn test_air(source: &str) -> MultiErrorResult<AirOutput> {
     let snapshot = SourceSnapshot::single("<test>", source).map_err(CompileErrors::from)?;
-    let (rir, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())?;
-    let rir =
-        std::sync::Arc::try_unwrap(rir).expect("test session uniquely owns its RIR after return");
+    let (_, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())?;
     let semantic = std::sync::Arc::try_unwrap(semantic)
         .expect("test session uniquely owns its semantic output after return");
-    let (_, symbols) = rir.into_parts();
     let (_, type_pool, _, warnings) = semantic.into_parts();
     Ok(AirOutput {
-        interner: symbols.into_interner(),
         type_pool,
         warnings,
     })

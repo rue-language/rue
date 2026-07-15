@@ -20,7 +20,7 @@
 use std::fmt;
 
 use lasso::{Key, ThreadedRodeo};
-use rue_air::{StructId, TypeInternPool, TypeKind};
+use rue_air::{FrozenTypeInternPool, StructId, TypeKind};
 use rue_cfg::{BlockId, Cfg, CfgValue, Type};
 
 use crate::types;
@@ -359,7 +359,11 @@ pub fn format_terminator(cfg: &rue_cfg::Cfg, terminator: &rue_cfg::Terminator) -
 ///   slot through that pointer before returning. (RUE-13/78/91)
 ///
 /// Scalars and unit never use sret.
-pub fn type_uses_sret_return(type_pool: &TypeInternPool, ty: Type, ret_reg_budget: u32) -> bool {
+pub fn type_uses_sret_return(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+    ret_reg_budget: u32,
+) -> bool {
     match ty.kind() {
         TypeKind::Struct(struct_id) => {
             if type_pool.is_strbuf(struct_id) {
@@ -374,7 +378,11 @@ pub fn type_uses_sret_return(type_pool: &TypeInternPool, ty: Type, ret_reg_budge
 
 /// Does this function return its value via the sret convention?
 /// See [`type_uses_sret_return`] for the convention.
-pub fn fn_uses_sret_return(cfg: &Cfg, type_pool: &TypeInternPool, ret_reg_budget: u32) -> bool {
+pub fn fn_uses_sret_return(
+    cfg: &Cfg,
+    type_pool: &FrozenTypeInternPool,
+    ret_reg_budget: u32,
+) -> bool {
     type_uses_sret_return(type_pool, cfg.return_type(), ret_reg_budget)
 }
 
@@ -396,7 +404,7 @@ pub struct CfgLowerContext<'a> {
     /// The CFG being lowered.
     pub cfg: &'a Cfg,
     /// Type intern pool for struct/enum/array lookups.
-    pub type_pool: &'a TypeInternPool,
+    pub type_pool: &'a FrozenTypeInternPool,
     /// Number of local variable slots.
     pub num_locals: u32,
     /// Number of parameter slots.
@@ -405,7 +413,7 @@ pub struct CfgLowerContext<'a> {
 
 impl<'a> CfgLowerContext<'a> {
     /// Create a new CFG lowering context.
-    pub fn new(cfg: &'a Cfg, type_pool: &'a TypeInternPool) -> Self {
+    pub fn new(cfg: &'a Cfg, type_pool: &'a FrozenTypeInternPool) -> Self {
         Self {
             cfg,
             type_pool,

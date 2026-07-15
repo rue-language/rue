@@ -552,7 +552,10 @@ fn finalize_function_body_analysis(
         // Body analysis and specialization can intern composite and anonymous
         // types. Transfer the completed pool only after every finalization
         // consumer above has finished reading semantic state.
-        type_pool: std::mem::take(&mut sema.type_pool),
+        // This transfer is deliberately last: specialization and anonymous
+        // destructor discovery above are the final operations allowed to
+        // extend the semantic type universe.
+        type_pool: std::mem::take(&mut sema.type_pool).freeze(),
     };
 
     errors.into_result_with(output)
@@ -2625,7 +2628,7 @@ mod error_invariant_tests {
             functions: vec![func],
             strings: Vec::new(),
             warnings: Vec::new(),
-            type_pool: TypeInternPool::new(),
+            type_pool: TypeInternPool::new().freeze(),
             body_analysis_work: crate::BodyAnalysisWork::default(),
             ordinary_body_exports: Vec::new(),
             specialized_body_exports: Vec::new(),

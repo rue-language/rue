@@ -107,7 +107,7 @@ pub(crate) struct CompileState {
     /// Analyzed functions with typed IR and control flow graphs.
     pub functions: Vec<FunctionWithCfg>,
     /// Type intern pool containing all struct and enum definitions.
-    pub type_pool: TypeInternPool,
+    pub type_pool: FrozenTypeInternPool,
     /// Warnings collected during compilation.
     pub warnings: Vec<CompileWarning>,
 }
@@ -117,7 +117,7 @@ pub(crate) struct CfgFrontendOutput {
     /// Analyzed functions paired with their optimized CFGs.
     pub(crate) functions: Vec<FunctionWithCfg>,
     /// Type intern pool containing all struct and enum definitions.
-    pub(crate) type_pool: TypeInternPool,
+    pub(crate) type_pool: FrozenTypeInternPool,
     /// String literals indexed by their AIR string_const index.
     pub(crate) strings: Vec<String>,
     /// Warnings collected during semantic analysis and CFG construction.
@@ -320,7 +320,7 @@ pub(crate) fn build_functions_and_cfgs(
                         implicit_edges.push(rue_air::ImplicitNamedDestructorDependencyEvent {
                             source: source.clone(),
                             target_file: target.file_id.index(),
-                            target_owner_name: target.name,
+                            target_owner_name: target.name.clone(),
                         });
                     }
                 }

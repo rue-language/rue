@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
-use rue_air::{TypeInternPool, TypeKind};
+use rue_air::{FrozenTypeInternPool, TypeKind};
 use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, Terminator, Type};
 use rue_error::CompileResult;
 use rue_target::Target;
@@ -73,7 +73,7 @@ impl<'a> CfgLower<'a> {
     /// Create a new CFG lowering pass.
     pub fn new(
         cfg: &'a Cfg,
-        type_pool: &'a TypeInternPool,
+        type_pool: &'a FrozenTypeInternPool,
         interner: &'a ThreadedRodeo,
         target: Target,
     ) -> Self {

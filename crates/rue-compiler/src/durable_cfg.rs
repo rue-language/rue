@@ -89,7 +89,7 @@ pub(crate) fn body_type_dependencies(
 
 pub(crate) fn transitive_body_type_dependencies(
     body: &DurableOrdinaryBodyPayload,
-    pool: &rue_air::TypeInternPool,
+    pool: &rue_air::FrozenTypeInternPool,
     definitions: &crate::BoundDefinitionSet,
 ) -> Result<BTreeSet<crate::StableDefinitionKey>, LayoutDependencyFailure> {
     let mut keys = body_type_dependencies(body);

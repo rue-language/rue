@@ -210,7 +210,8 @@ fn find_intrinsic_in_function<'a>(
 
 #[test]
 fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
-    let state = query_cfg_state("fn main() -> i32 { 0 }").expect("probe must compile");
+    let state = query_cfg_state("struct Probe { pointer: ptr mut u8 } fn main() -> i32 { 0 }")
+        .expect("probe must compile");
     let interp = Interp {
         state: &state,
         stdout: String::new(),
@@ -220,7 +221,14 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
         budget: STEP_BUDGET,
         depth: 0,
     };
-    let ptr = Type::new_ptr_mut(state.type_pool.intern_ptr_mut_from_type(Type::U8));
+    // The builtin contract only needs the logical pointer kind. Look up the
+    // pointer registered by Probe rather than mutating the completed universe.
+    let ptr = Type::new_ptr_mut(
+        state
+            .type_pool
+            .get_ptr_mut_by_type(Type::U8)
+            .expect("Probe must register ptr mut u8"),
+    );
     let types = [ptr, Type::U64, Type::U64];
     let modes = [CfgArgMode::Normal; 3];
     let bytes = Value::str_view("hé");

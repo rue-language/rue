@@ -562,22 +562,21 @@ mod durable_body_integration_tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(imported_strings, ordinary_strings);
+            // The epoch remains mutable for import setup; mirror the real
+            // semantic success boundary before exercising backend consumers.
+            let frozen_types = epoch.type_pool().clone().freeze();
             let mut cfg_output = rue_cfg::CfgBuilder::build(
                 &imported.air,
                 imported.num_locals,
                 imported.num_param_slots,
                 &ordinary.analyzed.name,
-                epoch.type_pool(),
+                &frozen_types,
                 imported.param_modes,
                 epoch.interner(),
                 imported.allow_unreachable_code,
             );
             assert!(cfg_output.errors.is_empty());
-            rue_cfg::opt::optimize(
-                &mut cfg_output.cfg,
-                rue_cfg::OptLevel::O0,
-                epoch.type_pool(),
-            );
+            rue_cfg::opt::optimize(&mut cfg_output.cfg, rue_cfg::OptLevel::O0, &frozen_types);
             assert_eq!(
                 normalize_epoch_symbols(&cfg_output.cfg.to_string()),
                 normalize_epoch_symbols(&ordinary.cfg.to_string())

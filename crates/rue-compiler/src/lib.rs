@@ -158,7 +158,7 @@ pub use backend::{
 };
 
 // Small foundational types callers need to configure or inspect the facade.
-pub use rue_air::TypeInternPool;
+pub use rue_air::{FrozenTypeInternPool, TypeInternPool};
 pub use rue_cfg::OptLevel;
 pub use rue_codegen::{
     LoweringDebugInfo, RegAllocDebugInfo, StackFrameInfo, generate_stack_frame_info,

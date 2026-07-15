@@ -29,7 +29,7 @@ pub use regalloc::RegAlloc;
 use crate::regalloc::RegAllocDebugInfo;
 
 use lasso::ThreadedRodeo;
-use rue_air::TypeInternPool;
+use rue_air::FrozenTypeInternPool;
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
 
@@ -38,7 +38,7 @@ pub use super::{EmittedCode, EmittedRelocation, MachineCode};
 
 fn prepare_backend(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
 ) -> CompileResult<crate::codegen_pipeline::PreparedMir<X86Mir, Reg>> {
     crate::codegen_pipeline::prepare_mir(
@@ -57,7 +57,7 @@ fn prepare_backend(
 
 fn generate_inner<T, Emit>(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     emit: Emit,
@@ -105,7 +105,7 @@ where
 /// The pipeline is: CFG → X86Mir → Machine Code
 pub fn generate(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
 ) -> CompileResult<MachineCode> {
@@ -127,7 +127,7 @@ pub fn generate(
 /// showing the actual emitted instructions (including prologue/epilogue).
 pub fn generate_with_asm(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
 ) -> CompileResult<(MachineCode, String)> {
@@ -149,7 +149,7 @@ pub fn generate_with_asm(
 /// including live ranges, interference, and allocation decisions.
 pub fn generate_regalloc_info(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
 ) -> CompileResult<RegAllocDebugInfo<Reg>> {
     let num_locals = cfg.num_locals();

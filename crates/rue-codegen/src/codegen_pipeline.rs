@@ -5,7 +5,7 @@
 //! those passes run — and the distinction between spill-placement slots and
 //! emitted-frame locals — is common to every machine-code emission entry point.
 
-use rue_air::TypeInternPool;
+use rue_air::FrozenTypeInternPool;
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
 
@@ -31,7 +31,7 @@ pub(crate) struct PreparedMir<M, R> {
 ///   emitters account for parameters and sret separately.
 pub(crate) fn prepare_mir<M, R, Lower, Allocate, Peephole, Schedule, Verify>(
     cfg: &Cfg,
-    type_pool: &TypeInternPool,
+    type_pool: &FrozenTypeInternPool,
     return_reg_count: u32,
     lower: Lower,
     allocate: Allocate,
@@ -81,6 +81,7 @@ mod tests {
     fn pass_order_and_frame_slot_formulas_are_single_source() {
         let type_pool = TypeInternPool::new();
         let array_id = type_pool.intern_array_from_type(Type::I32, 7);
+        let type_pool = type_pool.freeze();
         let cfg = Cfg::new(
             Type::new_array(array_id),
             3,

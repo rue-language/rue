@@ -282,6 +282,10 @@ const TAG_PTR_MUT: u32 = 105;
 
 // Primitive type constants
 impl Type {
+    pub(crate) const fn raw_encoding(self) -> u32 {
+        self.0
+    }
+
     /// 8-bit signed integer
     pub const I8: Type = Type(0);
     /// 16-bit signed integer
@@ -637,43 +641,28 @@ impl Type {
     /// This method is safe even if the struct/enum ID is invalid or the pool is None.
     /// It will return a fallback string like `"<struct#123>"` in those cases.
     pub fn safe_name_with_pool(&self, pool: Option<&crate::intern_pool::TypeInternPool>) -> String {
+        pool.map(|pool| pool.safe_type_name(*self))
+            .unwrap_or_else(|| self.safe_name_without_pool())
+    }
+
+    /// Backend-facing counterpart to [`Self::safe_name_with_pool`] for the
+    /// immutable type universe produced by semantic analysis.
+    pub fn safe_name_with_frozen_pool(
+        &self,
+        pool: Option<&crate::intern_pool::FrozenTypeInternPool>,
+    ) -> String {
+        pool.map(|pool| pool.safe_type_name(*self))
+            .unwrap_or_else(|| self.safe_name_without_pool())
+    }
+
+    fn safe_name_without_pool(&self) -> String {
         match self.try_kind() {
-            Some(TypeKind::Struct(struct_id)) => {
-                if let Some(pool) = pool {
-                    let def = pool.struct_def(struct_id);
-                    return def.name.clone();
-                }
-                format!("<struct#{}>", struct_id.0)
-            }
-            Some(TypeKind::Enum(enum_id)) => {
-                if let Some(pool) = pool {
-                    let def = pool.enum_def(enum_id);
-                    return def.name.clone();
-                }
-                format!("<enum#{}>", enum_id.0)
-            }
-            Some(TypeKind::Array(array_id)) => {
-                if let Some(pool) = pool {
-                    let (element, len) = pool.array_def(array_id);
-                    return format!("[{}; {}]", element.safe_name_with_pool(Some(pool)), len);
-                }
-                format!("<array#{}>", array_id.0)
-            }
-            Some(TypeKind::PtrConst(ptr_id)) => {
-                if let Some(pool) = pool {
-                    let pointee = pool.ptr_const_def(ptr_id);
-                    return format!("ptr const {}", pointee.safe_name_with_pool(Some(pool)));
-                }
-                format!("<ptr const#{}>", ptr_id.0)
-            }
-            Some(TypeKind::PtrMut(ptr_id)) => {
-                if let Some(pool) = pool {
-                    let pointee = pool.ptr_mut_def(ptr_id);
-                    return format!("ptr mut {}", pointee.safe_name_with_pool(Some(pool)));
-                }
-                format!("<ptr mut#{}>", ptr_id.0)
-            }
-            Some(_kind) => self.name().to_string(),
+            Some(TypeKind::Struct(id)) => format!("<struct#{}>", id.0),
+            Some(TypeKind::Enum(id)) => format!("<enum#{}>", id.0),
+            Some(TypeKind::Array(id)) => format!("<array#{}>", id.0),
+            Some(TypeKind::PtrConst(id)) => format!("<ptr const#{}>", id.0),
+            Some(TypeKind::PtrMut(id)) => format!("<ptr mut#{}>", id.0),
+            Some(_) => self.name().to_string(),
             None => format!("<invalid type encoding: {:#x}>", self.0),
         }
     }
@@ -888,11 +877,14 @@ impl Type {
     /// This is used during anonymous struct creation to determine if the new struct
     /// should be Copy based on its field types.
     pub fn is_copy_in_pool(&self, type_pool: &crate::intern_pool::TypeInternPool) -> bool {
-        if let Some(struct_id) = self.as_struct() {
-            type_pool.struct_def(struct_id).is_copy
-        } else {
-            self.is_copy()
-        }
+        type_pool.is_copy_type(*self)
+    }
+
+    pub fn is_copy_in_frozen_pool(
+        &self,
+        type_pool: &crate::intern_pool::FrozenTypeInternPool,
+    ) -> bool {
+        type_pool.is_copy_type(*self)
     }
 
     /// Check if this is a 64-bit type (uses 64-bit operations).

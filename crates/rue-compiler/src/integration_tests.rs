@@ -614,15 +614,11 @@ mod integration_tests {
                 fn main() -> i32 { 0 }
             "#;
             let result = test_air(src).unwrap();
-            // Verify Point is present
-            let point_name = result.interner.get_or_intern("Point");
-            let point_interned = result
+            let point = result
                 .type_pool
-                .get_struct_by_file_name(rue_span::FileId::DEFAULT, point_name);
-            assert!(
-                point_interned.is_some(),
-                "Point struct should exist in pool"
-            );
+                .all_struct_ids()
+                .find(|&id| result.type_pool.struct_def(id).name == "Point");
+            assert!(point.is_some(), "Point struct should exist in pool");
         }
 
         #[test]

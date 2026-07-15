@@ -4,7 +4,7 @@
 
 use std::{collections::HashMap, env, process, sync::Arc, time::Instant};
 
-use rue_air::{InternedType, TypeInternPool};
+use rue_air::FrozenTypeInternPool;
 use rue_compiler::{
     AcceptedReadManifestEntry, CanonicalSemanticOutput, CompileOptions, CompilerSession,
     CompilerSessionWork, DiscoverySourceAssembler, DurableBodyWork,
@@ -782,19 +782,30 @@ fn measured_semantic(
     (value, output.unwrap())
 }
 
-fn type_pool_snapshot(pool: &TypeInternPool) -> Vec<String> {
-    // InternedType reserves raw indices 0..16 for primitives. Composite values
-    // are stored densely after that prefix, so this captures the exact ordered
-    // public type universe without relying on HashMap iteration in Debug output.
-    (0..pool.len())
-        .map(|index| {
-            format!(
-                "{:?}",
-                pool.get(InternedType::from_raw(16 + index as u32))
-                    .expect("dense type-pool entry")
-            )
-        })
-        .collect()
+fn type_pool_snapshot(pool: &FrozenTypeInternPool) -> Vec<String> {
+    let mut entries = Vec::with_capacity(pool.len());
+    entries.extend(
+        pool.all_struct_ids()
+            .map(|id| (id.0, format!("struct:{:?}", pool.struct_def(id)))),
+    );
+    entries.extend(
+        pool.all_enum_ids()
+            .map(|id| (id.0, format!("enum:{:?}", pool.enum_def(id)))),
+    );
+    entries.extend(pool.all_array_ids().map(|id| {
+        let (element, len) = pool.array_def(id);
+        (id.0, format!("array:{element:?}:{len}"))
+    }));
+    entries.extend(
+        pool.all_ptr_const_ids()
+            .map(|id| (id.0, format!("ptr_const:{:?}", pool.ptr_const_def(id)))),
+    );
+    entries.extend(
+        pool.all_ptr_mut_ids()
+            .map(|id| (id.0, format!("ptr_mut:{:?}", pool.ptr_mut_def(id)))),
+    );
+    entries.sort_unstable_by_key(|(index, _)| *index);
+    entries.into_iter().map(|(_, entry)| entry).collect()
 }
 
 fn assert_diagnostic_parity(
