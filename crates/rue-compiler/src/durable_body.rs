@@ -665,6 +665,20 @@ fn durable_specialization_identity(
     })
 }
 
+pub(crate) fn convert_specialization_identity(
+    identity: &rue_air::SemanticSpecializationIdentity<SemanticBodyDefinitionIdentity, Arc<str>>,
+    merged: &CanonicalMergedProgram,
+    definitions: &BoundDefinitionSet,
+    work: &mut DurableBodyWork,
+) -> Result<DurableSpecializationIdentity, DurableBodyConversionFailure> {
+    durable_specialization_identity(
+        identity,
+        merged,
+        &DefinitionJoinIndex::new(merged, definitions),
+        work,
+    )
+}
+
 fn durable_identity_dependency_keys(
     identity: &DurableSpecializationIdentity,
 ) -> BTreeSet<StableDefinitionKey> {

@@ -38,6 +38,7 @@ mod dependency_envelope;
 mod diagnostic;
 mod drop_glue;
 mod durable_body;
+mod durable_cfg;
 mod durable_semantics;
 mod import_discovery;
 mod import_graph;

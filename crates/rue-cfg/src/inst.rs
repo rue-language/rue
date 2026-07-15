@@ -532,7 +532,7 @@ impl BasicBlock {
 }
 
 /// The complete CFG for a function.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Cfg {
     /// All basic blocks
     blocks: Vec<BasicBlock>,
@@ -576,6 +576,57 @@ pub struct Cfg {
 }
 
 impl Cfg {
+    /// Clone and atomically remap every request-local payload domain embedded
+    /// in this CFG. Block and value numbers are structural within the graph;
+    /// types, nominal IDs, symbols, strings, and spans are supplied by the
+    /// caller's stable projection/import boundary.
+    pub fn try_remap_domains<E>(
+        &self,
+        mut ty: impl FnMut(Type) -> Result<Type, E>,
+        mut strukt: impl FnMut(StructId) -> Result<StructId, E>,
+        mut enm: impl FnMut(EnumId) -> Result<EnumId, E>,
+        mut symbol: impl FnMut(Spur) -> Result<Spur, E>,
+        mut string: impl FnMut(u32) -> Result<u32, E>,
+        mut span: impl FnMut(Span) -> Result<Span, E>,
+    ) -> Result<Self, E> {
+        let mut cfg = self.clone();
+        cfg.return_type = ty(cfg.return_type)?;
+        for block in &mut cfg.blocks {
+            for (_, value_ty) in &mut block.params {
+                *value_ty = ty(*value_ty)?;
+            }
+        }
+        for projection in &mut cfg.projections {
+            match projection {
+                Projection::Field { struct_id, .. } => *struct_id = strukt(*struct_id)?,
+                Projection::Index { array_type, .. } => *array_type = ty(*array_type)?,
+            }
+        }
+        for inst in &mut cfg.values {
+            inst.ty = ty(inst.ty)?;
+            inst.span = span(inst.span)?;
+            match &mut inst.data {
+                CfgInstData::StringConst(index) => *index = string(*index)?,
+                CfgInstData::Call { name, .. } | CfgInstData::Intrinsic { name, .. } => {
+                    *name = symbol(*name)?
+                }
+                CfgInstData::StructInit { struct_id, .. } => *struct_id = strukt(*struct_id)?,
+                CfgInstData::EnumVariant { enum_id, .. }
+                | CfgInstData::EnumPayloadGet { enum_id, .. } => *enum_id = enm(*enum_id)?,
+                CfgInstData::IntCast { from_ty, .. } => *from_ty = ty(*from_ty)?,
+                CfgInstData::StorageLive { local_ty, .. }
+                | CfgInstData::StorageDead { local_ty, .. } => *local_ty = ty(*local_ty)?,
+                _ => {}
+            }
+            if let CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } =
+                &mut inst.data
+            {
+                place.base_type = ty(place.base_type)?;
+            }
+        }
+        Ok(cfg)
+    }
+
     /// Create a new CFG.
     pub fn new(
         return_type: Type,
