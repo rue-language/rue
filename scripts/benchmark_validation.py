@@ -101,6 +101,18 @@ def validate_results(data: object, expected_names: list[str]) -> list[str]:
                     f"does not match root iterations ({iterations})"
                 )
 
+        samples = bench.get("samples_ms")
+        if samples is not None:
+            if not isinstance(samples, list) or len(samples) != bench_iterations:
+                errors.append(
+                    f"benchmark '{display_name}' samples_ms must contain exactly "
+                    f"{bench_iterations} samples"
+                )
+            elif any(not _is_finite_non_negative_number(sample) for sample in samples):
+                errors.append(
+                    f"benchmark '{display_name}' samples_ms must contain finite non-negative numbers"
+                )
+
         passes = bench.get("passes")
         if not isinstance(passes, dict):
             errors.append(f"benchmark '{display_name}' passes must be an object")

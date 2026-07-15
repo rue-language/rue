@@ -28,6 +28,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from benchmark_history import latest_comparable_segment, load_history
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Categories the spec traceability check treats as normative (must have
@@ -84,19 +86,8 @@ def spec_case_count() -> int:
     )
 
 
-def bench_sparkline() -> dict | None:
-    history_file = (
-        REPO_ROOT / "website" / "static" / "benchmarks" / "history-x86-64-linux.json"
-    )
-    if not history_file.exists():
-        return None
-
-    try:
-        history = json.loads(history_file.read_text())
-    except json.JSONDecodeError:
-        return None
-
-    runs = history.get("runs", [])[-SPARKLINE_RUNS:]
+def sparkline_data(runs: list[dict]) -> dict | None:
+    runs = latest_comparable_segment(runs)[-SPARKLINE_RUNS:]
     totals = []
     for run in runs:
         benches = run.get("benchmarks", [])
@@ -110,10 +101,9 @@ def bench_sparkline() -> dict | None:
     points = []
     for i, total in enumerate(totals):
         if len(totals) == 1:
-            x = SPARK_W  # single run: pin "latest" to the right edge
+            x = SPARK_W
         else:
             x = SPARK_W * i / (len(totals) - 1)
-        # lower is better: smaller totals sit higher on the chart
         y = SPARK_Y_MIN + (SPARK_Y_MAX - SPARK_Y_MIN) * (total - lo) / span
         points.append(f"{x:.0f},{y:.1f}")
 
@@ -124,6 +114,20 @@ def bench_sparkline() -> dict | None:
         "last_x": points[-1].split(",")[0],
         "last_y": points[-1].split(",")[1],
     }
+
+
+def bench_sparkline() -> dict | None:
+    history_path = REPO_ROOT / "website" / "static" / "benchmarks" / "history-x86-64-linux"
+    legacy_path = history_path.with_suffix(".json")
+    if not history_path.exists() and not legacy_path.exists():
+        return None
+
+    try:
+        history = load_history(history_path if history_path.exists() else legacy_path)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+    return sparkline_data(history.get("runs", []))
 
 
 def main() -> int:

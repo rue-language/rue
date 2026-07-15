@@ -318,7 +318,8 @@ print(json.dumps(aggregate_iterations(sys.argv[1:])))
     timing_schema_version=$(echo "$extra_json" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('timing_schema_version', 1))")
 
     # Store result with all data (including memory and binary size from iteration tracking)
-    result_parts=("\"name\":\"$name\"" "\"iterations\":$count" "\"mean_ms\":$mean" "\"std_ms\":$stddev" "\"timing_schema_version\":$timing_schema_version" "\"passes\":$passes_json")
+    samples_json="[$(IFS=,; echo "${iteration_results[*]}")]"
+    result_parts=("\"name\":\"$name\"" "\"iterations\":$count" "\"mean_ms\":$mean" "\"std_ms\":$stddev" "\"samples_ms\":$samples_json" "\"timing_schema_version\":$timing_schema_version" "\"passes\":$passes_json")
     [[ "$source_metrics_json" != "null" ]] && result_parts+=("\"source_metrics\":$source_metrics_json")
     [[ "$mem_mean" -gt 0 ]] && result_parts+=("\"peak_memory_bytes\":$mem_mean")
     [[ "$binary_size" -gt 0 ]] && result_parts+=("\"binary_size_bytes\":$binary_size")
@@ -343,15 +344,16 @@ commit=""
 if command -v jj &>/dev/null; then
     # `|| true`: jj may fail (or `head` may SIGPIPE it) outside a jj repo; we
     # fall back to git, then to "unknown", so this must not abort under errexit.
-    commit=$(jj log -r @ --no-graph -T 'commit_id' 2>/dev/null | head -c 12 || true)
+    commit=$(jj log -r @ --no-graph -T 'commit_id' 2>/dev/null || true)
 fi
 if [[ -z "$commit" ]] && command -v git &>/dev/null; then
-    commit=$(git rev-parse --short HEAD 2>/dev/null || true)
+    commit=$(git rev-parse HEAD 2>/dev/null || true)
 fi
 if [[ -z "$commit" ]]; then
     commit="unknown"
 fi
 host="${arch}-${os}"
+runner_image="${RUE_BENCH_RUNNER_IMAGE:-local:${host}}"
 
 # Build final JSON
 cat > "$RESULTS_FILE" << EOF
@@ -360,6 +362,7 @@ cat > "$RESULTS_FILE" << EOF
   "timestamp": "$timestamp",
   "commit": "$commit",
   "build_mode": "$BUILD_MODE",
+  "runner_image": "$runner_image",
   "host": {
     "os": "$os",
     "arch": "$arch"
@@ -404,7 +407,9 @@ if [[ "$APPEND_HISTORY" == "true" ]]; then
 
     # Append to history using the Python script
     if [[ -f "$SCRIPT_DIR/scripts/append-benchmark.py" ]]; then
-        python3 "$SCRIPT_DIR/scripts/append-benchmark.py" "$RESULTS_FILE" "$HISTORY_FILE"
+        python3 "$SCRIPT_DIR/scripts/append-benchmark.py" "$RESULTS_FILE" "${HISTORY_FILE%.json}" \
+            --legacy-history "$HISTORY_FILE" --platform "$host" \
+            --runner-image "local:$host" --reason manual
         log_info "Results appended to history: $HISTORY_FILE"
     else
         log_warn "scripts/append-benchmark.py not found, skipping history append"

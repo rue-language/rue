@@ -31,6 +31,8 @@ def load_module(name: str, relative_path: str):
 validator = load_module("validate_benchmark", "scripts/validate-benchmark.py")
 collection = load_module("benchmark_collection", "scripts/benchmark_collection.py")
 charts = load_module("generate_charts", "scripts/generate-charts.py")
+site_status = load_module("generate_site_status", "scripts/generate-site-status.py")
+history_tools = load_module("benchmark_history", "scripts/benchmark_history.py")
 perf_baseline = load_module("perf_baseline", "scripts/perf-baseline.py")
 
 
@@ -513,6 +515,7 @@ class BenchmarkValidationTests(unittest.TestCase):
             "version": 1,
             "timestamp": "2026-07-09T00:00:00Z",
             "commit": "probe",
+            "build_mode": "release",
             "iterations": 5,
             "benchmarks": [
                 {
@@ -520,6 +523,8 @@ class BenchmarkValidationTests(unittest.TestCase):
                     "mean_ms": index + 0.5,
                     "std_ms": 0.1,
                     "iterations": 5,
+                    "samples_ms": [index + 0.5] * 5,
+                    "timing_schema_version": 2,
                     "passes": {"compile": {"mean_ms": index + 0.5}},
                 }
                 for index, name in enumerate(self.expected_names)
@@ -672,6 +677,12 @@ class BenchmarkValidationTests(unittest.TestCase):
                     str(history_path),
                     "--manifest",
                     str(INPUT_ROOT / "benchmarks" / "manifest.toml"),
+                    "--platform",
+                    "x86-64-linux",
+                    "--runner-image",
+                    "test-runner-v1",
+                    "--reason",
+                    "push",
                 ],
                 capture_output=True,
                 text=True,
@@ -697,19 +708,210 @@ class BenchmarkValidationTests(unittest.TestCase):
                     str(history_path),
                     "--manifest",
                     str(INPUT_ROOT / "benchmarks" / "manifest.toml"),
-                    "--reason",
-                    "push",
+                    "--reason", "push",
+                    "--platform", "x86-64-linux",
+                    "--runner-image", "test-runner-v1",
                 ],
                 capture_output=True,
                 text=True,
                 check=False,
             )
             self.assertEqual(valid_process.returncode, 0, valid_process.stderr)
-            published = json.loads(history_path.read_text())["runs"]
+            published = history_tools.load_history(history_path)["runs"]
             self.assertEqual(len(published), 1)
-            self.assertEqual(published[0]["version"], 2)
-            self.assertEqual(published[0]["benchmark_reason"], "push")
-            self.assertEqual(published[0]["commit_range"], ["probe"])
+            self.assertEqual(published[0]["version"], 3)
+            self.assertEqual(published[0]["publication"]["trigger_reason"], "push")
+            self.assertEqual(published[0]["publication"]["coverage"]["represented_commits"], ["probe"])
+
+
+class DurableBenchmarkHistoryTests(unittest.TestCase):
+    @staticmethod
+    def sample_run(index: int, month: int = 7) -> dict:
+        return {
+            "timestamp": f"2026-{month:02d}-{index % 28 + 1:02d}T00:00:00Z",
+            "commit": f"commit-{index}",
+            "iterations": 2,
+            "benchmarks": [],
+        }
+
+    def test_partitioned_history_retains_more_than_one_hundred_runs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "history-x86-64-linux"
+            runs = [self.sample_run(index, 6 if index < 40 else 7) for index in range(101)]
+            history_tools.save_history(path, runs, "x86-64-linux")
+            loaded = history_tools.load_history(path)
+            self.assertEqual(loaded["runs"], runs)
+            self.assertEqual(loaded["run_count"], 101)
+            self.assertEqual(len(loaded["shards"]), 101)
+            self.assertEqual(
+                {Path(entry["path"]).parts[2] for entry in loaded["shards"]},
+                {"06", "07"},
+            )
+
+    def test_index_is_atomic_visibility_boundary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "history"
+            original = [self.sample_run(0)]
+            history_tools.save_history(path, original, "test")
+            real_write = history_tools.atomic_write_json
+
+            def fail_index(target, value):
+                if target.name == "index.json":
+                    raise OSError("injected index failure")
+                return real_write(target, value)
+
+            with mock.patch.object(history_tools, "atomic_write_json", side_effect=fail_index):
+                with self.assertRaisesRegex(OSError, "injected"):
+                    history_tools.save_history(path, original + [self.sample_run(1)], "test")
+            self.assertEqual(history_tools.load_history(path)["runs"], original)
+
+    def test_legacy_list_and_object_migrate_as_visibly_unknown(self):
+        for value in ([self.sample_run(0)], {"version": 1, "runs": [self.sample_run(0)]}):
+            with self.subTest(kind=type(value).__name__), tempfile.TemporaryDirectory() as temp_dir:
+                legacy = Path(temp_dir) / "history.json"
+                legacy.write_text(json.dumps(value))
+                migrated = [history_tools.mark_legacy(run) for run in history_tools.legacy_history(legacy)]
+                publication = migrated[0]["publication"]
+                self.assertFalse(publication["comparable"])
+                self.assertEqual(publication["regime_id"], "unknown")
+                self.assertTrue(publication["coverage"]["gap_unknown"])
+
+    def test_regime_ignores_commit_but_tracks_comparability_dimensions(self):
+        corpus = {"schema_version": 1, "sha256": "a" * 64}
+        base = {
+            "commit": "one",
+            "build_mode": "release",
+            "iterations": 5,
+            "benchmarks": [{"timing_schema_version": 2}],
+        }
+        first = history_tools.regime_metadata(base, "linux", "image-v1", corpus)
+        changed_commit = history_tools.regime_metadata({**base, "commit": "two"}, "linux", "image-v1", corpus)
+        changed_iterations = history_tools.regime_metadata({**base, "iterations": 10}, "linux", "image-v1", corpus)
+        changed_runner = history_tools.regime_metadata(base, "linux", "image-v2", corpus)
+        self.assertEqual(first["id"], changed_commit["id"])
+        self.assertNotEqual(first["id"], changed_iterations["id"])
+        self.assertNotEqual(first["id"], changed_runner["id"])
+
+    def test_coverage_makes_skipped_commits_and_unknown_gaps_explicit(self):
+        completed = subprocess.CompletedProcess([], 0, "middle\ncurrent\n", "")
+        coverage = history_tools.git_coverage(
+            "previous", "current", Path("."), runner=lambda *args, **kwargs: completed
+        )
+        self.assertEqual(coverage["represented_commits"], ["current"])
+        self.assertEqual(coverage["skipped_commits"], ["middle"])
+        self.assertFalse(coverage["gap_unknown"])
+        self.assertTrue(history_tools.git_coverage(None, "current", Path("."))["gap_unknown"])
+        not_ancestor = subprocess.CompletedProcess([], 1, "", "")
+        unknown = history_tools.git_coverage(
+            "other-line", "current", Path("."), runner=lambda *args, **kwargs: not_ancestor
+        )
+        self.assertTrue(unknown["gap_unknown"])
+        self.assertEqual(unknown["skipped_commits"], [])
+
+    def test_chart_breaks_at_regime_changes_and_measurement_gaps(self):
+        def run(regime, skipped=None, unknown=False):
+            return {"publication": {
+                "comparable": True,
+                "regime_id": regime,
+                "coverage": {"skipped_commits": skipped or [], "gap_unknown": unknown},
+            }}
+
+        base = run("same")
+        self.assertFalse(charts.comparison_break(base, run("same")))
+        self.assertTrue(charts.comparison_break(base, run("changed")))
+        self.assertTrue(charts.comparison_break(base, run("same", ["skipped"])))
+        self.assertTrue(charts.comparison_break(base, run("same", unknown=True)))
+        legacy = {"commit": "legacy"}
+        self.assertTrue(charts.comparison_break(legacy, legacy))
+
+    def test_malformed_publication_metadata_is_rejected(self):
+        errors = history_tools.validate_publication({"commit": "x", "publication": {}})
+        self.assertTrue(any("missing regime" in error for error in errors))
+        self.assertTrue(any("coverage" in error for error in errors))
+
+    def test_index_and_shard_metadata_must_be_coherent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "history"
+            history_tools.save_history(path, [self.sample_run(0)], "test")
+            index_path = path / "index.json"
+            index = json.loads(index_path.read_text())
+            index["run_count"] = 2
+            index_path.write_text(json.dumps(index))
+            with self.assertRaisesRegex(ValueError, "index run count mismatch"):
+                history_tools.load_history(path)
+
+            index["run_count"] = 1
+            index_path.write_text(json.dumps(index))
+            shard_path = path / index["shards"][0]["path"]
+            shard = json.loads(shard_path.read_text())
+            shard["platform"] = "other"
+            shard_path.write_text(json.dumps(shard))
+            with self.assertRaisesRegex(ValueError, "shard metadata mismatch"):
+                history_tools.load_history(path)
+
+    def test_shard_digest_and_index_timestamps_detect_tampering(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "history"
+            history_tools.save_history(path, [self.sample_run(0)], "test")
+            index = json.loads((path / "index.json").read_text())
+            shard_path = path / index["shards"][0]["path"]
+            shard = json.loads(shard_path.read_text())
+            shard["runs"][0]["commit"] = "tampered"
+            shard_path.write_text(json.dumps(shard))
+            with self.assertRaisesRegex(ValueError, "digest mismatch"):
+                history_tools.load_history(path)
+
+            shard_path.unlink()
+            history_tools.save_history(path, [self.sample_run(0)], "test")
+            index = json.loads((path / "index.json").read_text())
+            index["shards"][0]["last_timestamp"] = "wrong"
+            (path / "index.json").write_text(json.dumps(index))
+            with self.assertRaisesRegex(ValueError, "timestamp mismatch"):
+                history_tools.load_history(path)
+
+    def test_every_time_series_splits_at_comparison_boundaries(self):
+        def run(index, gap=False):
+            value = float(index + 1)
+            return {
+                "commit": str(index + 1) * 40,
+                "publication": {
+                    "comparable": True,
+                    "regime_id": "same",
+                    "coverage": {"skipped_commits": ["gap"] if gap else [], "gap_unknown": False},
+                },
+                "benchmarks": [{
+                    "name": "probe", "mean_ms": value,
+                    "peak_memory_bytes": value * 1024 * 1024,
+                    "binary_size_bytes": value * 1024,
+                }],
+            }
+
+        runs = [run(0), run(1), run(2, gap=True), run(3)]
+        self.assertEqual([len(segment) for segment in charts.point_segments(runs, [1, 2, 3, 4])], [2, 2])
+        self.assertEqual(charts.generate_multi_timeline_chart(runs, ["probe"]).count("<path d="), 2)
+        self.assertEqual(charts.generate_memory_chart(runs).count('<path class="chart-line"'), 2)
+        self.assertEqual(charts.generate_binary_size_chart(runs).count('<path class="chart-line"'), 2)
+        self.assertEqual(charts.generate_comparison_timeline_chart({"probe": runs}).count("<path d="), 2)
+
+    def test_summary_and_homepage_use_only_latest_comparable_segment(self):
+        def run(commit, total, regime="new", gap=False):
+            return {
+                "commit": commit,
+                "publication": {
+                    "comparable": True, "regime_id": regime,
+                    "coverage": {"skipped_commits": [], "gap_unknown": gap},
+                },
+                "benchmarks": [{"name": "probe", "mean_ms": total}],
+            }
+
+        runs = [run("old", 1, "old"), run("new-1", 10), run("new-2", 20)]
+        summary = charts.generate_summary_data(runs)
+        self.assertEqual(summary["avg_time_ms"], 15)
+        self.assertEqual(summary["best_time_ms"], 10)
+        self.assertEqual(summary["comparable_run_count"], 2)
+        sparkline = site_status.sparkline_data(runs)
+        self.assertEqual(sparkline["n_runs"], 2)
+        self.assertEqual(sparkline["latest_ms"], 20)
 
 
 class BenchmarkCollectionTests(unittest.TestCase):

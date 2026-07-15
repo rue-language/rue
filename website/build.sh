@@ -40,12 +40,16 @@ mkdir -p "$BENCHMARKS_DIR/comparison"
 
 # Track which platforms have data for the root metadata.json
 PLATFORMS_WITH_DATA=()
+HISTORY_FILES_WITH_DATA=()
 
 for platform in "${PLATFORMS[@]}"; do
-    history_file="$BENCHMARKS_DIR/history-${platform}.json"
+    history_file="$BENCHMARKS_DIR/history-${platform}"
+    if [[ ! -d "$history_file" ]]; then
+        history_file="$BENCHMARKS_DIR/history-${platform}.json"
+    fi
     platform_dir="$BENCHMARKS_DIR/platforms/${platform}"
 
-    if [[ -f "$history_file" ]]; then
+    if [[ -e "$history_file" ]]; then
         echo "  Generating charts for ${platform}..."
         mkdir -p "$platform_dir"
         python3 "$ROOT/scripts/generate-charts.py" \
@@ -53,6 +57,7 @@ for platform in "${PLATFORMS[@]}"; do
             "$platform_dir" \
             --platform "$platform"
         PLATFORMS_WITH_DATA+=("$platform")
+        HISTORY_FILES_WITH_DATA+=("$history_file")
     else
         echo "  No history file for ${platform} (skipping)"
     fi
@@ -61,14 +66,10 @@ done
 # Generate comparison charts if we have multiple platforms
 if [[ ${#PLATFORMS_WITH_DATA[@]} -gt 0 ]]; then
     echo "  Generating comparison charts..."
-    history_files=()
-    for platform in "${PLATFORMS_WITH_DATA[@]}"; do
-        history_files+=("$BENCHMARKS_DIR/history-${platform}.json")
-    done
     python3 "$ROOT/scripts/generate-charts.py" \
         --comparison \
         "$BENCHMARKS_DIR/comparison" \
-        "${history_files[@]}"
+        "${HISTORY_FILES_WITH_DATA[@]}"
 fi
 
 # Generate root metadata.json listing all platforms
