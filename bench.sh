@@ -104,6 +104,8 @@ if [[ ! -f "$MANIFEST" ]]; then
     log_error "Run this script from the rue repository root"
     exit 1
 fi
+PYTHONPATH="$SCRIPT_DIR/scripts" python3 "$SCRIPT_DIR/scripts/benchmark_manifest.py" \
+    --manifest "$MANIFEST" validate
 
 # Detect OS early (needed for platform-specific commands in the loop)
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -133,38 +135,14 @@ log_info "Running benchmarks ($ITERATIONS iterations each)..."
 
 RESULTS_FILE="$TEMP_DIR/results.json"
 
-# Parse benchmarks from manifest
-# Format: [[benchmark]] followed by name = "...", path = "..."
+# Parse the static phase probes through the canonical manifest schema.
 benchmark_names=()
 benchmark_paths=()
-
-current_name=""
-current_path=""
-
-while IFS= read -r line; do
-    # Trim whitespace
-    line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-    if [[ "$line" == "[[benchmark]]" ]]; then
-        # Save previous benchmark if we have one
-        if [[ -n "$current_name" && -n "$current_path" ]]; then
-            benchmark_names+=("$current_name")
-            benchmark_paths+=("$current_path")
-        fi
-        current_name=""
-        current_path=""
-    elif [[ "$line" =~ ^name[[:space:]]*=[[:space:]]*\"(.*)\" ]]; then
-        current_name="${BASH_REMATCH[1]}"
-    elif [[ "$line" =~ ^path[[:space:]]*=[[:space:]]*\"(.*)\" ]]; then
-        current_path="${BASH_REMATCH[1]}"
-    fi
-done < "$MANIFEST"
-
-# Don't forget the last one
-if [[ -n "$current_name" && -n "$current_path" ]]; then
-    benchmark_names+=("$current_name")
-    benchmark_paths+=("$current_path")
-fi
+while IFS=$'\t' read -r name path; do
+    benchmark_names+=("$name")
+    benchmark_paths+=("$path")
+done < <(PYTHONPATH="$SCRIPT_DIR/scripts" python3 "$SCRIPT_DIR/scripts/benchmark_manifest.py" \
+    --manifest "$MANIFEST" list-static)
 
 # Run each benchmark
 all_results=()
@@ -336,6 +314,13 @@ fi
 
 log_info "Successfully collected ${#all_results[@]} benchmark(s)"
 
+# Scaling diagnostics are a separate, non-representative metric family. They
+# are published with the same run but never enter the phase-probe aggregate.
+log_info "Running deterministic scaling families..."
+scaling_json=$(PYTHONPATH="$SCRIPT_DIR/scripts" python3 "$SCRIPT_DIR/scripts/benchmark_scaling.py" \
+    --manifest "$MANIFEST" --rue-bin "$RUE_BIN" --iterations "$ITERATIONS" \
+    --platform "$os" --enforce-budgets)
+
 # Get metadata
 timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Get commit hash - try jj first (for local dev), fall back to git (for CI)
@@ -370,6 +355,7 @@ cat > "$RESULTS_FILE" << EOF
     "arch": "$arch"
   },
   "iterations": $ITERATIONS,
+  "scaling": $scaling_json,
   "benchmarks": [
 EOF
 
@@ -389,6 +375,9 @@ cat >> "$RESULTS_FILE" << EOF
   ]
 }
 EOF
+
+PYTHONPATH="$SCRIPT_DIR/scripts" python3 "$SCRIPT_DIR/scripts/benchmark_manifest.py" \
+    --manifest "$MANIFEST" enrich-results --results "$RESULTS_FILE"
 
 # Output results
 log_info "Benchmark run complete!"

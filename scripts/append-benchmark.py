@@ -17,7 +17,7 @@ from benchmark_history import (
     save_history,
     validate_publication,
 )
-from benchmark_validation import DEFAULT_MANIFEST, load_manifest_names, validate_results
+from benchmark_validation import DEFAULT_MANIFEST, validate_manifest_results
 
 
 def latest_measured_commit(runs: list[dict]) -> str | None:
@@ -44,8 +44,7 @@ def main() -> int:
 
     try:
         result = json.loads(args.results.read_text())
-        expected = load_manifest_names(args.manifest)
-        errors = validate_results(result, expected)
+        errors = validate_manifest_results(result, args.manifest)
         for bench in result.get("benchmarks", []) if isinstance(result, dict) else []:
             if isinstance(bench, dict) and "samples_ms" not in bench:
                 errors.append(f"benchmark '{bench.get('name', '?')}' is missing raw samples_ms")

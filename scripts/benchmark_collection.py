@@ -60,6 +60,14 @@ def parse_iteration_json(text: str) -> dict:
     names = [row["name"] for row in passes]
     if len(names) != len(set(names)):
         raise ValueError("passes must not contain duplicate names")
+    if "source_metrics" in data:
+        metrics = data["source_metrics"]
+        if not isinstance(metrics, dict):
+            raise ValueError("source_metrics must be an object")
+        for field in ("bytes", "files", "lines", "tokens"):
+            value = metrics.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"source_metrics {field} must be a non-negative integer")
     return data
 
 
@@ -70,12 +78,19 @@ def aggregate_iterations(payloads: list[str]) -> dict:
 
     pass_data: dict[str, list[float]] = {}
     source_metrics = None
+    source_metrics_present = None
     peak_memory_samples = []
     timing_schema_version = None
     expected_included_passes = None
+    pass_structure = None
 
     for text in payloads:
         data = parse_iteration_json(text)
+        present = "source_metrics" in data
+        if source_metrics_present is None:
+            source_metrics_present = present
+        elif present != source_metrics_present:
+            raise ValueError("source_metrics presence changed between iterations")
         schema_version = data.get("schema_version", 1)
         if timing_schema_version is None:
             timing_schema_version = schema_version
@@ -83,6 +98,7 @@ def aggregate_iterations(payloads: list[str]) -> dict:
             raise ValueError("timing schema_version changed between iterations")
 
         included_passes = set()
+        current_structure = {}
         for row in data["passes"]:
             if schema_version >= 2 and row.get("leaf_invocations") != row.get(
                 "invocations"
@@ -90,21 +106,35 @@ def aggregate_iterations(payloads: list[str]) -> dict:
                 continue
             included_passes.add(row["name"])
             pass_data.setdefault(row["name"], []).append(float(row["duration_ms"]))
+            if schema_version >= 2:
+                current_structure[row["name"]] = {
+                    "invocations": row["invocations"],
+                    "root_invocations": row["root_invocations"],
+                    "leaf_invocations": row["leaf_invocations"],
+                }
         if expected_included_passes is None:
             expected_included_passes = included_passes
         elif included_passes != expected_included_passes:
             raise ValueError("aggregated pass set changed between iterations")
-        if source_metrics is None and "source_metrics" in data:
-            source_metrics = data["source_metrics"]
+        if pass_structure is None:
+            pass_structure = current_structure
+        elif current_structure != pass_structure:
+            raise ValueError("pass invocation structure changed between iterations")
+        if "source_metrics" in data:
+            if source_metrics is None:
+                source_metrics = data["source_metrics"]
+            elif source_metrics != data["source_metrics"]:
+                raise ValueError("source_metrics changed between iterations")
         if "peak_memory_bytes" in data and data["peak_memory_bytes"]:
             peak_memory_samples.append(
                 _non_negative_number(data["peak_memory_bytes"], "peak_memory_bytes")
             )
 
-    passes = {
-        name: {"mean_ms": round(sum(durations) / len(durations), 3)}
-        for name, durations in pass_data.items()
-    }
+    passes = {}
+    for name, durations in pass_data.items():
+        passes[name] = {"mean_ms": round(sum(durations) / len(durations), 3)}
+        if pass_structure and name in pass_structure:
+            passes[name].update(pass_structure[name])
     result = {"passes": passes, "timing_schema_version": timing_schema_version}
     if source_metrics is not None:
         result["source_metrics"] = source_metrics

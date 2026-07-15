@@ -209,6 +209,16 @@ def get_binary_size(run: dict) -> float:
     return total_bytes / 1024
 
 
+def scaling_diagnostics(runs: list[dict]) -> dict | None:
+    """Return the latest explicitly non-representative scaling publication."""
+    if not runs:
+        return None
+    value = runs[-1].get("scaling")
+    if not isinstance(value, dict) or value.get("representative") is not False:
+        return None
+    return value
+
+
 def format_bytes(size_bytes: float) -> str:
     """Format bytes into human-readable form."""
     if size_bytes >= 1024 * 1024:
@@ -1242,6 +1252,7 @@ def generate_platform_charts(history_path: Path, output_dir: Path, platform: Opt
         "latest_commit": short_commit(runs[-1].get("commit", "")) if runs else None,
         "summary": summary,
         "latest_benchmarks": latest_benchmarks,
+        "latest_scaling": scaling_diagnostics(runs),
         "coverage": coverage,
         "regimes": regime_summary(runs),
         "metric_semantics": derive_history_metrics(runs),

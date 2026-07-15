@@ -116,11 +116,24 @@ def robust_summary(values: object) -> dict | None:
     numeric = [float(value) for value in values]
     center = statistics.median(numeric)
     mad = statistics.median(abs(value - center) for value in numeric)
+    scaled_mad = 1.4826 * mad
+    minimum = min(numeric)
+    maximum = max(numeric)
+    sample_range = maximum - minimum
+    # MAD intentionally ignores a minority of outliers. That is useful for a
+    # center estimate, but a zero/tiny MAD must not certify benchmark evidence
+    # when the observed range is extreme. The 50%-of-center floor tolerates
+    # ordinary scheduler noise while six scaled MADs covers dispersed samples.
+    range_guard_threshold = max(abs(center) * 0.5, scaled_mad * 6.0)
+    extreme_range = sample_range > range_guard_threshold
     return {
         "center": center,
-        "scaled_mad": 1.4826 * mad,
-        "minimum": min(numeric),
-        "maximum": max(numeric),
+        "scaled_mad": scaled_mad,
+        "minimum": minimum,
+        "maximum": maximum,
+        "range": sample_range,
+        "relative_range": sample_range / abs(center) if center != 0 else None,
+        "dispersion_classification": "extreme_range" if extreme_range else "robust",
         "sample_count": len(numeric),
     }
 

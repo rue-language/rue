@@ -146,6 +146,18 @@
             </div>
         </section>
 
+        <section id="scaling-section" class="mb-12">
+            <h2 class="section-title">Synthetic compiler scaling diagnostics</h2>
+            <p class="text-muted mb-4">
+                These generated phase probes are not representative applications and say nothing about
+                compiled-program runtime performance. Adjacent ratios show whether latency and peak-memory
+                growth outpaces input growth; they are excluded from the aggregate headline above.
+            </p>
+            <div id="scaling-container">
+                <p class="text-muted text-center py-8">Loading scaling diagnostics...</p>
+            </div>
+        </section>
+
         <script>
         (function() {
             const platformSelect = document.getElementById('platform-select');
@@ -175,6 +187,8 @@
             const binaryContainer = document.getElementById('binary-chart-container');
             const metricsSection = document.getElementById('metrics-section');
             const metricsContainer = document.getElementById('metrics-table-container');
+            const scalingSection = document.getElementById('scaling-section');
+            const scalingContainer = document.getElementById('scaling-container');
 
             let currentPlatform = 'comparison';
             let platformMetadata = null;
@@ -622,6 +636,50 @@
                 metricsContainer.innerHTML = html;
             }
 
+            function updateScaling(scaling) {
+                if (!scaling || !scaling.families?.length) {
+                    scalingContainer.innerHTML = '<p class="text-muted text-center py-8">No scaling diagnostics available</p>';
+                    return;
+                }
+                scalingContainer.replaceChildren();
+                const growthText = evidence => {
+                    if (!evidence) return '-';
+                    if (evidence.lower_bound === null || evidence.upper_bound === null) {
+                        return `${evidence.center.toFixed(2)} (indeterminate)`;
+                    }
+                    return `${evidence.center.toFixed(2)} [${evidence.lower_bound.toFixed(2)}, ${evidence.upper_bound.toFixed(2)}]`;
+                };
+                const summaryText = (summary, divisor = 1) => {
+                    if (summary.dispersion_classification === 'extreme_range') {
+                        return `${(summary.center / divisor).toFixed(2)}; range ${(summary.minimum / divisor).toFixed(2)}–${(summary.maximum / divisor).toFixed(2)} (extreme dispersion)`;
+                    }
+                    return `${(summary.center / divisor).toFixed(2)} ± ${(summary.scaled_mad / divisor).toFixed(2)}`;
+                };
+                scaling.families.forEach(family => {
+                    const card = node('div', undefined, 'bg-surface border border-themed rounded-lg p-4 mb-4');
+                    card.appendChild(node('h3', family.name.replaceAll('_', ' ')));
+                    card.appendChild(node('p', `${family.interpretation} ${family.non_representative}`, 'text-sm text-muted mb-3'));
+                    let html = `<table class="w-full text-sm"><caption class="text-left text-xs text-muted mb-2">${escapeHtml(family.name.replaceAll('_', ' '))}: input size, observed variation, and conservative adjacent growth bounds</caption><thead><tr>`;
+                    html += `<th scope="col" class="text-left p-2">${escapeHtml(family.input_axis)}</th><th scope="col" class="text-right p-2">Latency dispersion (ms)</th>`;
+                    html += '<th scope="col" class="text-right p-2">Peak memory dispersion (MB)</th><th scope="col" class="text-right p-2">Lines</th><th scope="col" class="text-right p-2">Tokens</th>';
+                    html += `<th scope="col" class="text-right p-2">${escapeHtml(family.focus_pass)} invocations</th><th scope="col" class="text-right p-2">Latency/unit center [bounds]</th><th scope="col" class="text-right p-2">Memory/unit center [bounds]</th><th scope="col" class="text-left p-2">Evidence</th></tr></thead><tbody>`;
+                    family.tiers.forEach((tier, index) => {
+                        const growth = index ? family.adjacent_growth[index - 1] : null;
+                        const focus = tier.passes?.[family.focus_pass] || {};
+                        html += '<tr class="border-t border-themed">';
+                        html += `<td class="p-2">${tier.input_size.toLocaleString()}</td><td class="p-2 text-right">${summaryText(tier.latency_summary_ms)}</td>`;
+                        html += `<td class="p-2 text-right">${summaryText(tier.peak_memory_summary_bytes, 1048576)}</td>`;
+                        html += `<td class="p-2 text-right">${tier.source_metrics?.lines?.toLocaleString() || '-'}</td><td class="p-2 text-right">${tier.source_metrics?.tokens?.toLocaleString() || '-'}</td>`;
+                        html += `<td class="p-2 text-right">${focus.invocations?.toLocaleString() || '-'}</td>`;
+                        html += `<td class="p-2 text-right">${growthText(growth?.latency_per_unit_growth)}</td><td class="p-2 text-right">${growthText(growth?.memory_per_unit_growth)}</td><td class="p-2">${escapeHtml(growth?.classification || 'baseline tier')}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                    const table = node('div', undefined, 'overflow-x-auto'); table.innerHTML = html; card.appendChild(table);
+                    card.appendChild(node('p', `Budget status: ${family.classification}; per-tier timeout ${family.budgets.per_tier_compile_timeout_seconds}s.`, 'text-xs text-muted mt-2'));
+                    scalingContainer.appendChild(card);
+                });
+            }
+
             // Load data for a specific platform
             function loadPlatformData(platform) {
                 currentPlatform = platform;
@@ -635,6 +693,7 @@
                     memorySection.style.display = 'none';
                     binarySection.style.display = 'none';
                     metricsSection.style.display = 'none';
+                    scalingSection.style.display = 'none';
 
                     fetch('/benchmarks/comparison/metadata.json')
                         .then(r => r.json())
@@ -659,6 +718,7 @@
                     memorySection.style.display = 'block';
                     binarySection.style.display = 'block';
                     metricsSection.style.display = 'block';
+                    scalingSection.style.display = 'block';
 
                     const basePath = `/benchmarks/platforms/${platform}`;
 
@@ -673,6 +733,7 @@
                         .then(data => {
                             updateStats(data.summary);
                             updateMetricsTable(data.latest_benchmarks);
+                            updateScaling(data.latest_scaling);
                             renderRecentWorkspace(data.recent_workspace);
                             renderEvolutionWorkspace(data.evolution_workspace, false);
 
@@ -691,6 +752,7 @@
                         .catch(() => {
                             updateStats(null);
                             updateMetricsTable(null);
+                            updateScaling(null);
                         });
                 }
             }
@@ -732,6 +794,7 @@
                     memorySection.style.display = 'block';
                     binarySection.style.display = 'block';
                     metricsSection.style.display = 'block';
+                    scalingSection.style.display = 'block';
 
                     loadSvg(timelineContainer, '/benchmarks/timeline.svg');
                     loadSvg(breakdownContainer, '/benchmarks/breakdown.svg');
@@ -744,6 +807,7 @@
                         .then(data => {
                             updateStats(data.summary);
                             updateMetricsTable(data.latest_benchmarks);
+                            updateScaling(data.latest_scaling);
 
                             // Populate benchmark dropdown
                             if (data.benchmarks && data.benchmarks.length > 0) {
