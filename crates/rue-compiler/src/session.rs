@@ -27,6 +27,12 @@ use crate::{
     validate_canonical_import_graph,
 };
 
+use crate::diagnostic_attempt_store::{DiagnosticAttemptProvenance, DiagnosticAttemptStore};
+pub use crate::diagnostic_attempt_store::{
+    FRONTEND_DIAGNOSTIC_RETENTION_LIMIT, FrontendDiagnosticSnapshot, FrontendDiagnosticStage,
+    ImportDiagnosticInputDescriptor,
+};
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrontendQueryWork {
     pub calls: usize,
@@ -34,7 +40,7 @@ pub struct FrontendQueryWork {
     pub reuses: usize,
 }
 
-/// Session-owned historical artifacts retained after the latest query.
+/// Session-owned indexed historical artifacts retained after the latest query.
 ///
 /// These are gauges, not cumulative work counters. Caller-owned
 /// [`Arc<FrontendDiagnosticSnapshot>`] values are deliberately excluded: once
@@ -42,9 +48,13 @@ pub struct FrontendQueryWork {
 /// session's eviction policy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrontendRetentionMetrics {
-    /// Diagnostic snapshots strongly owned by the session.
+    /// Diagnostic attempts indexed by the bounded diagnostic store.
+    ///
+    /// Producer caches may also retain the same origin `Arc`; those bounded or
+    /// producer-lifetime references are deliberately excluded from this index
+    /// gauge rather than counted twice.
     pub diagnostic_entries: usize,
-    /// Distinct diagnostic source attempts strongly owned by the session.
+    /// Distinct diagnostic source attempts indexed by the diagnostic store.
     pub diagnostic_source_attempts: usize,
     /// Source bytes across those distinct attempts (shared stages count once).
     pub diagnostic_source_bytes: usize,
@@ -90,14 +100,6 @@ pub struct CompilerSessionWork {
     /// Current bounded-retention gauges for long-lived service integrations.
     pub retention: FrontendRetentionMetrics,
 }
-
-/// Maximum number of diagnostic snapshots owned by a frontend session.
-///
-/// Eviction is deterministic insertion order, except that the latest attempt,
-/// latest successful query, and last successful semantic query are protected.
-/// Those three protected entries fit within this limit. Callers can explicitly
-/// pin any returned snapshot by retaining its `Arc` after session eviction.
-pub const FRONTEND_DIAGNOSTIC_RETENTION_LIMIT: usize = 16;
 
 /// Maximum number of recent invalidation plans owned by a frontend session.
 ///
@@ -917,74 +919,6 @@ impl SemanticInvalidationPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum FrontendDiagnosticStage {
-    Syntax,
-    Import(ImportDiagnosticInputDescriptor),
-    Merge,
-    Semantic(CodegenInputDescriptor),
-}
-
-/// Exact immutable inputs to one canonical import-diagnostic projection.
-///
-/// Keeping the plan and observation ledger in the descriptor makes reuse an
-/// exact attempted-revision property rather than merely a source-text match.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ImportDiagnosticInputDescriptor {
-    source: SourceRevision,
-    context: Option<crate::ImportDiscoveryContext>,
-    plan: Option<crate::ImportDiscoveryPlan>,
-    ledger: crate::ImportObservationLedger,
-    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
-}
-
-impl ImportDiagnosticInputDescriptor {
-    pub fn source_revision(&self) -> &SourceRevision {
-        &self.source
-    }
-    pub fn context(&self) -> Option<&crate::ImportDiscoveryContext> {
-        self.context.as_ref()
-    }
-    pub fn plan(&self) -> Option<&crate::ImportDiscoveryPlan> {
-        self.plan.as_ref()
-    }
-    pub fn ledger(&self) -> &crate::ImportObservationLedger {
-        &self.ledger
-    }
-    pub fn accepted_read_manifest(&self) -> &[crate::AcceptedReadManifestEntry] {
-        &self.accepted_reads
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FrontendDiagnosticSnapshot {
-    source: SourceSnapshot,
-    stage: FrontendDiagnosticStage,
-    errors: Arc<[CompileError]>,
-    warnings: Arc<[CompileWarning]>,
-}
-
-impl FrontendDiagnosticSnapshot {
-    pub fn source(&self) -> &SourceSnapshot {
-        &self.source
-    }
-    pub fn source_revision(&self) -> &SourceRevision {
-        self.source.source_revision()
-    }
-    pub fn stage(&self) -> &FrontendDiagnosticStage {
-        &self.stage
-    }
-    pub fn errors(&self) -> &[CompileError] {
-        &self.errors
-    }
-    pub fn warnings(&self) -> &[CompileWarning] {
-        &self.warnings
-    }
-    pub fn is_success(&self) -> bool {
-        self.errors.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ImportGraphInputDescriptor {
     pub sources: SourceRevision,
     pub resolution: ModuleResolutionInputs,
@@ -1126,31 +1060,122 @@ impl CompilerSessionUpdate {
 
 #[derive(Debug, Default)]
 pub struct CompilerSession {
-    parse: CanonicalParseSession,
+    parse: SyntaxParseProducer,
     discovery_parse: CanonicalParseSession,
     discovery_staging_active: bool,
     discovery_attempt: Option<Arc<ImportDiscoveryRevisionArtifact>>,
     committed_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
+    direct_import_diagnostics: Option<DirectImportDiagnosticCacheEntry>,
     #[cfg(test)]
     supplied_test_import_graph: Option<CanonicalImportGraph>,
     published: Option<Arc<ParsedProgram>>,
     published_snapshot: Option<SourceSnapshot>,
     batch_diagnostic_order: Option<Vec<crate::ModuleId>>,
-    merge_cache: Option<Result<Arc<CanonicalMergedProgram>, CompileErrors>>,
+    merge_cache: Option<MergeCacheEntry>,
     definition_shard_baseline: Option<crate::DefinitionSnapshot>,
     rir_cache: Option<Arc<CanonicalRirOutput>>,
     semantic_cache: Vec<SemanticCacheEntry>,
     definition_cache: Vec<DefinitionCacheEntry>,
     work: CompilerSessionWork,
-    diagnostic_cache: VecDeque<Arc<FrontendDiagnosticSnapshot>>,
-    latest_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
-    latest_successful_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
-    last_good_semantic_diagnostics: Option<Arc<FrontendDiagnosticSnapshot>>,
+    diagnostics: DiagnosticAttemptStore,
     dependency_manifest_cache: Vec<Arc<SemanticDependencyInputManifest>>,
     invalidation_plan_cache: VecDeque<InvalidationPlanCacheEntry>,
     durable_declaration_cache: Option<DurableDeclarationCache>,
     last_successful_body_cache: Option<DurableOrdinaryBodyCache>,
     last_successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
+}
+
+/// The canonical parse producer and the diagnostic origins attached to its
+/// currently reusable successful baseline.
+///
+/// Presentation variants share the same parsed program, so their origins are
+/// retained in a small bounded FIFO beside that producer. Replacing any parse
+/// artifact clears the origins atomically. Failed parses do not advance this
+/// producer and are therefore not retained here.
+#[derive(Debug, Default)]
+struct SyntaxParseProducer {
+    session: CanonicalParseSession,
+    origins: VecDeque<Arc<FrontendDiagnosticSnapshot>>,
+}
+
+#[derive(Debug)]
+struct SyntaxProducerUpdate {
+    parse: crate::CanonicalParseUpdate,
+    origin: Option<Arc<FrontendDiagnosticSnapshot>>,
+}
+
+impl SyntaxParseProducer {
+    fn update(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        provenance: &DiagnosticAttemptProvenance,
+    ) -> SyntaxProducerUpdate {
+        let origin = self.origin(snapshot, provenance);
+        let parse = self.session.update(snapshot);
+        self.finish_attempt(parse, origin)
+    }
+
+    fn update_for_batch(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        provenance: &DiagnosticAttemptProvenance,
+    ) -> SyntaxProducerUpdate {
+        let origin = self.origin(snapshot, provenance);
+        let parse = self.session.update_for_batch(snapshot);
+        self.finish_attempt(parse, origin)
+    }
+
+    fn adopt_exact(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        program: Arc<ParsedProgram>,
+        work: ParsedModulesWork,
+        provenance: &DiagnosticAttemptProvenance,
+    ) -> SyntaxProducerUpdate {
+        let origin = self.origin(snapshot, provenance);
+        let parse = self.session.adopt_exact(snapshot, program, work);
+        self.finish_attempt(parse, origin)
+    }
+
+    fn origin(
+        &self,
+        snapshot: &SourceSnapshot,
+        provenance: &DiagnosticAttemptProvenance,
+    ) -> Option<Arc<FrontendDiagnosticSnapshot>> {
+        self.origins
+            .iter()
+            .rev()
+            .find(|origin| {
+                origin.matches_exact_attempt(snapshot, &FrontendDiagnosticStage::Syntax, provenance)
+            })
+            .cloned()
+    }
+
+    fn finish_attempt(
+        &mut self,
+        parse: crate::CanonicalParseUpdate,
+        origin: Option<Arc<FrontendDiagnosticSnapshot>>,
+    ) -> SyntaxProducerUpdate {
+        let origin = origin.filter(|_| parse.exactly_reused_baseline());
+        if parse.succeeded() && !parse.exactly_reused_baseline() {
+            self.origins.clear();
+        }
+        SyntaxProducerUpdate { parse, origin }
+    }
+
+    fn attach_origin(&mut self, origin: Arc<FrontendDiagnosticSnapshot>) {
+        if self
+            .origins
+            .iter()
+            .any(|retained| Arc::ptr_eq(retained, &origin))
+        {
+            return;
+        }
+        self.origins.push_back(origin);
+        while self.origins.len() > FRONTEND_DIAGNOSTIC_RETENTION_LIMIT {
+            self.origins.pop_front();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1177,10 +1202,23 @@ struct InvalidationPlanCacheEntry {
 }
 
 #[derive(Debug)]
+struct MergeCacheEntry {
+    result: Result<Arc<CanonicalMergedProgram>, CompileErrors>,
+    diagnostics: Arc<FrontendDiagnosticSnapshot>,
+}
+
+#[derive(Debug)]
+struct DirectImportDiagnosticCacheEntry {
+    input: ImportDiagnosticInputDescriptor,
+    diagnostics: Arc<FrontendDiagnosticSnapshot>,
+}
+
+#[derive(Debug)]
 struct SemanticCacheEntry {
     input: CodegenInputDescriptor,
     imports: CanonicalImportGraph,
     result: Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
+    diagnostics: Arc<FrontendDiagnosticSnapshot>,
     successful_body_cache: Option<DurableOrdinaryBodyCache>,
 }
 
@@ -1313,18 +1351,18 @@ impl CompilerSession {
                 .published_snapshot
                 .clone()
                 .ok_or_else(no_published_program)?;
-            let stage = FrontendDiagnosticStage::Import(ImportDiagnosticInputDescriptor {
+            let input = ImportDiagnosticInputDescriptor {
                 source: source.source_revision().clone(),
                 context: None,
                 plan: None,
                 ledger: crate::ImportObservationLedger::default(),
                 accepted_reads: Arc::from([]),
-            });
+            };
             if let Some(cached) = self
-                .diagnostic_cache
-                .iter()
-                .find(|entry| same_attempt(entry.source(), &source) && entry.stage() == &stage)
-                .cloned()
+                .direct_import_diagnostics
+                .as_ref()
+                .filter(|entry| entry.input == input)
+                .map(|entry| entry.diagnostics.clone())
             {
                 self.work.import_diagnostics.reuses += 1;
                 cached
@@ -1332,11 +1370,20 @@ impl CompilerSession {
                 let program = self.published.as_ref().ok_or_else(no_published_program)?;
                 let errors = crate::ImportDiscoveryPlan::shape_diagnostics(program);
                 self.work.import_diagnostics.executions += 1;
-                self.publish_diagnostics(&source, stage, Some(&errors), &[])
+                let diagnostics = self.publish_diagnostics(
+                    &source,
+                    FrontendDiagnosticStage::Import(input.clone()),
+                    Some(&errors),
+                    &[],
+                );
+                self.direct_import_diagnostics = Some(DirectImportDiagnosticCacheEntry {
+                    input,
+                    diagnostics: diagnostics.clone(),
+                });
+                diagnostics
             }
         };
-        self.latest_diagnostics = Some(diagnostics.clone());
-        self.evict_diagnostics();
+        self.diagnostics.select(diagnostics.clone());
         self.refresh_retention_metrics();
         Ok(diagnostics)
     }
@@ -1716,11 +1763,11 @@ impl CompilerSession {
     /// Diagnostic snapshot from the most recently attempted query, whether it
     /// succeeded or failed.
     pub fn latest_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
-        self.latest_diagnostics.as_ref()
+        self.diagnostics.latest()
     }
     /// Most recently queried diagnostic snapshot with no errors.
     pub fn latest_successful_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
-        self.latest_successful_diagnostics.as_ref()
+        self.diagnostics.latest_successful()
     }
     /// Most recent successful semantic diagnostic snapshot.
     ///
@@ -1728,21 +1775,34 @@ impl CompilerSession {
     /// baseline. A caller may clone the returned `Arc` to pin it independently
     /// of later session eviction.
     pub fn last_good_semantic_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
-        self.last_good_semantic_diagnostics.as_ref()
+        self.diagnostics.last_good_semantic()
     }
-    /// Look up an exact source-attempt and query-stage pair while it remains in
-    /// the bounded recent cache.
+    /// Look up the currently selected, or otherwise most recently indexed,
+    /// diagnostic batch matching a source-attempt and public query stage.
     ///
-    /// Clone a returned `Arc` when the artifact must outlive cache eviction.
+    /// Canonical and presentation-ordered producer attempts can share the same
+    /// public stage. When the current selection matches, this returns that
+    /// exact batch; otherwise it returns the most recently indexed match.
+    /// Clone the `Arc` when the artifact must outlive index eviction.
+    pub fn most_recent_diagnostics_for(
+        &self,
+        source: &SourceSnapshot,
+        stage: &FrontendDiagnosticStage,
+    ) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+        self.diagnostics.find(source, stage)
+    }
+
+    /// Compatibility name for [`Self::most_recent_diagnostics_for`].
+    ///
+    /// This is not an exact lookup when canonical and presentation provenance
+    /// share a public stage; it follows the selection contract documented by
+    /// `most_recent_diagnostics_for`.
     pub fn diagnostics_for(
         &self,
         source: &SourceSnapshot,
         stage: &FrontendDiagnosticStage,
     ) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
-        self.diagnostic_cache
-            .iter()
-            .rev()
-            .find(|entry| same_attempt(entry.source(), source) && entry.stage() == stage)
+        self.most_recent_diagnostics_for(source, stage)
     }
 
     fn publish_diagnostics(
@@ -1752,30 +1812,41 @@ impl CompilerSession {
         errors: Option<&CompileErrors>,
         warnings: &[CompileWarning],
     ) -> Arc<FrontendDiagnosticSnapshot> {
+        let provenance = match &stage {
+            FrontendDiagnosticStage::Syntax => self
+                .batch_diagnostic_order
+                .as_ref()
+                .map_or(DiagnosticAttemptProvenance::Canonical, |order| {
+                    DiagnosticAttemptProvenance::Presentation(order.clone().into())
+                }),
+            FrontendDiagnosticStage::Merge if errors.is_some() => self
+                .batch_diagnostic_order
+                .as_ref()
+                .map_or(DiagnosticAttemptProvenance::Canonical, |order| {
+                    DiagnosticAttemptProvenance::Presentation(order.clone().into())
+                }),
+            FrontendDiagnosticStage::Merge => DiagnosticAttemptProvenance::Canonical,
+            FrontendDiagnosticStage::Import(_) | FrontendDiagnosticStage::Semantic(_) => {
+                DiagnosticAttemptProvenance::Canonical
+            }
+        };
         if let Some(existing) = self
-            .diagnostic_cache
-            .iter()
-            .find(|entry| same_attempt(entry.source(), source) && entry.stage() == &stage)
+            .diagnostics
+            .find_exact(source, &stage, &provenance)
             .cloned()
         {
             self.work.diagnostic_reuses += 1;
-            self.latest_diagnostics = Some(existing.clone());
-            if existing.is_success() {
-                self.latest_successful_diagnostics = Some(existing.clone());
-                if matches!(existing.stage(), FrontendDiagnosticStage::Semantic(_)) {
-                    self.last_good_semantic_diagnostics = Some(existing.clone());
-                }
-            }
-            self.evict_diagnostics();
+            self.diagnostics.select(existing.clone());
             self.refresh_retention_metrics();
             return existing;
         }
-        if self.latest_diagnostics.is_some() {
+        if self.diagnostics.latest().is_some() {
             self.work.diagnostic_invalidations += 1;
         }
         let snapshot = Arc::new(FrontendDiagnosticSnapshot {
             source: source.clone(),
             stage,
+            provenance,
             errors: errors
                 .map(|errors| errors.iter().cloned().collect::<Vec<_>>())
                 .unwrap_or_default()
@@ -1783,17 +1854,15 @@ impl CompilerSession {
             warnings: warnings.to_vec().into(),
         });
         self.work.diagnostic_publications += 1;
-        self.diagnostic_cache.push_back(snapshot.clone());
-        self.latest_diagnostics = Some(snapshot.clone());
-        if snapshot.is_success() {
-            self.latest_successful_diagnostics = Some(snapshot.clone());
-            if matches!(snapshot.stage(), FrontendDiagnosticStage::Semantic(_)) {
-                self.last_good_semantic_diagnostics = Some(snapshot.clone());
-            }
-        }
-        self.evict_diagnostics();
+        self.diagnostics.insert(snapshot.clone());
         self.refresh_retention_metrics();
         snapshot
+    }
+
+    fn reuse_diagnostics(&mut self, snapshot: Arc<FrontendDiagnosticSnapshot>) {
+        self.work.diagnostic_reuses += 1;
+        self.diagnostics.select(snapshot);
+        self.refresh_retention_metrics();
     }
 
     fn publish_import_diagnostics(
@@ -1820,47 +1889,8 @@ impl CompilerSession {
         )
     }
 
-    fn evict_diagnostics(&mut self) {
-        while self.diagnostic_cache.len() > FRONTEND_DIAGNOSTIC_RETENTION_LIMIT {
-            let evict = self.diagnostic_cache.iter().position(|entry| {
-                !self
-                    .latest_diagnostics
-                    .as_ref()
-                    .is_some_and(|protected| Arc::ptr_eq(entry, protected))
-                    && !self
-                        .latest_successful_diagnostics
-                        .as_ref()
-                        .is_some_and(|protected| Arc::ptr_eq(entry, protected))
-                    && !self
-                        .last_good_semantic_diagnostics
-                        .as_ref()
-                        .is_some_and(|protected| Arc::ptr_eq(entry, protected))
-            });
-            let Some(evict) = evict else {
-                break;
-            };
-            self.diagnostic_cache.remove(evict);
-        }
-        debug_assert!(self.diagnostic_cache.len() <= FRONTEND_DIAGNOSTIC_RETENTION_LIMIT);
-    }
-
     fn refresh_retention_metrics(&mut self) {
-        let mut attempts: Vec<&SourceSnapshot> = Vec::new();
-        let mut diagnostic_source_bytes = 0;
-        for diagnostic in &self.diagnostic_cache {
-            if attempts
-                .iter()
-                .any(|source| same_attempt(source, diagnostic.source()))
-            {
-                continue;
-            }
-            diagnostic_source_bytes += diagnostic
-                .source()
-                .files()
-                .map(|source| source.source.len())
-                .sum::<usize>();
-            attempts.push(diagnostic.source());
-        }
+        let diagnostics = self.diagnostics.retention_metrics();
 
         let mut manifests = BTreeSet::new();
         for manifest in &self.dependency_manifest_cache {
@@ -1871,9 +1901,9 @@ impl CompilerSession {
             manifests.insert(Arc::as_ptr(&entry.current) as usize);
         }
         self.work.retention = FrontendRetentionMetrics {
-            diagnostic_entries: self.diagnostic_cache.len(),
-            diagnostic_source_attempts: attempts.len(),
-            diagnostic_source_bytes,
+            diagnostic_entries: diagnostics.entries,
+            diagnostic_source_attempts: diagnostics.source_attempts,
+            diagnostic_source_bytes: diagnostics.source_bytes,
             dependency_manifests: manifests.len(),
             invalidation_plans: self.invalidation_plan_cache.len(),
         };
@@ -1884,8 +1914,9 @@ impl CompilerSession {
         {
             self.supplied_test_import_graph = None;
         }
-        self.batch_diagnostic_order = None;
-        let update = self.parse.update(snapshot);
+        self.select_diagnostic_presentation(None);
+        let provenance = self.syntax_diagnostic_provenance();
+        let update = self.parse.update(snapshot, &provenance);
         self.finish_update(snapshot, update)
     }
 
@@ -1899,13 +1930,14 @@ impl CompilerSession {
         {
             self.supplied_test_import_graph = None;
         }
-        self.batch_diagnostic_order = Some(
+        self.select_diagnostic_presentation(Some(
             snapshot
                 .files()
                 .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
                 .collect(),
-        );
-        let update = self.parse.update_for_batch(snapshot);
+        ));
+        let provenance = self.syntax_diagnostic_provenance();
+        let update = self.parse.update_for_batch(snapshot, &provenance);
         self.finish_update(snapshot, update)
     }
 
@@ -1919,33 +1951,70 @@ impl CompilerSession {
         {
             self.supplied_test_import_graph = None;
         }
-        self.batch_diagnostic_order = Some(
+        self.select_diagnostic_presentation(Some(
             snapshot
                 .files()
                 .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
                 .collect(),
-        );
-        let update = self.parse.adopt_exact(snapshot, program, work);
+        ));
+        let provenance = self.syntax_diagnostic_provenance();
+        let update = self.parse.adopt_exact(snapshot, program, work, &provenance);
         self.finish_update(snapshot, update)
+    }
+
+    fn syntax_diagnostic_provenance(&self) -> DiagnosticAttemptProvenance {
+        self.batch_diagnostic_order
+            .as_ref()
+            .map_or(DiagnosticAttemptProvenance::Canonical, |order| {
+                DiagnosticAttemptProvenance::Presentation(order.clone().into())
+            })
+    }
+
+    fn select_diagnostic_presentation(&mut self, order: Option<Vec<crate::ModuleId>>) {
+        if self.batch_diagnostic_order != order
+            && self
+                .merge_cache
+                .as_ref()
+                .is_some_and(|entry| entry.result.is_err())
+        {
+            // A failed merge's ordered batch is presentation-keyed. Successful
+            // merge artifacts are canonical and remain reusable across a pure
+            // presentation change.
+            self.merge_cache = None;
+        }
+        self.batch_diagnostic_order = order;
     }
 
     fn finish_update(
         &mut self,
         snapshot: &SourceSnapshot,
-        update: crate::CanonicalParseUpdate,
+        update: SyntaxProducerUpdate,
     ) -> CompilerSessionUpdate {
+        let SyntaxProducerUpdate {
+            parse: update,
+            origin,
+        } = update;
         self.work.updates += 1;
         let parse_work = update.work();
         let invalidation = update.invalidation().clone();
         self.work.last_parse = parse_work;
         self.work.last_invalidation = invalidation.clone();
         let result = update.into_result();
-        let diagnostics = self.publish_diagnostics(
-            snapshot,
-            FrontendDiagnosticStage::Syntax,
-            result.as_ref().err(),
-            &[],
-        );
+        let succeeded = result.is_ok();
+        let diagnostics = if let Some(origin) = origin.filter(|_| succeeded) {
+            self.reuse_diagnostics(origin.clone());
+            origin
+        } else {
+            self.publish_diagnostics(
+                snapshot,
+                FrontendDiagnosticStage::Syntax,
+                result.as_ref().err(),
+                &[],
+            )
+        };
+        if succeeded {
+            self.parse.attach_origin(diagnostics.clone());
+        }
         match result {
             Ok(candidate) => {
                 if self.discovery_attempt.as_deref().is_some_and(|artifact| {
@@ -1975,6 +2044,7 @@ impl CompilerSession {
                         self.work.downstream_invalidations += 1;
                     }
                     self.merge_cache = None;
+                    self.direct_import_diagnostics = None;
                     self.rir_cache = None;
                     self.work.semantic_entries_invalidated += self.semantic_cache.len();
                     self.semantic_cache.clear();
@@ -2107,20 +2177,14 @@ impl CompilerSession {
     pub fn merge(&mut self) -> Result<Arc<CanonicalMergedProgram>, CompileErrors> {
         self.require_closed_discovery()?;
         self.work.merge.calls += 1;
-        if let Some(cached) = &self.merge_cache {
+        if let Some((result, diagnostics)) = self
+            .merge_cache
+            .as_ref()
+            .map(|entry| (entry.result.clone(), entry.diagnostics.clone()))
+        {
             self.work.merge.reuses += 1;
-            let cached = cached.clone();
-            let source = self
-                .published_snapshot
-                .clone()
-                .expect("published program retains source snapshot");
-            self.publish_diagnostics(
-                &source,
-                FrontendDiagnosticStage::Merge,
-                cached.as_ref().err(),
-                &[],
-            );
-            return cached;
+            self.reuse_diagnostics(diagnostics);
+            return result;
         }
         let parsed = self.published.as_deref().ok_or_else(no_published_program)?;
         self.work.merge.executions += 1;
@@ -2138,17 +2202,20 @@ impl CompilerSession {
             self.work.last_merge = merged.work();
             self.definition_shard_baseline = Some(merged.definitions().clone());
         }
-        self.merge_cache = Some(merged.clone());
         let source = self
             .published_snapshot
             .clone()
             .expect("published program retains source snapshot");
-        self.publish_diagnostics(
+        let diagnostics = self.publish_diagnostics(
             &source,
             FrontendDiagnosticStage::Merge,
             merged.as_ref().err(),
             &[],
         );
+        self.merge_cache = Some(MergeCacheEntry {
+            result: merged.clone(),
+            diagnostics,
+        });
         merged
     }
 
@@ -2177,7 +2244,7 @@ impl CompilerSession {
         self.require_successful_import_diagnostics()?;
         let imports = self.accepted_semantic_import_graph()?;
         let rir = self.rir()?;
-        let merged = match self.merge_cache.as_ref() {
+        let merged = match self.merge_cache.as_ref().map(|entry| &entry.result) {
             Some(Ok(merged)) => merged.clone(),
             Some(Err(errors)) => return Err(errors.clone()),
             None => unreachable!("successful RIR query retains its merge input"),
@@ -2190,31 +2257,24 @@ impl CompilerSession {
             ),
             opt_level: options.opt_level.into(),
         };
-        if let Some(entry) = self
+        if let Some((result, diagnostics, successful_body_cache)) = self
             .semantic_cache
             .iter()
             .find(|entry| entry.input == input && entry.imports == imports)
+            .map(|entry| {
+                (
+                    entry.result.clone(),
+                    entry.diagnostics.clone(),
+                    entry.successful_body_cache.clone(),
+                )
+            })
         {
             self.work.semantic.reuses += 1;
-            if entry.result.is_ok() {
-                self.last_successful_body_cache = entry.successful_body_cache.clone();
-                self.last_successful_cfg_cache =
-                    Some(entry.result.as_ref().unwrap().durable_cfgs().clone());
+            if let Ok(output) = &result {
+                self.last_successful_body_cache = successful_body_cache;
+                self.last_successful_cfg_cache = Some(output.durable_cfgs().clone());
             }
-            let result = entry.result.clone();
-            let source = self
-                .published_snapshot
-                .clone()
-                .expect("semantic query retains source snapshot");
-            self.publish_diagnostics(
-                &source,
-                FrontendDiagnosticStage::Semantic(input),
-                result.as_ref().err(),
-                result
-                    .as_ref()
-                    .map(|output| output.warnings())
-                    .unwrap_or(&[]),
-            );
+            self.reuse_diagnostics(diagnostics);
             return result;
         }
 
@@ -2478,10 +2538,25 @@ impl CompilerSession {
             })
             .ok();
         }
+        let source = self
+            .published_snapshot
+            .clone()
+            .expect("semantic query retains source snapshot");
+        let diagnostic_input = semantic_diagnostic_input(&input, imports.clone());
+        let diagnostics = self.publish_diagnostics(
+            &source,
+            FrontendDiagnosticStage::Semantic(diagnostic_input),
+            result.as_ref().err(),
+            result
+                .as_ref()
+                .map(|output| output.warnings())
+                .unwrap_or(&[]),
+        );
         self.semantic_cache.push(SemanticCacheEntry {
             input: input.clone(),
             imports,
             result: result.clone(),
+            diagnostics,
             successful_body_cache: result
                 .is_ok()
                 .then(|| self.last_successful_body_cache.clone())
@@ -2489,24 +2564,11 @@ impl CompilerSession {
         });
         self.work.semantic_entries = self.semantic_cache.len();
         self.work.semantic_records.push(SemanticQueryRecord {
-            input: input.clone(),
+            input,
             work: semantic_work,
             failure,
             failed: result.is_err(),
         });
-        let source = self
-            .published_snapshot
-            .clone()
-            .expect("semantic query retains source snapshot");
-        self.publish_diagnostics(
-            &source,
-            FrontendDiagnosticStage::Semantic(input),
-            result.as_ref().err(),
-            result
-                .as_ref()
-                .map(|output| output.warnings())
-                .unwrap_or(&[]),
-        );
         result
     }
 
@@ -2524,7 +2586,7 @@ impl CompilerSession {
         self.require_successful_import_diagnostics()?;
         let imports = self.accepted_semantic_import_graph()?;
         let rir = self.rir()?;
-        let merged = match self.merge_cache.as_ref() {
+        let merged = match self.merge_cache.as_ref().map(|entry| &entry.result) {
             Some(Ok(merged)) => merged.clone(),
             Some(Err(errors)) => return Err(errors.clone()),
             None => unreachable!("successful RIR query retains merge input"),
@@ -4981,8 +5043,14 @@ fn invalid_dependency_manifest(reason: &str) -> CompileErrors {
     )))
 }
 
-fn same_attempt(left: &SourceSnapshot, right: &SourceSnapshot) -> bool {
-    left.source_revision() == right.source_revision() && left.metadata() == right.metadata()
+fn semantic_diagnostic_input(
+    input: &CodegenInputDescriptor,
+    imports: CanonicalImportGraph,
+) -> crate::ResolvedCodegenRevision {
+    crate::ResolvedCodegenRevision::new(
+        crate::ResolvedProgramRevision::new(input.semantic.clone(), imports),
+        input.opt_level,
+    )
 }
 
 fn programs_are_pointer_equivalent(left: &ParsedProgram, right: &ParsedProgram) -> bool {
@@ -5125,6 +5193,21 @@ mod tests {
             ],
             7,
         )
+    }
+
+    fn evict_diagnostic_index(session: &mut CompilerSession) {
+        for revision in 0..=FRONTEND_DIAGNOSTIC_RETENTION_LIMIT {
+            let source = snapshot(
+                &[(
+                    91,
+                    "/eviction/main.rue",
+                    "main.rue",
+                    &format!("fn main() -> i32 {{ {revision} }}"),
+                )],
+                91,
+            );
+            session.publish_diagnostics(&source, FrontendDiagnosticStage::Syntax, None, &[]);
+        }
     }
 
     fn publish_with_test_imports(
@@ -6818,16 +6901,26 @@ mod tests {
         let mut failed_input = session.semantic_cache[0].input.clone();
         failed_input.opt_level = crate::StableOptLevel::O1;
         let failed_imports = session.semantic_cache[0].imports.clone();
+        let failed_errors = CompileErrors::from(CompileError::without_span(
+            ErrorKind::InvalidCompilerInput("synthetic prior failed opt variant".to_string()),
+        ));
+        let failed_source = session.published_snapshot.clone().unwrap();
+        let failed_diagnostics = session.publish_diagnostics(
+            &failed_source,
+            FrontendDiagnosticStage::Semantic(semantic_diagnostic_input(
+                &failed_input,
+                failed_imports.clone(),
+            )),
+            Some(&failed_errors),
+            &[],
+        );
         session.semantic_cache.insert(
             0,
             SemanticCacheEntry {
                 input: failed_input,
                 imports: failed_imports,
-                result: Err(CompileErrors::from(CompileError::without_span(
-                    ErrorKind::InvalidCompilerInput(
-                        "synthetic prior failed opt variant".to_string(),
-                    ),
-                ))),
+                result: Err(failed_errors),
+                diagnostics: failed_diagnostics,
                 successful_body_cache: None,
             },
         );
@@ -8795,7 +8888,7 @@ mod tests {
         let FrontendDiagnosticStage::Semantic(input) = first.stage() else {
             panic!("semantic diagnostic stage");
         };
-        assert_eq!(input.opt_level, crate::StableOptLevel::O0);
+        assert_eq!(input.opt_level(), crate::StableOptLevel::O0);
 
         session.update(&warning_source).into_result().unwrap();
         session.semantic(&options).unwrap();
@@ -8867,6 +8960,251 @@ mod tests {
     }
 
     #[test]
+    fn syntax_producer_reselects_canonical_origin_after_diagnostic_index_eviction() {
+        let source = base();
+        let mut session = CompilerSession::new();
+        let origin = session.update(&source).diagnostics().clone();
+
+        evict_diagnostic_index(&mut session);
+        assert!(
+            session
+                .most_recent_diagnostics_for(&source, &FrontendDiagnosticStage::Syntax)
+                .is_none()
+        );
+        let publications = session.work().diagnostic_publications;
+        let invalidations = session.work().diagnostic_invalidations;
+        let reuses = session.work().diagnostic_reuses;
+
+        let exact = session.update(&source);
+
+        assert!(Arc::ptr_eq(exact.diagnostics(), &origin));
+        assert_eq!(exact.work().syntax.parser_invocations, 0);
+        assert_eq!(session.work().diagnostic_publications, publications);
+        assert_eq!(session.work().diagnostic_invalidations, invalidations);
+        assert_eq!(session.work().diagnostic_reuses, reuses + 1);
+        assert!(Arc::ptr_eq(
+            session
+                .most_recent_diagnostics_for(&source, &FrontendDiagnosticStage::Syntax)
+                .unwrap(),
+            &origin
+        ));
+    }
+
+    #[test]
+    fn syntax_producer_reselects_presentation_origin_after_diagnostic_index_eviction() {
+        let source = base();
+        let mut session = CompilerSession::new();
+        let origin = session
+            .update_for_presentation(&source)
+            .diagnostics()
+            .clone();
+
+        evict_diagnostic_index(&mut session);
+        assert!(
+            session
+                .most_recent_diagnostics_for(&source, &FrontendDiagnosticStage::Syntax)
+                .is_none()
+        );
+        let publications = session.work().diagnostic_publications;
+        let invalidations = session.work().diagnostic_invalidations;
+        let reuses = session.work().diagnostic_reuses;
+
+        let exact = session.update_for_presentation(&source);
+
+        assert!(Arc::ptr_eq(exact.diagnostics(), &origin));
+        assert_eq!(exact.work().syntax.parser_invocations, 0);
+        assert_eq!(session.work().diagnostic_publications, publications);
+        assert_eq!(session.work().diagnostic_invalidations, invalidations);
+        assert_eq!(session.work().diagnostic_reuses, reuses + 1);
+        assert!(Arc::ptr_eq(
+            session
+                .most_recent_diagnostics_for(&source, &FrontendDiagnosticStage::Syntax)
+                .unwrap(),
+            &origin
+        ));
+    }
+
+    #[test]
+    fn merge_cache_reselects_its_origin_after_diagnostic_index_eviction() {
+        let source = base();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.merge().unwrap();
+        let origin = session.latest_diagnostics().unwrap().clone();
+
+        evict_diagnostic_index(&mut session);
+        assert!(
+            session
+                .most_recent_diagnostics_for(&source, &FrontendDiagnosticStage::Merge)
+                .is_none()
+        );
+        let publications = session.work().diagnostic_publications;
+        let reuses = session.work().diagnostic_reuses;
+
+        session.merge().unwrap();
+
+        assert!(Arc::ptr_eq(session.latest_diagnostics().unwrap(), &origin));
+        assert_eq!(session.work().merge.executions, 1);
+        assert_eq!(session.work().merge.reuses, 1);
+        assert_eq!(session.work().diagnostic_publications, publications);
+        assert_eq!(session.work().diagnostic_reuses, reuses + 1);
+        assert!(Arc::ptr_eq(
+            session
+                .most_recent_diagnostics_for(&source, &FrontendDiagnosticStage::Merge)
+                .unwrap(),
+            &origin
+        ));
+    }
+
+    #[test]
+    fn direct_import_cache_reselects_its_origin_after_diagnostic_index_eviction() {
+        let source = base();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let origin = session.import_diagnostics().unwrap();
+        let stage = origin.stage().clone();
+
+        evict_diagnostic_index(&mut session);
+        assert!(
+            session
+                .most_recent_diagnostics_for(&source, &stage)
+                .is_none()
+        );
+        let publications = session.work().diagnostic_publications;
+
+        let reused = session.import_diagnostics().unwrap();
+
+        assert!(Arc::ptr_eq(&reused, &origin));
+        assert_eq!(session.work().import_diagnostics.executions, 1);
+        assert_eq!(session.work().import_diagnostics.reuses, 1);
+        assert_eq!(session.work().diagnostic_publications, publications);
+        assert!(Arc::ptr_eq(
+            session
+                .most_recent_diagnostics_for(&source, &stage)
+                .unwrap(),
+            &origin
+        ));
+    }
+
+    #[test]
+    fn semantic_cache_reselects_failure_origin_after_diagnostic_index_eviction() {
+        let source = snapshot(
+            &[(7, "/p/main.rue", "main.rue", "fn main() -> i32 { missing }")],
+            7,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let first_errors = session.semantic(&options).unwrap_err();
+        let origin = session.latest_diagnostics().unwrap().clone();
+        let stage = origin.stage().clone();
+
+        evict_diagnostic_index(&mut session);
+        assert!(
+            session
+                .most_recent_diagnostics_for(&source, &stage)
+                .is_none()
+        );
+        let publications = session.work().diagnostic_publications;
+        let reuses = session.work().diagnostic_reuses;
+
+        let reused_errors = session.semantic(&options).unwrap_err();
+
+        assert_eq!(
+            first_errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            reused_errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        );
+        assert!(Arc::ptr_eq(session.latest_diagnostics().unwrap(), &origin));
+        assert_eq!(session.work().semantic.executions, 1);
+        assert_eq!(session.work().semantic.reuses, 1);
+        assert_eq!(session.work().diagnostic_publications, publications);
+        assert_eq!(session.work().diagnostic_reuses, reuses + 1);
+        assert!(Arc::ptr_eq(
+            session
+                .most_recent_diagnostics_for(&source, &stage)
+                .unwrap(),
+            &origin
+        ));
+    }
+
+    #[test]
+    fn semantic_diagnostic_identity_includes_the_accepted_import_graph() {
+        let source = snapshot(
+            &[
+                (
+                    1,
+                    "/p/main.rue",
+                    "main.rue",
+                    r#"const selected = @import("choice.rue");
+fn main() -> i32 { selected.value() }"#,
+                ),
+                (2, "/p/a.rue", "a.rue", "pub fn value() -> i32 { 1 }"),
+                (3, "/p/b.rue", "b.rue", "pub fn value() -> i32 { 2 }"),
+            ],
+            1,
+        );
+        let root = source.module_id(FileId::new(1)).unwrap().clone();
+        let a = source.module_id(FileId::new(2)).unwrap().clone();
+        let b = source.module_id(FileId::new(3)).unwrap().clone();
+        let resolution = ModuleResolutionInputs::new(
+            root.clone(),
+            [
+                (root.clone(), "/p/main.rue"),
+                (a.clone(), "/p/a.rue"),
+                (b.clone(), "/p/b.rue"),
+            ]
+            .into_iter()
+            .map(|(module, path)| crate::ModuleResolutionInput {
+                module,
+                physical_path: Arc::from(path),
+            })
+            .collect(),
+        )
+        .unwrap();
+        let graph = |target| {
+            CanonicalImportGraph::from_supplied(
+                root.clone(),
+                vec![crate::CanonicalImportRecord::new(
+                    root.clone(),
+                    "choice.rue",
+                    CanonicalImportResolution::Resolved(target),
+                )],
+                &resolution,
+            )
+            .unwrap()
+        };
+        let graph_a = graph(a);
+        let graph_b = graph(b);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+
+        session.adopt_test_import_graph(graph_a.clone());
+        session.semantic(&options).unwrap();
+        let diagnostics_a = session.latest_diagnostics().unwrap().clone();
+        session.adopt_test_import_graph(graph_b.clone());
+        session.semantic(&options).unwrap();
+        let diagnostics_b = session.latest_diagnostics().unwrap().clone();
+
+        assert!(!Arc::ptr_eq(&diagnostics_a, &diagnostics_b));
+        let FrontendDiagnosticStage::Semantic(input_a) = diagnostics_a.stage() else {
+            panic!("semantic diagnostics");
+        };
+        let FrontendDiagnosticStage::Semantic(input_b) = diagnostics_b.stage() else {
+            panic!("semantic diagnostics");
+        };
+        assert_eq!(input_a.program().imports(), &graph_a);
+        assert_eq!(input_b.program().imports(), &graph_b);
+        assert_eq!(session.work().semantic.executions, 2);
+    }
+
+    #[test]
     fn long_failure_recovery_sequence_bounds_diagnostics_and_preserves_last_good() {
         let options = CompileOptions::default();
         let source = |text: &str| snapshot(&[(7, "/p/main.rue", "main.rue", text)], 7);
@@ -8931,7 +9269,10 @@ mod tests {
                 session
                     .diagnostics_for(
                         &valid,
-                        &FrontendDiagnosticStage::Semantic(recovered.input().clone())
+                        &FrontendDiagnosticStage::Semantic(semantic_diagnostic_input(
+                            recovered.input(),
+                            session.accepted_semantic_import_graph().unwrap(),
+                        ))
                     )
                     .unwrap()
             ));

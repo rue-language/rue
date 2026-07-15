@@ -36,6 +36,7 @@ mod canonical_semantic;
 mod definition_snapshot;
 mod dependency_envelope;
 mod diagnostic;
+mod diagnostic_attempt_store;
 mod drop_glue;
 mod durable_body;
 mod durable_cfg;

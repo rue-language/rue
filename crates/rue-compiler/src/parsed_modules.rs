@@ -556,6 +556,21 @@ impl CanonicalParseUpdate {
         &self.invalidation
     }
 
+    pub(crate) fn succeeded(&self) -> bool {
+        self.result.is_ok()
+    }
+
+    /// Whether this update reused the complete current baseline without
+    /// rebinding or replacing any producer artifact.
+    pub(crate) fn exactly_reused_baseline(&self) -> bool {
+        self.result.is_ok()
+            && !self.invalidation.exact_reused.is_empty()
+            && self.invalidation.payload_rebound.is_empty()
+            && self.invalidation.reparsed.is_empty()
+            && self.invalidation.added.is_empty()
+            && self.invalidation.removed.is_empty()
+    }
+
     #[cfg(test)]
     pub(crate) fn baseline_advanced(&self) -> bool {
         self.baseline_advanced
