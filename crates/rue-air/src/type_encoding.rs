@@ -124,10 +124,7 @@ pub(crate) mod compatibility {
     const POOL_INDEX_OFFSET: u32 = 256;
 
     pub(crate) const fn encode_pool_index(pool_index: u32) -> Option<u32> {
-        match pool_index.checked_add(POOL_INDEX_OFFSET) {
-            Some(encoded) => Some(encoded),
-            None => None,
-        }
+        pool_index.checked_add(POOL_INDEX_OFFSET)
     }
 
     pub(crate) const fn decode_pool_index(raw: u32) -> Option<u32> {
