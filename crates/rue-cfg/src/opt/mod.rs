@@ -8,8 +8,9 @@
 //! Rue follows standard compiler conventions for optimization levels:
 //!
 //! - `-O0`: No optimization (default)
-//! - `-O1`: Basic optimizations (constant folding, dead code elimination)
-//! - `-O2`: Standard optimizations (same as -O1 for now)
+//! - `-O1`: Basic optimizations (constant folding, peephole, CFG
+//!   simplification, dead code elimination)
+//! - `-O2`: `-O1` plus block-local common-subexpression elimination (RUE-913)
 //! - `-O3`: Aggressive optimizations (same as -O2 for now)
 //!
 //! ## Pipeline
@@ -22,6 +23,7 @@
 
 mod constfold;
 mod constopt;
+mod cse;
 mod dce;
 mod peephole;
 mod simplify;
@@ -50,8 +52,9 @@ pub enum OptLevel {
 
     /// Standard optimizations (`-O2`).
     ///
-    /// Currently the same as O1. Future optimization passes will be
-    /// added at this level.
+    /// Superset of `-O1`: runs everything `-O1` does, then block-local
+    /// common-subexpression elimination (RUE-913), which replaces duplicate
+    /// pure computations within a block with their first occurrence.
     O2,
 
     /// Aggressive optimizations (`-O3`).
@@ -166,6 +169,15 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel, type_pool: &FrozenTypeInternPool
             // single-predecessor Goto chains into straight-line blocks
             // before DCE prunes the leftovers.
             simplify::run(cfg);
+
+            // Block-local common-subexpression elimination (RUE-913), at
+            // -O2/-O3 only (ADR-0044 places CSE at the release-default level).
+            // Runs after simplify — merged straight-line blocks expose more
+            // intra-block duplicates — and before DCE, which sweeps the dead
+            // placeholders each replaced duplicate leaves behind.
+            if matches!(level, OptLevel::O2 | OptLevel::O3) {
+                cse::run(cfg);
+            }
 
             // Dead code elimination: remove unused values and unreachable blocks
             dce::run(cfg);

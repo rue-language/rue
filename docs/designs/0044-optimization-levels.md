@@ -191,8 +191,8 @@ shapes each new pass targets (see Sequencing).
 | Level | Contract | Passes (today) | Passes (planned home) |
 |-------|----------|----------------|-----------------------|
 | `-O0` | No optimization. Codegen tracks source; fastest compile; best debugging. **Default.** | none (only always-on `verify()`) | stays empty |
-| `-O1` | Cheap, always-safe, compile-time-neutral-or-positive local cleanups. | constfold ⇄ constprop (fixpoint) → DCE | + peephole/strength-reduction; simplify-cfg (block merging, jump threading) |
-| `-O2` | **Release default.** All balanced optimizations that reliably help without a size blow-up. Superset of `-O1`. | = `-O1` today | + CSE (GVN); conservative inlining (small/leaf fns); copy propagation; better regalloc |
+| `-O1` | Cheap, always-safe, compile-time-neutral-or-positive local cleanups. | sparse constfold/constprop (RUE-794) → peephole (RUE-912) → simplify-cfg (RUE-910/911) → DCE | complete for now |
+| `-O2` | **Release default.** All balanced optimizations that reliably help without a size blow-up. Superset of `-O1`. | `-O1` + block-local CSE (RUE-913) | + conservative inlining (small/leaf fns); copy propagation; wider GVN; better regalloc |
 | `-O3` | `-O2` plus speculative, size-spending, speed-chasing transforms. Superset of `-O2`. | = `-O1` today | + aggressive inlining; loop opts (LICM, unrolling); later, vectorization |
 
 Rules that make the table a *contract* rather than a wishlist:
@@ -260,10 +260,13 @@ as Linear issues under RUE-245. **This ADR implements none of them.**
 
 - [x] **Phase 0: Differential net** — RUE-236 (done; PR #1092). Prerequisite.
 - [x] **Phase 1: Define the contract** — this ADR (RUE-245).
-- [ ] **Phase 2: `-O1` completions** — peephole/strength-reduction + simplify-cfg,
-  added at `-O1` with differential coverage. (file RUE-NNN)
+- [x] **Phase 2: `-O1` completions** — peephole/strength-reduction + simplify-cfg,
+  added at `-O1` with differential coverage. (RUE-910, RUE-911, RUE-912; merged
+  2026-07-16)
 - [ ] **Phase 3: `-O2` content** — CSE/GVN, copy prop, conservative inlining;
-  `-O2` stops aliasing `-O1`. (file RUE-NNN)
+  `-O2` stops aliasing `-O1`. Partial: block-local CSE landed (RUE-913), so
+  `-O2` no longer aliases `-O1`; copy propagation (RUE-914) and conservative
+  inlining (RUE-915) still pending. (file RUE-NNN)
 - [ ] **Phase 4: `-O3` content** — aggressive inlining + loop opts; `-O3` stops
   aliasing `-O2`. (file RUE-NNN)
 - [ ] **Phase 5 (optional): size levels** — `-Os`/`-Oz` if a size-sensitive

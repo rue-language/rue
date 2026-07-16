@@ -1,4 +1,4 @@
-# pre-RUE-905 Chumsky: accepted=3757 rejected=149 lex_invalid=35 accepted_source_ast_sha256=b8775dc0d94aefbae4ae0675b3aff1374a403cb9f081fbd4583deef8c3eae6ef
+# pre-RUE-905 Chumsky: accepted=3759 rejected=149 lex_invalid=35 accepted_source_ast_sha256=6285a16bc19faa3ba2830fdbda7c4f0b7f20861b1148d309d8e7c0b02e6570b8
 crates/rue-cli-tests/cases/ice_regressions.toml#case[23].files[0].source	2e20a2ba448b239e1ead60f5f3a138b29d8fa35011e22e9e1aeb3c2d3c219365	4abc165df113087fc80754c454b6c344b9f89786f010f94eff6b34e12c72737f
 crates/rue-cli-tests/cases/modules.toml#case[5].files[0].source	5dc4f738ec6176b63e0afbcaa317b1b0d28b9a593dfdd7048c1add84aa179314	906620269e628b299441e74af888a91497ba49c62f0896d87a8232dff0c9818c
 crates/rue-cli-tests/cases/modules.toml#case[6].files[0].source	d62edd50c9e1f709d0ce50ffef54974ab82519a4e32eec9780c8c35f4a881aa8	a93bcb41d33bb153b5c78708b02dc973f8dd4c5652c767fcb54e15c5cf19f8ca
