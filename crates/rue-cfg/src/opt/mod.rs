@@ -23,6 +23,7 @@
 mod constfold;
 mod constopt;
 mod dce;
+mod peephole;
 mod simplify;
 
 use crate::Cfg;
@@ -150,6 +151,14 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel, type_pool: &FrozenTypeInternPool
             // deep chains stay linear instead of forcing quadratic full-CFG
             // rescans (RUE-794).
             constopt::run(cfg);
+
+            // Peephole algebraic simplification (RUE-912): rewire trap-free
+            // identities (x+0, x*1, ...) to their operand and strength-reduce
+            // unsigned division/modulo by powers of two. Runs after constopt
+            // so propagated constants are visible; annihilators that produce
+            // constants (x*0, x-x, ...) live in the constfold kernel inside
+            // the worklist instead, because their results cascade.
+            peephole::run(cfg);
 
             // CFG simplification (RUE-910, RUE-911): fold constant-condition
             // Branch/Switch terminators into Gotos so dead arms drop out of

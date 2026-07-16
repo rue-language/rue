@@ -462,3 +462,61 @@ stdout = """5
 6
 """
 exit_code = 11
+
+# Peephole algebraic simplification (RUE-912): identity rewires (x+0, x*1,
+# x/1, x|0, x^0, shifts by 0, x&x, x|x, !!b), constant-producing annihilators
+# (x*0, x-x, x^x, x%1), and unsigned power-of-two strength reduction. The
+# helper params keep operands dynamic so the rewrites (not constant folding)
+# are what's exercised; -O0 never rewrites and must agree exactly. The signed
+# division uses a NEGATIVE dividend to pin round-toward-zero: an illegal
+# sar-based reduction would produce -4 instead of -3.
+[[case]]
+name = "peephole_identities_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn identities(x: i32) -> i32 {
+    let a: i32 = x + 0;
+    let b: i32 = 0 + a;
+    let c: i32 = b - 0;
+    let d: i32 = c * 1;
+    let e: i32 = 1 * d;
+    let f: i32 = e / 1;
+    let g: i32 = f | 0;
+    let h: i32 = g ^ 0;
+    let i: i32 = h << 0;
+    let j: i32 = i >> 0;
+    j & j | (j | j)
+}
+
+fn annihilators(x: i32) -> i32 {
+    (x - x) + (x ^ x) + (x * 0) + (0 * x) + (x & 0) + (x % 1)
+}
+
+fn unsigned_reduce(x: u32) -> u32 {
+    x / 8 + x % 8 + x / 1
+}
+
+fn signed_round_toward_zero(x: i32) -> i32 {
+    x / 2
+}
+
+fn double_not(x: i32) -> bool {
+    !!(x > 3)
+}
+
+fn main() -> i32 {
+    @dbg(identities(21));
+    @dbg(annihilators(-17));
+    @dbg(unsigned_reduce(100));
+    @dbg(signed_round_toward_zero(-7));
+    if double_not(5) { @dbg(1); } else { @dbg(0); }
+    identities(21) * 2
+}
+""" }]
+stdout = """21
+0
+116
+-3
+1
+"""
+exit_code = 42
