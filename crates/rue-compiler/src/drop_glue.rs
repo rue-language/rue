@@ -629,7 +629,7 @@ fn type_name(ty: Type, type_pool: &FrozenTypeInternPool) -> String {
 #[cfg(test)]
 mod tests {
     use lasso::ThreadedRodeo;
-    use rue_air::{EnumDef, ModuleId, StructField, TypeInternPool};
+    use rue_air::{EnumDef, StructField, TypeInternPool};
 
     use super::*;
 
@@ -784,9 +784,11 @@ mod tests {
         );
         let drop_enum_ty = Type::new_enum(drop_enum_id);
 
-        // Every TypeKind occurs either directly or through one of the aggregate
-        // shapes below. Keeping the droppable fields last makes their Param
-        // indices a compact assertion over every preceding canonical width.
+        // Every runtime TypeKind occurs either directly or through one of the
+        // aggregate shapes below. Recovery and compile-time-only types are not
+        // valid backend structural children. Keeping the droppable fields last
+        // makes their Param indices a compact assertion over every preceding
+        // canonical width.
         let outer_id = register_struct(
             &type_pool,
             &interner,
@@ -801,11 +803,8 @@ mod tests {
                 Type::U32,
                 Type::U64,
                 Type::BOOL,
-                Type::ERROR,
                 Type::UNIT,
                 Type::NEVER,
-                Type::COMPTIME_TYPE,
-                Type::new_module(ModuleId(0)),
                 const_ptr,
                 mut_ptr,
                 zst_mixed_ty,
@@ -830,8 +829,8 @@ mod tests {
         let outer =
             create_struct_drop_glue_function(type_pool.struct_def(outer_id), outer_id, &type_pool);
         assert_eq!(outer.num_param_slots, type_pool.abi_slot_count(outer_ty));
-        assert_eq!(outer.num_param_slots, 28);
-        assert_eq!(param_indices(&outer), [20, 21, 23, 25]);
+        assert_eq!(outer.num_param_slots, 27);
+        assert_eq!(param_indices(&outer), [19, 20, 22, 24]);
 
         let array = create_array_drop_glue_function(drop_array_id, &type_pool);
         assert_eq!(

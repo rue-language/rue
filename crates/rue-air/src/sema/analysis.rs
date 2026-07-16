@@ -131,15 +131,15 @@ pub(crate) fn import_staged_body(
                     _ => return Err(F::NominalKindMismatch),
                 }
             }
-            T::Array { element, len } => Type::new_array(
-                pool.intern_array_from_type(import_type(sema, pool, element)?, *len),
-            ),
-            T::PtrConst(value) => Type::new_ptr_const(
-                pool.intern_ptr_const_from_type(import_type(sema, pool, value)?),
-            ),
-            T::PtrMut(value) => {
-                Type::new_ptr_mut(pool.intern_ptr_mut_from_type(import_type(sema, pool, value)?))
-            }
+            T::Array { element, len } => pool
+                .try_intern_array(import_type(sema, pool, element)?, *len)
+                .map_err(|_| F::InvalidStructuralType)?,
+            T::PtrConst(value) => pool
+                .try_intern_ptr_const(import_type(sema, pool, value)?)
+                .map_err(|_| F::InvalidStructuralType)?,
+            T::PtrMut(value) => pool
+                .try_intern_ptr_mut(import_type(sema, pool, value)?)
+                .map_err(|_| F::InvalidStructuralType)?,
             T::Module(module) => {
                 let id = (0..sema.module_registry.len())
                     .map(|i| ModuleId::new(i as u32))
@@ -378,6 +378,13 @@ fn intern_named_callable_symbols(sema: &BodySema<'_>) {
 /// success (`Ok`) path, so any `<error>` found here is by definition
 /// undiagnosed and indicates a compiler bug.
 fn find_undiagnosed_error_type(output: &SemaOutput) -> Option<CompileError> {
+    if let Err(error) = output.type_pool.validate_for_success() {
+        return Some(CompileError::without_span(ErrorKind::InternalError(
+            format!(
+                "the completed type pool contains an invalid or recovery-only type graph but no diagnostic was emitted: {error:?} (RUE-836)"
+            ),
+        )));
+    }
     for func in &output.functions {
         if func.air.return_type().is_error() {
             return Some(CompileError::without_span(ErrorKind::InternalError(

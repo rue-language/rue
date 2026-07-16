@@ -196,6 +196,19 @@ impl DeclarationPhase for SourceDeclarations {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeferredOwnershipGateKind {
+    RequireDroppable,
+    RequireTriviallyDroppable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeferredOwnershipGate {
+    kind: DeferredOwnershipGateKind,
+    ty: Type,
+    span: Span,
+}
+
 /// Semantic analyzer that converts RIR to AIR.
 pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     declarations: D,
@@ -318,6 +331,10 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     /// Maps the struct to the (field name, field type name) that caused it,
     /// for diagnostics explaining why the container is linear.
     pub(crate) infectious_linear: HashMap<StructId, (String, String)>,
+    /// Ownership gates reached while declaration payloads are still mutable.
+    /// Their negative result is not authoritative until nominal payloads,
+    /// infectious linearity, and destructors have all been finalized.
+    pub(crate) deferred_ownership_gates: Vec<DeferredOwnershipGate>,
     /// Current recursion depth of `-> type` comptime-function reduction
     /// (`eval_comptime_type_call`). Unlike value functions — whose comptime
     /// recursion is bounded by the specialization-round limit — a `-> type`
@@ -406,6 +423,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             anon_struct_type_subst,
             destructor_spans,
             infectious_linear,
+            deferred_ownership_gates,
             comptime_type_call_depth,
             fn_signatures_in_flight,
             ctor_type_displays,
@@ -459,6 +477,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             anon_struct_type_subst,
             destructor_spans,
             infectious_linear,
+            deferred_ownership_gates,
             comptime_type_call_depth,
             fn_signatures_in_flight,
             ctor_type_displays,
@@ -778,6 +797,7 @@ impl<'a> Sema<'a> {
             anon_struct_type_subst: HashMap::new(),
             destructor_spans: HashMap::new(),
             infectious_linear: HashMap::new(),
+            deferred_ownership_gates: Vec::new(),
             comptime_type_call_depth: 0,
             fn_signatures_in_flight: HashSet::new(),
             ctor_type_displays: HashMap::new(),

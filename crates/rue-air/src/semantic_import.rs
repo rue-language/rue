@@ -89,6 +89,8 @@ pub enum SemanticImportFailure {
     BuiltinNominalKindMismatch,
     GenericParameterNeedsDeclarationContext,
     GenericParameterOutOfRange,
+    InvalidStructuralType,
+    NominalAlreadyComplete,
     ForeignLocalType,
     ForeignLocalValue,
 }
@@ -148,19 +150,42 @@ where
     K: Clone + Ord,
     M: Clone + Ord + AsRef<str>,
 {
-    /// Atomically reconstruct a structured durable body in this epoch.
-    /// All validation and AIR construction happens in a scratch value; the
-    /// epoch's declaration universe is immutable and cannot be partially
-    /// updated on failure.
+    /// Reconstruct a structured durable body without publishing partial state.
+    ///
+    /// The first pass performs every fallible reconstruction step against the
+    /// type-pool transaction snapshot and an isolated symbol interner. Only a
+    /// body that passes that preflight is rebuilt with the live interner, so a
+    /// returned error changes neither pool nor symbol allocation order.
     pub fn import_body(
         &self,
         body: &SemanticBody<K, M>,
         body_span: Span,
     ) -> Result<SemanticImportedBody, SemanticBodyImportFailure> {
+        self.type_pool.transaction(|type_pool| {
+            let scratch_interner = ThreadedRodeo::new();
+            self.import_body_in_pool(body, body_span, type_pool, &scratch_interner)?;
+
+            // The same immutable body has passed every error path, and the
+            // transaction snapshot now contains every structural type it
+            // needs. This pass can therefore publish symbols without a later
+            // recoverable failure leaving a prefix behind.
+            Ok(self
+                .import_body_in_pool(body, body_span, type_pool, &self.interner)
+                .expect("preflighted semantic body reconstruction must be infallible"))
+        })
+    }
+
+    fn import_body_in_pool(
+        &self,
+        body: &SemanticBody<K, M>,
+        body_span: Span,
+        type_pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+    ) -> Result<SemanticImportedBody, SemanticBodyImportFailure> {
         Self::import_body_with(
             body,
             body_span,
-            |ty| self.import_type_local(ty),
+            |ty| self.import_type_local_with(ty, type_pool, None),
             |key| match self.nominals.get(key) {
                 Some(LocalNominal::Struct(id)) => Ok(*id),
                 Some(LocalNominal::Enum(_)) => Err(SemanticBodyImportFailure::WrongNominalKind),
@@ -184,7 +209,7 @@ where
                     ))
             },
             |_| Err(SemanticBodyImportFailure::UnsupportedGenericCall),
-            |name| self.interner.get_or_intern(name),
+            |name| interner.get_or_intern(name),
         )
     }
 
@@ -695,7 +720,7 @@ where
             let symbol = interner.get_or_intern(&name);
             let value = match nominal.kind {
                 SemanticImportNominalKind::Struct => {
-                    let (id, _) = type_pool.register_struct(
+                    let (id, _) = type_pool.declare_struct(
                         symbol,
                         StructDef {
                             name,
@@ -714,7 +739,7 @@ where
                     LocalNominal::Struct(id)
                 }
                 SemanticImportNominalKind::Enum => {
-                    let (id, _) = type_pool.register_enum(
+                    let (id, _) = type_pool.declare_enum(
                         symbol,
                         EnumDef {
                             name,
@@ -832,24 +857,26 @@ where
                 Some(LocalNominal::Enum(id)) => Type::new_enum(*id),
                 None => return Err(SemanticImportFailure::MissingNominal),
             },
-            SemanticImportType::Array { element, len } => {
-                Type::new_array(type_pool.intern_array_from_type(
+            SemanticImportType::Array { element, len } => type_pool
+                .try_intern_array(
                     self.import_type_local_with(element, type_pool, generic_parameters)?,
                     *len,
-                ))
-            }
-            SemanticImportType::PtrConst(value) => {
-                Type::new_ptr_const(type_pool.intern_ptr_const_from_type(
-                    self.import_type_local_with(value, type_pool, generic_parameters)?,
-                ))
-            }
-            SemanticImportType::PtrMut(value) => Type::new_ptr_mut(
-                type_pool.intern_ptr_mut_from_type(self.import_type_local_with(
+                )
+                .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
+            SemanticImportType::PtrConst(value) => type_pool
+                .try_intern_ptr_const(self.import_type_local_with(
                     value,
                     type_pool,
                     generic_parameters,
-                )?),
-            ),
+                )?)
+                .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
+            SemanticImportType::PtrMut(value) => type_pool
+                .try_intern_ptr_mut(self.import_type_local_with(
+                    value,
+                    type_pool,
+                    generic_parameters,
+                )?)
+                .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
             SemanticImportType::Module(key) => Type::new_module(
                 *self
                     .modules
@@ -946,6 +973,9 @@ where
         &self,
         value: Type,
     ) -> Result<SemanticImportType<K, M>, SemanticImportFailure> {
+        self.type_pool
+            .validate_complete_type(value)
+            .map_err(|_| SemanticImportFailure::ForeignLocalType)?;
         Ok(match value.kind() {
             crate::TypeKind::I8 => SemanticImportType::I8,
             crate::TypeKind::I16 => SemanticImportType::I16,
@@ -1060,20 +1090,38 @@ where
         else {
             return Err(SemanticImportFailure::NominalKindMismatch);
         };
-        let mut def = self.type_pool.struct_def(id);
-        def.fields = fields
-            .iter()
-            .map(|(name, ty)| {
-                Ok(StructField {
-                    name: name.to_string(),
-                    ty: self.import_type_local(ty)?,
+        self.type_pool.transaction(|type_pool| {
+            let metadata = type_pool.struct_declaration_metadata(id).ok_or_else(|| {
+                if type_pool.try_struct_def(id).is_some() {
+                    SemanticImportFailure::NominalAlreadyComplete
+                } else {
+                    SemanticImportFailure::NominalKindMismatch
+                }
+            })?;
+            let fields = fields
+                .iter()
+                .map(|(name, ty)| {
+                    Ok(StructField {
+                        name: name.to_string(),
+                        ty: self.import_type_local_with(ty, type_pool, None)?,
+                    })
                 })
-            })
-            .collect::<Result<_, _>>()?;
-        def.is_copy = is_copy;
-        def.is_linear = is_linear;
-        self.type_pool.update_struct_def(id, def);
-        Ok(())
+                .collect::<Result<_, _>>()?;
+            type_pool.complete_declared_struct(
+                id,
+                StructDef {
+                    name: metadata.name,
+                    fields,
+                    is_copy,
+                    is_linear,
+                    destructor: metadata.destructor,
+                    is_builtin: metadata.is_builtin,
+                    is_pub: metadata.is_pub,
+                    file_id: metadata.file_id,
+                },
+            );
+            Ok(())
+        })
     }
 
     pub fn complete_enum(
@@ -1089,19 +1137,35 @@ where
         else {
             return Err(SemanticImportFailure::NominalKindMismatch);
         };
-        let mut def = self.type_pool.enum_def(id);
-        def.variants = variants.iter().map(|(name, _)| name.to_string()).collect();
-        def.variant_payloads = variants
-            .iter()
-            .map(|(_, payload)| {
-                payload
-                    .iter()
-                    .map(|ty| self.import_type_local(ty))
-                    .collect()
-            })
-            .collect::<Result<_, _>>()?;
-        self.type_pool.update_enum_def(id, def);
-        Ok(())
+        self.type_pool.transaction(|type_pool| {
+            let metadata = type_pool.enum_declaration_metadata(id).ok_or_else(|| {
+                if type_pool.try_enum_def(id).is_some() {
+                    SemanticImportFailure::NominalAlreadyComplete
+                } else {
+                    SemanticImportFailure::NominalKindMismatch
+                }
+            })?;
+            let variant_payloads = variants
+                .iter()
+                .map(|(_, payload)| {
+                    payload
+                        .iter()
+                        .map(|ty| self.import_type_local_with(ty, type_pool, None))
+                        .collect()
+                })
+                .collect::<Result<_, _>>()?;
+            type_pool.complete_declared_enum(
+                id,
+                EnumDef {
+                    name: metadata.name,
+                    variants: variants.iter().map(|(name, _)| name.to_string()).collect(),
+                    variant_payloads,
+                    is_pub: metadata.is_pub,
+                    file_id: metadata.file_id,
+                },
+            );
+            Ok(())
+        })
     }
 
     pub fn type_pool(&self) -> &TypeInternPool {
@@ -1180,6 +1244,8 @@ mod tests {
             vec!["pkg/main.rue"],
         )
         .unwrap();
+        a.complete_struct(&"node", &[], false, false).unwrap();
+        b.complete_struct(&"node", &[], false, false).unwrap();
         let durable = ImportType::PtrConst(Box::new(ImportType::Nominal("node")));
         let ta = a.import_type(&durable).unwrap();
         let tb = b.import_type(&durable).unwrap();
@@ -1213,6 +1279,19 @@ mod tests {
             vec!["pkg/main.rue"],
         )
         .unwrap();
+        for epoch in [&first, &second] {
+            let left = epoch.nominals["left"];
+            let LocalNominal::Struct(left) = left else {
+                panic!("left must be a struct")
+            };
+            let left_ty = Type::new_struct(left);
+            assert!(epoch.type_pool().get(left_ty).is_none());
+            assert!(epoch.type_pool().try_struct_def(left).is_none());
+            assert_eq!(
+                epoch.type_pool().validate_complete_type(left_ty),
+                Err(crate::TypeValidationError::IncompleteDefinition)
+            );
+        }
         let left_fields = [(
             Arc::from("next"),
             ImportType::PtrConst(Box::new(ImportType::Nominal("right"))),
@@ -1240,6 +1319,102 @@ mod tests {
                 projection(&second, second.import_type(&ty).unwrap().value)
             );
         }
+        let LocalNominal::Struct(left) = first.nominals["left"] else {
+            panic!("left must be a struct")
+        };
+        assert!(first.type_pool().try_struct_def(left).is_some());
+        assert_eq!(
+            first.complete_struct(&"left", &left_fields, false, false),
+            Err(SemanticImportFailure::NominalAlreadyComplete)
+        );
+    }
+
+    #[test]
+    fn enum_shell_completes_once_and_public_reads_are_complete_only() {
+        let epoch = Epoch::new(
+            vec![nominal("choice", "Choice", SemanticImportNominalKind::Enum)],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let LocalNominal::Enum(id) = epoch.nominals["choice"] else {
+            panic!("choice must be an enum")
+        };
+        let ty = Type::new_enum(id);
+        assert!(epoch.type_pool().get(ty).is_none());
+        assert!(epoch.type_pool().try_enum_def(id).is_none());
+
+        let variants = [(Arc::from("Value"), Arc::from([ImportType::I32]))];
+        epoch.complete_enum(&"choice", &variants).unwrap();
+        assert_eq!(
+            epoch.type_pool().enum_def(id).variant_payloads,
+            vec![vec![Type::I32]]
+        );
+        assert_eq!(
+            epoch.complete_enum(&"choice", &variants),
+            Err(SemanticImportFailure::NominalAlreadyComplete)
+        );
+    }
+
+    #[test]
+    fn nominal_completion_is_atomic_after_earlier_structural_imports() {
+        let epoch = Epoch::new(
+            vec![
+                nominal("node", "Node", SemanticImportNominalKind::Struct),
+                nominal("choice", "Choice", SemanticImportNominalKind::Enum),
+            ],
+            vec![],
+            vec!["pkg/main.rue"],
+        )
+        .unwrap();
+        let before = epoch.type_pool().stats();
+        let fields = [
+            (
+                Arc::from("good"),
+                ImportType::Array {
+                    element: Box::new(ImportType::U8),
+                    len: 4,
+                },
+            ),
+            (
+                Arc::from("bad"),
+                ImportType::PtrConst(Box::new(ImportType::Module("pkg/main.rue"))),
+            ),
+        ];
+
+        assert_eq!(
+            epoch.complete_struct(&"node", &fields, false, false),
+            Err(SemanticImportFailure::InvalidStructuralType)
+        );
+        assert_eq!(epoch.type_pool().stats(), before);
+        assert_eq!(epoch.type_pool().get_array(Type::U8, 4), None);
+        let LocalNominal::Struct(id) = epoch.nominals["node"] else {
+            panic!("node must be a struct")
+        };
+        assert!(epoch.type_pool().try_struct_def(id).is_none());
+        assert!(epoch.type_pool().struct_declaration_metadata(id).is_some());
+
+        let variants = [(
+            Arc::from("Value"),
+            Arc::from([
+                ImportType::Array {
+                    element: Box::new(ImportType::U16),
+                    len: 5,
+                },
+                ImportType::PtrMut(Box::new(ImportType::Module("pkg/main.rue"))),
+            ]),
+        )];
+        assert_eq!(
+            epoch.complete_enum(&"choice", &variants),
+            Err(SemanticImportFailure::InvalidStructuralType)
+        );
+        assert_eq!(epoch.type_pool().stats(), before);
+        assert_eq!(epoch.type_pool().get_array(Type::U16, 5), None);
+        let LocalNominal::Enum(id) = epoch.nominals["choice"] else {
+            panic!("choice must be an enum")
+        };
+        assert!(epoch.type_pool().try_enum_def(id).is_none());
+        assert!(epoch.type_pool().enum_declaration_metadata(id).is_some());
     }
 
     #[test]
@@ -1260,6 +1435,21 @@ mod tests {
         assert_eq!(
             epoch.import_const_value(&SemanticImportConstValue::Function("missing")),
             Err(SemanticImportFailure::MissingFunction)
+        );
+
+        let epoch = Epoch::new(vec![], vec![], vec!["pkg/main.rue"]).unwrap();
+        assert_eq!(
+            epoch.import_type(&ImportType::Array {
+                element: Box::new(ImportType::ComptimeType),
+                len: 1,
+            }),
+            Err(SemanticImportFailure::InvalidStructuralType)
+        );
+        assert_eq!(
+            epoch.import_type(&ImportType::PtrConst(Box::new(ImportType::Module(
+                "pkg/main.rue",
+            )))),
+            Err(SemanticImportFailure::InvalidStructuralType)
         );
     }
 
@@ -1309,6 +1499,7 @@ mod tests {
             vec!["pkg/main.rue"],
         )
         .unwrap();
+        epoch.complete_struct(&"node", &[], false, false).unwrap();
         let values = [
             ImportType::Array {
                 element: Box::new(ImportType::PtrConst(Box::new(ImportType::Nominal("node")))),
@@ -1533,6 +1724,109 @@ mod tests {
                 .air
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn body_import_rolls_back_structural_types_before_later_failures() {
+        use crate::{
+            SemanticBodyAnchor, SemanticBodyImportFailure as F, SemanticBodyInstData as D,
+        };
+        let epoch = Epoch::new(vec![], vec![], vec![]).unwrap();
+        let array = ImportType::Array {
+            element: Box::new(ImportType::U8),
+            len: 9,
+        };
+        let before = epoch.type_pool().stats();
+
+        let mut forward = body(vec![D::Const(0), D::Add(2, 0)]);
+        let mut instructions = forward.instructions.to_vec();
+        instructions[0].ty = array.clone();
+        forward.instructions = instructions.into();
+        let result = epoch.import_body(&forward, Span::with_file(FileId::DEFAULT, 0, 100));
+        assert!(
+            matches!(result, Err(F::InvalidInstructionReference)),
+            "{result:?}"
+        );
+        assert_eq!(epoch.type_pool().stats(), before);
+        assert_eq!(epoch.type_pool().get_array(Type::U8, 9), None);
+
+        let mut warning = body(vec![D::Const(0)]);
+        let mut instructions = warning.instructions.to_vec();
+        instructions[0].ty = array;
+        warning.instructions = instructions.into();
+        warning.warnings = vec![crate::SemanticBodyWarning {
+            code: Arc::from("W"),
+            message: Arc::from("late invalid anchor"),
+            anchor: SemanticBodyAnchor {
+                start: 101,
+                end: 102,
+            },
+        }]
+        .into();
+        assert!(matches!(
+            epoch.import_body(&warning, Span::with_file(FileId::DEFAULT, 0, 100)),
+            Err(F::InvalidAnchor)
+        ));
+        assert_eq!(epoch.type_pool().stats(), before);
+        assert_eq!(epoch.type_pool().get_array(Type::U8, 9), None);
+    }
+
+    #[test]
+    fn failed_body_import_preserves_live_symbol_order_and_packed_air() {
+        use crate::{SemanticBodyImportFailure as F, SemanticBodyInstData as D};
+        let after_failure = Epoch::new(vec![], vec![], vec![]).unwrap();
+        let fresh = Epoch::new(vec![], vec![], vec![]).unwrap();
+        let baseline_symbols = fresh.interner().len();
+        assert_eq!(after_failure.interner().len(), baseline_symbols);
+
+        let invalid = body(vec![
+            D::Intrinsic {
+                runtime: None,
+                name: Arc::from("failed_import_symbol"),
+                args: Arc::new([]),
+            },
+            D::Add(3, 0),
+        ]);
+        assert!(matches!(
+            after_failure.import_body(&invalid, Span::with_file(FileId::DEFAULT, 0, 100)),
+            Err(F::InvalidInstructionReference)
+        ));
+        assert_eq!(
+            after_failure.interner().len(),
+            baseline_symbols,
+            "preflight must not publish an intrinsic symbol before a later failure"
+        );
+
+        let valid = body(vec![D::Intrinsic {
+            runtime: None,
+            name: Arc::from("successful_import_symbol"),
+            args: Arc::new([]),
+        }]);
+        let after_failure_body = after_failure
+            .import_body(&valid, Span::with_file(FileId::DEFAULT, 0, 100))
+            .unwrap();
+        let fresh_body = fresh
+            .import_body(&valid, Span::with_file(FileId::DEFAULT, 0, 100))
+            .unwrap();
+        let crate::AirInstData::Intrinsic {
+            name: after_failure_name,
+            ..
+        } = after_failure_body.air.instructions()[0].data
+        else {
+            panic!("expected reconstructed intrinsic")
+        };
+        let crate::AirInstData::Intrinsic {
+            name: fresh_name, ..
+        } = fresh_body.air.instructions()[0].data
+        else {
+            panic!("expected reconstructed intrinsic")
+        };
+        assert_eq!(after_failure_name, fresh_name);
+        assert_eq!(
+            format!("{:?}", after_failure_body.air),
+            format!("{:?}", fresh_body.air),
+            "a failed import must not perturb any packed AIR word"
         );
     }
 

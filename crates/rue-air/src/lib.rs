@@ -39,8 +39,8 @@ pub use inst::{
     AirPlace, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
 };
 pub use intern_pool::{
-    EnumData, FrozenTypeInternPool, InternedType, StructData, TypeData, TypeInternPool,
-    TypeInternPoolStats,
+    EnumData, FrozenTypeInternPool, StructData, TypeData, TypeInternPool, TypeInternPoolStats,
+    TypeValidationError,
 };
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};

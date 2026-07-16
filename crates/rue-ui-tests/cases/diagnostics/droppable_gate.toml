@@ -52,6 +52,37 @@ compile_fail = true
 error_contains = ["E0499", "Token", "required by the type-constructor application here"]
 
 [[case]]
+name = "deferred_named_enum_linear_payload_is_rejected"
+description = "A declaration-time gate defers an incomplete named enum, then rejects it after payload completion and infectious-linearity finalization."
+source = """
+linear struct Token { v: i32 }
+enum Maybe { Some(Token), None }
+fn Gated(comptime T: type) -> type {
+    @require_droppable(T);
+    struct { y: T }
+}
+const G = Gated(Maybe);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0499", "Maybe"]
+
+[[case]]
+name = "deferred_named_enum_primitive_payload_compiles"
+description = "The same deferred declaration-time query resolves negative after a named enum's primitive payload is complete."
+source = """
+enum Maybe { Some(i32), None }
+fn Gated(comptime T: type) -> type {
+    @require_droppable(T);
+    struct { y: T }
+}
+const G = Gated(Maybe);
+fn main() -> i32 { 0 }
+"""
+compile_fail = false
+exit_code = 0
+
+[[case]]
 name = "e0499_linear_names_and_labels"
 description = "The linear-element rejection (E0499) gets the same application-site label (RUE-610)"
 source = """

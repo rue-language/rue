@@ -42,7 +42,12 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // Check if an equivalent anonymous struct already exists
         // Anonymous structs have names starting with "__anon_struct_"
         for struct_id in self.type_pool.all_struct_ids() {
-            let struct_def = self.type_pool.struct_def(struct_id);
+            let Some(struct_def) = self.type_pool.try_struct_def(struct_id) else {
+                // Named declaration shells participate in recursive identity,
+                // but they are not definitions eligible for anonymous
+                // structural deduplication.
+                continue;
+            };
             if struct_def.name.starts_with("__anon_struct_") {
                 // Check fields match
                 if struct_def.fields.len() != fields.len() {

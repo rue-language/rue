@@ -478,8 +478,12 @@ impl<'a> DeclarationShells<'a> {
                         .structs_by_file_name
                         .get(&(pending.shell.declaration_span.file_id, name))
                         .ok_or(DeclarationInstallFailure::MissingNominal)?;
-                    let mut def = self.sema.type_pool.struct_def(id);
-                    if *syntax_linear != *is_linear || def.is_copy != *is_copy {
+                    let metadata = self
+                        .sema
+                        .type_pool
+                        .struct_declaration_metadata(id)
+                        .ok_or(DeclarationInstallFailure::NominalShapeMismatch)?;
+                    if *syntax_linear != *is_linear || metadata.is_copy != *is_copy {
                         return Err(DeclarationInstallFailure::NominalShapeMismatch);
                     }
                     if self
@@ -492,7 +496,7 @@ impl<'a> DeclarationShells<'a> {
                     {
                         return Err(DeclarationInstallFailure::NominalShapeMismatch);
                     }
-                    def.fields = fields
+                    let resolved_fields = fields
                         .iter()
                         .map(|(name, ty)| {
                             Ok(crate::StructField {
@@ -501,6 +505,16 @@ impl<'a> DeclarationShells<'a> {
                             })
                         })
                         .collect::<Result<_, DeclarationInstallFailure>>()?;
+                    let def = crate::StructDef {
+                        name: metadata.name,
+                        fields: resolved_fields,
+                        is_copy: metadata.is_copy,
+                        is_linear: metadata.is_linear,
+                        destructor: metadata.destructor,
+                        is_builtin: metadata.is_builtin,
+                        is_pub: metadata.is_pub,
+                        file_id: metadata.file_id,
+                    };
                     self.sema.type_pool.complete_declared_struct(id, def);
                 }
                 (SemanticDeclarationPayload::Enum { variants }, InstData::EnumDecl { .. }) => {
@@ -509,8 +523,12 @@ impl<'a> DeclarationShells<'a> {
                         .enums_by_file_name
                         .get(&(pending.shell.declaration_span.file_id, name))
                         .ok_or(DeclarationInstallFailure::MissingNominal)?;
-                    let mut def = self.sema.type_pool.enum_def(id);
-                    if def
+                    let metadata = self
+                        .sema
+                        .type_pool
+                        .enum_declaration_metadata(id)
+                        .ok_or(DeclarationInstallFailure::NominalShapeMismatch)?;
+                    if metadata
                         .variants
                         .iter()
                         .map(String::as_str)
@@ -518,7 +536,7 @@ impl<'a> DeclarationShells<'a> {
                     {
                         return Err(DeclarationInstallFailure::NominalShapeMismatch);
                     }
-                    def.variant_payloads = variants
+                    let variant_payloads = variants
                         .iter()
                         .map(|(_, payload)| {
                             payload
@@ -527,6 +545,13 @@ impl<'a> DeclarationShells<'a> {
                                 .collect()
                         })
                         .collect::<Result<_, DeclarationInstallFailure>>()?;
+                    let def = crate::EnumDef {
+                        name: metadata.name,
+                        variants: metadata.variants,
+                        variant_payloads,
+                        is_pub: metadata.is_pub,
+                        file_id: metadata.file_id,
+                    };
                     self.sema.type_pool.complete_declared_enum(id, def);
                 }
                 _ => return Err(DeclarationInstallFailure::KindMismatch),
@@ -710,6 +735,9 @@ impl<'a> DeclarationShells<'a> {
             .check_recursive_value_types()
             .map_err(|_| DeclarationInstallFailure::NominalShapeMismatch)?;
         self.sema.propagate_field_linearity();
+        self.sema
+            .validate_deferred_ownership_gates()
+            .map_err(|_| DeclarationInstallFailure::NominalShapeMismatch)?;
         self.sema.capture_resolved_declaration_type_dependencies();
         self.sema.declaration_type_observer = None;
         self.binding_work.durable_payloads_installed = expected;
@@ -774,22 +802,25 @@ impl Sema<'_> {
                     _ => return Err(DeclarationInstallFailure::KindMismatch),
                 }
             }
-            SemanticExportType::Array { element, len } => {
-                Type::new_array(self.type_pool.intern_array_from_type(
+            SemanticExportType::Array { element, len } => self
+                .type_pool
+                .try_intern_array(
                     self.import_export_type_with_generics(element, generic_parameters)?,
                     *len,
-                ))
-            }
-            SemanticExportType::PtrConst(value) => {
-                Type::new_ptr_const(self.type_pool.intern_ptr_const_from_type(
+                )
+                .map_err(|_| DeclarationInstallFailure::UnsupportedType)?,
+            SemanticExportType::PtrConst(value) => self
+                .type_pool
+                .try_intern_ptr_const(
                     self.import_export_type_with_generics(value, generic_parameters)?,
-                ))
-            }
-            SemanticExportType::PtrMut(value) => {
-                Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(
+                )
+                .map_err(|_| DeclarationInstallFailure::UnsupportedType)?,
+            SemanticExportType::PtrMut(value) => self
+                .type_pool
+                .try_intern_ptr_mut(
                     self.import_export_type_with_generics(value, generic_parameters)?,
-                ))
-            }
+                )
+                .map_err(|_| DeclarationInstallFailure::UnsupportedType)?,
             SemanticExportType::Module(_) => {
                 return Err(DeclarationInstallFailure::UnsupportedType);
             }
@@ -1248,6 +1279,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         ty: Type,
         stack: &mut Vec<Type>,
     ) -> Result<SemanticExportType, SemanticExportFailure> {
+        self.type_pool
+            .validate_complete_type(ty)
+            .map_err(|_| SemanticExportFailure::ErrorType)?;
         if stack.contains(&ty) {
             return Err(SemanticExportFailure::RecursiveStructuralType);
         }
