@@ -30,7 +30,7 @@ use crate::{BlockId, Cfg, CfgInstData, CfgValue, Projection, Terminator};
 /// - No hashing overhead for insert/contains
 /// - Better cache locality (bit-packed storage)
 /// - Constant-time operations
-struct BitSet {
+pub(super) struct BitSet {
     bits: Vec<u64>,
 }
 
@@ -62,7 +62,7 @@ impl BitSet {
 
     /// Check if an index is in the set.
     #[inline]
-    fn contains(&self, index: u32) -> bool {
+    pub(super) fn contains(&self, index: u32) -> bool {
         let word_index = (index / 64) as usize;
         let bit_index = index % 64;
 
@@ -392,7 +392,7 @@ fn eliminate_unreachable_blocks(cfg: &mut Cfg) {
 }
 
 /// Compute the set of blocks reachable from the entry block.
-fn compute_reachable_blocks(cfg: &Cfg) -> BitSet {
+pub(super) fn compute_reachable_blocks(cfg: &Cfg) -> BitSet {
     let mut reachable = BitSet::with_capacity(cfg.block_count());
     let mut worklist = vec![cfg.entry];
 

@@ -151,10 +151,11 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel, type_pool: &FrozenTypeInternPool
             // rescans (RUE-794).
             constopt::run(cfg);
 
-            // Constant-condition terminator folding (RUE-910): Branch on a
-            // folded BoolConst / Switch on a folded Const becomes a Goto, so
-            // the statically dead arms drop out of reachability before DCE
-            // computes it.
+            // CFG simplification (RUE-910, RUE-911): fold constant-condition
+            // Branch/Switch terminators into Gotos so dead arms drop out of
+            // reachability, then thread empty forwarding blocks and merge
+            // single-predecessor Goto chains into straight-line blocks
+            // before DCE prunes the leftovers.
             simplify::run(cfg);
 
             // Dead code elimination: remove unused values and unreachable blocks

@@ -1018,6 +1018,91 @@ impl Cfg {
         (0..self.blocks.len() as u32).map(BlockId)
     }
 
+    /// Rewrite every value USE in the CFG through `map`, covering all the
+    /// places a `CfgValue` can be referenced: instruction operands, the
+    /// `extra` array (struct fields, array elements, intrinsic args, and
+    /// terminator block arguments), call arguments, place projection
+    /// indices, and terminator operands (branch conditions, switch
+    /// scrutinees, return values).
+    ///
+    /// Definitions are not touched: `blocks[..].params` entries and the
+    /// mapped-away instructions themselves stay in the value arena as
+    /// detached values for DCE to ignore.
+    ///
+    /// This is the canonical use-rewrite for optimization passes that
+    /// substitute one value for another (e.g. block-merge parameter
+    /// substitution, RUE-911). One call visits every use site exactly once.
+    pub fn rewrite_value_uses(&mut self, map: impl Fn(CfgValue) -> CfgValue) {
+        use CfgInstData::*;
+        for inst in &mut self.values {
+            match &mut inst.data {
+                Add(a, b)
+                | Sub(a, b)
+                | Mul(a, b)
+                | Div(a, b)
+                | Mod(a, b)
+                | Eq(a, b)
+                | Ne(a, b)
+                | Lt(a, b)
+                | Gt(a, b)
+                | Le(a, b)
+                | Ge(a, b)
+                | BitAnd(a, b)
+                | BitOr(a, b)
+                | BitXor(a, b)
+                | Shl(a, b)
+                | Shr(a, b) => {
+                    *a = map(*a);
+                    *b = map(*b);
+                }
+                Neg(a) | Not(a) | BitNot(a) => *a = map(*a),
+                Alloc { init: v, .. }
+                | Store { value: v, .. }
+                | ParamStore { value: v, .. }
+                | PlaceWrite { value: v, .. }
+                | EnumPayloadGet { base: v, .. }
+                | IntCast { value: v, .. }
+                | Drop { value: v } => *v = map(*v),
+                Const(_)
+                | BoolConst(_)
+                | StringConst(_)
+                | Param { .. }
+                | BlockParam { .. }
+                | Load { .. }
+                | PlaceRead { .. }
+                | Call { .. }
+                | Intrinsic { .. }
+                | StructInit { .. }
+                | ArrayInit { .. }
+                | EnumVariant { .. }
+                | StorageLive { .. }
+                | StorageDead { .. } => {}
+            }
+        }
+        for value in &mut self.extra {
+            *value = map(*value);
+        }
+        for arg in &mut self.call_args {
+            arg.value = map(arg.value);
+        }
+        for proj in &mut self.projections {
+            if let Projection::Index { index, .. } = proj {
+                *index = map(*index);
+            }
+        }
+        for block in &mut self.blocks {
+            match &mut block.terminator {
+                Terminator::Branch { cond, .. } => *cond = map(*cond),
+                Terminator::Switch { scrutinee, .. } => *scrutinee = map(*scrutinee),
+                Terminator::Return { value: Some(value) } => *value = map(*value),
+                Terminator::Goto { .. }
+                | Terminator::Return { value: None }
+                | Terminator::Unreachable
+                | Terminator::None => {}
+            }
+        }
+    }
+
     /// Compute predecessor lists for all blocks, indexed by block id.
     ///
     /// Predecessors are computed on demand from the current terminators
