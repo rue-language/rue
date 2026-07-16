@@ -140,6 +140,151 @@ impl<'a> CfgLower<'a> {
         self.mir.intern_symbol(symbol)
     }
 
+    fn lower_runtime_call(
+        &mut self,
+        plan: crate::runtime_call_plan::RuntimeCallPlan,
+    ) -> crate::value_plan::MaterializedValue {
+        use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallResult};
+        use rue_runtime_abi::CallingConvention;
+
+        assert_eq!(plan.calling_convention(), CallingConvention::TargetC);
+        assert!(
+            plan.args().len() <= ARG_REGS.len(),
+            "runtime manifest exceeds the AArch64 target-C register budget"
+        );
+
+        let out_shape = plan.out_shape();
+        let out_bytes = out_shape
+            .map(|shape| (shape.shape().slots.len() as i32 * 8 + 15) & !15)
+            .unwrap_or(0);
+        if out_bytes > 0 {
+            self.mir.push(Aarch64Inst::SubImm {
+                dst: Operand::Physical(Reg::Sp),
+                src: Operand::Physical(Reg::Sp),
+                imm: out_bytes,
+            });
+        }
+
+        let materialized = plan
+            .args()
+            .iter()
+            .map(|arg| match *arg {
+                RuntimeCallArg::Slot { value, .. } => Some(value),
+                RuntimeCallArg::Scaled { value, scale, .. } => {
+                    Some(crate::allocation::lower_scale(self, value, scale))
+                }
+                RuntimeCallArg::Extended {
+                    value, extension, ..
+                } => {
+                    if extension == crate::value_plan::IntegerExtension::None {
+                        Some(value)
+                    } else {
+                        let extended = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Virtual(extended),
+                            src: Operand::Virtual(value),
+                        });
+                        let dst = Operand::Virtual(extended);
+                        let src = Operand::Virtual(extended);
+                        self.mir.push(match extension {
+                            crate::value_plan::IntegerExtension::Sign8 => {
+                                Aarch64Inst::Sxtb { dst, src }
+                            }
+                            crate::value_plan::IntegerExtension::Zero8 => {
+                                Aarch64Inst::Uxtb { dst, src }
+                            }
+                            crate::value_plan::IntegerExtension::Sign16 => {
+                                Aarch64Inst::Sxth { dst, src }
+                            }
+                            crate::value_plan::IntegerExtension::Zero16 => {
+                                Aarch64Inst::Uxth { dst, src }
+                            }
+                            crate::value_plan::IntegerExtension::Sign32 => {
+                                Aarch64Inst::Sxtw { dst, src }
+                            }
+                            crate::value_plan::IntegerExtension::None => unreachable!(),
+                        });
+                        Some(extended)
+                    }
+                }
+                RuntimeCallArg::Immediate { .. } | RuntimeCallArg::OutPointer { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
+        for (index, (arg, value)) in plan.args().iter().zip(&materialized).enumerate() {
+            let dst = Operand::Physical(ARG_REGS[index]);
+            match *arg {
+                RuntimeCallArg::Slot { .. }
+                | RuntimeCallArg::Scaled { .. }
+                | RuntimeCallArg::Extended { .. } => {
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst,
+                        src: Operand::Virtual(value.expect("materialized runtime argument")),
+                    });
+                }
+                RuntimeCallArg::Immediate { value, .. } => {
+                    self.mir.push(Aarch64Inst::MovImm {
+                        dst,
+                        imm: value as i64,
+                    });
+                }
+                RuntimeCallArg::OutPointer { shape } => {
+                    assert_eq!(Some(shape), out_shape);
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst,
+                        src: Operand::Physical(Reg::Sp),
+                    });
+                }
+            }
+        }
+
+        let symbol_id = self.intern_symbol(plan.symbol());
+        self.mir.push(Aarch64Inst::Bl { symbol_id });
+
+        match plan.result() {
+            RuntimeCallResult::OutPointer(shape) => {
+                let slots = (0..shape.shape().slots.len())
+                    .map(|index| {
+                        let slot = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::Ldr {
+                            dst: Operand::Virtual(slot),
+                            base: Reg::Sp,
+                            offset: (index * 8) as i32,
+                        });
+                        slot
+                    })
+                    .collect::<Vec<_>>();
+                self.mir.push(Aarch64Inst::AddImm {
+                    dst: Operand::Physical(Reg::Sp),
+                    src: Operand::Physical(Reg::Sp),
+                    imm: out_bytes,
+                });
+                crate::value_plan::MaterializedValue {
+                    primary: slots[0],
+                    slots,
+                }
+            }
+            RuntimeCallResult::Scalar(_) => {
+                let primary = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::MovRR {
+                    dst: Operand::Virtual(primary),
+                    src: Operand::Physical(Reg::X0),
+                });
+                crate::value_plan::MaterializedValue {
+                    primary,
+                    slots: Vec::new(),
+                }
+            }
+            RuntimeCallResult::Void => {
+                let primary = self.mir.alloc_vreg();
+                crate::value_plan::MaterializedValue {
+                    primary,
+                    slots: Vec::new(),
+                }
+            }
+        }
+    }
+
     fn emit_store_ptr_base(&mut self, src: VReg, ptr: VReg) {
         self.mir.push(Aarch64Inst::StrIndexed {
             src: Operand::Virtual(src),
@@ -181,7 +326,11 @@ impl<'a> CfgLower<'a> {
 
     /// Emit a target-local cleanup call using the normalized slot vector.
     fn emit_slot_call(&mut self, arg_vregs: &[VReg], symbol: &str) {
-        let plan = crate::call_plan::CallPlan::from_slot_values(symbol, arg_vregs, ARG_REGS.len());
+        let plan = crate::call_plan::CallPlan::from_slot_values(
+            crate::call_plan::CallTarget::rue(symbol),
+            arg_vregs,
+            ARG_REGS.len(),
+        );
         let _ = self.lower_call_plan(plan);
     }
 
@@ -263,7 +412,8 @@ impl<'a> CfgLower<'a> {
         plan: crate::value_plan::ArithmeticPlan,
     ) -> crate::value_plan::MaterializedValue {
         use crate::value_plan::ArithmeticOperation;
-        let trap_symbols = plan.trap_symbols;
+        let overflow_call = plan.overflow_call;
+        let div_by_zero_call = plan.div_by_zero_call;
         let vreg = match plan.operation {
             ArithmeticOperation::Add { lhs, rhs, width } => {
                 let vreg = self.mir.alloc_vreg();
@@ -280,7 +430,7 @@ impl<'a> CfgLower<'a> {
                         src2: Operand::Virtual(rhs),
                     }
                 });
-                self.emit_overflow_check_add(width, vreg, trap_symbols.overflow);
+                self.emit_overflow_check_add(width, vreg, overflow_call.clone());
                 vreg
             }
             ArithmeticOperation::Sub { lhs, rhs, width } => {
@@ -298,7 +448,7 @@ impl<'a> CfgLower<'a> {
                         src2: Operand::Virtual(rhs),
                     }
                 });
-                self.emit_overflow_check_sub(width, vreg, trap_symbols.overflow);
+                self.emit_overflow_check_sub(width, vreg, overflow_call.clone());
                 vreg
             }
             ArithmeticOperation::Mul {
@@ -366,11 +516,10 @@ impl<'a> CfgLower<'a> {
                         cond: Cond::Eq,
                         label: ok,
                     });
-                    let symbol_id = self.intern_symbol(trap_symbols.overflow);
-                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+                    let _ = self.lower_runtime_call(overflow_call.clone());
                     self.mir.push(Aarch64Inst::Label { id: ok });
                 } else {
-                    self.emit_overflow_check_mul(width, vreg, lhs, rhs, trap_symbols.overflow);
+                    self.emit_overflow_check_mul(width, vreg, lhs, rhs, overflow_call.clone());
                 }
                 vreg
             }
@@ -381,11 +530,10 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(rhs),
                     label: ok,
                 });
-                let symbol_id = self.intern_symbol(trap_symbols.div_by_zero);
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
+                let _ = self.lower_runtime_call(div_by_zero_call.clone());
                 self.mir.push(Aarch64Inst::Label { id: ok });
                 if width.signed {
-                    self.emit_signed_div_overflow_check(width, lhs, rhs, trap_symbols.overflow);
+                    self.emit_signed_div_overflow_check(width, lhs, rhs, overflow_call.clone());
                 }
                 self.mir.push(if width.signed {
                     if width.bits == 64 {
@@ -423,11 +571,10 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(rhs),
                     label: ok,
                 });
-                let symbol_id = self.intern_symbol(trap_symbols.div_by_zero);
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
+                let _ = self.lower_runtime_call(div_by_zero_call.clone());
                 self.mir.push(Aarch64Inst::Label { id: ok });
                 if width.signed {
-                    self.emit_signed_div_overflow_check(width, lhs, rhs, trap_symbols.overflow);
+                    self.emit_signed_div_overflow_check(width, lhs, rhs, overflow_call.clone());
                 }
                 let quotient = self.mir.alloc_vreg();
                 self.mir.push(if width.signed {
@@ -487,7 +634,7 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(value),
                     }
                 });
-                self.emit_overflow_check_neg(width, vreg, trap_symbols.overflow);
+                self.emit_overflow_check_neg(width, vreg, overflow_call.clone());
                 vreg
             }
         };
@@ -540,7 +687,7 @@ impl<'a> CfgLower<'a> {
                 src: Operand::Virtual(*arg),
             });
         }
-        let symbol_id = self.intern_symbol(&plan.symbol);
+        let symbol_id = self.intern_symbol(plan.target.symbol());
         self.mir.push(Aarch64Inst::Bl { symbol_id });
         if plan.stack_bytes > 0 {
             self.mir.push(Aarch64Inst::AddImm {
@@ -792,7 +939,8 @@ impl<'a> CfgLower<'a> {
                 lhs,
                 rhs,
                 leaf_types,
-            } => self.lower_comparison(op, lhs, rhs, plan.policy, &leaf_types),
+                runtime_call,
+            } => self.lower_comparison(op, lhs, rhs, plan.policy, &leaf_types, runtime_call),
             ResidualValuePlan::Alloc {
                 slot,
                 init,
@@ -998,7 +1146,7 @@ impl<'a> CfgLower<'a> {
             ResidualValuePlan::IntCast {
                 value,
                 from_width,
-                trap_symbol,
+                trap_call,
             } => {
                 let dst = self.mir.alloc_vreg();
                 self.mir.push(Aarch64Inst::MovRR {
@@ -1006,7 +1154,7 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(value),
                 });
                 let to_width = width.unwrap();
-                self.emit_int_cast_check(value, from_width, to_width, trap_symbol);
+                self.emit_int_cast_check(value, from_width, to_width, trap_call);
                 if from_width.signed && to_width.bits > from_width.bits {
                     let src = Operand::Virtual(value);
                     let dst = Operand::Virtual(dst);
@@ -1153,6 +1301,7 @@ impl<'a> CfgLower<'a> {
         rhs: crate::value_plan::MaterializedValue,
         policy: crate::value_plan::ValuePlan,
         leaf_types: &[Type],
+        runtime_call: Option<crate::runtime_call_plan::RuntimeCallPlan>,
     ) -> VReg {
         match policy.comparison.expect("comparison plan") {
             crate::value_plan::ComparisonPreparation::Scalar { .. } => {
@@ -1167,28 +1316,9 @@ impl<'a> CfgLower<'a> {
                 dst
             }
             crate::value_plan::ComparisonPreparation::StringContent { .. } => {
-                assert!(
-                    lhs.slots.len() >= 2 && rhs.slots.len() >= 2,
-                    "normalized string comparison needs ptr and len slots"
-                );
-                let dst = self.mir.alloc_vreg();
-                for (reg, slot) in [
-                    (Reg::X0, lhs.slots[0]),
-                    (Reg::X1, lhs.slots[1]),
-                    (Reg::X2, rhs.slots[0]),
-                    (Reg::X3, rhs.slots[1]),
-                ] {
-                    self.mir.push(Aarch64Inst::MovRR {
-                        dst: Operand::Physical(reg),
-                        src: Operand::Virtual(slot),
-                    });
-                }
-                let symbol_id = self.intern_symbol("__rue_str_eq");
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Virtual(dst),
-                    src: Operand::Physical(Reg::X0),
-                });
+                let dst = self
+                    .lower_runtime_call(runtime_call.expect("string equality runtime call plan"))
+                    .primary;
                 if matches!(op, crate::value_plan::ComparisonOp::Ne) {
                     self.mir.push(Aarch64Inst::EorImm {
                         dst: Operand::Virtual(dst),
@@ -1214,133 +1344,31 @@ impl<'a> CfgLower<'a> {
         &mut self,
         plan: crate::value_plan::TrapPlan,
     ) -> crate::value_plan::MaterializedValue {
-        let panic = |this: &mut Self,
-                     message: Option<crate::value_plan::MaterializedValue>,
-                     symbol: &str| {
-            if let Some(message) = message.filter(|message| message.slots.len() >= 2) {
-                this.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Physical(Reg::X0),
-                    src: Operand::Virtual(message.slots[0]),
-                });
-                this.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Physical(Reg::X1),
-                    src: Operand::Virtual(message.slots[1]),
-                });
-                let symbol_id = this.intern_symbol(symbol);
-                this.mir.push(Aarch64Inst::Bl { symbol_id });
-            } else {
-                let symbol_id = this.intern_symbol(symbol);
-                this.mir.push(Aarch64Inst::Bl { symbol_id });
-            }
-        };
         match plan {
-            crate::value_plan::TrapPlan::Panic { message, symbol } => panic(self, message, &symbol),
-            crate::value_plan::TrapPlan::Assert {
-                condition,
-                message,
-                symbol,
-            } => {
+            crate::value_plan::TrapPlan::Panic { call } => self.lower_runtime_call(call),
+            crate::value_plan::TrapPlan::Assert { condition, call } => {
                 let pass = self.mir.alloc_label();
                 self.mir.push(Aarch64Inst::Cbnz {
                     src: Operand::Virtual(condition),
                     label: pass,
                 });
-                panic(self, message, &symbol);
+                let result = self.lower_runtime_call(call);
                 self.mir.push(Aarch64Inst::Label { id: pass });
+                result
             }
-        }
-        let primary = self.mir.alloc_vreg();
-        self.mir.push(Aarch64Inst::MovImm {
-            dst: Operand::Virtual(primary),
-            imm: 0,
-        });
-        crate::value_plan::MaterializedValue {
-            primary,
-            slots: Vec::new(),
         }
     }
 
     fn lower_option_intrinsic(
         &mut self,
         plan: &crate::value_plan::IntrinsicPlan,
-        intrinsic: crate::value_plan::OptionIntrinsic,
+        _intrinsic: crate::value_plan::OptionIntrinsic,
     ) -> crate::value_plan::MaterializedValue {
-        let crate::value_plan::IntrinsicOperation::Option {
-            some_discriminant: some_disc,
-            none_discriminant: none_disc,
-            ..
-        } = plan.operation
-        else {
-            unreachable!()
-        };
-        let total_slots = plan.result_slots;
-        let sret_bytes = (total_slots as i32 * 8 + 15) & !15;
-        self.mir.push(Aarch64Inst::SubImm {
-            dst: Operand::Physical(Reg::Sp),
-            src: Operand::Physical(Reg::Sp),
-            imm: sret_bytes,
-        });
-        self.mir.push(Aarch64Inst::MovRR {
-            dst: Operand::Physical(Reg::X0),
-            src: Operand::Physical(Reg::Sp),
-        });
-        if intrinsic == crate::value_plan::OptionIntrinsic::ReadLine {
-            self.mir.push(Aarch64Inst::MovImm {
-                dst: Operand::Physical(Reg::X1),
-                imm: some_disc as i64,
-            });
-            self.mir.push(Aarch64Inst::MovImm {
-                dst: Operand::Physical(Reg::X2),
-                imm: none_disc as i64,
-            });
-        } else {
-            assert!(
-                plan.args.first().is_some_and(|arg| arg.slots.len() >= 2),
-                "normalized parse argument needs ptr and len slots"
-            );
-            let arg = &plan.args[0];
-            for (reg, src) in [(Reg::X1, arg.slots[0]), (Reg::X2, arg.slots[1])] {
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Physical(reg),
-                    src: Operand::Virtual(src),
-                });
-            }
-            self.mir.push(Aarch64Inst::MovImm {
-                dst: Operand::Physical(Reg::X3),
-                imm: some_disc as i64,
-            });
-            self.mir.push(Aarch64Inst::MovImm {
-                dst: Operand::Physical(Reg::X4),
-                imm: none_disc as i64,
-            });
-        }
-        let symbol_id = self.intern_symbol(
-            plan.runtime_symbol
-                .as_deref()
-                .expect("option intrinsic runtime symbol"),
-        );
-        self.mir.push(Aarch64Inst::Bl { symbol_id });
-        let slots: Vec<_> = (0..total_slots)
-            .map(|index| {
-                let slot = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::Ldr {
-                    dst: Operand::Virtual(slot),
-                    base: Reg::Sp,
-                    offset: (index * 8) as i32,
-                });
-                slot
-            })
-            .collect();
-        self.mir.push(Aarch64Inst::AddImm {
-            dst: Operand::Physical(Reg::Sp),
-            src: Operand::Physical(Reg::Sp),
-            imm: sret_bytes,
-        });
-        let primary = slots
-            .first()
-            .copied()
-            .unwrap_or_else(|| self.mir.alloc_vreg());
-        crate::value_plan::MaterializedValue { primary, slots }
+        self.lower_runtime_call(
+            plan.runtime_call
+                .clone()
+                .expect("option intrinsic runtime call plan"),
+        )
     }
 
     fn lower_intrinsic_plan(
@@ -1357,18 +1385,11 @@ impl<'a> CfgLower<'a> {
             }
             crate::value_plan::IntrinsicOperation::RandomU32
             | crate::value_plan::IntrinsicOperation::RandomU64 => {
-                let symbol_id = self.intern_symbol(
-                    plan.runtime_symbol
-                        .as_deref()
-                        .expect("random intrinsic runtime symbol"),
-                );
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
-                let dst = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Virtual(dst),
-                    src: Operand::Physical(Reg::X0),
-                });
-                dst
+                self.lower_runtime_call(
+                    plan.runtime_call
+                        .expect("random intrinsic runtime call plan"),
+                )
+                .primary
             }
             crate::value_plan::IntrinsicOperation::PtrToInt
             | crate::value_plan::IntrinsicOperation::IntToPtr => {
@@ -1463,189 +1484,31 @@ impl<'a> CfgLower<'a> {
                 dst
             }
             crate::value_plan::IntrinsicOperation::Alloc { element_size } => {
-                let size = plan
-                    .scale
-                    .map(|scale| allocation::lower_scale(self, plan.args[0].primary, scale))
-                    .unwrap_or(plan.args[0].primary);
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Physical(Reg::X0),
-                    src: Operand::Virtual(size),
-                });
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Physical(Reg::X1),
-                    imm: element_size as i64,
-                });
-                let symbol_id = self.intern_symbol(
-                    plan.runtime_symbol
-                        .as_deref()
-                        .expect("alloc intrinsic runtime symbol"),
-                );
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
-                let dst = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Virtual(dst),
-                    src: Operand::Physical(Reg::X0),
-                });
-                dst
+                let _ = element_size;
+                self.lower_runtime_call(plan.runtime_call.expect("alloc runtime call plan"))
+                    .primary
             }
             crate::value_plan::IntrinsicOperation::Free { element_size } => {
-                let size = if element_size == 8 {
-                    allocation::lower_scale(
-                        self,
-                        plan.args[1].primary,
-                        plan.scale.expect("free scale"),
-                    )
-                } else {
-                    plan.args[1].primary
-                };
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Physical(Reg::X0),
-                    src: Operand::Virtual(plan.args[0].primary),
-                });
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Physical(Reg::X1),
-                    src: Operand::Virtual(size),
-                });
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Physical(Reg::X2),
-                    imm: element_size as i64,
-                });
-                let symbol_id = self.intern_symbol(
-                    plan.runtime_symbol
-                        .as_deref()
-                        .expect("free intrinsic runtime symbol"),
-                );
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
-                let dst = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Virtual(dst),
-                    imm: 0,
-                });
-                dst
+                let _ = element_size;
+                self.lower_runtime_call(plan.runtime_call.expect("free runtime call plan"))
+                    .primary
             }
             crate::value_plan::IntrinsicOperation::Realloc { element_size } => {
-                if element_size == 8 {
-                    let old = allocation::lower_scale(
-                        self,
-                        plan.args[1].primary,
-                        plan.scale.expect("realloc scale"),
-                    );
-                    let new = allocation::lower_scale(
-                        self,
-                        plan.args[2].primary,
-                        plan.scale.expect("realloc scale"),
-                    );
-                    for (src, reg) in [
-                        (plan.args[0].primary, Reg::X0),
-                        (old, Reg::X1),
-                        (new, Reg::X2),
-                    ] {
-                        self.mir.push(Aarch64Inst::MovRR {
-                            dst: Operand::Physical(reg),
-                            src: Operand::Virtual(src),
-                        });
-                    }
-                    self.mir.push(Aarch64Inst::MovImm {
-                        dst: Operand::Physical(Reg::X3),
-                        imm: 8,
-                    });
-                } else {
-                    for (arg, reg) in plan.args.iter().zip([Reg::X0, Reg::X1, Reg::X2]) {
-                        self.mir.push(Aarch64Inst::MovRR {
-                            dst: Operand::Physical(reg),
-                            src: Operand::Virtual(arg.primary),
-                        });
-                    }
-                    self.mir.push(Aarch64Inst::MovImm {
-                        dst: Operand::Physical(Reg::X3),
-                        imm: 1,
-                    });
-                }
-                let symbol_id = self.intern_symbol(
-                    plan.runtime_symbol
-                        .as_deref()
-                        .expect("realloc intrinsic runtime symbol"),
-                );
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
-                let dst = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Virtual(dst),
-                    src: Operand::Physical(Reg::X0),
-                });
-                dst
+                let _ = element_size;
+                self.lower_runtime_call(plan.runtime_call.expect("realloc runtime call plan"))
+                    .primary
             }
             crate::value_plan::IntrinsicOperation::AllocBytes => {
-                let size = plan.args[0].primary;
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Physical(Reg::X0),
-                    src: Operand::Virtual(size),
-                });
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Physical(Reg::X1),
-                    imm: 1,
-                });
-                let symbol_id = self.intern_symbol(
-                    plan.runtime_symbol
-                        .as_deref()
-                        .expect("alloc-bytes intrinsic runtime symbol"),
-                );
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
-                let dst = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Virtual(dst),
-                    src: Operand::Physical(Reg::X0),
-                });
-                dst
+                self.lower_runtime_call(plan.runtime_call.expect("alloc-bytes runtime call plan"))
+                    .primary
             }
             crate::value_plan::IntrinsicOperation::FreeBytes => {
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Physical(Reg::X0),
-                    src: Operand::Virtual(plan.args[0].primary),
-                });
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Physical(Reg::X1),
-                    src: Operand::Virtual(plan.args[1].primary),
-                });
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Physical(Reg::X2),
-                    imm: 1,
-                });
-                let symbol_id = self.intern_symbol(
-                    plan.runtime_symbol
-                        .as_deref()
-                        .expect("free-bytes intrinsic runtime symbol"),
-                );
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
-                let dst = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Virtual(dst),
-                    imm: 0,
-                });
-                dst
+                self.lower_runtime_call(plan.runtime_call.expect("free-bytes runtime call plan"))
+                    .primary
             }
             crate::value_plan::IntrinsicOperation::ReallocBytes => {
-                for (arg, reg) in plan.args.iter().zip([Reg::X0, Reg::X1, Reg::X2]) {
-                    self.mir.push(Aarch64Inst::MovRR {
-                        dst: Operand::Physical(reg),
-                        src: Operand::Virtual(arg.primary),
-                    });
-                }
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Physical(Reg::X3),
-                    imm: 1,
-                });
-                let symbol_id = self.intern_symbol(
-                    plan.runtime_symbol
-                        .as_deref()
-                        .expect("realloc-bytes intrinsic runtime symbol"),
-                );
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
-                let dst = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Virtual(dst),
-                    src: Operand::Physical(Reg::X0),
-                });
-                dst
+                self.lower_runtime_call(plan.runtime_call.expect("realloc-bytes runtime call plan"))
+                    .primary
             }
             crate::value_plan::IntrinsicOperation::ByteRead => {
                 let addr = self.mir.alloc_vreg();
@@ -1689,127 +1552,8 @@ impl<'a> CfgLower<'a> {
                 dst
             }
             crate::value_plan::IntrinsicOperation::Debug => {
-                let arg = &plan.args[0];
-                if arg.slots.len() >= 2 {
-                    self.mir.push(Aarch64Inst::MovRR {
-                        dst: Operand::Physical(Reg::X0),
-                        src: Operand::Virtual(arg.slots[0]),
-                    });
-                    self.mir.push(Aarch64Inst::MovRR {
-                        dst: Operand::Physical(Reg::X1),
-                        src: Operand::Virtual(arg.slots[1]),
-                    });
-                    let symbol_id = self.intern_symbol(
-                        plan.runtime_symbol
-                            .as_deref()
-                            .expect("debug intrinsic runtime symbol"),
-                    );
-                    self.mir.push(Aarch64Inst::Bl { symbol_id });
-                } else {
-                    match arg.debug {
-                        crate::value_plan::DebugValuePlan::Integer(
-                            crate::value_plan::IntegerWidth {
-                                bits: 8,
-                                signed: true,
-                            },
-                        ) => {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg.primary),
-                            });
-                            self.mir.push(Aarch64Inst::Sxtb {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Physical(Reg::X0),
-                            });
-                        }
-                        crate::value_plan::DebugValuePlan::Integer(
-                            crate::value_plan::IntegerWidth {
-                                bits: 16,
-                                signed: true,
-                            },
-                        ) => {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg.primary),
-                            });
-                            self.mir.push(Aarch64Inst::Sxth {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Physical(Reg::X0),
-                            });
-                        }
-                        crate::value_plan::DebugValuePlan::Integer(
-                            crate::value_plan::IntegerWidth {
-                                bits: 32,
-                                signed: true,
-                            },
-                        ) => {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg.primary),
-                            });
-                            self.mir.push(Aarch64Inst::Sxtw {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Physical(Reg::X0),
-                            });
-                        }
-                        crate::value_plan::DebugValuePlan::Integer(
-                            crate::value_plan::IntegerWidth {
-                                bits: 8,
-                                signed: false,
-                            },
-                        ) => {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg.primary),
-                            });
-                            self.mir.push(Aarch64Inst::Uxtb {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Physical(Reg::X0),
-                            });
-                        }
-                        crate::value_plan::DebugValuePlan::Integer(
-                            crate::value_plan::IntegerWidth {
-                                bits: 16,
-                                signed: false,
-                            },
-                        ) => {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg.primary),
-                            });
-                            self.mir.push(Aarch64Inst::Uxth {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Physical(Reg::X0),
-                            });
-                        }
-                        crate::value_plan::DebugValuePlan::Bool
-                        | crate::value_plan::DebugValuePlan::Integer(
-                            crate::value_plan::IntegerWidth { bits: 32 | 64, .. },
-                        ) => {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg.primary),
-                            });
-                        }
-                        crate::value_plan::DebugValuePlan::String
-                        | crate::value_plan::DebugValuePlan::Other
-                        | crate::value_plan::DebugValuePlan::Integer(_) => {
-                            unreachable!("dbg type")
-                        }
-                    }
-                    let symbol_id = self.intern_symbol(
-                        plan.runtime_symbol
-                            .as_deref()
-                            .expect("debug intrinsic runtime symbol"),
-                    );
-                    self.mir.push(Aarch64Inst::Bl { symbol_id });
-                }
-                let dst = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Virtual(dst),
-                    imm: 0,
-                });
-                dst
+                self.lower_runtime_call(plan.runtime_call.expect("debug runtime call plan"))
+                    .primary
             }
             crate::value_plan::IntrinsicOperation::Syscall => {
                 let stack_space = ((plan.args.len() * 8 + 15) & !15) as i32;
@@ -1966,7 +1710,7 @@ impl<'a> CfgLower<'a> {
         &mut self,
         width: crate::value_plan::IntegerWidth,
         result_vreg: VReg,
-        trap_symbol: &str,
+        trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
         let ok_label = self.mir.alloc_label();
 
@@ -1992,8 +1736,7 @@ impl<'a> CfgLower<'a> {
         }
 
         // Overflow occurred - call panic handler
-        let symbol_id = self.intern_symbol(trap_symbol);
-        self.mir.push(Aarch64Inst::Bl { symbol_id });
+        let _ = self.lower_runtime_call(trap_call.clone());
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
@@ -2006,7 +1749,7 @@ impl<'a> CfgLower<'a> {
         &mut self,
         width: crate::value_plan::IntegerWidth,
         result_vreg: VReg,
-        trap_symbol: &str,
+        trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
         let ok_label = self.mir.alloc_label();
 
@@ -2031,8 +1774,7 @@ impl<'a> CfgLower<'a> {
             _ => return,
         }
 
-        let symbol_id = self.intern_symbol(trap_symbol);
-        self.mir.push(Aarch64Inst::Bl { symbol_id });
+        let _ = self.lower_runtime_call(trap_call.clone());
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
@@ -2047,7 +1789,7 @@ impl<'a> CfgLower<'a> {
         result_vreg: VReg,
         lhs_vreg: VReg,
         rhs_vreg: VReg,
-        trap_symbol: &str,
+        trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
         let ok_label = self.mir.alloc_label();
 
@@ -2172,8 +1914,7 @@ impl<'a> CfgLower<'a> {
             _ => return,
         }
 
-        let symbol_id = self.intern_symbol(trap_symbol);
-        self.mir.push(Aarch64Inst::Bl { symbol_id });
+        let _ = self.lower_runtime_call(trap_call.clone());
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
@@ -2191,7 +1932,7 @@ impl<'a> CfgLower<'a> {
         width: crate::value_plan::IntegerWidth,
         lhs_vreg: VReg,
         rhs_vreg: VReg,
-        trap_symbol: &str,
+        trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
         let ok_label = self.mir.alloc_label();
         let is_64 = width.bits == 64;
@@ -2242,8 +1983,7 @@ impl<'a> CfgLower<'a> {
         });
 
         // Overflow - call panic handler
-        let symbol_id = self.intern_symbol(trap_symbol);
-        self.mir.push(Aarch64Inst::Bl { symbol_id });
+        let _ = self.lower_runtime_call(trap_call.clone());
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
@@ -2256,7 +1996,7 @@ impl<'a> CfgLower<'a> {
         &mut self,
         width: crate::value_plan::IntegerWidth,
         result_vreg: VReg,
-        trap_symbol: &str,
+        trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
         let ok_label = self.mir.alloc_label();
 
@@ -2288,8 +2028,7 @@ impl<'a> CfgLower<'a> {
             _ => return,
         }
 
-        let symbol_id = self.intern_symbol(trap_symbol);
-        self.mir.push(Aarch64Inst::Bl { symbol_id });
+        let _ = self.lower_runtime_call(trap_call.clone());
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
@@ -2320,7 +2059,7 @@ impl<'a> CfgLower<'a> {
         src_vreg: VReg,
         from_width: crate::value_plan::IntegerWidth,
         to_width: crate::value_plan::IntegerWidth,
-        trap_symbol: &str,
+        trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
         let from_signed = from_width.signed;
         let to_signed = to_width.signed;
@@ -2370,8 +2109,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Below min - panic
-                    let symbol_id = self.intern_symbol(trap_symbol);
-                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+                    let _ = self.lower_runtime_call(trap_call.clone());
                     self.mir.push(Aarch64Inst::Label { id: ok_label });
 
                     let ok_label2 = self.mir.alloc_label();
@@ -2389,8 +2127,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Above max - panic
-                    let symbol_id = self.intern_symbol(trap_symbol);
-                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+                    let _ = self.lower_runtime_call(trap_call.clone());
                     self.mir.push(Aarch64Inst::Label { id: ok_label2 });
                 }
             } else {
@@ -2437,8 +2174,7 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Negative - panic
-                let symbol_id = self.intern_symbol(trap_symbol);
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
+                let _ = self.lower_runtime_call(trap_call.clone());
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
                 // Also check upper bound if narrowing
@@ -2457,8 +2193,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Above max - panic
-                    let symbol_id = self.intern_symbol(trap_symbol);
-                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+                    let _ = self.lower_runtime_call(trap_call.clone());
                     self.mir.push(Aarch64Inst::Label { id: ok_label2 });
                 }
             }
@@ -2480,8 +2215,7 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Above max - panic
-                let symbol_id = self.intern_symbol(trap_symbol);
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
+                let _ = self.lower_runtime_call(trap_call.clone());
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
             } else {
                 // Unsigned to unsigned: narrowing check
@@ -2498,8 +2232,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Above max - panic
-                    let symbol_id = self.intern_symbol(trap_symbol);
-                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+                    let _ = self.lower_runtime_call(trap_call.clone());
                     self.mir.push(Aarch64Inst::Label { id: ok_label });
                 }
             }
@@ -2616,20 +2349,8 @@ impl<'a> CfgLower<'a> {
                 });
             }
             TerminatorPlan::Return { mode } => match mode {
-                ReturnMode::Exit { value } => {
-                    if let Some(value) = value {
-                        self.mir.push(Aarch64Inst::MovRR {
-                            dst: Operand::Physical(Reg::X0),
-                            src: Operand::Virtual(value),
-                        });
-                    } else {
-                        self.mir.push(Aarch64Inst::MovImm {
-                            dst: Operand::Physical(Reg::X0),
-                            imm: 0,
-                        });
-                    }
-                    let symbol_id = self.intern_symbol("__rue_exit");
-                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+                ReturnMode::Exit { call } => {
+                    let _ = self.lower_runtime_call(call);
                 }
                 ReturnMode::Function { value } => match value {
                     ReturnValuePlan::ZeroSized => self.mir.push(Aarch64Inst::Ret),
@@ -2815,6 +2536,12 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     fn emit_call(&mut self, plan: crate::call_plan::CallPlan) -> crate::value_plan::ValueResult {
         crate::value_plan::ValueResult::Materialized(self.lower_call_plan(plan))
     }
+    fn emit_runtime_call(
+        &mut self,
+        plan: crate::runtime_call_plan::RuntimeCallPlan,
+    ) -> crate::value_plan::ValueResult {
+        crate::value_plan::ValueResult::Materialized(self.lower_runtime_call(plan))
+    }
     fn emit_intrinsic(
         &mut self,
         plan: crate::value_plan::IntrinsicPlan,
@@ -2974,11 +2701,14 @@ impl crate::allocation::BoundsCheckBackend for CfgLower<'_> {
         }
     }
 
-    fn emit_bounds_trap(&mut self, trap: crate::allocation::BoundsTrap, symbol: &'static str) {
+    fn emit_bounds_trap(
+        &mut self,
+        trap: crate::allocation::BoundsTrap,
+        call: crate::runtime_call_plan::RuntimeCallPlan,
+    ) {
         match trap {
             crate::allocation::BoundsTrap::IndexOutOfBounds => {
-                let symbol_id = self.intern_symbol(symbol);
-                self.mir.push(Aarch64Inst::Bl { symbol_id });
+                let _ = self.lower_runtime_call(call);
             }
         }
     }
@@ -3057,9 +2787,11 @@ impl crate::allocation::ScaleBackend for CfgLower<'_> {
                             src: Operand::Virtual(high_vreg),
                             label: ok_label,
                         });
-                        let symbol_id =
-                            self.intern_symbol(crate::allocation::RUNTIME_TRAP_SYMBOLS.overflow);
-                        self.mir.push(Aarch64Inst::Bl { symbol_id });
+                        let _ = self.lower_runtime_call(
+                            crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                                rue_runtime_abi::RuntimeHelperId::Overflow,
+                            ),
+                        );
                         self.mir.push(Aarch64Inst::Label { id: ok_label });
                     }
                 }
@@ -3206,13 +2938,13 @@ mod tests {
             })
     }
 
-    fn runtime_call_index(mir: &Aarch64Mir, symbol: &str) -> usize {
+    fn runtime_call_index(mir: &Aarch64Mir, helper: rue_runtime_abi::RuntimeHelperId) -> usize {
         mir.instructions()
             .iter()
             .position(|inst| {
-                matches!(inst, Aarch64Inst::Bl { symbol_id } if mir.get_symbol(*symbol_id) == symbol)
+                matches!(inst, Aarch64Inst::Bl { symbol_id } if mir.get_symbol(*symbol_id) == helper.symbol())
             })
-            .unwrap_or_else(|| panic!("missing call to {symbol}"))
+            .unwrap_or_else(|| panic!("missing call to {helper:?}"))
     }
 
     fn lower_to_mir(source: &str) -> Aarch64Mir {
@@ -3300,7 +3032,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_bytes_preview_lowers_to_true_byte_memory_ops() {
+    fn raw_bytes_runtime_helper_identity_and_slots_match_shared_plan() {
         let mut preview = PreviewFeatures::new();
         preview.insert(PreviewFeature::RawBytes);
         let mir = lower_function_to_mir_with_preview(
@@ -3322,16 +3054,16 @@ mod tests {
                 .any(|inst| matches!(inst, Aarch64Inst::LdrbIndexed { .. }))
         );
 
-        let alloc = runtime_call_index(&mir, "__rue_alloc");
+        let alloc = runtime_call_index(&mir, rue_runtime_abi::RuntimeHelperId::Alloc);
         assert_eq!(immediate_call_arg(&mir, alloc, Reg::X0), Some(3));
         assert_eq!(immediate_call_arg(&mir, alloc, Reg::X1), Some(1));
 
-        let realloc = runtime_call_index(&mir, "__rue_realloc");
+        let realloc = runtime_call_index(&mir, rue_runtime_abi::RuntimeHelperId::Realloc);
         assert_eq!(immediate_call_arg(&mir, realloc, Reg::X1), Some(3));
         assert_eq!(immediate_call_arg(&mir, realloc, Reg::X2), Some(5));
         assert_eq!(immediate_call_arg(&mir, realloc, Reg::X3), Some(1));
 
-        let free = runtime_call_index(&mir, "__rue_free");
+        let free = runtime_call_index(&mir, rue_runtime_abi::RuntimeHelperId::Free);
         assert_eq!(immediate_call_arg(&mir, free, Reg::X1), Some(5));
         assert_eq!(immediate_call_arg(&mir, free, Reg::X2), Some(1));
     }

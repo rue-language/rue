@@ -7,6 +7,7 @@
 
 use rue_air::FrozenTypeInternPool;
 use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, Type};
+use rue_runtime_abi::{ReservedExportClass, ReservedExportId};
 
 use crate::cfg_lower::type_uses_sret_return;
 use crate::types;
@@ -18,16 +19,70 @@ pub enum CalleeAbi {
     /// A Rue-compiled function, whose aggregate arguments use reversed ABI
     /// slot order to preserve the ascending logical frame layout.
     Rue,
-    /// A runtime helper using the natural C-compatible aggregate slot order.
+    /// A compiler-built C routine using natural C-compatible slot order.
     Runtime,
 }
 
 impl CalleeAbi {
-    fn for_symbol(symbol: &str) -> Self {
-        if symbol.starts_with("__rue_") {
-            Self::Runtime
-        } else {
-            Self::Rue
+    const fn for_target(target: &CallTarget) -> Self {
+        match target {
+            CallTarget::Rue(_) => Self::Rue,
+            CallTarget::MemoryBuiltin(_) => Self::Runtime,
+        }
+    }
+}
+
+/// Typed logical identity of a call target.
+///
+/// Runtime helpers use the separately validated `RuntimeCallPlan` path. Rue
+/// functions (including generated drop glue) and compiler-built C memory
+/// routines remain separate classes instead of being inferred from a prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallTarget {
+    Rue(String),
+    MemoryBuiltin(MemoryBuiltinId),
+}
+
+/// Checked identity for one compiler-built C memory routine.
+///
+/// This wrapper prevents other reserved runtime exports (entry points, shims,
+/// or ABI marker data) from being represented as callable memory builtins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryBuiltinId(ReservedExportId);
+
+impl MemoryBuiltinId {
+    pub fn new(id: ReservedExportId) -> Self {
+        assert_eq!(
+            id.export().class,
+            ReservedExportClass::CompilerBuiltMemory,
+            "memory builtin call targets must name compiler-built memory routines"
+        );
+        Self(id)
+    }
+
+    pub const fn export_id(self) -> ReservedExportId {
+        self.0
+    }
+
+    pub const fn symbol(self) -> &'static str {
+        self.0.symbol()
+    }
+}
+
+impl CallTarget {
+    pub fn rue(symbol: impl Into<String>) -> Self {
+        Self::Rue(symbol.into())
+    }
+
+    pub fn memory_builtin(id: ReservedExportId) -> Self {
+        Self::MemoryBuiltin(MemoryBuiltinId::new(id))
+    }
+
+    /// Resolve the external symbol at the MIR symbol-table boundary.
+    pub fn symbol(&self) -> &str {
+        match self {
+            Self::Rue(symbol) => symbol,
+            Self::MemoryBuiltin(id) => id.symbol(),
         }
     }
 }
@@ -113,7 +168,7 @@ impl ReturnPlan {
 /// A normalized call ABI plan consumed by both target adapters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallPlan {
-    pub symbol: String,
+    pub target: CallTarget,
     pub callee_abi: CalleeAbi,
     pub hidden_sret: Option<HiddenSretPlan>,
     pub user_args: Vec<UserArgPlan>,
@@ -236,14 +291,14 @@ impl CallPlan {
     /// by-reference arguments always return one address vreg, including for a
     /// zero-sized pointee.
     pub fn from_inputs<M: CallMaterializer>(
-        symbol: &str,
+        target: CallTarget,
         return_plan: ReturnPlan,
         args: &[CallArgInput],
         arg_reg_budget: usize,
         materializer: &mut M,
     ) -> Self {
         Self::from_inputs_with_result(
-            symbol,
+            target,
             return_plan,
             args,
             arg_reg_budget,
@@ -253,14 +308,14 @@ impl CallPlan {
     }
 
     pub fn from_inputs_with_result<M: CallMaterializer>(
-        symbol: &str,
+        target: CallTarget,
         return_plan: ReturnPlan,
         args: &[CallArgInput],
         arg_reg_budget: usize,
         materializer: &mut M,
         result: Option<VReg>,
     ) -> Self {
-        let callee_abi = CalleeAbi::for_symbol(symbol);
+        let callee_abi = CalleeAbi::for_target(&target);
         let mut hidden_sret = None;
         let mut abi_slots = Vec::new();
 
@@ -322,7 +377,7 @@ impl CallPlan {
         let stack_bytes = align_up((stack_slot_count * 8) as u32, 16);
 
         Self {
-            symbol: symbol.to_owned(),
+            target,
             callee_abi,
             hidden_sret,
             user_args,
@@ -336,11 +391,11 @@ impl CallPlan {
 
     /// Build the same normalized shape for drop/glue calls whose slots have
     /// already been materialized by the canonical aggregate leaves.
-    pub fn from_slot_values(symbol: &str, slots: &[VReg], arg_reg_budget: usize) -> Self {
+    pub fn from_slot_values(target: CallTarget, slots: &[VReg], arg_reg_budget: usize) -> Self {
         let stack_slot_count = slots.len().saturating_sub(arg_reg_budget);
         Self {
-            symbol: symbol.to_owned(),
-            callee_abi: CalleeAbi::for_symbol(symbol),
+            callee_abi: CalleeAbi::for_target(&target),
+            target,
             hidden_sret: None,
             user_args: vec![UserArgPlan {
                 mode: UserArgMode::Value,
@@ -458,7 +513,7 @@ mod tests {
     #[test]
     fn slot_call_plan_counts_aligned_stack_slots() {
         let slots: Vec<_> = (0..9).map(VReg::new).collect();
-        let plan = CallPlan::from_slot_values("drop", &slots, 6);
+        let plan = CallPlan::from_slot_values(CallTarget::rue("drop"), &slots, 6);
 
         assert_eq!(plan.abi_slots, slots);
         assert_eq!(plan.stack_slot_count, 3);
@@ -470,7 +525,7 @@ mod tests {
     fn zero_sized_normal_arguments_are_omitted_but_by_ref_is_preserved() {
         let slots = vec![VReg::new(7)];
         let plan = CallPlan {
-            symbol: "test".into(),
+            target: CallTarget::rue("test"),
             callee_abi: CalleeAbi::Rue,
             hidden_sret: None,
             user_args: vec![
@@ -534,7 +589,7 @@ mod tests {
         ];
         let mut materializer = TestMaterializer;
         let rue = CallPlan::from_inputs(
-            "callee",
+            CallTarget::rue("callee"),
             ReturnPlan::Sret {
                 slot_count: 3,
                 storage_bytes: 32,
@@ -553,23 +608,36 @@ mod tests {
         assert_eq!(rue.stack_bytes, 16);
         assert_eq!(rue.user_args[1].mode, UserArgMode::Borrow);
         assert!(rue.user_args[2].slots.is_empty());
+    }
+
+    #[test]
+    fn generated_rue_symbols_do_not_trigger_runtime_abi_by_prefix() {
+        let args = [CallArgInput::Value {
+            value: rue_cfg::CfgValue::from_raw(1),
+            slot_count: 2,
+            is_multislot_aggregate: true,
+        }];
 
         let mut materializer = TestMaterializer;
-        let runtime = CallPlan::from_inputs(
-            "__rue_runtime",
-            ReturnPlan::Sret {
-                slot_count: 3,
-                storage_bytes: 32,
-            },
+        let generated_rue = CallPlan::from_inputs(
+            CallTarget::rue("__rue_drop_generated"),
+            ReturnPlan::ZeroSized,
             &args,
             8,
             &mut materializer,
         );
-        assert_eq!(
-            runtime.abi_slots,
-            vec![VReg::new(40), VReg::new(10), VReg::new(11), VReg::new(30)]
-        );
-        assert_eq!(runtime.stack_slot_count, 0);
-        assert_eq!(runtime.stack_bytes, 0);
+        assert_eq!(generated_rue.callee_abi, CalleeAbi::Rue);
+        assert_eq!(generated_rue.abi_slots, vec![VReg::new(11), VReg::new(10)]);
+    }
+
+    #[test]
+    fn memory_builtins_are_distinct_from_helpers_and_rue_symbols() {
+        let target = CallTarget::memory_builtin(ReservedExportId::Memcpy);
+        assert_eq!(target.symbol(), "memcpy");
+        assert_eq!(CalleeAbi::for_target(&target), CalleeAbi::Runtime);
+        assert!(matches!(
+            target,
+            CallTarget::MemoryBuiltin(id) if id.export_id() == ReservedExportId::Memcpy
+        ));
     }
 }

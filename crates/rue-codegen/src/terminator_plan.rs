@@ -55,12 +55,17 @@ pub enum ReturnValuePlan {
     },
 }
 
-/// Target-neutral return behavior.  `Exit` is the language-level `main`
-/// termination mode; the adapter supplies the platform call sequence.
+/// Target-neutral return behavior. `Exit` is the language-level `main`
+/// termination mode; its manifest-derived call plan is shared, while the
+/// adapter assigns the platform argument registers and call instruction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReturnMode {
-    Exit { value: Option<VReg> },
-    Function { value: ReturnValuePlan },
+    Exit {
+        call: crate::runtime_call_plan::RuntimeCallPlan,
+    },
+    Function {
+        value: ReturnValuePlan,
+    },
 }
 
 /// Exhaustive target-neutral terminator plan.
@@ -434,11 +439,28 @@ pub fn plan_terminator<A: TerminatorAdapter>(
         }
         Terminator::Return { value } => {
             let mode = if fn_name == "main" {
+                let value = value.map(|value| {
+                    let plan = ValuePlan::for_value(ctx, value);
+                    adapter.materialize_value(value, plan).primary
+                });
                 ReturnMode::Exit {
-                    value: value.map(|value| {
-                        let plan = ValuePlan::for_value(ctx, value);
-                        adapter.materialize_value(value, plan).primary
-                    }),
+                    call: crate::runtime_call_plan::RuntimeCallPlan::expect_manifest(
+                        rue_runtime_abi::RuntimeHelperId::Exit,
+                        [value.map_or_else(
+                            || {
+                                crate::runtime_call_plan::RuntimeCallArg::immediate(
+                                    0,
+                                    rue_runtime_abi::AbiType::I32,
+                                )
+                            },
+                            |value| {
+                                crate::runtime_call_plan::RuntimeCallArg::value(
+                                    value,
+                                    rue_runtime_abi::AbiType::I32,
+                                )
+                            },
+                        )],
+                    ),
                 }
             } else {
                 ReturnMode::Function {

@@ -634,11 +634,11 @@ function main:
     cbnz v1, .L0
     bl __rue_div_by_zero
     .L0:
-    mov v3, #-1
-    cmp v1, v3
+    mov v4, #-1
+    cmp v1, v4
     b.ne .L1
-    mov v4, #-2147483648
-    cmp v0, v4
+    mov v5, #-2147483648
+    cmp v0, v5
     b.ne .L1
     bl __rue_overflow
     .L1:
@@ -713,16 +713,16 @@ function main:
     cbnz v1, .L0
     bl __rue_div_by_zero
     .L0:
-    mov v3, #-1
-    cmp v1, v3
+    mov v4, #-1
+    cmp v1, v4
     b.ne .L1
-    mov v4, #-2147483648
-    cmp v0, v4
+    mov v5, #-2147483648
+    cmp v0, v5
     b.ne .L1
     bl __rue_overflow
     .L1:
-    sdiv v5, v0, v1
-    msub v2, v5, v1, v0
+    sdiv v7, v0, v1
+    msub v2, v7, v1, v0
     mov x0, v2
     bl __rue_exit
 """
@@ -948,12 +948,12 @@ function main:
     jb .L0
     call __rue_bounds_check
     .L0:
-    mov v8, v5
-    mov v9, 16
-    imulq v8, v9
-    lea v10, [rbp-8]
-    addq v10, v8
-    mov v6, [v10]
+    mov v9, v5
+    mov v10, 16
+    imulq v9, v10
+    lea v11, [rbp-8]
+    addq v11, v9
+    mov v6, [v11]
     mov rdi, v6
     call __rue_exit
 """
@@ -987,12 +987,12 @@ function main:
     b.lo .L0
     bl __rue_bounds_check
     .L0:
-    mov v8, v5
-    mov v9, #16
-    mul v8, v8, v9
-    add v10, fp, #-8
-    add v10, v10, v8
-    ldr v6, [v10]
+    mov v9, v5
+    mov v10, #16
+    mul v9, v9, v10
+    add v11, fp, #-8
+    add v11, v11, v9
+    ldr v6, [v11]
     mov x0, v6
     bl __rue_exit
 """
