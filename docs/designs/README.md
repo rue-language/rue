@@ -215,4 +215,5 @@ The table is generated from ADR frontmatter. Run
 | [0051](0051-canonical-import-resolution-authority.md) | CanonicalImportGraph as the sole import-resolution authority | Accepted | architecture, compiler, modules, incremental, tooling |
 | [0052](0052-canonical-physical-type-layout.md) | Canonical Physical Type Layout | Proposal | types, semantics, compiler, codegen, abi, memory |
 | [0053](0053-typed-compiler-query-state.md) | Typed CompilerSession query state | Accepted | architecture, compiler, incremental, tooling |
+| [0055](0055-typed-runtime-abi-manifest.md) | Typed compiler-runtime ABI manifest | Accepted | architecture, compiler, runtime, abi, codegen |
 <!-- ADR-INDEX:END -->
