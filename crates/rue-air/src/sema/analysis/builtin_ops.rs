@@ -262,10 +262,10 @@ impl<'a> BodySema<'a> {
     /// The `String` argument is *borrowed* (read, not consumed), exactly like
     /// the operands of `s1 + s2`: a named argument stays usable afterwards and
     /// a temporary is dropped by its owner at statement end (no leak, no double
-    /// free). This lowers to an ordinary `extern "C"` call to the runtime
-    /// `__rue_print` / `__rue_println`, reusing the String-flattening call path
-    /// (the String passes as its three fields ptr/len/cap; the runtime ignores
-    /// cap) — so no codegen change is needed.
+    /// free). The owned-buffer and shared-view cases select typed builtin
+    /// mappings whose logical signatures come from the canonical runtime
+    /// manifest. AIR retains its existing external-call representation until
+    /// the typed call migration.
     pub(crate) fn analyze_print_builtin(
         &mut self,
         air: &mut Air,
@@ -319,16 +319,16 @@ impl<'a> BodySema<'a> {
             self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
         });
         let shared_text = source_strbuf || self.is_str_like(arg_result.ty);
-        let runtime_fn = if name == self.known.println && shared_text {
-            "__rue_str_println"
-        } else if name == self.known.println {
-            rue_builtins::PRINTLN_RUNTIME_FN
-        } else if shared_text {
-            "__rue_str_print"
+        debug_assert!(shared_text || arg_result.ty.is_error());
+        let operation = if name == self.known.println {
+            rue_builtins::TextBuiltinOperation::PrintlnView
         } else {
-            rue_builtins::PRINT_RUNTIME_FN
+            rue_builtins::TextBuiltinOperation::PrintView
         };
-        let call_name = self.interner.get_or_intern(runtime_fn);
+        let runtime_helper = operation
+            .runtime_helper()
+            .expect("print builtin must map to a runtime helper");
+        let call_name = self.interner.get_or_intern(runtime_helper.symbol);
 
         let extra_data = if source_strbuf {
             let (ptr, len, temp_scope) =

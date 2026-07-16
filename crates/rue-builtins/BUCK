@@ -2,7 +2,7 @@ load("//crates:defs.bzl", "rue_crate")
 
 rue_crate(
     name = "rue-builtins",
-    test_deps = [
+    deps = [
         "//crates/rue-runtime-abi:rue-runtime-abi",
     ],
 )

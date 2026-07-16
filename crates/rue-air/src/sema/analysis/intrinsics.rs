@@ -1039,16 +1039,15 @@ impl<'a> BodySema<'a> {
     /// Formats any integer (`i8`/`i16`/`i32`/`i64`/`u8`/`u16`/`u32`/`u64`) as
     /// its decimal representation in a fresh heap `String`. The runtime
     /// formatters operate on a 64-bit value, so a narrower argument is widened
-    /// to 64 bits first: signed types sign-extend to `i64` and use
-    /// `__rue_to_string`; unsigned types zero-extend to `u64` and use
-    /// `__rue_to_string_unsigned` (so a `u32`/`u64` with the high bit set
-    /// prints as its unsigned value, not a negative number). The widening
-    /// reuses the ordinary `IntCast` path, which the backends already
-    /// sign/zero-extend correctly (RUE-88). Rather than introduce a dedicated
-    /// codegen intrinsic, this lowers to an ordinary `extern "C"` call to the
-    /// runtime: the return type is the builtin `String`, so the existing sret
-    /// call convention allocates the result buffer and passes it as the hidden
-    /// first argument — no codegen change.
+    /// to 64 bits first. Signed operands select
+    /// [`rue_builtins::TextBuiltinOperation::ToStringSigned`]; unsigned operands
+    /// select [`rue_builtins::TextBuiltinOperation::ToStringUnsigned`] so a
+    /// `u32`/`u64` with the high bit set prints as its unsigned value, not a
+    /// negative number. The widening reuses the ordinary `IntCast` path, which
+    /// the backends already sign/zero-extend correctly (RUE-88). The builtin
+    /// mapping obtains the logical out-pointer signature from the canonical
+    /// runtime manifest; AIR retains its existing external-call representation
+    /// until the typed call migration.
     pub(super) fn analyze_to_string_intrinsic(
         &mut self,
         air: &mut Air,
@@ -1104,12 +1103,16 @@ impl<'a> BodySema<'a> {
         let string_type = self
             .strbuf_type()
             .ok_or_compile_error(ErrorKind::UnknownType("StrBuf".to_string()), span)?;
-        let runtime_fn = if unsigned {
-            rue_builtins::TO_STRING_UNSIGNED_RUNTIME_FN
+        let operation = if unsigned {
+            rue_builtins::TextBuiltinOperation::ToStringUnsigned
         } else {
-            rue_builtins::TO_STRING_RUNTIME_FN
+            rue_builtins::TextBuiltinOperation::ToStringSigned
         };
-        let call_name = self.interner.get_or_intern(runtime_fn);
+        let runtime_helper = operation
+            .runtime_helper()
+            .expect("to_string builtin must map to a runtime helper");
+        debug_assert_eq!(runtime_helper.parameters.len(), 2);
+        let call_name = self.interner.get_or_intern(runtime_helper.symbol);
 
         // Encode the single by-value argument as a (value, mode) pair.
         let extra_data = [arg_air_ref.as_u32(), AirArgMode::Normal.as_u32()];

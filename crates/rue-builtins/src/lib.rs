@@ -1,38 +1,386 @@
-//! Runtime symbol constants and compiler-provided enum definitions.
+//! Typed builtin/runtime mappings and compiler-provided enum definitions.
 //!
 //! Source-defined standard-library types use trusted language-item identity;
 //! this crate does not inject or describe nominal struct types.
+
+use rue_runtime_abi::{RuntimeHelper, RuntimeHelperId};
 
 // ============================================================================
 // Runtime operations that return or consume text values
 // ============================================================================
 
-/// Runtime symbol for `@to_string(n)` on a signed integer: formats an `i64` as
-/// its decimal representation into a freshly heap-allocated `StrBuf` (full range
-/// including `i64::MIN`; negatives are prefixed with `-`). Narrower signed
-/// operands (`i8`/`i16`/`i32`) are sign-extended to `i64` before the call. sret
-/// ABI: `extern "C" fn __rue_to_string(out: *mut StrBufResult, n: i64)`.
-pub const TO_STRING_RUNTIME_FN: &str = "__rue_to_string";
+/// The part of the text surface to which a builtin operation belongs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TextBuiltinCategory {
+    Construction,
+    Capacity,
+    Mutation,
+    Indexing,
+    Iteration,
+    Formatting,
+    Io,
+}
 
-/// Runtime symbol for `@to_string(n)` on an unsigned integer: formats a `u64` as
-/// its decimal representation into a freshly heap-allocated `StrBuf` (full
-/// range, so a value with the high bit set prints as its unsigned magnitude, not
-/// a negative number). Narrower unsigned operands (`u8`/`u16`/`u32`) are
-/// zero-extended to `u64` before the call. sret ABI:
-/// `extern "C" fn __rue_to_string_unsigned(out: *mut StrBufResult, n: u64)`.
-pub const TO_STRING_UNSIGNED_RUNTIME_FN: &str = "__rue_to_string_unsigned";
+/// Where the canonical implementation of a text builtin lives.
+///
+/// Source-owned operations are ordinary methods in `std.strbuf` or functions
+/// in `std.fmt`. Direct semantic operations construct AIR without crossing the
+/// runtime ABI. Runtime operations carry the exhaustive typed helper identity;
+/// their symbol and logical signature are obtained from `rue-runtime-abi`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TextBuiltinDisposition {
+    OwnedBySource(&'static str),
+    DirectSema,
+    RuntimeHelper(RuntimeHelperId),
+}
 
-/// Runtime symbol for `print(s)`: writes the raw bytes of `s` to stdout with no
-/// added newline. The `StrBuf` is passed by borrow (not consumed), flattened
-/// into three ABI slots: `extern "C" fn __rue_print(ptr, len, cap)` (`cap`
-/// unused). Returns unit (RUE-1).
-pub const PRINT_RUNTIME_FN: &str = "__rue_print";
+impl TextBuiltinDisposition {
+    /// Return the canonical runtime ABI entry, if this operation crosses the
+    /// compiler/runtime boundary.
+    const fn runtime_helper(self) -> Option<&'static RuntimeHelper> {
+        match self {
+            Self::RuntimeHelper(id) => Some(id.helper()),
+            Self::OwnedBySource(_) | Self::DirectSema => None,
+        }
+    }
+}
 
-/// Runtime symbol for `println(s)`: writes the raw bytes of `s` to stdout
-/// followed by a single `\n`. Same borrow ABI as [`PRINT_RUNTIME_FN`]:
-/// `extern "C" fn __rue_println(ptr, len, cap)` (`cap` unused). Returns unit
-/// (RUE-1).
-pub const PRINTLN_RUNTIME_FN: &str = "__rue_println";
+/// One closed inventory row for the currently supported `StrBuf` surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TextBuiltinMapping {
+    operation: TextBuiltinOperation,
+    category: TextBuiltinCategory,
+    /// Source spelling or a short compiler-owned description. Runtime symbol
+    /// names deliberately do not live here.
+    surface: &'static str,
+    disposition: TextBuiltinDisposition,
+}
+
+impl TextBuiltinMapping {
+    /// Return the canonical helper and signature for a runtime-backed mapping.
+    const fn runtime_helper(self) -> Option<&'static RuntimeHelper> {
+        self.disposition.runtime_helper()
+    }
+}
+
+macro_rules! text_builtin_inventory {
+    (
+        $(
+            $variant:ident => {
+                category: $category:ident,
+                surface: $surface:literal,
+                disposition: $disposition:expr
+            }
+        ),+ $(,)?
+    ) => {
+        /// Exhaustive typed identity for the compiler-owned `StrBuf` builtin
+        /// surface. Additions must declare their ownership in this macro, so
+        /// the inventory cannot acquire an unclassified row.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[repr(u8)]
+        pub enum TextBuiltinOperation {
+            $($variant),+
+        }
+
+        impl TextBuiltinOperation {
+            #[cfg(test)]
+            const ALL: [Self; text_builtin_inventory!(@count $($variant),+)] = [
+                $(Self::$variant),+
+            ];
+
+            const fn mapping(self) -> &'static TextBuiltinMapping {
+                &TEXT_BUILTIN_MAPPINGS[self as usize]
+            }
+
+            /// Return this operation's canonical runtime helper and logical ABI
+            /// signature, or `None` when source or semantic analysis owns it.
+            pub const fn runtime_helper(self) -> Option<&'static RuntimeHelper> {
+                self.mapping().runtime_helper()
+            }
+        }
+
+        const TEXT_BUILTIN_MAPPINGS:
+            [TextBuiltinMapping; text_builtin_inventory!(@count $($variant),+)] = [
+                $(
+                    TextBuiltinMapping {
+                        operation: TextBuiltinOperation::$variant,
+                        category: TextBuiltinCategory::$category,
+                        surface: $surface,
+                        disposition: $disposition,
+                    }
+                ),+
+            ];
+    };
+    (@count $($variant:ident),+) => {
+        <[()]>::len(&[$(text_builtin_inventory!(@replace $variant ())),+])
+    };
+    (@replace $_variant:ident $value:expr) => {
+        $value
+    };
+}
+
+// Current-source inventory for the String/StrBuf paths owned by builtin
+// resolution and its directly lowered exceptions. Source-defined entries name
+// their canonical source callable. Direct-sema entries have no external ABI.
+// Runtime entries name only a RuntimeHelperId; symbol and signature facts stay
+// canonical in rue-runtime-abi.
+text_builtin_inventory! {
+    New => {
+        category: Construction,
+        surface: "StrBuf.new",
+        disposition: TextBuiltinDisposition::OwnedBySource("new")
+    },
+    WithCapacity => {
+        category: Construction,
+        surface: "StrBuf.with_capacity",
+        disposition: TextBuiltinDisposition::OwnedBySource("with_capacity")
+    },
+    Allocate => {
+        category: Construction,
+        surface: "StrBuf.allocate",
+        disposition: TextBuiltinDisposition::OwnedBySource("allocate")
+    },
+    Clone => {
+        category: Construction,
+        surface: "StrBuf.clone",
+        disposition: TextBuiltinDisposition::OwnedBySource("clone")
+    },
+    Copy => {
+        category: Construction,
+        surface: "StrBuf.copy",
+        disposition: TextBuiltinDisposition::OwnedBySource("copy")
+    },
+    Substring => {
+        category: Construction,
+        surface: "StrBuf.substring",
+        disposition: TextBuiltinDisposition::OwnedBySource("substring")
+    },
+    ConcatMethod => {
+        category: Construction,
+        surface: "StrBuf.concat",
+        disposition: TextBuiltinDisposition::OwnedBySource("concat")
+    },
+    ConcatOperator => {
+        category: Construction,
+        surface: "StrBuf + StrBuf",
+        disposition: TextBuiltinDisposition::OwnedBySource("concat_borrowed")
+    },
+    Len => {
+        category: Capacity,
+        surface: "StrBuf.len",
+        disposition: TextBuiltinDisposition::OwnedBySource("len")
+    },
+    Capacity => {
+        category: Capacity,
+        surface: "StrBuf.capacity",
+        disposition: TextBuiltinDisposition::OwnedBySource("capacity")
+    },
+    IsEmpty => {
+        category: Capacity,
+        surface: "StrBuf.is_empty",
+        disposition: TextBuiltinDisposition::OwnedBySource("is_empty")
+    },
+    InitialCapacity => {
+        category: Capacity,
+        surface: "StrBuf.initial_capacity",
+        disposition: TextBuiltinDisposition::OwnedBySource("initial_capacity")
+    },
+    GrowthCapacity => {
+        category: Capacity,
+        surface: "StrBuf.growth_capacity",
+        disposition: TextBuiltinDisposition::OwnedBySource("growth_capacity")
+    },
+    Reserve => {
+        category: Capacity,
+        surface: "StrBuf.reserve",
+        disposition: TextBuiltinDisposition::OwnedBySource("reserve")
+    },
+    ReserveSource => {
+        category: Capacity,
+        surface: "StrBuf.reserve_source",
+        disposition: TextBuiltinDisposition::OwnedBySource("reserve_source")
+    },
+    Grow => {
+        category: Capacity,
+        surface: "StrBuf.grow",
+        disposition: TextBuiltinDisposition::OwnedBySource("grow")
+    },
+    Push => {
+        category: Mutation,
+        surface: "StrBuf.push",
+        disposition: TextBuiltinDisposition::OwnedBySource("push")
+    },
+    AppendByte => {
+        category: Mutation,
+        surface: "StrBuf.append_byte",
+        disposition: TextBuiltinDisposition::OwnedBySource("append_byte")
+    },
+    PushStr => {
+        category: Mutation,
+        surface: "StrBuf.push_str",
+        disposition: TextBuiltinDisposition::OwnedBySource("push_str")
+    },
+    AppendOwned => {
+        category: Mutation,
+        surface: "StrBuf.append_owned",
+        disposition: TextBuiltinDisposition::OwnedBySource("append_owned")
+    },
+    Clear => {
+        category: Mutation,
+        surface: "StrBuf.clear",
+        disposition: TextBuiltinDisposition::OwnedBySource("clear")
+    },
+    Duplicate => {
+        category: Mutation,
+        surface: "StrBuf.duplicate",
+        disposition: TextBuiltinDisposition::OwnedBySource("duplicate")
+    },
+    Free => {
+        category: Mutation,
+        surface: "StrBuf.free",
+        disposition: TextBuiltinDisposition::OwnedBySource("free")
+    },
+    Drop => {
+        category: Mutation,
+        surface: "drop StrBuf",
+        disposition: TextBuiltinDisposition::OwnedBySource("drop fn StrBuf")
+    },
+    ByteIndex => {
+        category: Indexing,
+        surface: "StrBuf[index]",
+        disposition: TextBuiltinDisposition::OwnedBySource("byte_at_borrowed")
+    },
+    ByteRange => {
+        category: Indexing,
+        surface: "StrBuf.substring",
+        disposition: TextBuiltinDisposition::OwnedBySource("byte_range")
+    },
+    Equality => {
+        category: Indexing,
+        surface: "StrBuf == StrBuf",
+        disposition: TextBuiltinDisposition::OwnedBySource("equals_borrowed")
+    },
+    StartsWith => {
+        category: Indexing,
+        surface: "StrBuf.starts_with",
+        disposition: TextBuiltinDisposition::OwnedBySource("starts_with")
+    },
+    Contains => {
+        category: Indexing,
+        surface: "StrBuf.contains",
+        disposition: TextBuiltinDisposition::OwnedBySource("contains")
+    },
+    TextViewByteIndex => {
+        category: Indexing,
+        surface: "str/Str(N)[index]",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrByteAt)
+    },
+    TextViewEquality => {
+        category: Indexing,
+        surface: "str/Str(N) equality",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrEq)
+    },
+    ByteIteration => {
+        category: Iteration,
+        surface: "for byte in StrBuf",
+        disposition: TextBuiltinDisposition::DirectSema
+    },
+    CharScalar => {
+        category: Iteration,
+        surface: "StrBuf.chars scalar",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrCharScalar)
+    },
+    CharNext => {
+        category: Iteration,
+        surface: "StrBuf.chars next",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrCharNext)
+    },
+    CharScalarLossy => {
+        category: Iteration,
+        surface: "StrBuf.chars_lossy scalar",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrCharScalarLossy)
+    },
+    CharNextLossy => {
+        category: Iteration,
+        surface: "StrBuf.chars_lossy next",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrCharNextLossy)
+    },
+    ToStringSigned => {
+        category: Formatting,
+        surface: "@to_string(signed)",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::ToString)
+    },
+    ToStringUnsigned => {
+        category: Formatting,
+        surface: "@to_string(unsigned)",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::ToStringUnsigned)
+    },
+    IntToString => {
+        category: Formatting,
+        surface: "std.fmt.int_to_string",
+        disposition: TextBuiltinDisposition::OwnedBySource("int_to_string")
+    },
+    BoolToString => {
+        category: Formatting,
+        surface: "std.fmt.bool_to_string",
+        disposition: TextBuiltinDisposition::OwnedBySource("bool_to_string")
+    },
+    ToRadix => {
+        category: Formatting,
+        surface: "std.fmt.to_radix",
+        disposition: TextBuiltinDisposition::OwnedBySource("to_radix")
+    },
+    ToHex => {
+        category: Formatting,
+        surface: "std.fmt.to_hex",
+        disposition: TextBuiltinDisposition::OwnedBySource("to_hex")
+    },
+    ToBinary => {
+        category: Formatting,
+        surface: "std.fmt.to_binary",
+        disposition: TextBuiltinDisposition::OwnedBySource("to_binary")
+    },
+    PrintView => {
+        category: Io,
+        surface: "print(StrBuf/str/Str(N))",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrPrint)
+    },
+    PrintlnView => {
+        category: Io,
+        surface: "println(StrBuf/str/Str(N))",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrPrintln)
+    },
+    DebugText => {
+        category: Io,
+        surface: "@dbg(text)",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::DebugStr)
+    },
+    ReadLine => {
+        category: Io,
+        surface: "@read_line",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::ReadLine)
+    },
+    ParseI32 => {
+        category: Io,
+        surface: "@parse_i32",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::ParseI32)
+    },
+    ParseI64 => {
+        category: Io,
+        surface: "@parse_i64",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::ParseI64)
+    },
+    ParseU32 => {
+        category: Io,
+        surface: "@parse_u32",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::ParseU32)
+    },
+    ParseU64 => {
+        category: Io,
+        surface: "@parse_u64",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::ParseU64)
+    }
+}
 
 // ============================================================================
 // Built-in Enums (Target Platform)
@@ -137,7 +485,7 @@ pub fn is_reserved_function_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_runtime_abi::RuntimeHelperId;
+    use rue_runtime_abi::{AbiResult, AbiType, AggregateShapeId, ParameterMode};
 
     #[test]
     fn test_is_reserved_function_name() {
@@ -174,25 +522,127 @@ mod tests {
     }
 
     #[test]
-    fn current_builtin_symbol_constants_have_canonical_helper_identities() {
-        // This is deliberately a non-migrating proof. RUE-829 replaces these
-        // raw constants and their consumers with typed helper IDs.
+    fn text_builtin_inventory_is_exhaustive_and_index_stable() {
+        assert_eq!(TextBuiltinOperation::ALL.len(), TEXT_BUILTIN_MAPPINGS.len());
+        for (index, operation) in TextBuiltinOperation::ALL.iter().copied().enumerate() {
+            assert_eq!(operation as usize, index);
+            assert_eq!(operation.mapping().operation, operation);
+            assert!(!operation.mapping().surface.is_empty());
+        }
+    }
+
+    #[test]
+    fn text_builtin_inventory_covers_every_required_area() {
+        for category in [
+            TextBuiltinCategory::Construction,
+            TextBuiltinCategory::Capacity,
+            TextBuiltinCategory::Mutation,
+            TextBuiltinCategory::Indexing,
+            TextBuiltinCategory::Iteration,
+            TextBuiltinCategory::Formatting,
+            TextBuiltinCategory::Io,
+        ] {
+            assert!(
+                TEXT_BUILTIN_MAPPINGS
+                    .iter()
+                    .any(|mapping| mapping.category == category),
+                "missing text builtin category: {category:?}"
+            );
+        }
+        assert!(TEXT_BUILTIN_MAPPINGS.iter().any(|mapping| matches!(
+            mapping.disposition,
+            TextBuiltinDisposition::OwnedBySource(_)
+        )));
+        assert!(
+            TEXT_BUILTIN_MAPPINGS
+                .iter()
+                .any(|mapping| matches!(mapping.disposition, TextBuiltinDisposition::DirectSema))
+        );
+        assert!(TEXT_BUILTIN_MAPPINGS.iter().any(|mapping| matches!(
+            mapping.disposition,
+            TextBuiltinDisposition::RuntimeHelper(_)
+        )));
+    }
+
+    #[test]
+    fn runtime_backed_text_builtins_obtain_identity_and_signature_from_manifest() {
+        for mapping in TEXT_BUILTIN_MAPPINGS {
+            let TextBuiltinDisposition::RuntimeHelper(id) = mapping.disposition else {
+                assert!(mapping.runtime_helper().is_none());
+                continue;
+            };
+            let helper = mapping
+                .runtime_helper()
+                .expect("runtime-backed builtin must resolve a manifest entry");
+            assert_eq!(helper.id, id);
+            assert_eq!(RuntimeHelperId::from_symbol(helper.symbol), Some(id));
+        }
+
+        let signed = TextBuiltinOperation::ToStringSigned
+            .runtime_helper()
+            .unwrap();
         assert_eq!(
-            RuntimeHelperId::from_symbol(TO_STRING_RUNTIME_FN),
-            Some(RuntimeHelperId::ToString)
+            signed.parameters[0].mode,
+            ParameterMode::OutPointer(AggregateShapeId::StrBufResult)
+        );
+        assert_eq!(signed.parameters[1].ty, AbiType::I64);
+        assert_eq!(signed.result, AbiResult::Void);
+
+        let unsigned = TextBuiltinOperation::ToStringUnsigned
+            .runtime_helper()
+            .unwrap();
+        assert_eq!(
+            unsigned.parameters[0].mode,
+            ParameterMode::OutPointer(AggregateShapeId::StrBufResult)
+        );
+        assert_eq!(unsigned.parameters[1].ty, AbiType::U64);
+
+        for operation in [
+            TextBuiltinOperation::PrintView,
+            TextBuiltinOperation::PrintlnView,
+        ] {
+            let helper = operation.runtime_helper().unwrap();
+            assert_eq!(helper.parameters.len(), 2);
+            assert_eq!(helper.result, AbiResult::Void);
+        }
+        assert_eq!(
+            TextBuiltinOperation::PrintView.runtime_helper().unwrap().id,
+            RuntimeHelperId::StrPrint
         );
         assert_eq!(
-            RuntimeHelperId::from_symbol(TO_STRING_UNSIGNED_RUNTIME_FN),
-            Some(RuntimeHelperId::ToStringUnsigned)
+            TextBuiltinOperation::PrintlnView
+                .runtime_helper()
+                .unwrap()
+                .id,
+            RuntimeHelperId::StrPrintln
         );
-        assert_eq!(
-            RuntimeHelperId::from_symbol(PRINT_RUNTIME_FN),
-            Some(RuntimeHelperId::Print)
-        );
-        assert_eq!(
-            RuntimeHelperId::from_symbol(PRINTLN_RUNTIME_FN),
-            Some(RuntimeHelperId::Println)
-        );
+        assert!(!TEXT_BUILTIN_MAPPINGS.iter().any(|mapping| matches!(
+            mapping.disposition,
+            TextBuiltinDisposition::RuntimeHelper(
+                RuntimeHelperId::Print | RuntimeHelperId::Println
+            )
+        )));
+
+        let byte_at = TextBuiltinOperation::TextViewByteIndex
+            .runtime_helper()
+            .unwrap();
+        assert_eq!(byte_at.id, RuntimeHelperId::StrByteAt);
+        assert_eq!(byte_at.parameters.len(), 3);
+        assert_eq!(byte_at.parameters[0].mode, ParameterMode::ConstPointer);
+        assert_eq!(byte_at.parameters[1].ty, AbiType::U64);
+        assert_eq!(byte_at.parameters[2].ty, AbiType::U64);
+        assert_eq!(byte_at.result, AbiResult::Scalar(AbiType::U64));
+
+        let equality = TextBuiltinOperation::TextViewEquality
+            .runtime_helper()
+            .unwrap();
+        assert_eq!(equality.id, RuntimeHelperId::StrEq);
+        assert_eq!(equality.parameters.len(), 4);
+        assert_eq!(equality.parameters[0].mode, ParameterMode::ConstPointer);
+        assert_eq!(equality.parameters[1].ty, AbiType::U64);
+        assert_eq!(equality.parameters[2].mode, ParameterMode::ConstPointer);
+        assert_eq!(equality.parameters[3].ty, AbiType::U64);
+        assert_eq!(equality.result, AbiResult::Scalar(AbiType::U64));
     }
 
     // ========================================================================
