@@ -13,6 +13,7 @@
 use lasso::Spur;
 use rue_air::{EnumId, StructId, TypeKind};
 use rue_cfg::{CfgInstData, CfgValue, Place, PlaceBase, Projection, Type};
+use rue_runtime_abi::RuntimeHelperId;
 
 use crate::call_plan::CallPlan;
 use crate::cfg_lower::CfgLowerContext;
@@ -78,6 +79,7 @@ pub enum ResidualValuePlan {
         lhs: MaterializedValue,
         rhs: MaterializedValue,
         leaf_types: Vec<Type>,
+        runtime_call: Option<crate::runtime_call_plan::RuntimeCallPlan>,
     },
     Bitwise {
         op: BitwiseOp,
@@ -135,7 +137,7 @@ pub enum ResidualValuePlan {
     IntCast {
         value: VReg,
         from_width: IntegerWidth,
-        trap_symbol: &'static str,
+        trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     },
     Drop {
         actions: Vec<DropAction>,
@@ -176,10 +178,11 @@ pub struct DropAction {
     pub slots: Vec<VReg>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArithmeticPlan {
     pub operation: ArithmeticOperation,
-    pub trap_symbols: crate::allocation::RuntimeTrapSymbols,
+    pub overflow_call: crate::runtime_call_plan::RuntimeCallPlan,
+    pub div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,13 +222,11 @@ pub enum ArithmeticOperation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrapPlan {
     Panic {
-        message: Option<MaterializedValue>,
-        symbol: String,
+        call: crate::runtime_call_plan::RuntimeCallPlan,
     },
     Assert {
         condition: VReg,
-        message: Option<MaterializedValue>,
-        symbol: String,
+        call: crate::runtime_call_plan::RuntimeCallPlan,
     },
 }
 
@@ -293,9 +294,9 @@ pub enum IntrinsicOperation {
 pub struct IntrinsicPlan {
     pub operation: IntrinsicOperation,
     /// Shared runtime entry selected from the intrinsic semantics. Target
-    /// adapters marshal this symbol through their call leaf and do not map
+    /// adapters marshal this helper through their call leaf and do not map
     /// language intrinsics to runtime names themselves.
-    pub runtime_symbol: Option<String>,
+    pub runtime_call: Option<crate::runtime_call_plan::RuntimeCallPlan>,
     pub args: Vec<IntrinsicArgPlan>,
     pub result_ty: Type,
     pub result_slots: u32,
@@ -366,6 +367,8 @@ pub trait ValueLowerAdapter:
     fn return_register_budget(&self) -> u32;
     fn emit_value(&mut self, plan: ValueEmissionPlan) -> ValueResult;
     fn emit_call(&mut self, plan: CallPlan) -> ValueResult;
+    fn emit_runtime_call(&mut self, plan: crate::runtime_call_plan::RuntimeCallPlan)
+    -> ValueResult;
     fn emit_intrinsic(&mut self, plan: IntrinsicPlan) -> ValueResult;
     fn emit_checked_arithmetic(&mut self, plan: ArithmeticPlan) -> ValueResult;
     fn emit_trap(&mut self, plan: TrapPlan) -> ValueResult;
@@ -690,11 +693,37 @@ fn comparison_plan<A: ValueLowerAdapter>(
     } else {
         Vec::new()
     };
+    let lhs = operand(ctx, adapter, lhs);
+    let rhs = operand(ctx, adapter, rhs);
+    let runtime_call = ctx.is_string_like_for_equality(lhs_ty).then(|| {
+        crate::runtime_call_plan::RuntimeCallPlan::expect_manifest(
+            RuntimeHelperId::StrEq,
+            [
+                crate::runtime_call_plan::RuntimeCallArg::const_pointer(
+                    lhs.slots[0],
+                    rue_runtime_abi::AbiType::Byte,
+                ),
+                crate::runtime_call_plan::RuntimeCallArg::value(
+                    lhs.slots[1],
+                    rue_runtime_abi::AbiType::U64,
+                ),
+                crate::runtime_call_plan::RuntimeCallArg::const_pointer(
+                    rhs.slots[0],
+                    rue_runtime_abi::AbiType::Byte,
+                ),
+                crate::runtime_call_plan::RuntimeCallArg::value(
+                    rhs.slots[1],
+                    rue_runtime_abi::AbiType::U64,
+                ),
+            ],
+        )
+    });
     ResidualValuePlan::Comparison {
         op,
-        lhs: operand(ctx, adapter, lhs),
-        rhs: operand(ctx, adapter, rhs),
+        lhs,
+        rhs,
         leaf_types,
+        runtime_call,
     }
 }
 
@@ -1050,7 +1079,9 @@ fn residual_plan<A: ValueLowerAdapter>(
         ResidualInput::IntCast { value, from_ty } => ResidualValuePlan::IntCast {
             value: operand(ctx, adapter, value).primary,
             from_width: integer_width(from_ty).expect("integer cast source width"),
-            trap_symbol: crate::allocation::RUNTIME_TRAP_SYMBOLS.intcast_overflow,
+            trap_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                RuntimeHelperId::IntcastOverflow,
+            ),
         },
         ResidualInput::Drop { value } => ResidualValuePlan::Drop {
             actions: drop_plan(ctx, adapter, value),
@@ -1145,7 +1176,12 @@ pub fn lower_value<A: ValueLowerAdapter>(
             let rhs = operand(ctx, adapter, rhs).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Add { lhs, rhs, width },
-                trap_symbols: crate::allocation::RUNTIME_TRAP_SYMBOLS,
+                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::Overflow,
+                ),
+                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::DivByZero,
+                ),
             });
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
@@ -1156,7 +1192,12 @@ pub fn lower_value<A: ValueLowerAdapter>(
             let rhs = operand(ctx, adapter, rhs).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Sub { lhs, rhs, width },
-                trap_symbols: crate::allocation::RUNTIME_TRAP_SYMBOLS,
+                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::Overflow,
+                ),
+                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::DivByZero,
+                ),
             });
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
@@ -1181,7 +1222,12 @@ pub fn lower_value<A: ValueLowerAdapter>(
                     width,
                     shift,
                 },
-                trap_symbols: crate::allocation::RUNTIME_TRAP_SYMBOLS,
+                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::Overflow,
+                ),
+                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::DivByZero,
+                ),
             });
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
@@ -1192,7 +1238,12 @@ pub fn lower_value<A: ValueLowerAdapter>(
             let rhs = operand(ctx, adapter, rhs).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Div { lhs, rhs, width },
-                trap_symbols: crate::allocation::RUNTIME_TRAP_SYMBOLS,
+                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::Overflow,
+                ),
+                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::DivByZero,
+                ),
             });
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
@@ -1203,7 +1254,12 @@ pub fn lower_value<A: ValueLowerAdapter>(
             let rhs = operand(ctx, adapter, rhs).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Mod { lhs, rhs, width },
-                trap_symbols: crate::allocation::RUNTIME_TRAP_SYMBOLS,
+                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::Overflow,
+                ),
+                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::DivByZero,
+                ),
             });
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
@@ -1216,7 +1272,12 @@ pub fn lower_value<A: ValueLowerAdapter>(
                     value: operand_vreg,
                     width,
                 },
-                trap_symbols: crate::allocation::RUNTIME_TRAP_SYMBOLS,
+                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::Overflow,
+                ),
+                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::DivByZero,
+                ),
             });
             cache_result(adapter, value, result);
             Some(ValueKind::UnaryArithmetic)
@@ -1248,17 +1309,31 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 &by_ref_plans,
                 adapter.return_register_budget(),
             );
-            let result_vreg = adapter.reserve_value_result();
             let symbol = adapter.resolve_symbol(name);
-            let plan = crate::call_plan::CallPlan::from_inputs_with_result(
-                &symbol,
-                inputs.return_plan,
-                &inputs.args,
-                adapter.call_arg_register_budget(),
-                adapter,
-                Some(result_vreg),
-            );
-            let result = adapter.emit_call(plan);
+            let runtime_helper = runtime_helper_for_symbol(&symbol);
+            let result = if let Some(helper) = runtime_helper {
+                let plan = crate::runtime_call_plan::RuntimeCallPlan::from_cfg_inputs(
+                    helper,
+                    inputs.return_plan,
+                    &inputs.args,
+                    adapter,
+                )
+                .unwrap_or_else(|error| {
+                    panic!("invalid CFG runtime call for {helper:?}: {error:?}")
+                });
+                adapter.emit_runtime_call(plan)
+            } else {
+                let result_vreg = adapter.reserve_value_result();
+                let plan = crate::call_plan::CallPlan::from_inputs_with_result(
+                    crate::call_plan::CallTarget::rue(symbol),
+                    inputs.return_plan,
+                    &inputs.args,
+                    adapter.call_arg_register_budget(),
+                    adapter,
+                    Some(result_vreg),
+                );
+                adapter.emit_call(plan)
+            };
             cache_result(adapter, value, result);
             Some(ValueKind::Call)
         }
@@ -1286,14 +1361,24 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 .collect();
             if name_string == "panic" {
                 let result = adapter.emit_trap(TrapPlan::Panic {
-                    message: values.first().map(|arg| MaterializedValue {
-                        primary: arg.primary,
-                        slots: arg.slots.clone(),
-                    }),
-                    symbol: if values.first().is_some_and(|arg| arg.slots.len() >= 2) {
-                        "__rue_panic".to_string()
+                    call: if let Some(arg) = values.first().filter(|arg| arg.slots.len() >= 2) {
+                        crate::runtime_call_plan::RuntimeCallPlan::expect_manifest(
+                            RuntimeHelperId::Panic,
+                            [
+                                crate::runtime_call_plan::RuntimeCallArg::const_pointer(
+                                    arg.slots[0],
+                                    rue_runtime_abi::AbiType::Byte,
+                                ),
+                                crate::runtime_call_plan::RuntimeCallArg::value(
+                                    arg.slots[1],
+                                    rue_runtime_abi::AbiType::U64,
+                                ),
+                            ],
+                        )
                     } else {
-                        "__rue_panic_no_msg".to_string()
+                        crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                            RuntimeHelperId::PanicNoMessage,
+                        )
                     },
                 });
                 cache_result(adapter, value, result);
@@ -1305,8 +1390,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 });
                 let result = adapter.emit_trap(TrapPlan::Assert {
                     condition: values[0].primary,
-                    symbol: assert_trap_symbol(message.as_ref()).to_string(),
-                    message,
+                    call: trap_runtime_call(message.as_ref()),
                 });
                 cache_result(adapter, value, result);
                 Some(ValueKind::Intrinsic)
@@ -1415,13 +1499,14 @@ pub fn lower_value<A: ValueLowerAdapter>(
                     }
                     _ => None,
                 };
-                let runtime_symbol = intrinsic_runtime_symbol(&operation, &values);
+                let result_slots = ctx.type_slot_count(inst.ty);
+                let runtime_call = intrinsic_runtime_call(&operation, &values, scale, result_slots);
                 let result = adapter.emit_intrinsic(IntrinsicPlan {
                     operation,
-                    runtime_symbol,
+                    runtime_call,
                     args: values,
                     result_ty: inst.ty,
-                    result_slots: ctx.type_slot_count(inst.ty),
+                    result_slots,
                     scale,
                 });
                 cache_result(adapter, value, result);
@@ -1513,34 +1598,142 @@ pub fn lower_value<A: ValueLowerAdapter>(
     }
 }
 
-fn intrinsic_runtime_symbol(
+/// Transitional bridge until CFG call instructions carry `RuntimeHelperId`.
+/// Matching is against the complete manifest inventory, never a symbol prefix.
+fn runtime_helper_for_symbol(symbol: &str) -> Option<RuntimeHelperId> {
+    RuntimeHelperId::ALL
+        .iter()
+        .copied()
+        .find(|helper| helper.symbol() == symbol)
+}
+
+fn intrinsic_runtime_call(
     operation: &IntrinsicOperation,
     args: &[IntrinsicArgPlan],
-) -> Option<String> {
-    let symbol = match operation {
+    scale: Option<crate::allocation::ScalePlan>,
+    result_slots: u32,
+) -> Option<crate::runtime_call_plan::RuntimeCallPlan> {
+    use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallPlan};
+    use rue_runtime_abi::{AbiType, AggregateShapeId};
+
+    let (helper, call_args) = match operation {
         IntrinsicOperation::Option { intrinsic, .. } => match intrinsic {
-            OptionIntrinsic::ReadLine => "__rue_read_line",
-            OptionIntrinsic::ParseI32 => "__rue_parse_i32",
-            OptionIntrinsic::ParseI64 => "__rue_parse_i64",
-            OptionIntrinsic::ParseU32 => "__rue_parse_u32",
-            OptionIntrinsic::ParseU64 => "__rue_parse_u64",
+            OptionIntrinsic::ReadLine => (
+                RuntimeHelperId::ReadLine,
+                vec![
+                    RuntimeCallArg::out_pointer(AggregateShapeId::OptionStrBufResult),
+                    RuntimeCallArg::immediate(option_discriminants(operation).0, AbiType::U64),
+                    RuntimeCallArg::immediate(option_discriminants(operation).1, AbiType::U64),
+                ],
+            ),
+            intrinsic => {
+                let arg = args.first()?;
+                let helper = match intrinsic {
+                    OptionIntrinsic::ParseI32 => RuntimeHelperId::ParseI32,
+                    OptionIntrinsic::ParseI64 => RuntimeHelperId::ParseI64,
+                    OptionIntrinsic::ParseU32 => RuntimeHelperId::ParseU32,
+                    OptionIntrinsic::ParseU64 => RuntimeHelperId::ParseU64,
+                    OptionIntrinsic::ReadLine => unreachable!(),
+                };
+                (
+                    helper,
+                    vec![
+                        RuntimeCallArg::out_pointer(AggregateShapeId::OptionIntResult),
+                        RuntimeCallArg::const_pointer(arg.slots[0], AbiType::Byte),
+                        RuntimeCallArg::value(arg.slots[1], AbiType::U64),
+                        RuntimeCallArg::immediate(option_discriminants(operation).0, AbiType::U64),
+                        RuntimeCallArg::immediate(option_discriminants(operation).1, AbiType::U64),
+                    ],
+                )
+            }
         },
-        IntrinsicOperation::RandomU32 => "__rue_random_u32",
-        IntrinsicOperation::RandomU64 => "__rue_random_u64",
-        IntrinsicOperation::Alloc { .. } | IntrinsicOperation::AllocBytes => "__rue_alloc",
-        IntrinsicOperation::Free { .. } | IntrinsicOperation::FreeBytes => "__rue_free",
-        IntrinsicOperation::Realloc { .. } | IntrinsicOperation::ReallocBytes => "__rue_realloc",
+        IntrinsicOperation::RandomU32 => (RuntimeHelperId::RandomU32, vec![]),
+        IntrinsicOperation::RandomU64 => (RuntimeHelperId::RandomU64, vec![]),
+        IntrinsicOperation::Alloc { element_size } => (
+            RuntimeHelperId::Alloc,
+            vec![
+                RuntimeCallArg::scaled(args[0].primary, scale?, AbiType::U64),
+                RuntimeCallArg::immediate(*element_size, AbiType::U64),
+            ],
+        ),
+        IntrinsicOperation::AllocBytes => (
+            RuntimeHelperId::Alloc,
+            vec![
+                RuntimeCallArg::value(args[0].primary, AbiType::U64),
+                RuntimeCallArg::immediate(1, AbiType::U64),
+            ],
+        ),
+        IntrinsicOperation::Free { element_size } => (
+            RuntimeHelperId::Free,
+            vec![
+                RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
+                RuntimeCallArg::scaled(args[1].primary, scale?, AbiType::U64),
+                RuntimeCallArg::immediate(*element_size, AbiType::U64),
+            ],
+        ),
+        IntrinsicOperation::FreeBytes => (
+            RuntimeHelperId::Free,
+            vec![
+                RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
+                RuntimeCallArg::value(args[1].primary, AbiType::U64),
+                RuntimeCallArg::immediate(1, AbiType::U64),
+            ],
+        ),
+        IntrinsicOperation::Realloc { .. } | IntrinsicOperation::ReallocBytes => {
+            let element_size = match operation {
+                IntrinsicOperation::Realloc { element_size } => *element_size,
+                IntrinsicOperation::ReallocBytes => 1,
+                _ => unreachable!(),
+            };
+            let old = if matches!(operation, IntrinsicOperation::Realloc { .. }) {
+                RuntimeCallArg::scaled(args[1].primary, scale?, AbiType::U64)
+            } else {
+                RuntimeCallArg::value(args[1].primary, AbiType::U64)
+            };
+            let new = if matches!(operation, IntrinsicOperation::Realloc { .. }) {
+                RuntimeCallArg::scaled(args[2].primary, scale?, AbiType::U64)
+            } else {
+                RuntimeCallArg::value(args[2].primary, AbiType::U64)
+            };
+            (
+                RuntimeHelperId::Realloc,
+                vec![
+                    RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
+                    old,
+                    new,
+                    RuntimeCallArg::immediate(element_size, AbiType::U64),
+                ],
+            )
+        }
         IntrinsicOperation::Debug => {
             let arg = args.first()?;
             if arg.slots.len() >= 2 {
-                "__rue_dbg_str"
+                (
+                    RuntimeHelperId::DebugStr,
+                    vec![
+                        RuntimeCallArg::const_pointer(arg.slots[0], AbiType::Byte),
+                        RuntimeCallArg::value(arg.slots[1], AbiType::U64),
+                    ],
+                )
             } else {
-                match arg.debug {
-                    DebugValuePlan::Bool => "__rue_dbg_bool",
-                    DebugValuePlan::Integer(IntegerWidth { signed: true, .. }) => "__rue_dbg_i64",
-                    DebugValuePlan::Integer(IntegerWidth { signed: false, .. }) => "__rue_dbg_u64",
+                let (helper, ty) = match arg.debug {
+                    DebugValuePlan::Bool => (RuntimeHelperId::DebugBool, AbiType::BoolWordI64),
+                    DebugValuePlan::Integer(IntegerWidth { signed: true, .. }) => {
+                        (RuntimeHelperId::DebugI64, AbiType::I64)
+                    }
+                    DebugValuePlan::Integer(IntegerWidth { signed: false, .. }) => {
+                        (RuntimeHelperId::DebugU64, AbiType::U64)
+                    }
                     DebugValuePlan::String | DebugValuePlan::Other => return None,
-                }
+                };
+                (
+                    helper,
+                    vec![RuntimeCallArg::extended(
+                        arg.primary,
+                        arg.integer_extension,
+                        ty,
+                    )],
+                )
             }
         }
         IntrinsicOperation::PtrToInt
@@ -1553,14 +1746,48 @@ fn intrinsic_runtime_symbol(
         | IntrinsicOperation::PlaceAddress
         | IntrinsicOperation::Syscall => return None,
     };
-    Some(symbol.to_string())
+    let plan = RuntimeCallPlan::expect_manifest(helper, call_args);
+    if let Some(shape) = plan.out_shape() {
+        assert_eq!(
+            shape.shape().slots.len(),
+            result_slots as usize,
+            "runtime out-pointer shape must match the semantic result slot count"
+        );
+    }
+    Some(plan)
 }
 
-fn assert_trap_symbol(message: Option<&MaterializedValue>) -> &'static str {
+fn option_discriminants(operation: &IntrinsicOperation) -> (u64, u64) {
+    match operation {
+        IntrinsicOperation::Option {
+            some_discriminant,
+            none_discriminant,
+            ..
+        } => (*some_discriminant, *none_discriminant),
+        _ => unreachable!(),
+    }
+}
+
+fn trap_runtime_call(
+    message: Option<&MaterializedValue>,
+) -> crate::runtime_call_plan::RuntimeCallPlan {
     if message.is_some_and(|value| value.slots.len() >= 2) {
-        "__rue_panic"
+        let message = message.unwrap();
+        crate::runtime_call_plan::RuntimeCallPlan::expect_manifest(
+            RuntimeHelperId::Panic,
+            [
+                crate::runtime_call_plan::RuntimeCallArg::const_pointer(
+                    message.slots[0],
+                    rue_runtime_abi::AbiType::Byte,
+                ),
+                crate::runtime_call_plan::RuntimeCallArg::value(
+                    message.slots[1],
+                    rue_runtime_abi::AbiType::U64,
+                ),
+            ],
+        )
     } else {
-        "__rue_assert_failed"
+        crate::runtime_call_plan::RuntimeCallPlan::no_args(RuntimeHelperId::AssertFailed)
     }
 }
 
@@ -1736,13 +1963,15 @@ pub fn assert_slot_policy(plan: ValuePlan, actual: usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ComparisonPreparation, IntegerWidth, MaterializationRequirement, MaterializedValue,
+        ComparisonPreparation, DebugValuePlan, IntegerExtension, IntegerWidth, IntrinsicArgPlan,
+        IntrinsicOperation, MaterializationRequirement, MaterializedValue, OptionIntrinsic,
         StoragePolicy, StoreDestination, ValueKind, ValuePlan, ValueShape, assert_slot_policy,
         comparison_integer_width, integer_range, type_bits, type_range,
     };
     use lasso::{Spur, ThreadedRodeo};
     use rue_air::{EnumDef, LangItem, ParamSlotModes, StructDef, StructField, TypeInternPool};
     use rue_cfg::{Cfg, CfgInst, CfgInstData, CfgValue, Place, Terminator, Type};
+    use rue_runtime_abi::RuntimeHelperId;
     use rue_span::{FileId, Span};
     use rue_target::Target;
 
@@ -2789,7 +3018,7 @@ mod tests {
     }
 
     #[test]
-    fn assert_trap_plan_selects_message_runtime_symbol() {
+    fn assert_trap_plan_selects_manifest_runtime_call() {
         let condition = crate::vreg::VReg::new(0);
         let no_message = MaterializedValue {
             primary: condition,
@@ -2800,12 +3029,169 @@ mod tests {
             slots: vec![crate::vreg::VReg::new(1), crate::vreg::VReg::new(2)],
         };
 
-        assert_eq!(super::assert_trap_symbol(None), "__rue_assert_failed");
         assert_eq!(
-            super::assert_trap_symbol(Some(&no_message)),
-            "__rue_assert_failed"
+            super::trap_runtime_call(None).helper(),
+            RuntimeHelperId::AssertFailed
         );
-        assert_eq!(super::assert_trap_symbol(Some(&message)), "__rue_panic");
+        assert_eq!(
+            super::trap_runtime_call(Some(&no_message)).helper(),
+            RuntimeHelperId::AssertFailed
+        );
+        assert_eq!(
+            super::trap_runtime_call(Some(&message)).helper(),
+            RuntimeHelperId::Panic
+        );
+        assert_eq!(super::trap_runtime_call(Some(&message)).args().len(), 2);
+    }
+
+    #[test]
+    fn intrinsic_runtime_policy_uses_manifest_helper_identities() {
+        let scalar_arg = IntrinsicArgPlan {
+            primary: crate::vreg::VReg::new(0),
+            slots: Vec::new(),
+            slot_count: 1,
+            integer_extension: IntegerExtension::None,
+            place: None,
+            debug: DebugValuePlan::Bool,
+        };
+        let string_arg = IntrinsicArgPlan {
+            slots: vec![crate::vreg::VReg::new(0), crate::vreg::VReg::new(1)],
+            debug: DebugValuePlan::String,
+            ..scalar_arg.clone()
+        };
+
+        let option = |intrinsic| IntrinsicOperation::Option {
+            intrinsic,
+            some_discriminant: 1,
+            none_discriminant: 0,
+        };
+        let scale = crate::allocation::ScalePlan {
+            kind: crate::allocation::ScaleKind::Constant(8),
+            purpose: crate::allocation::ScalePurpose::AllocationSize,
+            overflow: crate::allocation::OverflowBehavior::Trap,
+        };
+        let call = |operation, args: &[IntrinsicArgPlan], scale, result_slots| {
+            super::intrinsic_runtime_call(&operation, args, scale, result_slots)
+                .expect("operation should have a runtime call")
+        };
+
+        assert_eq!(
+            call(option(OptionIntrinsic::ReadLine), &[], None, 4).helper(),
+            RuntimeHelperId::ReadLine
+        );
+        for (intrinsic, helper) in [
+            (OptionIntrinsic::ParseI32, RuntimeHelperId::ParseI32),
+            (OptionIntrinsic::ParseI64, RuntimeHelperId::ParseI64),
+            (OptionIntrinsic::ParseU32, RuntimeHelperId::ParseU32),
+            (OptionIntrinsic::ParseU64, RuntimeHelperId::ParseU64),
+        ] {
+            let plan = call(
+                option(intrinsic),
+                std::slice::from_ref(&string_arg),
+                None,
+                2,
+            );
+            assert_eq!(plan.helper(), helper);
+            assert_eq!(plan.args().len(), 5);
+        }
+        assert_eq!(
+            call(IntrinsicOperation::RandomU32, &[], None, 1).helper(),
+            RuntimeHelperId::RandomU32
+        );
+        assert_eq!(
+            call(IntrinsicOperation::RandomU64, &[], None, 1).helper(),
+            RuntimeHelperId::RandomU64
+        );
+        assert_eq!(
+            call(
+                IntrinsicOperation::Alloc { element_size: 8 },
+                std::slice::from_ref(&scalar_arg),
+                Some(scale),
+                1,
+            )
+            .helper(),
+            RuntimeHelperId::Alloc
+        );
+        assert_eq!(
+            call(
+                IntrinsicOperation::Free { element_size: 8 },
+                &[scalar_arg.clone(), scalar_arg.clone()],
+                Some(scale),
+                0,
+            )
+            .helper(),
+            RuntimeHelperId::Free
+        );
+        assert_eq!(
+            call(
+                IntrinsicOperation::Realloc { element_size: 8 },
+                &[scalar_arg.clone(), scalar_arg.clone(), scalar_arg.clone()],
+                Some(scale),
+                1,
+            )
+            .helper(),
+            RuntimeHelperId::Realloc
+        );
+        assert_eq!(
+            call(
+                IntrinsicOperation::Debug,
+                std::slice::from_ref(&scalar_arg),
+                None,
+                0,
+            )
+            .helper(),
+            RuntimeHelperId::DebugBool
+        );
+        assert_eq!(
+            call(
+                IntrinsicOperation::Debug,
+                std::slice::from_ref(&string_arg),
+                None,
+                0,
+            )
+            .helper(),
+            RuntimeHelperId::DebugStr
+        );
+
+        let realloc = call(
+            IntrinsicOperation::Realloc { element_size: 8 },
+            &[scalar_arg.clone(), scalar_arg.clone(), scalar_arg],
+            Some(scale),
+            1,
+        );
+        assert_eq!(
+            realloc
+                .args()
+                .iter()
+                .map(|arg| arg.parameter())
+                .collect::<Vec<_>>(),
+            RuntimeHelperId::Realloc.helper().parameters
+        );
+        assert_eq!(
+            realloc.calling_convention(),
+            RuntimeHelperId::Realloc.helper().calling_convention
+        );
+        assert_eq!(
+            realloc.return_behavior(),
+            RuntimeHelperId::Realloc.helper().return_behavior
+        );
+    }
+
+    #[test]
+    fn cfg_runtime_bridge_accepts_only_exact_manifest_symbols() {
+        assert_eq!(
+            super::runtime_helper_for_symbol("__rue_print"),
+            Some(RuntimeHelperId::Print)
+        );
+        assert_eq!(
+            super::runtime_helper_for_symbol("__rue_println"),
+            Some(RuntimeHelperId::Println)
+        );
+        assert_eq!(
+            super::runtime_helper_for_symbol("__rue_drop_generated"),
+            None
+        );
+        assert_eq!(super::runtime_helper_for_symbol("__rue_print_suffix"), None);
     }
 
     #[test]

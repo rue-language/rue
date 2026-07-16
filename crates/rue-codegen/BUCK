@@ -7,6 +7,7 @@ rue_crate(
         "//crates/rue-builtins:rue-builtins",
         "//crates/rue-cfg:rue-cfg",
         "//crates/rue-error:rue-error",
+        "//crates/rue-runtime-abi:rue-runtime-abi",
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
         "//third-party:fixedbitset",

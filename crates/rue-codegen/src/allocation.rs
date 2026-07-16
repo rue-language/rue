@@ -8,6 +8,7 @@
 //! instructions.
 
 use rue_air::{FrozenTypeInternPool, Type, TypeKind};
+use rue_runtime_abi::RuntimeHelperId;
 
 use crate::types;
 use crate::vreg::{LabelId, VReg};
@@ -156,41 +157,43 @@ pub enum BoundsTrap {
 }
 
 /// Runtime entries selected by shared language-level trap policy. Adapters
-/// receive these decided symbols and only intern/marshal the target call.
+/// receive these typed identities and only resolve symbols when building MIR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuntimeTrapSymbols {
-    pub bounds: &'static str,
-    pub overflow: &'static str,
-    pub div_by_zero: &'static str,
-    pub intcast_overflow: &'static str,
+pub struct RuntimeTrapHelpers {
+    pub bounds: RuntimeHelperId,
+    pub overflow: RuntimeHelperId,
+    pub div_by_zero: RuntimeHelperId,
+    pub intcast_overflow: RuntimeHelperId,
 }
 
-pub const RUNTIME_TRAP_SYMBOLS: RuntimeTrapSymbols = RuntimeTrapSymbols {
-    bounds: "__rue_bounds_check",
-    overflow: "__rue_overflow",
-    div_by_zero: "__rue_div_by_zero",
-    intcast_overflow: "__rue_intcast_overflow",
+pub const RUNTIME_TRAP_HELPERS: RuntimeTrapHelpers = RuntimeTrapHelpers {
+    bounds: RuntimeHelperId::BoundsCheck,
+    overflow: RuntimeHelperId::Overflow,
+    div_by_zero: RuntimeHelperId::DivByZero,
+    intcast_overflow: RuntimeHelperId::IntcastOverflow,
 };
 
 /// A complete target-neutral bounds-check plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundsCheckPlan {
     pub index: VReg,
     pub length: u64,
     pub condition: BoundsCondition,
     pub trap: BoundsTrap,
-    pub trap_symbol: &'static str,
+    pub trap_call: crate::runtime_call_plan::RuntimeCallPlan,
 }
 
 impl BoundsCheckPlan {
     #[inline]
-    pub const fn new(index: VReg, length: u64) -> Self {
+    pub fn new(index: VReg, length: u64) -> Self {
         Self {
             index,
             length,
             condition: BoundsCondition::UnsignedIndexLessThanLength,
             trap: BoundsTrap::IndexOutOfBounds,
-            trap_symbol: RUNTIME_TRAP_SYMBOLS.bounds,
+            trap_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                RUNTIME_TRAP_HELPERS.bounds,
+            ),
         }
     }
 }
@@ -201,7 +204,11 @@ pub trait BoundsCheckBackend {
     fn emit_bounds_compare(&mut self, index: VReg, length: VReg);
     fn alloc_bounds_label(&mut self) -> LabelId;
     fn emit_bounds_branch(&mut self, condition: BoundsCondition, label: LabelId);
-    fn emit_bounds_trap(&mut self, trap: BoundsTrap, symbol: &'static str);
+    fn emit_bounds_trap(
+        &mut self,
+        trap: BoundsTrap,
+        call: crate::runtime_call_plan::RuntimeCallPlan,
+    );
     fn emit_bounds_label(&mut self, label: LabelId);
 }
 
@@ -213,7 +220,7 @@ pub fn lower_bounds_check<B: BoundsCheckBackend + ?Sized>(b: &mut B, plan: Bound
     b.emit_bounds_compare(plan.index, length);
     let ok = b.alloc_bounds_label();
     b.emit_bounds_branch(plan.condition, ok);
-    b.emit_bounds_trap(plan.trap, plan.trap_symbol);
+    b.emit_bounds_trap(plan.trap, plan.trap_call);
     b.emit_bounds_label(ok);
 }
 
