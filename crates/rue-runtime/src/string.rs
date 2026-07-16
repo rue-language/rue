@@ -6,24 +6,12 @@
 //! results returned through the `StrBuf` three-word representation.
 
 use crate::heap;
+pub use rue_runtime_abi::StrBufResult;
 
 /// Minimum capacity for runtime-produced `StrBuf` values.
 pub const STRING_MIN_CAPACITY: u64 = 16;
 
-/// The three-word `StrBuf` result used by runtime sret functions.
-#[repr(C)]
-pub struct StrBufResult {
-    pub ptr: *mut u8,
-    pub len: u64,
-    pub cap: u64,
-}
-
-const _: () = {
-    assert!(core::mem::size_of::<StrBufResult>() == 24);
-    assert!(core::mem::align_of::<StrBufResult>() == 8);
-};
-
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// `str` equality comparison.
     ///
     /// Called by the `==` operator on `str` values. Compares two strings
@@ -91,7 +79,7 @@ crate::define_for_all_platforms! {
 // Heap Allocation Wrappers
 // =============================================================================
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Allocate memory from the heap.
     ///
     /// This is the main allocation function for Rue programs. Memory is allocated
@@ -121,7 +109,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Free memory previously allocated by `__rue_alloc`.
     ///
     /// # Arguments
@@ -146,7 +134,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Reallocate memory to a new size.
     ///
     /// # Arguments
@@ -197,7 +185,7 @@ crate::define_for_all_platforms! {
 // array indexing. Neither respects UTF-8 char boundaries: any in-range byte
 // index / byte range is valid.
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Read the byte at `index` in a `str`, returning it as `u8` (ADR-0043
     /// ADR-0043, RUE-324).
     ///
@@ -306,7 +294,7 @@ unsafe fn __rue_decode_utf8_at(ptr: *const u8, len: u64, offset: u64) -> (u32, u
     (cp, width as u64)
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Decode one scalar through the shared two-word `str` view ABI.
     pub unsafe extern "C" fn __rue_str_char_scalar(
         ptr: *const u8,
@@ -318,7 +306,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Advance one scalar through the shared two-word `str` view ABI.
     pub unsafe extern "C" fn __rue_str_char_next(
         ptr: *const u8,
@@ -414,7 +402,7 @@ unsafe fn __rue_decode_utf8_lossy_at(ptr: *const u8, len: u64, offset: u64) -> (
     (cp, width as u64)
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Decode one scalar lossily through the shared two-word `str` view ABI.
     pub unsafe extern "C" fn __rue_str_char_scalar_lossy(
         ptr: *const u8,
@@ -426,7 +414,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Advance one scalar lossily through the shared two-word `str` view ABI.
     pub unsafe extern "C" fn __rue_str_char_next_lossy(
         ptr: *const u8,
@@ -444,7 +432,7 @@ crate::define_for_all_platforms! {
 // Integer-to-`StrBuf` formatting (ADR-0035)
 // =============================================================================
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Format an `i64` in base 10 into a freshly heap-allocated `StrBuf`.
     ///
     /// Implements the `@to_string(n)` intrinsic. Handles the full `i64` range,
@@ -517,7 +505,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Format a `u64` in base 10 into a freshly heap-allocated `StrBuf`.
     ///
     /// Implements `@to_string(n)` for unsigned integers (RUE-314). The compiler

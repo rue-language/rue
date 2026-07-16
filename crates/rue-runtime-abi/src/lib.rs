@@ -8,11 +8,29 @@
 
 use core::fmt;
 
-/// Current lockstep compiler/runtime ABI version.
-pub const RUNTIME_ABI_VERSION: u32 = 1;
+/// Invoke a callback with the canonical runtime ABI version and marker
+/// identifier.
+///
+/// Both metadata and runtime emission consume this declaration, so an ABI bump
+/// cannot leave behind an independently spelled marker.
+#[macro_export]
+macro_rules! runtime_abi_version {
+    ($callback:ident) => {
+        $callback!(1, __rue_runtime_abi_v1);
+    };
+}
 
-/// Retained data symbol exported by each runtime archive for this ABI version.
-pub const RUNTIME_ABI_VERSION_SYMBOL: &str = "__rue_runtime_abi_v1";
+macro_rules! define_runtime_abi_version {
+    ($version:literal, $marker:ident) => {
+        /// Current lockstep compiler/runtime ABI version.
+        pub const RUNTIME_ABI_VERSION: u32 = $version;
+
+        /// Retained data symbol exported by each runtime archive for this ABI version.
+        pub const RUNTIME_ABI_VERSION_SYMBOL: &str = stringify!($marker);
+    };
+}
+
+runtime_abi_version!(define_runtime_abi_version);
 
 /// A physical scalar type at the C boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -156,6 +174,13 @@ impl SafetyContract {
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+
+    /// Whether caller-owned pointer validity requires an unsafe Rust boundary.
+    pub const fn requires_unsafe_rust_boundary(self) -> bool {
+        self.contains(Self::READABLE_BYTES)
+            || self.contains(Self::WRITABLE_RESULT)
+            || self.contains(Self::VALID_ALLOCATION)
+    }
 }
 
 /// Named aggregate layouts written through explicit out pointers.
@@ -257,6 +282,48 @@ pub const AGGREGATE_SHAPES: [AggregateShape; 3] = [
     },
 ];
 
+/// The three-word growable-string result written by formatting helpers.
+#[repr(C)]
+pub struct StrBufResult {
+    pub ptr: *mut u8,
+    pub len: u64,
+    pub cap: u64,
+}
+
+/// The tagged growable-string option written by `__rue_read_line`.
+#[repr(C)]
+pub struct OptionStrBufResult {
+    pub disc: u64,
+    pub ptr: *mut u8,
+    pub len: u64,
+    pub cap: u64,
+}
+
+/// The tagged integer option written by the parsing helpers.
+#[repr(C)]
+pub struct OptionIntResult {
+    pub disc: u64,
+    pub value: u64,
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<StrBufResult>() == 24);
+    assert!(core::mem::align_of::<StrBufResult>() == 8);
+    assert!(core::mem::offset_of!(StrBufResult, ptr) == 0);
+    assert!(core::mem::offset_of!(StrBufResult, len) == 8);
+    assert!(core::mem::offset_of!(StrBufResult, cap) == 16);
+    assert!(core::mem::size_of::<OptionStrBufResult>() == 32);
+    assert!(core::mem::align_of::<OptionStrBufResult>() == 8);
+    assert!(core::mem::offset_of!(OptionStrBufResult, disc) == 0);
+    assert!(core::mem::offset_of!(OptionStrBufResult, ptr) == 8);
+    assert!(core::mem::offset_of!(OptionStrBufResult, len) == 16);
+    assert!(core::mem::offset_of!(OptionStrBufResult, cap) == 24);
+    assert!(core::mem::size_of::<OptionIntResult>() == 16);
+    assert!(core::mem::align_of::<OptionIntResult>() == 8);
+    assert!(core::mem::offset_of!(OptionIntResult, disc) == 0);
+    assert!(core::mem::offset_of!(OptionIntResult, value) == 8);
+};
+
 macro_rules! params {
     () => {
         &[]
@@ -300,7 +367,9 @@ const READABLE_WRITABLE_DISCRIMINANTS: SafetyContract =
 macro_rules! runtime_helpers {
     (
         $(
-            $variant:ident => {
+            $variant:ident => $safety_kind:ident $function:ident(
+                $($argument:ident : $rust_type:ty),* $(,)?
+            ) $(-> $rust_result:ty)? {
                 symbol: $symbol:literal,
                 parameters: $parameters:expr,
                 result: $result:expr,
@@ -362,12 +431,28 @@ macro_rules! runtime_helpers {
                 }
             ),+
         ];
+
+        const _: () = {
+            $(
+                assert!(string_eq(stringify!($function), $symbol));
+                assert!(
+                    $safety.requires_unsafe_rust_boundary()
+                        == runtime_helpers!(@is_unsafe $safety_kind)
+                );
+            )+
+        };
     };
     (@count $($variant:ident),+) => {
         <[()]>::len(&[$(runtime_helpers!(@replace $variant ())),+])
     };
     (@replace $_variant:ident $value:expr) => {
         $value
+    };
+    (@is_unsafe safe) => {
+        false
+    };
+    (@is_unsafe unsafe) => {
+        true
     };
 }
 
@@ -384,255 +469,326 @@ pub struct RuntimeHelper {
     pub calling_convention: CallingConvention,
 }
 
-runtime_helpers! {
-    Exit => {
-        symbol: "__rue_exit",
-        parameters: params![I32_VALUE],
-        result: VOID,
-        safety: TERMINATES,
-        returns: NEVER
-    },
-    Alloc => {
-        symbol: "__rue_alloc",
-        parameters: params![U64_VALUE, U64_VALUE],
-        result: MUT_POINTER_RESULT,
-        safety: ALLOC_LAYOUT,
-        returns: RETURNS
-    },
-    Free => {
-        symbol: "__rue_free",
-        parameters: params![MUT_BYTE_POINTER, U64_VALUE, U64_VALUE],
-        result: VOID,
-        // The current bump allocator's free operation is a no-op and imposes
-        // no pointer or layout precondition.
-        safety: SafetyContract::NONE,
-        returns: RETURNS
-    },
-    Realloc => {
-        symbol: "__rue_realloc",
-        parameters: params![MUT_BYTE_POINTER, U64_VALUE, U64_VALUE, U64_VALUE],
-        result: MUT_POINTER_RESULT,
-        safety: VALID_ALLOC_LAYOUT,
-        returns: RETURNS
-    },
-    DivByZero => {
-        symbol: "__rue_div_by_zero",
-        parameters: params![],
-        result: VOID,
-        safety: TERMINATES,
-        returns: NEVER
-    },
-    Overflow => {
-        symbol: "__rue_overflow",
-        parameters: params![],
-        result: VOID,
-        safety: TERMINATES,
-        returns: NEVER
-    },
-    IntcastOverflow => {
-        symbol: "__rue_intcast_overflow",
-        parameters: params![],
-        result: VOID,
-        safety: TERMINATES,
-        returns: NEVER
-    },
-    BoundsCheck => {
-        symbol: "__rue_bounds_check",
-        parameters: params![],
-        result: VOID,
-        safety: TERMINATES,
-        returns: NEVER
-    },
-    Panic => {
-        symbol: "__rue_panic",
-        parameters: params![BYTE_VIEW, U64_VALUE],
-        result: VOID,
-        safety: READABLE.union(TERMINATES),
-        returns: NEVER
-    },
-    PanicNoMessage => {
-        symbol: "__rue_panic_no_msg",
-        parameters: params![],
-        result: VOID,
-        safety: TERMINATES,
-        returns: NEVER
-    },
-    AssertFailed => {
-        symbol: "__rue_assert_failed",
-        parameters: params![],
-        result: VOID,
-        safety: TERMINATES,
-        returns: NEVER
-    },
-    DebugI64 => {
-        symbol: "__rue_dbg_i64",
-        parameters: params![I64_VALUE],
-        result: VOID,
-        safety: SafetyContract::NONE,
-        returns: RETURNS
-    },
-    DebugU64 => {
-        symbol: "__rue_dbg_u64",
-        parameters: params![U64_VALUE],
-        result: VOID,
-        safety: SafetyContract::NONE,
-        returns: RETURNS
-    },
-    DebugBool => {
-        symbol: "__rue_dbg_bool",
-        parameters: params![BOOL_WORD_VALUE],
-        result: VOID,
-        safety: SafetyContract::NONE,
-        returns: RETURNS
-    },
-    DebugStr => {
-        symbol: "__rue_dbg_str",
-        parameters: params![BYTE_VIEW, U64_VALUE],
-        result: VOID,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    StrEq => {
-        symbol: "__rue_str_eq",
-        parameters: params![BYTE_VIEW, U64_VALUE, BYTE_VIEW, U64_VALUE],
-        result: U64_RESULT,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    StrByteAt => {
-        symbol: "__rue_str_byte_at",
-        parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
-        result: U64_RESULT,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    StrCharScalar => {
-        symbol: "__rue_str_char_scalar",
-        parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
-        result: U64_RESULT,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    StrCharNext => {
-        symbol: "__rue_str_char_next",
-        parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
-        result: U64_RESULT,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    StrCharScalarLossy => {
-        symbol: "__rue_str_char_scalar_lossy",
-        parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
-        result: U64_RESULT,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    StrCharNextLossy => {
-        symbol: "__rue_str_char_next_lossy",
-        parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
-        result: U64_RESULT,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    ToString => {
-        symbol: "__rue_to_string",
-        parameters: params![STR_BUF_OUT, I64_VALUE],
-        result: VOID,
-        safety: WRITABLE,
-        returns: RETURNS
-    },
-    ToStringUnsigned => {
-        symbol: "__rue_to_string_unsigned",
-        parameters: params![STR_BUF_OUT, U64_VALUE],
-        result: VOID,
-        safety: WRITABLE,
-        returns: RETURNS
-    },
-    Print => {
-        symbol: "__rue_print",
-        parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
-        result: VOID,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    Println => {
-        symbol: "__rue_println",
-        parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
-        result: VOID,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    StrPrint => {
-        symbol: "__rue_str_print",
-        parameters: params![BYTE_VIEW, U64_VALUE],
-        result: VOID,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    StrPrintln => {
-        symbol: "__rue_str_println",
-        parameters: params![BYTE_VIEW, U64_VALUE],
-        result: VOID,
-        safety: READABLE,
-        returns: RETURNS
-    },
-    ReadLine => {
-        symbol: "__rue_read_line",
-        parameters: params![OPTION_STR_BUF_OUT, U64_VALUE, U64_VALUE],
-        result: VOID,
-        safety: WRITABLE_DISCRIMINANTS,
-        returns: RETURNS
-    },
-    ParseI32 => {
-        symbol: "__rue_parse_i32",
-        parameters: params![OPTION_INT_OUT, BYTE_VIEW, U64_VALUE, U64_VALUE, U64_VALUE],
-        result: VOID,
-        safety: READABLE_WRITABLE_DISCRIMINANTS,
-        returns: RETURNS
-    },
-    ParseI64 => {
-        symbol: "__rue_parse_i64",
-        parameters: params![OPTION_INT_OUT, BYTE_VIEW, U64_VALUE, U64_VALUE, U64_VALUE],
-        result: VOID,
-        safety: READABLE_WRITABLE_DISCRIMINANTS,
-        returns: RETURNS
-    },
-    ParseU32 => {
-        symbol: "__rue_parse_u32",
-        parameters: params![OPTION_INT_OUT, BYTE_VIEW, U64_VALUE, U64_VALUE, U64_VALUE],
-        result: VOID,
-        safety: READABLE_WRITABLE_DISCRIMINANTS,
-        returns: RETURNS
-    },
-    ParseU64 => {
-        symbol: "__rue_parse_u64",
-        parameters: params![OPTION_INT_OUT, BYTE_VIEW, U64_VALUE, U64_VALUE, U64_VALUE],
-        result: VOID,
-        safety: READABLE_WRITABLE_DISCRIMINANTS,
-        returns: RETURNS
-    },
-    RandomU32 => {
-        symbol: "__rue_random_u32",
-        parameters: params![],
-        result: U32_RESULT,
-        safety: SafetyContract::NONE,
-        returns: RETURNS
-    },
-    RandomU64 => {
-        symbol: "__rue_random_u64",
-        parameters: params![],
-        result: U64_RESULT,
-        safety: SafetyContract::NONE,
-        returns: RETURNS
-    },
-    InvalidUtf8 => {
-        symbol: "__rue_invalid_utf8",
-        parameters: params![],
-        result: VOID,
-        safety: TERMINATES,
-        returns: NEVER
-    }
+/// Invoke a callback with the canonical Rust declaration and logical contract
+/// for every compiler-callable runtime helper.
+///
+/// The runtime uses the Rust declarations to generate its exported wrappers,
+/// while this crate uses the same rows to build [`RUNTIME_HELPERS`]. Keeping
+/// both consumers on this macro prevents a peer Rust signature table from
+/// drifting away from the manifest.
+#[macro_export]
+macro_rules! for_each_runtime_helper {
+    ($callback:ident) => {
+        $callback! {
+        Exit => safe __rue_exit(status: i32) -> ! {
+            symbol: "__rue_exit",
+            parameters: params![I32_VALUE],
+            result: VOID,
+            safety: TERMINATES,
+            returns: NEVER
+        },
+        Alloc => safe __rue_alloc(size: u64, align: u64) -> *mut u8 {
+            symbol: "__rue_alloc",
+            parameters: params![U64_VALUE, U64_VALUE],
+            result: MUT_POINTER_RESULT,
+            safety: ALLOC_LAYOUT,
+            returns: RETURNS
+        },
+        Free => safe __rue_free(ptr: *mut u8, size: u64, align: u64) {
+            symbol: "__rue_free",
+            parameters: params![MUT_BYTE_POINTER, U64_VALUE, U64_VALUE],
+            result: VOID,
+            // The current bump allocator's free operation is a no-op and imposes
+            // no pointer or layout precondition.
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        Realloc => unsafe __rue_realloc(
+            ptr: *mut u8,
+            old_size: u64,
+            new_size: u64,
+            align: u64,
+        ) -> *mut u8 {
+            symbol: "__rue_realloc",
+            parameters: params![MUT_BYTE_POINTER, U64_VALUE, U64_VALUE, U64_VALUE],
+            result: MUT_POINTER_RESULT,
+            safety: VALID_ALLOC_LAYOUT,
+            returns: RETURNS
+        },
+        DivByZero => safe __rue_div_by_zero() -> ! {
+            symbol: "__rue_div_by_zero",
+            parameters: params![],
+            result: VOID,
+            safety: TERMINATES,
+            returns: NEVER
+        },
+        Overflow => safe __rue_overflow() -> ! {
+            symbol: "__rue_overflow",
+            parameters: params![],
+            result: VOID,
+            safety: TERMINATES,
+            returns: NEVER
+        },
+        IntcastOverflow => safe __rue_intcast_overflow() -> ! {
+            symbol: "__rue_intcast_overflow",
+            parameters: params![],
+            result: VOID,
+            safety: TERMINATES,
+            returns: NEVER
+        },
+        BoundsCheck => safe __rue_bounds_check() -> ! {
+            symbol: "__rue_bounds_check",
+            parameters: params![],
+            result: VOID,
+            safety: TERMINATES,
+            returns: NEVER
+        },
+        Panic => unsafe __rue_panic(ptr: *const u8, len: u64) -> ! {
+            symbol: "__rue_panic",
+            parameters: params![BYTE_VIEW, U64_VALUE],
+            result: VOID,
+            safety: READABLE.union(TERMINATES),
+            returns: NEVER
+        },
+        PanicNoMessage => safe __rue_panic_no_msg() -> ! {
+            symbol: "__rue_panic_no_msg",
+            parameters: params![],
+            result: VOID,
+            safety: TERMINATES,
+            returns: NEVER
+        },
+        AssertFailed => safe __rue_assert_failed() -> ! {
+            symbol: "__rue_assert_failed",
+            parameters: params![],
+            result: VOID,
+            safety: TERMINATES,
+            returns: NEVER
+        },
+        DebugI64 => safe __rue_dbg_i64(value: i64) {
+            symbol: "__rue_dbg_i64",
+            parameters: params![I64_VALUE],
+            result: VOID,
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        DebugU64 => safe __rue_dbg_u64(value: u64) {
+            symbol: "__rue_dbg_u64",
+            parameters: params![U64_VALUE],
+            result: VOID,
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        DebugBool => safe __rue_dbg_bool(value: i64) {
+            symbol: "__rue_dbg_bool",
+            parameters: params![BOOL_WORD_VALUE],
+            result: VOID,
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        DebugStr => unsafe __rue_dbg_str(ptr: *const u8, len: u64) {
+            symbol: "__rue_dbg_str",
+            parameters: params![BYTE_VIEW, U64_VALUE],
+            result: VOID,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        StrEq => unsafe __rue_str_eq(
+            ptr1: *const u8,
+            len1: u64,
+            ptr2: *const u8,
+            len2: u64,
+        ) -> u64 {
+            symbol: "__rue_str_eq",
+            parameters: params![BYTE_VIEW, U64_VALUE, BYTE_VIEW, U64_VALUE],
+            result: U64_RESULT,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        StrByteAt => unsafe __rue_str_byte_at(ptr: *const u8, len: u64, index: u64) -> u64 {
+            symbol: "__rue_str_byte_at",
+            parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
+            result: U64_RESULT,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        StrCharScalar => unsafe __rue_str_char_scalar(
+            ptr: *const u8,
+            len: u64,
+            byte_offset: u64,
+        ) -> u64 {
+            symbol: "__rue_str_char_scalar",
+            parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
+            result: U64_RESULT,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        StrCharNext => unsafe __rue_str_char_next(
+            ptr: *const u8,
+            len: u64,
+            byte_offset: u64,
+        ) -> u64 {
+            symbol: "__rue_str_char_next",
+            parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
+            result: U64_RESULT,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        StrCharScalarLossy => unsafe __rue_str_char_scalar_lossy(
+            ptr: *const u8,
+            len: u64,
+            byte_offset: u64,
+        ) -> u64 {
+            symbol: "__rue_str_char_scalar_lossy",
+            parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
+            result: U64_RESULT,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        StrCharNextLossy => unsafe __rue_str_char_next_lossy(
+            ptr: *const u8,
+            len: u64,
+            byte_offset: u64,
+        ) -> u64 {
+            symbol: "__rue_str_char_next_lossy",
+            parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
+            result: U64_RESULT,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        ToString => unsafe __rue_to_string(out: *mut $crate::StrBufResult, n: i64) {
+            symbol: "__rue_to_string",
+            parameters: params![STR_BUF_OUT, I64_VALUE],
+            result: VOID,
+            safety: WRITABLE,
+            returns: RETURNS
+        },
+        ToStringUnsigned => unsafe __rue_to_string_unsigned(
+            out: *mut $crate::StrBufResult,
+            n: u64,
+        ) {
+            symbol: "__rue_to_string_unsigned",
+            parameters: params![STR_BUF_OUT, U64_VALUE],
+            result: VOID,
+            safety: WRITABLE,
+            returns: RETURNS
+        },
+        Print => unsafe __rue_print(ptr: *const u8, len: u64, cap: u64) {
+            symbol: "__rue_print",
+            parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
+            result: VOID,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        Println => unsafe __rue_println(ptr: *const u8, len: u64, cap: u64) {
+            symbol: "__rue_println",
+            parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
+            result: VOID,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        StrPrint => unsafe __rue_str_print(ptr: *const u8, len: u64) {
+            symbol: "__rue_str_print",
+            parameters: params![BYTE_VIEW, U64_VALUE],
+            result: VOID,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        StrPrintln => unsafe __rue_str_println(ptr: *const u8, len: u64) {
+            symbol: "__rue_str_println",
+            parameters: params![BYTE_VIEW, U64_VALUE],
+            result: VOID,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        ReadLine => unsafe __rue_read_line(
+            out: *mut $crate::OptionStrBufResult,
+            some_disc: u64,
+            none_disc: u64,
+        ) {
+            symbol: "__rue_read_line",
+            parameters: params![OPTION_STR_BUF_OUT, U64_VALUE, U64_VALUE],
+            result: VOID,
+            safety: WRITABLE_DISCRIMINANTS,
+            returns: RETURNS
+        },
+        ParseI32 => unsafe __rue_parse_i32(
+            out: *mut $crate::OptionIntResult,
+            ptr: *const u8,
+            len: u64,
+            some_disc: u64,
+            none_disc: u64,
+        ) {
+            symbol: "__rue_parse_i32",
+            parameters: params![OPTION_INT_OUT, BYTE_VIEW, U64_VALUE, U64_VALUE, U64_VALUE],
+            result: VOID,
+            safety: READABLE_WRITABLE_DISCRIMINANTS,
+            returns: RETURNS
+        },
+        ParseI64 => unsafe __rue_parse_i64(
+            out: *mut $crate::OptionIntResult,
+            ptr: *const u8,
+            len: u64,
+            some_disc: u64,
+            none_disc: u64,
+        ) {
+            symbol: "__rue_parse_i64",
+            parameters: params![OPTION_INT_OUT, BYTE_VIEW, U64_VALUE, U64_VALUE, U64_VALUE],
+            result: VOID,
+            safety: READABLE_WRITABLE_DISCRIMINANTS,
+            returns: RETURNS
+        },
+        ParseU32 => unsafe __rue_parse_u32(
+            out: *mut $crate::OptionIntResult,
+            ptr: *const u8,
+            len: u64,
+            some_disc: u64,
+            none_disc: u64,
+        ) {
+            symbol: "__rue_parse_u32",
+            parameters: params![OPTION_INT_OUT, BYTE_VIEW, U64_VALUE, U64_VALUE, U64_VALUE],
+            result: VOID,
+            safety: READABLE_WRITABLE_DISCRIMINANTS,
+            returns: RETURNS
+        },
+        ParseU64 => unsafe __rue_parse_u64(
+            out: *mut $crate::OptionIntResult,
+            ptr: *const u8,
+            len: u64,
+            some_disc: u64,
+            none_disc: u64,
+        ) {
+            symbol: "__rue_parse_u64",
+            parameters: params![OPTION_INT_OUT, BYTE_VIEW, U64_VALUE, U64_VALUE, U64_VALUE],
+            result: VOID,
+            safety: READABLE_WRITABLE_DISCRIMINANTS,
+            returns: RETURNS
+        },
+        RandomU32 => safe __rue_random_u32() -> u32 {
+            symbol: "__rue_random_u32",
+            parameters: params![],
+            result: U32_RESULT,
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        RandomU64 => safe __rue_random_u64() -> u64 {
+            symbol: "__rue_random_u64",
+            parameters: params![],
+            result: U64_RESULT,
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        InvalidUtf8 => safe __rue_invalid_utf8() -> ! {
+            symbol: "__rue_invalid_utf8",
+            parameters: params![],
+            result: VOID,
+            safety: TERMINATES,
+            returns: NEVER
+        }
+            }
+    };
 }
+
+for_each_runtime_helper!(runtime_helpers);
 
 /// Logical function signature for separately classified non-helper exports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -659,56 +815,122 @@ pub enum ReservedExportKind {
     ReadOnlyData { size: u8 },
 }
 
-/// Exhaustive identity for intentionally visible, non-helper runtime exports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum ReservedExportId {
-    Memcpy,
-    Memmove,
-    Memset,
-    Memcmp,
-    Bcmp,
-    LinuxStart,
-    MacosMain,
-    X86_64LinuxStart,
-    RtSigreturn,
-    RuntimeAbiVersion,
-}
-
-impl ReservedExportId {
-    pub const ALL: [Self; 10] = [
-        Self::Memcpy,
-        Self::Memmove,
-        Self::Memset,
-        Self::Memcmp,
-        Self::Bcmp,
-        Self::LinuxStart,
-        Self::MacosMain,
-        Self::X86_64LinuxStart,
-        Self::RtSigreturn,
-        Self::RuntimeAbiVersion,
-    ];
-
-    pub const fn export(self) -> &'static ReservedExport {
-        &RESERVED_EXPORTS[self as usize]
-    }
-
-    pub const fn symbol(self) -> &'static str {
-        self.export().symbol
-    }
-
-    pub fn from_symbol(symbol: &str) -> Option<Self> {
-        let mut index = 0;
-        while index < Self::ALL.len() {
-            let id = Self::ALL[index];
-            if string_eq(id.symbol(), symbol) {
-                return Some(id);
-            }
-            index += 1;
+/// Invoke a callback with every separately classified runtime export.
+///
+/// The callback receives the exact Rust declaration, applicability, and
+/// manifest metadata. Runtime declarations and the typed reserved-export table
+/// are generated from these same rows.
+#[macro_export]
+macro_rules! for_each_reserved_runtime_export {
+    ($callback:ident) => {
+        $callback! {
+            (Memcpy => function all unsafe memcpy(
+                dst: *mut u8,
+                src: *const u8,
+                count: usize,
+            ) -> *mut u8 {
+                class: ReservedExportClass::CompilerBuiltMemory,
+                signature: COPY_FUNCTION
+            }),
+            (Memmove => function all unsafe memmove(
+                dst: *mut u8,
+                src: *const u8,
+                count: usize,
+            ) -> *mut u8 {
+                class: ReservedExportClass::CompilerBuiltMemory,
+                signature: COPY_FUNCTION
+            }),
+            (Memset => function all unsafe memset(
+                dst: *mut u8,
+                value: i32,
+                count: usize,
+            ) -> *mut u8 {
+                class: ReservedExportClass::CompilerBuiltMemory,
+                signature: MEMSET_FUNCTION
+            }),
+            (Memcmp => function all unsafe memcmp(
+                left: *const u8,
+                right: *const u8,
+                count: usize,
+            ) -> i32 {
+                class: ReservedExportClass::CompilerBuiltMemory,
+                signature: COMPARE_FUNCTION
+            }),
+            (Bcmp => function all unsafe bcmp(
+                left: *const u8,
+                right: *const u8,
+                count: usize,
+            ) -> i32 {
+                class: ReservedExportClass::CompilerBuiltMemory,
+                signature: COMPARE_FUNCTION
+            }),
+            (LinuxStart => linux_entry linux unsafe _start() -> ! {
+                class: ReservedExportClass::ProgramEntry,
+                signature: NEVER_FUNCTION
+            }),
+            (MacosMain => function aarch64_macos unsafe _main() -> ! {
+                class: ReservedExportClass::ProgramEntry,
+                signature: NEVER_FUNCTION
+            }),
+            (X86_64LinuxStart => function x86_64_linux safe __rue_x86_64_linux_start() -> ! {
+                class: ReservedExportClass::PlatformShim,
+                signature: NEVER_FUNCTION
+            }),
+            (RtSigreturn => assembly x86_64_linux unsafe __rue_rt_sigreturn() {
+                class: ReservedExportClass::PlatformShim,
+                signature: VOID_FUNCTION
+            }),
+            (RuntimeAbiVersion => marker all {
+                class: ReservedExportClass::AbiVersionMarker,
+                size: 1
+            })
         }
-        None
-    }
+    };
 }
+
+macro_rules! define_reserved_export_ids {
+    (
+        $(
+            ($variant:ident => $kind:ident $($declaration:tt)*)
+        ),+ $(,)?
+    ) => {
+        /// Exhaustive identity for intentionally visible, non-helper runtime exports.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[repr(u8)]
+        pub enum ReservedExportId {
+            $($variant),+
+        }
+
+        impl ReservedExportId {
+            pub const ALL: [Self; <[()]>::len(&[$(define_reserved_export_ids!(@unit $variant)),+])] = [
+                $(Self::$variant),+
+            ];
+
+            pub const fn export(self) -> &'static ReservedExport {
+                &RESERVED_EXPORTS[self as usize]
+            }
+
+            pub const fn symbol(self) -> &'static str {
+                self.export().symbol
+            }
+
+            pub fn from_symbol(symbol: &str) -> Option<Self> {
+                let mut index = 0;
+                while index < Self::ALL.len() {
+                    let id = Self::ALL[index];
+                    if string_eq(id.symbol(), symbol) {
+                        return Some(id);
+                    }
+                    index += 1;
+                }
+                None
+            }
+        }
+    };
+    (@unit $_variant:ident) => { () };
+}
+
+for_each_reserved_runtime_export!(define_reserved_export_ids);
 
 /// A separately classified, intentionally visible runtime export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -763,78 +985,85 @@ const COMPARE_FUNCTION: AbiSignature = AbiSignature {
     calling_convention: TARGET_C,
 };
 
-pub const RESERVED_EXPORTS: [ReservedExport; 10] = [
-    ReservedExport {
-        id: ReservedExportId::Memcpy,
-        symbol: "memcpy",
-        class: ReservedExportClass::CompilerBuiltMemory,
-        kind: ReservedExportKind::Function(COPY_FUNCTION),
-        availability: ALL_TARGETS,
-    },
-    ReservedExport {
-        id: ReservedExportId::Memmove,
-        symbol: "memmove",
-        class: ReservedExportClass::CompilerBuiltMemory,
-        kind: ReservedExportKind::Function(COPY_FUNCTION),
-        availability: ALL_TARGETS,
-    },
-    ReservedExport {
-        id: ReservedExportId::Memset,
-        symbol: "memset",
-        class: ReservedExportClass::CompilerBuiltMemory,
-        kind: ReservedExportKind::Function(MEMSET_FUNCTION),
-        availability: ALL_TARGETS,
-    },
-    ReservedExport {
-        id: ReservedExportId::Memcmp,
-        symbol: "memcmp",
-        class: ReservedExportClass::CompilerBuiltMemory,
-        kind: ReservedExportKind::Function(COMPARE_FUNCTION),
-        availability: ALL_TARGETS,
-    },
-    ReservedExport {
-        id: ReservedExportId::Bcmp,
-        symbol: "bcmp",
-        class: ReservedExportClass::CompilerBuiltMemory,
-        kind: ReservedExportKind::Function(COMPARE_FUNCTION),
-        availability: ALL_TARGETS,
-    },
-    ReservedExport {
-        id: ReservedExportId::LinuxStart,
-        symbol: "_start",
-        class: ReservedExportClass::ProgramEntry,
-        kind: ReservedExportKind::Function(NEVER_FUNCTION),
-        availability: TargetSet::X86_64_LINUX.union(TargetSet::AARCH64_LINUX),
-    },
-    ReservedExport {
-        id: ReservedExportId::MacosMain,
-        symbol: "_main",
-        class: ReservedExportClass::ProgramEntry,
-        kind: ReservedExportKind::Function(NEVER_FUNCTION),
-        availability: TargetSet::AARCH64_MACOS,
-    },
-    ReservedExport {
-        id: ReservedExportId::X86_64LinuxStart,
-        symbol: "__rue_x86_64_linux_start",
-        class: ReservedExportClass::PlatformShim,
-        kind: ReservedExportKind::Function(NEVER_FUNCTION),
-        availability: TargetSet::X86_64_LINUX,
-    },
-    ReservedExport {
-        id: ReservedExportId::RtSigreturn,
-        symbol: "__rue_rt_sigreturn",
-        class: ReservedExportClass::PlatformShim,
-        kind: ReservedExportKind::Function(VOID_FUNCTION),
-        availability: TargetSet::X86_64_LINUX,
-    },
-    ReservedExport {
-        id: ReservedExportId::RuntimeAbiVersion,
-        symbol: RUNTIME_ABI_VERSION_SYMBOL,
-        class: ReservedExportClass::AbiVersionMarker,
-        kind: ReservedExportKind::ReadOnlyData { size: 1 },
-        availability: ALL_TARGETS,
-    },
-];
+macro_rules! define_reserved_exports {
+    (
+        $(
+            ($variant:ident => $($row:tt)*)
+        ),+ $(,)?
+    ) => {
+        pub const RESERVED_EXPORTS: [ReservedExport; ReservedExportId::ALL.len()] = [
+            $(
+                define_reserved_exports!(@row $variant => $($row)*),
+            )+
+        ];
+    };
+    (
+        @row $variant:ident => function $target:ident $safety:ident $function:ident(
+            $($argument:ident : $rust_type:ty),* $(,)?
+        ) $(-> $rust_result:ty)? {
+            class: $class:path,
+            signature: $signature:ident
+        }
+    ) => {
+        ReservedExport {
+            id: ReservedExportId::$variant,
+            symbol: stringify!($function),
+            class: $class,
+            kind: ReservedExportKind::Function($signature),
+            availability: define_reserved_exports!(@targets $target),
+        }
+    };
+    (
+        @row $variant:ident => linux_entry $target:ident $safety:ident $function:ident()
+            -> $rust_result:ty {
+                class: $class:path,
+                signature: $signature:ident
+            }
+    ) => {
+        ReservedExport {
+            id: ReservedExportId::$variant,
+            symbol: stringify!($function),
+            class: $class,
+            kind: ReservedExportKind::Function($signature),
+            availability: define_reserved_exports!(@targets $target),
+        }
+    };
+    (
+        @row $variant:ident => assembly $target:ident $safety:ident $function:ident()
+            $(-> $rust_result:ty)? {
+                class: $class:path,
+                signature: $signature:ident
+            }
+    ) => {
+        ReservedExport {
+            id: ReservedExportId::$variant,
+            symbol: stringify!($function),
+            class: $class,
+            kind: ReservedExportKind::Function($signature),
+            availability: define_reserved_exports!(@targets $target),
+        }
+    };
+    (
+        @row RuntimeAbiVersion => marker $target:ident {
+            class: $class:path,
+            size: $size:literal
+        }
+    ) => {
+        ReservedExport {
+            id: ReservedExportId::RuntimeAbiVersion,
+            symbol: RUNTIME_ABI_VERSION_SYMBOL,
+            class: $class,
+            kind: ReservedExportKind::ReadOnlyData { size: $size },
+            availability: define_reserved_exports!(@targets $target),
+        }
+    };
+    (@targets all) => { TargetSet::ALL };
+    (@targets linux) => { TargetSet::X86_64_LINUX.union(TargetSet::AARCH64_LINUX) };
+    (@targets aarch64_macos) => { TargetSet::AARCH64_MACOS };
+    (@targets x86_64_linux) => { TargetSet::X86_64_LINUX };
+}
+
+for_each_reserved_runtime_export!(define_reserved_exports);
 
 /// Classification of a known externally visible runtime name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

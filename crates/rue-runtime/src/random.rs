@@ -7,7 +7,7 @@
 
 use crate::platform;
 
-define_for_all_platforms! {
+define_runtime_implementation! {
     /// Generate a random u32 value.
     ///
     /// Uses platform-specific entropy source:
@@ -29,7 +29,7 @@ define_for_all_platforms! {
     }
 }
 
-define_for_all_platforms! {
+define_runtime_implementation! {
     /// Generate a random u64 value.
     ///
     /// Uses platform-specific entropy source:

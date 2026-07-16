@@ -36,7 +36,7 @@ pub(crate) fn allocation_failure() -> ! {
     unsafe { __rue_panic(msg.as_ptr(), msg.len() as u64) }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Runtime error: division by zero.
     ///
     /// Called when a division or modulo operation has a zero divisor. This is
@@ -87,7 +87,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Runtime error: integer overflow.
     ///
     /// Called when an arithmetic operation overflows. This is typically triggered
@@ -138,7 +138,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Runtime error: integer cast overflow.
     ///
     /// Called when `@intCast` would produce a value that cannot be represented
@@ -193,7 +193,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Runtime error: index out of bounds.
     ///
     /// Called when an array index operation accesses an element outside the
@@ -254,7 +254,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Runtime error: invalid UTF-8 during decoding.
     ///
     /// Called when `s.chars()` iteration (RUE-220, ADR-0035) decodes a byte
@@ -305,7 +305,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Runtime error: explicit `@panic(msg)` with a message.
     ///
     /// Called by code generated for the `@panic("...")` intrinsic. Writes
@@ -357,7 +357,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Runtime error: explicit `@panic()` with no message.
     ///
     /// Called by code generated for the message-less `@panic()` intrinsic.
@@ -387,7 +387,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Runtime error: failed `@assert(cond)` (no message).
     ///
     /// Called by code generated for `@assert(cond)` when `cond` is false.
