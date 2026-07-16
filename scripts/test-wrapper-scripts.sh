@@ -548,6 +548,110 @@ test_sanitizer_status_contracts() {
   rm -rf "$sb"
 }
 
+# ===========================================================================
+# RUE-903 — scripts/rue unit runs ONE crate's tests with case-level filtering
+# ===========================================================================
+
+# Build a scripts/rue sandbox for the `unit` subcommand. Installs a copy of the
+# real script, a couple of crate BUCK stubs (so crate-name validation passes),
+# and a fake ./buck2 that logs every invocation's argv. On a --list preflight
+# the fake emits $FAKE_LIST_OUT (a match line by default, so the preflight
+# passes); the real run exits with $FAKE_RUN_EXIT. Echoes the sandbox path.
+make_rue_unit_sandbox() {
+  local sb; sb="$(mktemp -d)"
+  mkdir -p "$sb/scripts" "$sb/crates/rue-parser" "$sb/crates/rue-compiler"
+  cp "$SRC_ROOT/scripts/rue" "$sb/scripts/rue"; chmod +x "$sb/scripts/rue"
+  printf '# stub\n' >"$sb/crates/rue-parser/BUCK"
+  printf '# stub\n' >"$sb/crates/rue-compiler/BUCK"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$BUCK_LOG"
+for a in "$@"; do
+  if [ "$a" = "--list" ]; then
+    printf '%s\n' "${FAKE_LIST_OUT-some::case: test}"
+    exit 0
+  fi
+done
+exit "${FAKE_RUN_EXIT:-0}"
+EOF
+  chmod +x "$sb/buck2"
+  printf '%s\n' "$sb"
+}
+
+# The friendly crate name maps to //crates/<pkg>:<pkg>-test both with and
+# without the rue- prefix, and libtest args are forwarded verbatim after `--`.
+test_rue_unit_maps_crate_and_forwards_args() {
+  local sb; sb="$(make_rue_unit_sandbox)"
+  local rc=0
+  ( cd "$sb" && BUCK_LOG="$sb/buck.log" \
+      FAKE_LIST_OUT='parser::tests::diagnostic_corpus: test' \
+      ./scripts/rue unit parser diagnostic_corpus --exact ) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue unit: prefix-less crate reaches the real run" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'run //crates/rue-parser:rue-parser-test -- diagnostic_corpus --exact' "$sb/buck.log" && echo 0 || echo 1)"
+
+  : >"$sb/buck.log"; rc=0
+  ( cd "$sb" && BUCK_LOG="$sb/buck.log" \
+      FAKE_LIST_OUT='parser::tests::diagnostic_corpus: test' \
+      ./scripts/rue unit rue-parser diagnostic_corpus ) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue unit: rue- prefixed crate resolves to the same target" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'run //crates/rue-parser:rue-parser-test -- diagnostic_corpus' "$sb/buck.log" && echo 0 || echo 1)"
+
+  # The explicit <crate>:<target> form reaches an alternate target in the crate.
+  : >"$sb/buck.log"; rc=0
+  ( cd "$sb" && BUCK_LOG="$sb/buck.log" \
+      FAKE_LIST_OUT='some::api_case: test' \
+      ./scripts/rue unit compiler:rue-compiler-public-api-test ) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue unit: explicit crate:target form reaches the alternate target" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'run //crates/rue-compiler:rue-compiler-public-api-test --' "$sb/buck.log" && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# A filter that selects nothing (libtest --list shows only its summary line,
+# no `name: test` entries) must fail loudly and NEVER reach the real run.
+test_rue_unit_zero_match_fails_loud() {
+  local sb; sb="$(make_rue_unit_sandbox)"
+  local rc=0 out
+  out="$( cd "$sb" && BUCK_LOG="$sb/buck.log" \
+      FAKE_LIST_OUT='0 tests, 0 benchmarks' \
+      ./scripts/rue unit parser zzznomatch 2>&1 )" || rc=$?
+  check "scripts/rue unit: empty selection exits non-zero" \
+    "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  check "scripts/rue unit: empty selection prints a clear message" \
+    "$(printf '%s\n' "$out" | grep -q 'no tests matched' && echo 0 || echo 1)"
+  # Only the --list preflight should have run; no line lacking --list (the real
+  # run) may appear in the log.
+  check "scripts/rue unit: empty selection never runs the tests for real" \
+    "$([ -z "$(grep -v -- '--list' "$sb/buck.log" 2>/dev/null)" ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# A selected test that fails must propagate its non-zero exit code.
+test_rue_unit_failing_test_propagates_exit() {
+  local sb; sb="$(make_rue_unit_sandbox)"
+  local rc=0
+  ( cd "$sb" && BUCK_LOG="$sb/buck.log" \
+      FAKE_LIST_OUT='parser::tests::flaky: test' FAKE_RUN_EXIT=101 \
+      ./scripts/rue unit parser flaky ) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue unit: a failing selected test propagates its exit code" \
+    "$([ "$rc" -eq 101 ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# An unknown crate name fails with a clear message before any buck2 invocation.
+test_rue_unit_unknown_crate_errors_cleanly() {
+  local sb; sb="$(make_rue_unit_sandbox)"
+  local rc=0 out
+  out="$( cd "$sb" && BUCK_LOG="$sb/buck.log" \
+      ./scripts/rue unit nosuchcrate foo 2>&1 )" || rc=$?
+  check "scripts/rue unit: unknown crate exits non-zero" \
+    "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  check "scripts/rue unit: unknown crate names the missing crate" \
+    "$(printf '%s\n' "$out" | grep -q "unknown crate 'nosuchcrate'" && echo 0 || echo 1)"
+  check "scripts/rue unit: unknown crate never invokes buck2" \
+    "$([ ! -s "$sb/buck.log" ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # --- run everything ---------------------------------------------------------
 
 test_ruebin_build_failure_is_loud
@@ -559,6 +663,10 @@ test_rue_exec_resolves_from_caller_cwd
 test_rue_run_resolves_relative_output
 test_rue_cli_examples_survive_case_chdir
 test_testsh_cli_examples_survive_case_chdir
+test_rue_unit_maps_crate_and_forwards_args
+test_rue_unit_zero_match_fails_loud
+test_rue_unit_failing_test_propagates_exit
+test_rue_unit_unknown_crate_errors_cleanly
 test_sanitizer_defaults_std_path
 test_sanitizer_recursive_discovery_contract
 test_sanitizer_status_contracts

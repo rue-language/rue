@@ -8,6 +8,10 @@
 #   scripts/rue exec prog.rue      Compile prog.rue to a temp file AND run it
 #   scripts/rue test [pattern]     Full suite (./test.sh), optional filter
 #   scripts/rue quick              Unit tests only (./quick-test.sh)
+#   scripts/rue unit <crate> [args] One crate's Rust unit tests, case-filtered
+#                                  (crate name with or without the rue- prefix,
+#                                  or an explicit <crate>:<target>; forwards
+#                                  <pattern>/--exact/--nocapture to libtest)
 #   scripts/rue spec [pattern]     Spec tests, optional filter
 #   scripts/rue cli [pattern]      CLI integration tests, optional filter
 #   scripts/rue ui [pattern]       UI/diagnostics tests, optional filter
@@ -85,6 +89,61 @@ case "$cmd" in
         ;;
     quick)
         ./quick-test.sh "$@"
+        ;;
+    unit)
+        # Run ONE crate's Rust unit tests with real case-level filtering, the
+        # way spec/cli/ui forward libtest patterns to their harness binaries
+        # (RUE-903). Unlike `test <pattern>`, which still walks the whole unit
+        # graph, this drives a single `//crates/<crate>:<crate>-test` target so
+        # a positional <pattern>, --exact, --nocapture, and -q all behave
+        # natively.
+        if [[ $# -lt 1 ]]; then
+            echo "usage: scripts/rue unit <crate>[:target] [libtest args...]" >&2
+            exit 2
+        fi
+        sel="$1"; shift
+        # Accept an explicit <crate>:<target> so the extra rue-compiler targets
+        # (rue-compiler-public-api-test, rue-compiler-differential-oracle-test)
+        # stay reachable; otherwise the target defaults to <crate>-test.
+        if [[ "$sel" == *:* ]]; then
+            crate="${sel%%:*}"
+            unit_target="${sel#*:}"
+        else
+            crate="$sel"
+            unit_target=""
+        fi
+        # Map the friendly crate name to its package, accepting it with or
+        # without the rue- prefix (`compiler` -> `rue-compiler`).
+        case "$crate" in
+            rue-*) pkg="$crate" ;;
+            *)     pkg="rue-$crate" ;;
+        esac
+        # Validate against the source tree so an unknown crate produces a clear
+        # message instead of a raw buck2 target-not-found dump.
+        if [[ ! -f "crates/$pkg/BUCK" ]]; then
+            echo "scripts/rue unit: unknown crate '$crate' (no crates/$pkg)" >&2
+            exit 2
+        fi
+        [[ -n "$unit_target" ]] || unit_target="$pkg-test"
+        target="//crates/$pkg:$unit_target"
+        # Preflight the same filter with --list: libtest exits 0 when a filter
+        # matches NOTHING, which would otherwise masquerade as a passing run.
+        # A non-empty selection prints one `name: test`/`name: benchmark` line
+        # per case; the trailing "N tests, M benchmarks" summary never matches
+        # that pattern, so its absence means zero cases were selected. --list
+        # runs nothing, so this stays cheap.
+        list_rc=0
+        list_out="$(./buck2 run "$target" -- "$@" --list 2>/dev/null)" || list_rc=$?
+        if [[ $list_rc -eq 0 ]] && ! printf '%s' "$list_out" | grep -qE ': (test|benchmark)$'; then
+            echo "scripts/rue unit: no tests matched the given filter in $target" >&2
+            exit 1
+        fi
+        # Either the selection is non-empty, or the preflight itself failed to
+        # build; run for real so the cases execute (or the build error surfaces
+        # loudly, RUE-550) and propagate the real run's exit code faithfully.
+        rc=0
+        ./buck2 run "$target" -- "$@" || rc=$?
+        exit $rc
         ;;
     spec)
         RUE_BINARY="$(scripts/rue-bin)" \
