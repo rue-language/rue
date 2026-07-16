@@ -16,6 +16,7 @@ rue_crate(
         "//crates/rue-linker:rue-linker",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",
+        "//crates/rue-runtime-abi:rue-runtime-abi",
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
         "//third-party:annotate-snippets",

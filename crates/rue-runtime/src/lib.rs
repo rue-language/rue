@@ -322,11 +322,24 @@ macro_rules! declare_reserved_assembly {
     (x86_64_linux unsafe $function:ident()) => {
         #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
         core::arch::global_asm!(
+            concat!(
+                ".pushsection .text.",
+                stringify!($function),
+                ",\"ax\",@progbits"
+            ),
             concat!(".globl ", stringify!($function)),
             concat!(".hidden ", stringify!($function)),
+            concat!(".type ", stringify!($function), ",@function"),
             concat!(stringify!($function), ":"),
             "mov rax, 15",
             "syscall",
+            concat!(
+                ".size ",
+                stringify!($function),
+                ", .-",
+                stringify!($function)
+            ),
+            ".popsection",
         );
 
         #[cfg(all(target_arch = "x86_64", target_os = "linux"))]

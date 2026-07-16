@@ -27,6 +27,10 @@
           "name": "rue_rir"
         },
         {
+          "crate": 16,
+          "name": "rue_runtime_abi"
+        },
+        {
           "crate": 18,
           "name": "rue_span"
         },
@@ -61,7 +65,12 @@
       "display_name": "rue-builtins",
       "root_module": "crates/rue-builtins/src/lib.rs",
       "edition": "2024",
-      "deps": [],
+      "deps": [
+        {
+          "crate": 16,
+          "name": "rue_runtime_abi"
+        }
+      ],
       "is_workspace_member": true,
       "source": {
         "include_dirs": [
@@ -174,6 +183,10 @@
           "name": "rue_error"
         },
         {
+          "crate": 16,
+          "name": "rue_runtime_abi"
+        },
+        {
           "crate": 18,
           "name": "rue_span"
         },
@@ -284,6 +297,10 @@
         {
           "crate": 15,
           "name": "rue_rir"
+        },
+        {
+          "crate": 16,
+          "name": "rue_runtime_abi"
         },
         {
           "crate": 18,
@@ -703,7 +720,12 @@
       "display_name": "rue-runtime",
       "root_module": "crates/rue-runtime/src/lib.rs",
       "edition": "2024",
-      "deps": [],
+      "deps": [
+        {
+          "crate": 16,
+          "name": "rue_runtime_abi"
+        }
+      ],
       "is_workspace_member": true,
       "source": {
         "include_dirs": [

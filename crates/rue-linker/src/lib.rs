@@ -19,6 +19,9 @@ pub mod macho;
 mod util;
 
 pub use archive::{Archive, ArchiveError};
-pub use elf::{ObjectFile, Relocation, RelocationType, Section, Symbol};
+pub use elf::{
+    ElfMachine, ObjectFile, ObjectFormat, Relocation, RelocationType, Section, SectionFlags,
+    Symbol, SymbolBinding, SymbolType,
+};
 pub use emit::{CodeRelocation, ObjectBuilder};
 pub use linker::{LinkError, Linker};

@@ -29,6 +29,8 @@ pub enum ArchiveError {
     InvalidHeader(String),
     /// Failed to parse contained object.
     ObjectParse(ParseError),
+    /// A member with a recognized object-file magic was malformed or unsupported.
+    ObjectMemberParse { member: String, source: ParseError },
     /// Integer overflow in size calculation.
     Overflow,
 }
@@ -40,6 +42,9 @@ impl std::fmt::Display for ArchiveError {
             ArchiveError::TooShort => write!(f, "archive too short"),
             ArchiveError::InvalidHeader(s) => write!(f, "invalid archive header: {}", s),
             ArchiveError::ObjectParse(e) => write!(f, "failed to parse object: {}", e),
+            ArchiveError::ObjectMemberParse { member, source } => {
+                write!(f, "failed to parse object member `{member}`: {source}")
+            }
             ArchiveError::Overflow => write!(f, "integer overflow in archive size calculation"),
         }
     }
@@ -69,6 +74,22 @@ impl Archive {
     /// Special entries like symbol tables (`/`, `//`, `__.SYMDEF`) are skipped.
     #[must_use = "parsing returns a Result that must be checked"]
     pub fn parse(data: &[u8]) -> Result<Self, ArchiveError> {
+        Self::parse_impl(data, false)
+    }
+
+    /// Parse an archive while rejecting malformed members that advertise a
+    /// supported ELF or Mach-O object-file magic.
+    ///
+    /// Rust static libraries also contain symbol indexes, metadata, and may
+    /// contain LLVM bitcode. Those non-object members remain intentionally
+    /// ignored. A member beginning with a recognized native-object magic,
+    /// however, must parse successfully instead of silently disappearing.
+    #[must_use = "parsing returns a Result that must be checked"]
+    pub fn parse_strict_objects(data: &[u8]) -> Result<Self, ArchiveError> {
+        Self::parse_impl(data, true)
+    }
+
+    fn parse_impl(data: &[u8], strict_objects: bool) -> Result<Self, ArchiveError> {
         // Check magic
         if data.len() < AR_MAGIC.len() {
             return Err(ArchiveError::TooShort);
@@ -83,6 +104,9 @@ impl Archive {
         loop {
             let header_end = checked_offset_add(offset, HEADER_SIZE)?;
             if header_end > data.len() {
+                if strict_objects && offset != data.len() {
+                    return Err(ArchiveError::TooShort);
+                }
                 break;
             }
 
@@ -170,6 +194,12 @@ impl Archive {
             // Non-object members (e.g., LLVM bitcode files from LTO builds) are skipped.
             match ObjectFile::parse(member_data) {
                 Ok(obj) => objects.push(obj),
+                Err(source) if strict_objects && looks_like_native_object(member_data) => {
+                    return Err(ArchiveError::ObjectMemberParse {
+                        member: actual_name,
+                        source,
+                    });
+                }
                 Err(_) => {
                     // Member is not a valid object file. This is common for:
                     // - LLVM bitcode files (.bc) in LTO-enabled builds
@@ -200,6 +230,20 @@ impl Archive {
     pub fn len(&self) -> usize {
         self.objects.len()
     }
+}
+
+fn looks_like_native_object(data: &[u8]) -> bool {
+    if data.starts_with(b"\x7fELF") {
+        return true;
+    }
+    let Some(magic) = data
+        .get(..4)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map(u32::from_le_bytes)
+    else {
+        return false;
+    };
+    matches!(magic, 0xfeed_face | 0xcefa_edfe | 0xfeed_facf | 0xcffa_edfe)
 }
 
 #[cfg(test)]
