@@ -1,45 +1,89 @@
-//! Constant-condition terminator simplification.
+//! CFG simplification: constant-condition terminator folding, empty-block
+//! threading, and straight-line block merging.
+//!
+//! ## Terminator folding (RUE-910)
 //!
 //! Constant folding produces `BoolConst` branch conditions and `Const` switch
 //! scrutinees — including fieldless enum comparisons like
 //! `@target_arch() == Arch.X86_64`, whose fold exists specifically to enable
 //! dead platform code elimination — but folding alone never changes control
 //! flow: DCE's reachability walk treats every `Branch` and `Switch` as taking
-//! all of its edges, so statically dead arms survive to codegen (RUE-910).
-//!
-//! This pass rewrites terminators whose outcome is statically known:
+//! all of its edges, so statically dead arms survive to codegen.
 //!
 //! * `Branch` on a `BoolConst` condition becomes a `Goto` to the taken block,
 //!   carrying the taken edge's block arguments verbatim.
 //! * `Switch` on a `Const`/`BoolConst` scrutinee becomes a `Goto` to the
 //!   matching case (or the default when no case matches).
 //!
-//! Running before DCE, the rewrite makes the untaken edges disappear from
-//! reachability, so DCE's existing unreachable-block elimination prunes the
-//! dead arms and their instructions.
-//!
-//! ## Switch matching semantics
-//!
 //! Case selection must be exactly what the backends execute, or folding
 //! changes behavior. Both backends materialize the case value as a full
 //! 64-bit immediate and compare at 64-bit width when the scrutinee's type is
 //! 64-bit, and at 32-bit width otherwise (RUE-27) — so this pass compares the
-//! scrutinee's canonical constant the same way: full-width for 64-bit types,
-//! low 32 bits for everything narrower.
+//! scrutinee's canonical constant the same way.
+//!
+//! ## Threading and merging (RUE-911)
+//!
+//! Folded terminators leave `Goto` chains and single-predecessor blocks
+//! behind. Two structural cleanups run after folding, both restricted to
+//! blocks reachable *after* folding so statically dead arms don't inhibit
+//! them:
+//!
+//! * **Threading**: an edge into an empty, parameterless forwarding block
+//!   (no instructions, terminator `Goto`) is retargeted at the forwarder's
+//!   ultimate destination, carrying the final forwarder's block arguments.
+//!   Any value those arguments reference dominates the forwarder, and
+//!   nothing executes between a predecessor's terminator and the forwarder,
+//!   so the values are equally available on the retargeted edge. `Switch`
+//!   edges are not threaded: they cannot carry block arguments, so only an
+//!   argument-free chain would qualify, and those are rare enough to leave
+//!   for a later change.
+//! * **Merging**: a block whose ONLY incoming edge is a `Goto` is absorbed
+//!   into its predecessor: instructions are spliced onto the predecessor,
+//!   the predecessor takes over the terminator, and each block parameter is
+//!   substituted by the corresponding `Goto` argument. Substitutions from
+//!   every merge in the pass are applied in one batched
+//!   [`Cfg::rewrite_value_uses`] sweep, so the pass performs a single global
+//!   use-rewrite regardless of how many blocks merge (RUE-794 work
+//!   discipline). Malformed parameter substitution is the RUE-347 ill-typed
+//!   edge class; `optimize()`'s post-pass verification checks every surviving
+//!   edge's arity and types.
+//!
+//! Merged-away and threaded-around blocks become husks (no instructions,
+//! `Unreachable` terminator) or drop out of reachability; DCE prunes them.
+//! Husks are marked, not removed — renumbering dense `BlockId`s is the
+//! separate compaction decision tracked by RUE-769.
 
-use crate::{BlockId, Cfg, CfgInstData, Terminator};
+use crate::{BlockId, Cfg, CfgInstData, CfgValue, Terminator};
 
-/// Work counters for one run (RUE-794 convention): the pass visits each
-/// block's terminator exactly once, so `blocks_scanned` is the block count
-/// and the folded counts are bounded by it.
+use super::dce;
+
+/// Work counters for one run (RUE-794 convention). Each phase makes one
+/// bounded scan: folding visits each terminator once, threading resolves
+/// each forwarder chain with memoization, merging consumes each block at
+/// most once, and all parameter substitutions apply in one global
+/// use-rewrite.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stats {
-    /// Terminators inspected (one per block).
+    /// Terminators inspected by the folding phase (one per block).
     pub blocks_scanned: u64,
     /// `Branch` terminators rewritten to `Goto`.
     pub branches_folded: u64,
     /// `Switch` terminators rewritten to `Goto`.
     pub switches_folded: u64,
+    /// Edges retargeted around empty forwarding blocks.
+    pub edges_threaded: u64,
+    /// Blocks absorbed into their unique predecessor.
+    pub blocks_merged: u64,
+}
+
+/// Run all simplification phases: fold constant-condition terminators, then
+/// thread empty forwarders, then merge single-predecessor `Goto` chains.
+pub fn run(cfg: &mut Cfg) -> Stats {
+    let mut stats = Stats::default();
+    fold_terminators(cfg, &mut stats);
+    thread_forwarders(cfg, &mut stats);
+    merge_chains(cfg, &mut stats);
+    stats
 }
 
 /// Rewrite constant-condition `Branch`/`Switch` terminators into `Goto`s.
@@ -47,9 +91,7 @@ pub struct Stats {
 /// Terminators are rewritten in place (not via `Cfg::set_terminator`, whose
 /// already-set assertion guards *construction*; replacing a real terminator
 /// is exactly this pass's job). Instructions are never touched.
-pub fn run(cfg: &mut Cfg) -> Stats {
-    let mut stats = Stats::default();
-
+fn fold_terminators(cfg: &mut Cfg, stats: &mut Stats) {
     for block_idx in 0..cfg.block_count() {
         let block_id = BlockId::from_raw(block_idx as u32);
         stats.blocks_scanned += 1;
@@ -125,14 +167,263 @@ pub fn run(cfg: &mut Cfg) -> Stats {
             | Terminator::None => {}
         }
     }
+}
 
-    stats
+/// A `Goto` edge payload: target plus block-argument range.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Edge {
+    target: BlockId,
+    args_start: u32,
+    args_len: u32,
+}
+
+/// Retarget edges that point at empty, parameterless forwarding blocks.
+fn thread_forwarders(cfg: &mut Cfg, stats: &mut Stats) {
+    let reachable = dce::compute_reachable_blocks(cfg);
+
+    // A forwarder holds no instructions and no parameters, so jumping to it
+    // does nothing but jump again. The entry block is never treated as one:
+    // it has no incoming edges to retarget and must remain the entry.
+    let forward_edge: Vec<Option<Edge>> = (0..cfg.block_count())
+        .map(|idx| {
+            let block_id = BlockId::from_raw(idx as u32);
+            if block_id == cfg.entry || !reachable.contains(idx as u32) {
+                return None;
+            }
+            let block = cfg.get_block(block_id);
+            if !block.insts.is_empty() || !block.params.is_empty() {
+                return None;
+            }
+            match block.terminator {
+                Terminator::Goto {
+                    target,
+                    args_start,
+                    args_len,
+                } => Some(Edge {
+                    target,
+                    args_start,
+                    args_len,
+                }),
+                _ => None,
+            }
+        })
+        .collect();
+
+    // Resolve each forwarder to its ultimate destination with memoization,
+    // leaving forwarder cycles (empty infinite loops) alone. Every block is
+    // resolved at most once, so the whole phase is linear in blocks.
+    let mut resolved: Vec<Option<Edge>> = vec![None; cfg.block_count()];
+    let resolve = |resolved: &mut Vec<Option<Edge>>, start: BlockId| -> Option<Edge> {
+        forward_edge[start.as_u32() as usize]?;
+        if let Some(edge) = resolved[start.as_u32() as usize] {
+            return Some(edge);
+        }
+        // Walk the chain, tracking visited forwarders to stop on cycles.
+        let mut chain = vec![start];
+        let mut edge = forward_edge[start.as_u32() as usize].unwrap();
+        while let Some(next) = forward_edge[edge.target.as_u32() as usize] {
+            if chain.contains(&edge.target) {
+                break; // forwarder cycle: an empty infinite loop, keep as-is
+            }
+            chain.push(edge.target);
+            edge = next;
+        }
+        for block in chain {
+            resolved[block.as_u32() as usize] = Some(edge);
+        }
+        Some(edge)
+    };
+
+    for block_idx in 0..cfg.block_count() {
+        let block_id = BlockId::from_raw(block_idx as u32);
+        if !reachable.contains(block_idx as u32) {
+            continue;
+        }
+        // Only Goto and Branch edges are threaded; Switch edges cannot carry
+        // the forwarder's block arguments (see module docs).
+        match cfg.get_block(block_id).terminator {
+            Terminator::Goto { target, .. } => {
+                if target == block_id {
+                    continue;
+                }
+                if let Some(edge) = resolve(&mut resolved, target) {
+                    // An edge into a parameterless block carries no args, so
+                    // the forwarder chain's final args replace them whole.
+                    cfg.get_block_mut(block_id).terminator = Terminator::Goto {
+                        target: edge.target,
+                        args_start: edge.args_start,
+                        args_len: edge.args_len,
+                    };
+                    stats.edges_threaded += 1;
+                }
+            }
+            Terminator::Branch {
+                cond,
+                then_block,
+                then_args_start,
+                then_args_len,
+                else_block,
+                else_args_start,
+                else_args_len,
+            } => {
+                let thread_side = |resolved: &mut Vec<Option<Edge>>,
+                                   side: BlockId,
+                                   start: u32,
+                                   len: u32,
+                                   stats: &mut Stats| {
+                    match resolve(resolved, side) {
+                        Some(edge) => {
+                            stats.edges_threaded += 1;
+                            (edge.target, edge.args_start, edge.args_len)
+                        }
+                        None => (side, start, len),
+                    }
+                };
+                let (new_then, new_then_start, new_then_len) = thread_side(
+                    &mut resolved,
+                    then_block,
+                    then_args_start,
+                    then_args_len,
+                    stats,
+                );
+                let (new_else, new_else_start, new_else_len) = thread_side(
+                    &mut resolved,
+                    else_block,
+                    else_args_start,
+                    else_args_len,
+                    stats,
+                );
+                if (new_then, new_else) != (then_block, else_block) {
+                    cfg.get_block_mut(block_id).terminator = Terminator::Branch {
+                        cond,
+                        then_block: new_then,
+                        then_args_start: new_then_start,
+                        then_args_len: new_then_len,
+                        else_block: new_else,
+                        else_args_start: new_else_start,
+                        else_args_len: new_else_len,
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Absorb blocks whose only incoming edge is a `Goto` into their
+/// predecessor, substituting block parameters with the edge's arguments.
+fn merge_chains(cfg: &mut Cfg, stats: &mut Stats) {
+    let reachable = dce::compute_reachable_blocks(cfg);
+
+    // Count incoming EDGES (not predecessor blocks: a Branch with both sides
+    // on one target contributes two) among reachable blocks only, so arms
+    // already killed by terminator folding don't inhibit merging.
+    let mut incoming = vec![0u32; cfg.block_count()];
+    for block_idx in 0..cfg.block_count() {
+        if !reachable.contains(block_idx as u32) {
+            continue;
+        }
+        let block_id = BlockId::from_raw(block_idx as u32);
+        match cfg.get_block(block_id).terminator {
+            Terminator::Goto { target, .. } => incoming[target.as_u32() as usize] += 1,
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => {
+                incoming[then_block.as_u32() as usize] += 1;
+                incoming[else_block.as_u32() as usize] += 1;
+            }
+            Terminator::Switch {
+                cases_start,
+                cases_len,
+                default,
+                ..
+            } => {
+                for (_, target) in cfg.get_switch_cases(cases_start, cases_len) {
+                    incoming[target.as_u32() as usize] += 1;
+                }
+                incoming[default.as_u32() as usize] += 1;
+            }
+            _ => {}
+        }
+    }
+
+    // Parameter -> argument substitutions accumulated across every merge,
+    // applied in ONE global use-rewrite afterwards.
+    let mut subst: Vec<Option<CfgValue>> = vec![None; cfg.value_count()];
+    let mut consumed = vec![false; cfg.block_count()];
+
+    for block_idx in 0..cfg.block_count() {
+        if !reachable.contains(block_idx as u32) || consumed[block_idx] {
+            continue;
+        }
+        let head = BlockId::from_raw(block_idx as u32);
+
+        // Absorb the whole downstream chain into `head`. Each absorbed block
+        // is marked consumed, so total splice work is linear.
+        loop {
+            let Terminator::Goto {
+                target,
+                args_start,
+                args_len,
+            } = cfg.get_block(head).terminator
+            else {
+                break;
+            };
+            let target_idx = target.as_u32() as usize;
+            if target == head
+                || target == cfg.entry
+                || consumed[target_idx]
+                || incoming[target_idx] != 1
+            {
+                break;
+            }
+
+            // Record param -> arg substitutions for the edge being erased.
+            let args: Vec<CfgValue> = cfg.get_extra(args_start, args_len).to_vec();
+            let params = std::mem::take(&mut cfg.get_block_mut(target).params);
+            debug_assert_eq!(params.len(), args.len(), "verified edge arity");
+            for ((param, _ty), arg) in params.into_iter().zip(args) {
+                subst[param.as_u32() as usize] = Some(arg);
+            }
+
+            // Splice the target into the head and husk the target.
+            let target_insts = std::mem::take(&mut cfg.get_block_mut(target).insts);
+            let target_term = cfg.get_block(target).terminator;
+            cfg.get_block_mut(target).terminator = Terminator::Unreachable;
+            let head_block = cfg.get_block_mut(head);
+            head_block.insts.extend(target_insts);
+            head_block.terminator = target_term;
+
+            consumed[target_idx] = true;
+            stats.blocks_merged += 1;
+        }
+    }
+
+    if stats.blocks_merged == 0 {
+        return;
+    }
+
+    // Resolve substitution chains (a merged block's argument can itself be a
+    // parameter that a later merge substituted) iteratively, then rewrite
+    // every use once.
+    let resolve = |subst: &[Option<CfgValue>], mut v: CfgValue| -> CfgValue {
+        while let Some(next) = subst[v.as_u32() as usize] {
+            v = next;
+        }
+        v
+    };
+    let resolved: Vec<CfgValue> = (0..cfg.value_count())
+        .map(|i| resolve(&subst, CfgValue::from_raw(i as u32)))
+        .collect();
+    cfg.rewrite_value_uses(|v| resolved[v.as_u32() as usize]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CfgInst, CfgValue, Type};
+    use crate::{CfgInst, Type};
     use rue_span::Span;
 
     fn make_cfg() -> Cfg {
@@ -154,6 +445,17 @@ mod tests {
         )
     }
 
+    fn push_in(cfg: &mut Cfg, block: BlockId, data: CfgInstData, ty: Type) -> CfgValue {
+        cfg.add_inst_to_block(
+            block,
+            CfgInst {
+                data,
+                ty,
+                span: Span::new(0, 0),
+            },
+        )
+    }
+
     fn ret_const(cfg: &mut Cfg, block: BlockId, val: u64) {
         let value = cfg.add_inst(CfgInst {
             data: CfgInstData::Const(val),
@@ -164,12 +466,24 @@ mod tests {
         cfg.set_terminator(block, Terminator::Return { value: Some(value) });
     }
 
+    fn fold_only(cfg: &mut Cfg) -> Stats {
+        let mut stats = Stats::default();
+        fold_terminators(cfg, &mut stats);
+        stats
+    }
+
+    // ------------------------------------------------------------------
+    // Terminator folding (RUE-910)
+    // ------------------------------------------------------------------
+
     #[test]
     fn test_branch_true_folds_to_then_edge_with_args() {
         let mut cfg = make_cfg();
         let cond = push(&mut cfg, CfgInstData::BoolConst(true), Type::BOOL);
         let then_block = cfg.new_block();
         let else_block = cfg.new_block();
+        let then_param = cfg.add_block_param(then_block, Type::I32);
+        let _else_param = cfg.add_block_param(else_block, Type::I32);
         let then_arg = push(&mut cfg, CfgInstData::Const(10), Type::I32);
         let else_arg = push(&mut cfg, CfgInstData::Const(20), Type::I32);
         let (then_args_start, then_args_len) = cfg.push_extra(vec![then_arg]);
@@ -186,10 +500,15 @@ mod tests {
                 else_args_len,
             },
         );
-        ret_const(&mut cfg, then_block, 1);
+        cfg.set_terminator(
+            then_block,
+            Terminator::Return {
+                value: Some(then_param),
+            },
+        );
         ret_const(&mut cfg, else_block, 2);
 
-        let stats = run(&mut cfg);
+        let stats = fold_only(&mut cfg);
         assert_eq!(stats.branches_folded, 1);
         match cfg.get_block(cfg.entry).terminator {
             Terminator::Goto { target, .. } => {
@@ -222,7 +541,7 @@ mod tests {
         ret_const(&mut cfg, then_block, 1);
         ret_const(&mut cfg, else_block, 2);
 
-        let stats = run(&mut cfg);
+        let stats = fold_only(&mut cfg);
         assert_eq!(stats.branches_folded, 1);
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
@@ -251,7 +570,7 @@ mod tests {
         ret_const(&mut cfg, then_block, 1);
         ret_const(&mut cfg, else_block, 2);
 
-        let stats = run(&mut cfg);
+        let stats = fold_only(&mut cfg);
         assert_eq!(stats.branches_folded, 0);
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
@@ -290,7 +609,7 @@ mod tests {
     #[test]
     fn test_switch_const_folds_to_matching_case() {
         let (mut cfg, case_blocks, _default) = switch_cfg(7, Type::I32, vec![3, 7, 11]);
-        let stats = run(&mut cfg);
+        let stats = fold_only(&mut cfg);
         assert_eq!(stats.switches_folded, 1);
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
@@ -301,7 +620,7 @@ mod tests {
     #[test]
     fn test_switch_no_match_folds_to_default() {
         let (mut cfg, _case_blocks, default) = switch_cfg(5, Type::I32, vec![3, 7]);
-        run(&mut cfg);
+        fold_only(&mut cfg);
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
             Terminator::Goto { target, .. } if target == default
@@ -314,7 +633,7 @@ mod tests {
         // -1i64. Low-32 comparison must match (mirrors the backends' 32-bit
         // compare for sub-64-bit scrutinees).
         let (mut cfg, case_blocks, _default) = switch_cfg((-1i64) as u64, Type::I32, vec![-1, 0]);
-        run(&mut cfg);
+        fold_only(&mut cfg);
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
             Terminator::Goto { target, .. } if target == case_blocks[0]
@@ -327,7 +646,7 @@ mod tests {
         // low word, but the backends compare 64-bit scrutinees at full width
         // (RUE-27), so the fold must go to default.
         let (mut cfg, _case_blocks, default) = switch_cfg(0x1_0000_0001, Type::I64, vec![1]);
-        run(&mut cfg);
+        fold_only(&mut cfg);
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
             Terminator::Goto { target, .. } if target == default
@@ -342,8 +661,6 @@ mod tests {
         let true_block = cfg.new_block();
         let (cases_start, cases_len) =
             cfg.push_switch_cases(vec![(0, false_block), (1, true_block)]);
-        // Exhaustive bool match: builder would pop the last case into the
-        // default; keep both as cases here — the fold must pick case 1.
         let default = false_block;
         cfg.set_terminator(
             cfg.entry,
@@ -357,7 +674,7 @@ mod tests {
         ret_const(&mut cfg, false_block, 0);
         ret_const(&mut cfg, true_block, 1);
 
-        run(&mut cfg);
+        fold_only(&mut cfg);
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
             Terminator::Goto { target, .. } if target == true_block
@@ -365,9 +682,9 @@ mod tests {
     }
 
     #[test]
-    fn test_work_is_one_scan() {
-        // RUE-794 convention: the pass makes exactly one pass over the
-        // blocks, independent of how many terminators fold.
+    fn test_fold_work_is_one_scan() {
+        // RUE-794 convention: the folding phase makes exactly one pass over
+        // the blocks, independent of how many terminators fold.
         let mut cfg = make_cfg();
         let mut prev = cfg.entry;
         for _ in 0..50 {
@@ -391,46 +708,327 @@ mod tests {
         }
         ret_const(&mut cfg, prev, 1);
 
-        let stats = run(&mut cfg);
+        let stats = fold_only(&mut cfg);
         assert_eq!(stats.blocks_scanned, cfg.block_count() as u64);
         assert_eq!(stats.branches_folded, 50);
     }
 
-    /// End-to-end through the pass pipeline (constopt -> simplify -> dce):
-    /// a branch whose condition is a propagated constant loses its dead arm
-    /// entirely — the RUE-910 acceptance shape.
+    // ------------------------------------------------------------------
+    // Threading and merging (RUE-911)
+    // ------------------------------------------------------------------
+
+    /// entry -> f1 -> f2 -> tail, where f1/f2 are empty forwarders and f2's
+    /// edge into tail carries an argument. Threading retargets entry
+    /// directly at tail with that argument; merging then absorbs tail.
     #[test]
-    fn test_dead_arm_eliminated_through_pipeline() {
+    fn test_threads_forwarder_chain_and_carries_final_args() {
+        let mut cfg = make_cfg();
+        let arg = push(&mut cfg, CfgInstData::Const(5), Type::I32);
+        let f1 = cfg.new_block();
+        let f2 = cfg.new_block();
+        let tail = cfg.new_block();
+        let tail_param = cfg.add_block_param(tail, Type::I32);
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Goto {
+                target: f1,
+                args_start: 0,
+                args_len: 0,
+            },
+        );
+        cfg.set_terminator(
+            f1,
+            Terminator::Goto {
+                target: f2,
+                args_start: 0,
+                args_len: 0,
+            },
+        );
+        let (args_start, args_len) = cfg.push_extra(vec![arg]);
+        cfg.set_terminator(
+            f2,
+            Terminator::Goto {
+                target: tail,
+                args_start,
+                args_len,
+            },
+        );
+        cfg.set_terminator(
+            tail,
+            Terminator::Return {
+                value: Some(tail_param),
+            },
+        );
+
+        let stats = run(&mut cfg);
+        assert!(stats.edges_threaded >= 1);
+        // After threading, entry pointed at tail with f2's arg; merging then
+        // absorbed tail into entry, substituting the param with the arg.
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == arg
+        ));
+    }
+
+    #[test]
+    fn test_forwarder_cycle_left_alone() {
+        // Two empty blocks forwarding to each other: an empty infinite loop.
+        // Threading must not "skip past" it and change semantics.
+        let mut cfg = make_cfg();
+        let a = cfg.new_block();
+        let b = cfg.new_block();
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Goto {
+                target: a,
+                args_start: 0,
+                args_len: 0,
+            },
+        );
+        cfg.set_terminator(
+            a,
+            Terminator::Goto {
+                target: b,
+                args_start: 0,
+                args_len: 0,
+            },
+        );
+        cfg.set_terminator(
+            b,
+            Terminator::Goto {
+                target: a,
+                args_start: 0,
+                args_len: 0,
+            },
+        );
+
+        run(&mut cfg);
+        // Control still enters the a<->b cycle; whichever block entry now
+        // targets, it must be part of the cycle, and the cycle must persist.
+        let Terminator::Goto { target, .. } = cfg.get_block(cfg.entry).terminator else {
+            panic!("entry must still be a Goto");
+        };
+        assert!(target == a || target == b);
+        let Terminator::Goto { target: next, .. } = cfg.get_block(target).terminator else {
+            panic!("cycle block must still be a Goto");
+        };
+        assert!(next == a || next == b);
+    }
+
+    /// A goto chain of blocks that each carry an instruction merges into one
+    /// straight-line block, with each hop's param substituted by its arg.
+    #[test]
+    fn test_merges_goto_chain_with_param_substitution() {
+        let mut cfg = make_cfg();
+        let start = push(&mut cfg, CfgInstData::Const(1), Type::I32);
+        let mut prev_out = start;
+        let mut blocks = Vec::new();
+        for _ in 0..3 {
+            let block = cfg.new_block();
+            let param = cfg.add_block_param(block, Type::I32);
+            let out = push_in(&mut cfg, block, CfgInstData::Add(param, param), Type::I32);
+            blocks.push((block, out));
+            prev_out = out;
+        }
+        // Wire: entry -> b0(start), b0 -> b1(out0), b1 -> b2(out1), b2 returns out2.
+        let mut source = cfg.entry;
+        let mut carried = start;
+        for &(block, out) in &blocks {
+            let (args_start, args_len) = cfg.push_extra(vec![carried]);
+            cfg.set_terminator(
+                source,
+                Terminator::Goto {
+                    target: block,
+                    args_start,
+                    args_len,
+                },
+            );
+            source = block;
+            carried = out;
+        }
+        cfg.set_terminator(
+            source,
+            Terminator::Return {
+                value: Some(prev_out),
+            },
+        );
+
+        let stats = run(&mut cfg);
+        assert_eq!(stats.blocks_merged, 3);
+        // Everything lives in entry now: 1 const + 3 adds, ending in Return.
+        let entry = cfg.get_block(cfg.entry);
+        assert_eq!(entry.insts.len(), 4);
+        assert!(matches!(entry.terminator, Terminator::Return { .. }));
+        // The adds now operate on substituted values: first add reads the
+        // const directly (its param was substituted).
+        let first_add = cfg.get_inst(entry.insts[1]);
+        assert!(matches!(first_add.data, CfgInstData::Add(a, b) if a == start && b == start));
+        // Merged blocks are husks.
+        for &(block, _) in &blocks {
+            let husk = cfg.get_block(block);
+            assert!(husk.insts.is_empty());
+            assert!(husk.params.is_empty());
+            assert!(matches!(husk.terminator, Terminator::Unreachable));
+        }
+    }
+
+    #[test]
+    fn test_two_predecessor_block_not_merged() {
+        // A join block with two live incoming edges must not be absorbed.
+        let mut cfg = make_cfg();
+        let cond = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::BOOL);
+        let then_block = cfg.new_block();
+        let else_block = cfg.new_block();
+        let join = cfg.new_block();
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Branch {
+                cond,
+                then_block,
+                then_args_start: 0,
+                then_args_len: 0,
+                else_block,
+                else_args_start: 0,
+                else_args_len: 0,
+            },
+        );
+        let t = push_in(&mut cfg, then_block, CfgInstData::Const(1), Type::I32);
+        let _ = t;
+        cfg.set_terminator(
+            then_block,
+            Terminator::Goto {
+                target: join,
+                args_start: 0,
+                args_len: 0,
+            },
+        );
+        let e = push_in(&mut cfg, else_block, CfgInstData::Const(2), Type::I32);
+        let _ = e;
+        cfg.set_terminator(
+            else_block,
+            Terminator::Goto {
+                target: join,
+                args_start: 0,
+                args_len: 0,
+            },
+        );
+        ret_const(&mut cfg, join, 3);
+
+        let stats = run(&mut cfg);
+        assert_eq!(stats.blocks_merged, 0);
+        assert!(matches!(
+            cfg.get_block(join).terminator,
+            Terminator::Return { .. }
+        ));
+    }
+
+    #[test]
+    fn test_loop_back_edge_not_merged() {
+        // entry -> header; header branches to body or exit; body -> header.
+        // The header has two incoming edges (entry + back edge), so nothing
+        // merges into it and the loop survives intact.
+        let mut cfg = make_cfg();
+        let cond = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::BOOL);
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Goto {
+                target: header,
+                args_start: 0,
+                args_len: 0,
+            },
+        );
+        cfg.set_terminator(
+            header,
+            Terminator::Branch {
+                cond,
+                then_block: body,
+                then_args_start: 0,
+                then_args_len: 0,
+                else_block: exit,
+                else_args_start: 0,
+                else_args_len: 0,
+            },
+        );
+        let work = push_in(&mut cfg, body, CfgInstData::Const(1), Type::I32);
+        let _ = work;
+        cfg.set_terminator(
+            body,
+            Terminator::Goto {
+                target: header,
+                args_start: 0,
+                args_len: 0,
+            },
+        );
+        ret_const(&mut cfg, exit, 0);
+
+        let stats = run(&mut cfg);
+        // body merges into nothing (header has 2 incoming edges); body itself
+        // has 1 incoming edge and CAN be absorbed into header's then-side?
+        // No: absorption requires the predecessor to end in a Goto, and
+        // header ends in a Branch. The loop shape is untouched.
+        assert_eq!(stats.blocks_merged, 0);
+        assert!(matches!(
+            cfg.get_block(header).terminator,
+            Terminator::Branch { .. }
+        ));
+        assert!(matches!(
+            cfg.get_block(body).terminator,
+            Terminator::Goto { target, .. } if target == header
+        ));
+    }
+
+    #[test]
+    fn test_merge_work_is_bounded() {
+        // A 100-block goto chain merges in one pass: every block is consumed
+        // exactly once and blocks_merged equals the chain length.
+        let mut cfg = make_cfg();
+        let mut source = cfg.entry;
+        let mut blocks = Vec::new();
+        for _ in 0..100 {
+            let block = cfg.new_block();
+            push_in(&mut cfg, block, CfgInstData::Const(7), Type::I32);
+            cfg.set_terminator(
+                source,
+                Terminator::Goto {
+                    target: block,
+                    args_start: 0,
+                    args_len: 0,
+                },
+            );
+            blocks.push(block);
+            source = block;
+        }
+        ret_const(&mut cfg, source, 0);
+
+        let stats = run(&mut cfg);
+        assert_eq!(stats.blocks_merged, 100);
+        assert_eq!(cfg.get_block(cfg.entry).insts.len(), 101);
+    }
+
+    /// End-to-end through the pass pipeline (constopt -> simplify -> dce):
+    /// a diamond over a propagated-constant condition collapses to a single
+    /// straight-line block — the RUE-910 + RUE-911 acceptance shape.
+    #[test]
+    fn test_diamond_collapses_to_straight_line() {
         let mut cfg = Cfg::new(Type::I32, 1, 0, "test".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
-        // let flag = false; if flag { 1 } else { 2 }
-        let init = cfg.add_inst_to_block(
+        // let flag = false; if flag { 1 } else { 2 } (join carries the value)
+        let init = push_in(&mut cfg, entry, CfgInstData::BoolConst(false), Type::BOOL);
+        push_in(
+            &mut cfg,
             entry,
-            CfgInst {
-                data: CfgInstData::BoolConst(false),
-                ty: Type::BOOL,
-                span: Span::new(0, 0),
-            },
+            CfgInstData::Alloc { slot: 0, init },
+            Type::UNIT,
         );
-        cfg.add_inst_to_block(
-            entry,
-            CfgInst {
-                data: CfgInstData::Alloc { slot: 0, init },
-                ty: Type::UNIT,
-                span: Span::new(0, 0),
-            },
-        );
-        let cond = cfg.add_inst_to_block(
-            entry,
-            CfgInst {
-                data: CfgInstData::Load { slot: 0 },
-                ty: Type::BOOL,
-                span: Span::new(0, 0),
-            },
-        );
+        let cond = push_in(&mut cfg, entry, CfgInstData::Load { slot: 0 }, Type::BOOL);
         let then_block = cfg.new_block();
         let else_block = cfg.new_block();
+        let join = cfg.new_block();
+        let join_param = cfg.add_block_param(join, Type::I32);
         cfg.set_terminator(
             entry,
             Terminator::Branch {
@@ -443,23 +1041,51 @@ mod tests {
                 else_args_len: 0,
             },
         );
-        ret_const(&mut cfg, then_block, 1);
-        ret_const(&mut cfg, else_block, 2);
+        let t = push_in(&mut cfg, then_block, CfgInstData::Const(1), Type::I32);
+        let (t_start, t_len) = cfg.push_extra(vec![t]);
+        cfg.set_terminator(
+            then_block,
+            Terminator::Goto {
+                target: join,
+                args_start: t_start,
+                args_len: t_len,
+            },
+        );
+        let e = push_in(&mut cfg, else_block, CfgInstData::Const(2), Type::I32);
+        let (e_start, e_len) = cfg.push_extra(vec![e]);
+        cfg.set_terminator(
+            else_block,
+            Terminator::Goto {
+                target: join,
+                args_start: e_start,
+                args_len: e_len,
+            },
+        );
+        cfg.set_terminator(
+            join,
+            Terminator::Return {
+                value: Some(join_param),
+            },
+        );
 
         super::super::constopt::run(&mut cfg);
         let stats = run(&mut cfg);
         super::super::dce::run(&mut cfg);
 
         assert_eq!(stats.branches_folded, 1);
-        // The dead then-arm is fully eliminated: no instructions, an
-        // Unreachable terminator (DCE's block-husk form).
+        // else (the taken arm) and join both merged into entry, and the join
+        // param was substituted by the else arm's value.
+        assert_eq!(stats.blocks_merged, 2);
+        assert!(
+            matches!(
+                cfg.get_block(cfg.entry).terminator,
+                Terminator::Return { value: Some(v) } if v == e
+            ),
+            "entry must return the else-arm value directly"
+        );
+        // The dead then-arm is a husk.
         let dead = cfg.get_block(then_block);
-        assert!(dead.insts.is_empty(), "dead arm instructions eliminated");
+        assert!(dead.insts.is_empty());
         assert!(matches!(dead.terminator, Terminator::Unreachable));
-        // The live arm survives.
-        assert!(matches!(
-            cfg.get_block(else_block).terminator,
-            Terminator::Return { .. }
-        ));
     }
 }

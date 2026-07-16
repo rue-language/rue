@@ -427,3 +427,38 @@ fn main() -> i32 {
 stdout = """42
 """
 exit_code = 5
+
+# Block merging and threading (RUE-911): value-yielding ifs (block-arg joins)
+# with both constant conditions (join merges into a straight line) and
+# dynamic conditions (join keeps two predecessors and must NOT merge), plus a
+# dynamic while loop whose back edge must survive simplification intact.
+[[case]]
+name = "merged_blocks_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn pick(flag: bool) -> i32 {
+    let r: i32 = if flag { 10 } else { 20 };
+    r + 1
+}
+
+fn main() -> i32 {
+    let constant: i32 = if 2 > 1 { 5 } else { 6 };
+    @dbg(constant);
+    @dbg(pick(true));
+    @dbg(pick(false));
+    let mut i: i32 = 0;
+    let mut total: i32 = 0;
+    while i < 4 {
+        total = total + i;
+        i = i + 1;
+    }
+    @dbg(total);
+    constant + total
+}
+""" }]
+stdout = """5
+11
+21
+6
+"""
+exit_code = 11
