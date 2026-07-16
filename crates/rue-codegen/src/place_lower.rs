@@ -11,12 +11,15 @@
 //! leaves in [`PlaceLowerBackend`], including two intentionally narrow leaves
 //! that preserve the exact MIR forms emitted before this extraction.
 
-use rue_air::Type;
-use rue_cfg::{CfgValue, Place, PlaceBase, Projection};
-
 use crate::agg_slots::{self, SlotBackend};
 use crate::allocation::{self, ScalePlan};
 use crate::vreg::VReg;
+use rue_air::Type;
+
+/// A place whose dynamic indices have already been materialized by the shared
+/// value dispatcher. This is the normalized input consumed by the plan-only
+/// entry points below.
+pub type ResolvedPlace = crate::value_plan::PlacePlan;
 
 /// Per-target instruction leaves used by shared place lowering.
 pub trait PlaceLowerBackend: SlotBackend {
@@ -51,261 +54,103 @@ pub trait PlaceLowerBackend: SlotBackend {
     fn emit_load_ptr_base(&mut self, dst: VReg, ptr: VReg);
 }
 
-#[derive(Clone, Copy)]
-struct IndexLevel {
-    index: CfgValue,
-    scale: ScalePlan,
-}
-
-struct ProjectionOffsets {
-    static_slot_offset: u32,
-    index_levels: Vec<IndexLevel>,
-}
-
-enum ProjectedAccess {
-    /// A statically known frame slot containing the accessed value's low end.
-    FrameSlot(u32),
-    /// A fully formed address. Reads use the backend's base-only load form.
-    PointerAddr(VReg),
-    /// A received by-ref pointer plus a statically encoded displacement.
-    PointerOffset { ptr: VReg, byte_offset: i32 },
-}
-
-/// Lower a scalar [`Place`] read, including projection bounds checks and
-/// address formation.
-pub fn lower_place_read<B: PlaceLowerBackend>(b: &mut B, dst: VReg, place: &Place, ty: Type) {
-    // Even a zero-sized indexed place has a valid language-level access that
-    // must reject an out-of-range index. There is no address to form or load
-    // for the zero-sized value, but the bounds edge still has to be emitted.
-    let projections = b.ctx().cfg.get_place_projections(place).to_vec();
-    // This guard must precede root-origin arithmetic: a zero-slot root would
-    // underflow at `root_count - 1`, and there are no bytes to load (RUE-577).
-    if b.ctx().type_slot_count(ty) == 0 {
-        if !projections.is_empty() {
-            analyze_projections(b, &projections, true);
-        }
-        b.emit_zero_sized_place(dst);
-        return;
-    }
-
-    // Clone the compact projection slice so generic emission can mutably
-    // borrow the backend without retaining a borrow through its CFG context.
-    if projections.is_empty() {
-        match place.base {
-            PlaceBase::Local(slot) => b.emit_load_slot(dst, slot),
-            PlaceBase::Param(param_slot) => {
-                if b.ctx().cfg.is_param_by_ref(param_slot) {
-                    let ptr = b.ensure_by_ref_param_ptr(param_slot);
-                    b.emit_load_ptr_base(dst, ptr);
-                } else {
-                    let slot = b.ctx().num_locals + param_slot;
-                    b.emit_load_slot(dst, slot);
-                }
-            }
-        }
-        return;
-    }
-
-    let offsets = analyze_projections(b, &projections, true);
-    match projected_access(b, place, offsets) {
-        ProjectedAccess::FrameSlot(slot) => b.emit_load_slot(dst, slot),
-        ProjectedAccess::PointerAddr(ptr) => b.emit_load_ptr_base(dst, ptr),
-        ProjectedAccess::PointerOffset { ptr, byte_offset } => {
-            b.emit_load_through_ptr(dst, ptr, byte_offset);
-        }
-    }
-}
-
-/// Lower a [`Place`] write. `vals` contains one vreg per logical value slot,
-/// with slot zero first.
-pub fn lower_place_write<B: PlaceLowerBackend>(b: &mut B, place: &Place, vals: &[VReg]) {
-    let projections = b.ctx().cfg.get_place_projections(place).to_vec();
-    // A zero-sized value has no storage to update. Current CFG callers filter
-    // these writes before reaching codegen, but the index still needs its
-    // language-level bounds edge. Keeping this boundary total avoids forming
-    // an address for a value with no storage.
-    if vals.is_empty() {
-        if !projections.is_empty() {
-            analyze_projections(b, &projections, true);
-        }
-        return;
-    }
-
-    if projections.is_empty() {
-        match place.base {
-            PlaceBase::Local(slot) => agg_slots::store_slots(b, vals, slot),
-            PlaceBase::Param(param_slot) => {
-                if b.ctx().cfg.is_param_by_ref(param_slot) {
-                    let ptr = b.ensure_by_ref_param_ptr(param_slot);
-                    agg_slots::store_slots_through_ptr(b, vals, ptr, 0);
-                } else {
-                    let slot = b.ctx().num_locals + param_slot;
-                    agg_slots::store_slots(b, vals, slot);
-                }
-            }
-        }
-        return;
-    }
-
-    let offsets = analyze_projections(b, &projections, true);
-    match projected_access(b, place, offsets) {
-        ProjectedAccess::FrameSlot(low_slot) => {
-            agg_slots::store_slots_at_low(b, vals, low_slot);
-        }
-        ProjectedAccess::PointerAddr(ptr) => {
-            agg_slots::store_slots_through_ptr(b, vals, ptr, 0);
-        }
-        ProjectedAccess::PointerOffset { ptr, byte_offset } => {
-            agg_slots::store_slots_through_ptr(b, vals, ptr, byte_offset);
-        }
-    }
-}
-
-/// Check every index projection in source order. Callers that form an address
-/// directly (by-ref arguments and aggregate materialization) use this helper
-/// so they cannot accidentally bypass the shared trap edge.
-pub fn lower_place_bounds<B: PlaceLowerBackend + ?Sized>(b: &mut B, place: &Place) {
-    let projections = b.ctx().cfg.get_place_projections(place).to_vec();
-    for projection in projections {
-        if let Projection::Index { array_type, index } = projection {
-            let index_vreg = b.get_vreg(index);
-            allocation::lower_bounds_check(
-                b,
-                allocation::BoundsCheckPlan::new(index_vreg, b.ctx().array_length(array_type)),
-            );
-        }
-    }
-}
-
-/// Emit the low-end address of `place` into `dst`.
-///
-/// Index projections are intentionally unchecked here: `@raw` is unchecked,
-/// while by-ref argument lowering performs its bounds checks before calling
-/// through [`SlotBackend::emit_place_addr`].
-pub fn lower_place_addr<B: PlaceLowerBackend>(b: &mut B, dst: VReg, place: &Place) {
-    let projections = b.ctx().cfg.get_place_projections(place).to_vec();
-    let offsets = analyze_projections(b, &projections, false);
-    let root_count = agg_slots::root_slot_count(b, place);
-    let dynamic_offset = compute_index_offset(b, &offsets.index_levels);
-
-    match place.base {
-        PlaceBase::Local(slot) => {
-            let low_slot = slot + (root_count - 1) - offsets.static_slot_offset;
-            b.emit_frame_addr(dst, low_slot);
-            if let Some(dynamic_offset) = dynamic_offset {
-                b.emit_addr_add(dst, dynamic_offset);
-            }
-        }
-        PlaceBase::Param(param_slot) => {
-            if b.ctx().cfg.is_param_by_ref(param_slot) {
-                // A received by-ref pointer already denotes the caller place's
-                // low end. Both field and index offsets therefore add.
-                let ptr = b.ensure_by_ref_param_ptr(param_slot);
-                b.emit_reg_move(dst, ptr);
-                let static_byte_offset = offsets.static_slot_offset as i32 * 8;
-                if static_byte_offset != 0 {
-                    b.emit_addr_add_imm(dst, static_byte_offset);
-                }
-                if let Some(dynamic_offset) = dynamic_offset {
-                    b.emit_addr_add(dst, dynamic_offset);
-                }
-            } else {
-                let low_slot =
-                    b.ctx().num_locals + param_slot + (root_count - 1) - offsets.static_slot_offset;
-                b.emit_frame_addr(dst, low_slot);
-                if let Some(dynamic_offset) = dynamic_offset {
-                    b.emit_addr_add(dst, dynamic_offset);
-                }
-            }
-        }
-    }
-}
-
-fn analyze_projections<B: PlaceLowerBackend>(
+fn resolved_offsets<B: PlaceLowerBackend + ?Sized>(
     b: &mut B,
-    projections: &[Projection],
+    place: &ResolvedPlace,
     check_bounds: bool,
-) -> ProjectionOffsets {
+) -> ResolvedProjectionOffsets {
     let mut static_slot_offset = 0;
     let mut index_levels = Vec::new();
-
-    for projection in projections {
-        match projection {
-            Projection::Field {
+    for projection in &place.projections {
+        match *projection {
+            crate::value_plan::ProjectionPlan::Field {
                 struct_id,
                 field_index,
             } => {
-                static_slot_offset += b.ctx().struct_field_slot_offset(*struct_id, *field_index);
+                static_slot_offset += b.ctx().struct_field_slot_offset(struct_id, field_index);
             }
-            Projection::Index { array_type, index } => {
+            crate::value_plan::ProjectionPlan::Index { array_type, index } => {
                 if check_bounds {
-                    // Preserve the historical ordering: every bounds check is
-                    // emitted while walking the chain, before any address math.
-                    let index_vreg = b.get_vreg(*index);
-                    let length = b.ctx().array_length(*array_type);
                     allocation::lower_bounds_check(
                         b,
-                        allocation::BoundsCheckPlan::new(index_vreg, length),
+                        allocation::BoundsCheckPlan::new(index, b.ctx().array_length(array_type)),
                     );
                 }
-                index_levels.push(IndexLevel {
-                    index: *index,
-                    scale: allocation::index_scale_plan(b.ctx().type_pool, *array_type),
+                index_levels.push(ResolvedIndexLevel {
+                    index,
+                    scale: allocation::index_scale_plan(b.ctx().type_pool, array_type),
                 });
             }
         }
     }
-
-    ProjectionOffsets {
+    ResolvedProjectionOffsets {
         static_slot_offset,
         index_levels,
     }
 }
 
-fn projected_access<B: PlaceLowerBackend>(
-    b: &mut B,
-    place: &Place,
-    offsets: ProjectionOffsets,
-) -> ProjectedAccess {
-    // Frame slots descend in address, so the root object's low-address end is
-    // its highest-numbered slot. Once anchored there, logical aggregate slots,
-    // field offsets, and scaled indices all ascend in address (ADR-0040).
-    let root_count = agg_slots::root_slot_count(b, place);
-    let dynamic_offset = compute_index_offset(b, &offsets.index_levels);
+fn resolved_root_count<B: PlaceLowerBackend + ?Sized>(b: &B, place: &ResolvedPlace) -> u32 {
+    b.ctx().type_slot_count(place.base_type)
+}
 
+fn resolved_access<B: PlaceLowerBackend + ?Sized>(
+    b: &mut B,
+    place: &ResolvedPlace,
+    offsets: ResolvedProjectionOffsets,
+) -> ProjectedAccess {
+    let root_count = resolved_root_count(b, place);
+    let dynamic_offset = compute_resolved_index_offset(b, &offsets.index_levels);
     match place.base {
-        PlaceBase::Local(slot) => {
-            let low_slot = slot + (root_count - 1) - offsets.static_slot_offset;
-            frame_access(b, low_slot, dynamic_offset)
-        }
-        PlaceBase::Param(param_slot) => {
-            if b.ctx().cfg.is_param_by_ref(param_slot) {
-                let ptr = b.ensure_by_ref_param_ptr(param_slot);
-                let static_byte_offset = offsets.static_slot_offset as i32 * 8;
-                if let Some(dynamic_offset) = dynamic_offset {
-                    let addr = b.alloc_vreg();
-                    b.emit_reg_move(addr, ptr);
-                    if static_byte_offset != 0 {
-                        b.emit_addr_add_imm(addr, static_byte_offset);
-                    }
-                    b.emit_addr_add(addr, dynamic_offset);
-                    ProjectedAccess::PointerAddr(addr)
-                } else {
-                    ProjectedAccess::PointerOffset {
-                        ptr,
-                        byte_offset: static_byte_offset,
-                    }
+        crate::value_plan::PlaceBasePlan::Local(slot) => frame_access(
+            b,
+            slot + root_count.saturating_sub(1) - offsets.static_slot_offset,
+            dynamic_offset,
+        ),
+        crate::value_plan::PlaceBasePlan::Param { slot, by_ref: true } => {
+            let ptr = b.ensure_by_ref_param_ptr(slot);
+            let byte_offset = offsets.static_slot_offset as i32 * 8;
+            if let Some(dynamic) = dynamic_offset {
+                let addr = b.alloc_vreg();
+                b.emit_reg_move(addr, ptr);
+                if byte_offset != 0 {
+                    b.emit_addr_add_imm(addr, byte_offset);
                 }
+                b.emit_addr_add(addr, dynamic);
+                ProjectedAccess::PointerAddr(addr)
             } else {
-                let low_slot =
-                    b.ctx().num_locals + param_slot + (root_count - 1) - offsets.static_slot_offset;
-                frame_access(b, low_slot, dynamic_offset)
+                ProjectedAccess::PointerOffset { ptr, byte_offset }
             }
         }
+        crate::value_plan::PlaceBasePlan::Param {
+            slot,
+            by_ref: false,
+        } => frame_access(
+            b,
+            b.ctx().num_locals + slot + root_count.saturating_sub(1) - offsets.static_slot_offset,
+            dynamic_offset,
+        ),
     }
 }
 
-fn frame_access<B: PlaceLowerBackend>(
+fn compute_resolved_index_offset<B: PlaceLowerBackend + ?Sized>(
+    b: &mut B,
+    levels: &[ResolvedIndexLevel],
+) -> Option<VReg> {
+    let mut total = None;
+    for level in levels {
+        let scaled = b.alloc_vreg();
+        b.emit_reg_move(scaled, level.index);
+        b.emit_scale_index_bytes(scaled, level.scale);
+        if let Some(previous) = total {
+            b.emit_addr_add(previous, scaled);
+        } else {
+            total = Some(scaled);
+        }
+    }
+    total
+}
+
+fn frame_access<B: PlaceLowerBackend + ?Sized>(
     b: &mut B,
     low_slot: u32,
     dynamic_offset: Option<VReg>,
@@ -320,33 +165,170 @@ fn frame_access<B: PlaceLowerBackend>(
     }
 }
 
-fn compute_index_offset<B: PlaceLowerBackend>(b: &mut B, levels: &[IndexLevel]) -> Option<VReg> {
-    let mut total = None;
-
-    for level in levels {
-        let index = b.get_vreg(level.index);
-        let scaled = b.alloc_vreg();
-        b.emit_reg_move(scaled, index);
-        b.emit_scale_index_bytes(scaled, level.scale);
-
-        if let Some(previous) = total {
-            b.emit_addr_add(previous, scaled);
-        } else {
-            total = Some(scaled);
+pub fn lower_place_read_plan<B: PlaceLowerBackend>(
+    b: &mut B,
+    dst: VReg,
+    place: &ResolvedPlace,
+    ty: Type,
+) {
+    if b.ctx().type_slot_count(ty) == 0 {
+        resolved_offsets(b, place, true);
+        b.emit_zero_sized_place(dst);
+        return;
+    }
+    if place.projections.is_empty() {
+        match place.base {
+            crate::value_plan::PlaceBasePlan::Local(slot) => b.emit_load_slot(dst, slot),
+            crate::value_plan::PlaceBasePlan::Param { slot, by_ref: true } => {
+                let ptr = b.ensure_by_ref_param_ptr(slot);
+                b.emit_load_ptr_base(dst, ptr);
+            }
+            crate::value_plan::PlaceBasePlan::Param {
+                slot,
+                by_ref: false,
+            } => b.emit_load_slot(dst, b.ctx().num_locals + slot),
+        }
+        return;
+    }
+    let offsets = resolved_offsets(b, place, true);
+    match resolved_access(b, place, offsets) {
+        ProjectedAccess::FrameSlot(slot) => b.emit_load_slot(dst, slot),
+        ProjectedAccess::PointerAddr(ptr) => b.emit_load_ptr_base(dst, ptr),
+        ProjectedAccess::PointerOffset { ptr, byte_offset } => {
+            b.emit_load_through_ptr(dst, ptr, byte_offset)
         }
     }
+}
 
-    total
+pub fn lower_place_write_plan<B: PlaceLowerBackend>(
+    b: &mut B,
+    place: &ResolvedPlace,
+    vals: &[VReg],
+) {
+    if vals.is_empty() {
+        resolved_offsets(b, place, true);
+        return;
+    }
+    if place.projections.is_empty() {
+        match place.base {
+            crate::value_plan::PlaceBasePlan::Local(slot) => agg_slots::store_slots(b, vals, slot),
+            crate::value_plan::PlaceBasePlan::Param { slot, by_ref: true } => {
+                let ptr = b.ensure_by_ref_param_ptr(slot);
+                agg_slots::store_slots_through_ptr(b, vals, ptr, 0);
+            }
+            crate::value_plan::PlaceBasePlan::Param {
+                slot,
+                by_ref: false,
+            } => agg_slots::store_slots(b, vals, b.ctx().num_locals + slot),
+        }
+        return;
+    }
+    let offsets = resolved_offsets(b, place, true);
+    match resolved_access(b, place, offsets) {
+        ProjectedAccess::FrameSlot(slot) => agg_slots::store_slots_at_low(b, vals, slot),
+        ProjectedAccess::PointerAddr(ptr) => agg_slots::store_slots_through_ptr(b, vals, ptr, 0),
+        ProjectedAccess::PointerOffset { ptr, byte_offset } => {
+            agg_slots::store_slots_through_ptr(b, vals, ptr, byte_offset)
+        }
+    }
+}
+
+fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
+    b: &mut B,
+    dst: VReg,
+    place: &ResolvedPlace,
+    check_bounds: bool,
+) {
+    let offsets = resolved_offsets(b, place, check_bounds);
+    let root_count = resolved_root_count(b, place);
+    let dynamic = compute_resolved_index_offset(b, &offsets.index_levels);
+    match place.base {
+        crate::value_plan::PlaceBasePlan::Local(slot) => {
+            b.emit_frame_addr(
+                dst,
+                slot + root_count.saturating_sub(1) - offsets.static_slot_offset,
+            );
+            if let Some(dynamic) = dynamic {
+                b.emit_addr_add(dst, dynamic);
+            }
+        }
+        crate::value_plan::PlaceBasePlan::Param { slot, by_ref: true } => {
+            let ptr = b.ensure_by_ref_param_ptr(slot);
+            b.emit_reg_move(dst, ptr);
+            let byte_offset = offsets.static_slot_offset as i32 * 8;
+            if byte_offset != 0 {
+                b.emit_addr_add_imm(dst, byte_offset);
+            }
+            if let Some(dynamic) = dynamic {
+                b.emit_addr_add(dst, dynamic);
+            }
+        }
+        crate::value_plan::PlaceBasePlan::Param {
+            slot,
+            by_ref: false,
+        } => {
+            b.emit_frame_addr(
+                dst,
+                b.ctx().num_locals + slot + root_count.saturating_sub(1)
+                    - offsets.static_slot_offset,
+            );
+            if let Some(dynamic) = dynamic {
+                b.emit_addr_add(dst, dynamic);
+            }
+        }
+    }
+}
+
+/// Form a place address after applying the shared bounds policy. Aggregate
+/// reads use this entry point so their multi-slot load path cannot bypass an
+/// indexed-place trap.
+pub fn lower_checked_place_addr_plan<B: PlaceLowerBackend + ?Sized>(
+    b: &mut B,
+    dst: VReg,
+    place: &ResolvedPlace,
+) {
+    lower_place_addr_plan_with_bounds(b, dst, place, true);
+}
+
+/// Form an unchecked place address for target leaves whose caller has already
+/// established the policy (for example raw ABI pointer materialization).
+pub fn lower_place_addr_plan<B: PlaceLowerBackend + ?Sized>(
+    b: &mut B,
+    dst: VReg,
+    place: &ResolvedPlace,
+) {
+    lower_place_addr_plan_with_bounds(b, dst, place, false);
+}
+
+struct ResolvedIndexLevel {
+    index: VReg,
+    scale: ScalePlan,
+}
+
+struct ResolvedProjectionOffsets {
+    static_slot_offset: u32,
+    index_levels: Vec<ResolvedIndexLevel>,
+}
+
+enum ProjectedAccess {
+    /// A statically known frame slot containing the accessed value's low end.
+    FrameSlot(u32),
+    /// A fully formed address. Reads use the backend's base-only load form.
+    PointerAddr(VReg),
+    /// A received by-ref pointer plus a statically encoded displacement.
+    PointerOffset { ptr: VReg, byte_offset: i32 },
 }
 
 #[cfg(test)]
 mod tests {
-    use rue_air::Sema;
-    use rue_cfg::CfgBuilder;
+    use lasso::ThreadedRodeo;
+    use rue_air::{Sema, StructDef, StructField, Type, TypeInternPool};
+    use rue_cfg::{Cfg, CfgBuilder, CfgInst, CfgInstData, PlaceBase, Projection, Terminator};
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::AstGen;
+    use rue_span::{FileId, Span};
     use rue_target::Target;
 
     use crate::aarch64::{Aarch64Inst, CfgLower as Aarch64CfgLower};
@@ -482,6 +464,133 @@ mod tests {
                 .count(),
             1
         );
+
+        // Build a direct CFG fixture for an indexed PlaceRead whose result is
+        // a two-slot aggregate. The source language normally passes such a
+        // place by reference, so this isolates the returning aggregate shape
+        // and makes the shared slot traversal observable on both adapters.
+        let synthetic_interner = ThreadedRodeo::new();
+        let synthetic_types = TypeInternPool::new();
+        let (pair_id, _) = synthetic_types.register_struct(
+            synthetic_interner.get_or_intern("IndexedPair"),
+            StructDef {
+                name: "IndexedPair".to_string(),
+                fields: vec![
+                    StructField {
+                        name: "left".to_string(),
+                        ty: Type::I64,
+                    },
+                    StructField {
+                        name: "right".to_string(),
+                        ty: Type::I64,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let pair_ty = Type::new_struct(pair_id);
+        let array_id = synthetic_types.intern_array_from_type(pair_ty, 2);
+        let array_ty = Type::new_array(array_id);
+        let synthetic_types = synthetic_types.freeze();
+        let mut indexed_cfg = Cfg::new(pair_ty, 1, 1, "indexed_pair_read".to_string(), vec![false]);
+        let indexed_entry = indexed_cfg.new_block();
+        indexed_cfg.entry = indexed_entry;
+        let index = indexed_cfg.add_inst(CfgInst {
+            data: CfgInstData::Param { index: 0 },
+            ty: Type::U64,
+            span: Span::new(0, 0),
+        });
+        let place = indexed_cfg.make_place(
+            PlaceBase::Local(0),
+            array_ty,
+            [Projection::Index {
+                array_type: array_ty,
+                index,
+            }],
+        );
+        let read = indexed_cfg.add_inst(CfgInst {
+            data: CfgInstData::PlaceRead { place },
+            ty: pair_ty,
+            span: Span::new(0, 0),
+        });
+        indexed_cfg
+            .get_block_mut(indexed_entry)
+            .insts
+            .extend([index, read]);
+        indexed_cfg.set_terminator(indexed_entry, Terminator::Return { value: Some(read) });
+        let pair_x86 = X86CfgLower::new(&indexed_cfg, &synthetic_types, &interner)
+            .lower()
+            .expect("x86 indexed aggregate read should lower");
+        let pair_arm = Aarch64CfgLower::new(
+            &indexed_cfg,
+            &synthetic_types,
+            &interner,
+            Target::Aarch64Linux,
+        )
+        .lower()
+        .expect("AArch64 indexed aggregate read should lower");
+        let x86_bounds = pair_x86
+            .instructions()
+            .iter()
+            .position(|inst| {
+                matches!(
+                    inst,
+                    X86Inst::CallRel { symbol_id }
+                        if pair_x86.get_symbol(*symbol_id) == "__rue_bounds_check"
+                )
+            })
+            .expect("indexed aggregate read must retain its bounds trap edge");
+        let x86_loads: Vec<(usize, i32)> = pair_x86
+            .instructions()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, inst)| match inst {
+                X86Inst::MovRMIndexed { offset, .. } => Some((index, *offset)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            x86_loads
+                .iter()
+                .map(|(_, offset)| *offset)
+                .collect::<Vec<_>>(),
+            vec![0, 8]
+        );
+        assert!(x86_bounds < x86_loads[0].0);
+
+        let arm_bounds = pair_arm
+            .instructions()
+            .iter()
+            .position(|inst| {
+                matches!(
+                    inst,
+                    Aarch64Inst::Bl { symbol_id }
+                        if pair_arm.get_symbol(*symbol_id) == "__rue_bounds_check"
+                )
+            })
+            .expect("indexed aggregate read must retain its bounds trap edge");
+        let arm_loads: Vec<(usize, i32)> = pair_arm
+            .instructions()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, inst)| match inst {
+                Aarch64Inst::LdrIndexedOffset { offset, .. } => Some((index, *offset)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            arm_loads
+                .iter()
+                .map(|(_, offset)| *offset)
+                .collect::<Vec<_>>(),
+            vec![0, 8]
+        );
+        assert!(arm_bounds < arm_loads[0].0);
 
         // Lock down the two deliberately distinct compatibility leaves. A
         // simple borrow and inout reads must retain AArch64's base-only

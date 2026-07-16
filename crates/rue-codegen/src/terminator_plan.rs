@@ -10,20 +10,8 @@ use rue_cfg::{BasicBlock, BlockId, CfgValue, Terminator, Type};
 
 use crate::call_plan::{self, ReturnPlan};
 use crate::cfg_lower::CfgLowerContext;
-use crate::value_plan::{self, ValuePlan, ValueShape};
+use crate::value_plan::{self, MaterializedValue, ValueLowerAdapter, ValuePlan, ValueShape};
 use crate::vreg::VReg;
-
-/// A materialized CFG value supplied by a concrete adapter.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaterializedValue {
-    /// The primary value vreg.  It is used for scalar values and conditions.
-    /// Aggregate plans retain it only as the canonical first-slot bookkeeping
-    /// value; their complete representation is in `slots`.
-    pub primary: VReg,
-    /// Complete logical slots in ascending layout order.  This is empty for a
-    /// zero-sized value and complete for every aggregate.
-    pub slots: Vec<VReg>,
-}
 
 /// One logical slot move performed on a control-flow edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,18 +232,14 @@ pub trait TerminatorAdapter {
     fn emit_terminator(&mut self, plan: TerminatorPlan);
 }
 
-/// The remaining straight-line lowering and debug presentation hooks.  The
-/// block walk itself belongs to this module; value traversal remains an
-/// adapter leaf until the RUE-825 convergence slice.
-pub trait CfgLowerAdapter: TerminatorAdapter {
+/// Debug and presentation hooks layered on the shared CFG/value traversal.
+pub trait CfgLowerAdapter: TerminatorAdapter + ValueLowerAdapter {
     fn preload_by_ref_params(&mut self);
     fn prepare_block_param(&mut self, block: BlockId, index: u32, value: CfgValue, ty: Type);
-    fn value_is_lowered(&self, value: CfgValue) -> bool;
-    fn lower_value(&mut self, value: CfgValue);
     fn value_description(&self, value: CfgValue) -> String;
     fn instruction_count(&self) -> usize;
     fn instruction_strings(&self, range: Range<usize>) -> Vec<String>;
-    fn value_rationale(&self, data: &rue_cfg::CfgInstData, ty: Type) -> Option<String>;
+    fn value_rationale(&self, kind: value_plan::ValueKind, ty: Type) -> Option<String>;
     fn terminator_rationale(&self, plan: &TerminatorPlan) -> Option<String>;
 }
 
@@ -518,17 +502,18 @@ pub fn lower_cfg<A: CfgLowerAdapter>(
                 }
                 let inst = ctx.cfg.get_inst(value);
                 let start = adapter.instruction_count();
-                adapter.lower_value(value);
+                let kind = value_plan::lower_value(ctx, adapter, value)
+                    .expect("debug lowering should visit each value exactly once");
                 let end = adapter.instruction_count();
                 info.instructions.push(crate::LoweringDecision {
                     cfg_value: value,
                     cfg_inst_desc: adapter.value_description(value),
                     cfg_type: inst.ty.name().to_string(),
                     mir_insts: adapter.instruction_strings(start..end),
-                    rationale: adapter.value_rationale(&inst.data, inst.ty),
+                    rationale: adapter.value_rationale(kind, inst.ty),
                 });
             } else {
-                adapter.lower_value(value);
+                value_plan::lower_value(ctx, adapter, value);
             }
         }
 

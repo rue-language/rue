@@ -280,7 +280,7 @@ pub fn collect_array_scalar_vregs(
             let elements = cfg.get_extra(*elements_start, *elements_len);
             let mut result = Vec::new();
             // Collect elements in logical order (element 0 first), matching
-            // `lower_array_init`: the slot cache is uniform ascending order and
+            // The slot cache is uniform ascending order and
             // the ascending physical layout is produced at store time (ADR-0040
             // / RUE-311).
             for elem in elements.iter() {

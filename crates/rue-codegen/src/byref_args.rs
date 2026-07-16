@@ -8,21 +8,15 @@
 //! projections ("by-ref argument must be a variable"); sema mirrored the
 //! limitation by rejecting projections with the now-retired E0438.
 //!
-//! Like [`crate::agg_slots`], the decision logic here is target-independent —
-//! which argument shapes are addressable, that every index projection is
-//! bounds-checked before the address is formed — so backends only provide
-//! the leaf operations in [`crate::place_lower::PlaceLowerBackend`]. Bounds checks and
-//! projected-place address formation are shared through
-//! [`crate::agg_slots::SlotBackend`]
-//! (the indexed-place-read materialization in `agg_slots` needs them too,
-//! RUE-188). `emit_place_addr` is the same math the backend's
-//! `PlaceRead`/`PlaceWrite` lowering uses: it yields the place's LOW-end
-//! address, from which aggregate slots ascend (`slot k` at `+k*8`), uniform
-//! for frame- and heap-rooted places (ADR-0040 / RUE-311).
+//! Shared planning produces a [`ByRefAddressPlan`] before this target leaf is
+//! called. The plan has already classified the addressable source, materialized
+//! every projection index, and selected the checked-place policy. This module
+//! only marshals that normalized address through target-neutral place leaves;
+//! it does not inspect CFG instructions or re-read projections.
 
-use crate::place_lower::{self, PlaceLowerBackend};
+use crate::place_lower::PlaceLowerBackend;
+use crate::value_plan::ByRefAddressPlan;
 use crate::vreg::VReg;
-use rue_cfg::{CfgInstData, CfgValue, Place};
 
 /// Lower a by-ref (inout/borrow) call argument to the vreg holding its
 /// address.
@@ -32,65 +26,32 @@ use rue_cfg::{CfgInstData, CfgValue, Place};
 /// with no storage to address is a violated sema/CFG invariant (RUE-760).
 pub fn lower_byref_arg_addr<B: PlaceLowerBackend + ?Sized>(
     b: &mut B,
-    arg_value: CfgValue,
-    is_inout: bool,
+    plan: &ByRefAddressPlan,
 ) -> VReg {
-    // Extract the small Copy payload first so the CFG borrow ends before we
-    // emit (emission needs `&mut B`).
-    enum ArgShape {
-        Local(u32),
-        Param(u32),
-        Place(Place),
-        NotAPlace,
-    }
-    // Slot count of the addressed value: a by-ref pointer must point at the
-    // place's LOW end (ADR-0040 / RUE-311), which for a frame-resident
-    // aggregate is its highest-numbered slot `base + count - 1`.
-    let arg_ty = b.ctx().cfg.get_inst(arg_value).ty;
-    let low_shift = b.ctx().type_slot_count(arg_ty).saturating_sub(1);
-    let shape = match &b.ctx().cfg.get_inst(arg_value).data {
-        CfgInstData::Load { slot } => ArgShape::Local(*slot),
-        CfgInstData::Param { index } => ArgShape::Param(*index),
-        CfgInstData::PlaceRead { place } => ArgShape::Place(*place),
-        _ => ArgShape::NotAPlace,
-    };
-
-    match shape {
-        ArgShape::NotAPlace => {
-            unreachable!(
-                "malformed CFG: {} argument is not an addressable place",
-                if is_inout { "inout" } else { "borrow" }
-            )
-        }
-        ArgShape::Local(slot) => {
+    match plan {
+        ByRefAddressPlan::FrameSlot { slot, low_shift } => {
             let addr_vreg = b.alloc_vreg();
             b.emit_frame_addr(addr_vreg, slot + low_shift);
             addr_vreg
         }
-        ArgShape::Param(index) => {
+        ByRefAddressPlan::Parameter {
+            slot,
+            by_ref,
+            low_shift,
+        } => {
             let addr_vreg = b.alloc_vreg();
-            if b.ctx().cfg.is_param_by_ref(index) {
-                // Forwarding a by-ref param: pass along the pointer we
-                // received. ensure_by_ref_param_ptr covers params never
-                // accessed via a Param instruction.
-                let ptr_vreg = b.ensure_by_ref_param_ptr(index);
+            if *by_ref {
+                let ptr_vreg = b.ensure_by_ref_param_ptr(*slot);
                 b.emit_reg_move(addr_vreg, ptr_vreg);
             } else {
-                // Normal param: it lives in a frame slot after the locals.
-                let slot = b.ctx().num_locals + index;
-                b.emit_frame_addr(addr_vreg, slot + low_shift);
+                let frame_slot = b.ctx().num_locals + *slot;
+                b.emit_frame_addr(addr_vreg, frame_slot + low_shift);
             }
             addr_vreg
         }
-        ArgShape::Place(place) => {
-            // Bounds-check every index projection BEFORE forming the address:
-            // the callee accesses memory through this pointer, so an
-            // out-of-bounds index must trap at the call site (the projected
-            // PlaceRead the arg expression also lowers to is a dead value —
-            // its own bounds check does not protect the address).
-            place_lower::lower_place_bounds(b, &place);
+        ByRefAddressPlan::Place(place) => {
             let addr_vreg = b.alloc_vreg();
-            b.emit_place_addr(addr_vreg, &place);
+            crate::place_lower::lower_checked_place_addr_plan(b, addr_vreg, place);
             addr_vreg
         }
     }

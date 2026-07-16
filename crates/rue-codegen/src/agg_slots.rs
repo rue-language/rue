@@ -11,8 +11,8 @@
 //! [`SlotBackend`]: vreg allocation, value lookup, and the one genuinely
 //! per-architecture instruction (load a frame slot into a vreg).
 //!
-//! [`lower_struct_init`] and [`lower_array_init`] eagerly populate the slot
-//! cache. Every consumer-side aggregate write (Alloc, Store, PlaceWrite, and
+//! Shared value planning eagerly populates the slot cache. Every consumer-side
+//! aggregate write (Alloc, Store, PlaceWrite, and
 //! `inout` writeback) goes through [`store_slots`] or
 //! [`store_slots_through_ptr`]. [`store_slots_to_sret`] handles callee-side
 //! sret writes; `crate::cfg_lower::type_uses_sret_return` owns the shared
@@ -21,10 +21,10 @@
 
 use std::collections::HashMap;
 
-use rue_air::{Type, TypeKind};
-use rue_cfg::{CfgInstData, CfgValue, Place, PlaceBase, Projection};
+use rue_air::Type;
+use rue_cfg::CfgValue;
 
-use crate::allocation::{self, BoundsCheckBackend};
+use crate::allocation::BoundsCheckBackend;
 use crate::cfg_lower::CfgLowerContext;
 use crate::vreg::VReg;
 
@@ -46,25 +46,11 @@ pub trait SlotBackend: BoundsCheckBackend {
     /// Get (or lazily create) the primary vreg for a CFG value.
     fn get_vreg(&mut self, value: CfgValue) -> VReg;
 
-    /// Record `vreg` as the primary vreg for `value` (the `value_map` entry).
-    fn map_value(&mut self, value: CfgValue, vreg: VReg);
-
     /// Emit a load of frame slot `slot` into `dst`.
     fn emit_load_slot(&mut self, dst: VReg, slot: u32);
 
     /// Emit a register-to-register move.
     fn emit_reg_move(&mut self, dst: VReg, src: VReg);
-
-    /// Emit a load of the constant zero into `dst`.
-    fn emit_load_zero(&mut self, dst: VReg);
-
-    /// Emit a load of the integer constant `imm` into `dst` (used for an
-    /// enum discriminant, RUE-221).
-    fn emit_load_imm(&mut self, dst: VReg, imm: i64);
-
-    /// Recursively collect the scalar slot vregs of an array value
-    /// (the backends' thin wrapper over `types::collect_array_scalar_vregs`).
-    fn collect_array_scalars(&mut self, value: CfgValue) -> Vec<VReg>;
 
     /// Emit a store of `src` to frame slot `slot`.
     fn emit_store_slot(&mut self, src: VReg, slot: u32);
@@ -74,144 +60,29 @@ pub trait SlotBackend: BoundsCheckBackend {
 
     /// Emit a load of the value at `byte_offset` from pointer `ptr` into `dst`.
     fn emit_load_through_ptr(&mut self, dst: VReg, ptr: VReg, byte_offset: i32);
-
-    /// Emit `dst = low-end address of the (possibly projected) place` — the
-    /// backend's `lower_place_addr`. The result is the place's lowest-address
-    /// byte; aggregate slots ascend from it (`slot k` at `dst + k*8`), uniform
-    /// for frame- and heap-rooted places (ADR-0040 / RUE-311). Does NOT
-    /// bounds-check index projections; callers do that first.
-    fn emit_place_addr(&mut self, dst: VReg, place: &Place);
 }
 
 /// Get or compute the slot vregs for a multi-slot aggregate value
 /// (struct, builtin String, or fixed-size array).
 ///
-/// Sources handled:
-/// - cache hit (StructInit/ArrayInit/Call/BlockParam populate eagerly)
-/// - `StructInit`: the field values' vregs directly
-/// - `Load`: load `slot_count` consecutive stack slots
-/// - `Param`: load from the parameter slot area (by-ref params load through
-///   the received pointer instead — the frame slot holds an address)
-/// - `PlaceRead` with only static field projections on a frame-slot base:
-///   load from the field's consecutive slots
-/// - `PlaceRead` with index projections (constant or dynamic, `arr[i]`,
-///   `s.rows[i]`) or a by-ref param base: bounds-check every index, form the
-///   place's address, and load all `slot_count` slots through it (RUE-188)
+/// Sources are lowered by the shared value dispatcher. This accessor only
+/// retrieves the complete slot vector that the dispatcher cached; it does not
+/// inspect raw CFG operations or repeat place, parameter, or bounds policy.
 ///
 /// Returns `None` for non-aggregate types. Valid multi-slot aggregate values
 /// are either materialized directly here or are lowered on demand and read
 /// from the cache populated by their lowering rule.
 pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) -> Option<Vec<VReg>> {
-    // Check cache first
     if let Some(vregs) = b.slot_cache().get(&value).cloned() {
         return Some(vregs);
     }
 
-    let (ty, data) = {
-        let inst = b.ctx().cfg.get_inst(value);
-        (inst.ty, inst.data.clone())
-    };
-    // Aggregates are structs, arrays, and payload-carrying enums (a
-    // discriminant-only enum stays a 1-slot scalar and is handled by the
-    // ordinary single-vreg path). (RUE-221)
-    let is_payload_enum = matches!(ty.kind(), TypeKind::Enum(_)) && b.ctx().type_slot_count(ty) > 1;
-    if !matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) && !is_payload_enum {
+    let ty = b.ctx().cfg.get_inst(value).ty;
+    if !b.ctx().is_multislot_aggregate(ty) {
         return None;
     }
-
-    match data {
-        CfgInstData::Load { slot } => {
-            let slot_count = b.ctx().type_slot_count(ty);
-            Some(load_consecutive(b, slot, slot_count))
-        }
-        CfgInstData::Param { index } => {
-            let slot_count = b.ctx().type_slot_count(ty);
-            if b.ctx().cfg.is_param_by_ref(index) {
-                // By-ref (inout/borrow) param: the frame slot holds a POINTER
-                // to the caller's storage, not the value — load the slots
-                // through it (emit_place_addr fetches the received pointer).
-                let addr_vreg = b.alloc_vreg();
-                b.emit_place_addr(addr_vreg, &Place::param(index, ty));
-                Some(load_through_ptr(b, addr_vreg, slot_count))
-            } else {
-                let base_slot = b.ctx().num_locals + index;
-                Some(load_consecutive(b, base_slot, slot_count))
-            }
-        }
-        CfgInstData::PlaceRead { place } => {
-            // A multi-slot aggregate read from a place — e.g. `let s2 = h.s;`
-            // or `let row = m[i];`. The base place-read lowering only
-            // materializes the first slot; here we materialize all of them so
-            // consumers see the full value. (RUE-22/63/94, RUE-118, RUE-188)
-            let projections = b.ctx().cfg.get_place_projections(&place).to_vec();
-            let has_index = projections
-                .iter()
-                .any(|p| matches!(p, Projection::Index { .. }));
-            let is_by_ref_base = matches!(
-                place.base,
-                PlaceBase::Param(param_slot) if b.ctx().cfg.is_param_by_ref(param_slot)
-            );
-            let slot_count = b.ctx().type_slot_count(ty);
-
-            if !has_index && !is_by_ref_base {
-                // Purely static projection chain rooted at a frame slot.
-                // Ascending layout (ADR-0040 / RUE-311): the accessed field's
-                // low end (its logical slot 0) sits at the ROOT object's low
-                // end plus the summed field byte offset. In frame-slot terms
-                // the root's low end is `root_base + (C_root - 1)` (its
-                // highest-numbered = lowest-address slot), and adding the field
-                // offset in ADDRESS space means SUBTRACTING it in slot number.
-                let mut static_slot_offset: u32 = 0;
-                for proj in &projections {
-                    match proj {
-                        Projection::Field {
-                            struct_id,
-                            field_index,
-                        } => {
-                            static_slot_offset +=
-                                b.ctx().struct_field_slot_offset(*struct_id, *field_index);
-                        }
-                        Projection::Index { .. } => unreachable!("has_index is false"),
-                    }
-                }
-                let root_base = match place.base {
-                    PlaceBase::Local(slot) => slot,
-                    PlaceBase::Param(param_slot) => b.ctx().num_locals + param_slot,
-                };
-                let root_count = root_slot_count(b, &place);
-                let field_low_slot = root_base + (root_count - 1) - static_slot_offset;
-                return Some(load_slots_at_low(b, field_low_slot, slot_count));
-            }
-
-            // Indexed element (`arr[i]`, `s.rows[i]` — constant or dynamic
-            // index) or a projection through a by-ref param: bounds-check
-            // every index projection, form the place's low-end address, then
-            // load each slot through it. Slot k lives at addr + k*8 (ascending,
-            // ADR-0040 / RUE-311), matching `store_slots_through_ptr`.
-            for proj in &projections {
-                if let Projection::Index { array_type, index } = proj {
-                    let length = b.ctx().array_length(*array_type);
-                    let index_vreg = b.get_vreg(*index);
-                    allocation::lower_bounds_check(
-                        b,
-                        allocation::BoundsCheckPlan::new(index_vreg, length),
-                    );
-                }
-            }
-            let addr_vreg = b.alloc_vreg();
-            b.emit_place_addr(addr_vreg, &place);
-            Some(load_through_ptr(b, addr_vreg, slot_count))
-        }
-        // Eager aggregate producers (StructInit, ArrayInit, EnumVariant,
-        // EnumPayloadGet, Call, Intrinsic, and BlockParam) establish their
-        // complete slot list as part of lowering. Trigger lazy lowering when
-        // necessary, then retrieve that representation. A missing entry is
-        // malformed internal IR and is rejected by `require_aggregate_slots`.
-        _ => {
-            b.get_vreg(value);
-            b.slot_cache().get(&value).cloned()
-        }
-    }
+    b.get_vreg(value);
+    b.slot_cache().get(&value).cloned()
 }
 
 /// Materialize and return the complete representation of a multi-slot
@@ -227,9 +98,8 @@ pub fn require_aggregate_slots<B: SlotBackend>(b: &mut B, value: CfgValue) -> Ve
     let plan = crate::value_plan::ValuePlan::for_value(b.ctx(), value);
     assert!(
         plan.shape.requires_complete_slots(),
-        "aggregate slot materialization requires a multi-slot aggregate value: {value} (type={ty:?}, shape={:?}, kind={:?})",
+        "aggregate slot materialization requires a multi-slot aggregate value: {value} (type={ty:?}, shape={:?})",
         plan.shape,
-        plan.kind
     );
     let expected = plan.shape.slot_count() as usize;
     let slots = get_or_compute_field_vregs(b, value).unwrap_or_else(|| match expected {
@@ -252,19 +122,6 @@ fn assert_complete_slot_count(value: CfgValue, actual: usize, expected: usize) {
         actual, expected,
         "multi-slot aggregate {value} slot count mismatch: representation has {actual} slots, type requires {expected}"
     );
-}
-
-/// Total slot count of the ROOT object a place is rooted at. Ascending place addressing
-/// (ADR-0040 / RUE-311) anchors every field/element at the root object's low
-/// end (`root_base + root_count - 1` in frame slots), so the root's own slot
-/// count is the one origin shift a projection chain needs; nested containers
-/// contribute only their byte offsets from that anchor. The place carries this
-/// type explicitly so lowering does not have to trust the first projection's
-/// self-described container type. A zero-sized root still uses one conceptual
-/// address slot: by-ref/raw operations need a concrete frame address, and every
-/// consumer computes that address with `root_count - 1`.
-pub fn root_slot_count<B: SlotBackend>(b: &B, place: &Place) -> u32 {
-    b.ctx().type_slot_count(place.base_type).max(1)
 }
 
 /// Pre-allocate the per-slot vregs for an aggregate block parameter.
@@ -295,182 +152,6 @@ pub fn preallocate_block_param_slots<B: SlotBackend>(
         slot_vregs.push(b.alloc_vreg());
     }
     b.slot_cache().insert(param_value, slot_vregs);
-}
-
-/// Lower a `StructInit`: flatten the field values into one vreg per slot,
-/// cache the list, and bind the value's primary vreg (first slot, or zero for
-/// a fieldless struct).
-///
-/// Nested struct/String fields contribute all their slot vregs via the
-/// accessor — including a field read from another aggregate (`B { p: a.p }`).
-/// Nested array fields flatten to their element scalar slots so the cached
-/// slot list is fully flattened (consumers and the Alloc of this StructInit
-/// rely on it). (RUE-118)
-pub fn lower_struct_init<B: SlotBackend>(
-    b: &mut B,
-    value: CfgValue,
-    fields_start: u32,
-    fields_len: u32,
-) {
-    let vreg = b.alloc_vreg();
-    b.map_value(value, vreg);
-
-    let fields = b.ctx().cfg.get_extra(fields_start, fields_len).to_vec();
-    let mut slot_vregs = Vec::new();
-    for field in &fields {
-        let field_ty = b.ctx().cfg.get_inst(*field).ty;
-        // A zero-sized field (unit, [T; 0], empty struct) occupies no slots
-        // (RUE-577): pushing the dummy vreg CFG carries for it would shift
-        // every later field one slot over — `Mixed { a: (), b: 42 }` stored
-        // 42 into the wrong slot.
-        if b.ctx().type_slot_count(field_ty) == 0 {
-            continue;
-        }
-        match field_ty.kind() {
-            TypeKind::Struct(_) | TypeKind::Enum(_) => {
-                // Struct/payload-enum fields contribute their complete slot
-                // representation. Discriminant-only enums remain scalars.
-                if b.ctx().is_multislot_aggregate(field_ty) {
-                    slot_vregs.extend(require_aggregate_slots(b, *field));
-                } else {
-                    slot_vregs.push(b.get_vreg(*field));
-                }
-            }
-            TypeKind::Array(_) => {
-                slot_vregs.extend(require_aggregate_slots(b, *field));
-            }
-            _ => {
-                // Scalar field - single vreg
-                slot_vregs.push(b.get_vreg(*field));
-            }
-        }
-    }
-
-    if let Some(&first_vreg) = slot_vregs.first() {
-        b.emit_reg_move(vreg, first_vreg);
-    } else {
-        b.emit_load_zero(vreg);
-    }
-
-    b.slot_cache().insert(value, slot_vregs);
-}
-
-/// Lower an `EnumVariant` tuple-variant construction into slot vregs (RUE-221).
-///
-/// Tagged-union layout: slot 0 is the discriminant (`variant_index`), followed
-/// by the payload operands flattened to one vreg per slot. The payload area is
-/// padded with zero slots so every value of the enum type occupies the same
-/// number of slots (sized to the largest variant), which is what consumers
-/// (Alloc, Store, match extraction) expect. The value's primary vreg is slot 0
-/// (the discriminant), so a `match` can switch on it directly.
-pub fn lower_enum_variant<B: SlotBackend>(
-    b: &mut B,
-    value: CfgValue,
-    payload_start: u32,
-    payload_len: u32,
-) {
-    let ty = b.ctx().cfg.get_inst(value).ty;
-    let total_slots = b.ctx().type_slot_count(ty);
-
-    // Slot 0: the discriminant.
-    let disc_vreg = b.alloc_vreg();
-    let variant_index = match &b.ctx().cfg.get_inst(value).data {
-        CfgInstData::EnumVariant { variant_index, .. } => *variant_index,
-        _ => unreachable!("lower_enum_variant on non-EnumVariant"),
-    };
-    b.emit_load_imm(disc_vreg, variant_index as i64);
-    b.map_value(value, disc_vreg);
-
-    let mut slot_vregs: Vec<VReg> = Vec::with_capacity(total_slots as usize);
-    slot_vregs.push(disc_vreg);
-
-    // Payload slots, flattening nested aggregates like StructInit does.
-    let payload = b.ctx().cfg.get_extra(payload_start, payload_len).to_vec();
-    for field in &payload {
-        let field_ty = b.ctx().cfg.get_inst(*field).ty;
-        // Zero-sized payload fields occupy no slots (RUE-577): pushing their
-        // dummy vreg would overfill the payload area before padding —
-        // `Some(())` cached one slot too many and stores clobbered the
-        // neighboring frame slot.
-        if b.ctx().type_slot_count(field_ty) == 0 {
-            continue;
-        }
-        match field_ty.kind() {
-            TypeKind::Struct(_) | TypeKind::Enum(_) => {
-                if b.ctx().is_multislot_aggregate(field_ty) {
-                    slot_vregs.extend(require_aggregate_slots(b, *field));
-                } else {
-                    slot_vregs.push(b.get_vreg(*field));
-                }
-            }
-            TypeKind::Array(_) => {
-                slot_vregs.extend(require_aggregate_slots(b, *field));
-            }
-            _ => slot_vregs.push(b.get_vreg(*field)),
-        }
-    }
-
-    // Pad the payload area to the enum's full slot count so all values of this
-    // type are the same size (the union is sized to the largest variant).
-    while (slot_vregs.len() as u32) < total_slots {
-        let pad = b.alloc_vreg();
-        b.emit_load_zero(pad);
-        slot_vregs.push(pad);
-    }
-
-    b.slot_cache().insert(value, slot_vregs);
-}
-
-/// Lower an `ArrayInit`: flatten the element values into one vreg per slot
-/// and cache the list. The value's primary vreg is a zero placeholder — an
-/// array base has no single value; the actual storage is handled by the
-/// `Alloc` that precedes this.
-///
-/// Nested aggregate elements (multidimensional arrays, arrays of structs) are
-/// flattened to their scalar slots so the cached list is the full slot set —
-/// their own primary vreg is just a placeholder. (RUE-118)
-pub fn lower_array_init<B: SlotBackend>(
-    b: &mut B,
-    value: CfgValue,
-    elements_start: u32,
-    elements_len: u32,
-) {
-    let vreg = b.alloc_vreg();
-    b.map_value(value, vreg);
-
-    // The slot cache holds the aggregate's logical slots in ascending order —
-    // element 0 first, then element 1, and so on, each element's own slots in
-    // logical order (RUE-311). Physical ascending layout (element 0 at the
-    // array's lowest address, element i at base + i*element_size — ADR-0040 /
-    // RUE-243) is produced when this list is *stored*: `store_slots` reverses
-    // it into the frame (logical slot 0 at the highest-numbered = lowest-
-    // address slot), and `store_slots_through_ptr` writes it ascending from a
-    // low-end pointer. So every consumer — frame store, `@ptr_write`, the call
-    // ABI, structural equality — sees one uniform slot order.
-    let elements = b.ctx().cfg.get_extra(elements_start, elements_len).to_vec();
-    let mut element_vregs: Vec<VReg> = Vec::new();
-    for e in elements.iter() {
-        let e_ty = b.ctx().cfg.get_inst(*e).ty;
-        // Payload enums are multi-slot aggregates too: a discriminant-only
-        // enum (accessor returns None) stays a single-vreg scalar, but a
-        // payload-carrying element must contribute all its slots or the array
-        // stores only the tag and drops the payload (RUE-237).
-        if matches!(
-            e_ty.kind(),
-            TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_)
-        ) {
-            if b.ctx().is_multislot_aggregate(e_ty) {
-                element_vregs.extend(require_aggregate_slots(b, *e));
-            } else {
-                element_vregs.push(b.get_vreg(*e));
-            }
-        } else {
-            element_vregs.push(b.get_vreg(*e));
-        }
-    }
-    b.slot_cache().insert(value, element_vregs);
-
-    b.emit_load_zero(vreg);
 }
 
 /// Store a whole aggregate value's `vals` (one vreg per logical slot, slot 0
@@ -542,10 +223,6 @@ pub fn load_slots_through_ptr<B: SlotBackend>(b: &mut B, ptr: VReg, count: u32) 
 /// beginning at `base_slot` (ascending layout, ADR-0040): logical slot 0 is at
 /// the region's low end (frame slot `base_slot + count - 1`), slot `k` at
 /// `base_slot + count - 1 - k`. Returns the vregs in logical slot order.
-fn load_consecutive<B: SlotBackend>(b: &mut B, base_slot: u32, count: u32) -> Vec<VReg> {
-    load_slots_at_low(b, base_slot + count.saturating_sub(1), count)
-}
-
 /// Load `count` logical slots (slot 0 first) from the frame with the value's
 /// low-end (slot 0) at frame slot `low_slot`; logical slot `k` is read from
 /// frame slot `low_slot - k` (ascending, ADR-0040).
