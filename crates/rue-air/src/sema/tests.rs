@@ -588,7 +588,11 @@ mod tests {
         let errors = compile_to_air(
             r#"
                 fn choose(c: bool) -> str {
-                    if c { "hello" } else { "world" } == choose(true)
+                    // Parenthesized so the `if` is in operand position: in
+                    // statement/tail position a block-like expression is a
+                    // complete statement and a following `==` is a syntax error
+                    // (RUE-918). The bool comparison tail still mismatches `str`.
+                    (if c { "hello" } else { "world" }) == choose(true)
                 }
                 fn main() -> i32 {
                     let s: str = "hello";

@@ -2,11 +2,13 @@
 id = "cli.stmt_expr_boundary"
 name = "Statement / expression boundary parsing"
 description = """
-Regression coverage for two parser statement/expression-boundary bugs:
+Regression coverage for parser statement/expression-boundary bugs:
 RUE-209 (bare break/return used as a while/if condition swallowing the
-following block as a value operand) and RUE-210 (an if/match expression
+following block as a value operand), RUE-210 (an if/match expression
 statement followed by a line starting with unary minus being greedily parsed
-as a subtraction spanning both lines).
+as a subtraction spanning both lines), and RUE-918 (a statement-position
+block-like expression followed by any other infix binary operator being
+greedily parsed as one binary expression; it is now a syntax error).
 """
 
 # =============================================================================
@@ -93,13 +95,65 @@ fn main() -> i32 {
 """ }]
 exit_code = 5
 
-# In statement position, an unambiguously-binary `+` keeps the leading
-# block-like expression as its left operand (one addition, 10 + 5 = 15).
+# =============================================================================
+# RUE-918: in statement position a block-like expression is a COMPLETE statement.
+# A following infix binary operator (other than `-`, which starts a new
+# statement per RUE-210) is a syntax error, not a continuation. Parentheses opt
+# the construct into expression use. (RUE-922 tracks turning `if` into a real
+# expression; until then this hole is closed conservatively.)
+# =============================================================================
+
+# In statement position an unambiguously-binary `+` no longer swallows the
+# leading block-like expression as its left operand; it is a syntax error that
+# points at parentheses.
 [[case]]
-name = "if_then_plus_stays_binary"
+name = "if_then_plus_is_syntax_error"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     if true { 10 } else { 20 } + 5
 }
 """ }]
+compile_fail = true
+error_contains = [
+    "E0102",
+    "block-like expression in statement position is a complete statement",
+    "(if c { a } else { b }) + x",
+]
+
+# The operator on a following line is equally a syntax error: the block-like
+# statement does not reach across the newline into a binary expression.
+[[case]]
+name = "if_then_plus_next_line_is_syntax_error"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    if true { 10 } else { 20 }
+    + 5
+}
+""" }]
+compile_fail = true
+error_contains = ["E0102", "block-like expression in statement position"]
+
+# Parentheses opt the construct back into expression position, where the
+# operator is an ordinary addition again (10 + 5 = 15).
+[[case]]
+name = "parenthesized_if_then_plus_is_addition"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    (if true { 10 } else { 20 }) + 5
+}
+""" }]
 exit_code = 15
+
+# Documented current behavior (RUE-922): a postfix continuation (`.method()`,
+# indexing, calls) after a statement-position block-like expression is still
+# accepted through Pratt. RUE-918 deliberately left this boundary untouched;
+# this case pins the status quo so a future change is visible in the diff.
+[[case]]
+name = "if_then_postfix_method_still_continues"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, fn get(self) -> i32 { self.x } }
+fn main() -> i32 {
+    if true { P { x: 7 } } else { P { x: 9 } }.get()
+}
+""" }]
+exit_code = 7

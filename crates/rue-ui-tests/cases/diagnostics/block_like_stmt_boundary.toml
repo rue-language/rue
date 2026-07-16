@@ -1,0 +1,32 @@
+# Statement-position block-like boundary diagnostic (RUE-918).
+#
+# In statement position a block-like expression (`if`/`match`/`while`/`loop`/
+# `for`/`{ ... }`) is a complete statement; a following infix binary operator
+# cannot continue it. These pin the exact E0102 wording, the span on the
+# operator, and the parentheses help so the paren suggestion cannot silently
+# regress. RUE-922 tracks turning `if` into a real value-producing expression.
+
+[section]
+id = "diagnostics.block_like_stmt_boundary"
+name = "Statement-position block-like boundary"
+description = "The paren-suggesting E0102 emitted when an infix operator follows a block-like statement."
+
+[[case]]
+name = "block_like_then_star_points_at_operator_with_paren_help"
+description = """
+RUE-918: `*` after a statement-position `if` is a syntax error. The diagnostic
+is E0102, anchors on the operator (2:32, the `*`), and its help points at the
+parenthesized form that opts into expression use.
+"""
+source = """
+fn main() -> i32 {
+    if true { 10 } else { 20 } * 3
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0102]",
+    "a block-like expression in statement position is a complete statement; a binary operator cannot continue it",
+    "2:32",
+    "wrap the construct in parentheses to use it as a value, e.g. `(if c { a } else { b }) + x`",
+]

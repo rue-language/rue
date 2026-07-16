@@ -1823,10 +1823,17 @@ impl Parser {
                 statements.push(self.let_statement()?);
                 continue;
             }
-            // Rue treats `-` after a brace-terminated construct as the start of
-            // a new statement, not binary subtraction (RUE-210). Recognize
-            // that one ambiguous boundary before entering the general Pratt
-            // parser; all other operators continue through Pratt normally.
+            // In statement position a block-like expression (`if`/`match`/
+            // `while`/`loop`/`for`/`{ ... }`) forms a complete statement on its
+            // own; it does not continue into an enclosing infix expression
+            // (RUE-918). A following `-` starts a NEW statement (unary
+            // negation), preserving the RUE-210 rule; any other infix binary
+            // operator is a syntax error that points at parentheses to opt into
+            // expression use. Postfix continuations (`.method()`, indexing,
+            // calls) are still routed through Pratt here; that boundary is left
+            // untouched pending the RUE-922 design work. Non-statement uses
+            // (`let` right-hand sides, parenthesized forms) never reach this arm
+            // and continue through Pratt normally.
             let expr_start = self.cursor;
             let value = if matches!(
                 self.kind(),
@@ -1838,9 +1845,35 @@ impl Parser {
                     | TokenKind::LBrace
             ) {
                 let block_like = self.primary()?;
-                if is_control_flow(&block_like) && self.at(TokenKind::Minus) {
-                    statements.push(Statement::Expr(block_like));
-                    continue;
+                if is_control_flow(&block_like) {
+                    if self.at(TokenKind::Minus) {
+                        statements.push(Statement::Expr(block_like));
+                        continue;
+                    }
+                    if binary_binding(self.kind()).is_some() {
+                        let op_span = self
+                            .tokens
+                            .get(self.cursor)
+                            .map(|token| token.span)
+                            .unwrap_or_else(|| {
+                                Span::point_in_file(self.file_id, self.end_offset())
+                            });
+                        self.errors.push(
+                            CompileError::new(
+                                ErrorKind::ParseError(
+                                    "a block-like expression in statement position is a \
+                                     complete statement; a binary operator cannot continue it"
+                                        .to_owned(),
+                                ),
+                                op_span,
+                            )
+                            .with_help(
+                                "wrap the construct in parentheses to use it as a value, \
+                                 e.g. `(if c { a } else { b }) + x`",
+                            ),
+                        );
+                        return Err(());
+                    }
                 }
                 self.pratt_tail(block_like, 0)?
             } else {
