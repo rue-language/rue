@@ -37,7 +37,7 @@ interpretation = "Fixed edits queried through the canonical CompilerSession grap
 not_runtime = "Measures compiler build/query latency and cache behavior, not generated-program runtime."
 target = "host-default"
 scenarios = [
-  { name = "no_change_query", modules = [0, 7], semantic_bodies = [0, 0], cfgs = [0, 0], semantic_queries = [0, 1] },
+  { name = "no_change_query", modules = [0, 0], semantic_bodies = [0, 0], cfgs = [0, 0], semantic_queries = [0, 1] },
   { name = "leaf_edit", modules = [1, 6], semantic_bodies = [6, 0], cfgs = [6, 0], semantic_queries = [1, 0] },
   { name = "widely_depended_definition_edit", modules = [1, 6], semantic_bodies = [6, 0], cfgs = [6, 0], semantic_queries = [1, 0] },
   { name = "import_change", modules = [2, 5], semantic_bodies = [6, 0], cfgs = [6, 0], semantic_queries = [1, 0] },

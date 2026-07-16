@@ -921,6 +921,41 @@ class BenchmarkValidationTests(unittest.TestCase):
             "uncertainty_crosses_budget",
         )
 
+        isolated_outlier_tiers = [
+            tier(100, 10.0),
+            tier(300, 30.0),
+            tier(900, 90.0),
+        ]
+        for current, center in zip(isolated_outlier_tiers, (10.0, 30.0, 90.0)):
+            current["samples_ms"] = [center, center, center, center, center * 100]
+        isolated_outlier = scaling.derive_family(family, isolated_outlier_tiers)
+        self.assertEqual(
+            isolated_outlier["tiers"][0]["latency_summary_ms"][
+                "dispersion_classification"
+            ],
+            "robust",
+        )
+        self.assertEqual(
+            isolated_outlier["classification"],
+            "within_normalized_growth_budget",
+        )
+
+        opposing_outlier_tiers = [
+            tier(100, 10.0),
+            tier(300, 30.0),
+            tier(900, 90.0),
+        ]
+        for current, center in zip(opposing_outlier_tiers, (10.0, 30.0, 90.0)):
+            current["samples_ms"] = [center / 100, center, center, center, center * 100]
+        opposing_outliers = scaling.derive_family(family, opposing_outlier_tiers)
+        self.assertEqual(
+            opposing_outliers["tiers"][0]["latency_summary_ms"][
+                "dispersion_classification"
+            ],
+            "extreme_range",
+        )
+        self.assertEqual(opposing_outliers["classification"], "indeterminate")
+
         one_sample = scaling.derive_family(
             family,
             [tier(100, 10.0, 1), tier(300, 90.0, 1), tier(900, 810.0, 1)],
