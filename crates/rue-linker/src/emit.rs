@@ -625,7 +625,7 @@ impl ObjectBuilder {
         // On macOS, all external C symbols get a leading underscore prefix.
         // This applies to ALL symbols, regardless of their original name.
         // e.g., "main" -> "_main", "__rue_exit" -> "___rue_exit"
-        let macho_name = format!("_{}", self.name);
+        let macho_name = crate::util::add_macho_underscore(&self.name);
 
         // Build string table
         // Format: starts with null byte (index 0 = empty string), then null-terminated strings
@@ -669,7 +669,7 @@ impl ObjectBuilder {
                 continue;
             }
             // Always add underscore prefix for macOS
-            let macho_sym = format!("_{}", reloc.symbol);
+            let macho_sym = crate::util::add_macho_underscore(&reloc.symbol);
             if !extern_symbols.contains(&macho_sym) {
                 extern_name_offsets.push(strtab.len());
                 strtab.extend_from_slice(macho_sym.as_bytes());
@@ -882,7 +882,7 @@ impl ObjectBuilder {
                     (0_u32, true)
                 } else {
                     // Undefined external symbol
-                    let macho_sym = format!("_{}", reloc.symbol);
+                    let macho_sym = crate::util::add_macho_underscore(&reloc.symbol);
                     let sym_idx = extern_symbols.iter().position(|s| s == &macho_sym).unwrap();
                     // Undefined externals start after function and non-empty string symbols
                     (1 + num_string_syms as u32 + sym_idx as u32, true)
