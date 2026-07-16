@@ -19,15 +19,39 @@
 //!
 //! Only pure-by-value instructions whose result is a deterministic function of
 //! their SSA operands: `Const`, `BoolConst`, `StringConst`, the binary
-//! arithmetic/comparison/bitwise/shift ops, and the unary `Neg`/`Not`/`BitNot`.
-//! These read only SSA values, never memory, so there are no memory barriers to
-//! track. Deliberately NOT keyed:
+//! arithmetic/comparison/bitwise/shift ops, the unary `Neg`/`Not`/`BitNot`, and
+//! reads of a never-written parameter (see below). These read only SSA values,
+//! never memory, so there are no memory barriers to track. Deliberately NOT
+//! keyed:
 //!
 //! * `Load`/`PlaceRead` — read memory, which needs versioning to dedupe safely
 //!   (a store between two loads can change the result). Out of scope here.
 //! * `Call`/`Intrinsic` — side effects; two calls are not interchangeable.
 //! * everything else (allocs, stores, struct/array/enum construction, casts,
 //!   drops, storage markers) — either side-effecting or not a pure value.
+//!
+//! ### Never-written parameter reads (RUE-914)
+//!
+//! Each `Param { index }` re-materializes the parameter's ABI-slot value, so two
+//! reads of the same parameter produce separate SSA ids. That defeats CSE of
+//! expressions over parameters: in `let s = a + b; let t = a + b;` the two `a`
+//! reads and the two `b` reads carry different ids, so the two adds never key
+//! equal. Keying `Param { index }` collapses repeated reads of the same
+//! parameter to their first occurrence, which in turn lets the adds dedupe.
+//!
+//! This is sound ONLY for a parameter that is never written, so its every read
+//! yields the identical value. A `Param { index }`'s `index` is the parameter's
+//! ABI slot (the same numbering as [`Cfg::is_param_writable`] and a
+//! `ParamStore`'s `param_slot`; both flow from sema's `abi_slot`). A slot is
+//! treated as never-written when it is (a) not logically writable by-ref
+//! (`is_param_writable(slot) == false`, i.e. `borrow` or by-value, never
+//! `inout`) and (b) receives no `ParamStore` anywhere among the block-attached
+//! instructions. By-value (`Normal`) parameters are immutable in the callee
+//! (assignment is rejected, E0203) and `borrow` parameters cannot be written, so
+//! only `inout` slots — excluded by (a) — and any slot a `ParamStore` targets —
+//! excluded by (b) — are left out. (As defense in depth, a projected
+//! `PlaceWrite` whose base is a parameter slot also excludes it, though such a
+//! write only ever targets an already-excluded `inout` slot.)
 //!
 //! Constants MUST be keyed: two separately materialized `Const(1)` instructions
 //! would otherwise give `x + 1` and `x + 1` different operand ids, defeating the
@@ -83,6 +107,10 @@ enum VnKey {
     Const(u64, Type),
     BoolConst(bool, Type),
     StringConst(u32, Type),
+    /// A read of a never-written parameter, keyed by its ABI slot and type
+    /// (RUE-914). Only inserted for slots proven never-written; every such read
+    /// yields the identical value.
+    Param(u32, Type),
     /// `(opcode tag, operand, type)`.
     Unary(u8, CfgValue, Type),
     /// `(opcode tag, lhs, rhs, type)`. For commutative ops the operands are
@@ -113,13 +141,29 @@ fn commutative(tag: u8, a: CfgValue, b: CfgValue, ty: Type) -> VnKey {
 /// Compute the value-number key for `value`, resolving operands through the
 /// substitution map. Returns `None` for instructions this pass does not number
 /// (memory reads, calls, and everything with side effects or non-value results).
-fn key_of(cfg: &Cfg, value: CfgValue, r: impl Fn(CfgValue) -> CfgValue) -> Option<VnKey> {
+fn key_of(
+    cfg: &Cfg,
+    value: CfgValue,
+    never_written_param: &[bool],
+    r: impl Fn(CfgValue) -> CfgValue,
+) -> Option<VnKey> {
     let inst = cfg.get_inst(value);
     let ty = inst.ty;
     Some(match inst.data {
         CfgInstData::Const(v) => VnKey::Const(v, ty),
         CfgInstData::BoolConst(b) => VnKey::BoolConst(b, ty),
         CfgInstData::StringConst(s) => VnKey::StringConst(s, ty),
+
+        // A read of a never-written parameter is a pure value: key it only when
+        // the slot is proven never-written (RUE-914).
+        CfgInstData::Param { index }
+            if never_written_param
+                .get(index as usize)
+                .copied()
+                .unwrap_or(false) =>
+        {
+            VnKey::Param(index, ty)
+        }
 
         // Commutative binary ops: operands sorted.
         CfgInstData::Add(a, b) => commutative(0, r(a), r(b), ty),
@@ -150,6 +194,42 @@ fn key_of(cfg: &Cfg, value: CfgValue, r: impl Fn(CfgValue) -> CfgValue) -> Optio
     })
 }
 
+/// Compute, per parameter ABI slot, whether the parameter is never written and
+/// so its reads are all the identical pure value (RUE-914). A slot is
+/// never-written when it is not logically writable by-ref (`inout`) and receives
+/// no `ParamStore` (nor, defensively, a projected `PlaceWrite`) among the
+/// block-attached instructions. Indexed by ABI slot; `Param { index }`'s `index`
+/// is exactly that slot.
+fn never_written_params(cfg: &Cfg) -> Vec<bool> {
+    let num_params = cfg.num_params() as usize;
+    let mut never_written = vec![false; num_params];
+    for (slot, flag) in never_written.iter_mut().enumerate() {
+        *flag = !cfg.is_param_writable(slot as u32);
+    }
+
+    for block in cfg.blocks() {
+        for &value in &block.insts {
+            match &cfg.get_inst(value).data {
+                CfgInstData::ParamStore { param_slot, .. } => {
+                    if let Some(flag) = never_written.get_mut(*param_slot as usize) {
+                        *flag = false;
+                    }
+                }
+                CfgInstData::PlaceWrite { place, .. } => {
+                    if let crate::PlaceBase::Param(slot) = place.base {
+                        if let Some(flag) = never_written.get_mut(slot as usize) {
+                            *flag = false;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    never_written
+}
+
 /// Run block-local CSE. Call at `-O2`/`-O3` after simplification (more
 /// duplicates are exposed once blocks are merged) and before DCE (which sweeps
 /// the dead placeholders).
@@ -160,6 +240,8 @@ pub fn run(cfg: &mut Cfg) -> Stats {
     // stays correct), while the value-number table is per-block.
     let mut subst: Vec<Option<CfgValue>> = vec![None; cfg.value_count()];
 
+    let never_written_param = never_written_params(cfg);
+
     for block_idx in 0..cfg.block_count() {
         let block_id = BlockId::from_raw(block_idx as u32);
         let mut table: HashMap<VnKey, CfgValue> = HashMap::new();
@@ -168,7 +250,7 @@ pub fn run(cfg: &mut Cfg) -> Stats {
             let value = cfg.get_block(block_id).insts[i];
             stats.insts_scanned += 1;
 
-            let Some(key) = key_of(cfg, value, |v| resolve(&subst, v)) else {
+            let Some(key) = key_of(cfg, value, &never_written_param, |v| resolve(&subst, v)) else {
                 continue;
             };
 
@@ -400,5 +482,145 @@ mod tests {
         // Idempotent: nothing left to eliminate.
         let again = run(&mut cfg);
         assert_eq!(again.duplicates_replaced, 0);
+    }
+
+    #[test]
+    fn test_never_written_param_reads_dedupe() {
+        // Two separate reads of the same never-written parameter carry different
+        // SSA ids; keying `Param { index }` collapses the second to the first.
+        let mut cfg = Cfg::new(Type::I32, 0, 2, "f".to_string(), vec![false, false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let a1 = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let a2 = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let sum = push(&mut cfg, CfgInstData::Add(a1, a2), Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sum) });
+
+        let stats = run(&mut cfg);
+        assert_eq!(stats.duplicates_replaced, 1);
+        // The add now reads the first parameter value twice.
+        assert!(matches!(cfg.get_inst(sum).data, CfgInstData::Add(x, y) if x == a1 && y == a1));
+        assert!(matches!(cfg.get_inst(a2).data, CfgInstData::Const(0)));
+    }
+
+    #[test]
+    fn test_writable_inout_param_reads_not_deduped() {
+        // An `inout` (writable) parameter may change between reads, so its reads
+        // must NOT be numbered together.
+        let mut cfg = Cfg::new(
+            Type::I32,
+            0,
+            1,
+            "f".to_string(),
+            rue_air::ParamSlotModes::new(vec![true], vec![true]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let a1 = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let a2 = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let sum = push(&mut cfg, CfgInstData::Add(a1, a2), Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sum) });
+
+        let stats = run(&mut cfg);
+        assert_eq!(stats.duplicates_replaced, 0);
+        assert!(matches!(
+            cfg.get_inst(a1).data,
+            CfgInstData::Param { index: 0 }
+        ));
+        assert!(matches!(
+            cfg.get_inst(a2).data,
+            CfgInstData::Param { index: 0 }
+        ));
+    }
+
+    #[test]
+    fn test_paramstore_written_param_reads_not_deduped() {
+        // A by-value parameter targeted by a `ParamStore` (however that arises)
+        // is written, so its reads must not be numbered together either.
+        let mut cfg = Cfg::new(Type::I32, 0, 1, "f".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let a1 = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let c = push(&mut cfg, CfgInstData::Const(5), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::ParamStore {
+                param_slot: 0,
+                value: c,
+            },
+            Type::UNIT,
+        );
+        let a2 = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let sum = push(&mut cfg, CfgInstData::Add(a1, a2), Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sum) });
+
+        let stats = run(&mut cfg);
+        assert_eq!(stats.duplicates_replaced, 0);
+    }
+
+    #[test]
+    fn test_forward_then_cse_dedupes_param_expression() {
+        // The RUE-914 acceptance shape:
+        //   fn f(a: i32, b: i32) -> i32 { let s = a + b; let t = a + b; s + t }
+        // CfgBuilder materializes each parameter use as a fresh `Param`, spills
+        // `s`/`t` to slots, and reads them back. Running the release pipeline
+        // stages in order — constopt, forward, cse — must leave the two adds
+        // computed once: forwarding turns the `Load`s of `s`/`t` into the two
+        // add values, param keying collapses the duplicated `a`/`b` reads, and
+        // CSE then sees the second add as a duplicate of the first.
+        let mut cfg = Cfg::new(Type::I32, 2, 2, "f".to_string(), vec![false, false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+
+        // let s = a + b;  (slot 0)
+        let a1 = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let b1 = push(&mut cfg, CfgInstData::Param { index: 1 }, Type::I32);
+        let add1 = push(&mut cfg, CfgInstData::Add(a1, b1), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: add1,
+            },
+            Type::UNIT,
+        );
+        // let t = a + b;  (slot 1) — fresh param reads per source use.
+        let a2 = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let b2 = push(&mut cfg, CfgInstData::Param { index: 1 }, Type::I32);
+        let add2 = push(&mut cfg, CfgInstData::Add(a2, b2), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 1,
+                init: add2,
+            },
+            Type::UNIT,
+        );
+        // s + t
+        let load_s = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        let load_t = push(&mut cfg, CfgInstData::Load { slot: 1 }, Type::I32);
+        let result = push(&mut cfg, CfgInstData::Add(load_s, load_t), Type::I32);
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Return {
+                value: Some(result),
+            },
+        );
+
+        super::super::constopt::run(&mut cfg);
+        let fwd = super::super::forward::run(&mut cfg);
+        // Both `Load`s forwarded to their slot's single write (the adds).
+        assert_eq!(fwd.loads_forwarded_single_write, 2);
+
+        let cse = run(&mut cfg);
+        // a2, b2, and the second add are all duplicates.
+        assert_eq!(cse.duplicates_replaced, 3);
+        // The result now adds the single surviving add to itself.
+        assert!(
+            matches!(cfg.get_inst(result).data, CfgInstData::Add(x, y) if x == add1 && y == add1),
+            "result should be add1 + add1, got {:?}",
+            cfg.get_inst(result).data
+        );
+        assert!(matches!(cfg.get_inst(add2).data, CfgInstData::Const(0)));
     }
 }

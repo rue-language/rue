@@ -573,3 +573,60 @@ fn main() -> i32 {
 stdout = ""
 exit_code = 101
 runtime_error_contains = ["division by zero"]
+
+# Value forwarding + CSE over parameter expressions (RUE-914). `a` and `b` are
+# never-written by-value parameters, so their repeated reads are the same pure
+# value: forwarding turns the `let s`/`let t`/`let u` loads into the single
+# `a + b`, CSE's parameter keying (RUE-914) collapses the duplicated reads, and
+# the three `a + b` computations become one. `acc` is a multi-write local, so it
+# exercises block-local forwarding with kill-on-store between its mutations. The
+# result must be identical at every level — forwarding and CSE are semantics-
+# preserving, not just at -O2 where they fire.
+[[case]]
+name = "forward_and_cse_param_expressions_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn compute(a: i32, b: i32) -> i32 {
+    let s = a + b;
+    let t = a + b;
+    let mut acc = s + t;
+    acc = acc + a;
+    acc = acc * b;
+    let u = a + b;
+    acc + u
+}
+
+fn main() -> i32 {
+    let x = compute(3, 4);
+    @dbg(x);
+    x
+}
+""" }]
+stdout = "75\n"
+exit_code = 75
+
+# A store followed by an `inout` call followed by a load must RELOAD, not
+# forward the pre-call value (RUE-914). The callee writes through the by-ref
+# pointer, so forwarding kills the slot's tracked store at the call; `let r = v`
+# then reads the mutated value. If forwarding wrongly propagated the pre-call
+# `5`, -O2 would print/return `5` while -O0 returns `105` — the differential net
+# names that divergence. The `inout` argument's own load also stays a place at
+# every level (the by-ref lowering requires it).
+[[case]]
+name = "inout_call_between_store_and_load_reloads_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn bump(inout x: i32) {
+    x = x + 100;
+}
+
+fn main() -> i32 {
+    let mut v: i32 = 5;
+    bump(inout v);
+    let r = v;
+    @dbg(r);
+    r
+}
+""" }]
+stdout = "105\n"
+exit_code = 105

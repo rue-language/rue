@@ -10,7 +10,8 @@
 //! - `-O0`: No optimization (default)
 //! - `-O1`: Basic optimizations (constant folding, peephole, CFG
 //!   simplification, dead code elimination)
-//! - `-O2`: `-O1` plus block-local common-subexpression elimination (RUE-913)
+//! - `-O2`: `-O1` plus value forwarding / copy propagation (RUE-914) and
+//!   block-local common-subexpression elimination (RUE-913)
 //! - `-O3`: Aggressive optimizations (same as -O2 for now)
 //!
 //! ## Pipeline
@@ -25,6 +26,7 @@ mod constfold;
 mod constopt;
 mod cse;
 mod dce;
+mod forward;
 mod peephole;
 mod simplify;
 
@@ -52,7 +54,9 @@ pub enum OptLevel {
 
     /// Standard optimizations (`-O2`).
     ///
-    /// Superset of `-O1`: runs everything `-O1` does, then block-local
+    /// Superset of `-O1`: runs everything `-O1` does, then value forwarding /
+    /// copy propagation (RUE-914), which replaces redundant `Load`s with the
+    /// SSA value already holding the slot's contents, followed by block-local
     /// common-subexpression elimination (RUE-913), which replaces duplicate
     /// pure computations within a block with their first occurrence.
     O2,
@@ -170,11 +174,22 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel, type_pool: &FrozenTypeInternPool
             // before DCE prunes the leftovers.
             simplify::run(cfg);
 
+            // Value forwarding / copy propagation (RUE-914), at -O2/-O3 only.
+            // Runs after simplify and before CSE: it turns redundant `Load`s
+            // into the SSA value already holding the slot's contents (a global
+            // single-write rule plus a block-local last-store rule), which is
+            // exactly what lets CSE key expressions built over those loads.
+            // Both rules are trap-exact — a load never traps and the forwarded
+            // value is already computed — so the orphaned loads fall to DCE.
+            if matches!(level, OptLevel::O2 | OptLevel::O3) {
+                forward::run(cfg);
+            }
+
             // Block-local common-subexpression elimination (RUE-913), at
             // -O2/-O3 only (ADR-0044 places CSE at the release-default level).
-            // Runs after simplify — merged straight-line blocks expose more
-            // intra-block duplicates — and before DCE, which sweeps the dead
-            // placeholders each replaced duplicate leaves behind.
+            // Runs after forwarding — expressions over forwarded loads are now
+            // keyable — and before DCE, which sweeps the dead placeholders each
+            // replaced duplicate (and each forwarded load) leaves behind.
             if matches!(level, OptLevel::O2 | OptLevel::O3) {
                 cse::run(cfg);
             }
