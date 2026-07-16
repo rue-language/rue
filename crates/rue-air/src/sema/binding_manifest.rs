@@ -501,7 +501,7 @@ impl<'a> DeclarationShells<'a> {
                             })
                         })
                         .collect::<Result<_, DeclarationInstallFailure>>()?;
-                    self.sema.type_pool.update_struct_def(id, def);
+                    self.sema.type_pool.complete_declared_struct(id, def);
                 }
                 (SemanticDeclarationPayload::Enum { variants }, InstData::EnumDecl { .. }) => {
                     let id = *self
@@ -527,7 +527,7 @@ impl<'a> DeclarationShells<'a> {
                                 .collect()
                         })
                         .collect::<Result<_, DeclarationInstallFailure>>()?;
-                    self.sema.type_pool.update_enum_def(id, def);
+                    self.sema.type_pool.complete_declared_enum(id, def);
                 }
                 _ => return Err(DeclarationInstallFailure::KindMismatch),
             }

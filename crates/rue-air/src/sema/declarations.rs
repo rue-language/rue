@@ -429,7 +429,7 @@ impl<'a> Sema<'a> {
                     };
 
                     // Register in type pool and get pool-based EnumId
-                    let (enum_id, _) = self.type_pool.register_enum(*name, enum_def);
+                    let (enum_id, _) = self.type_pool.declare_enum(*name, enum_def);
 
                     // Source declarations are always keyed by their defining file.
                     self.enums_by_file_name.insert(key, enum_id);
@@ -470,7 +470,7 @@ impl<'a> Sema<'a> {
                     };
 
                     // Register in type pool and get pool-based StructId
-                    let (struct_id, _) = self.type_pool.register_struct(*name, struct_def);
+                    let (struct_id, _) = self.type_pool.declare_struct(*name, struct_def);
                     if self
                         .trusted_standard_library_files
                         .contains(&inst.span.file_id)
@@ -775,16 +775,14 @@ impl<'a> Sema<'a> {
                 ..
             } = &inst.data
             {
-                if *payloads_len > 0 {
-                    jobs.push((*name, *payloads_start, *payloads_len, inst.span));
-                }
+                jobs.push((*name, *payloads_start, *payloads_len, inst.span));
             }
         }
 
         for (name, payloads_start, payloads_len, span) in jobs {
             let source_name = self.interner.resolve(&name).to_string();
             self.declaration_type_observer =
-                (!source_name.starts_with("__anon_enum_")).then_some((
+                (payloads_len > 0 && !source_name.starts_with("__anon_enum_")).then_some((
                     span.file_id,
                     source_name,
                     None,
@@ -829,7 +827,7 @@ impl<'a> Sema<'a> {
                 .expect("enum registered in phase 1");
             let mut def = self.type_pool.enum_def(enum_id);
             def.variant_payloads = variant_payloads;
-            self.type_pool.update_enum_def(enum_id, def);
+            self.type_pool.complete_declared_enum(enum_id, def);
         }
         Ok(())
     }
@@ -965,7 +963,8 @@ impl<'a> Sema<'a> {
                 // Update the struct definition in the pool with resolved fields
                 let mut struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.fields = resolved_fields;
-                self.type_pool.update_struct_def(struct_id, struct_def);
+                self.type_pool
+                    .complete_declared_struct(struct_id, struct_def);
             }
         }
         Ok(())
