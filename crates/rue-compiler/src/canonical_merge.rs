@@ -201,7 +201,6 @@ fn assemble_merged_program(
 
 fn canonical_duplicate_errors(modules: &[&Arc<ParsedModule>]) -> Vec<CompileError> {
     let mut errors = Vec::new();
-    let mut program_main: Option<CandidateDef> = None;
     for module in modules {
         let mut functions = HashMap::<&str, CandidateDef>::new();
         let mut function_names = HashMap::<&str, CandidateDef>::new();
@@ -216,26 +215,17 @@ fn canonical_duplicate_errors(modules: &[&Arc<ParsedModule>]) -> Vec<CompileErro
             };
             match candidate.kind() {
                 DefinitionKind::Function => {
+                    // Duplicate names are diagnosed per file (spec 10.5:1),
+                    // including `main`: namespacing makes a `main` in a
+                    // non-root module an ordinary function, so only same-file
+                    // collisions are rejected here. The program entry point is
+                    // the root module's `main` (spec 6.1:38); RUE-920/RUE-921
+                    // retired the program-wide `main` uniqueness check that
+                    // ADR-0047 tracked as a transitional state.
                     if let Some(first) = functions.get(name) {
                         errors.push(function_conflict(candidate.declaration_span(), name, first));
-                    } else if name == "main"
-                        && let Some(first) = &program_main
-                    {
-                        errors.push(
-                            CompileError::new(
-                                ErrorKind::DuplicateFunctionDefinition {
-                                    function_name: name.to_owned(),
-                                },
-                                candidate.declaration_span(),
-                            )
-                            .with_label("first defined here", first.span),
-                        );
                     } else {
-                        let value = definition();
-                        if name == "main" {
-                            program_main = Some(value.clone());
-                        }
-                        functions.insert(name, value);
+                        functions.insert(name, definition());
                     }
                     if let Some(first) = type_names.get(name) {
                         errors.push(function_conflict(candidate.declaration_span(), name, first));
@@ -345,21 +335,6 @@ mod tests {
         .unwrap()
     }
 
-    fn errors(errors: &CompileErrors) -> Vec<String> {
-        errors
-            .iter()
-            .map(|error| {
-                format!(
-                    "{}|{:?}|{}|{:?}",
-                    error.kind.code(),
-                    error.span(),
-                    error,
-                    error.diagnostic()
-                )
-            })
-            .collect()
-    }
-
     fn definitions(snapshot: &DefinitionSnapshot) -> Vec<String> {
         snapshot
             .definitions()
@@ -415,7 +390,10 @@ mod tests {
     }
 
     #[test]
-    fn canonical_cross_module_main_diagnostics_ignore_program_storage_order() {
+    fn cross_module_main_is_accepted_regardless_of_program_storage_order() {
+        // RUE-920: `main` is root-module-scoped, not program-wide unique.
+        // A `main` in more than one loaded module is no longer a conflict,
+        // and that holds whichever storage order the modules arrive in.
         let snapshot = snapshot(
             &[
                 (1, "a.rue", "a.rue", "fn main() {}"),
@@ -424,20 +402,23 @@ mod tests {
             1,
         );
         let canonical = parse_source_snapshot_modules(&snapshot).unwrap();
-        let expected = merge_parsed_modules(&canonical).unwrap_err();
+        assert!(merge_parsed_modules(&canonical).is_ok());
         let mut reversed = canonical.modules().to_vec();
         reversed.reverse();
         let reordered = ParsedProgram::new(canonical.root().clone(), reversed).unwrap();
-        let reordered = merge_parsed_modules(&reordered).unwrap_err();
-        assert_eq!(errors(&expected), errors(&reordered));
+        assert!(merge_parsed_modules(&reordered).is_ok());
     }
 
     #[test]
     fn batch_merge_uses_explicit_presentation_order_without_reordering_program() {
+        // Same-file duplicates remain per-file conflicts (spec 10.5:1). With one
+        // in each module, the explicit presentation order [b, a] fixes the
+        // diagnostic sequence (b's conflict before a's) without reordering the
+        // stored program.
         let snapshot = snapshot(
             &[
-                (1, "a.rue", "a.rue", "fn main() {}"),
-                (2, "b.rue", "b.rue", "fn main() {}"),
+                (1, "a.rue", "a.rue", "fn dup() {} fn dup() {}"),
+                (2, "b.rue", "b.rue", "fn clash() {} fn clash() {}"),
             ],
             1,
         );
@@ -446,14 +427,15 @@ mod tests {
             ModuleId::from_logical_path("b.rue").unwrap(),
             ModuleId::from_logical_path("a.rue").unwrap(),
         ];
-        let error = merge_parsed_modules_for_batch(&parsed, &order)
+        let errors = merge_parsed_modules_for_batch(&parsed, &order)
             .unwrap_err()
             .into_iter()
-            .next()
-            .unwrap();
+            .collect::<Vec<_>>();
 
-        assert_eq!(error.span().unwrap().file_id, FileId::new(1));
-        assert_eq!(error.diagnostic().labels[0].span.file_id, FileId::new(2));
+        // Presentation order [b, a]: b.rue's conflict (file 2) is reported
+        // before a.rue's (file 1).
+        assert_eq!(errors[0].span().unwrap().file_id, FileId::new(2));
+        assert_eq!(errors[1].span().unwrap().file_id, FileId::new(1));
         assert_eq!(
             parsed
                 .modules()

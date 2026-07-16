@@ -268,6 +268,18 @@ Programs can also terminate explicitly through the standard library:
 status code and does not return. This bypasses `main`'s return value; if
 `std.exit` is reached, code after that call is not evaluated.
 
+{{ rule(id="6.1:38", cat="legality-rule") }}
+
+The program entry point is the `main` function of the **root module** — the
+module designated as the compilation root. A top-level function named `main` in
+any other loaded module is an ordinary namespaced function with no entry-point
+role: it is reachable only through its module path (for example `m.main()`), and
+it neither satisfies nor conflicts with the root module's entry-point
+requirement. Consequently the requirement of 6.1:7 is checked against the root
+module alone: a root module without `main` is rejected even when an imported
+module defines one, and defining `main` in more than one module is not itself an
+error (each module is its own namespace, per 10.5:1).
+
 {{ rule(id="6.1:9") }}
 
 ```rue

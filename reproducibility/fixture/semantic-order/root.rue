@@ -1,6 +1,15 @@
-// The designated semantic and import root is intentionally not the file that
-// contains the executable entry point. The gate keeps this source first while
-// reversing the two sibling modules that follow it.
+// The root module owns the program entry point (spec 6.1:38, RUE-920) and
+// discovers both sibling modules through imports. The siblings still exchange
+// FileId-adjacent identities through manifest-order and parallelism
+// perturbation in the gate, and their same-named types keep colliding in the
+// path-qualified glue namespace.
+const left = @import("left/types.rue");
+const right = @import("right/types.rue");
+
 struct RootMarker {
     value: i32,
+}
+
+fn main() -> i32 {
+    left.run()
 }
