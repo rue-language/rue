@@ -30,8 +30,8 @@ use rue_parser::{
 };
 
 use crate::inst::{
-    Inst, InstData, InstRef, RepeatCount, Rir, RirArgMode, RirCallArg, RirDirective, RirParam,
-    RirParamMode, RirPattern,
+    Inst, InstData, InstRef, InternalIntrinsic, RepeatCount, Rir, RirArgMode, RirCallArg,
+    RirDirective, RirParam, RirParamMode, RirPattern,
 };
 
 /// Generates RIR from an AST.
@@ -1229,16 +1229,16 @@ impl<'a> AstGen<'a> {
     ///   } }
     /// ```
     ///
-    /// The type-dependent pieces are three compiler-internal intrinsics that
+    /// The type-dependent pieces are compiler-internal RIR operations that
     /// Sema resolves by the collection's type (dispatching the three iterable
     /// kinds — array, String byte view, String `.chars()` / `.chars_lossy()`
-    /// scalar views): `@__rue_iter_len`, and for the char views
-    /// `@__rue_char_scalar` / `@__rue_char_next` (strict, trap on invalid
-    /// UTF-8) or their `_lossy` counterparts (substitute U+FFFD). Everything
+    /// scalar views): [`InternalIntrinsic::IterLen`], and for the char views
+    /// the scalar/next strict operations (trap on invalid UTF-8) or their lossy
+    /// counterparts (substitute U+FFFD). Everything
     /// else reuses the ordinary
     /// loop/branch/break/index lowering, so move-checking, drop elaboration,
     /// and codegen come for free. The whole thing is preview-gated in Sema at
-    /// the `@__rue_iter_len` intrinsic, which every for-loop emits.
+    /// [`InternalIntrinsic::IterLen`], which every for-loop emits.
     fn gen_for(&mut self, for_expr: &rue_parser::ForExpr) -> InstRef {
         let span = for_expr.span;
         let n = self.for_counter;
@@ -1312,7 +1312,7 @@ impl<'a> AstGen<'a> {
         });
         outer_stmts.push(p_alloc.as_u32());
 
-        // let __len: u64 = @__rue_iter_len(__coll);
+        // let __len: u64 = InternalIntrinsic::IterLen(__coll);
         // These two nodes carry the ITERABLE's span, not the whole statement's:
         // Sema's not-iterable type error (E0206) anchors on the intrinsic, and
         // it should underline the offending iterable expression.
@@ -1322,11 +1322,10 @@ impl<'a> AstGen<'a> {
             data: InstData::VarRef { name: coll_name },
             span: iter_span,
         });
-        let iter_len_sym = self.interner.get_or_intern("__rue_iter_len");
         let (la_start, la_len) = self.rir.add_inst_refs(&[coll_for_len]);
         let len_call = self.rir.add_inst(Inst {
-            data: InstData::Intrinsic {
-                name: iter_len_sym,
+            data: InstData::InternalIntrinsic {
+                intrinsic: InternalIntrinsic::IterLen,
                 args_start: la_start,
                 args_len: la_len,
             },
@@ -1402,15 +1401,15 @@ impl<'a> AstGen<'a> {
             span,
         });
         let get_inst = if is_chars {
-            let sym = self.interner.get_or_intern(if is_lossy {
-                "__rue_char_scalar_lossy"
+            let intrinsic = if is_lossy {
+                InternalIntrinsic::CharScalarLossy
             } else {
-                "__rue_char_scalar"
-            });
+                InternalIntrinsic::CharScalar
+            };
             let (s, l) = self.rir.add_inst_refs(&[coll_for_get, p_for_get]);
             self.rir.add_inst(Inst {
-                data: InstData::Intrinsic {
-                    name: sym,
+                data: InstData::InternalIntrinsic {
+                    intrinsic,
                     args_start: s,
                     args_len: l,
                 },
@@ -1454,15 +1453,15 @@ impl<'a> AstGen<'a> {
                 data: InstData::VarRef { name: coll_name },
                 span,
             });
-            let sym = self.interner.get_or_intern(if is_lossy {
-                "__rue_char_next_lossy"
+            let intrinsic = if is_lossy {
+                InternalIntrinsic::CharNextLossy
             } else {
-                "__rue_char_next"
-            });
+                InternalIntrinsic::CharNext
+            };
             let (s, l) = self.rir.add_inst_refs(&[coll_for_adv, p_for_adv]);
             self.rir.add_inst(Inst {
-                data: InstData::Intrinsic {
-                    name: sym,
+                data: InstData::InternalIntrinsic {
+                    intrinsic,
                     args_start: s,
                     args_len: l,
                 },
@@ -1671,6 +1670,40 @@ mod tests {
                 assert!(matches!(rir.get(*rhs).data, InstData::IntConst(2)));
             }
             _ => panic!("expected Add"),
+        }
+    }
+
+    #[test]
+    fn for_loops_emit_typed_internal_intrinsics() {
+        for (iterable, expected) in [
+            ("[1, 2]", vec![InternalIntrinsic::IterLen]),
+            (
+                "\"ok\".chars()",
+                vec![
+                    InternalIntrinsic::IterLen,
+                    InternalIntrinsic::CharScalar,
+                    InternalIntrinsic::CharNext,
+                ],
+            ),
+            (
+                "\"ok\".chars_lossy()",
+                vec![
+                    InternalIntrinsic::IterLen,
+                    InternalIntrinsic::CharScalarLossy,
+                    InternalIntrinsic::CharNextLossy,
+                ],
+            ),
+        ] {
+            let source = format!("fn main() {{ for _ in {iterable} {{}} }}");
+            let (rir, _) = gen_rir(&source);
+            let actual: Vec<_> = rir
+                .iter()
+                .filter_map(|(_, inst)| match inst.data {
+                    InstData::InternalIntrinsic { intrinsic, .. } => Some(intrinsic),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(actual, expected, "{source}");
         }
     }
 

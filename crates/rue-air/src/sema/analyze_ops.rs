@@ -6894,6 +6894,21 @@ impl<'a> BodySema<'a> {
                 )
             }),
 
+            InstData::InternalIntrinsic {
+                intrinsic,
+                args_start,
+                args_len,
+            } => ctx.with_expected_type(None, |ctx| {
+                self.analyze_internal_intrinsic_impl(
+                    air,
+                    *intrinsic,
+                    *args_start,
+                    *args_len,
+                    inst.span,
+                    ctx,
+                )
+            }),
+
             InstData::TypeIntrinsic { name, type_arg } => {
                 self.analyze_type_intrinsic(air, *name, *type_arg, inst.span, ctx)
             }

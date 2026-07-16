@@ -9,7 +9,7 @@ mod tests {
     use rue_error::{CompileErrors, CompileResult, ErrorKind, MultiErrorResult, PreviewFeatures};
     use rue_lexer::Lexer;
     use rue_parser::Parser;
-    use rue_rir::{AstGen, Rir, RirParamMode};
+    use rue_rir::{AstGen, InstData, InternalIntrinsic, Rir, RirParamMode};
     use rue_span::FileId;
 
     struct TestModule {
@@ -101,6 +101,58 @@ mod tests {
         let air = &functions[0].air;
         assert_eq!(air.return_type(), Type::I32);
         assert_eq!(air.len(), 2); // Const + Ret
+    }
+
+    #[test]
+    fn reserved_looking_source_intrinsics_never_select_internal_operations() {
+        for (name, args) in [
+            ("__rue_iter_len", "0"),
+            ("__rue_char_scalar", "0, 0"),
+            ("__rue_char_next", "0, 0"),
+            ("__rue_char_scalar_lossy", "0, 0"),
+            ("__rue_char_next_lossy", "0, 0"),
+        ] {
+            let source = format!("fn main() {{ @{name}({args}) }}");
+            let errors = compile_to_air(&source).expect_err("source spelling must stay unknown");
+            assert!(
+                errors.iter().any(|error| matches!(
+                    &error.kind,
+                    ErrorKind::UnknownIntrinsic(actual) if actual == name
+                )),
+                "{name}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_internal_intrinsic_arity_is_reported_without_panicking() {
+        let source = "fn main() { @dbg(1); }";
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, mut interner) = Parser::new(tokens, interner).parse().unwrap();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let mut rir = astgen.finish();
+        let (intrinsic_ref, args_start) = rir
+            .iter()
+            .find_map(|(inst_ref, inst)| match inst.data {
+                InstData::Intrinsic { args_start, .. } => Some((inst_ref, args_start)),
+                _ => None,
+            })
+            .unwrap();
+        rir.get_mut(intrinsic_ref).data = InstData::InternalIntrinsic {
+            intrinsic: InternalIntrinsic::IterLen,
+            args_start,
+            args_len: 0,
+        };
+
+        let errors = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+            .analyze_all()
+            .expect_err("malformed compiler RIR must be diagnosed");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::InternalError(message)
+                if message.contains("`__rue_iter_len` expects 1 argument, found 0")
+        )));
     }
 
     #[test]

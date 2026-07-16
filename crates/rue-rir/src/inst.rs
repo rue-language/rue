@@ -725,6 +725,43 @@ pub enum RepeatCount {
     Named(Spur),
 }
 
+/// A compiler-internal intrinsic synthesized directly into RIR.
+///
+/// These operations are not source intrinsics. Keeping their identity separate
+/// from [`InstData::Intrinsic`] prevents a source spelling that resembles an
+/// implementation detail from selecting compiler-only behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InternalIntrinsic {
+    IterLen,
+    CharScalar,
+    CharNext,
+    CharScalarLossy,
+    CharNextLossy,
+}
+
+impl InternalIntrinsic {
+    /// The diagnostic and RIR-printer spelling for this operation.
+    ///
+    /// This is presentation-only; compiler dispatch must match the enum.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::IterLen => "__rue_iter_len",
+            Self::CharScalar => "__rue_char_scalar",
+            Self::CharNext => "__rue_char_next",
+            Self::CharScalarLossy => "__rue_char_scalar_lossy",
+            Self::CharNextLossy => "__rue_char_next_lossy",
+        }
+    }
+
+    /// Number of RIR operands required by this operation.
+    pub const fn arity(self) -> u32 {
+        match self {
+            Self::IterLen => 1,
+            Self::CharScalar | Self::CharNext | Self::CharScalarLossy | Self::CharNextLossy => 2,
+        }
+    }
+}
+
 /// Instruction data - the actual operation.
 #[derive(Debug, Clone)]
 pub enum InstData {
@@ -910,6 +947,15 @@ pub enum InstData {
         /// Index into extra data where args start
         args_start: u32,
         /// Number of arguments
+        args_len: u32,
+    },
+
+    /// Compiler-internal intrinsic with expression arguments.
+    ///
+    /// Args are stored in the extra array using add_inst_refs/get_inst_refs.
+    InternalIntrinsic {
+        intrinsic: InternalIntrinsic,
+        args_start: u32,
         args_len: u32,
     },
 
@@ -1742,6 +1788,24 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .map(|a| self.display_ref(*a).to_string())
                         .collect();
                     writeln!(out, "intrinsic @{}({})", name_str, args_str.join(", ")).unwrap();
+                }
+                InstData::InternalIntrinsic {
+                    intrinsic,
+                    args_start,
+                    args_len,
+                } => {
+                    let args = self.rir.get_inst_refs(*args_start, *args_len);
+                    let args_str: Vec<String> = args
+                        .iter()
+                        .map(|a| self.display_ref(*a).to_string())
+                        .collect();
+                    writeln!(
+                        out,
+                        "internal_intrinsic @{}({})",
+                        intrinsic.as_str(),
+                        args_str.join(", ")
+                    )
+                    .unwrap();
                 }
                 InstData::TypeIntrinsic { name, type_arg } => {
                     let name_str = self.interner.resolve(&*name);
@@ -2956,6 +3020,62 @@ mod tests {
         let printer = RirPrinter::new(&rir, &interner);
         let output = printer.to_string();
         assert!(output.contains("intrinsic @dbg(%0)"));
+    }
+
+    #[test]
+    fn test_printer_internal_intrinsic() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let arg = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+        let (args_start, args_len) = rir.add_inst_refs(&[arg]);
+        rir.add_inst(Inst {
+            data: InstData::InternalIntrinsic {
+                intrinsic: InternalIntrinsic::IterLen,
+                args_start,
+                args_len,
+            },
+            span: Span::new(0, 10),
+        });
+
+        let output = RirPrinter::new(&rir, &interner).to_string();
+        assert!(output.contains("internal_intrinsic @__rue_iter_len(%0)"));
+    }
+
+    #[test]
+    fn internal_intrinsic_presentation_and_arity_are_exhaustive() {
+        assert_eq!(
+            [
+                (
+                    InternalIntrinsic::IterLen.as_str(),
+                    InternalIntrinsic::IterLen.arity()
+                ),
+                (
+                    InternalIntrinsic::CharScalar.as_str(),
+                    InternalIntrinsic::CharScalar.arity()
+                ),
+                (
+                    InternalIntrinsic::CharNext.as_str(),
+                    InternalIntrinsic::CharNext.arity()
+                ),
+                (
+                    InternalIntrinsic::CharScalarLossy.as_str(),
+                    InternalIntrinsic::CharScalarLossy.arity()
+                ),
+                (
+                    InternalIntrinsic::CharNextLossy.as_str(),
+                    InternalIntrinsic::CharNextLossy.arity()
+                ),
+            ],
+            [
+                ("__rue_iter_len", 1),
+                ("__rue_char_scalar", 2),
+                ("__rue_char_next", 2),
+                ("__rue_char_scalar_lossy", 2),
+                ("__rue_char_next_lossy", 2),
+            ]
+        );
     }
 
     #[test]
