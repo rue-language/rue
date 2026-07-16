@@ -46,6 +46,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use fixedbitset::FixedBitSet;
+use rue_error::CompileResult;
 
 use crate::index_map::IndexMap;
 use crate::vreg::VReg;
@@ -923,6 +924,230 @@ pub struct RegAllocDebugInfo<Reg: Copy + Eq + std::hash::Hash> {
     pub callee_saved_used: Vec<Reg>,
 }
 
+/// Target hooks used by the shared register-allocation lifecycle.
+///
+/// This is intentionally limited to the target facts needed to drive
+/// allocation and to hand each instruction back to target-specific rewriting.
+/// It is not a generic MIR interface: instruction selection, operand
+/// constraints, scratch registers, and concrete spill instructions remain in
+/// each backend.
+pub trait RegAllocBackend {
+    type Mir;
+    type Inst;
+    type Reg: Copy + Eq + std::hash::Hash + fmt::Display + 'static;
+
+    fn vreg_count(mir: &Self::Mir) -> u32;
+    fn instructions(mir: &Self::Mir) -> &[Self::Inst];
+    fn analyze(mir: &Self::Mir) -> LivenessInfo<Self::Reg>;
+    fn analyze_loops(mir: &Self::Mir) -> LoopInfo;
+    fn coalesce_candidates(instructions: &[Self::Inst]) -> Vec<CoalesceCandidate>;
+    fn allocatable_regs() -> &'static [Self::Reg];
+
+    fn new_mir() -> Self::Mir;
+    fn take_symbols(mir: &mut Self::Mir) -> Vec<String>;
+    fn set_symbols(mir: &mut Self::Mir, symbols: Vec<String>);
+    fn into_instructions(mir: Self::Mir) -> Vec<Self::Inst>;
+    fn push(mir: &mut Self::Mir, inst: Self::Inst);
+    fn rewrite_inst(
+        context: &AllocationContext<'_, Self::Reg>,
+        buffer: &mut RewriteBuffer<Self::Inst>,
+        inst: Self::Inst,
+    ) -> CompileResult<()>;
+}
+
+/// Read-only allocation state exposed to a target's instruction rewriter.
+///
+/// The shared driver owns this state. Targets can query a virtual register's
+/// final assignment and coalescing representative, but cannot alter the
+/// allocation or spill-slot decisions.
+pub struct AllocationContext<'a, Reg: Copy + Eq + std::hash::Hash> {
+    allocation: &'a IndexMap<VReg, Option<Allocation<Reg>>>,
+    coalesce_result: &'a CoalesceResult,
+}
+
+impl<Reg: Copy + Eq + std::hash::Hash> AllocationContext<'_, Reg> {
+    /// Return the final assignment for a virtual register.
+    pub fn allocation(&self, vreg: VReg) -> Option<Allocation<Reg>> {
+        let representative = self.coalesce_result.representative(vreg);
+        self.allocation[representative]
+    }
+}
+
+/// Ordered target-instruction output for one source instruction.
+///
+/// Target rewriters decide which concrete instructions belong before, at, or
+/// after the source instruction. The shared driver owns the final drain order.
+pub struct RewriteBuffer<I> {
+    before: Vec<I>,
+    main: Vec<I>,
+    after: Vec<I>,
+}
+
+impl<I> RewriteBuffer<I> {
+    pub fn new() -> Self {
+        Self {
+            before: Vec::new(),
+            main: Vec::new(),
+            after: Vec::new(),
+        }
+    }
+
+    pub fn push_before(&mut self, inst: I) {
+        self.before.push(inst);
+    }
+
+    pub fn push_main(&mut self, inst: I) {
+        self.main.push(inst);
+    }
+
+    /// Append to the main instruction stream. This alias keeps target rewrite
+    /// code visually identical while the shared driver owns queue ordering.
+    pub fn push(&mut self, inst: I) {
+        self.push_main(inst);
+    }
+
+    pub fn push_after(&mut self, inst: I) {
+        self.after.push(inst);
+    }
+
+    fn into_ordered(mut self) -> Vec<I> {
+        let mut ordered =
+            Vec::with_capacity(self.before.len() + self.main.len() + self.after.len());
+        ordered.append(&mut self.before);
+        ordered.append(&mut self.main);
+        ordered.append(&mut self.after);
+        ordered
+    }
+}
+
+/// Shared assignment, rewrite, and spill orchestration for one target.
+pub struct RegAllocDriver<B: RegAllocBackend> {
+    mir: B::Mir,
+    allocation: IndexMap<VReg, Option<Allocation<B::Reg>>>,
+    liveness: LivenessInfo<B::Reg>,
+    loop_info: LoopInfo,
+    coalesce_result: CoalesceResult,
+    num_spills: u32,
+    used_callee_saved: Vec<B::Reg>,
+    existing_locals: u32,
+}
+
+impl<B: RegAllocBackend> RegAllocDriver<B> {
+    /// Create the shared allocator state and perform target-provided analyses.
+    pub fn new(mir: B::Mir, existing_locals: u32) -> Self {
+        let vreg_count = B::vreg_count(&mir) as usize;
+        let mut liveness = B::analyze(&mir);
+        let loop_info = B::analyze_loops(&mir);
+        let candidates = B::coalesce_candidates(B::instructions(&mir));
+        let coalesce_result = coalesce(&candidates, &mut liveness);
+
+        let mut allocation = IndexMap::with_capacity(vreg_count);
+        allocation.resize(vreg_count, None);
+
+        Self {
+            mir,
+            allocation,
+            liveness,
+            loop_info,
+            coalesce_result,
+            num_spills: 0,
+            used_callee_saved: Vec::new(),
+            existing_locals,
+        }
+    }
+
+    /// Number of spill slots selected by the last assignment pass.
+    pub fn num_spills(&self) -> u32 {
+        self.num_spills
+    }
+
+    /// Run normal allocation and target rewriting.
+    pub fn allocate(mut self) -> CompileResult<B::Mir> {
+        self.assign_registers();
+        self.rewrite_instructions()?;
+        Ok(self.mir)
+    }
+
+    /// Run normal allocation and return spill/frame bookkeeping.
+    pub fn allocate_with_spills(mut self) -> CompileResult<(B::Mir, u32, Vec<B::Reg>)> {
+        self.assign_registers();
+        self.rewrite_instructions()?;
+        Ok((self.mir, self.num_spills, self.used_callee_saved))
+    }
+
+    /// Run the debug assignment path, followed by the same rewrite path.
+    pub fn allocate_with_debug(
+        mut self,
+    ) -> CompileResult<(B::Mir, u32, Vec<B::Reg>, RegAllocDebugInfo<B::Reg>)> {
+        let debug_info = self.assign_registers_with_debug();
+        self.rewrite_instructions()?;
+        Ok((
+            self.mir,
+            self.num_spills,
+            self.used_callee_saved,
+            debug_info,
+        ))
+    }
+
+    fn assign_registers(&mut self) {
+        let (allocation, num_spills, used_callee_saved) = linear_scan_with_cost_model(
+            B::vreg_count(&self.mir),
+            &self.liveness,
+            B::allocatable_regs(),
+            self.existing_locals,
+            &CostModel::default(),
+            &self.loop_info,
+        );
+        self.allocation = allocation;
+        self.num_spills = num_spills;
+        self.used_callee_saved = used_callee_saved;
+    }
+
+    fn assign_registers_with_debug(&mut self) -> RegAllocDebugInfo<B::Reg> {
+        let (allocation, num_spills, used_callee_saved, debug_info) =
+            linear_scan_with_cost_model_and_debug(
+                B::vreg_count(&self.mir),
+                &self.liveness,
+                B::allocatable_regs(),
+                self.existing_locals,
+                &CostModel::default(),
+                &self.loop_info,
+            );
+        self.allocation = allocation;
+        self.num_spills = num_spills;
+        self.used_callee_saved = used_callee_saved;
+        debug_info
+    }
+
+    fn rewrite_instructions(&mut self) -> CompileResult<()> {
+        // The source instruction order is the canonical rewrite order. The
+        // target hook classifies generated instructions into before/main/after
+        // queues, and this driver drains them identically on both targets.
+        let symbols = B::take_symbols(&mut self.mir);
+        let old_instructions = B::into_instructions(std::mem::replace(&mut self.mir, B::new_mir()));
+        let mut new_mir = B::new_mir();
+        B::set_symbols(&mut new_mir, symbols);
+        let context = AllocationContext {
+            allocation: &self.allocation,
+            coalesce_result: &self.coalesce_result,
+        };
+
+        for (idx, inst) in old_instructions.into_iter().enumerate() {
+            if self.coalesce_result.is_eliminated(idx) {
+                continue;
+            }
+            let mut buffer = RewriteBuffer::new();
+            B::rewrite_inst(&context, &mut buffer, inst)?;
+            for rewritten in buffer.into_ordered() {
+                B::push(&mut new_mir, rewritten);
+            }
+        }
+
+        self.mir = new_mir;
+        Ok(())
+    }
+}
+
 impl<Reg: Copy + Eq + std::hash::Hash + fmt::Display> fmt::Display for RegAllocDebugInfo<Reg> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Live Ranges:")?;
@@ -1541,6 +1766,16 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rewrite_buffer_preserves_before_main_after_order() {
+        let mut buffer = RewriteBuffer::new();
+        buffer.push_after("after");
+        buffer.push_main("main");
+        buffer.push_before("before");
+
+        assert_eq!(buffer.into_ordered(), ["before", "main", "after"]);
+    }
 
     // ========================================
     // LiveRange tests
