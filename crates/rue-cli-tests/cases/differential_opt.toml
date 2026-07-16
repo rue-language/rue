@@ -520,3 +520,56 @@ stdout = """21
 1
 """
 exit_code = 42
+
+# Block-local CSE (RUE-913): a repeated pure subexpression's shared operand is
+# value-numbered once and reused, so the three separate `const 100`
+# materializations in `weighted` collapse to a single instruction at -O2. The
+# helper's params keep the surrounding multiplies opaque to constopt, so they
+# survive to CSE instead of folding away. `safe_div` is a repeated division that
+# does NOT trap for these inputs — CSE must leave its observable result
+# unchanged. -O0/-O1 (no CSE) must agree byte-for-byte with -O2/-O3.
+[[case]]
+name = "cse_shared_subexpressions_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn weighted(x: i32, y: i32) -> i32 {
+    x * 100 + y * 100 + 100
+}
+
+fn safe_div(a: i32, b: i32) -> i32 {
+    (a / b) + (a / b)
+}
+
+fn main() -> i32 {
+    let w: i32 = weighted(2, 3);
+    let d: i32 = safe_div(30, 3);
+    @dbg(w);
+    @dbg(d);
+    w + d
+}
+""" }]
+stdout = """600
+20
+"""
+exit_code = 108
+
+# Block-local CSE on a TRAPPING expression (RUE-913): constopt propagates the
+# constant `z = 0` into both divisors, so the two `100 / z` divisions become
+# identical `100 / 0` operations and -O2 CSE merges them into one. Eliminating
+# the SECOND occurrence is trap-exact — the first division executes earlier in
+# the same block, dominates, and still divides by zero — so every level aborts
+# with the same "division by zero" and exit status. This is the RUE-57
+# obligation the pass must honor: CSE may drop a redundant trap but never a
+# reachable one, and the differential net proves -O2 did not change behavior.
+[[case]]
+name = "cse_trapping_division_still_traps_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let z: i32 = 0;
+    (100 / z) + (100 / z)
+}
+""" }]
+stdout = ""
+exit_code = 101
+runtime_error_contains = ["division by zero"]
