@@ -321,3 +321,109 @@ stdout = """42
 30
 """
 exit_code = 35
+
+# Constant-condition control flow (RUE-910): simplify-cfg folds Branch on a
+# folded BoolConst / Switch on a folded Const into Goto, and DCE then prunes
+# the dead arm. The live arm's side effects and computed values must survive
+# at every level, and -O0 (which never folds) must agree byte-for-byte.
+[[case]]
+name = "constant_branches_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let flag: bool = 10 > 3;
+    let dead: bool = 1 == 2;
+    let mut acc: i32 = 0;
+    if flag {
+        @dbg(1);
+        acc = acc + 40;
+    } else {
+        @dbg(2);
+        acc = acc + 1000;
+    }
+    if dead {
+        @dbg(3);
+        acc = acc + 2000;
+    }
+    while dead {
+        @dbg(4);
+        acc = acc + 3000;
+    }
+    acc = acc + 2;
+    acc
+}
+""" }]
+stdout = """1
+"""
+exit_code = 42
+
+# Constant match scrutinees (RUE-910): int, bool, and enum matches whose
+# scrutinee constant-folds. The switch must fold to the arm the backends
+# would select at runtime, including a negative case value and a
+# no-case-matches default.
+[[case]]
+name = "constant_switches_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+enum Mode { Fast, Slow, Off }
+
+fn main() -> i32 {
+    let n: i32 = 3 - 4;
+    let picked: i32 = match n {
+        -1 => 10,
+        0 => 20,
+        _ => 30,
+    };
+    @dbg(picked);
+    let missed: i32 = match n * 5 {
+        1 => 100,
+        2 => 200,
+        _ => 300,
+    };
+    @dbg(missed);
+    let b: bool = 2 < 1;
+    let from_bool: i32 = match b {
+        true => 7,
+        false => 8,
+    };
+    @dbg(from_bool);
+    let m = Mode.Slow;
+    match m {
+        Mode.Fast => 1,
+        Mode.Slow => 2,
+        Mode.Off => 3,
+    }
+}
+""" }]
+stdout = """10
+300
+8
+"""
+exit_code = 2
+
+# Platform selection via constant enum comparison (RUE-910, the motivating
+# case for fold_enum_comparison): the untaken architecture's arm is
+# statically dead at -O1+ but the observable result is identical at -O0.
+# Both arms compute the same observable values through different expressions
+# on purpose: differential cases must declare exact stdout, so the program
+# has to be target-invariant while still giving each architecture a distinct
+# dead arm to eliminate.
+[[case]]
+name = "target_arch_selection_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    if @target_arch() == Arch.X86_64 {
+        @dbg(40 + 2);
+    } else {
+        @dbg(6 * 7);
+    }
+    match @target_arch() {
+        Arch.X86_64 => 2 + 3,
+        Arch.Aarch64 => 10 - 5,
+    }
+}
+""" }]
+stdout = """42
+"""
+exit_code = 5

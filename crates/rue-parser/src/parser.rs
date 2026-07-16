@@ -2530,13 +2530,22 @@ mod tests {
         }
         // This checked-in snapshot was first generated from the Chumsky parser
         // immediately before RUE-905 removed it, then byte-compared against
-        // this parser. Updating it requires repeating that differential audit.
+        // this parser. The Chumsky anchor cannot be re-derived, so updates are
+        // legitimate ONLY when the corpus itself grew: regenerate with
+        // RUE_BLESS_DIAGNOSTIC_CORPUS=1, then audit that the TOML diff adds
+        // fixtures without editing existing ones and that the snapshot diff
+        // only adds rejected rows / increases the accepted count. A changed
+        // fingerprint on an EXISTING row means this parser's behavior drifted
+        // — that requires a real investigation, not a bless.
         let accepted_source_ast_fingerprint = format!("{:x}", accepted_ast_hasher.finalize());
         let actual = format!(
             "# pre-RUE-905 Chumsky: accepted={accepted} rejected={rejected} lex_invalid={lex_invalid} accepted_source_ast_sha256={accepted_source_ast_fingerprint}\n{}\n",
             rows.join("\n")
         );
         let snapshot_path = root.join("crates/rue-parser/src/diagnostic_corpus.snapshot");
+        if std::env::var_os("RUE_BLESS_DIAGNOSTIC_CORPUS").is_some() {
+            fs::write(&snapshot_path, &actual).unwrap();
+        }
         assert_eq!(actual, fs::read_to_string(snapshot_path).unwrap());
     }
 
