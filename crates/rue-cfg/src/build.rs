@@ -245,6 +245,116 @@ pub struct CfgBuilder<'a> {
 }
 
 impl<'a> CfgBuilder<'a> {
+    fn runtime_air_type(&self, ty: Type) -> Option<rue_air::RuntimeAirType> {
+        use rue_air::RuntimeAirType as R;
+
+        if ty == Type::UNIT {
+            return Some(R::Unit);
+        }
+        if ty == Type::I64 {
+            return Some(R::I64);
+        }
+        if ty == Type::U64 {
+            return Some(R::U64);
+        }
+        if ty == Type::U32 {
+            return Some(R::U32);
+        }
+        if ty == Type::BOOL {
+            return Some(R::Bool);
+        }
+        if ty == Type::NEVER {
+            return Some(R::Never);
+        }
+        if ty.is_signed() {
+            return Some(R::SignedInteger);
+        }
+        if ty.is_unsigned() {
+            return Some(R::UnsignedInteger);
+        }
+        if let TypeKind::Struct(struct_id) = ty.kind() {
+            let name = &self.type_pool.struct_def(struct_id).name;
+            if self.type_pool.is_strbuf(struct_id)
+                || name == "str"
+                || (name.starts_with("Str(") && name.ends_with(')'))
+            {
+                return Some(R::Text);
+            }
+        }
+        if let Some(ptr) = ty.as_ptr_const()
+            && self.type_pool.ptr_const_def(ptr) == Type::U8
+        {
+            return Some(R::ConstBytePointer);
+        }
+        if let Some(ptr) = ty.as_ptr_mut() {
+            return Some(if self.type_pool.ptr_mut_def(ptr) == Type::U8 {
+                R::MutBytePointer
+            } else {
+                R::MutPointer
+            });
+        }
+        None
+    }
+
+    fn runtime_air_result_type(&self, ty: Type) -> Option<rue_air::RuntimeAirType> {
+        use rue_air::RuntimeAirType as R;
+
+        if ty == Type::U8 {
+            return Some(R::U8);
+        }
+        if let TypeKind::Struct(struct_id) = ty.kind()
+            && self.type_pool.is_strbuf(struct_id)
+        {
+            return Some(R::StrBuf);
+        }
+        if let TypeKind::Enum(enum_id) = ty.kind() {
+            let definition = self.type_pool.enum_def(enum_id);
+            let some = definition.find_variant("Some")?;
+            definition.find_variant("None")?;
+            let [payload] = definition.variant_payload(some) else {
+                return None;
+            };
+            if let TypeKind::Struct(struct_id) = payload.kind()
+                && self.type_pool.is_strbuf(struct_id)
+            {
+                return Some(R::OptionStrBuf);
+            }
+            return Some(match *payload {
+                Type::I32 => R::OptionI32,
+                Type::I64 => R::OptionI64,
+                Type::U32 => R::OptionU32,
+                Type::U64 => R::OptionU64,
+                _ => return None,
+            });
+        }
+        self.runtime_air_type(ty)
+    }
+
+    fn assert_valid_runtime_call_args(
+        &self,
+        runtime: rue_air::RuntimeCallKind,
+        args: impl IntoIterator<Item = (AirRef, AirArgMode)>,
+        result: Type,
+    ) {
+        let args = args
+            .into_iter()
+            .map(|(value, mode)| {
+                self.runtime_air_type(self.air.get(value).ty)
+                    .map(|ty| rue_air::RuntimeAirArgument { ty, mode })
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(args) = args else {
+            panic!("runtime call {runtime:?} has an AIR argument with no runtime type");
+        };
+        let Some(result) = self.runtime_air_result_type(result) else {
+            panic!("runtime call {runtime:?} has an AIR result with no runtime type");
+        };
+        assert!(
+            runtime.validate() && runtime.validate_air_call(&args, result),
+            "runtime call {runtime:?} has invalid AIR arguments {args:?} or result {result:?}"
+        );
+    }
+
     /// Build a CFG from AIR, returning the CFG and any warnings.
     ///
     /// The `type_pool` provides struct/enum/array definitions needed for queries like
@@ -855,10 +965,20 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Call {
+                runtime,
                 name,
                 args_start,
                 args_len,
             } => {
+                if let Some(runtime) = runtime {
+                    self.assert_valid_runtime_call_args(
+                        *runtime,
+                        self.air
+                            .get_call_args(*args_start, *args_len)
+                            .map(|arg| (arg.value, arg.mode)),
+                        ty,
+                    );
+                }
                 let mut arg_vals = Vec::new();
                 for arg in self.air.get_call_args(*args_start, *args_len) {
                     let Some(value) = self.lower_value(arg.value) else {
@@ -873,6 +993,7 @@ impl<'a> CfgBuilder<'a> {
                 let (args_start, args_len) = self.cfg.push_call_args(arg_vals);
                 let value = self.emit(
                     CfgInstData::Call {
+                        runtime: *runtime,
                         name: *name,
                         args_start,
                         args_len,
@@ -901,10 +1022,20 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Intrinsic {
+                runtime,
                 name,
                 args_start,
                 args_len,
             } => {
+                if let Some(runtime) = runtime {
+                    self.assert_valid_runtime_call_args(
+                        *runtime,
+                        self.air
+                            .get_air_refs(*args_start, *args_len)
+                            .map(|arg| (arg, AirArgMode::Normal)),
+                        ty,
+                    );
+                }
                 let mut arg_vals = Vec::new();
                 for arg in self.air.get_air_refs(*args_start, *args_len) {
                     let Some(val) = self.lower_value(arg) else {
@@ -945,6 +1076,7 @@ impl<'a> CfgBuilder<'a> {
                 let (args_start, args_len) = self.cfg.push_extra(arg_vals);
                 let intrinsic_value = self.emit(
                     CfgInstData::Intrinsic {
+                        runtime: *runtime,
                         name: *name,
                         args_start,
                         args_len,
@@ -2799,6 +2931,7 @@ impl<'a> CfgBuilder<'a> {
             }));
             self.emit(
                 CfgInstData::Call {
+                    runtime: None,
                     name,
                     args_start,
                     args_len,
@@ -3877,6 +4010,7 @@ mod tests {
             let args = air.add_extra(&[read.as_u32(), AirArgMode::Borrow.as_u32()]);
             let call = air.add_inst(AirInst {
                 data: AirInstData::Call {
+                    runtime: None,
                     name: interner.get_or_intern("consume"),
                     args_start: args,
                     args_len: 1,

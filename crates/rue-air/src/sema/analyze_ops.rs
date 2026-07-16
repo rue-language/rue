@@ -5597,6 +5597,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&extra);
         let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
+                runtime: None,
                 name: call_name,
                 args_start,
                 args_len: 2,
@@ -5669,6 +5670,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&extra);
         let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
+                runtime: Some(crate::RuntimeCallKind::StrByteAt),
                 name: call_name,
                 args_start,
                 args_len: 2,
@@ -5781,6 +5783,7 @@ impl<'a> BodySema<'a> {
             let assert_args = air.add_extra(&[lower_bound_ref.as_u32()]);
             Some(air.add_inst(AirInst {
                 data: AirInstData::Intrinsic {
+                    runtime: Some(crate::RuntimeCallKind::AssertFailed),
                     name: self.known.assert,
                     args_start: assert_args,
                     args_len: 1,
@@ -5799,6 +5802,7 @@ impl<'a> BodySema<'a> {
         let upper_assert_args = air.add_extra(&[upper_bound_ref.as_u32()]);
         let upper_assert_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::AssertFailed),
                 name: self.known.assert,
                 args_start: upper_assert_args,
                 args_len: 1,
@@ -5811,6 +5815,7 @@ impl<'a> BodySema<'a> {
         let off_args = air.add_extra(&[ptr_ref.as_u32(), index_result.air_ref.as_u32()]);
         let off_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name: self.known.ptr_offset,
                 args_start: off_args,
                 args_len: 2,
@@ -5821,6 +5826,7 @@ impl<'a> BodySema<'a> {
         let read_args = air.add_extra(&[off_ref.as_u32()]);
         let elem_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name: self.known.ptr_read,
                 args_start: read_args,
                 args_len: 1,
@@ -6577,6 +6583,7 @@ impl<'a> BodySema<'a> {
 
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Call {
+                    runtime: None,
                     name,
                     args_start,
                     args_len,

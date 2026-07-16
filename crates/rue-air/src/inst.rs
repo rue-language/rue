@@ -841,6 +841,8 @@ pub enum AirInstData {
 
     /// Function call
     Call {
+        /// Typed runtime identity, absent for source-language calls.
+        runtime: Option<crate::RuntimeCallKind>,
         /// Function name (interned symbol)
         name: Spur,
         /// Start index into extra array for arguments
@@ -884,6 +886,8 @@ pub enum AirInstData {
 
     /// Intrinsic call (e.g., @dbg)
     Intrinsic {
+        /// Runtime helper/adaptation selected for runtime-backed intrinsics.
+        runtime: Option<crate::RuntimeCallKind>,
         /// Intrinsic name (without @, interned)
         name: Spur,
         /// Start index into extra array for arguments
@@ -1162,10 +1166,14 @@ impl Air {
                     }
                 }
                 AirInstData::Call {
+                    runtime,
                     name,
                     args_start,
                     args_len,
                 } => {
+                    if let Some(runtime) = runtime {
+                        write!(f, "runtime.{runtime:?} ")?;
+                    }
                     match interner {
                         Some(interner) => write!(f, "call @{}(", interner.resolve(name))?,
                         None => write!(f, "call @{}(", name.into_usize())?,
@@ -1223,10 +1231,14 @@ impl Air {
                     writeln!(f, ")")?;
                 }
                 AirInstData::Intrinsic {
+                    runtime,
                     name,
                     args_start,
                     args_len,
                 } => {
+                    if let Some(runtime) = runtime {
+                        write!(f, "runtime.{runtime:?} ")?;
+                    }
                     match interner {
                         Some(interner) => write!(f, "intrinsic @{}(", interner.resolve(name))?,
                         None => write!(f, "intrinsic @sym:{}(", name.into_usize())?,
@@ -1494,6 +1506,7 @@ mod tests {
 
         for data in [
             AirInstData::Call {
+                runtime: None,
                 name: call,
                 args_start: 0,
                 args_len: 0,
@@ -1508,6 +1521,7 @@ mod tests {
                 args_len: 0,
             },
             AirInstData::Intrinsic {
+                runtime: None,
                 name: intrinsic,
                 args_start: 0,
                 args_len: 0,

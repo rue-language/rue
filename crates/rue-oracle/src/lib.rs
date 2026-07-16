@@ -2414,6 +2414,7 @@ impl<'a> Interp<'a> {
                 name,
                 args_start,
                 args_len,
+                ..
             } => {
                 let fname = self.interner().resolve(name).to_string();
                 let call_args = cfg.get_call_args(*args_start, *args_len).to_vec();
@@ -2500,6 +2501,7 @@ impl<'a> Interp<'a> {
                 name,
                 args_start,
                 args_len,
+                ..
             } => {
                 let iname = self.interner().resolve(name).to_string();
                 let args = cfg.get_extra(*args_start, *args_len).to_vec();

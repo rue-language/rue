@@ -241,6 +241,7 @@ impl<'a> BodySema<'a> {
 
         let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
+                runtime: None,
                 name: call_name,
                 args_start,
                 args_len: 2,
@@ -360,6 +361,17 @@ impl<'a> BodySema<'a> {
 
         let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
+                runtime: Some(if name == self.known.println {
+                    if source_strbuf {
+                        crate::RuntimeCallKind::StrPrintlnProjected
+                    } else {
+                        crate::RuntimeCallKind::StrPrintlnAggregate
+                    }
+                } else if source_strbuf {
+                    crate::RuntimeCallKind::StrPrintProjected
+                } else {
+                    crate::RuntimeCallKind::StrPrintAggregate
+                }),
                 name: call_name,
                 args_start,
                 args_len: if source_strbuf { 2 } else { 1 },
@@ -535,6 +547,7 @@ impl<'a> BodySema<'a> {
                 ));
                 let equal = air.add_inst(AirInst {
                     data: AirInstData::Call {
+                        runtime: None,
                         name: call_name,
                         args_start,
                         args_len: 2,

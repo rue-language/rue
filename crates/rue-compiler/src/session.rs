@@ -13026,7 +13026,8 @@ fn main() -> i32 { selected.value() }"#,
                 42,
                 "/p/main.rue",
                 "main.rue",
-                "fn id(comptime T: type, value: T) -> T { value }\nfn main() -> i32 { id(i32, 42) }",
+                "fn sample(comptime T: type) -> u64 { @random_u64() }\n\
+                 fn main() -> i32 { if sample(u64) == 0 { 0 } else { 1 } }",
             )],
             42,
         );
@@ -13034,6 +13035,24 @@ fn main() -> i32 { selected.value() }"#,
         session.update(&source).into_result().unwrap();
         let cold = session.semantic(&CompileOptions::default()).unwrap();
         assert_eq!(cold.durable_specialized_body_payloads().len(), 1);
+        let specialized = &cold.durable_specialized_body_payloads()[0];
+        assert_eq!(
+            specialized.schema_version,
+            crate::DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION
+        );
+        assert!(
+            specialized.body.referenced_definition_keys().is_empty(),
+            "a specialized runtime call must not fabricate a source-definition edge"
+        );
+        assert!(specialized.body.instructions.iter().any(|instruction| {
+            matches!(
+                instruction.data,
+                crate::DurableAirInstData::Intrinsic {
+                    runtime: Some(rue_air::RuntimeCallKind::RandomU64),
+                    ..
+                }
+            )
+        }));
         assert_eq!(
             session
                 .last_successful_body_cache
@@ -13057,6 +13076,30 @@ fn main() -> i32 { selected.value() }"#,
         assert_eq!(work.specialized_body_analyses_skipped, 1);
         assert_eq!(work.specialized_bodies_attempted, 0);
         assert_eq!(work.specialization_rounds, 1);
+        assert!(reused.functions().iter().any(|function| {
+            function.analyzed.air.iter().any(|(_, instruction)| {
+                matches!(
+                    instruction.data,
+                    rue_air::AirInstData::Intrinsic {
+                        runtime: Some(rue_air::RuntimeCallKind::RandomU64),
+                        ..
+                    }
+                )
+            })
+        }));
+        assert!(reused.functions().iter().any(|function| {
+            function.cfg.blocks().iter().any(|block| {
+                block.insts.iter().any(|value| {
+                    matches!(
+                        function.cfg.get_inst(*value).data,
+                        rue_cfg::CfgInstData::Intrinsic {
+                            runtime: Some(rue_air::RuntimeCallKind::RandomU64),
+                            ..
+                        }
+                    )
+                })
+            })
+        }));
 
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&source).into_result().unwrap();

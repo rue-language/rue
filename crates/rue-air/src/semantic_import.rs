@@ -407,7 +407,17 @@ where
                     let name = resolve_function(function)?;
                     let (s, l) = call_args(&mut air, args, current)?;
                     AirInstData::Call {
+                        runtime: None,
                         name,
+                        args_start: s,
+                        args_len: l,
+                    }
+                }
+                SemanticBodyInstData::RuntimeCall { runtime, args } => {
+                    let (s, l) = call_args(&mut air, args, current)?;
+                    AirInstData::Call {
+                        runtime: Some(*runtime),
+                        name: intern(runtime.helper().helper().symbol),
                         args_start: s,
                         args_len: l,
                     }
@@ -432,7 +442,11 @@ where
                     }
                 }
                 SemanticBodyInstData::CallGeneric => return Err(F::UnsupportedGenericCall),
-                SemanticBodyInstData::Intrinsic { name, args } => {
+                SemanticBodyInstData::Intrinsic {
+                    runtime,
+                    name,
+                    args,
+                } => {
                     let name = intern(name.as_ref());
                     if args.iter().any(|arg| arg.mode != crate::AirArgMode::Normal) {
                         return Err(F::InvalidParameterModes);
@@ -440,6 +454,7 @@ where
                     let values = args.iter().map(|arg| arg.value).collect::<Vec<_>>();
                     let (s, l) = refs(&mut air, &values, current)?;
                     AirInstData::Intrinsic {
+                        runtime: *runtime,
                         name,
                         args_start: s,
                         args_len: l,

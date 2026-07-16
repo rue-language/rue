@@ -30,6 +30,7 @@ fn find_call_metadata(
                     name,
                     args_start,
                     args_len,
+                    ..
                 } = &inst.data
                 else {
                     continue;
@@ -186,6 +187,7 @@ fn find_intrinsic_in_function<'a>(
             name,
             args_start,
             args_len,
+            ..
         } = &inst.data
         else {
             continue;

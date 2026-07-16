@@ -500,6 +500,7 @@ mod tests {
         let args_start = air.add_extra(&[number.as_u32()]);
         let result = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name: interner.get_or_intern("syscall"),
                 args_start,
                 args_len: 1,

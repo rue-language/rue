@@ -69,7 +69,7 @@ pub(crate) fn body_type_dependencies(
             }
             _ => {}
         }
-        if let DurableAirInstData::Intrinsic { name, args } = &instruction.data
+        if let DurableAirInstData::Intrinsic { name, args, .. } = &instruction.data
             && matches!(name.as_ref(), "ptr_read" | "ptr_write" | "ptr_offset")
         {
             for arg in args.iter() {
@@ -435,6 +435,7 @@ mod tests {
             block,
             CfgInst {
                 data: CfgInstData::Call {
+                    runtime: None,
                     name: old,
                     args_start: 0,
                     args_len: 0,

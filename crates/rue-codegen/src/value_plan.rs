@@ -1283,6 +1283,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
             Some(ValueKind::UnaryArithmetic)
         }
         CfgInstData::Call {
+            runtime,
             name,
             args_start,
             args_len,
@@ -1309,9 +1310,8 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 &by_ref_plans,
                 adapter.return_register_budget(),
             );
-            let symbol = adapter.resolve_symbol(name);
-            let runtime_helper = runtime_helper_for_symbol(&symbol);
-            let result = if let Some(helper) = runtime_helper {
+            let result = if let Some(runtime) = runtime {
+                let helper = runtime.helper();
                 let plan = crate::runtime_call_plan::RuntimeCallPlan::from_cfg_inputs(
                     helper,
                     inputs.return_plan,
@@ -1323,6 +1323,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 });
                 adapter.emit_runtime_call(plan)
             } else {
+                let symbol = adapter.resolve_symbol(name);
                 let result_vreg = adapter.reserve_value_result();
                 let plan = crate::call_plan::CallPlan::from_inputs_with_result(
                     crate::call_plan::CallTarget::rue(symbol),
@@ -1338,10 +1339,12 @@ pub fn lower_value<A: ValueLowerAdapter>(
             Some(ValueKind::Call)
         }
         CfgInstData::Intrinsic {
+            runtime,
             name,
             args_start,
             args_len,
         } => {
+            debug_assert!(runtime.is_none_or(|runtime| runtime.validate()));
             let args = ctx.cfg.get_extra(args_start, args_len);
             let name_string = adapter.resolve_symbol(name);
             let values: Vec<IntrinsicArgPlan> = args
@@ -1596,15 +1599,6 @@ pub fn lower_value<A: ValueLowerAdapter>(
             lower_residual!(ResidualInput::PlaceWrite { place, value })
         }
     }
-}
-
-/// Transitional bridge until CFG call instructions carry `RuntimeHelperId`.
-/// Matching is against the complete manifest inventory, never a symbol prefix.
-fn runtime_helper_for_symbol(symbol: &str) -> Option<RuntimeHelperId> {
-    RuntimeHelperId::ALL
-        .iter()
-        .copied()
-        .find(|helper| helper.symbol() == symbol)
 }
 
 fn intrinsic_runtime_call(
@@ -2172,6 +2166,7 @@ mod tests {
         add(
             &mut cfg,
             CfgInstData::Call {
+                runtime: None,
                 name: call_name,
                 args_start: 0,
                 args_len: 0,
@@ -2182,6 +2177,7 @@ mod tests {
         add(
             &mut cfg,
             CfgInstData::Intrinsic {
+                runtime: None,
                 name: panic_name,
                 args_start: 0,
                 args_len: 0,
@@ -2457,6 +2453,7 @@ mod tests {
             ),
             (
                 CfgInstData::Call {
+                    runtime: None,
                     name: symbol,
                     args_start: 0,
                     args_len: 0,
@@ -2465,6 +2462,7 @@ mod tests {
             ),
             (
                 CfgInstData::Intrinsic {
+                    runtime: None,
                     name: symbol,
                     args_start: 0,
                     args_len: 0,
@@ -3175,23 +3173,6 @@ mod tests {
             realloc.return_behavior(),
             RuntimeHelperId::Realloc.helper().return_behavior
         );
-    }
-
-    #[test]
-    fn cfg_runtime_bridge_accepts_only_exact_manifest_symbols() {
-        assert_eq!(
-            super::runtime_helper_for_symbol("__rue_print"),
-            Some(RuntimeHelperId::Print)
-        );
-        assert_eq!(
-            super::runtime_helper_for_symbol("__rue_println"),
-            Some(RuntimeHelperId::Println)
-        );
-        assert_eq!(
-            super::runtime_helper_for_symbol("__rue_drop_generated"),
-            None
-        );
-        assert_eq!(super::runtime_helper_for_symbol("__rue_print_suffix"), None);
     }
 
     #[test]

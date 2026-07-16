@@ -21,8 +21,8 @@ use crate::{
     StableDefinitionKey, StableDefinitionKind,
 };
 
-pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 4;
-pub const DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION: u32 = 2;
+pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 5;
+pub const DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION: u32 = 3;
 
 pub type DurableAirRef = u32;
 pub type DurablePlaceRef = u32;
@@ -148,11 +148,16 @@ pub enum DurableAirInstData {
         function: StableDefinitionKey,
         args: Arc<[DurableCallArg]>,
     },
+    RuntimeCall {
+        runtime: rue_air::RuntimeCallKind,
+        args: Arc<[DurableCallArg]>,
+    },
     CallSpecialized {
         identity: DurableSpecializationIdentity,
         args: Arc<[DurableCallArg]>,
     },
     Intrinsic {
+        runtime: Option<rue_air::RuntimeCallKind>,
         name: Arc<str>,
         args: Arc<[DurableCallArg]>,
     },
@@ -963,6 +968,12 @@ pub fn convert_semantic_body_exports(
                     function: key(function, work)?,
                     args: args.iter().map(arg).collect::<Vec<_>>().into(),
                 },
+                SemanticBodyInstData::RuntimeCall { runtime, args } => {
+                    DurableAirInstData::RuntimeCall {
+                        runtime: *runtime,
+                        args: args.iter().map(arg).collect::<Vec<_>>().into(),
+                    }
+                }
                 SemanticBodyInstData::CallSpecialized { identity, args } => {
                     DurableAirInstData::CallSpecialized {
                         identity: durable_specialization_identity(
@@ -977,7 +988,12 @@ pub fn convert_semantic_body_exports(
                 SemanticBodyInstData::CallGeneric => {
                     return Err(DurableBodyConversionFailure::UnsupportedGenericCall);
                 }
-                SemanticBodyInstData::Intrinsic { name, args } => DurableAirInstData::Intrinsic {
+                SemanticBodyInstData::Intrinsic {
+                    runtime,
+                    name,
+                    args,
+                } => DurableAirInstData::Intrinsic {
+                    runtime: *runtime,
                     name: name.clone(),
                     args: args.iter().map(arg).collect::<Vec<_>>().into(),
                 },
@@ -1418,6 +1434,7 @@ impl DurableOrdinaryBodyPayload {
                 D::Store { value, .. } | D::ParamStore { value, .. } => check(*value),
                 D::Ret(value) => value.map_or(Ok(()), &check),
                 D::Call { args, .. }
+                | D::RuntimeCall { args, .. }
                 | D::CallSpecialized { args, .. }
                 | D::Intrinsic { args, .. } => args.iter().try_for_each(|arg| check(arg.value)),
                 D::Block { statements, value } => {
@@ -1566,11 +1583,20 @@ impl DurableOrdinaryBodyPayload {
                     function: function.clone(),
                     args: args.iter().map(arg).collect::<Vec<_>>().into(),
                 },
+                DurableAirInstData::RuntimeCall { runtime, args } => S::RuntimeCall {
+                    runtime: *runtime,
+                    args: args.iter().map(arg).collect::<Vec<_>>().into(),
+                },
                 DurableAirInstData::CallSpecialized { identity, args } => S::CallSpecialized {
                     identity: identity.import_dto(),
                     args: args.iter().map(arg).collect::<Vec<_>>().into(),
                 },
-                DurableAirInstData::Intrinsic { name, args } => S::Intrinsic {
+                DurableAirInstData::Intrinsic {
+                    runtime,
+                    name,
+                    args,
+                } => S::Intrinsic {
+                    runtime: *runtime,
                     name: name.clone(),
                     args: args.iter().map(arg).collect::<Vec<_>>().into(),
                 },
@@ -1801,6 +1827,25 @@ mod tests {
         assert_eq!(work.projection_attempts, 1);
         assert_eq!(work.projection_completions, 0);
         assert_eq!(work.projection_failures, 1);
+    }
+
+    #[test]
+    fn runtime_calls_round_trip_without_source_definition_edges() {
+        let candidate = payload(vec![instruction(DurableAirInstData::RuntimeCall {
+            runtime: rue_air::RuntimeCallKind::ToString,
+            args: Arc::from([]),
+        })]);
+        assert!(candidate.referenced_definition_keys().is_empty());
+
+        let mut work = DurableBodyWork::default();
+        let projected = candidate.project_semantic_body(&mut work).unwrap();
+        assert!(matches!(
+            projected.instructions[0].data,
+            rue_air::SemanticBodyInstData::RuntimeCall {
+                runtime: rue_air::RuntimeCallKind::ToString,
+                ..
+            }
+        ));
     }
 
     #[test]

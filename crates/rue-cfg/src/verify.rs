@@ -2089,6 +2089,7 @@ mod tests {
             entry,
             CfgInst {
                 data: CfgInstData::Call {
+                    runtime: None,
                     name: lasso::Spur::default(),
                     args_start: 1,
                     args_len: 1,

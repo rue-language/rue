@@ -352,25 +352,37 @@ impl BodySema<'_> {
                     SemanticBodyInstData::Ret(value.map(|value| r(value, current)).transpose()?)
                 }
                 AirInstData::Call {
+                    runtime,
                     name,
                     args_start,
                     args_len,
-                } => match specialized_calls.and_then(|calls| calls.get(name)) {
-                    Some(identity) => SemanticBodyInstData::CallSpecialized {
-                        identity: identity.clone(),
-                        args: call_args(*args_start, *args_len)?,
-                    },
-                    None => SemanticBodyInstData::Call {
-                        function: self.function_identity(*name)?,
-                        args: call_args(*args_start, *args_len)?,
-                    },
-                },
+                } => {
+                    if let Some(runtime) = runtime {
+                        SemanticBodyInstData::RuntimeCall {
+                            runtime: *runtime,
+                            args: call_args(*args_start, *args_len)?,
+                        }
+                    } else {
+                        match specialized_calls.and_then(|calls| calls.get(name)) {
+                            Some(identity) => SemanticBodyInstData::CallSpecialized {
+                                identity: identity.clone(),
+                                args: call_args(*args_start, *args_len)?,
+                            },
+                            None => SemanticBodyInstData::Call {
+                                function: self.function_identity(*name)?,
+                                args: call_args(*args_start, *args_len)?,
+                            },
+                        }
+                    }
+                }
                 AirInstData::CallGeneric { .. } => return Err(F::UnsupportedGenericCall),
                 AirInstData::Intrinsic {
+                    runtime,
                     name,
                     args_start,
                     args_len,
                 } => SemanticBodyInstData::Intrinsic {
+                    runtime: *runtime,
                     name: Arc::from(self.interner.resolve(name)),
                     args: intrinsic_args(*args_start, *args_len)?,
                 },

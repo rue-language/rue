@@ -303,6 +303,10 @@ pub enum SemanticBodyInstData<K, M> {
         function: K,
         args: Arc<[SemanticBodyCallArg]>,
     },
+    RuntimeCall {
+        runtime: crate::RuntimeCallKind,
+        args: Arc<[SemanticBodyCallArg]>,
+    },
     /// A call to another concrete specialization. Its stable generic origin
     /// and ordered canonical arguments replace the request-local mangled name.
     CallSpecialized {
@@ -311,6 +315,7 @@ pub enum SemanticBodyInstData<K, M> {
     },
     CallGeneric,
     Intrinsic {
+        runtime: Option<crate::RuntimeCallKind>,
         name: Arc<str>,
         args: Arc<[SemanticBodyCallArg]>,
     },
@@ -564,12 +569,21 @@ impl<K, M> SemanticBody<K, M> {
                         function: key(function)?,
                         args: args.clone(),
                     },
+                    D::RuntimeCall { runtime, args } => D::RuntimeCall {
+                        runtime: *runtime,
+                        args: args.clone(),
+                    },
                     D::CallSpecialized { identity, args } => D::CallSpecialized {
                         identity: identity.try_map_keys(key, module)?,
                         args: args.clone(),
                     },
                     D::CallGeneric => D::CallGeneric,
-                    D::Intrinsic { name, args } => D::Intrinsic {
+                    D::Intrinsic {
+                        runtime,
+                        name,
+                        args,
+                    } => D::Intrinsic {
+                        runtime: *runtime,
                         name: name.clone(),
                         args: args.clone(),
                     },

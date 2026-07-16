@@ -665,6 +665,7 @@ fn rewrite_call_generic(
                 rewrites.push((
                     i,
                     AirInstData::Call {
+                        runtime: None,
                         name: info.mangled_name,
                         args_start: *args_start,
                         args_len: *args_len,
