@@ -1,7 +1,7 @@
 {
   "format": "rue-benchmark-history",
   "platform": "x86-64-linux",
-  "run_count": 122,
+  "run_count": 123,
   "shards": [
     {
       "first_timestamp": "2026-07-12T08:52:12Z",
@@ -733,6 +733,12 @@
       "first_timestamp": "2026-07-16T03:33:31Z",
       "last_timestamp": "2026-07-16T03:33:31Z",
       "path": "shards/2026/07/b8d222b553f41a67266f80097f8c96152a546be0cb9de905bbdc4691946ec753.json",
+      "run_count": 1
+    },
+    {
+      "first_timestamp": "2026-07-16T04:02:18Z",
+      "last_timestamp": "2026-07-16T04:02:18Z",
+      "path": "shards/2026/07/6d3684e1b7991748f86fb6d0789d5a686ad7281befa3fc615f23fd34f0807d8e.json",
       "run_count": 1
     }
   ],
