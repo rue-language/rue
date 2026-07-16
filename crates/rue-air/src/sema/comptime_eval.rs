@@ -55,7 +55,9 @@ use rue_rir::{InstData, InstRef, RepeatCount, RirPattern};
 use rue_span::{FileId, Span};
 
 use super::context::{AnalysisContext, ConstValue, LocalVar, ParamInfo};
-use super::{DeclarationPhase, FunctionInfo, Sema};
+use super::{
+    DeclarationPhase, DeferredOwnershipGate, DeferredOwnershipGateKind, FunctionInfo, Sema,
+};
 use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
 use crate::types::{ArrayLen, StructField, Type, TypeKind};
 
@@ -1185,7 +1187,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 if let Some(ty) = resolved {
                     match ty.kind() {
                         TypeKind::Struct(id) => {
-                            let def = self.type_pool.struct_def(id);
+                            let def = self
+                                .type_pool
+                                .struct_metadata(id)
+                                .expect("struct type must have declaration metadata");
                             self.record_named_const_dependency(
                                 super::NamedConstDependencyTargetEvent::NamedType {
                                     file: def.file_id.index(),
@@ -1195,7 +1200,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                             );
                         }
                         TypeKind::Enum(id) => {
-                            let def = self.type_pool.enum_def(id);
+                            let def = self
+                                .type_pool
+                                .enum_metadata(id)
+                                .expect("enum type must have declaration metadata");
                             self.record_named_const_dependency(
                                 super::NamedConstDependencyTargetEvent::NamedType {
                                     file: def.file_id.index(),
@@ -1438,20 +1446,42 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// future ADR — deliberately out of scope here), linear elements stay
     /// rejected. A droppable element (primitives, pointers, `Copy` structs,
     /// destructor-bearing structs, nested containers) passes.
-    pub(crate) fn check_require_droppable(&self, ty: Type, span: Span) -> CompileResult<()> {
+    pub(crate) fn check_require_droppable(&mut self, ty: Type, span: Span) -> CompileResult<()> {
+        if self.declaration_binding_active {
+            match self.known_linear_during_binding(ty) {
+                Some(true) => return Err(self.require_droppable_error(ty, span)),
+                Some(false) => return Ok(()),
+                None => {
+                    self.defer_ownership_gate(
+                        DeferredOwnershipGateKind::RequireDroppable,
+                        ty,
+                        span,
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        self.check_require_droppable_finalized(ty, span)
+    }
+
+    fn check_require_droppable_finalized(&self, ty: Type, span: Span) -> CompileResult<()> {
         if self.type_carries_linear(ty) {
-            return Err(CompileError::new(
-                ErrorKind::ContainerElementIsLinear {
-                    ty: self.format_type_name(ty),
-                },
-                span,
-            ));
+            return Err(self.require_droppable_error(ty, span));
         }
         // Droppable-but-non-linear element types are accepted (RUE-646): the
         // container runs each live element's drop glue before freeing its
         // buffer. Linear element types stay rejected because they require a
         // consuming discharge rather than ordinary drop glue.
         Ok(())
+    }
+
+    fn require_droppable_error(&self, ty: Type, span: Span) -> CompileError {
+        CompileError::new(
+            ErrorKind::ContainerElementIsLinear {
+                ty: self.format_type_name(ty),
+            },
+            span,
+        )
     }
 
     /// The `@require_trivially_droppable(T)` gate for by-copy element *reads*
@@ -1469,14 +1499,61 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     ///
     /// A `linear` `T` never reaches here: `@require_droppable` already rejects it
     /// at instantiation, so `ArrayBuf(linear)` cannot be constructed to be read.
-    pub(crate) fn check_trivially_droppable(&self, ty: Type, span: Span) -> CompileResult<()> {
+    pub(crate) fn check_trivially_droppable(&mut self, ty: Type, span: Span) -> CompileResult<()> {
+        if self.declaration_binding_active {
+            match self.known_drop_glue_during_binding(ty) {
+                Some(true) => return Err(self.trivially_droppable_error(ty, span)),
+                Some(false) => return Ok(()),
+                None => {
+                    self.defer_ownership_gate(
+                        DeferredOwnershipGateKind::RequireTriviallyDroppable,
+                        ty,
+                        span,
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        self.check_trivially_droppable_finalized(ty, span)
+    }
+
+    fn check_trivially_droppable_finalized(&self, ty: Type, span: Span) -> CompileResult<()> {
         if self.type_has_drop_glue(ty) {
-            return Err(CompileError::new(
-                ErrorKind::ContainerElementNotTriviallyDroppable {
-                    ty: self.format_type_name(ty),
-                },
-                span,
-            ));
+            return Err(self.trivially_droppable_error(ty, span));
+        }
+        Ok(())
+    }
+
+    fn trivially_droppable_error(&self, ty: Type, span: Span) -> CompileError {
+        CompileError::new(
+            ErrorKind::ContainerElementNotTriviallyDroppable {
+                ty: self.format_type_name(ty),
+            },
+            span,
+        )
+    }
+
+    fn defer_ownership_gate(&mut self, kind: DeferredOwnershipGateKind, ty: Type, span: Span) {
+        debug_assert!(self.declaration_binding_active);
+        debug_assert!(self.type_ownership_depends_on_nominal(ty));
+        let gate = DeferredOwnershipGate { kind, ty, span };
+        if !self.deferred_ownership_gates.contains(&gate) {
+            self.deferred_ownership_gates.push(gate);
+        }
+    }
+
+    /// Discharge ownership gates after declaration binding has completed every
+    /// nominal payload, infectious-linearity fixpoint, and destructor.
+    pub(crate) fn validate_deferred_ownership_gates(&mut self) -> CompileResult<()> {
+        for gate in std::mem::take(&mut self.deferred_ownership_gates) {
+            match gate.kind {
+                DeferredOwnershipGateKind::RequireDroppable => {
+                    self.check_require_droppable_finalized(gate.ty, gate.span)?
+                }
+                DeferredOwnershipGateKind::RequireTriviallyDroppable => {
+                    self.check_trivially_droppable_finalized(gate.ty, gate.span)?
+                }
+            }
         }
         Ok(())
     }

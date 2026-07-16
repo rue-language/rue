@@ -52,8 +52,18 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             TypeKind::Never => "!".to_string(),
             TypeKind::Error => "<error>".to_string(),
             // Nominal strings and generated string views are ordinary structs.
-            TypeKind::Struct(struct_id) => self.type_pool.struct_def(struct_id).name.clone(),
-            TypeKind::Enum(enum_id) => self.type_pool.enum_def(enum_id).name.clone(),
+            TypeKind::Struct(struct_id) => {
+                self.type_pool
+                    .struct_metadata(struct_id)
+                    .expect("struct type must have declaration metadata")
+                    .name
+            }
+            TypeKind::Enum(enum_id) => {
+                self.type_pool
+                    .enum_metadata(enum_id)
+                    .expect("enum type must have declaration metadata")
+                    .name
+            }
             TypeKind::Array(array_id) => {
                 let (element_type, length) = self.type_pool.array_def(array_id);
                 format!("[{}; {}]", self.format_type_name(element_type), length)
@@ -615,7 +625,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             // Spans here are always the reference site (annotation,
             // signature, struct literal), so `span.file_id` is the
             // referencing file.
-            let struct_def = self.type_pool.struct_def(struct_id);
+            let struct_def = self
+                .type_pool
+                .struct_metadata(struct_id)
+                .expect("type lookup names a registered struct identity");
             self.check_unqualified_visibility(
                 "struct",
                 type_name,
@@ -633,7 +646,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             // Privacy (E0460, RUE-185): same rule for enums — an unqualified
             // type reference must not reach a private enum defined in another
             // directory.
-            let enum_def = self.type_pool.enum_def(enum_id);
+            let enum_def = self
+                .type_pool
+                .enum_metadata(enum_id)
+                .expect("type lookup names a registered enum identity");
             self.check_unqualified_visibility(
                 "enum",
                 type_name,
@@ -718,7 +734,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     pub(crate) fn record_resolved_declaration_type(&mut self, ty: Type) {
         match ty.kind() {
             TypeKind::Struct(id) => {
-                let def = self.type_pool.struct_def(id);
+                let def = self
+                    .type_pool
+                    .struct_metadata(id)
+                    .expect("resolved declaration type names a registered struct identity");
                 if !def.is_builtin && !def.name.starts_with("__anon_struct_") {
                     self.record_resolved_declaration_type_target(
                         def.file_id,
@@ -728,7 +747,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 }
             }
             TypeKind::Enum(id) => {
-                let def = self.type_pool.enum_def(id);
+                let def = self
+                    .type_pool
+                    .enum_metadata(id)
+                    .expect("resolved declaration type names a registered enum identity");
                 self.record_resolved_declaration_type_target(
                     def.file_id,
                     def.name,
@@ -883,7 +905,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 .get(&(file_id, member_sym))
                 .copied()
         }) {
-            let struct_def = self.type_pool.struct_def(struct_id);
+            let struct_def = self
+                .type_pool
+                .struct_metadata(struct_id)
+                .expect("qualified type lookup names a registered struct identity");
             self.check_unqualified_visibility(
                 "struct",
                 member,
@@ -896,7 +921,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         if let Some(enum_id) = module_file_id
             .and_then(|file_id| self.enums_by_file_name.get(&(file_id, member_sym)).copied())
         {
-            let enum_def = self.type_pool.enum_def(enum_id);
+            let enum_def = self
+                .type_pool
+                .enum_metadata(enum_id)
+                .expect("qualified type lookup names a registered enum identity");
             self.check_unqualified_visibility(
                 "enum",
                 member,
@@ -3175,6 +3203,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// every materialization site via [`Self::require_layout_slots`], so the
     /// saturated value is never used for real allocation.
     pub(crate) fn abi_slot_count(&self, ty: Type) -> u32 {
-        self.type_pool.abi_slot_count(ty)
+        self.type_pool.provisional_abi_slot_count(ty)
     }
 }

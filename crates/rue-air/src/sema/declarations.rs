@@ -477,7 +477,11 @@ impl<'a> Sema<'a> {
                         && let Some(module_path) = self.symbol_paths.get(&inst.span.file_id)
                         && let Some(lang_item) = crate::LangItem::from_standard_library_nominal(
                             module_path,
-                            &self.type_pool.struct_def(struct_id).name,
+                            &self
+                                .type_pool
+                                .struct_metadata(struct_id)
+                                .expect("newly declared struct must retain its shell")
+                                .name,
                         )
                     {
                         self.type_pool.set_struct_lang_item(struct_id, lang_item);
@@ -519,6 +523,7 @@ impl<'a> Sema<'a> {
             self.check_recursive_value_types()?;
             self.propagate_field_linearity();
             self.resolve_remaining_declarations()?;
+            self.validate_deferred_ownership_gates()?;
             // Now that value constants are separated from module bindings, reject
             // any value-constant name that collides with a function/struct/enum
             // (order-independent E0436, spec 10.3:1/10.5:1, RUE-239).
@@ -683,7 +688,10 @@ impl<'a> Sema<'a> {
     ) {
         let target = match ty.kind() {
             TypeKind::Struct(id) => {
-                let def = self.type_pool.struct_def(id);
+                let def = self
+                    .type_pool
+                    .struct_metadata(id)
+                    .expect("declaration dependency names a registered struct identity");
                 if def.is_builtin || def.name.starts_with("__anon_struct_") {
                     return;
                 }
@@ -694,7 +702,10 @@ impl<'a> Sema<'a> {
                 ))
             }
             TypeKind::Enum(id) => {
-                let def = self.type_pool.enum_def(id);
+                let def = self
+                    .type_pool
+                    .enum_metadata(id)
+                    .expect("declaration dependency names a registered enum identity");
                 Some((
                     def.file_id,
                     def.name,
@@ -825,8 +836,17 @@ impl<'a> Sema<'a> {
                 .enums_by_file_name
                 .get(&(span.file_id, name))
                 .expect("enum registered in phase 1");
-            let mut def = self.type_pool.enum_def(enum_id);
-            def.variant_payloads = variant_payloads;
+            let metadata = self
+                .type_pool
+                .enum_declaration_metadata(enum_id)
+                .expect("enum registered as a declaration shell in phase 1");
+            let def = EnumDef {
+                name: metadata.name,
+                variants: metadata.variants,
+                variant_payloads,
+                is_pub: metadata.is_pub,
+                file_id: metadata.file_id,
+            };
             self.type_pool.complete_declared_enum(enum_id, def);
         }
         Ok(())
@@ -961,8 +981,20 @@ impl<'a> Sema<'a> {
                 }
 
                 // Update the struct definition in the pool with resolved fields
-                let mut struct_def = self.type_pool.struct_def(struct_id);
-                struct_def.fields = resolved_fields;
+                let metadata = self
+                    .type_pool
+                    .struct_declaration_metadata(struct_id)
+                    .expect("struct registered as a declaration shell in phase 1");
+                let struct_def = StructDef {
+                    name: metadata.name,
+                    fields: resolved_fields,
+                    is_copy: metadata.is_copy,
+                    is_linear: metadata.is_linear,
+                    destructor: metadata.destructor,
+                    is_builtin: metadata.is_builtin,
+                    is_pub: metadata.is_pub,
+                    file_id: metadata.file_id,
+                };
                 self.type_pool
                     .complete_declared_struct(struct_id, struct_def);
             }
@@ -2493,7 +2525,10 @@ impl<'a> Sema<'a> {
         // a claim stale since type-valued constants landed.
         if let Some(mfile) = module_file_id {
             if let Some(struct_id) = self.structs_by_file_name.get(&(mfile, member)).copied() {
-                let def = self.type_pool.struct_def(struct_id);
+                let def = self
+                    .type_pool
+                    .struct_metadata(struct_id)
+                    .expect("named struct must have declaration metadata");
                 let is_pub = def.is_pub;
                 self.check_const_member_visibility(
                     is_pub,
@@ -2514,7 +2549,10 @@ impl<'a> Sema<'a> {
                 ))));
             }
             if let Some(enum_id) = self.enums_by_file_name.get(&(mfile, member)).copied() {
-                let def = self.type_pool.enum_def(enum_id);
+                let def = self
+                    .type_pool
+                    .enum_metadata(enum_id)
+                    .expect("named enum must have declaration metadata");
                 let is_pub = def.is_pub;
                 self.check_const_member_visibility(
                     is_pub,

@@ -582,6 +582,9 @@ impl BodySema<'_> {
         &self,
         ty: Type,
     ) -> Result<SemanticImportType<SemanticBodyDefinitionIdentity, Arc<str>>, F> {
+        self.type_pool
+            .validate_complete_type(ty)
+            .map_err(|_| F::UnsupportedType)?;
         Ok(match ty.kind() {
             TypeKind::I8 => SemanticImportType::I8,
             TypeKind::I16 => SemanticImportType::I16,
