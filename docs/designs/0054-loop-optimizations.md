@@ -416,15 +416,15 @@ Tracking placeholders; this draft implements none of them.
   propagation (`opt/forward.rs`).
 - [ ] **Phase 1: Natural-loop analysis** — natural-loop forest + preheader
   materialization built on the existing `DominatorTree`, with unit tests.
-  (file RUE-NNN)
+  (file RUE-926)
 - [ ] **Phase 2: LICM (trap-free only)** — hoist pure invariant ops; never hoist
-  trapping ops; differential trap-safety cases. `-O3`. (file RUE-NNN)
+  trapping ops; differential trap-safety cases. `-O3`. (file RUE-927)
 - [ ] **Phase 3: Constant-trip full unrolling** — canonical shape only (single
   header, single latch, recognized IV, no unsupported exits); full CFG-subgraph
   cloning; mandatory post-unroll const-fold/simplify/DCE cleanup; under the size
-  budget; shared code-growth budget with ADR-0049 inlining. `-O3`. (file RUE-NNN)
+  budget; shared code-growth budget with ADR-0049 inlining. `-O3`. (file RUE-928)
 - [ ] **Phase 4 (relaxation): guarded trapping-op hoisting** — after loop
-  rotation/guard analysis exists. (file RUE-NNN)
+  rotation/guard analysis exists. (file RUE-934)
 
 ## Consequences
 

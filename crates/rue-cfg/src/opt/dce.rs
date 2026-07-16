@@ -12,16 +12,21 @@
 //! 4. Remove dead instructions from basic blocks
 //! 5. Remove unreachable blocks
 //!
-//! ## What counts as a side effect
+//! ## What keeps an instruction live
 //!
-//! - Function calls (may have arbitrary effects)
-//! - Intrinsic calls (e.g., @dbg)
-//! - Store instructions (write to memory)
-//! - Alloc instructions (initialize memory)
-//! - PlaceWrite (write to projected memory)
-//! - Drop instructions (run destructors)
-//! - StorageLive, StorageDead (affect stack allocation)
+//! DCE must not eliminate an instruction that is either *observable* or *can
+//! trap*. Those two axes are named once in the shared classifier
+//! (`super::classify`, ADR-0054 §2), and this pass keeps an op live when either
+//! holds:
+//!
+//! - Observable side effect (`classify::has_observable_side_effect`): function
+//!   calls, intrinsics, `Store`/`ParamStore`/`PlaceWrite`, `Alloc`, `Drop`,
+//!   `StorageLive`/`StorageDead`.
+//! - May trap (`classify::may_trap`): overflow-checked arithmetic and division
+//!   checks, `IntCast` (range check), and an indexed `PlaceRead` (bounds check)
+//!   — the mandatory runtime traps DCE must preserve (RUE-57).
 
+use super::classify;
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, Projection, Terminator};
 
 /// A simple bitset for tracking indices.
@@ -132,57 +137,23 @@ fn compute_live_values(cfg: &Cfg) -> BitSet {
     live
 }
 
-/// Check if an instruction has side effects.
+/// Check whether an instruction must be kept live regardless of use count.
+///
+/// An instruction cannot be eliminated when it is either observable or can
+/// trap. Both axes are named once in the shared classifier (`super::classify`,
+/// ADR-0054 §2), so DCE, LICM, and unrolling agree on the trapping set:
+///
+/// - `classify::has_observable_side_effect` — `Call`, `Intrinsic`, `Alloc`,
+///   `Store`, `ParamStore`, `PlaceWrite`, `Drop`, `StorageLive`/`StorageDead`.
+/// - `classify::may_trap` — overflow-checked arithmetic and division checks,
+///   `IntCast` (range check), and an indexed `PlaceRead` (bounds check). These
+///   are the mandatory runtime traps DCE must preserve even when the result is
+///   unused (RUE-57). Bitwise ops and shifts do not trap (shift counts are
+///   masked per spec), so they remain eligible for elimination.
+///
+/// This is exactly `classify::is_speculatable`'s negation, expressed positively.
 fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
-    match &cfg.get_inst(value).data {
-        // Function calls can have arbitrary effects
-        CfgInstData::Call { .. } => true,
-
-        // Intrinsics (like @dbg) have effects
-        CfgInstData::Intrinsic { .. } => true,
-
-        // Memory writes
-        CfgInstData::Alloc { .. } => true,
-        CfgInstData::Store { .. } => true,
-        CfgInstData::ParamStore { .. } => true,
-
-        // Drop runs destructors
-        CfgInstData::Drop { .. } => true,
-
-        // Storage liveness affects stack allocation
-        CfgInstData::StorageLive { .. } => true,
-        CfgInstData::StorageDead { .. } => true,
-
-        // IntCast can panic (range check), so it has side effects
-        CfgInstData::IntCast { .. } => true,
-
-        // PlaceWrite is a memory write (side effect)
-        CfgInstData::PlaceWrite { .. } => true,
-
-        // A PlaceRead is pure for field projections, but an array index read
-        // performs a bounds check that panics when out of range. A read whose
-        // place contains an Index projection is therefore side-effecting and
-        // must not be eliminated even when its value is unused (RUE-57).
-        CfgInstData::PlaceRead { place } => cfg
-            .get_place_projections(place)
-            .iter()
-            .any(|p| matches!(p, Projection::Index { .. })),
-
-        // Overflow-checked arithmetic (Add/Sub/Mul/Neg) and Div/Mod (division
-        // by zero) panic at runtime. That trap is observable behavior the
-        // optimizer must preserve, so these are side-effecting even when the
-        // result is unused (RUE-57). Bitwise ops and shifts do not trap (shift
-        // counts are masked per spec), so they remain pure.
-        CfgInstData::Add(..)
-        | CfgInstData::Sub(..)
-        | CfgInstData::Mul(..)
-        | CfgInstData::Div(..)
-        | CfgInstData::Mod(..)
-        | CfgInstData::Neg(..) => true,
-
-        // Everything else is pure computation
-        _ => false,
-    }
+    classify::may_trap(cfg, value) || classify::has_observable_side_effect(cfg, value)
 }
 
 /// Visit values used by a terminator.
