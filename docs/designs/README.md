@@ -218,4 +218,5 @@ The table is generated from ADR frontmatter. Run
 | [0053](0053-typed-compiler-query-state.md) | Typed CompilerSession query state | Accepted | architecture, compiler, incremental, tooling |
 | [0054](0054-loop-optimizations.md) | Loop Optimizations — LICM and Unrolling | Accepted | compiler, codegen, optimization |
 | [0055](0055-typed-runtime-abi-manifest.md) | Typed compiler-runtime ABI manifest | Implemented | architecture, compiler, runtime, abi, codegen |
+| [0056](0056-typed-ir-payload-schemas.md) | Typed IR payload schemas | Accepted | architecture, compiler, ir, performance, validation |
 <!-- ADR-INDEX:END -->
