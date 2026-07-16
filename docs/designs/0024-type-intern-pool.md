@@ -1,462 +1,429 @@
 ---
 id: 0024
-title: Type Intern Pool
-status: implemented
-tags: [type-system, performance, parallelization]
+title: Canonical Type Handle and Intern Pool
+status: accepted
+tags: [architecture, type-system, performance, parallelization]
 feature-flag: null
 created: 2026-01-02
-accepted: 2026-01-02
-implemented: 2026-01-02
+accepted: 2026-07-16
+implemented:
 spec-sections: []
 superseded-by:
+relates: ["RUE-766", "RUE-835", "RUE-836", "RUE-837", "RUE-838"]
 ---
 
-# ADR-0024: Type Intern Pool
+# ADR-0024: Canonical Type Handle and Intern Pool
 
 ## Status
 
-**Implemented** (2026-01-02) - Phases 1-4 complete. Type is now a u32 newtype with O(1) equality.
+Accepted under RUE-766 on 2026-07-16. The representation convergence is not
+implemented until RUE-835 through RUE-838 land. This is an internal compiler
+architecture decision with no language-semantics, specification, or preview
+feature change.
 
-This text replaces an earlier migration plan for the same decision. The prior
-version remains available in Git history rather than occupying a second ADR
-identity.
+## Summary
 
-## Executive Summary
+`Type` is Rue's single authoritative compact live type handle at semantic and
+runtime compiler phase boundaries within one semantic epoch. `TypeKind` is its
+checked decoded view for pattern matching. The intern pool owns definitions,
+structural-type canonicalization, and private typed storage identities; it does
+not expose a second handle universe that independently encodes primitives and
+composite indices.
 
-After multiple failed migration attempts, we discovered that **the pool is already the primary lookup mechanism** for struct/enum definitions. The `struct_defs` and `enum_defs` Vecs are legacy artifacts carried around for "backwards compatibility" but aren't used in the main codepath.
+The canonical `Type` encoding must distinguish runtime types, comptime-only
+types, module values, never, and error recovery. Malformed or reserved bit
+patterns are explicitly rejected by checked decoding. Structural interning
+consumes and returns `Type`, and pool entries retain enough kind information to
+validate that a handle is used with the correct definition category and entry
+state in its owner-provided pool.
 
-This revised approach:
-1. **Removes the Vec duplication** (Phase 2A) - simple cleanup
-2. **Keeps the `Type` enum unchanged** - no pattern match migration needed
-3. **Migrates arrays to the pool** (Phase 2B) - the real value
-4. **Defers `Type` → `TypeId` rename** until generics needs it (Phase 4, optional)
+Durable semantic types remain a separate stable projection and import schema.
+They deliberately do not reuse the request-local live handle encoding.
 
-## Context: Why Previous Attempts Failed
+## Context
 
-### Original ADR-0024 Phase 4
-The original plan required:
-- Renaming `InternedType` → `Type` globally (~675 usages)
-- Updating all pattern matches simultaneously
-- Massive compiler errors eating all context (600+ errors)
+At acceptance time, the source has most of the intended architecture:
 
-### Incremental Migration Approach
-A previous incremental approach added a `Type::Interned(TypeId)` variant, but:
-- Created dual representations that both needed handling
-- Every pattern match needed `Type::Interned(_) => panic!(...)` or `.normalize()`
-- The migration stalled with 9+ locations needing manual updates
+- `Type` in `crates/rue-air/src/types.rs` is a compact `u32` handle. It directly
+  encodes primitive, composite, module, comptime, never, and error categories.
+- `TypeKind` is the decoded, pattern-matchable view returned by checked decoding
+  APIs.
+- AIR and the surrounding compiler phases overwhelmingly exchange `Type`.
+- `TypeInternPool` owns nominal definitions and canonical structural array and
+  pointer entries. RUE-659 and RUE-660 established
+  `FrozenTypeInternPool` as the backend-facing read-only projection after
+  semantic construction finishes.
+- `DurableType` and the semantic import/export schemas represent stable,
+  request-independent types for reuse and invalidation.
 
-## Key Discovery: Pool Already Primary
+One transitional representation remains: `InternedType` is a second public
+`u32` type universe in `crates/rue-air/src/intern_pool.rs`. It has a different
+primitive table from `Type`, omits comptime and module categories, and maps every
+composite to an offset pool index. Recovering the composite category therefore
+requires consulting pool storage. Public conversions and pool APIs allow both
+representations to persist.
 
-Analysis revealed that `SemaContext.get_struct_def()` already uses the pool:
+This duplication creates architectural ambiguity:
 
-```rust
-// sema_context.rs:370-372
-pub fn get_struct_def(&self, id: StructId) -> StructDef {
-    self.type_pool.struct_def(id)  // Uses pool, NOT Vec!
-}
+- a phase API can accidentally choose either handle without expressing a
+  different ownership or lifetime boundary;
+- primitive values can have different raw meanings depending on the wrapper;
+- a bare composite index does not prove whether its entry is a struct, enum,
+  array, or pointer;
+- comptime-only, module, error, and malformed encodings cannot be described
+  uniformly; and
+- tests can validate each representation independently while missing divergence
+  between them.
+
+The compiler needs one live type identity, not a conversion protocol between
+two request-local identities.
+
+## Decision
+
+### `Type` is the sole live compiler type handle
+
+Every semantic and runtime compiler phase boundary uses `Type`. This includes
+AIR, semantic definitions, structural interning, CFG construction, layout
+queries, code generation, and compiler-session artifacts that remain within one
+semantic epoch.
+
+`Type` remains compact, copyable, hashable, and equality-comparable without
+dereferencing the pool. Its raw representation is an implementation detail.
+Callers construct values through named constants, typed constructors, and pool
+APIs rather than synthesizing raw encodings.
+
+No second public type may independently represent both primitives and composite
+pool entries. Opaque category-specific IDs may remain public where `TypeKind`
+or a category-specific API needs them. They are not peer representations of the
+complete type universe. Raw pool positions, unchecked construction from those
+positions, and unchecked extraction of positions from live handles remain
+private to the pool implementation.
+
+### `TypeKind` is the checked decoded view
+
+`TypeKind` remains the exhaustive, pattern-matchable view of a `Type`. Decoding
+must preserve all semantically meaningful categories:
+
+- runtime primitives and composite types;
+- comptime-only types;
+- module values;
+- never and error-recovery types.
+
+`Type::try_kind` establishes **encoding validity** without consulting a pool. It
+validates the tag and payload shape and returns no kind for malformed values,
+overflowed payloads, and bit patterns reserved for future encoding categories.
+An encoding-valid composite is not thereby valid in any particular pool or
+semantic epoch.
+
+Potentially untrusted or reconstructed raw values cross this checked decoding
+API. Invariant-proven internal paths may use a convenience API that treats
+invalid encoding as a compiler bug, but invalid bits must never silently decode
+as a valid type. Encoding-reserved bit ranges are unrelated to the nominal
+reservation lifecycle described below.
+
+The encoding layout is centralized in one implementation. Primitive constants,
+tags, masks, limits, construction, and decoding may not be repeated in the
+intern pool or in consumers.
+
+### The pool owns typed storage identity, not a second type universe
+
+The intern pool stores one kind-tagged entry for every pool-backed type. Its
+private storage may use typed pool indices or entry IDs for efficient lookup,
+but a raw position alone is not sufficient type metadata. Looking up a struct
+as an array, an enum as a pointer, or any out-of-range entry must fail through a
+checked boundary or be reported as an internal invariant violation on a path
+that has already established the kind.
+
+Pool-aware validation establishes that an encoding-valid composite is **valid
+in a pool/epoch** relative to its authoritative owner. It checks that the entry
+is in range in the provided pool, has the encoded category, is in a state legal
+for the requested operation, and contains representable children. APIs that
+receive imported, reconstructed, or otherwise unproven values are fallible. A
+bare `TypeKind` result never substitutes for these checks.
+
+A naked compact `Type` cannot prove which pool produced it. Live phase
+artifacts therefore pair their `Type` values with one authoritative pool as an
+owner and boundary invariant. Pool lookup can validate the bits against that
+provided pool, but it cannot distinguish foreign bits that coincidentally name
+the same range and category. APIs must not carry a bare live `Type` across
+semantic epochs. Explicit cross-epoch transfer uses durable export/import (or
+an explicitly stamped boundary wrapper if one independently exists); M5 does
+not introduce a branded replacement handle.
+
+Nominal types retain nominal identity. Structural types are canonicalized by
+their structural key. Those keys contain canonical `Type` children, so equality
+and deduplication do not pass through another primitive/composite encoding.
+
+Accordingly, structural pool APIs consume and return `Type`:
+
+```text
+intern_array(element: Type, len) -> Type
+intern_ptr_const(pointee: Type) -> Type
+intern_ptr_mut(pointee: Type) -> Type
 ```
 
-The only code using the Vec directly:
-- `TypeContext.get_struct_def()` - legacy, limited use
-- Test assertions checking `output.struct_defs.len()`
-- Logging for struct_count
-
-This means **90%+ of struct/enum lookups already use the pool**.
-
-## Revised Approach
-
-### Guiding Principles
-
-1. **Keep `Type` enum unchanged** - pattern matching works, don't break it
-2. **Remove duplication first** - the Vecs are pure overhead
-3. **Pool is canonical** - all lookups go through pool
-4. **Defer rename to Phase 4** - only if generics specialization needs it
-
-### What Changes
-
-| Component | Current | After Phase 2A | After Phase 2B |
-|-----------|---------|----------------|----------------|
-| `Sema.struct_defs` | `Vec<StructDef>` | **Removed** | Removed |
-| `Sema.enum_defs` | `Vec<EnumDef>` | **Removed** | Removed |
-| `TypeContext.struct_defs` | `Vec<StructDef>` | **Removed** | Removed |
-| `SemaContext.struct_defs` | `Vec<StructDef>` (unused) | **Removed** | Removed |
-| `SemaOutput.struct_defs` | `Vec<StructDef>` | **Pool ref** | Pool ref |
-| `ArrayTypeRegistry` | Separate | Separate | **Pool** |
-| `Type` enum | 15 variants | **Unchanged** | Unchanged |
-| Pattern matches | ~215 locations | **Unchanged** | Unchanged |
-
-### What Stays the Same
-
-- `Type::I32`, `Type::Struct(StructId)` - unchanged
-- All pattern matches on `Type` - unchanged
-- `StructId`, `EnumId` newtypes - unchanged (they wrap pool indices)
-- `ArrayTypeId` - unchanged until Phase 2B
-
-## Implementation Phases
-
-### Phase 1: Infrastructure ✅ (Already Complete)
-
-The pool infrastructure exists and is populated:
-- `TypeInternPool` in `intern_pool.rs`
-- `type_pool.struct_def(id)` works
-- `SemaContext` uses pool for lookups
-
-### Phase 2A: Remove Vec Duplication (NEW - Easy)
-
-**Goal**: Single source of truth for struct/enum definitions.
-
-**Changes**:
-1. Remove `struct_defs: Vec<StructDef>` from `Sema`, `TypeContext`, `SemaContext`
-2. Remove `enum_defs: Vec<EnumDef>` from same
-3. Update `SemaOutput` to provide pool access instead of Vecs
-4. Update tests to use `type_pool.struct_count()` instead of `output.struct_defs.len()`
-5. Update logging to use pool stats
-
-**Files affected**: ~8-10 files, mostly deletions
-
-**Ship criterion**: All tests pass, no `struct_defs` or `enum_defs` Vecs anywhere.
-
-### Phase 2B: Migrate Arrays to Pool
-
-**Goal**: Array types interned in pool, enabling parallel creation without merging.
-
-**Changes**:
-1. Move `ArrayTypeRegistry` functionality into `TypeInternPool`
-2. Use `type_pool.intern_array(element, len)` instead of registry
-3. Remove `ArrayTypeRegistry` from `SemaContext`
-4. Arrays deduplicate automatically (same element+len = same type)
-
-**Files affected**: ~5-10 files
-
-**Ship criterion**: Arrays work, no separate array registry, parallel function analysis cleaner.
-
-### Phase 3: Struct/Enum Unified Indexing (Optional)
-
-**Goal**: `StructId` and `EnumId` are just `TypeId` under the hood.
-
-Currently `StructId(0)` and `EnumId(0)` could both exist (different types). After this phase, all composite types share one index space.
-
-**Changes**:
-1. Make `StructId` and `EnumId` aliases for a range of `TypeId`
-2. Update pattern matching on `Type::Struct(id)` to extract from TypeId
-
-**Complexity**: Medium. May not be needed if current design works.
-
-### Phase 4: Type Enum → TypeId (Deferred)
-
-**Goal**: Replace `Type` enum with `TypeId(u32)` for O(1) comparison in generics.
-
-**Only do this when**:
-- Generics specialization needs canonical type comparison
-- `SpecializationKey { type_args: Vec<Type> }` hash collisions become an issue
-- We're adding `Vec<T>` and need to intern generic instantiations
-
-**Changes**:
-1. Rename `Type` → `TypeKind` (the pattern-matchable form)
-2. Make `TypeId` the primary type representation
-3. Add `TypeId::kind(&self, pool) -> TypeKind` for pattern matching
-4. Migrate storage: `ty: Type` → `ty: TypeId`
-5. Migrate patterns: `match ty { Type::I32 => }` → `match ty.kind(pool) { TypeKind::I32 => }`
-
-**Complexity**: High. 200+ pattern matches need updating. Only do if benefits justify cost.
-
-## Benefits of This Approach
-
-### Immediate (Phase 2A)
-- **Simpler codebase**: Remove redundant Vec storage
-- **Single source of truth**: Pool is canonical
-- **No risk**: Just deletions, easy to verify
-
-### Medium-term (Phase 2B)
-- **Parallel array creation**: No per-function merging
-- **Array deduplication**: `[i32; 5]` same type everywhere
-- **Cleaner architecture**: One registry for all composite types
-
-### Long-term (Phase 4, if needed)
-- **O(1) type equality**: Critical for generic specialization caching
-- **Foundation for generics**: `Vec<i32>` as interned type
-- **Future type features**: Pointers, function types, etc.
-
-## Comparison to Original Plan
-
-| Aspect | Original | Revised |
-|--------|----------|---------|
-| Pattern matches changed | 215+ | **0** (until Phase 4) |
-| Files changed (Phase 2) | ~25 | **~10** |
-| Risk of breaking changes | High | **Low** |
-| Immediate benefit | Low (just infrastructure) | **High** (remove duplication) |
-| Type representation | Changes immediately | **Unchanged until needed** |
-| Generics support | Required before generics | **Only if needed** |
-
-## Migration Order
-
-```
-Phase 1 ✅ (done)
-    │
-    ▼
-Phase 2A: Remove Vec duplication (~1-2 hours)
-    │
-    ▼
-Phase 2B: Migrate arrays to pool (~2-4 hours)
-    │
-    ▼
-[STOP HERE unless generics needs it]
-    │
-    ▼
-Phase 3: Unified indexing (optional, ~2-4 hours)
-    │
-    ▼
-Phase 4: Type→TypeId rename (only if needed, ~8-16 hours)
-```
-
-## Files to Change
-
-### Phase 2A (Remove Vecs)
-
-**Delete fields**:
-- `crates/rue-air/src/sema/mod.rs`: `struct_defs`, `enum_defs` fields
-- `crates/rue-air/src/sema_context.rs`: `struct_defs`, `enum_defs` fields
-- `crates/rue-air/src/type_context.rs`: `struct_defs`, `enum_defs` fields
-
-**Update**:
-- `crates/rue-air/src/sema/declarations.rs`: Remove `.push()` calls
-- `crates/rue-air/src/sema/builtins.rs`: Remove `.push()` call
-- `crates/rue-air/src/sema/analysis.rs`: Remove `std::mem::take(&mut sema.struct_defs)`
-- `crates/rue-air/src/sema/mod.rs`: Remove Vec cloning in `build_type_context()`
-- `crates/rue-air/src/sema/tests.rs`: Use `type_pool.struct_count()` instead
-- `crates/rue-compiler/src/lib.rs`: Use `type_pool.struct_count()` for logging
-
-### Phase 2B (Arrays to Pool)
-
-- `crates/rue-air/src/intern_pool.rs`: Already has `intern_array()`
-- `crates/rue-air/src/sema_context.rs`: Replace `ArrayTypeRegistry` with pool
-- `crates/rue-air/src/sema/analysis.rs`: Use `type_pool.intern_array()`
-- `crates/rue-codegen/src/types.rs`: Update array lookups
-
-## Success Criteria
-
-### Phase 2A Complete ✅ (2026-01-02)
-- [x] No `struct_defs: Vec<StructDef>` anywhere in codebase
-- [x] No `enum_defs: Vec<EnumDef>` anywhere in codebase
-- [x] All struct/enum lookups go through `type_pool`
-- [x] All tests pass
-- [x] `./test.sh` green
-
-### Phase 2B Complete ✅ (2026-01-02)
-- [x] No `ArrayTypeRegistry`
-- [x] Arrays interned via `type_pool.intern_array()`
-- [x] Array deduplication works (same element+len = same ArrayTypeId)
-- [x] All tests pass
-
-## Phase 3 & 4: Type Enum → Type(u32) Migration
-
-**Status**: Implemented (2026-01-02)
-
-After completing Phase 2B, we proceeded with Phases 3 and 4 to achieve the full benefits described in the original ADR-0024:
-- O(1) type equality via u32 comparison
-- Foundation for generic type instantiation
-- Unified type representation
-
-### Migration Strategy: "Shadow Type" Approach
-
-The key challenge is migrating ~61 pattern match sites without creating 600+ simultaneous compilation errors. Our approach uses **incremental migration with TypeKind**:
-
-#### Phase 3.1: Introduce TypeKind enum
-
-Create a new `TypeKind` enum that mirrors the current `Type` enum structure:
-
-```rust
-// crates/rue-air/src/types.rs
-pub enum TypeKind {
-    I8, I16, I32, I64, U8, U16, U32, U64,
-    Bool, Unit,
-    Struct(StructId),
-    Enum(EnumId),
-    Array(ArrayTypeId),
-    Module(ModuleId),
-    Error,
-    Never,
-    ComptimeType,
-}
-```
-
-**Why**: TypeKind is the pattern-matchable representation of a Type. Separating these concerns allows incremental migration.
-
-#### Phase 3.2: Add Type::kind() method
-
-Add a method to convert Type to TypeKind:
-
-```rust
-impl Type {
-    pub fn kind(&self) -> TypeKind {
-        match self {
-            Type::I8 => TypeKind::I8,
-            Type::I16 => TypeKind::I16,
-            // ... etc for all variants
-        }
-    }
-}
-```
-
-**Why**: This allows pattern matches to gradually migrate from `match ty { Type::I32 => }` to `match ty.kind() { TypeKind::I32 => }` while keeping everything compiling.
-
-#### Phase 3.3: Migrate pattern matches incrementally
-
-Migrate one file at a time:
-
-```rust
-// Before:
-match ty {
-    Type::I32 | Type::I64 => emit_integer_op(),
-    Type::Struct(id) => {
-        let def = pool.struct_def(id);
-        emit_struct_op(&def);
-    }
-    _ => panic!("unexpected type"),
-}
-
-// After:
-match ty.kind() {
-    TypeKind::I32 | TypeKind::I64 => emit_integer_op(),
-    TypeKind::Struct(id) => {
-        let def = pool.struct_def(id);
-        emit_struct_op(&def);
-    }
-    _ => panic!("unexpected type"),
-}
-```
-
-**Benefits**:
-- Each file compiles and tests pass ✅
-- Can ship intermediate states ✅
-- Easy to back out if issues arise ✅
-- Clear progress tracking (~61 match sites)
-
-#### Phase 4.1: Replace Type enum with Type(InternedType)
-
-Once all pattern matches use `.kind()`, replace the Type enum:
-
-```rust
-// Remove the old enum:
-// pub enum Type { I8, I16, ... }
-
-// Replace with newtype:
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Type(InternedType);
-
-impl Type {
-    // Primitive constants
-    pub const I8: Type = Type(InternedType::I8);
-    pub const I16: Type = Type(InternedType::I16);
-    // ... etc
-
-    // Now kind() does a pool lookup:
-    pub fn kind(&self, pool: &TypeInternPool) -> TypeKind {
-        if self.0.is_primitive() {
-            // Fast path: decode primitive from index
-            match self.0.index() {
-                0 => TypeKind::I8,
-                1 => TypeKind::I16,
-                // ... etc
-            }
-        } else {
-            // Composite types: pool lookup
-            pool.get_kind(self.0)
-        }
-    }
-}
-```
-
-**Why**: Now Type is just a u32 index, giving us O(1) equality. All existing pattern matches continue to work via `.kind()`.
-
-#### Phase 4.2: Update method signatures
-
-Once Type is Type(InternedType), update methods that pattern match:
-
-```rust
-// Before (Phase 3):
-impl Type {
-    pub fn is_integer(&self) -> bool {
-        matches!(self.kind(), TypeKind::I8 | TypeKind::I16 | ...)
-    }
-}
-
-// After (Phase 4, optimized):
-impl Type {
-    pub fn is_integer(&self) -> bool {
-        // No pool lookup needed - just check the index
-        matches!(self.0.index(), 0..=7) // i8..u64
-    }
-}
-```
-
-### Success Criteria
-
-#### Phase 3 Complete ✅ (2026-01-02)
-- [x] TypeKind enum exists in crates/rue-air/src/types.rs
-- [x] Type::kind() method implemented
-- [x] All ~61 pattern match sites migrated to use .kind()
-- [x] All tests pass
-- [x] No direct pattern matches on Type enum remain
-
-#### Phase 4 Complete ✅ (2026-01-02)
-- [x] Type enum removed, replaced with Type(u32) newtype
-- [x] Type::kind() decodes u32 back to TypeKind for pattern matching
-- [x] Type constants (Type::I32, etc.) defined as const Type(n)
-- [x] Helper methods (is_integer, as_struct, etc.) optimized with u32 checks
-- [x] All tests pass (1230 spec, 275 unit, 38 UI)
-- [x] O(1) type equality via u32 comparison works
-
-### Files Affected (Estimated)
-
-**Phase 3.1-3.2** (~1-2 files):
-- `crates/rue-air/src/types.rs` - Add TypeKind, Type::kind()
-
-**Phase 3.3** (~20 files, 61 match sites):
-- `crates/rue-air/src/sema/analysis.rs` (~19 matches)
-- `crates/rue-air/src/sema/typeck.rs` (~9 matches)
-- `crates/rue-codegen/src/x86_64/cfg_lower.rs` (~7 matches)
-- `crates/rue-compiler/src/drop_glue.rs` (~8 matches)
-- `crates/rue-air/src/intern_pool.rs` (~15 matches)
-- ... (15 more files with 1-3 matches each)
-
-**Phase 4.1-4.2** (~3-5 files):
-- `crates/rue-air/src/types.rs` - Replace enum with newtype
-- `crates/rue-air/src/intern_pool.rs` - Add get_kind() method
-- `crates/rue-air/src/lib.rs` - Update exports
-
-### Comparison to Big-Bang Approach
-
-| Aspect | Big-Bang | Shadow Type (Our Approach) |
-|--------|----------|----------------------------|
-| Compilation errors | 600+ all at once | 0 (compiles at each step) |
-| Testability | Only at the end | After each file migration |
-| Risk | High | Low |
-| Context window | Fills with errors | Clean, focused changes |
-| Reversibility | Difficult | Easy (one file at a time) |
-| Progress tracking | Binary (done/not done) | Linear (~61 match sites) |
-
-### Why This Works
-
-1. **TypeKind is the same structure as Type**: Just a renamed copy, so semantics don't change
-2. **Type::kind() starts trivial**: Just returns the enum variant, no pool lookup
-3. **Incremental migration**: Each file can be done independently
-4. **Final flip is mechanical**: Once all matches use .kind(), replacing the enum is safe
-
-### Implementation Order (Completed)
-
-1. ✅ Add TypeKind enum to types.rs
-2. ✅ Add Type::kind() → TypeKind conversion
-3. ✅ Migrate pattern matches file by file, testing after each
-4. ✅ Replace Type enum with Type(u32) newtype
-5. ✅ Optimize Type::kind() and helper methods
-6. Kept TypeKind for pattern matching (provides better ergonomics than direct u32 decoding)
-
-## Appendix: Why We Proceeded with Phases 3 & 4
-
-The revised ADR originally recommended stopping after Phase 2B and only proceeding if generics needed it. However, we implemented Phases 3 & 4 because:
-
-1. **Clean foundation**: Better to complete the migration while the architecture is fresh
-2. **Original design intent**: The full InternPool design provides clear benefits
-3. **Incremental safety**: Our "Shadow Type" approach mitigates the risk that caused the original deferral
-4. **Future-proofing**: O(1) type comparison and generic type instantiation will be needed eventually
+The exact Rust spelling may differ, but callers do not convert through
+`InternedType` before or after interning.
+
+### Runtime structural children are validated
+
+Arrays and raw pointers are runtime structural types. The pool applies these
+representation-level rules before inserting or locating a structural entry:
+
+| Child category | Array/pointer child |
+| --- | --- |
+| Runtime primitive | Allowed |
+| Complete nominal or structural type in the owner-provided pool | Allowed |
+| Declared nominal shell in the owner-provided pool | Allowed so recursive type graphs can be formed |
+| `Never` | Allowed; source-position legality is a semantic check outside the interner |
+| `Module` | Rejected |
+| `ComptimeType` | Rejected |
+| `Error` | Allowed as a canonical recovery child so sema can continue |
+| Private anonymous reservation | Rejected |
+| Malformed, wrong-kind, or out-of-range value | Rejected |
+
+The interner decides representability, not full language legality. In
+particular, semantic analysis decides whether `Never` is permitted in a given
+source position.
+
+A structural graph containing `Error` is recovery-only. Error results may
+retain it for diagnostics, and semantic output may still freeze on an error
+path. Successful durable export, layout, backend access, and compilation reject
+any graph containing `Error`. Freeze itself does not reject `Error`.
+
+Checked pool and durable-import APIs report failure rather than panicking on
+rejected children. Durable imports fail closed if any recursive child cannot
+become a representable live type in the target owner-provided pool.
+
+### Nominal construction has explicit entry states
+
+Nominal construction has three relevant pool-entry states:
+
+1. **Reserved.** A private anonymous-construction token and entry. It is not
+   issued as a live `Type` and is not legal in structural keys or type graphs.
+2. **Declared.** A named nominal shell with canonical identity but no completed
+   definition. It may be issued as `Type` and referenced by structural keys and
+   type graphs. This permits legal recursive declarations such as pointers to a
+   nominal whose fields are still being gathered.
+3. **Complete.** A nominal with its finished definition.
+
+Reservation is not a `Type` bit category and not a `TypeKind` variant. Declared
+and completed nominals retain the same slot identity. Definition and layout
+reads distinguish their pool-entry state rather than treating a shell as an
+empty definition.
+
+The legal transitions are `Reserved -> Complete` for anonymous construction and
+`Declared -> Complete` for ordinary named declarations. Each transition happens
+at most once. A completed entry can never be overwritten by another completion.
+Duplicate-name and wrong-kind checks apply to both transitions.
+
+Structural interning and type-graph construction may read the identity and
+category of a declared shell. Definition, layout, durable export, backend, and
+successful-compilation reads require completion. Reserved entries reject all
+ordinary reads. Freeze rejects every remaining reserved or declared entry so
+backend consumers receive a complete nominal universe.
+
+RUE-835 implements the three entry states. RUE-836 implements the two transition
+APIs and operation-specific reads. RUE-837 tests legal recursion, both
+single-completion transitions, completed-entry overwrite rejection,
+operation-specific shell access, reserved-entry rejection, and freeze rejection
+of either incomplete state.
+
+### Mutation and read ownership stay phase-scoped
+
+Semantic construction owns creation, registration, interning, and completion
+of live types. Once the semantic type universe is complete,
+`FrozenTypeInternPool` remains the shared read authority for CFG and backend
+consumers. Consolidating type handles does not create a peer mutation path in
+later phases.
+
+RUE-659 and RUE-660 already established this ownership and frozen-read
+boundary. This decision preserves it rather than reopening it.
+
+### Durable types are an external stable schema
+
+`DurableType` and semantic import/export types remain owned, stable projections.
+They use logical module and definition identities plus recursive structural
+data; they do not expose or persist `Type` bits, pool positions, nominal IDs,
+or request-local interner values.
+
+Import validates a durable value and constructs or locates the corresponding
+live `Type` in the current semantic epoch through fallible pool-aware APIs.
+Export validates both encoding validity and validity in the source pool/epoch
+before projecting into the supported durable algebra. Declared shells,
+recovery-only `Error` graphs, unsupported categories, and invalid structural
+states fail closed. The durable schema can evolve independently of the live
+encoding.
+
+## Required invariants
+
+The implementation is complete only while both validation contracts hold.
+
+Encoding contract:
+
+1. `Type` is the only public primitive-or-composite live type handle.
+2. Every encoding-valid `Type` has exactly one `TypeKind`; malformed and
+   encoding-reserved values have none.
+3. Construction and decoding share one canonical encoding definition.
+4. Runtime, comptime-only, module, never, and error categories cannot be
+   accidentally conflated.
+
+Pool/owner contract:
+
+5. Every live phase artifact pairs its `Type` values with one authoritative
+   pool; naked bits are not a cross-epoch transfer format.
+6. Pool-aware reads validate range, encoded category, entry state, and
+   operation-specific child requirements in the owner-provided pool.
+7. Structural interning accepts runtime types, `Never`, recovery `Error`, and
+   declared nominal shells; it rejects module, comptime, reserved, malformed,
+   wrong-kind, and out-of-range children.
+8. Reserved anonymous entries are never issued as `Type`. Declared nominal
+   shells may be issued and referenced recursively, but definition/layout/
+   durable/backend reads require completion.
+9. Each reserved or declared entry completes at most once, completed entries
+   cannot be overwritten, and freeze rejects either incomplete state.
+10. Recovery-only `Error` graphs may survive error output and freeze but cannot
+    enter successful durable output, layout, backend work, or compilation.
+11. Durable type identity contains no live handle encoding or pool index.
+12. Phase APIs do not require bidirectional `Type`/`InternedType` conversion.
+
+## Implementation sequence
+
+The M5 work proceeds in dependency order:
+
+1. **RUE-835 — centralize the canonical encoding and entry states.** Define one
+   source of truth for tags, primitives, malformed and encoding-reserved
+   patterns, checked construction, and decoding. Make pool entries retain
+   explicit kind metadata, and represent reserved anonymous entries, declared
+   nominal shells, and completed definitions distinctly.
+2. **RUE-836 — migrate pool and phase APIs.** Change structural interning,
+   lookup, keys, and consumers to accept and return `Type`. Add the
+   `Reserved -> Complete` and `Declared -> Complete` transitions,
+   operation-specific entry-state checks, the exact structural representability
+   rules, and fallible durable-import validation. Preserve the owner/pool
+   boundary without introducing a branded replacement handle. Use raw pool
+   positions only inside the pool; retain opaque category-specific IDs where
+   the typed public API needs them.
+3. **RUE-837 — prove the representation.** Add round-trip and uniqueness
+   properties, malformed/corrupt encoding tests, the exact child-representability
+   matrix, recursive declared-shell coverage, both single-completion
+   transitions, overwrite rejection, operation-specific incomplete-state
+   failures, recovery-`Error` success-boundary rejection, structural
+   deduplication, durable cross-epoch round trips, and concurrent interning
+   coverage.
+4. **RUE-838 — remove the transitional universe.** Delete `InternedType`,
+   bidirectional conversions, duplicate primitive tables, migration
+   scaffolding, and exports that expose raw pool implementation details. Update
+   this ADR's context, checklist, status, and generated index to describe the
+   completed architecture.
+
+This is a sequential dependency chain, not parallel work. Linear relations must
+record `RUE-836 blockedBy RUE-835` and `RUE-837 blockedBy RUE-836`. The migrated
+API supplies the final surface for RUE-837, and RUE-838 removes compatibility
+code only after those properties pass.
+
+## Ownership boundaries
+
+| Concern | Authority |
+| --- | --- |
+| Live compiler type identity and decoding | `Type` and `TypeKind` |
+| Composite definitions and structural canonicalization | `TypeInternPool` |
+| Backend-facing immutable type metadata | `FrozenTypeInternPool` |
+| Raw pool positions and unchecked construction/extraction | Private pool implementation |
+| Opaque category-specific IDs used by `TypeKind` or typed category APIs | Public only at those typed boundaries |
+| Stable cross-revision type identity | `DurableType` and import/export schemas |
+| Orchestration and artifact lifetime | `CompilerSession` |
+
+No consumer may reproduce a responsibility from another row merely for
+presentation, compatibility, or convenience.
+
+## Non-goals
+
+This decision does not:
+
+- change Rue language type semantics or syntax;
+- prescribe persistent serialization of the live `Type` encoding;
+- make live `Type` values stable across compiler requests or pool epochs;
+- replace `DurableType`, stable definition keys, or semantic import/export
+  schemas;
+- redesign the semantic mutation ownership or frozen-pool sharing boundary
+  established by RUE-659 and RUE-660;
+- add new type categories, generic semantics, layout rules, or codegen behavior;
+  or
+- require compiler source changes in RUE-766 itself.
+
+## Consequences
+
+### Benefits
+
+- Phase signatures communicate one type identity consistently.
+- O(1) live type equality is preserved without parallel primitive tables.
+- Structural interning cannot erase composite kind information.
+- Checked decoding and corruption tests cover the same representation used by
+  production phases.
+- The pool's public surface becomes smaller and its storage mechanics remain
+  replaceable.
+- Durable incremental artifacts remain independent of request-local allocation
+  and representation choices.
+
+### Costs and risks
+
+- Migrating keys and APIs touches semantic and pool code broadly even though
+  language behavior is unchanged.
+- A centralized encoding change can have wide impact; property tests and
+  corruption tests must land before compatibility scaffolding is deleted.
+- Compact encodings have finite tag and payload space. Constructors must reject
+  overflow rather than truncate IDs into a different valid type.
+- Concurrent structural interning must preserve one canonical result under
+  contention.
+- Explicit private pool-entry reservation state may reveal construction paths
+  that currently read placeholder definitions. Those paths must establish
+  completion rather than weakening the invariant.
+
+## Completion criteria
+
+ADR-0024 returns to `implemented` only when:
+
+- [ ] RUE-835, RUE-836, RUE-837, and RUE-838 are merged.
+- [ ] Public compiler phase APIs use `Type` for live type values.
+- [ ] `InternedType` and its public conversions and exports no longer exist.
+- [ ] Primitive, tag, malformed/encoding-reserved pattern, construction-limit,
+      and decoding logic has one authoritative implementation.
+- [ ] Encoding tests distinguish encoding-valid values from malformed or
+      encoding-reserved values without requiring a pool.
+- [ ] Live phase artifacts retain their authoritative pool, and no API treats
+      naked `Type` bits as a cross-epoch transfer format.
+- [ ] Pool-aware reads check range, stored category, entry state, and
+      operation-specific child requirements in the owner-provided pool without
+      claiming to detect coincidentally equal foreign bits.
+- [ ] Reserved anonymous entries are private and unissued as `Type`; declared
+      nominal shells may be issued and used in recursive structural keys/type
+      graphs.
+- [ ] `Reserved -> Complete` and `Declared -> Complete` preserve slot identity,
+      happen at most once, reject completed-entry overwrite, and enforce
+      duplicate-name and wrong-kind checks.
+- [ ] Definition, layout, durable, backend, and successful-compilation reads
+      reject declared shells; ordinary reads reject reserved entries; freeze
+      rejects either incomplete state.
+- [ ] Structural interning consumes and returns `Type`, enforces the child
+      legality matrix, and remains deterministic under concurrency.
+- [ ] Property and corruption tests cover encoding validity, pool/epoch
+      validity under an authoritative owner, all encoding categories, every
+      structural child category, recursive declared shells, and malformed,
+      wrong-kind, out-of-range, reserved, and declared cases.
+- [ ] Recovery structural types containing `Error` are canonical for diagnostics
+      and may survive freeze on error paths, but successful durable export,
+      layout, backend work, and compilation reject them.
+- [ ] A source and public-API inventory proves durable types contain no live
+      bits, pool indices, nominal IDs, or unchecked conversion path.
+- [ ] Durable projection/import tests perform successful cross-epoch round
+      trips and prove malformed or illegal imports fail closed.
+- [ ] The focused type/pool tests and Rue's required compiler validation suites
+      pass.
+- [ ] RUE-838 updates this ADR's acceptance-time context, checklist, status, and
+      generated README index to record the verified completed architecture.
+
+## References
+
+- [ADR-0050: Stable semantic dependency manifests](0050-semantic-dependency-manifest.md)
+- [ADR-0053: Typed CompilerSession query state](0053-typed-compiler-query-state.md)

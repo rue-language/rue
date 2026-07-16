@@ -186,7 +186,7 @@ The table is generated from ADR frontmatter. Run
 | [0021](0021-stdin-input.md) | Standard Input | Implemented | io, intrinsics, runtime |
 | [0022](0022-integer-parsing.md) | Integer Parsing | Implemented | intrinsics, runtime, strings |
 | [0023](0023-multi-file-compilation.md) | Multi-File Compilation | Superseded | architecture, compiler, scalability |
-| [0024](0024-type-intern-pool.md) | Type Intern Pool | Implemented | type-system, performance, parallelization |
+| [0024](0024-type-intern-pool.md) | Canonical Type Handle and Intern Pool | Accepted | architecture, type-system, performance, parallelization |
 | [0025](0025-comptime.md) | Compile-Time Execution (comptime) | Implemented | compiler, type-system, generics |
 | [0026](0026-module-system.md) | Module System | Stable | architecture, compiler, modules, scalability |
 | [0027](0027-random-intrinsics.md) | Random Number Intrinsics | Implemented | intrinsics, runtime, semantics |
