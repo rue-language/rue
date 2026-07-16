@@ -47,7 +47,6 @@ mod codegen_pipeline;
 mod schedule_core;
 mod stack_frame;
 mod stack_verify;
-mod storage_lower;
 pub mod terminator_plan;
 pub mod value_plan;
 

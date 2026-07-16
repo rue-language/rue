@@ -43,6 +43,24 @@ pub enum UserArgMode {
     Borrow,
 }
 
+/// The only modes that can produce a by-reference call input. Keeping this
+/// separate from `UserArgMode` makes a raw CFG value impossible to pair with
+/// an `inout` or `borrow` input in `CallArgInput::Value`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByRefMode {
+    Inout,
+    Borrow,
+}
+
+impl From<ByRefMode> for UserArgMode {
+    fn from(mode: ByRefMode) -> Self {
+        match mode {
+            ByRefMode::Inout => Self::Inout,
+            ByRefMode::Borrow => Self::Borrow,
+        }
+    }
+}
+
 /// One classified user argument.  Its vregs are already materialized by the
 /// shared aggregate/by-ref leaves, but no physical ABI assignment has happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,18 +121,28 @@ pub struct CallPlan {
     /// present.  This is the only slot vector the adapters may marshal.
     pub abi_slots: Vec<VReg>,
     pub return_plan: ReturnPlan,
+    /// Result vreg reserved by the shared dispatcher before argument leaves
+    /// materialize, preserving the canonical event allocation order.
+    pub result: Option<VReg>,
     pub stack_slot_count: usize,
     pub stack_bytes: u32,
 }
 
-/// Input metadata for one CFG call argument.  This is copied out of the CFG
-/// before the mutable materialization adapter is borrowed.
-#[derive(Debug, Clone, Copy)]
-pub struct CallArgInput {
-    pub value: rue_cfg::CfgValue,
-    pub mode: CfgArgMode,
-    pub slot_count: u32,
-    pub is_multislot_aggregate: bool,
+/// Input metadata for one CFG call argument. This is copied out of the CFG
+/// before the mutable materialization adapter is borrowed. A by-reference
+/// input deliberately has no CFG value handle: its addressability has already
+/// been decided by the shared value planner.
+#[derive(Debug, Clone)]
+pub enum CallArgInput {
+    Value {
+        value: rue_cfg::CfgValue,
+        slot_count: u32,
+        is_multislot_aggregate: bool,
+    },
+    ByRef {
+        mode: ByRefMode,
+        address: crate::value_plan::ByRefAddressPlan,
+    },
 }
 
 /// Shared policy inputs copied from a CFG before backend materialization.
@@ -130,18 +158,27 @@ impl CallInputs {
         type_pool: &FrozenTypeInternPool,
         return_ty: Type,
         args: &[CfgCallArg],
+        by_ref_plans: &[Option<crate::value_plan::ByRefAddressPlan>],
         ret_reg_budget: u32,
     ) -> Self {
+        assert_eq!(
+            args.len(),
+            by_ref_plans.len(),
+            "call argument classification must cover every CFG argument"
+        );
         let args = args
             .iter()
-            .map(|arg| {
+            .zip(by_ref_plans)
+            .map(|(arg, by_ref_plan)| {
                 let arg_ty = cfg.get_inst(arg.value).ty;
-                CallArgInput {
-                    value: arg.value,
-                    mode: arg.mode,
-                    slot_count: types::type_slot_count(type_pool, arg_ty),
-                    is_multislot_aggregate: types::is_multislot_aggregate(type_pool, arg_ty),
-                }
+                normalize_call_arg(
+                    arg.mode,
+                    arg.value,
+                    types::type_slot_count(type_pool, arg_ty),
+                    types::is_multislot_aggregate(type_pool, arg_ty),
+                    by_ref_plan.clone(),
+                )
+                .unwrap_or_else(|message| panic!("{message}"))
             })
             .collect();
         Self {
@@ -151,9 +188,33 @@ impl CallInputs {
     }
 }
 
-impl CallArgInput {
-    fn is_by_ref(self) -> bool {
-        matches!(self.mode, CfgArgMode::Inout | CfgArgMode::Borrow)
+fn normalize_call_arg(
+    mode: CfgArgMode,
+    value: rue_cfg::CfgValue,
+    slot_count: u32,
+    is_multislot_aggregate: bool,
+    by_ref_plan: Option<crate::value_plan::ByRefAddressPlan>,
+) -> Result<CallArgInput, &'static str> {
+    match (mode, by_ref_plan) {
+        (CfgArgMode::Normal, None) => Ok(CallArgInput::Value {
+            value,
+            slot_count,
+            is_multislot_aggregate,
+        }),
+        (CfgArgMode::Inout, Some(address)) => Ok(CallArgInput::ByRef {
+            mode: ByRefMode::Inout,
+            address,
+        }),
+        (CfgArgMode::Borrow, Some(address)) => Ok(CallArgInput::ByRef {
+            mode: ByRefMode::Borrow,
+            address,
+        }),
+        (CfgArgMode::Normal, Some(_)) => {
+            Err("normal call argument cannot have a by-reference address plan")
+        }
+        (CfgArgMode::Inout | CfgArgMode::Borrow, None) => {
+            Err("by-reference call argument requires an address plan")
+        }
     }
 }
 
@@ -163,7 +224,7 @@ impl CallArgInput {
 pub trait CallMaterializer {
     fn materialize_scalar(&mut self, value: rue_cfg::CfgValue) -> VReg;
     fn materialize_aggregate(&mut self, value: rue_cfg::CfgValue) -> Vec<VReg>;
-    fn materialize_by_ref(&mut self, value: rue_cfg::CfgValue, mode: CfgArgMode) -> VReg;
+    fn materialize_by_ref(&mut self, plan: &crate::value_plan::ByRefAddressPlan) -> VReg;
     fn materialize_sret_pointer(&mut self, storage_bytes: u32) -> VReg;
 }
 
@@ -180,6 +241,24 @@ impl CallPlan {
         args: &[CallArgInput],
         arg_reg_budget: usize,
         materializer: &mut M,
+    ) -> Self {
+        Self::from_inputs_with_result(
+            symbol,
+            return_plan,
+            args,
+            arg_reg_budget,
+            materializer,
+            None,
+        )
+    }
+
+    pub fn from_inputs_with_result<M: CallMaterializer>(
+        symbol: &str,
+        return_plan: ReturnPlan,
+        args: &[CallArgInput],
+        arg_reg_budget: usize,
+        materializer: &mut M,
+        result: Option<VReg>,
     ) -> Self {
         let callee_abi = CalleeAbi::for_symbol(symbol);
         let mut hidden_sret = None;
@@ -202,34 +281,36 @@ impl CallPlan {
 
         let mut user_args = Vec::with_capacity(args.len());
         for arg in args {
-            let mode = match arg.mode {
-                CfgArgMode::Normal => UserArgMode::Value,
-                CfgArgMode::Inout => UserArgMode::Inout,
-                CfgArgMode::Borrow => UserArgMode::Borrow,
-            };
-
-            let slots = if arg.is_by_ref() {
-                // A reference is an ABI pointer even when the pointee has no
-                // storage slots.  This branch must precede the ZST omission.
-                vec![materializer.materialize_by_ref(arg.value, arg.mode)]
-            } else {
-                let slot_count = arg.slot_count;
-                if slot_count == 0 {
-                    Vec::new()
-                } else if arg.is_multislot_aggregate {
-                    let slots = materializer.materialize_aggregate(arg.value);
-                    assert_eq!(
-                        slots.len(),
-                        slot_count as usize,
-                        "aggregate materialization must produce every logical ABI slot"
-                    );
-                    if callee_abi == CalleeAbi::Runtime {
-                        slots
+            let (mode, slots) = match arg {
+                CallArgInput::ByRef { mode, address } => (
+                    (*mode).into(),
+                    // A reference is an ABI pointer even when the pointee has
+                    // no storage slots. This branch precedes ZST omission.
+                    vec![materializer.materialize_by_ref(address)],
+                ),
+                CallArgInput::Value {
+                    value,
+                    slot_count,
+                    is_multislot_aggregate,
+                } => {
+                    let slots = if *slot_count == 0 {
+                        Vec::new()
+                    } else if *is_multislot_aggregate {
+                        let slots = materializer.materialize_aggregate(*value);
+                        assert_eq!(
+                            slots.len(),
+                            *slot_count as usize,
+                            "aggregate materialization must produce every logical ABI slot"
+                        );
+                        if callee_abi == CalleeAbi::Runtime {
+                            slots
+                        } else {
+                            slots.into_iter().rev().collect()
+                        }
                     } else {
-                        slots.into_iter().rev().collect()
-                    }
-                } else {
-                    vec![materializer.materialize_scalar(arg.value)]
+                        vec![materializer.materialize_scalar(*value)]
+                    };
+                    (UserArgMode::Value, slots)
                 }
             };
 
@@ -247,6 +328,7 @@ impl CallPlan {
             user_args,
             abi_slots,
             return_plan,
+            result,
             stack_slot_count,
             stack_bytes,
         }
@@ -266,6 +348,7 @@ impl CallPlan {
             }],
             abi_slots: slots.to_vec(),
             return_plan: ReturnPlan::ZeroSized,
+            result: None,
             stack_slot_count,
             stack_bytes: align_up((stack_slot_count * 8) as u32, 16),
         }
@@ -309,13 +392,67 @@ mod tests {
             vec![VReg::new(10), VReg::new(11)]
         }
 
-        fn materialize_by_ref(&mut self, _value: rue_cfg::CfgValue, _mode: CfgArgMode) -> VReg {
+        fn materialize_by_ref(&mut self, _plan: &crate::value_plan::ByRefAddressPlan) -> VReg {
             VReg::new(30)
         }
 
         fn materialize_sret_pointer(&mut self, _storage_bytes: u32) -> VReg {
             VReg::new(40)
         }
+    }
+
+    #[test]
+    fn call_arg_input_structurally_separates_values_and_by_ref_modes() {
+        let address = crate::value_plan::ByRefAddressPlan::FrameSlot {
+            slot: 2,
+            low_shift: 0,
+        };
+        let value = normalize_call_arg(
+            CfgArgMode::Normal,
+            rue_cfg::CfgValue::from_raw(1),
+            1,
+            false,
+            None,
+        )
+        .expect("normal values should normalize without an address plan");
+        assert!(matches!(value, CallArgInput::Value { .. }));
+
+        let by_ref = normalize_call_arg(
+            CfgArgMode::Borrow,
+            rue_cfg::CfgValue::from_raw(2),
+            1,
+            false,
+            Some(address.clone()),
+        )
+        .expect("borrow arguments should normalize with an address plan");
+        assert!(matches!(
+            by_ref,
+            CallArgInput::ByRef {
+                mode: ByRefMode::Borrow,
+                ..
+            }
+        ));
+
+        assert!(
+            normalize_call_arg(
+                CfgArgMode::Normal,
+                rue_cfg::CfgValue::from_raw(3),
+                1,
+                false,
+                Some(address.clone()),
+            )
+            .is_err()
+        );
+        assert!(
+            normalize_call_arg(
+                CfgArgMode::Inout,
+                rue_cfg::CfgValue::from_raw(4),
+                1,
+                false,
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -348,6 +485,7 @@ mod tests {
             ],
             abi_slots: slots.clone(),
             return_plan: ReturnPlan::ZeroSized,
+            result: None,
             stack_slot_count: 0,
             stack_bytes: 0,
         };
@@ -376,21 +514,20 @@ mod tests {
     #[test]
     fn cfg_plan_orders_aggregate_slots_by_callee_abi_and_keeps_hidden_sret_first() {
         let args = [
-            CallArgInput {
+            CallArgInput::Value {
                 value: rue_cfg::CfgValue::from_raw(1),
-                mode: CfgArgMode::Normal,
                 slot_count: 2,
                 is_multislot_aggregate: true,
             },
-            CallArgInput {
-                value: rue_cfg::CfgValue::from_raw(2),
-                mode: CfgArgMode::Borrow,
-                slot_count: 0,
-                is_multislot_aggregate: false,
+            CallArgInput::ByRef {
+                mode: ByRefMode::Borrow,
+                address: crate::value_plan::ByRefAddressPlan::FrameSlot {
+                    slot: 2,
+                    low_shift: 0,
+                },
             },
-            CallArgInput {
+            CallArgInput::Value {
                 value: rue_cfg::CfgValue::from_raw(3),
-                mode: CfgArgMode::Normal,
                 slot_count: 0,
                 is_multislot_aggregate: false,
             },

@@ -29,13 +29,13 @@ use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
 use rue_air::{FrozenTypeInternPool, TypeKind};
-use rue_cfg::{BlockId, Cfg, CfgInstData, CfgValue, Place, Type};
+use rue_cfg::{BlockId, Cfg, CfgValue, Type};
 use rue_error::CompileResult;
 
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
+use crate::agg_slots::SlotBackend;
 use crate::allocation;
 use crate::cfg_lower::CfgLowerContext;
-use crate::types;
 use crate::vreg::BLOCK_LABEL_BASE;
 
 /// Argument passing registers per System V AMD64 ABI. ABI arg slots beyond
@@ -86,8 +86,8 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         self.require_aggregate_slots(value)
     }
 
-    fn materialize_by_ref(&mut self, value: CfgValue, mode: rue_cfg::CfgArgMode) -> VReg {
-        crate::byref_args::lower_byref_arg_addr(self, value, mode == rue_cfg::CfgArgMode::Inout)
+    fn materialize_by_ref(&mut self, plan: &crate::value_plan::ByRefAddressPlan) -> VReg {
+        crate::byref_args::lower_byref_arg_addr(self, plan)
     }
 
     fn materialize_sret_pointer(&mut self, storage_bytes: u32) -> VReg {
@@ -145,28 +145,15 @@ impl<'a> CfgLower<'a> {
         self.mir.intern_symbol(symbol)
     }
 
-    /// Recursively collect all scalar vregs from an array value.
-    fn collect_array_scalar_vregs(&mut self, value: CfgValue) -> Vec<VReg> {
-        let slot_vregs = self.struct_slot_vregs.clone();
-        types::collect_array_scalar_vregs(self.ctx.cfg, &slot_vregs, value, &mut |v| {
-            self.get_vreg(v)
-        })
+    fn emit_store_ptr_base(&mut self, src: VReg, ptr: VReg) {
+        self.mir.push(X86Inst::MovMRIndexed {
+            base: ptr,
+            offset: 0,
+            src: Operand::Virtual(src),
+        });
     }
 
     /// Recursively collect all scalar vregs from a struct value.
-    fn collect_struct_scalar_vregs(&mut self, value: CfgValue) -> Vec<VReg> {
-        let slot_vregs = self.struct_slot_vregs.clone();
-        types::collect_struct_scalar_vregs(self.ctx.cfg, &slot_vregs, value, &mut |v| {
-            self.get_vreg(v)
-        })
-    }
-
-    /// Ensure the by-reference parameter pointer vreg exists for the given slot.
-    /// If the pointer has already been loaded (via a Param instruction), returns the cached vreg.
-    /// Otherwise, loads the pointer from the parameter slot and caches it.
-    ///
-    /// This is needed because ParamStore and parameter-based PlaceWrite may reference a by-ref param
-    /// that was never accessed via a Param instruction (e.g., write-only parameter).
     fn ensure_by_ref_param_ptr(&mut self, param_slot: u32) -> VReg {
         if let Some(ptr_vreg) = self.by_ref_param_ptrs.get(&param_slot).copied() {
             return ptr_vreg;
@@ -198,73 +185,18 @@ impl<'a> CfgLower<'a> {
         }
     }
 
+    /// Emit a target-local cleanup call using the normalized slot vector.
+    fn emit_slot_call(&mut self, arg_vregs: &[VReg], symbol: &str) {
+        let plan = crate::call_plan::CallPlan::from_slot_values(symbol, arg_vregs, ARG_REGS.len());
+        let _ = self.lower_call_plan(plan);
+    }
+
     /// Call `symbol` passing `arg_vregs` as flattened by-value slot arguments
     /// per the standard convention: the first slots in ARG_REGS, the rest
     /// pushed on the stack (16-byte aligned, cleaned up after the call) —
     /// the same shape as generic `Call` lowering. Drop and drop-glue calls use
     /// this path so every slot beyond the six register arguments is passed on
     /// the stack (RUE-193).
-    fn emit_call_with_slot_args(&mut self, arg_vregs: &[VReg], symbol: &str) {
-        let plan = crate::call_plan::CallPlan::from_slot_values(symbol, arg_vregs, ARG_REGS.len());
-        let num_reg_args = plan.abi_slots.len().min(ARG_REGS.len());
-        let num_stack_args = plan.stack_slot_count;
-
-        // RSP must be 16-byte aligned before the call; each push is 8 bytes,
-        // so an odd number of stack arguments needs 8 bytes of padding.
-        let needs_alignment = plan.stack_bytes > (num_stack_args * 8) as u32;
-        if needs_alignment {
-            self.mir.push(X86Inst::AddRI {
-                dst: Operand::Physical(Reg::Rsp),
-                imm: -8,
-            });
-        }
-
-        // Push stack arguments (in reverse, so the lowest-index slot ends up
-        // at the lowest address), then stage register arguments via push/pop
-        // so regalloc's scratch use of rax can't clobber them.
-        for arg_vreg in plan.abi_slots.iter().skip(ARG_REGS.len()).rev() {
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Physical(Reg::Rax),
-                src: Operand::Virtual(*arg_vreg),
-            });
-            self.mir.push(X86Inst::Push {
-                src: Operand::Physical(Reg::Rax),
-            });
-        }
-        for arg_vreg in plan.abi_slots.iter().take(num_reg_args).rev() {
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Physical(Reg::Rax),
-                src: Operand::Virtual(*arg_vreg),
-            });
-            self.mir.push(X86Inst::Push {
-                src: Operand::Physical(Reg::Rax),
-            });
-        }
-        for reg in ARG_REGS.iter().take(num_reg_args) {
-            self.mir.push(X86Inst::Pop {
-                dst: Operand::Physical(*reg),
-            });
-        }
-
-        let symbol_id = self.intern_symbol(&plan.symbol);
-        self.mir.push(X86Inst::CallRel { symbol_id });
-
-        // Clean up stack arguments and alignment padding
-        if num_stack_args > 0 || needs_alignment {
-            let stack_space = plan.stack_bytes as i32;
-            self.mir.push(X86Inst::AddRI {
-                dst: Operand::Physical(Reg::Rsp),
-                imm: stack_space,
-            });
-        }
-    }
-
-    /// Emit the divide instruction for a div/mod, with the dividend already in
-    /// RAX. Sign-extends (signed) or zero-extends (unsigned) the dividend into
-    /// RDX:RAX, then divides by `rhs_vreg`, selecting 64-bit forms (CQO + REX.W
-    /// idiv/div) for 64-bit operands instead of the 32-bit CDQ + idiv/div that
-    /// would only operate on the low 32 bits (RUE-26). Quotient lands in RAX,
-    /// remainder in RDX.
     fn emit_div_core(&mut self, is_64: bool, is_signed: bool, rhs_vreg: VReg) {
         if is_signed {
             // Sign-extend (R/E)AX into (R/E)DX.
@@ -314,6 +246,7 @@ impl<'a> CfgLower<'a> {
         width: crate::value_plan::IntegerWidth,
         lhs_vreg: VReg,
         rhs_vreg: VReg,
+        trap_symbol: &str,
     ) {
         let ok_label = self.new_label();
         if width.bits == 64 {
@@ -350,56 +283,19 @@ impl<'a> CfgLower<'a> {
         self.mir.push(X86Inst::Jnz { label: ok_label });
 
         // Overflow - call panic handler
-        let symbol_id = self.intern_symbol("__rue_overflow");
+        let symbol_id = self.intern_symbol(trap_symbol);
         self.mir.push(X86Inst::CallRel { symbol_id });
         self.mir.push(X86Inst::Label { id: ok_label });
-    }
-
-    /// The AND mask (bit_width - 1) applied to a shift count, since the count
-    /// is taken modulo the operand's bit width (spec 4.3a:10).
-    fn shift_count_mask(ty: Type) -> u64 {
-        match Self::type_bits(ty) {
-            8 => 0x07,
-            16 => 0x0F,
-            64 => 0x3F,
-            _ => 0x1F, // 32-bit
-        }
     }
 
     /// Materialize the shift count masked to the operand's bit width into a
     /// fresh vreg, so a sub-word variable count >= the width wraps per spec
     /// (the x86 CL shift only masks by 31/63). For 32/64-bit operands the
     /// hardware mask already matches, so the count is returned unmasked.
-    fn emit_masked_shift_count(&mut self, rhs: CfgValue, ty: Type) -> VReg {
-        let rhs_vreg = self.get_vreg(rhs);
-        if Self::type_bits(ty) >= 32 {
-            return rhs_vreg;
-        }
-        let mask_vreg = self.mir.alloc_vreg();
-        self.mir.push(X86Inst::MovRI32 {
-            dst: Operand::Virtual(mask_vreg),
-            imm: Self::shift_count_mask(ty) as i32,
-        });
-        let count_vreg = self.mir.alloc_vreg();
-        self.mir.push(X86Inst::MovRR {
-            dst: Operand::Virtual(count_vreg),
-            src: Operand::Virtual(rhs_vreg),
-        });
-        self.mir.push(X86Inst::AndRR {
-            dst: Operand::Virtual(count_vreg),
-            src: Operand::Virtual(mask_vreg),
-        });
-        count_vreg
-    }
-
-    /// Narrow a value to a sub-word integer type by sign-/zero-extending its
-    /// low byte/word over the register, so it holds the correct value for the
-    /// type after an op that may have set bits above the operand width (e.g. a
-    /// left shift). No-op for 32/64-bit types.
     fn emit_subword_narrow(&mut self, vreg: VReg, ty: Type) {
         let dst = Operand::Virtual(vreg);
         let src = Operand::Virtual(vreg);
-        match Self::type_bits(ty) {
+        match crate::value_plan::type_bits(ty) {
             8 if crate::value_plan::type_is_signed(ty) => {
                 self.mir.push(X86Inst::Movsx8To64 { dst, src })
             }
@@ -439,12 +335,6 @@ impl<'a> CfgLower<'a> {
 
     /// Get or compute the slot vregs for a multi-slot aggregate value.
     /// Single shared implementation — see crate::agg_slots. (RUE-121)
-    fn get_or_compute_field_vregs(&mut self, value: CfgValue) -> Option<Vec<VReg>> {
-        crate::agg_slots::get_or_compute_field_vregs(self, value)
-    }
-
-    /// Materialize every slot of a multi-slot aggregate or fail the CFG
-    /// representation invariant.
     fn require_aggregate_slots(&mut self, value: CfgValue) -> Vec<VReg> {
         crate::agg_slots::require_aggregate_slots(self, value)
     }
@@ -478,36 +368,36 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Generate rationale for instruction lowering decisions.
-    fn get_lowering_rationale(&self, data: &CfgInstData, ty: Type) -> Option<String> {
-        match data {
-            CfgInstData::Add(_, _) | CfgInstData::Sub(_, _) | CfgInstData::Mul(_, _) => {
+    fn get_lowering_rationale(
+        &self,
+        kind: crate::value_plan::ValueKind,
+        ty: Type,
+    ) -> Option<String> {
+        match kind {
+            crate::value_plan::ValueKind::Constant => {
+                if crate::value_plan::integer_width(ty).is_some_and(|width| width.bits <= 32) {
+                    Some("32-bit immediate (zero-extends to 64-bit)".to_string())
+                } else {
+                    Some("64-bit immediate required".to_string())
+                }
+            }
+            crate::value_plan::ValueKind::BinaryArithmetic => {
                 if crate::value_plan::is_64_bit(ty) {
                     Some("64-bit operation with 64-bit overflow check".to_string())
-                } else if matches!(
-                    ty.kind(),
-                    TypeKind::I8
-                        | TypeKind::I16
-                        | TypeKind::I32
-                        | TypeKind::U8
-                        | TypeKind::U16
-                        | TypeKind::U32
-                ) {
-                    Some("32-bit operation with overflow check".to_string())
                 } else {
-                    None
+                    Some("operation with overflow check".to_string())
                 }
             }
-            CfgInstData::Div(_, _) | CfgInstData::Mod(_, _) => {
-                if matches!(
-                    ty.kind(),
-                    TypeKind::I8 | TypeKind::I16 | TypeKind::I32 | TypeKind::I64
-                ) {
-                    Some("Signed division: uses CDQ/IDIV sequence".to_string())
-                } else {
-                    Some("Unsigned division: uses XOR/DIV sequence".to_string())
-                }
+            crate::value_plan::ValueKind::Call => {
+                Some("SysV ABI call uses the shared logical slot plan".to_string())
             }
-            CfgInstData::Shr(_, _) => {
+            crate::value_plan::ValueKind::Parameter => {
+                Some("Parameter uses the shared ABI slot plan".to_string())
+            }
+            crate::value_plan::ValueKind::PlaceRead | crate::value_plan::ValueKind::PlaceWrite => {
+                Some("Place operation with bounds checks".to_string())
+            }
+            crate::value_plan::ValueKind::Shift => {
                 if matches!(
                     ty.kind(),
                     TypeKind::I8 | TypeKind::I16 | TypeKind::I32 | TypeKind::I64
@@ -517,2395 +407,1681 @@ impl<'a> CfgLower<'a> {
                     Some("Unsigned shift right (SHR) zero-extends".to_string())
                 }
             }
-            CfgInstData::Call {
-                args_start,
-                args_len,
-                ..
-            } => {
-                let args = self.ctx.cfg.get_call_args(*args_start, *args_len);
-                let inout_count = args.iter().filter(|a| a.is_inout()).count();
-                let borrow_count = args.iter().filter(|a| a.is_borrow()).count();
-                if inout_count > 0 || borrow_count > 0 {
-                    Some(format!(
-                        "SysV ABI with {} inout, {} borrow params (passed as pointers)",
-                        inout_count, borrow_count
-                    ))
-                } else if args.len() > 6 {
-                    Some("SysV ABI with stack-passed arguments".to_string())
-                } else {
-                    None
-                }
-            }
-            CfgInstData::Param { index } => {
-                if self.ctx.cfg.is_param_by_ref(*index) {
-                    Some("By-ref param: load pointer then dereference".to_string())
-                } else {
-                    // ABI slot: shifted by one when a hidden sret pointer
-                    // occupies the first arg register.
-                    let abi_index =
-                        *index as usize + self.ctx.uses_sret_return(RET_REGS.len() as u32) as usize;
-                    if abi_index < ARG_REGS.len() {
-                        Some(format!(
-                            "From frame param slot (arrived in {}, spilled by prologue)",
-                            ARG_REGS[abi_index]
-                        ))
-                    } else {
-                        Some(
-                            "From frame param slot (stack-passed arg, copied by prologue)"
-                                .to_string(),
-                        )
-                    }
-                }
-            }
-            CfgInstData::Const(v) => {
-                if *v <= u32::MAX as u64 {
-                    Some("32-bit immediate (zero-extends to 64-bit)".to_string())
-                } else {
-                    Some("64-bit immediate required".to_string())
-                }
-            }
-            CfgInstData::PlaceRead { .. } | CfgInstData::PlaceWrite { .. } => {
-                Some("Place operation with bounds checks".to_string())
-            }
             _ => None,
         }
     }
-
-    /// Generate rationale for terminator lowering decisions.
-    /// Lower a CFG value (instruction).
-    fn lower_value(&mut self, value: CfgValue) {
-        // Skip if already lowered
-        if self.value_map.contains_key(&value) {
-            return;
-        }
-
-        // Decide scalar-vs-complete-slot shape, storage root, comparison
-        // preparation, and integer width in the shared policy layer before any
-        // target instruction is selected.  The backend match below is an
-        // instruction-selection adapter; it must not make a competing shape
-        // decision.
-        let value_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, value);
-
-        let inst = self.ctx.cfg.get_inst(value);
-        let ty = inst.ty;
-        let plan_is_64 = value_plan
-            .integer_width
-            .is_some_and(|width| width.bits == 64);
-        let plan_is_signed = value_plan.integer_width.is_some_and(|width| width.signed);
-
-        assert_eq!(
-            value_plan.kind,
-            crate::value_plan::kind(&inst.data),
-            "backend value dispatch must consume the shared ValueKind"
-        );
-
-        match &inst.data {
-            CfgInstData::Const(v) => {
+    fn lower_checked_arithmetic(
+        &mut self,
+        plan: crate::value_plan::ArithmeticPlan,
+    ) -> crate::value_plan::MaterializedValue {
+        use crate::value_plan::ArithmeticOperation;
+        let trap_symbols = plan.trap_symbols;
+        let vreg = match plan.operation {
+            ArithmeticOperation::Add { lhs, rhs, width } => {
                 let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                // Use 32-bit immediate if value fits in unsigned 32-bit range
-                // (this is safe because mov r32, imm32 zero-extends to 64-bit)
-                if *v <= u32::MAX as u64 {
-                    self.mir.push(X86Inst::MovRI32 {
-                        dst: Operand::Virtual(vreg),
-                        imm: *v as i32,
-                    });
-                } else {
-                    // For values > u32::MAX, use 64-bit move
-                    // Cast to i64 to preserve the bit pattern
-                    self.mir.push(X86Inst::MovRI64 {
-                        dst: Operand::Virtual(vreg),
-                        imm: *v as i64,
-                    });
-                }
-            }
-
-            CfgInstData::BoolConst(v) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                self.mir.push(X86Inst::MovRI32 {
-                    dst: Operand::Virtual(vreg),
-                    imm: if *v { 1 } else { 0 },
-                });
-            }
-
-            CfgInstData::StringConst(string_id) => {
-                // A string literal is a fat pointer to its `.rodata` bytes. The
-                // slot count comes from the value's type: a `str` (ADR-0043
-                // Phase 3, RUE-324) is 2 words `{ptr, len}`; a `String` is 3
-                // words `{ptr, len, cap}`. The ptr/len words are identical in
-                // both — only `str` drops the (static, non-owning) cap word.
-                let ptr_vreg = self.mir.alloc_vreg();
-                let len_vreg = self.mir.alloc_vreg();
-
-                self.mir.push(X86Inst::StringConstPtr {
-                    dst: Operand::Virtual(ptr_vreg),
-                    string_id: *string_id,
-                });
-
-                self.mir.push(X86Inst::StringConstLen {
-                    dst: Operand::Virtual(len_vreg),
-                    string_id: *string_id,
-                });
-
-                let mut slot_vregs = vec![ptr_vreg, len_vreg];
-                if value_plan.shape.slot_count() >= 3 {
-                    let cap_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::StringConstCap {
-                        dst: Operand::Virtual(cap_vreg),
-                        string_id: *string_id,
-                    });
-                    slot_vregs.push(cap_vreg);
-                }
-
-                self.struct_slot_vregs.insert(value, slot_vregs);
-                self.value_map.insert(value, ptr_vreg);
-            }
-
-            CfgInstData::Param { index } => {
-                // Check if this parameter is physically passed by reference.
-                let is_by_ref = matches!(
-                    value_plan.storage,
-                    crate::value_plan::StoragePolicy::ParameterSlot { by_ref: true, .. }
-                );
-
-                // The prologue copies every ABI arg slot — register- and
-                // stack-passed alike — into the contiguous frame param area
-                // (slots num_locals..num_locals+num_params), so scalar,
-                // aggregate, and write paths all use uniform frame-slot loads,
-                // including ABI slots beyond the six argument registers.
-                // (RUE-13/79/91)
-                if is_by_ref && value_plan.shape.requires_complete_slots() {
-                    // Aggregate parameters must materialize their complete
-                    // logical representation through the shared slot policy.
-                    // In particular, a zero-slot struct/array has no frame
-                    // load at all; `max(1)` here would read a neighboring
-                    // slot and turn a ZST into a scalar value.
-                    let slots = self.require_aggregate_slots(value);
-                    let primary = slots
-                        .first()
-                        .copied()
-                        .unwrap_or_else(|| self.mir.alloc_vreg());
-                    self.value_map.insert(value, primary);
-                } else if is_by_ref {
-                    // For by-ref params, the slot contains a POINTER to the caller's memory.
-                    // Load the pointer, then dereference to get the value.
-                    let ptr_vreg = self.ensure_by_ref_param_ptr(*index);
-                    let val_vreg = self.mir.alloc_vreg();
-
-                    // Dereference the pointer to get the actual value
-                    self.mir.push(X86Inst::MovRMIndexed {
-                        dst: Operand::Virtual(val_vreg),
-                        base: ptr_vreg,
-                        offset: 0,
-                    });
-
-                    self.value_map.insert(value, val_vreg);
-                } else if value_plan.shape.requires_complete_slots() {
-                    let slots = self.require_aggregate_slots(value);
-                    let primary = slots
-                        .first()
-                        .copied()
-                        .unwrap_or_else(|| self.mir.alloc_vreg());
-                    self.value_map.insert(value, primary);
-                } else {
-                    // Normal parameter: the primary vreg is the value's LOGICAL
-                    // slot 0 (e.g. an enum's discriminant). Ascending layout
-                    // (ADR-0040 / RUE-311): logical slot 0 of a multi-slot param
-                    // is at its region's low end, frame slot `base + count - 1`;
-                    // a scalar (count 1) is at `base` unchanged.
-                    let vreg = self.mir.alloc_vreg();
-                    self.value_map.insert(value, vreg);
-
-                    let slot = self.ctx.num_locals + *index;
-                    let offset = self.ctx.local_offset(slot);
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(vreg),
-                        base: Reg::Rbp,
-                        offset,
-                    });
-                }
-            }
-
-            CfgInstData::BlockParam { .. } => {
-                // Block parameters are pre-allocated, nothing to do here
-            }
-
-            CfgInstData::Add(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
+                    src: Operand::Virtual(lhs),
                 });
-
-                // Use 64-bit add for 64-bit types to get correct overflow detection
-                if value_plan
-                    .integer_width
-                    .is_some_and(|width| width.bits == 64)
-                {
-                    self.mir.push(X86Inst::AddRR64 {
+                self.mir.push(if width.bits == 64 {
+                    X86Inst::AddRR64 {
                         dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                } else {
-                    self.mir.push(X86Inst::AddRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                }
-
-                // Overflow check - use appropriate flag based on signedness
-                self.emit_overflow_check(
-                    value_plan
-                        .integer_width
-                        .expect("arithmetic plan must include integer width"),
-                    vreg,
-                );
-            }
-
-            CfgInstData::Sub(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
-                });
-
-                // Use 64-bit sub for 64-bit types to get correct overflow detection
-                if value_plan
-                    .integer_width
-                    .is_some_and(|width| width.bits == 64)
-                {
-                    self.mir.push(X86Inst::SubRR64 {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                } else {
-                    self.mir.push(X86Inst::SubRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                }
-
-                // Overflow check - use appropriate flag based on signedness
-                self.emit_overflow_check(
-                    value_plan
-                        .integer_width
-                        .expect("arithmetic plan must include integer width"),
-                    vreg,
-                );
-            }
-
-            CfgInstData::Mul(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-
-                // Strength reduction: multiply by power of 2 -> shift left
-                // This replaces expensive IMUL (3-4 cycles) with SHL (1 cycle).
-                // Only apply to 32/64-bit types - sub-word types (i8, i16, u8, u16)
-                // have complex overflow checking that doesn't work well with shifts.
-                // Check rhs first (more common: x * constant), then lhs (constant * x)
-                //
-                // Future optimization: x * 2 could use `add x, x` instead of `shl x, 1`
-                // (same latency but potentially better for some microarchitectures).
-                let is_word_or_larger = value_plan
-                    .integer_width
-                    .is_some_and(|width| width.bits >= 32);
-                let shift_amount = if is_word_or_larger {
-                    self.try_power_of_two_shift(*rhs)
-                        .or_else(|| self.try_power_of_two_shift(*lhs))
-                } else {
-                    None
-                };
-
-                if let Some(shift) = shift_amount {
-                    // Use the non-constant operand as the value to shift
-                    let src_vreg = if self.try_power_of_two_shift(*rhs).is_some() {
-                        lhs_vreg
-                    } else {
-                        self.get_vreg(*rhs)
-                    };
-
-                    // Copy source to result
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(src_vreg),
-                    });
-
-                    // Emit shift left
-                    if plan_is_64 {
-                        self.mir.push(X86Inst::ShlRI {
-                            dst: Operand::Virtual(vreg),
-                            imm: shift,
-                        });
-                    } else {
-                        self.mir.push(X86Inst::Shl32RI {
-                            dst: Operand::Virtual(vreg),
-                            imm: shift,
-                        });
+                        src: Operand::Virtual(rhs),
                     }
-
-                    // Overflow check: shift back and compare with original
-                    // If they differ, bits were lost during the shift (overflow)
-                    let check_vreg = self.mir.alloc_vreg();
+                } else {
+                    X86Inst::AddRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs),
+                    }
+                });
+                self.emit_overflow_check(width, vreg, trap_symbols.overflow);
+                vreg
+            }
+            ArithmeticOperation::Sub { lhs, rhs, width } => {
+                let vreg = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(lhs),
+                });
+                self.mir.push(if width.bits == 64 {
+                    X86Inst::SubRR64 {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs),
+                    }
+                } else {
+                    X86Inst::SubRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs),
+                    }
+                });
+                self.emit_overflow_check(width, vreg, trap_symbols.overflow);
+                vreg
+            }
+            ArithmeticOperation::Mul {
+                lhs,
+                rhs,
+                width,
+                shift,
+            } => {
+                let vreg = self.mir.alloc_vreg();
+                if let Some((src, amount)) = shift.filter(|_| width.bits >= 32) {
                     self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(check_vreg),
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(src),
+                    });
+                    self.mir.push(if width.bits == 64 {
+                        X86Inst::ShlRI {
+                            dst: Operand::Virtual(vreg),
+                            imm: amount,
+                        }
+                    } else {
+                        X86Inst::Shl32RI {
+                            dst: Operand::Virtual(vreg),
+                            imm: amount,
+                        }
+                    });
+                    let check = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(check),
                         src: Operand::Virtual(vreg),
                     });
-
-                    // Use arithmetic shift (SAR) for signed, logical shift (SHR) for unsigned
-                    if plan_is_signed {
-                        if plan_is_64 {
-                            self.mir.push(X86Inst::SarRI {
-                                dst: Operand::Virtual(check_vreg),
-                                imm: shift,
-                            });
+                    self.mir.push(if width.signed {
+                        if width.bits == 64 {
+                            X86Inst::SarRI {
+                                dst: Operand::Virtual(check),
+                                imm: amount,
+                            }
                         } else {
-                            self.mir.push(X86Inst::Sar32RI {
-                                dst: Operand::Virtual(check_vreg),
-                                imm: shift,
-                            });
+                            X86Inst::Sar32RI {
+                                dst: Operand::Virtual(check),
+                                imm: amount,
+                            }
                         }
-                    } else if plan_is_64 {
-                        self.mir.push(X86Inst::ShrRI {
-                            dst: Operand::Virtual(check_vreg),
-                            imm: shift,
-                        });
+                    } else if width.bits == 64 {
+                        X86Inst::ShrRI {
+                            dst: Operand::Virtual(check),
+                            imm: amount,
+                        }
                     } else {
-                        self.mir.push(X86Inst::Shr32RI {
-                            dst: Operand::Virtual(check_vreg),
-                            imm: shift,
-                        });
-                    }
-
-                    // Compare with original value
-                    if plan_is_64 {
-                        self.mir.push(X86Inst::Cmp64RR {
-                            src1: Operand::Virtual(check_vreg),
-                            src2: Operand::Virtual(src_vreg),
-                        });
+                        X86Inst::Shr32RI {
+                            dst: Operand::Virtual(check),
+                            imm: amount,
+                        }
+                    });
+                    self.mir.push(if width.bits == 64 {
+                        X86Inst::Cmp64RR {
+                            src1: Operand::Virtual(check),
+                            src2: Operand::Virtual(src),
+                        }
                     } else {
-                        self.mir.push(X86Inst::CmpRR {
-                            src1: Operand::Virtual(check_vreg),
-                            src2: Operand::Virtual(src_vreg),
-                        });
-                    }
-
-                    // Jump if equal (no overflow)
-                    let ok_label = self.new_label();
-                    self.mir.push(X86Inst::Jz { label: ok_label });
-
-                    // Overflow - call panic handler
-                    let symbol_id = self.intern_symbol("__rue_overflow");
+                        X86Inst::CmpRR {
+                            src1: Operand::Virtual(check),
+                            src2: Operand::Virtual(src),
+                        }
+                    });
+                    let ok = self.new_label();
+                    self.mir.push(X86Inst::Jz { label: ok });
+                    let symbol_id = self.intern_symbol(trap_symbols.overflow);
                     self.mir.push(X86Inst::CallRel { symbol_id });
-                    self.mir.push(X86Inst::Label { id: ok_label });
-                } else if !plan_is_signed && is_word_or_larger {
-                    // Unsigned 32/64-bit: two-operand IMUL's OF/CF report
-                    // *signed* overflow, which both misses real unsigned
-                    // overflows and falsely fires on valid products with the
-                    // high bit set (RUE-148). Use the one-operand MUL
-                    // ((R/E)DX:(R/E)AX = (R/E)AX * src), whose CF/OF are set
-                    // exactly when the high half is non-zero — i.e. on
-                    // unsigned overflow — matching emit_overflow_check's JAE.
-                    let rhs_vreg = self.get_vreg(*rhs);
-
+                    self.mir.push(X86Inst::Label { id: ok });
+                } else if !width.signed && width.bits >= 32 {
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rax),
-                        src: Operand::Virtual(lhs_vreg),
+                        src: Operand::Virtual(lhs),
                     });
-                    self.mir.push(if plan_is_64 {
+                    self.mir.push(if width.bits == 64 {
                         X86Inst::Mul64R {
-                            src: Operand::Virtual(rhs_vreg),
+                            src: Operand::Virtual(rhs),
                         }
                     } else {
                         X86Inst::MulR {
-                            src: Operand::Virtual(rhs_vreg),
+                            src: Operand::Virtual(rhs),
                         }
                     });
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Physical(Reg::Rax),
                     });
-
-                    // MOV does not modify flags, so MUL's CF still drives the
-                    // JAE check here.
-                    self.emit_overflow_check(
-                        value_plan
-                            .integer_width
-                            .expect("arithmetic plan must include integer width"),
-                        vreg,
-                    );
+                    self.emit_overflow_check(width, vreg, trap_symbols.overflow);
                 } else {
-                    // Fall back to IMUL for non-power-of-2 constants
-                    let rhs_vreg = self.get_vreg(*rhs);
-
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(lhs_vreg),
+                        src: Operand::Virtual(lhs),
                     });
-
-                    // Use 64-bit mul for 64-bit types to get correct overflow detection
-                    if plan_is_64 {
-                        self.mir.push(X86Inst::ImulRR64 {
+                    self.mir.push(if width.bits == 64 {
+                        X86Inst::ImulRR64 {
                             dst: Operand::Virtual(vreg),
-                            src: Operand::Virtual(rhs_vreg),
-                        });
+                            src: Operand::Virtual(rhs),
+                        }
                     } else {
-                        self.mir.push(X86Inst::ImulRR {
+                        X86Inst::ImulRR {
                             dst: Operand::Virtual(vreg),
-                            src: Operand::Virtual(rhs_vreg),
-                        });
-                    }
-
-                    // Overflow check. IMUL's OF/CF mean *signed* overflow,
-                    // which is correct for i32/i64. Sub-word types (i8/i16/
-                    // u8/u16) ignore the flags entirely: the 32-bit IMUL of
-                    // (sign- or zero-extended) sub-word operands yields the
-                    // exact product mod 2^32, and emit_overflow_check
-                    // range-checks that value against the type's bounds.
-                    // (u32/u64 take the one-operand MUL branch above.)
-                    self.emit_overflow_check(
-                        value_plan
-                            .integer_width
-                            .expect("arithmetic plan must include integer width"),
-                        vreg,
-                    );
+                            src: Operand::Virtual(rhs),
+                        }
+                    });
+                    self.emit_overflow_check(width, vreg, trap_symbols.overflow);
                 }
+                vreg
             }
-
-            CfgInstData::Div(lhs, rhs) => {
+            ArithmeticOperation::Div { lhs, rhs, width } => {
                 let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                // Division by zero check. For a 64-bit divisor the test must be
-                // 64-bit — a 32-bit test would only look at the low half and
-                // falsely trap (or fail to trap) when the high bits differ
-                // (RUE-26).
-                let width = value_plan
-                    .integer_width
-                    .expect("division plan must include integer width");
-                let is_64 = width.bits == 64;
-                let ok_label = self.new_label();
-                if is_64 {
-                    self.mir.push(X86Inst::Test64RR {
-                        src1: Operand::Virtual(rhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
+                let ok = self.new_label();
+                self.mir.push(if width.bits == 64 {
+                    X86Inst::Test64RR {
+                        src1: Operand::Virtual(rhs),
+                        src2: Operand::Virtual(rhs),
+                    }
                 } else {
-                    self.mir.push(X86Inst::TestRR {
-                        src1: Operand::Virtual(rhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
-                }
-                self.mir.push(X86Inst::Jnz { label: ok_label });
-                let symbol_id = self.intern_symbol("__rue_div_by_zero");
+                    X86Inst::TestRR {
+                        src1: Operand::Virtual(rhs),
+                        src2: Operand::Virtual(rhs),
+                    }
+                });
+                self.mir.push(X86Inst::Jnz { label: ok });
+                let symbol_id = self.intern_symbol(trap_symbols.div_by_zero);
                 self.mir.push(X86Inst::CallRel { symbol_id });
-                self.mir.push(X86Inst::Label { id: ok_label });
-
-                // Signed MIN / -1 overflows; trap it explicitly (RUE-30).
+                self.mir.push(X86Inst::Label { id: ok });
                 if width.signed {
-                    self.emit_signed_div_overflow_check(
-                        value_plan
-                            .integer_width
-                            .expect("division plan must include integer width"),
-                        lhs_vreg,
-                        rhs_vreg,
-                    );
+                    self.emit_signed_div_overflow_check(width, lhs, rhs, trap_symbols.overflow);
                 }
-
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Physical(Reg::Rax),
-                    src: Operand::Virtual(lhs_vreg),
+                    src: Operand::Virtual(lhs),
                 });
-
-                // Use signed division (CDQ/CQO + IDIV) for signed types,
-                // unsigned division (XOR EDX,EDX + DIV) for unsigned types,
-                // selecting 64-bit forms for 64-bit operands (RUE-26).
-                self.emit_div_core(is_64, width.signed, rhs_vreg);
-
+                self.emit_div_core(width.bits == 64, width.signed, rhs);
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Physical(Reg::Rax),
                 });
+                vreg
             }
-
-            CfgInstData::Mod(lhs, rhs) => {
+            ArithmeticOperation::Mod { lhs, rhs, width } => {
                 let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                let width = value_plan
-                    .integer_width
-                    .expect("modulo plan must include integer width");
-                let is_64 = width.bits == 64;
-                let ok_label = self.new_label();
-                if is_64 {
-                    self.mir.push(X86Inst::Test64RR {
-                        src1: Operand::Virtual(rhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
+                let ok = self.new_label();
+                self.mir.push(if width.bits == 64 {
+                    X86Inst::Test64RR {
+                        src1: Operand::Virtual(rhs),
+                        src2: Operand::Virtual(rhs),
+                    }
                 } else {
-                    self.mir.push(X86Inst::TestRR {
-                        src1: Operand::Virtual(rhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
-                }
-                self.mir.push(X86Inst::Jnz { label: ok_label });
-                let symbol_id = self.intern_symbol("__rue_div_by_zero");
+                    X86Inst::TestRR {
+                        src1: Operand::Virtual(rhs),
+                        src2: Operand::Virtual(rhs),
+                    }
+                });
+                self.mir.push(X86Inst::Jnz { label: ok });
+                let symbol_id = self.intern_symbol(trap_symbols.div_by_zero);
                 self.mir.push(X86Inst::CallRel { symbol_id });
-                self.mir.push(X86Inst::Label { id: ok_label });
-
-                // Signed MIN % -1 overflows like MIN / -1 (the implied
-                // quotient -MIN is unrepresentable); trap it (RUE-30).
+                self.mir.push(X86Inst::Label { id: ok });
                 if width.signed {
-                    self.emit_signed_div_overflow_check(
-                        value_plan
-                            .integer_width
-                            .expect("modulo plan must include integer width"),
-                        lhs_vreg,
-                        rhs_vreg,
-                    );
+                    self.emit_signed_div_overflow_check(width, lhs, rhs, trap_symbols.overflow);
                 }
-
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Physical(Reg::Rax),
-                    src: Operand::Virtual(lhs_vreg),
+                    src: Operand::Virtual(lhs),
                 });
-
-                // Use signed division (CDQ/CQO + IDIV) for signed types,
-                // unsigned division (XOR EDX,EDX + DIV) for unsigned types,
-                // selecting 64-bit forms for 64-bit operands (RUE-26).
-                self.emit_div_core(is_64, width.signed, rhs_vreg);
-
+                self.emit_div_core(width.bits == 64, width.signed, rhs);
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Physical(Reg::Rdx),
                 });
+                vreg
             }
-
-            CfgInstData::Neg(operand) => {
+            ArithmeticOperation::Neg { value, width } => {
                 let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let operand_vreg = self.get_vreg(*operand);
-
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(operand_vreg),
+                    src: Operand::Virtual(value),
                 });
-
-                // Use 64-bit neg for 64-bit types to get correct overflow detection
-                if plan_is_64 {
-                    self.mir.push(X86Inst::Neg64 {
-                        dst: Operand::Virtual(vreg),
-                    });
-                } else {
-                    self.mir.push(X86Inst::Neg {
-                        dst: Operand::Virtual(vreg),
-                    });
-                }
-
-                // Overflow check for negation
-                // For signed types: NEG sets OF when negating MIN_VALUE
-                // For unsigned types: NEG sets CF for all non-zero values,
-                // but we only care about -0 = 0 (no overflow). Since negation
-                // of any non-zero unsigned value would wrap (0 - x), we check CF.
-                self.emit_overflow_check(
-                    value_plan
-                        .integer_width
-                        .expect("arithmetic plan must include integer width"),
-                    vreg,
-                );
-            }
-
-            CfgInstData::Not(operand) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let operand_vreg = self.get_vreg(*operand);
-
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(operand_vreg),
-                });
-                self.mir.push(X86Inst::XorRI {
-                    dst: Operand::Virtual(vreg),
-                    imm: 1,
-                });
-            }
-
-            CfgInstData::BitNot(operand) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let operand_vreg = self.get_vreg(*operand);
-
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(operand_vreg),
-                });
-                // 64-bit operands need a REX.W `not`; the 32-bit form would
-                // zero the high 32 bits of the result (RUE-59).
-                self.mir.push(if plan_is_64 {
-                    X86Inst::Not64R {
+                self.mir.push(if width.bits == 64 {
+                    X86Inst::Neg64 {
                         dst: Operand::Virtual(vreg),
                     }
                 } else {
-                    X86Inst::NotR {
+                    X86Inst::Neg {
                         dst: Operand::Virtual(vreg),
                     }
                 });
-                // NOT flips all 32 register bits, setting bits above a
-                // sub-word operand's width (e.g. ~0u8 leaves 0xFFFFFFFF, not
-                // 0xFF); narrow back to the operand's type (RUE-162).
-                self.emit_subword_narrow(vreg, ty);
+                self.emit_overflow_check(width, vreg, trap_symbols.overflow);
+                vreg
             }
-
-            CfgInstData::BitAnd(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
-                });
-                // 64-bit operands need a REX.W `and`; a 32-bit `and` would zero
-                // the high 32 bits of the result (RUE-58).
-                self.mir.push(if plan_is_64 {
-                    X86Inst::And64RR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    }
-                } else {
-                    X86Inst::AndRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    }
-                });
-            }
-
-            CfgInstData::BitOr(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
-                });
-                self.mir.push(if plan_is_64 {
-                    X86Inst::Or64RR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    }
-                } else {
-                    X86Inst::OrRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    }
-                });
-            }
-
-            CfgInstData::BitXor(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
-                });
-                self.mir.push(if plan_is_64 {
-                    X86Inst::Xor64RR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    }
-                } else {
-                    X86Inst::XorRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    }
-                });
-            }
-
-            CfgInstData::Shl(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-
-                // Move LHS to result
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
-                });
-
-                // The shift count is taken modulo the operand's bit width
-                // (spec 4.3a:10): mod 8 for i8/u8, 16 for i16/u16, 32 for
-                // i32/u32, 64 for i64/u64. The x86 hardware only masks by 31
-                // (32-bit shift) or 63 (64-bit), so sub-word counts need an
-                // explicit mask (RUE-29).
-                let count_mask = Self::shift_count_mask(ty);
-                let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
-                if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let imm = (*shift_amount & count_mask) as u8;
-                    if plan_is_64 {
-                        self.mir.push(X86Inst::ShlRI {
-                            dst: Operand::Virtual(vreg),
-                            imm,
-                        });
-                    } else {
-                        self.mir.push(X86Inst::Shl32RI {
-                            dst: Operand::Virtual(vreg),
-                            imm,
-                        });
-                    }
-                } else {
-                    // Variable shift amount - mask it (mod bit width) and use CL.
-                    let count_vreg = self.emit_masked_shift_count(*rhs, ty);
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rcx),
-                        src: Operand::Virtual(count_vreg),
-                    });
-                    if plan_is_64 {
-                        self.mir.push(X86Inst::ShlRCl {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    } else {
-                        self.mir.push(X86Inst::Shl32RCl {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    }
-                }
-                // Left shift can set bits above the operand's width; narrow the
-                // result back to the sub-word type so it has the correct value
-                // (e.g. 1i8 << 7 == -128, not +128) (RUE-29).
-                self.emit_subword_narrow(vreg, ty);
-            }
-
-            CfgInstData::Shr(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-
-                // Move LHS to result
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
-                });
-
-                // Shift count taken modulo the operand bit width (spec 4.3a:10);
-                // sub-word counts need an explicit mask (RUE-29).
-                let count_mask = Self::shift_count_mask(ty);
-                let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
-                if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let imm = (*shift_amount & count_mask) as u8;
-                    // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
-                    // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                    if plan_is_64 && plan_is_signed {
-                        self.mir.push(X86Inst::SarRI {
-                            dst: Operand::Virtual(vreg),
-                            imm,
-                        });
-                    } else if plan_is_64 {
-                        self.mir.push(X86Inst::ShrRI {
-                            dst: Operand::Virtual(vreg),
-                            imm,
-                        });
-                    } else if plan_is_signed {
-                        self.mir.push(X86Inst::Sar32RI {
-                            dst: Operand::Virtual(vreg),
-                            imm,
-                        });
-                    } else {
-                        self.mir.push(X86Inst::Shr32RI {
-                            dst: Operand::Virtual(vreg),
-                            imm,
-                        });
-                    }
-                } else {
-                    // Variable shift amount - mask it (mod bit width) and use CL.
-                    let count_vreg = self.emit_masked_shift_count(*rhs, ty);
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rcx),
-                        src: Operand::Virtual(count_vreg),
-                    });
-
-                    // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
-                    // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                    if plan_is_64 && plan_is_signed {
-                        self.mir.push(X86Inst::SarRCl {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    } else if plan_is_64 {
-                        self.mir.push(X86Inst::ShrRCl {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    } else if plan_is_signed {
-                        self.mir.push(X86Inst::Sar32RCl {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    } else {
-                        self.mir.push(X86Inst::Shr32RCl {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    }
-                }
-            }
-
-            CfgInstData::Eq(lhs, rhs) => {
-                let lhs_ty = self.ctx.cfg.get_inst(*lhs).ty;
-
-                if matches!(
-                    value_plan.comparison,
-                    Some(crate::value_plan::ComparisonPreparation::StringContent { .. })
-                ) {
-                    // String-like equality compares byte content, not the
-                    // pointer/len/cap fields structurally.
-                    let vreg = self.emit_builtin_eq_call(*lhs, *rhs, "__rue_str_eq");
-                    self.value_map.insert(value, vreg);
-                } else if matches!(
-                    value_plan.comparison,
-                    Some(crate::value_plan::ComparisonPreparation::Unit)
-                ) {
-                    // Unit equality: () == () is always true
-                    let vreg = self.mir.alloc_vreg();
-                    self.value_map.insert(value, vreg);
-                    self.mir.push(X86Inst::MovRI32 {
-                        dst: Operand::Virtual(vreg),
-                        imm: 1,
-                    });
-                } else if matches!(
-                    value_plan.comparison,
-                    Some(crate::value_plan::ComparisonPreparation::Aggregate { .. })
-                ) {
-                    // Structural equality: compare every slot (struct fields,
-                    // array elements, or an enum's tag + payload). (RUE-285)
-                    self.emit_aggregate_equality(value, *lhs, *rhs, lhs_ty, false);
-                } else {
-                    self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                        mir.push(X86Inst::Sete {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    });
-                }
-            }
-
-            CfgInstData::Ne(lhs, rhs) => {
-                let lhs_ty = self.ctx.cfg.get_inst(*lhs).ty;
-
-                if matches!(
-                    value_plan.comparison,
-                    Some(crate::value_plan::ComparisonPreparation::StringContent { .. })
-                ) {
-                    // String-like inequality is the inverse of byte-content
-                    // equality.
-                    let vreg = self.emit_builtin_eq_call(*lhs, *rhs, "__rue_str_eq");
-                    self.value_map.insert(value, vreg);
-                    self.mir.push(X86Inst::XorRI {
-                        dst: Operand::Virtual(vreg),
-                        imm: 1,
-                    });
-                } else if matches!(
-                    value_plan.comparison,
-                    Some(crate::value_plan::ComparisonPreparation::Unit)
-                ) {
-                    // Unit inequality: () != () is always false
-                    let vreg = self.mir.alloc_vreg();
-                    self.value_map.insert(value, vreg);
-                    self.mir.push(X86Inst::MovRI32 {
-                        dst: Operand::Virtual(vreg),
-                        imm: 0,
-                    });
-                } else if matches!(
-                    value_plan.comparison,
-                    Some(crate::value_plan::ComparisonPreparation::Aggregate { .. })
-                ) {
-                    // Structural inequality: compare every slot, invert result.
-                    // (RUE-285)
-                    self.emit_aggregate_equality(value, *lhs, *rhs, lhs_ty, true);
-                } else {
-                    self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                        mir.push(X86Inst::Setne {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    });
-                }
-            }
-
-            CfgInstData::Lt(lhs, rhs) => {
-                let is_unsigned = matches!(
-                    value_plan.comparison,
-                    Some(crate::value_plan::ComparisonPreparation::Scalar {
-                        width: crate::value_plan::IntegerWidth { signed: false, .. }
-                    })
-                );
-                self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    if is_unsigned {
-                        mir.push(X86Inst::Setb {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    } else {
-                        mir.push(X86Inst::Setl {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    }
-                });
-            }
-
-            CfgInstData::Gt(lhs, rhs) => {
-                let is_unsigned = matches!(
-                    value_plan.comparison,
-                    Some(crate::value_plan::ComparisonPreparation::Scalar {
-                        width: crate::value_plan::IntegerWidth { signed: false, .. }
-                    })
-                );
-                self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    if is_unsigned {
-                        mir.push(X86Inst::Seta {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    } else {
-                        mir.push(X86Inst::Setg {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    }
-                });
-            }
-
-            CfgInstData::Le(lhs, rhs) => {
-                let is_unsigned = matches!(
-                    value_plan.comparison,
-                    Some(crate::value_plan::ComparisonPreparation::Scalar {
-                        width: crate::value_plan::IntegerWidth { signed: false, .. }
-                    })
-                );
-                self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    if is_unsigned {
-                        mir.push(X86Inst::Setbe {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    } else {
-                        mir.push(X86Inst::Setle {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    }
-                });
-            }
-
-            CfgInstData::Ge(lhs, rhs) => {
-                let is_unsigned = matches!(
-                    value_plan.comparison,
-                    Some(crate::value_plan::ComparisonPreparation::Scalar {
-                        width: crate::value_plan::IntegerWidth { signed: false, .. }
-                    })
-                );
-                self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    if is_unsigned {
-                        mir.push(X86Inst::Setae {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    } else {
-                        mir.push(X86Inst::Setge {
-                            dst: Operand::Virtual(vreg),
-                        });
-                    }
-                });
-            }
-
-            CfgInstData::Alloc { slot, init } => {
-                crate::storage_lower::lower_alloc(self, *slot, *init);
-            }
-
-            CfgInstData::Load { slot } => {
-                crate::storage_lower::lower_load(self, value, *slot);
-            }
-
-            CfgInstData::Store { slot, value: val } => {
-                crate::storage_lower::lower_store(self, *slot, *val);
-            }
-
-            CfgInstData::ParamStore {
-                param_slot,
-                value: val,
-            } => {
-                crate::storage_lower::lower_param_store(self, *param_slot, *val);
-            }
-
-            CfgInstData::Call {
-                name,
-                args_start,
-                args_len,
-            } => {
-                let result_vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, result_vreg);
-
-                let args = self.ctx.cfg.get_call_args(*args_start, *args_len).to_vec();
-                let symbol = self.interner.resolve(name).to_owned();
-                let inputs = crate::call_plan::CallInputs::from_cfg(
-                    self.ctx.cfg,
-                    self.ctx.type_pool,
-                    ty,
-                    &args,
-                    RET_REGS.len() as u32,
-                );
-                let plan = crate::call_plan::CallPlan::from_inputs(
-                    &symbol,
-                    inputs.return_plan,
-                    &inputs.args,
-                    ARG_REGS.len(),
-                    self,
-                );
-                assert_eq!(
-                    plan.abi_slots.len(),
-                    plan.hidden_sret.map_or(0, |_| 1)
-                        + plan
-                            .user_args
-                            .iter()
-                            .map(|arg| arg.slots.len())
-                            .sum::<usize>()
-                );
-                let num_reg_args = plan.abi_slots.len().min(ARG_REGS.len());
-                let num_stack_args = plan.stack_slot_count;
-
-                // Add alignment padding if we have an odd number of stack arguments.
-                // RSP must be 16-byte aligned before the call, and each push is 8 bytes.
-                // If we push an odd number of arguments, we need 8 bytes of padding.
-                let needs_alignment = plan.stack_bytes > (num_stack_args * 8) as u32;
-                if needs_alignment {
-                    // sub rsp, 8 to add alignment padding
-                    self.mir.push(X86Inst::AddRI {
-                        dst: Operand::Physical(Reg::Rsp),
-                        imm: -8,
-                    });
-                }
-
-                // Push stack arguments
-                for arg_vreg in plan.abi_slots.iter().skip(ARG_REGS.len()).rev() {
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rax),
-                        src: Operand::Virtual(*arg_vreg),
-                    });
-                    self.mir.push(X86Inst::Push {
-                        src: Operand::Physical(Reg::Rax),
-                    });
-                }
-
-                // Push register arguments temporarily
-                for arg_vreg in plan.abi_slots.iter().take(num_reg_args).rev() {
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rax),
-                        src: Operand::Virtual(*arg_vreg),
-                    });
-                    self.mir.push(X86Inst::Push {
-                        src: Operand::Physical(Reg::Rax),
-                    });
-                }
-
-                // Pop into argument registers
-                for i in 0..num_reg_args {
-                    self.mir.push(X86Inst::Pop {
-                        dst: Operand::Physical(ARG_REGS[i]),
-                    });
-                }
-
-                let symbol_id = self.intern_symbol(&plan.symbol);
-                self.mir.push(X86Inst::CallRel { symbol_id });
-
-                // Clean up stack arguments and alignment padding
-                if num_stack_args > 0 || needs_alignment {
-                    let stack_space = plan.stack_bytes as i32;
-                    self.mir.push(X86Inst::AddRI {
-                        dst: Operand::Physical(Reg::Rsp),
-                        imm: stack_space,
-                    });
-                }
-
-                // Handle struct and string returns (multi-slot types)
-                // sret calls first: the callee wrote the slots to the buffer
-                // at [rsp]. (String always; big aggregates per RUE-106.)
-                match plan.return_plan {
-                    crate::call_plan::ReturnPlan::Sret {
-                        slot_count: ret_slot_count,
-                        storage_bytes: sret_bytes,
-                    } => {
-                        // Load every slot from the return buffer
-                        let mut slot_vregs = Vec::new();
-                        for slot_idx in 0..ret_slot_count {
-                            let slot_vreg = self.mir.alloc_vreg();
-                            let offset = (slot_idx * 8) as i32;
-                            self.mir.push(X86Inst::MovRM {
-                                dst: Operand::Virtual(slot_vreg),
-                                base: Reg::Rsp,
-                                offset,
-                            });
-                            slot_vregs.push(slot_vreg);
-                        }
-                        assert_eq!(slot_vregs.len(), ret_slot_count as usize);
-                        // Pop the sret space (including alignment padding)
-                        self.mir.push(X86Inst::AddRI {
-                            dst: Operand::Physical(Reg::Rsp),
-                            imm: sret_bytes as i32,
-                        });
-                        self.struct_slot_vregs.insert(value, slot_vregs.clone());
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Virtual(result_vreg),
-                            src: Operand::Virtual(slot_vregs[0]),
-                        });
-                    }
-                    crate::call_plan::ReturnPlan::Registers { slot_count } => {
-                        // Aggregates that fit return in registers have a complete
-                        // cached representation populated from RET_REGS. (RUE-78)
-                        assert!((slot_count as usize) <= RET_REGS.len());
-                        let mut slot_vregs = Vec::new();
-                        for slot_idx in 0..slot_count {
-                            let slot_vreg = self.mir.alloc_vreg();
-                            if (slot_idx as usize) < RET_REGS.len() {
-                                self.mir.push(X86Inst::MovRR {
-                                    dst: Operand::Virtual(slot_vreg),
-                                    src: Operand::Physical(RET_REGS[slot_idx as usize]),
-                                });
-                            }
-                            slot_vregs.push(slot_vreg);
-                        }
-                        assert_eq!(slot_vregs.len(), slot_count as usize);
-                        self.struct_slot_vregs.insert(value, slot_vregs.clone());
-                        if let Some(&first_vreg) = slot_vregs.first() {
-                            self.mir.push(X86Inst::MovRR {
-                                dst: Operand::Virtual(result_vreg),
-                                src: Operand::Virtual(first_vreg),
-                            });
-                        }
-                    }
-                    crate::call_plan::ReturnPlan::Scalar => {
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Virtual(result_vreg),
-                            src: Operand::Physical(Reg::Rax),
-                        });
-                    }
-                    crate::call_plan::ReturnPlan::ZeroSized => {
-                        // Zero-sized values have no ABI return slot. Keep the
-                        // CFG's cached dummy value defined for any later
-                        // storage path that asks for its vreg.
-                        self.mir.push(X86Inst::MovRI32 {
-                            dst: Operand::Virtual(result_vreg),
-                            imm: 0,
-                        });
-                    }
-                }
-            }
-
-            CfgInstData::Intrinsic {
-                name,
-                args_start,
-                args_len,
-            } => {
-                let name_str = self.interner.resolve(name);
-                if name_str == "read_line" {
-                    // @read_line() intrinsic - reads a line from stdin and
-                    // returns `Option(String)`: `Some(line)` normally, `None`
-                    // at EOF (RUE-6, ADR-0038). The runtime writes the whole
-                    // tagged-union `Option` to an sret buffer laid out as
-                    // [disc, ptr, len, cap] (slot 0 = discriminant, RUE-221);
-                    // we pass the Some/None discriminant values and load the
-                    // slots back. No branch needed — the runtime picks the
-                    // discriminant.
-                    let vty = self.ctx.cfg.get_inst(value).ty;
-                    let (some_disc, none_disc) =
-                        types::option_variant_discriminants(self.ctx.type_pool, vty);
-                    let total_slots = self.ctx.type_slot_count(vty);
-                    // sret buffer sized to the enum's slots, rounded to 16.
-                    let sret_bytes = (total_slots as i32 * 8 + 15) & !15;
-
-                    self.mir.push(X86Inst::AddRI {
-                        dst: Operand::Physical(Reg::Rsp),
-                        imm: -sret_bytes,
-                    });
-
-                    // Args: RDI = out ptr, RSI = some_disc, RDX = none_disc.
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdi),
-                        src: Operand::Physical(Reg::Rsp),
-                    });
-                    self.mir.push(X86Inst::MovRI32 {
-                        dst: Operand::Physical(Reg::Rsi),
-                        imm: some_disc as i32,
-                    });
-                    self.mir.push(X86Inst::MovRI32 {
-                        dst: Operand::Physical(Reg::Rdx),
-                        imm: none_disc as i32,
-                    });
-
-                    // Call __rue_read_line
-                    let symbol_id = self.intern_symbol("__rue_read_line");
-                    self.mir.push(X86Inst::CallRel { symbol_id });
-
-                    // Load the enum's slots (disc, ptr, len, cap) into vregs.
-                    let mut slot_vregs = Vec::with_capacity(total_slots as usize);
-                    for slot_idx in 0..total_slots {
-                        let slot_vreg = self.mir.alloc_vreg();
-                        let offset = (slot_idx * 8) as i32;
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(slot_vreg),
-                            base: Reg::Rsp,
-                            offset,
-                        });
-                        slot_vregs.push(slot_vreg);
-                    }
-
-                    // Pop the sret space
-                    self.mir.push(X86Inst::AddRI {
-                        dst: Operand::Physical(Reg::Rsp),
-                        imm: sret_bytes,
-                    });
-
-                    // Slot 0 is the discriminant and the value's primary vreg,
-                    // so a `match` switches on it directly (like EnumVariant).
-                    let disc_vreg = slot_vregs[0];
-                    self.struct_slot_vregs.insert(value, slot_vregs);
-                    self.value_map.insert(value, disc_vreg);
-                } else if name_str == "dbg" {
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let arg_val = args[0];
-                    let arg_type = self.ctx.cfg.get_inst(arg_val).ty;
-
-                    // Handle builtin String type specially
-                    if self.ctx.is_string_like_for_equality(arg_type) {
-                        // Get the fat pointer (ptr, len, cap) — materializes a String read
-                        // from a place (`@dbg(h.s)`) as well as cached sources. (RUE-118)
-                        if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
-                            // Correctness guard (must run in release): a wrong
-                            // vreg count feeds garbage to @dbg, so plain `assert!`
-                            // not `debug_assert!` (RUE-45).
-                            assert!(field_vregs.len() >= 2, "text needs ptr and len slots");
-                            let ptr_vreg = field_vregs[0];
-                            let len_vreg = field_vregs[1];
-
-                            // Move ptr to RDI, len to RSI
-                            self.mir.push(X86Inst::MovRR {
-                                dst: Operand::Physical(Reg::Rdi),
-                                src: Operand::Virtual(ptr_vreg),
-                            });
-                            self.mir.push(X86Inst::MovRR {
-                                dst: Operand::Physical(Reg::Rsi),
-                                src: Operand::Virtual(len_vreg),
-                            });
-
-                            // Call __rue_dbg_str
-                            let symbol_id = self.intern_symbol("__rue_dbg_str");
-                            self.mir.push(X86Inst::CallRel { symbol_id });
-                        } else {
-                            unreachable!("string value should have field vregs for fat pointer");
-                        }
-
-                        // Result is unit
-                        let result_vreg = self.mir.alloc_vreg();
-                        self.value_map.insert(value, result_vreg);
-                    } else {
-                        // Existing scalar handling
-                        let arg_vreg = self.get_vreg(arg_val);
-
-                        let runtime_fn = match arg_type.kind() {
-                            TypeKind::Bool => "__rue_dbg_bool",
-                            TypeKind::I8 | TypeKind::I16 | TypeKind::I32 | TypeKind::I64 => {
-                                "__rue_dbg_i64"
-                            }
-                            TypeKind::U8 | TypeKind::U16 | TypeKind::U32 | TypeKind::U64 => {
-                                "__rue_dbg_u64"
-                            }
-                            _ => unreachable!("@dbg only supports scalars and strings"),
-                        };
-
-                        // Handle type extensions
-                        match arg_type.kind() {
-                            TypeKind::I8 => {
-                                self.mir.push(X86Inst::MovRR {
-                                    dst: Operand::Physical(Reg::Rax),
-                                    src: Operand::Virtual(arg_vreg),
-                                });
-                                self.mir.push(X86Inst::Movsx8To64 {
-                                    dst: Operand::Physical(Reg::Rdi),
-                                    src: Operand::Physical(Reg::Rax),
-                                });
-                            }
-                            TypeKind::I16 => {
-                                self.mir.push(X86Inst::MovRR {
-                                    dst: Operand::Physical(Reg::Rax),
-                                    src: Operand::Virtual(arg_vreg),
-                                });
-                                self.mir.push(X86Inst::Movsx16To64 {
-                                    dst: Operand::Physical(Reg::Rdi),
-                                    src: Operand::Physical(Reg::Rax),
-                                });
-                            }
-                            TypeKind::I32 => {
-                                self.mir.push(X86Inst::MovRR {
-                                    dst: Operand::Physical(Reg::Rax),
-                                    src: Operand::Virtual(arg_vreg),
-                                });
-                                self.mir.push(X86Inst::Movsx32To64 {
-                                    dst: Operand::Physical(Reg::Rdi),
-                                    src: Operand::Physical(Reg::Rax),
-                                });
-                            }
-                            TypeKind::U8 => {
-                                self.mir.push(X86Inst::MovRR {
-                                    dst: Operand::Physical(Reg::Rax),
-                                    src: Operand::Virtual(arg_vreg),
-                                });
-                                self.mir.push(X86Inst::Movzx8To64 {
-                                    dst: Operand::Physical(Reg::Rdi),
-                                    src: Operand::Physical(Reg::Rax),
-                                });
-                            }
-                            TypeKind::U16 => {
-                                self.mir.push(X86Inst::MovRR {
-                                    dst: Operand::Physical(Reg::Rax),
-                                    src: Operand::Virtual(arg_vreg),
-                                });
-                                self.mir.push(X86Inst::Movzx16To64 {
-                                    dst: Operand::Physical(Reg::Rdi),
-                                    src: Operand::Physical(Reg::Rax),
-                                });
-                            }
-                            TypeKind::U32 | TypeKind::I64 | TypeKind::U64 | TypeKind::Bool => {
-                                self.mir.push(X86Inst::MovRR {
-                                    dst: Operand::Physical(Reg::Rdi),
-                                    src: Operand::Virtual(arg_vreg),
-                                });
-                            }
-                            _ => unreachable!(),
-                        }
-
-                        let symbol_id = self.intern_symbol(runtime_fn);
-                        self.mir.push(X86Inst::CallRel { symbol_id });
-
-                        let result_vreg = self.mir.alloc_vreg();
-                        self.value_map.insert(value, result_vreg);
-                    }
-                } else if name_str == "parse_i32"
-                    || name_str == "parse_i64"
-                    || name_str == "parse_u32"
-                    || name_str == "parse_u64"
-                {
-                    // @parse_* intrinsics: take a String, return `Option(int)`:
-                    // `Some(n)` on success, `None` on parse failure (RUE-6,
-                    // ADR-0038). The runtime writes the whole tagged-union
-                    // `Option` to an sret buffer laid out as [disc, value]
-                    // (slot 0 = discriminant, RUE-221); we pass ptr/len plus the
-                    // Some/None discriminant values and load the slots back.
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let arg_val = args[0];
-                    let vty = self.ctx.cfg.get_inst(value).ty;
-                    let (some_disc, none_disc) =
-                        types::option_variant_discriminants(self.ctx.type_pool, vty);
-                    let total_slots = self.ctx.type_slot_count(vty);
-                    let sret_bytes = (total_slots as i32 * 8 + 15) & !15;
-
-                    // Get the String fat pointer (ptr, len, cap) — materializes a String
-                    // read from a place (`@parse_i32(h.s)`) as well as cached sources. (RUE-118)
-                    if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
-                        // Correctness guard (must run in release): a wrong vreg
-                        // count feeds garbage to @parse_*, so plain `assert!`
-                        // not `debug_assert!` (RUE-45).
-                        assert!(field_vregs.len() >= 2, "text needs ptr and len slots");
-                        let ptr_vreg = field_vregs[0];
-                        let len_vreg = field_vregs[1];
-
-                        // Allocate the sret buffer for the Option(int) result.
-                        self.mir.push(X86Inst::AddRI {
-                            dst: Operand::Physical(Reg::Rsp),
-                            imm: -sret_bytes,
-                        });
-
-                        // Args: RDI = out, RSI = ptr, RDX = len,
-                        //       RCX = some_disc, R8 = none_disc.
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(Reg::Rdi),
-                            src: Operand::Physical(Reg::Rsp),
-                        });
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(Reg::Rsi),
-                            src: Operand::Virtual(ptr_vreg),
-                        });
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(Reg::Rdx),
-                            src: Operand::Virtual(len_vreg),
-                        });
-                        self.mir.push(X86Inst::MovRI32 {
-                            dst: Operand::Physical(Reg::Rcx),
-                            imm: some_disc as i32,
-                        });
-                        self.mir.push(X86Inst::MovRI32 {
-                            dst: Operand::Physical(Reg::R8),
-                            imm: none_disc as i32,
-                        });
-
-                        // Determine the runtime function based on intrinsic name
-                        let runtime_fn = match name_str {
-                            "parse_i32" => "__rue_parse_i32",
-                            "parse_i64" => "__rue_parse_i64",
-                            "parse_u32" => "__rue_parse_u32",
-                            "parse_u64" => "__rue_parse_u64",
-                            _ => unreachable!(),
-                        };
-
-                        // Call the runtime function
-                        let symbol_id = self.intern_symbol(runtime_fn);
-                        self.mir.push(X86Inst::CallRel { symbol_id });
-
-                        // Load the enum's slots (disc, value) into vregs.
-                        let mut slot_vregs = Vec::with_capacity(total_slots as usize);
-                        for slot_idx in 0..total_slots {
-                            let slot_vreg = self.mir.alloc_vreg();
-                            let offset = (slot_idx * 8) as i32;
-                            self.mir.push(X86Inst::MovRM {
-                                dst: Operand::Virtual(slot_vreg),
-                                base: Reg::Rsp,
-                                offset,
-                            });
-                            slot_vregs.push(slot_vreg);
-                        }
-
-                        // Pop the sret space.
-                        self.mir.push(X86Inst::AddRI {
-                            dst: Operand::Physical(Reg::Rsp),
-                            imm: sret_bytes,
-                        });
-
-                        // Slot 0 (discriminant) is the value's primary vreg.
-                        let disc_vreg = slot_vregs[0];
-                        self.struct_slot_vregs.insert(value, slot_vregs);
-                        self.value_map.insert(value, disc_vreg);
-                    } else {
-                        unreachable!("string value should have field vregs for fat pointer");
-                    }
-                } else if name_str == "random_u32" || name_str == "random_u64" {
-                    // @random_u32() and @random_u64() intrinsics - generate random numbers
-                    // These intrinsics take no arguments and return u32/u64 respectively
-                    // Call __rue_random_u32 or __rue_random_u64 from the runtime
-
-                    let runtime_fn = match name_str {
-                        "random_u32" => "__rue_random_u32",
-                        "random_u64" => "__rue_random_u64",
-                        _ => unreachable!(),
-                    };
-
-                    // Call the runtime function (no arguments)
-                    let symbol_id = self.intern_symbol(runtime_fn);
-                    self.mir.push(X86Inst::CallRel { symbol_id });
-
-                    // Result is in RAX, move to a vreg
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Physical(Reg::Rax),
-                    });
-                    self.value_map.insert(value, result_vreg);
-                } else if name_str == "syscall" {
-                    // @syscall intrinsic - perform a direct system call
-                    // Linux x86-64 syscall ABI:
-                    //   - RAX: syscall number
-                    //   - RDI, RSI, RDX, R10, R8, R9: arguments 1-6
-                    //   - Returns result in RAX
-                    //   - Clobbers RCX and R11 (saved by hardware)
-                    //
-                    // IMPORTANT: We use push/pop to load arguments into physical registers
-                    // immediately before the syscall instruction. This prevents the register
-                    // allocator from reusing these registers between the setup and the syscall,
-                    // which would break the syscall (especially RAX containing the syscall number).
-
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-
-                    // Syscall argument registers (different from regular function call ABI!)
-                    const SYSCALL_ARG_REGS: [Reg; 6] =
-                        [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::R10, Reg::R8, Reg::R9];
-
-                    // Push all arguments onto the stack in reverse order (syscall num last)
-                    // This creates a safe staging area that the register allocator won't touch
-                    for &arg in args.iter().rev() {
-                        let arg_vreg = self.get_vreg(arg);
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(Reg::Rax),
-                            src: Operand::Virtual(arg_vreg),
-                        });
-                        self.mir.push(X86Inst::Push {
-                            src: Operand::Physical(Reg::Rax),
-                        });
-                    }
-
-                    // Pop syscall number into RAX
-                    self.mir.push(X86Inst::Pop {
-                        dst: Operand::Physical(Reg::Rax),
-                    });
-
-                    // Pop remaining arguments into their syscall ABI registers
-                    for (i, reg) in SYSCALL_ARG_REGS.iter().enumerate() {
-                        if i < args.len() - 1 {
-                            // -1 because first arg (syscall num) is already in RAX
-                            self.mir.push(X86Inst::Pop {
-                                dst: Operand::Physical(*reg),
-                            });
-                        }
-                    }
-
-                    // Execute the syscall instruction
-                    self.mir.push(X86Inst::Syscall);
-
-                    // Result is in RAX, move to a vreg
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Physical(Reg::Rax),
-                    });
-                    self.value_map.insert(value, result_vreg);
-                } else if name_str == "ptr_read" {
-                    // @ptr_read(ptr) - Read the pointee value through the pointer.
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let ptr_val = args[0];
-                    let ptr_vreg = self.get_vreg(ptr_val);
-
-                    // The result type is the pointee type. An aggregate pointee
-                    // (struct/array/payload enum) occupies several 8-byte slots;
-                    // read EVERY logical slot at its ascending byte offset
-                    // (slot i at ptr + i*8, matching @raw and the by-ref
-                    // aggregate load path). Reading only slot 0 dropped
-                    // every field but the first (RUE-242).
-                    let result_ty = self.ctx.cfg.get_inst(value).ty;
-                    let slot_count = self.ctx.type_slot_count(result_ty);
-                    if slot_count == 0 {
-                        // Zero-sized pointee (`ptr const Z` where `Z {}` has no
-                        // fields): the read is a no-op carrying no bits — do
-                        // NOT dereference. ArrayBuf never allocates for a
-                        // zero-sized element type, so its buffer stays null
-                        // and a 1-slot load here segfaulted (RUE-566). The
-                        // value maps to a fresh (never-read) vreg, like unit.
-                        let result_vreg = self.mir.alloc_vreg();
-                        self.value_map.insert(value, result_vreg);
-                    } else if slot_count > 1 {
-                        let slot_vregs =
-                            crate::agg_slots::load_slots_through_ptr(self, ptr_vreg, slot_count);
-                        let first = slot_vregs[0];
-                        self.struct_slot_vregs.insert(value, slot_vregs);
-                        self.value_map.insert(value, first);
-                    } else {
-                        let result_vreg = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRMIndexed {
-                            dst: Operand::Virtual(result_vreg),
-                            base: ptr_vreg,
-                            offset: 0,
-                        });
-                        self.value_map.insert(value, result_vreg);
-                    }
-                } else if name_str == "ptr_write" {
-                    // @ptr_write(ptr, value) - Write value at pointer
-                    // First argument is pointer, second is value to write.
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let ptr_val = args[0];
-                    let value_val = args[1];
-                    let ptr_vreg = self.get_vreg(ptr_val);
-
-                    // An aggregate value spans several 8-byte slots; store EVERY
-                    // logical slot at its ascending byte offset (slot i at
-                    // ptr + i*8), symmetric with @ptr_read. Storing only slot 0 dropped
-                    // every field but the first (RUE-242).
-                    let value_ty = self.ctx.cfg.get_inst(value_val).ty;
-                    let slot_count = self.ctx.type_slot_count(value_ty);
-                    if slot_count == 0 {
-                        // Zero-sized value: a zero-byte store — emit nothing
-                        // and do NOT dereference the pointer (which is null
-                        // for a never-allocated zero-sized-element ArrayBuf,
-                        // RUE-566). Logical effects (`len` bookkeeping) live
-                        // in the caller.
-                    } else if slot_count > 1 {
-                        let slot_vregs = self.require_aggregate_slots(value_val);
-                        crate::agg_slots::store_slots_through_ptr(self, &slot_vregs, ptr_vreg, 0);
-                    } else {
-                        let value_vreg = self.get_vreg(value_val);
-                        self.mir.push(X86Inst::MovMRIndexed {
-                            base: ptr_vreg,
-                            offset: 0,
-                            src: Operand::Virtual(value_vreg),
-                        });
-                    }
-
-                    // Result is unit (no meaningful value)
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.value_map.insert(value, result_vreg);
-                } else if name_str == "ptr_offset" {
-                    // @ptr_offset(ptr, offset) - Pointer arithmetic
-                    // Advances pointer by offset * sizeof(pointee)
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let ptr_val = args[0];
-                    let offset_val = args[1];
-                    let ptr_vreg = self.get_vreg(ptr_val);
-                    let raw_offset_vreg = self.get_vreg(offset_val);
-
-                    let ptr_type = self.ctx.cfg.get_inst(ptr_val).ty;
-                    let scale_plan =
-                        allocation::pointer_offset_scale_plan(self.ctx.type_pool, ptr_type);
-
-                    // Sign-/zero-extend the index to a full 64-bit value before
-                    // the 64-bit scale + add below. A narrow signed index
-                    // (e.g. an i32 `-1`) sits in the low 32 bits with high bits
-                    // clear; without extension the 64-bit multiply would treat
-                    // it as ~4 billion and corrupt the address (RUE-213).
-                    let offset_ty = self.ctx.cfg.get_inst(offset_val).ty;
-                    let offset_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(offset_vreg),
-                        src: Operand::Virtual(raw_offset_vreg),
-                    });
-                    let ext_dst = Operand::Virtual(offset_vreg);
-                    let ext_src = Operand::Virtual(offset_vreg);
-                    match (
-                        Self::type_bits(offset_ty),
-                        crate::value_plan::type_is_signed(offset_ty),
-                    ) {
-                        (8, true) => self.mir.push(X86Inst::Movsx8To64 {
-                            dst: ext_dst,
-                            src: ext_src,
-                        }),
-                        (8, false) => self.mir.push(X86Inst::Movzx8To64 {
-                            dst: ext_dst,
-                            src: ext_src,
-                        }),
-                        (16, true) => self.mir.push(X86Inst::Movsx16To64 {
-                            dst: ext_dst,
-                            src: ext_src,
-                        }),
-                        (16, false) => self.mir.push(X86Inst::Movzx16To64 {
-                            dst: ext_dst,
-                            src: ext_src,
-                        }),
-                        (32, true) => self.mir.push(X86Inst::Movsx32To64 {
-                            dst: ext_dst,
-                            src: ext_src,
-                        }),
-                        // 32-bit unsigned already zero-extends; 64-bit is full width.
-                        _ => {}
-                    }
-
-                    // Calculate: ptr + (offset * element_size)
-                    // Standard pointer arithmetic, an unconditional add
-                    // (ADR-0040 / RUE-243): arrays are now laid out ascending
-                    // (element i at base + i*size), so array indexing adds and
-                    // @ptr_offset adds too — they agree, and the add is uniform
-                    // for every pointer origin (local array, heap, mmap,
-                    // @int_to_ptr). Positive n moves toward higher addresses.
-                    // First, multiply offset by the shared element-width plan.
-                    let scaled_offset_vreg = allocation::lower_scale(self, offset_vreg, scale_plan);
-
-                    // Add to pointer (64-bit add for addresses); see the
-                    // ascending-layout note above (ADR-0040 / RUE-243).
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Virtual(ptr_vreg),
-                    });
-                    self.mir.push(X86Inst::AddRR64 {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Virtual(scaled_offset_vreg),
-                    });
-                    self.value_map.insert(value, result_vreg);
-                } else if name_str == "ptr_to_int" {
-                    // @ptr_to_int(ptr) - Convert pointer to u64
-                    // On x86-64, pointers are already 64-bit values, so this is a simple move.
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let ptr_val = args[0];
-                    let ptr_vreg = self.get_vreg(ptr_val);
-
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Virtual(ptr_vreg),
-                    });
-                    self.value_map.insert(value, result_vreg);
-                } else if name_str == "int_to_ptr" {
-                    // @int_to_ptr(addr) - Convert u64 to pointer
-                    // On x86-64, this is also a simple move.
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let addr_val = args[0];
-                    let addr_vreg = self.get_vreg(addr_val);
-
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Virtual(addr_vreg),
-                    });
-                    self.value_map.insert(value, result_vreg);
-                } else if name_str == "alloc" {
-                    // @alloc(count) -> ptr mut T. Allocate count * size_of(T)
-                    // bytes on the heap via __rue_alloc(size, align). The
-                    // element type T is the pointee of the result pointer type
-                    // (RUE-1). Returns the block pointer (null on failure).
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let count_vreg = self.get_vreg(args[0]);
-
-                    let result_ty = self.ctx.cfg.get_inst(value).ty;
-                    // size = count * element_size in RDI (first arg register).
-                    let size_vreg = allocation::lower_scale(
-                        self,
-                        count_vreg,
-                        allocation::allocation_size_scale_plan(self.ctx.type_pool, result_ty),
-                    );
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdi),
-                        src: Operand::Virtual(size_vreg),
-                    });
-                    // align = 8 (all Rue types are 8-byte-slotted) in RSI.
-                    self.mir.push(X86Inst::MovRI64 {
-                        dst: Operand::Physical(Reg::Rsi),
-                        imm: 8,
-                    });
-                    let symbol_id = self.intern_symbol("__rue_alloc");
-                    self.mir.push(X86Inst::CallRel { symbol_id });
-
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Physical(Reg::Rax),
-                    });
-                    self.value_map.insert(value, result_vreg);
-                } else if name_str == "free" {
-                    // @free(ptr, count) -> (). Free a block via
-                    // __rue_free(ptr, size, align) where size = count *
-                    // size_of(T), T the pointee of the argument type (RUE-1).
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let ptr_val = args[0];
-                    let count_val = args[1];
-                    let ptr_vreg = self.get_vreg(ptr_val);
-                    let count_vreg = self.get_vreg(count_val);
-
-                    let ptr_ty = self.ctx.cfg.get_inst(ptr_val).ty;
-                    let size_vreg = allocation::lower_scale(
-                        self,
-                        count_vreg,
-                        allocation::allocation_size_scale_plan(self.ctx.type_pool, ptr_ty),
-                    );
-
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdi),
-                        src: Operand::Virtual(ptr_vreg),
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rsi),
-                        src: Operand::Virtual(size_vreg),
-                    });
-                    self.mir.push(X86Inst::MovRI64 {
-                        dst: Operand::Physical(Reg::Rdx),
-                        imm: 8,
-                    });
-                    let symbol_id = self.intern_symbol("__rue_free");
-                    self.mir.push(X86Inst::CallRel { symbol_id });
-
-                    // Result is unit.
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.value_map.insert(value, result_vreg);
-                } else if name_str == "realloc" {
-                    // @realloc(ptr, old_count, new_count) -> ptr mut T. Grow or
-                    // shrink a block via __rue_realloc(ptr, old_size, new_size,
-                    // align). Element type T is the pointee of the result (=arg0)
-                    // pointer type (RUE-1).
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let ptr_val = args[0];
-                    let ptr_vreg = self.get_vreg(ptr_val);
-                    let old_vreg = self.get_vreg(args[1]);
-                    let new_vreg = self.get_vreg(args[2]);
-
-                    let result_ty = self.ctx.cfg.get_inst(value).ty;
-                    let scale_plan =
-                        allocation::allocation_size_scale_plan(self.ctx.type_pool, result_ty);
-                    let old_size_vreg = allocation::lower_scale(self, old_vreg, scale_plan);
-                    let new_size_vreg = allocation::lower_scale(self, new_vreg, scale_plan);
-
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdi),
-                        src: Operand::Virtual(ptr_vreg),
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rsi),
-                        src: Operand::Virtual(old_size_vreg),
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdx),
-                        src: Operand::Virtual(new_size_vreg),
-                    });
-                    self.mir.push(X86Inst::MovRI64 {
-                        dst: Operand::Physical(Reg::Rcx),
-                        imm: 8,
-                    });
-                    let symbol_id = self.intern_symbol("__rue_realloc");
-                    self.mir.push(X86Inst::CallRel { symbol_id });
-
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Physical(Reg::Rax),
-                    });
-                    self.value_map.insert(value, result_vreg);
-                } else if name_str == "alloc_bytes" {
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let size = self.get_vreg(args[0]);
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdi),
-                        src: Operand::Virtual(size),
-                    });
-                    self.mir.push(X86Inst::MovRI64 {
-                        dst: Operand::Physical(Reg::Rsi),
-                        imm: 1,
-                    });
-                    let symbol_id = self.intern_symbol("__rue_alloc");
-                    self.mir.push(X86Inst::CallRel { symbol_id });
-                    let result = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result),
-                        src: Operand::Physical(Reg::Rax),
-                    });
-                    self.value_map.insert(value, result);
-                } else if name_str == "free_bytes" {
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let ptr = self.get_vreg(args[0]);
-                    let size = self.get_vreg(args[1]);
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdi),
-                        src: Operand::Virtual(ptr),
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rsi),
-                        src: Operand::Virtual(size),
-                    });
-                    self.mir.push(X86Inst::MovRI64 {
-                        dst: Operand::Physical(Reg::Rdx),
-                        imm: 1,
-                    });
-                    let symbol_id = self.intern_symbol("__rue_free");
-                    self.mir.push(X86Inst::CallRel { symbol_id });
-                    self.value_map.insert(value, self.mir.alloc_vreg());
-                } else if name_str == "realloc_bytes" {
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let abi = [Reg::Rdi, Reg::Rsi, Reg::Rdx];
-                    for (arg, reg) in args.iter().zip(abi) {
-                        let arg_vreg = self.get_vreg(*arg);
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(reg),
-                            src: Operand::Virtual(arg_vreg),
-                        });
-                    }
-                    self.mir.push(X86Inst::MovRI64 {
-                        dst: Operand::Physical(Reg::Rcx),
-                        imm: 1,
-                    });
-                    let symbol_id = self.intern_symbol("__rue_realloc");
-                    self.mir.push(X86Inst::CallRel { symbol_id });
-                    let result = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result),
-                        src: Operand::Physical(Reg::Rax),
-                    });
-                    self.value_map.insert(value, result);
-                } else if name_str == "byte_read" || name_str == "byte_write" {
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let ptr = self.get_vreg(args[0]);
-                    let offset = self.get_vreg(args[1]);
-                    let address = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(address),
-                        src: Operand::Virtual(ptr),
-                    });
-                    self.mir.push(X86Inst::AddRR64 {
-                        dst: Operand::Virtual(address),
-                        src: Operand::Virtual(offset),
-                    });
-                    if name_str == "byte_read" {
-                        let result = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::Movzx8RMIndexed {
-                            dst: Operand::Virtual(result),
-                            base: address,
-                            offset: 0,
-                        });
-                        self.value_map.insert(value, result);
-                    } else {
-                        let byte = self.get_vreg(args[2]);
-                        self.mir.push(X86Inst::MovMR8Indexed {
-                            base: address,
-                            offset: 0,
-                            src: Operand::Virtual(byte),
-                        });
-                        self.value_map.insert(value, self.mir.alloc_vreg());
-                    }
-                } else if name_str == "raw" || name_str == "raw_mut" || name_str == "field_ptr" {
-                    // Address-taking intrinsics consume the canonical place
-                    // representation. `field_ptr` is restricted by sema to a
-                    // field projection; all three forms lower that place to an
-                    // address without reading its value.
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let lvalue_val = args[0];
-
-                    // Get the local slot for this value
-                    let lvalue_inst = self.ctx.cfg.get_inst(lvalue_val);
-                    let lvalue_ty = lvalue_inst.ty;
-                    if let CfgInstData::Load { slot } = &lvalue_inst.data {
-                        // The address of a whole local is its LOW end
-                        // (ADR-0040 / RUE-311): an
-                        // aggregate's low-address end is its highest-numbered
-                        // frame slot, `slot + count - 1`.
-                        let count = self.ctx.type_slot_count(lvalue_ty).max(1);
-                        let offset = self.ctx.local_offset(*slot + count - 1);
-                        let result_vreg = self.mir.alloc_vreg();
-                        // LEA to compute address: result = rbp + offset
-                        self.mir.push(X86Inst::Lea {
-                            dst: Operand::Virtual(result_vreg),
-                            base: Reg::Rbp,
-                            disp: offset,
-                        });
-                        self.value_map.insert(value, result_vreg);
-                    } else if let CfgInstData::PlaceRead { place } = &lvalue_inst.data {
-                        // Compute the projected place's address without reading it.
-                        let result_vreg = self.mir.alloc_vreg();
-                        crate::place_lower::lower_place_addr(self, result_vreg, place);
-                        self.value_map.insert(value, result_vreg);
-                    } else if let CfgInstData::Param { index } = &lvalue_inst.data {
-                        // A parameter place denotes the address of its storage,
-                        // not the parameter's value (RUE-273). The
-                        // prologue spills every param into the contiguous frame
-                        // param area (slots num_locals..), so its address is the
-                        // corresponding frame slot.
-                        let index = *index;
-                        if self.ctx.cfg.is_param_by_ref(index) {
-                            // By-ref params hold a POINTER to the caller's storage;
-                            // that pointer already IS the address of the place.
-                            let ptr_vreg = self.ensure_by_ref_param_ptr(index);
-                            self.value_map.insert(value, ptr_vreg);
-                        } else {
-                            // Whole by-value param: its low end is the highest
-                            // slot of its frame region (ADR-0040 / RUE-311).
-                            let count = self.ctx.type_slot_count(lvalue_ty).max(1);
-                            let slot = self.ctx.num_locals + index + count - 1;
-                            let offset = self.ctx.local_offset(slot);
-                            let result_vreg = self.mir.alloc_vreg();
-                            self.mir.push(X86Inst::Lea {
-                                dst: Operand::Virtual(result_vreg),
-                                base: Reg::Rbp,
-                                disp: offset,
-                            });
-                            self.value_map.insert(value, result_vreg);
-                        }
-                    } else {
-                        // Sema (RUE-274) requires the operand to be a place, so
-                        // Load/PlaceRead/Param above cover every legal case. Keep a
-                        // defensive fallback for any not-yet-modeled place kind.
-                        let vreg = self.get_vreg(lvalue_val);
-                        self.value_map.insert(value, vreg);
-                    }
-                } else if name_str == "panic" {
-                    // @panic(msg?) — abort the process with a message on stderr
-                    // and exit code 101, the same abort discipline as the other
-                    // runtime traps (RUE-319). Never returns; any code the
-                    // compiler emits after this point is dead at runtime.
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    if args.is_empty() {
-                        let symbol_id = self.intern_symbol("__rue_panic_no_msg");
-                        self.mir.push(X86Inst::CallRel { symbol_id });
-                    } else {
-                        self.emit_panic_with_msg(args[0]);
-                    }
-                } else if name_str == "assert" {
-                    // @assert(cond, msg?) — abort iff `cond` is false (RUE-319).
-                    // A true condition falls through with no effect.
-                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
-                    let cond_val = args[0];
-                    let msg_val = args.get(1).copied();
-                    let cond_vreg = self.get_vreg(cond_val);
-                    let pass_label = self.new_label();
-                    // cond != 0 (true) → skip the abort.
-                    self.mir.push(X86Inst::CmpRI {
-                        src: Operand::Virtual(cond_vreg),
-                        imm: 0,
-                    });
-                    self.mir.push(X86Inst::Jnz { label: pass_label });
-                    match msg_val {
-                        Some(msg) => self.emit_panic_with_msg(msg),
-                        None => {
-                            let symbol_id = self.intern_symbol("__rue_assert_failed");
-                            self.mir.push(X86Inst::CallRel { symbol_id });
-                        }
-                    }
-                    self.mir.push(X86Inst::Label { id: pass_label });
-                }
-            }
-
-            CfgInstData::StructInit {
-                struct_id: _,
-                fields_start,
-                fields_len,
-            } => {
-                crate::agg_slots::lower_struct_init(self, value, *fields_start, *fields_len);
-            }
-
-            CfgInstData::ArrayInit {
-                elements_start,
-                elements_len,
-            } => {
-                crate::agg_slots::lower_array_init(self, value, *elements_start, *elements_len);
-            }
-
-            CfgInstData::EnumVariant {
-                variant_index,
-                payload_start,
-                payload_len,
-                ..
-            } => {
-                if matches!(value_plan.shape, crate::value_plan::ValueShape::Scalar) {
-                    // Discriminant-only (C-like) enum: a single-slot scalar
-                    // holding the variant index.
-                    let vreg = self.mir.alloc_vreg();
-                    self.value_map.insert(value, vreg);
-                    self.mir.push(X86Inst::MovRI32 {
-                        dst: Operand::Virtual(vreg),
-                        imm: *variant_index as i32,
-                    });
-                } else {
-                    // Tagged-union value (RUE-221): discriminant + payload slots.
-                    let (ps, pl) = (*payload_start, *payload_len);
-                    crate::agg_slots::lower_enum_variant(self, value, ps, pl);
-                }
-            }
-
-            CfgInstData::EnumPayloadGet {
-                base,
-                enum_id,
-                variant_index,
-                field_index,
-            } => {
-                // Read payload field from the scrutinee's tagged-union slots.
-                let (enum_id, variant_index, field_index) =
-                    (*enum_id, *variant_index, *field_index);
-                let base = *base;
-                let field_slots = value_plan.shape.slot_count() as usize;
-                let offset = types::enum_payload_slot_offset(
-                    self.ctx.type_pool,
-                    enum_id,
-                    variant_index,
-                    field_index,
-                ) as usize;
-                // A zero-sized payload field (`Option(Z)` where `Z {}` has no
-                // fields) carries no bits and its enclosing enum may be a
-                // 1-slot discriminant-only value with NO tracked aggregate
-                // slots — reading a payload slot here panicked (RUE-566).
-                // Map to a fresh never-read vreg, like unit.
-                if field_slots == 0 {
-                    let vreg = self.mir.alloc_vreg();
-                    self.value_map.insert(value, vreg);
-                } else {
-                    let base_slots = self.require_aggregate_slots(base);
-                    let vreg = self.mir.alloc_vreg();
-                    self.value_map.insert(value, vreg);
-                    if field_slots > 1 {
-                        // Multi-slot payload (nested aggregate): expose all slots.
-                        let slots: Vec<VReg> = base_slots[offset..offset + field_slots].to_vec();
-                        self.struct_slot_vregs.insert(value, slots.clone());
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Virtual(vreg),
-                            src: Operand::Virtual(slots[0]),
-                        });
-                    } else {
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Virtual(vreg),
-                            src: Operand::Virtual(base_slots[offset]),
-                        });
-                    }
-                }
-            }
-
-            CfgInstData::IntCast {
-                value: src_value,
-                from_ty: _,
-            } => {
-                // Integer cast with runtime range check
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let src_vreg = self.get_vreg(*src_value);
-                // Emit range check and panic if out of bounds
-                let from_width = value_plan
-                    .source_integer_width
-                    .expect("integer cast plan must include source width");
-                let to_width = value_plan
-                    .integer_width
-                    .expect("integer cast plan must include destination width");
-                self.emit_int_cast_check(src_vreg, from_width, to_width);
-
-                // Move the value to the result vreg. A signed source widened to a
-                // larger type must be SIGN-extended into the high bits — a plain
-                // 64-bit copy would carry the source's zero-extended high bits,
-                // turning e.g. i32 -5 into 4294967291 (RUE-88). The value is held
-                // zero-extended in the register, so emit an explicit movsx.
-                let from_bits = from_width.bits;
-                let to_bits = to_width.bits;
-                if from_width.signed && to_bits > from_bits {
-                    let dst = Operand::Virtual(vreg);
-                    let src = Operand::Virtual(src_vreg);
-                    match from_bits {
-                        8 => self.mir.push(X86Inst::Movsx8To64 { dst, src }),
-                        16 => self.mir.push(X86Inst::Movsx16To64 { dst, src }),
-                        _ => self.mir.push(X86Inst::Movsx32To64 { dst, src }),
-                    }
-                } else {
-                    // Unsigned widening, narrowing, and same-size reinterpretation
-                    // already hold the correct bits in the low half.
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(src_vreg),
-                    });
-                }
-            }
-
-            CfgInstData::Drop {
-                value: dropped_value,
-            } => {
-                // Drop instruction - runs destructor if the type needs one.
-                // The CFG builder already elides Drop for trivially droppable types,
-                // so reaching here means we need to emit actual cleanup code.
-                //
-                // Get the type of the value being dropped to determine which
-                // destructor function to call.
-                let dropped_ty = self.ctx.cfg.get_inst(*dropped_value).ty;
-
-                // Handle struct drops - need to pass all flattened field values
-                if let TypeKind::Struct(struct_id) = dropped_ty.kind() {
-                    let struct_def = self.ctx.type_pool.struct_def(struct_id);
-
-                    // Multi-slot structs use the complete aggregate
-                    // representation. Zero- and one-slot structs use their
-                    // scalar/ZST flattening.
-                    let dropped_plan =
-                        crate::value_plan::ValuePlan::for_value(&self.ctx, *dropped_value);
-                    let field_vregs = if dropped_plan.shape.requires_complete_slots() {
-                        self.require_aggregate_slots(*dropped_value)
-                    } else {
-                        self.collect_struct_scalar_vregs(*dropped_value)
-                    };
-
-                    // For builtin types (e.g., String), the destructor IS the drop glue.
-                    // We call only the destructor and skip the drop glue to avoid double-calling.
-                    if struct_def.is_builtin {
-                        if let Some(ref destructor_name) = struct_def.destructor {
-                            self.emit_call_with_slot_args(&field_vregs, destructor_name);
-                        }
-                        // No drop glue for builtins - destructor handles everything
-                        return;
-                    }
-
-                    // For user-defined structs, call destructor first (if any), then drop glue.
-                    if let Some(ref destructor_name) = struct_def.destructor {
-                        // The user destructor takes `self` as ONE by-value
-                        // struct parameter, so its slots are passed in the
-                        // reversed by-value aggregate ABI order (ADR-0040 /
-                        // RUE-311) — see the reversal in the general `Call`
-                        // lowering. (The drop glue below instead takes each
-                        // field as a separate scalar parameter, in declaration
-                        // order, so it is NOT reversed.)
-                        let mut self_vregs = field_vregs.clone();
-                        self_vregs.reverse();
-                        self.emit_call_with_slot_args(&self_vregs, destructor_name);
-                    }
-
-                    // Now call the drop glue function to drop fields, passing
-                    // all fields again (the destructor call clobbered the
-                    // argument registers). Drop glue receives the flattened
-                    // fields as individual parameters in declaration order, but
-                    // it reconstructs any multi-slot field (a nested struct or
-                    // array) by reading it as one aggregate `Param` — which uses
-                    // the reversed by-value aggregate ABI (ADR-0040 / RUE-311).
-                    // So each such field's own slots are reversed within their
-                    // sub-range here; scalar fields (one slot) are unaffected.
-                    let mut glue_vregs = field_vregs.clone();
-                    let mut off = 0usize;
-                    for field in &struct_def.fields {
-                        let fc = self.ctx.type_slot_count(field.ty) as usize;
-                        if fc > 1 && off + fc <= glue_vregs.len() {
-                            glue_vregs[off..off + fc].reverse();
-                        }
-                        off += fc;
-                    }
-                    // File-qualified when the struct name spans files
-                    // (RUE-571) — must match the glue definition in
-                    // rue_compiler::drop_glue.
-                    let drop_fn_name = format!(
-                        "__rue_drop_{}",
-                        self.ctx.type_pool.struct_symbol_name(struct_id)
-                    );
-                    self.emit_call_with_slot_args(&glue_vregs, &drop_fn_name);
-                    return;
-                }
-
-                // Handle array drops - need to pass all element values
-                if let TypeKind::Array(array_id) = dropped_ty.kind() {
-                    // All flattened element slots (accessor first, as above;
-                    // slot counts past the argument registers go on the stack
-                    // via emit_call_with_slot_args — e.g. [String; 3] is 9
-                    // slots, RUE-193)
-                    let dropped_plan =
-                        crate::value_plan::ValuePlan::for_value(&self.ctx, *dropped_value);
-                    let mut element_vregs = if dropped_plan.shape.requires_complete_slots() {
-                        self.require_aggregate_slots(*dropped_value)
-                    } else {
-                        self.collect_array_scalar_vregs(*dropped_value)
-                    };
-
-                    // The array drop glue reconstructs each multi-slot element
-                    // via one aggregate `Param` read, which uses the reversed
-                    // by-value ABI (ADR-0040 / RUE-311). Reverse each element's
-                    // own slots within its sub-range so that read recovers
-                    // logical order; single-slot elements are unaffected.
-                    let elem_slots = self.ctx.array_element_slot_count(dropped_ty) as usize;
-                    if elem_slots > 1 {
-                        for chunk in element_vregs.chunks_mut(elem_slots) {
-                            chunk.reverse();
-                        }
-                    }
-
-                    let drop_fn_name = types::array_drop_glue_name(array_id, self.ctx.type_pool);
-                    self.emit_call_with_slot_args(&element_vregs, &drop_fn_name);
-                    return;
-                }
-
-                // Handle enum drops (RUE-221): pass the enum's flattened slots
-                // (discriminant + payload union) to its synthesized drop glue,
-                // which switches on the discriminant and drops the active
-                // variant's payload.
-                if let TypeKind::Enum(enum_id) = dropped_ty.kind() {
-                    let field_vregs = self.require_aggregate_slots(*dropped_value);
-                    // File-qualified when the enum name spans files (RUE-571).
-                    let drop_fn_name = format!(
-                        "__rue_drop_{}",
-                        self.ctx.type_pool.enum_symbol_name(enum_id)
-                    );
-                    self.emit_call_with_slot_args(&field_vregs, &drop_fn_name);
-                    return;
-                }
-
-                // For other types that might need drop in the future
-                unreachable!(
-                    "Drop instruction reached codegen for unexpected type: {:?}",
-                    dropped_ty
-                );
-            }
-
-            CfgInstData::StorageLive { .. } => {
-                // StorageLive marks a slot as valid for use.
-                // Currently a no-op in codegen. In the future, this could be used
-                // for stack slot optimization (LLVM lifetime intrinsics).
-            }
-
-            CfgInstData::StorageDead { .. } => {
-                // StorageDead marks a slot as no longer in use.
-                // Currently a no-op in codegen. In the future, this could be used
-                // for stack slot optimization (LLVM lifetime intrinsics).
-            }
-
-            // Canonical projected memory operations.
-            CfgInstData::PlaceRead { place } => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-                crate::place_lower::lower_place_read(self, vreg, place, ty);
-            }
-
-            CfgInstData::PlaceWrite { place, value: val } => {
-                // A multi-slot aggregate value (struct, String, array, or
-                // payload enum) has one vreg per logical slot; PlaceWrite must
-                // store that complete representation. (RUE-118, RUE-23)
-                let val_plan = crate::value_plan::ValuePlan::for_value(&self.ctx, *val);
-                // A zero-sized value has no bytes to store (RUE-577): writing
-                // the dummy vreg CFG carries for unit would clobber a
-                // neighboring slot, and a ZST destination's origin shift
-                // underflows. Nothing to do.
-                let vals = if val_plan.shape.requires_complete_slots() {
-                    self.require_aggregate_slots(*val)
-                } else if val_plan.shape.slot_count() == 0 {
-                    Vec::new()
-                } else {
-                    vec![self.get_vreg(*val)]
-                };
-                crate::place_lower::lower_place_write(self, place, &vals);
-            }
-        }
-
-        if matches!(
-            value_plan.requirement,
-            crate::value_plan::MaterializationRequirement::CompleteSlots
-        ) {
-            let slots = crate::agg_slots::require_aggregate_slots(self, value);
-            crate::value_plan::assert_slot_policy(value_plan, slots.len());
-        } else if let Some(slots) = self.struct_slot_vregs.get(&value) {
-            crate::value_plan::assert_slot_policy(value_plan, slots.len());
+        };
+        crate::value_plan::MaterializedValue {
+            primary: vreg,
+            slots: Vec::new(),
         }
     }
 
+    fn lower_drop_plan(
+        &mut self,
+        actions: Vec<crate::value_plan::DropAction>,
+    ) -> crate::value_plan::ValueResult {
+        for action in actions {
+            self.emit_slot_call(&action.slots, &action.symbol);
+        }
+
+        let primary = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(primary),
+            imm: 0,
+        });
+        crate::value_plan::ValueResult::SideEffect
+    }
+
+    fn lower_call_plan(
+        &mut self,
+        plan: crate::call_plan::CallPlan,
+    ) -> crate::value_plan::MaterializedValue {
+        use crate::call_plan::ReturnPlan;
+        let primary = plan.result.unwrap_or_else(|| self.mir.alloc_vreg());
+        let num_reg_args = plan.abi_slots.len().min(ARG_REGS.len());
+        let num_stack_args = plan.stack_slot_count;
+        let needs_alignment = plan.stack_bytes > (num_stack_args * 8) as u32;
+        if needs_alignment {
+            self.mir.push(X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: -8,
+            });
+        }
+        for arg in plan.abi_slots.iter().skip(ARG_REGS.len()).rev() {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Virtual(*arg),
+            });
+            self.mir.push(X86Inst::Push {
+                src: Operand::Physical(Reg::Rax),
+            });
+        }
+        for arg in plan.abi_slots.iter().take(num_reg_args).rev() {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Virtual(*arg),
+            });
+            self.mir.push(X86Inst::Push {
+                src: Operand::Physical(Reg::Rax),
+            });
+        }
+        for (index, _) in plan.abi_slots.iter().take(num_reg_args).enumerate() {
+            self.mir.push(X86Inst::Pop {
+                dst: Operand::Physical(ARG_REGS[index]),
+            });
+        }
+        let symbol_id = self.intern_symbol(&plan.symbol);
+        self.mir.push(X86Inst::CallRel { symbol_id });
+        if num_stack_args > 0 || needs_alignment {
+            self.mir.push(X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: plan.stack_bytes as i32,
+            });
+        }
+        let slots = match plan.return_plan {
+            ReturnPlan::Sret {
+                slot_count,
+                storage_bytes,
+            } => {
+                let slots: Vec<_> = (0..slot_count)
+                    .map(|index| {
+                        let slot = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRM {
+                            dst: Operand::Virtual(slot),
+                            base: Reg::Rsp,
+                            offset: (index * 8) as i32,
+                        });
+                        slot
+                    })
+                    .collect();
+                self.mir.push(X86Inst::AddRI {
+                    dst: Operand::Physical(Reg::Rsp),
+                    imm: storage_bytes as i32,
+                });
+                slots
+            }
+            ReturnPlan::Registers { slot_count } => (0..slot_count)
+                .map(|index| {
+                    let slot = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(slot),
+                        src: Operand::Physical(RET_REGS[index as usize]),
+                    });
+                    slot
+                })
+                .collect(),
+            ReturnPlan::Scalar => Vec::new(),
+            ReturnPlan::ZeroSized => Vec::new(),
+        };
+        if let Some(&slot) = slots.first() {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Virtual(primary),
+                src: Operand::Virtual(slot),
+            });
+        } else if matches!(plan.return_plan, ReturnPlan::Scalar) {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Virtual(primary),
+                src: Operand::Physical(Reg::Rax),
+            });
+        } else if matches!(plan.return_plan, ReturnPlan::ZeroSized) {
+            self.mir.push(X86Inst::MovRI32 {
+                dst: Operand::Virtual(primary),
+                imm: 0,
+            });
+        }
+        crate::value_plan::MaterializedValue { primary, slots }
+    }
+
+    fn lower_residual_value(
+        &mut self,
+        plan: crate::value_plan::ValueEmissionPlan,
+    ) -> crate::value_plan::ValueResult {
+        use crate::value_plan::{BitwiseOp, ResidualValuePlan, ShiftOp, ValueResult};
+        let ty = plan.ty;
+        let width = plan.policy.integer_width;
+        let mut slots = Vec::new();
+        let primary = match plan.value {
+            ResidualValuePlan::Const { value } => {
+                let dst = self.mir.alloc_vreg();
+                if value <= u32::MAX as u64 {
+                    self.mir.push(X86Inst::MovRI32 {
+                        dst: Operand::Virtual(dst),
+                        imm: value as i32,
+                    });
+                } else {
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Virtual(dst),
+                        imm: value as i64,
+                    });
+                }
+                dst
+            }
+            ResidualValuePlan::BoolConst { value } => {
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: value as i32,
+                });
+                dst
+            }
+            ResidualValuePlan::StringConst { string_id } => {
+                let ptr = self.mir.alloc_vreg();
+                let len = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::StringConstPtr {
+                    dst: Operand::Virtual(ptr),
+                    string_id,
+                });
+                self.mir.push(X86Inst::StringConstLen {
+                    dst: Operand::Virtual(len),
+                    string_id,
+                });
+                slots = vec![ptr, len];
+                if plan.policy.shape.slot_count() >= 3 {
+                    let cap = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::StringConstCap {
+                        dst: Operand::Virtual(cap),
+                        string_id,
+                    });
+                    slots.push(cap);
+                }
+                ptr
+            }
+            ResidualValuePlan::Param { index } => {
+                let (primary, result_slots) = self.lower_param_value(index, ty, plan.policy);
+                slots = result_slots;
+                primary
+            }
+            ResidualValuePlan::BlockParam { index: _ } => {
+                panic!("block parameter must be preallocated")
+            }
+            ResidualValuePlan::Not { value } => {
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(value),
+                });
+                self.mir.push(X86Inst::XorRI {
+                    dst: Operand::Virtual(dst),
+                    imm: 1,
+                });
+                dst
+            }
+            ResidualValuePlan::BitNot { value } => {
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(value),
+                });
+                self.mir.push(if width.is_some_and(|w| w.bits == 64) {
+                    X86Inst::Not64R {
+                        dst: Operand::Virtual(dst),
+                    }
+                } else {
+                    X86Inst::NotR {
+                        dst: Operand::Virtual(dst),
+                    }
+                });
+                self.emit_subword_narrow(dst, ty);
+                dst
+            }
+            ResidualValuePlan::Bitwise { op, lhs, rhs } => {
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(lhs),
+                });
+                self.mir
+                    .push(match (op, width.is_some_and(|w| w.bits == 64)) {
+                        (BitwiseOp::And, true) => X86Inst::And64RR {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(rhs),
+                        },
+                        (BitwiseOp::And, false) => X86Inst::AndRR {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(rhs),
+                        },
+                        (BitwiseOp::Or, true) => X86Inst::Or64RR {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(rhs),
+                        },
+                        (BitwiseOp::Or, false) => X86Inst::OrRR {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(rhs),
+                        },
+                        (BitwiseOp::Xor, true) => X86Inst::Xor64RR {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(rhs),
+                        },
+                        (BitwiseOp::Xor, false) => X86Inst::XorRR {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(rhs),
+                        },
+                    });
+                dst
+            }
+            ResidualValuePlan::Shift {
+                op,
+                lhs,
+                rhs,
+                constant,
+            } => {
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(lhs),
+                });
+                let mask = plan.policy.shift_count_mask.expect("shift count mask");
+                if let Some(value) = constant {
+                    let imm = (value & mask) as u8;
+                    self.mir.push(
+                        match (
+                            op,
+                            width.is_some_and(|w| w.bits == 64),
+                            width.is_some_and(|w| w.signed),
+                        ) {
+                            (ShiftOp::Left, true, _) => X86Inst::ShlRI {
+                                dst: Operand::Virtual(dst),
+                                imm,
+                            },
+                            (ShiftOp::Left, false, _) => X86Inst::Shl32RI {
+                                dst: Operand::Virtual(dst),
+                                imm,
+                            },
+                            (ShiftOp::Right, true, true) => X86Inst::SarRI {
+                                dst: Operand::Virtual(dst),
+                                imm,
+                            },
+                            (ShiftOp::Right, false, true) => X86Inst::Sar32RI {
+                                dst: Operand::Virtual(dst),
+                                imm,
+                            },
+                            (ShiftOp::Right, true, false) => X86Inst::ShrRI {
+                                dst: Operand::Virtual(dst),
+                                imm,
+                            },
+                            (ShiftOp::Right, false, false) => X86Inst::Shr32RI {
+                                dst: Operand::Virtual(dst),
+                                imm,
+                            },
+                        },
+                    );
+                } else {
+                    let count = self.emit_masked_shift_count_vreg(rhs, mask);
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rcx),
+                        src: Operand::Virtual(count),
+                    });
+                    self.mir.push(
+                        match (
+                            op,
+                            width.is_some_and(|w| w.bits == 64),
+                            width.is_some_and(|w| w.signed),
+                        ) {
+                            (ShiftOp::Left, true, _) => X86Inst::ShlRCl {
+                                dst: Operand::Virtual(dst),
+                            },
+                            (ShiftOp::Left, false, _) => X86Inst::Shl32RCl {
+                                dst: Operand::Virtual(dst),
+                            },
+                            (ShiftOp::Right, true, true) => X86Inst::SarRCl {
+                                dst: Operand::Virtual(dst),
+                            },
+                            (ShiftOp::Right, false, true) => X86Inst::Sar32RCl {
+                                dst: Operand::Virtual(dst),
+                            },
+                            (ShiftOp::Right, true, false) => X86Inst::ShrRCl {
+                                dst: Operand::Virtual(dst),
+                            },
+                            (ShiftOp::Right, false, false) => X86Inst::Shr32RCl {
+                                dst: Operand::Virtual(dst),
+                            },
+                        },
+                    );
+                }
+                self.emit_subword_narrow(dst, ty);
+                dst
+            }
+            ResidualValuePlan::Comparison {
+                op,
+                lhs,
+                rhs,
+                leaf_types,
+            } => self.lower_comparison(op, lhs, rhs, plan.policy, &leaf_types),
+            ResidualValuePlan::Alloc {
+                slot,
+                init,
+                init_shape,
+            } => {
+                if init_shape.slot_count() == 0 {
+                    return ValueResult::SideEffect;
+                } else if init.slots.is_empty() {
+                    self.emit_store_slot(init.primary, slot);
+                } else {
+                    crate::agg_slots::store_slots(self, &init.slots, slot);
+                }
+                return ValueResult::SideEffect;
+            }
+            ResidualValuePlan::Load { slot } => {
+                let count = plan.policy.shape.slot_count();
+                if count == 0 {
+                    self.mir.alloc_vreg()
+                } else if count > 1 {
+                    slots = crate::agg_slots::load_slots_at_low(self, slot + count - 1, count);
+                    let dst = slots[0];
+                    dst
+                } else {
+                    let dst = self.mir.alloc_vreg();
+                    self.emit_load_slot(dst, slot);
+                    dst
+                }
+            }
+            ResidualValuePlan::Store {
+                destination,
+                value,
+                value_shape,
+            } => {
+                if value_shape.slot_count() == 0 {
+                    return ValueResult::SideEffect;
+                }
+                if value.slots.is_empty() {
+                    match destination {
+                        crate::value_plan::StoreDestination::FrameSlot(slot) => {
+                            self.emit_store_slot(value.primary, slot)
+                        }
+                        crate::value_plan::StoreDestination::ByRefParam(param_slot) => {
+                            let ptr = self.ensure_by_ref_param_ptr(param_slot);
+                            self.emit_store_ptr_base(value.primary, ptr);
+                        }
+                    }
+                } else {
+                    match destination {
+                        crate::value_plan::StoreDestination::FrameSlot(slot) => {
+                            crate::agg_slots::store_slots(self, &value.slots, slot)
+                        }
+                        crate::value_plan::StoreDestination::ByRefParam(param_slot) => {
+                            let ptr = self.ensure_by_ref_param_ptr(param_slot);
+                            crate::agg_slots::store_slots_through_ptr(self, &value.slots, ptr, 0);
+                        }
+                    }
+                }
+                return ValueResult::SideEffect;
+            }
+            ResidualValuePlan::ParamStore {
+                param_slot,
+                value,
+                value_shape,
+            } => {
+                if value_shape.slot_count() == 0 {
+                    return ValueResult::SideEffect;
+                }
+                let ptr = self.ensure_by_ref_param_ptr(param_slot);
+                if value.slots.is_empty() {
+                    self.emit_store_ptr_base(value.primary, ptr);
+                } else {
+                    crate::agg_slots::store_slots_through_ptr(self, &value.slots, ptr, 0);
+                }
+                return ValueResult::SideEffect;
+            }
+            ResidualValuePlan::PlaceRead { place } => {
+                let count = plan.policy.shape.slot_count();
+                if count > 1 {
+                    let addr = self.mir.alloc_vreg();
+                    crate::place_lower::lower_checked_place_addr_plan(self, addr, &place);
+                    slots = crate::agg_slots::load_slots_through_ptr(self, addr, count);
+                    let dst = slots[0];
+                    dst
+                } else {
+                    let dst = self.mir.alloc_vreg();
+                    crate::place_lower::lower_place_read_plan(self, dst, &place, ty);
+                    dst
+                }
+            }
+            ResidualValuePlan::PlaceWrite {
+                place,
+                value,
+                value_shape,
+            } => {
+                let vals = if matches!(
+                    value_shape,
+                    crate::value_plan::ValueShape::ZeroSized
+                        | crate::value_plan::ValueShape::CompleteAggregate { slot_count: 0 }
+                ) {
+                    Vec::new()
+                } else if value.slots.is_empty() {
+                    vec![value.primary]
+                } else {
+                    value.slots
+                };
+                crate::place_lower::lower_place_write_plan(self, &place, &vals);
+                return ValueResult::SideEffect;
+            }
+            ResidualValuePlan::StructInit { fields, .. }
+            | ResidualValuePlan::ArrayInit { elements: fields } => {
+                slots.clear();
+                for (field, shape) in fields {
+                    if matches!(
+                        shape,
+                        crate::value_plan::ValueShape::ZeroSized
+                            | crate::value_plan::ValueShape::CompleteAggregate { slot_count: 0 }
+                    ) {
+                        continue;
+                    }
+                    let source = if field.slots.is_empty() {
+                        vec![field.primary]
+                    } else {
+                        field.slots
+                    };
+                    slots.extend(source);
+                }
+                let dst = self.mir.alloc_vreg();
+                if matches!(
+                    plan.policy.aggregate_primary,
+                    crate::value_plan::AggregatePrimary::Zero
+                ) {
+                    self.mir.push(X86Inst::MovRI32 {
+                        dst: Operand::Virtual(dst),
+                        imm: 0,
+                    });
+                } else if let Some(&first) = slots.first() {
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(first),
+                    });
+                } else {
+                    self.mir.push(X86Inst::MovRI32 {
+                        dst: Operand::Virtual(dst),
+                        imm: 0,
+                    });
+                }
+                dst
+            }
+            ResidualValuePlan::EnumVariant {
+                variant_index,
+                payload,
+                total_slots,
+                ..
+            } => {
+                slots = (0..total_slots).map(|_| self.mir.alloc_vreg()).collect();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(slots[0]),
+                    imm: variant_index as i32,
+                });
+                let mut offset = 1;
+                for (value, shape) in payload {
+                    if shape.slot_count() == 0 {
+                        continue;
+                    }
+                    let values = if value.slots.is_empty() {
+                        vec![value.primary]
+                    } else {
+                        value.slots
+                    };
+                    for value in values {
+                        if offset < slots.len() {
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Virtual(slots[offset]),
+                                src: Operand::Virtual(value),
+                            });
+                            offset += 1;
+                        }
+                    }
+                }
+                let dst = slots[0];
+                dst
+            }
+            ResidualValuePlan::EnumPayloadGet {
+                base_slots,
+                field_offset,
+                field_slots,
+            } => {
+                slots.clear();
+                for index in 0..field_slots {
+                    let dst = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(base_slots[(field_offset + index) as usize]),
+                    });
+                    slots.push(dst);
+                }
+                let dst = slots
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| self.mir.alloc_vreg());
+                dst
+            }
+            ResidualValuePlan::IntCast {
+                value,
+                from_width,
+                trap_symbol,
+            } => {
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(value),
+                });
+                let to_width = width.unwrap();
+                self.emit_int_cast_check(value, from_width, to_width, trap_symbol);
+                if from_width.signed && to_width.bits > from_width.bits {
+                    let src = Operand::Virtual(value);
+                    let dst = Operand::Virtual(dst);
+                    self.mir.push(match from_width.bits {
+                        8 => X86Inst::Movsx8To64 { dst, src },
+                        16 => X86Inst::Movsx16To64 { dst, src },
+                        _ => X86Inst::Movsx32To64 { dst, src },
+                    });
+                }
+                dst
+            }
+            ResidualValuePlan::Drop { actions } => {
+                self.lower_drop_plan(actions);
+                return ValueResult::SideEffect;
+            }
+            ResidualValuePlan::StorageLive { .. } | ResidualValuePlan::StorageDead { .. } => {
+                return ValueResult::SideEffect;
+            }
+        };
+        ValueResult::Materialized(crate::value_plan::MaterializedValue { primary, slots })
+    }
+
+    fn lower_param_value(
+        &mut self,
+        index: u32,
+        ty: Type,
+        policy: crate::value_plan::ValuePlan,
+    ) -> (VReg, Vec<VReg>) {
+        let dst = self.mir.alloc_vreg();
+        let count = policy.shape.slot_count();
+        if count == 0 {
+            self.mir.push(X86Inst::MovRI32 {
+                dst: Operand::Virtual(dst),
+                imm: 0,
+            });
+            return (dst, Vec::new());
+        }
+        if let crate::value_plan::StoragePolicy::ParameterSlot { by_ref: true, .. } = policy.storage
+        {
+            let ptr = self.ensure_by_ref_param_ptr(index);
+            if count > 1 {
+                let slots: Vec<_> = (0..count)
+                    .map(|slot| {
+                        let v = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRMIndexed {
+                            dst: Operand::Virtual(v),
+                            base: ptr,
+                            offset: (slot * 8) as i32,
+                        });
+                        v
+                    })
+                    .collect();
+                return (slots[0], slots);
+            }
+            self.mir.push(X86Inst::MovRMIndexed {
+                dst: Operand::Virtual(dst),
+                base: ptr,
+                offset: 0,
+            });
+        } else if count > 1 {
+            let slots: Vec<_> = (0..count)
+                .map(|slot| {
+                    let v = self.mir.alloc_vreg();
+                    let frame_slot = self.ctx.num_locals + index + count - 1 - slot;
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(v),
+                        base: Reg::Rbp,
+                        offset: self.ctx.local_offset(frame_slot),
+                    });
+                    v
+                })
+                .collect();
+            return (slots[0], slots);
+        } else {
+            self.mir.push(X86Inst::MovRM {
+                dst: Operand::Virtual(dst),
+                base: Reg::Rbp,
+                offset: self.ctx.local_offset(self.ctx.num_locals + index),
+            });
+        }
+        let _ = ty;
+        (dst, Vec::new())
+    }
+
+    fn emit_masked_shift_count_vreg(&mut self, rhs: VReg, mask: u64) -> VReg {
+        if mask >= 31 {
+            return rhs;
+        }
+        let mask_vreg = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(mask_vreg),
+            imm: mask as i32,
+        });
+        let dst = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(rhs),
+        });
+        self.mir.push(X86Inst::AndRR {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(mask_vreg),
+        });
+        dst
+    }
+
+    fn lower_scalar_comparison(
+        &mut self,
+        op: crate::value_plan::ComparisonOp,
+        lhs: VReg,
+        rhs: VReg,
+        policy: crate::value_plan::ValuePlan,
+    ) -> VReg {
+        let dst = self.mir.alloc_vreg();
+        let width = policy.comparison_width();
+        self.mir.push(if width.bits == 64 {
+            X86Inst::Cmp64RR {
+                src1: Operand::Virtual(lhs),
+                src2: Operand::Virtual(rhs),
+            }
+        } else {
+            X86Inst::CmpRR {
+                src1: Operand::Virtual(lhs),
+                src2: Operand::Virtual(rhs),
+            }
+        });
+        self.mir.push(match (op, width.signed) {
+            (crate::value_plan::ComparisonOp::Eq, _) => X86Inst::Sete {
+                dst: Operand::Virtual(dst),
+            },
+            (crate::value_plan::ComparisonOp::Ne, _) => X86Inst::Setne {
+                dst: Operand::Virtual(dst),
+            },
+            (crate::value_plan::ComparisonOp::Lt, true) => X86Inst::Setl {
+                dst: Operand::Virtual(dst),
+            },
+            (crate::value_plan::ComparisonOp::Lt, false) => X86Inst::Setb {
+                dst: Operand::Virtual(dst),
+            },
+            (crate::value_plan::ComparisonOp::Gt, true) => X86Inst::Setg {
+                dst: Operand::Virtual(dst),
+            },
+            (crate::value_plan::ComparisonOp::Gt, false) => X86Inst::Seta {
+                dst: Operand::Virtual(dst),
+            },
+            (crate::value_plan::ComparisonOp::Le, true) => X86Inst::Setle {
+                dst: Operand::Virtual(dst),
+            },
+            (crate::value_plan::ComparisonOp::Le, false) => X86Inst::Setbe {
+                dst: Operand::Virtual(dst),
+            },
+            (crate::value_plan::ComparisonOp::Ge, true) => X86Inst::Setge {
+                dst: Operand::Virtual(dst),
+            },
+            (crate::value_plan::ComparisonOp::Ge, false) => X86Inst::Setae {
+                dst: Operand::Virtual(dst),
+            },
+        });
+        dst
+    }
+
+    fn lower_comparison(
+        &mut self,
+        op: crate::value_plan::ComparisonOp,
+        lhs: crate::value_plan::MaterializedValue,
+        rhs: crate::value_plan::MaterializedValue,
+        policy: crate::value_plan::ValuePlan,
+        leaf_types: &[Type],
+    ) -> VReg {
+        match policy.comparison.expect("comparison plan") {
+            crate::value_plan::ComparisonPreparation::Scalar { .. } => {
+                self.lower_scalar_comparison(op, lhs.primary, rhs.primary, policy)
+            }
+            crate::value_plan::ComparisonPreparation::Unit => {
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: matches!(op, crate::value_plan::ComparisonOp::Eq) as i32,
+                });
+                dst
+            }
+            crate::value_plan::ComparisonPreparation::StringContent { .. } => {
+                assert!(
+                    lhs.slots.len() >= 2 && rhs.slots.len() >= 2,
+                    "normalized string comparison needs ptr and len slots"
+                );
+                let dst = self.mir.alloc_vreg();
+                for (reg, slot) in [
+                    (Reg::Rdi, lhs.slots[0]),
+                    (Reg::Rsi, lhs.slots[1]),
+                    (Reg::Rdx, rhs.slots[0]),
+                    (Reg::Rcx, rhs.slots[1]),
+                ] {
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(reg),
+                        src: Operand::Virtual(slot),
+                    });
+                }
+                let symbol_id = self.intern_symbol("__rue_str_eq");
+                self.mir.push(X86Inst::CallRel { symbol_id });
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Physical(Reg::Rax),
+                });
+                if matches!(op, crate::value_plan::ComparisonOp::Ne) {
+                    self.mir.push(X86Inst::XorRI {
+                        dst: Operand::Virtual(dst),
+                        imm: 1,
+                    });
+                }
+                dst
+            }
+            crate::value_plan::ComparisonPreparation::Aggregate { .. } => {
+                crate::aggregate_eq::emit_aggregate_equality_plan(
+                    self,
+                    &lhs.slots,
+                    &rhs.slots,
+                    leaf_types,
+                    matches!(op, crate::value_plan::ComparisonOp::Ne),
+                )
+            }
+        }
+    }
+
+    fn lower_trap(
+        &mut self,
+        plan: crate::value_plan::TrapPlan,
+    ) -> crate::value_plan::MaterializedValue {
+        let panic = |this: &mut Self,
+                     message: Option<crate::value_plan::MaterializedValue>,
+                     symbol: &str| {
+            if let Some(message) = message.filter(|message| message.slots.len() >= 2) {
+                this.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rdi),
+                    src: Operand::Virtual(message.slots[0]),
+                });
+                this.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rsi),
+                    src: Operand::Virtual(message.slots[1]),
+                });
+                let symbol_id = this.intern_symbol(symbol);
+                this.mir.push(X86Inst::CallRel { symbol_id });
+            } else {
+                let symbol_id = this.intern_symbol(symbol);
+                this.mir.push(X86Inst::CallRel { symbol_id });
+            }
+        };
+        match plan {
+            crate::value_plan::TrapPlan::Panic { message, symbol } => panic(self, message, &symbol),
+            crate::value_plan::TrapPlan::Assert {
+                condition,
+                message,
+                symbol,
+            } => {
+                let pass = self.new_label();
+                self.mir.push(X86Inst::CmpRI {
+                    src: Operand::Virtual(condition),
+                    imm: 0,
+                });
+                self.mir.push(X86Inst::Jnz { label: pass });
+                panic(self, message, &symbol);
+                self.mir.push(X86Inst::Label { id: pass });
+            }
+        }
+        let primary = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(primary),
+            imm: 0,
+        });
+        crate::value_plan::MaterializedValue {
+            primary,
+            slots: Vec::new(),
+        }
+    }
+
+    fn lower_option_intrinsic(
+        &mut self,
+        plan: &crate::value_plan::IntrinsicPlan,
+        intrinsic: crate::value_plan::OptionIntrinsic,
+    ) -> crate::value_plan::MaterializedValue {
+        let crate::value_plan::IntrinsicOperation::Option {
+            some_discriminant: some_disc,
+            none_discriminant: none_disc,
+            ..
+        } = plan.operation
+        else {
+            unreachable!()
+        };
+        let total_slots = plan.result_slots;
+        let sret_bytes = (total_slots as i32 * 8 + 15) & !15;
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: -sret_bytes,
+        });
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Physical(Reg::Rsp),
+        });
+        if intrinsic == crate::value_plan::OptionIntrinsic::ReadLine {
+            self.mir.push(X86Inst::MovRI32 {
+                dst: Operand::Physical(Reg::Rsi),
+                imm: some_disc as i32,
+            });
+            self.mir.push(X86Inst::MovRI32 {
+                dst: Operand::Physical(Reg::Rdx),
+                imm: none_disc as i32,
+            });
+        } else {
+            assert!(
+                plan.args.first().is_some_and(|arg| arg.slots.len() >= 2),
+                "normalized parse argument needs ptr and len slots"
+            );
+            let arg = &plan.args[0];
+            for (reg, src) in [(Reg::Rsi, arg.slots[0]), (Reg::Rdx, arg.slots[1])] {
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(reg),
+                    src: Operand::Virtual(src),
+                });
+            }
+            self.mir.push(X86Inst::MovRI32 {
+                dst: Operand::Physical(Reg::Rcx),
+                imm: some_disc as i32,
+            });
+            self.mir.push(X86Inst::MovRI32 {
+                dst: Operand::Physical(Reg::R8),
+                imm: none_disc as i32,
+            });
+        }
+        let symbol_id = self.intern_symbol(
+            plan.runtime_symbol
+                .as_deref()
+                .expect("option intrinsic runtime symbol"),
+        );
+        self.mir.push(X86Inst::CallRel { symbol_id });
+        let slots: Vec<_> = (0..total_slots)
+            .map(|index| {
+                let slot = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRM {
+                    dst: Operand::Virtual(slot),
+                    base: Reg::Rsp,
+                    offset: (index * 8) as i32,
+                });
+                slot
+            })
+            .collect();
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: sret_bytes,
+        });
+        let primary = slots
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.mir.alloc_vreg());
+        crate::value_plan::MaterializedValue { primary, slots }
+    }
+
+    fn lower_intrinsic_plan(
+        &mut self,
+        plan: crate::value_plan::IntrinsicPlan,
+    ) -> crate::value_plan::MaterializedValue {
+        let operation = plan.operation;
+        let mut slots = Vec::new();
+        let primary = match operation {
+            crate::value_plan::IntrinsicOperation::Option { intrinsic, .. } => {
+                let result = self.lower_option_intrinsic(&plan, intrinsic);
+                slots = result.slots;
+                result.primary
+            }
+            crate::value_plan::IntrinsicOperation::RandomU32
+            | crate::value_plan::IntrinsicOperation::RandomU64 => {
+                let symbol_id = self.intern_symbol(
+                    plan.runtime_symbol
+                        .as_deref()
+                        .expect("random intrinsic runtime symbol"),
+                );
+                self.mir.push(X86Inst::CallRel { symbol_id });
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Physical(Reg::Rax),
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::PtrToInt
+            | crate::value_plan::IntrinsicOperation::IntToPtr => {
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(plan.args[0].primary),
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::PtrRead => {
+                let ptr = plan.args[0].primary;
+                let count = plan.result_slots;
+                if count > 1 {
+                    slots = crate::agg_slots::load_slots_through_ptr(self, ptr, count);
+                    slots[0]
+                } else {
+                    let dst = self.mir.alloc_vreg();
+                    if count != 0 {
+                        self.mir.push(X86Inst::MovRMIndexed {
+                            dst: Operand::Virtual(dst),
+                            base: ptr,
+                            offset: 0,
+                        });
+                    }
+                    if count != 0 {
+                        slots.push(dst);
+                    }
+                    dst
+                }
+            }
+            crate::value_plan::IntrinsicOperation::PtrWrite => {
+                let ptr = plan.args[0].primary;
+                let value = &plan.args[1];
+                if value.slot_count == 0 {
+                    // Zero-sized values have no bytes to write.
+                } else if !value.slots.is_empty() {
+                    crate::agg_slots::store_slots_through_ptr(self, &value.slots, ptr, 0);
+                } else {
+                    self.mir.push(X86Inst::MovMRIndexed {
+                        base: ptr,
+                        offset: 0,
+                        src: Operand::Virtual(value.primary),
+                    });
+                }
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: 0,
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::PtrOffset => {
+                let offset = plan.args[1].primary;
+                let offset = match plan.args[1].integer_extension {
+                    crate::value_plan::IntegerExtension::None => offset,
+                    extension => {
+                        let extended = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(extended),
+                            src: Operand::Virtual(offset),
+                        });
+                        let dst = Operand::Virtual(extended);
+                        let src = Operand::Virtual(extended);
+                        match extension {
+                            crate::value_plan::IntegerExtension::Sign8 => {
+                                self.mir.push(X86Inst::Movsx8To64 { dst, src })
+                            }
+                            crate::value_plan::IntegerExtension::Zero8 => {
+                                self.mir.push(X86Inst::Movzx8To64 { dst, src })
+                            }
+                            crate::value_plan::IntegerExtension::Sign16 => {
+                                self.mir.push(X86Inst::Movsx16To64 { dst, src })
+                            }
+                            crate::value_plan::IntegerExtension::Zero16 => {
+                                self.mir.push(X86Inst::Movzx16To64 { dst, src })
+                            }
+                            crate::value_plan::IntegerExtension::Sign32 => {
+                                self.mir.push(X86Inst::Movsx32To64 { dst, src })
+                            }
+                            crate::value_plan::IntegerExtension::None => unreachable!(),
+                        }
+                        extended
+                    }
+                };
+                let scaled =
+                    allocation::lower_scale(self, offset, plan.scale.expect("ptr_offset scale"));
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(plan.args[0].primary),
+                });
+                self.mir.push(X86Inst::AddRR64 {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(scaled),
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::Alloc { element_size } => {
+                let scale = plan.scale;
+                let size = scale
+                    .map(|scale| allocation::lower_scale(self, plan.args[0].primary, scale))
+                    .unwrap_or(plan.args[0].primary);
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rdi),
+                    src: Operand::Virtual(size),
+                });
+                self.mir.push(X86Inst::MovRI64 {
+                    dst: Operand::Physical(Reg::Rsi),
+                    imm: element_size as i64,
+                });
+                let symbol_id = self.intern_symbol(
+                    plan.runtime_symbol
+                        .as_deref()
+                        .expect("alloc intrinsic runtime symbol"),
+                );
+                self.mir.push(X86Inst::CallRel { symbol_id });
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Physical(Reg::Rax),
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::Free { element_size } => {
+                let size = if element_size == 8 {
+                    allocation::lower_scale(
+                        self,
+                        plan.args[1].primary,
+                        plan.scale.expect("free scale"),
+                    )
+                } else {
+                    plan.args[1].primary
+                };
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rdi),
+                    src: Operand::Virtual(plan.args[0].primary),
+                });
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rsi),
+                    src: Operand::Virtual(size),
+                });
+                self.mir.push(X86Inst::MovRI64 {
+                    dst: Operand::Physical(Reg::Rdx),
+                    imm: element_size as i64,
+                });
+                let symbol_id = self.intern_symbol(
+                    plan.runtime_symbol
+                        .as_deref()
+                        .expect("free intrinsic runtime symbol"),
+                );
+                self.mir.push(X86Inst::CallRel { symbol_id });
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: 0,
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::Realloc { element_size } => {
+                let mut args = plan.args.iter().map(|arg| arg.primary);
+                if element_size == 8 {
+                    let old = allocation::lower_scale(
+                        self,
+                        plan.args[1].primary,
+                        plan.scale.expect("realloc scale"),
+                    );
+                    let new = allocation::lower_scale(
+                        self,
+                        plan.args[2].primary,
+                        plan.scale.expect("realloc scale"),
+                    );
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rdi),
+                        src: Operand::Virtual(plan.args[0].primary),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rsi),
+                        src: Operand::Virtual(old),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rdx),
+                        src: Operand::Virtual(new),
+                    });
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Physical(Reg::Rcx),
+                        imm: 8,
+                    });
+                } else {
+                    for (arg, reg) in args.by_ref().zip([Reg::Rdi, Reg::Rsi, Reg::Rdx]) {
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Physical(reg),
+                            src: Operand::Virtual(arg),
+                        });
+                    }
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Physical(Reg::Rcx),
+                        imm: 1,
+                    });
+                }
+                let symbol_id = self.intern_symbol(
+                    plan.runtime_symbol
+                        .as_deref()
+                        .expect("realloc intrinsic runtime symbol"),
+                );
+                self.mir.push(X86Inst::CallRel { symbol_id });
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Physical(Reg::Rax),
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::AllocBytes => {
+                let size = plan.args[0].primary;
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rdi),
+                    src: Operand::Virtual(size),
+                });
+                self.mir.push(X86Inst::MovRI64 {
+                    dst: Operand::Physical(Reg::Rsi),
+                    imm: 1,
+                });
+                let symbol_id = self.intern_symbol(
+                    plan.runtime_symbol
+                        .as_deref()
+                        .expect("alloc-bytes intrinsic runtime symbol"),
+                );
+                self.mir.push(X86Inst::CallRel { symbol_id });
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Physical(Reg::Rax),
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::FreeBytes => {
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rdi),
+                    src: Operand::Virtual(plan.args[0].primary),
+                });
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rsi),
+                    src: Operand::Virtual(plan.args[1].primary),
+                });
+                self.mir.push(X86Inst::MovRI64 {
+                    dst: Operand::Physical(Reg::Rdx),
+                    imm: 1,
+                });
+                let symbol_id = self.intern_symbol(
+                    plan.runtime_symbol
+                        .as_deref()
+                        .expect("free-bytes intrinsic runtime symbol"),
+                );
+                self.mir.push(X86Inst::CallRel { symbol_id });
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: 0,
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::ReallocBytes => {
+                for (arg, reg) in plan.args.iter().zip([Reg::Rdi, Reg::Rsi, Reg::Rdx]) {
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(reg),
+                        src: Operand::Virtual(arg.primary),
+                    });
+                }
+                self.mir.push(X86Inst::MovRI64 {
+                    dst: Operand::Physical(Reg::Rcx),
+                    imm: 1,
+                });
+                let symbol_id = self.intern_symbol(
+                    plan.runtime_symbol
+                        .as_deref()
+                        .expect("realloc-bytes intrinsic runtime symbol"),
+                );
+                self.mir.push(X86Inst::CallRel { symbol_id });
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Physical(Reg::Rax),
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::ByteRead => {
+                let addr = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(addr),
+                    src: Operand::Virtual(plan.args[0].primary),
+                });
+                self.mir.push(X86Inst::AddRR64 {
+                    dst: Operand::Virtual(addr),
+                    src: Operand::Virtual(plan.args[1].primary),
+                });
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::Movzx8RMIndexed {
+                    dst: Operand::Virtual(dst),
+                    base: addr,
+                    offset: 0,
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::ByteWrite => {
+                let addr = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(addr),
+                    src: Operand::Virtual(plan.args[0].primary),
+                });
+                self.mir.push(X86Inst::AddRR64 {
+                    dst: Operand::Virtual(addr),
+                    src: Operand::Virtual(plan.args[1].primary),
+                });
+                self.mir.push(X86Inst::MovMR8Indexed {
+                    base: addr,
+                    offset: 0,
+                    src: Operand::Virtual(plan.args[2].primary),
+                });
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: 0,
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::PlaceAddress => {
+                let place = plan.args[0]
+                    .place
+                    .as_ref()
+                    .expect("raw intrinsic place plan");
+                let dst = self.mir.alloc_vreg();
+                crate::place_lower::lower_place_addr_plan(self, dst, place);
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::Debug => {
+                let arg = &plan.args[0];
+                if arg.slots.len() >= 2 {
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rdi),
+                        src: Operand::Virtual(arg.slots[0]),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rsi),
+                        src: Operand::Virtual(arg.slots[1]),
+                    });
+                    let symbol_id = self.intern_symbol(
+                        plan.runtime_symbol
+                            .as_deref()
+                            .expect("debug intrinsic runtime symbol"),
+                    );
+                    self.mir.push(X86Inst::CallRel { symbol_id });
+                } else {
+                    match arg.debug {
+                        crate::value_plan::DebugValuePlan::Integer(
+                            crate::value_plan::IntegerWidth {
+                                bits: 8,
+                                signed: true,
+                            },
+                        ) => {
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Physical(Reg::Rax),
+                                src: Operand::Virtual(arg.primary),
+                            });
+                            self.mir.push(X86Inst::Movsx8To64 {
+                                dst: Operand::Physical(Reg::Rdi),
+                                src: Operand::Physical(Reg::Rax),
+                            });
+                        }
+                        crate::value_plan::DebugValuePlan::Integer(
+                            crate::value_plan::IntegerWidth {
+                                bits: 16,
+                                signed: true,
+                            },
+                        ) => {
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Physical(Reg::Rax),
+                                src: Operand::Virtual(arg.primary),
+                            });
+                            self.mir.push(X86Inst::Movsx16To64 {
+                                dst: Operand::Physical(Reg::Rdi),
+                                src: Operand::Physical(Reg::Rax),
+                            });
+                        }
+                        crate::value_plan::DebugValuePlan::Integer(
+                            crate::value_plan::IntegerWidth {
+                                bits: 32,
+                                signed: true,
+                            },
+                        ) => {
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Physical(Reg::Rax),
+                                src: Operand::Virtual(arg.primary),
+                            });
+                            self.mir.push(X86Inst::Movsx32To64 {
+                                dst: Operand::Physical(Reg::Rdi),
+                                src: Operand::Physical(Reg::Rax),
+                            });
+                        }
+                        crate::value_plan::DebugValuePlan::Integer(
+                            crate::value_plan::IntegerWidth {
+                                bits: 8,
+                                signed: false,
+                            },
+                        ) => {
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Physical(Reg::Rax),
+                                src: Operand::Virtual(arg.primary),
+                            });
+                            self.mir.push(X86Inst::Movzx8To64 {
+                                dst: Operand::Physical(Reg::Rdi),
+                                src: Operand::Physical(Reg::Rax),
+                            });
+                        }
+                        crate::value_plan::DebugValuePlan::Integer(
+                            crate::value_plan::IntegerWidth {
+                                bits: 16,
+                                signed: false,
+                            },
+                        ) => {
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Physical(Reg::Rax),
+                                src: Operand::Virtual(arg.primary),
+                            });
+                            self.mir.push(X86Inst::Movzx16To64 {
+                                dst: Operand::Physical(Reg::Rdi),
+                                src: Operand::Physical(Reg::Rax),
+                            });
+                        }
+                        crate::value_plan::DebugValuePlan::Bool
+                        | crate::value_plan::DebugValuePlan::Integer(
+                            crate::value_plan::IntegerWidth { bits: 32 | 64, .. },
+                        ) => {
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Physical(Reg::Rdi),
+                                src: Operand::Virtual(arg.primary),
+                            });
+                        }
+                        crate::value_plan::DebugValuePlan::String
+                        | crate::value_plan::DebugValuePlan::Other
+                        | crate::value_plan::DebugValuePlan::Integer(_) => {
+                            unreachable!("dbg type")
+                        }
+                    }
+                    let symbol_id = self.intern_symbol(
+                        plan.runtime_symbol
+                            .as_deref()
+                            .expect("debug intrinsic runtime symbol"),
+                    );
+                    self.mir.push(X86Inst::CallRel { symbol_id });
+                }
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: 0,
+                });
+                dst
+            }
+            crate::value_plan::IntrinsicOperation::Syscall => {
+                let syscall_regs = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::R10, Reg::R8, Reg::R9];
+                for arg in plan.args.iter().rev() {
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rax),
+                        src: Operand::Virtual(arg.primary),
+                    });
+                    self.mir.push(X86Inst::Push {
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                }
+                self.mir.push(X86Inst::Pop {
+                    dst: Operand::Physical(Reg::Rax),
+                });
+                for (index, reg) in syscall_regs.iter().enumerate() {
+                    if index + 1 < plan.args.len() {
+                        self.mir.push(X86Inst::Pop {
+                            dst: Operand::Physical(*reg),
+                        });
+                    }
+                }
+                self.mir.push(X86Inst::Syscall);
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Physical(Reg::Rax),
+                });
+                dst
+            }
+        };
+        crate::value_plan::MaterializedValue { primary, slots }
+    }
+
+    /// Lower a CFG value (instruction).
     /// Try to extract a power-of-two shift amount from a constant value.
     ///
     /// Returns `Some(shift_amount)` if the value is a constant that is a power of 2
     /// greater than 1, otherwise returns `None`.
     ///
     /// Used for strength reduction: `x * 2^n` can be lowered to `x << n`.
-    fn try_power_of_two_shift(&self, value: CfgValue) -> Option<u8> {
-        let inst = self.ctx.cfg.get_inst(value);
-        match &inst.data {
-            CfgInstData::Const(n) => {
-                let n = *n;
-                // Check if n is a power of 2 and greater than 1
-                // n > 1 because x * 1 should be handled by identity optimization (not here)
-                // n must fit in u64 for is_power_of_two
-                if n > 1 && n.is_power_of_two() {
-                    Some(n.trailing_zeros() as u8)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Emit overflow check based on the type.
-    ///
-    /// For 32/64-bit types, we can use the CPU flags directly:
-    /// - Signed (i32, i64): Use OF (overflow flag) via JNO
-    /// - Unsigned (u32, u64): Use CF (carry flag) via JAE (= JNC). The
-    ///   preceding op must set CF on *unsigned* overflow: ADD/SUB do, and
-    ///   multiplication must use the one-operand MUL (CF = high half
-    ///   non-zero), NOT two-operand IMUL whose CF means signed overflow
-    ///   (RUE-148).
-    ///
-    /// For sub-word types (8/16-bit), the arithmetic is done in 32/64-bit registers,
-    /// so we need to check if the result fits in the original type's range.
-    fn emit_overflow_check(&mut self, width: crate::value_plan::IntegerWidth, result_vreg: VReg) {
+    fn emit_overflow_check(
+        &mut self,
+        width: crate::value_plan::IntegerWidth,
+        result_vreg: VReg,
+        trap_symbol: &str,
+    ) {
         let ok_label = self.new_label();
 
         match (width.bits, width.signed) {
@@ -2993,7 +2169,7 @@ impl<'a> CfgLower<'a> {
         }
 
         // Overflow occurred - call panic handler
-        let symbol_id = self.intern_symbol("__rue_overflow");
+        let symbol_id = self.intern_symbol(trap_symbol);
         self.mir.push(X86Inst::CallRel { symbol_id });
         self.mir.push(X86Inst::Label { id: ok_label });
     }
@@ -3002,36 +2178,12 @@ impl<'a> CfgLower<'a> {
     /// `@assert(cond, "msg")` (RUE-319). `msg_val` is the CFG value of the
     /// message `String`; its fat pointer supplies the `ptr`/`len` arguments.
     /// Never returns at runtime.
-    fn emit_panic_with_msg(&mut self, msg_val: CfgValue) {
-        if let Some(field_vregs) = self.get_or_compute_field_vregs(msg_val) {
-            // A String is a (ptr, len, cap) fat pointer; pass ptr in RDI, len in RSI.
-            assert!(field_vregs.len() >= 2, "text needs ptr and len slots");
-            let ptr_vreg = field_vregs[0];
-            let len_vreg = field_vregs[1];
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Physical(Reg::Rdi),
-                src: Operand::Virtual(ptr_vreg),
-            });
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Physical(Reg::Rsi),
-                src: Operand::Virtual(len_vreg),
-            });
-            let symbol_id = self.intern_symbol("__rue_panic");
-            self.mir.push(X86Inst::CallRel { symbol_id });
-        } else {
-            unreachable!("panic/assert message must be a string with field vregs");
-        }
-    }
-
-    /// Emit integer cast range check.
-    ///
-    /// Checks if the source value can be represented in the target type.
-    /// Panics via `__rue_intcast_overflow` if the value is out of range.
     fn emit_int_cast_check(
         &mut self,
         src_vreg: VReg,
         from_width: crate::value_plan::IntegerWidth,
         to_width: crate::value_plan::IntegerWidth,
+        trap_symbol: &str,
     ) {
         let from_signed = from_width.signed;
         let to_signed = to_width.signed;
@@ -3085,7 +2237,7 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Jge { label: ok_label });
 
                     // Below min - panic
-                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    let symbol_id = self.intern_symbol(trap_symbol);
                     self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label });
 
@@ -3110,7 +2262,7 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Jle { label: ok_label2 });
 
                     // Above max - panic
-                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    let symbol_id = self.intern_symbol(trap_symbol);
                     self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label2 });
                 }
@@ -3131,7 +2283,7 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Jge { label: ok_label });
 
                 // Negative - panic
-                let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                let symbol_id = self.intern_symbol(trap_symbol);
                 self.mir.push(X86Inst::CallRel { symbol_id });
                 self.mir.push(X86Inst::Label { id: ok_label });
 
@@ -3159,7 +2311,7 @@ impl<'a> CfgLower<'a> {
                     }
 
                     // Above max - panic
-                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    let symbol_id = self.intern_symbol(trap_symbol);
                     self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label2 });
                 }
@@ -3189,7 +2341,7 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Jbe { label: ok_label });
 
                 // Above max - panic
-                let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                let symbol_id = self.intern_symbol(trap_symbol);
                 self.mir.push(X86Inst::CallRel { symbol_id });
                 self.mir.push(X86Inst::Label { id: ok_label });
             } else {
@@ -3214,7 +2366,7 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Jbe { label: ok_label });
 
                     // Above max - panic
-                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    let symbol_id = self.intern_symbol(trap_symbol);
                     self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label });
                 }
@@ -3222,139 +2374,7 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    /// Get the bit width of an integer type.
-    fn type_bits(ty: Type) -> u32 {
-        crate::value_plan::type_bits(ty)
-    }
-
     /// Emit a comparison instruction.
-    fn emit_comparison<F>(&mut self, value: CfgValue, lhs: CfgValue, rhs: CfgValue, emit_setcc: F)
-    where
-        F: FnOnce(&mut X86Mir, VReg),
-    {
-        let vreg = self.mir.alloc_vreg();
-        self.value_map.insert(value, vreg);
-
-        let lhs_vreg = self.get_vreg(lhs);
-        let rhs_vreg = self.get_vreg(rhs);
-
-        // The shared comparison plan selects the compare width; this helper
-        // only chooses the x86 encoding for that decided width.
-        let compare_bits = crate::value_plan::ValuePlan::for_value(&self.ctx, value)
-            .comparison_width()
-            .bits;
-        if compare_bits == 64 {
-            self.mir.push(X86Inst::Cmp64RR {
-                src1: Operand::Virtual(lhs_vreg),
-                src2: Operand::Virtual(rhs_vreg),
-            });
-        } else {
-            self.mir.push(X86Inst::CmpRR {
-                src1: Operand::Virtual(lhs_vreg),
-                src2: Operand::Virtual(rhs_vreg),
-            });
-        }
-        emit_setcc(&mut self.mir, vreg);
-        self.mir.push(X86Inst::Movzx {
-            dst: Operand::Virtual(vreg),
-            src: Operand::Virtual(vreg),
-        });
-    }
-
-    /// Emit struct equality comparison.
-    ///
-    /// Compares all fields of two structs and returns true only if all fields are equal.
-    /// If `invert` is true, returns true if any field is different (for !=).
-    /// Structural equality (`==` / `!=`) for a multi-slot aggregate: struct,
-    /// fixed-size array, or a payload-carrying enum (RUE-285).
-    ///
-    /// The aggregate is flattened to one vreg per storage slot (via
-    /// [`get_or_compute_field_vregs`]); we compare every slot pairwise and AND
-    /// the results, so nested aggregates recurse for free (a nested struct or
-    /// array contributes all of its leaf slots). Each slot's compare width is
-    /// selected by its leaf type ([`types::aggregate_leaf_types`]) so 64-bit
-    /// leaves and raw pointers (which compare by ADDRESS) are compared at full
-    /// width. For an enum, slot 0 is the discriminant: two different variants
-    /// differ in the tag and are never equal; two same-variant values compare
-    /// their payloads (the padding beyond a variant's payload is a deterministic
-    /// zero, so it never spuriously distinguishes equal values). Reading each
-    /// operand's slots does not consume it, so `==` borrows its operands.
-    fn emit_aggregate_equality(
-        &mut self,
-        value: CfgValue,
-        lhs: CfgValue,
-        rhs: CfgValue,
-        ty: Type,
-        invert: bool,
-    ) {
-        crate::aggregate_eq::emit_aggregate_equality(self, value, lhs, rhs, ty, invert);
-    }
-
-    /// Emit a call to a builtin equality function (e.g., __rue_str_eq).
-    ///
-    /// The runtime function is expected to take (ptr1, len1, ptr2, len2) and return 0 or 1.
-    /// Returns the vreg containing the result.
-    fn emit_builtin_eq_call(&mut self, lhs: CfgValue, rhs: CfgValue, runtime_fn: &str) -> VReg {
-        let result_vreg = self.mir.alloc_vreg();
-
-        // Get struct fields from struct_slot_vregs
-        // For comparison, we use ptr and len (first two fields)
-        let lhs_fields = self
-            .get_or_compute_field_vregs(lhs)
-            .expect("builtin type should have field vregs");
-        let rhs_fields = self
-            .get_or_compute_field_vregs(rhs)
-            .expect("builtin type should have field vregs");
-
-        // Correctness guard (must run in release): reading ptr/len from a
-        // builtin with fewer than 2 fields would index garbage, so plain
-        // `assert!` not `debug_assert!` (RUE-45).
-        assert!(
-            lhs_fields.len() >= 2,
-            "builtin type should have at least 2 fields for comparison"
-        );
-        assert!(
-            rhs_fields.len() >= 2,
-            "builtin type should have at least 2 fields for comparison"
-        );
-
-        let lhs_ptr = lhs_fields[0];
-        let lhs_len = lhs_fields[1];
-        let rhs_ptr = rhs_fields[0];
-        let rhs_len = rhs_fields[1];
-
-        // Move arguments to calling convention registers
-        // RDI = ptr1, RSI = len1, RDX = ptr2, RCX = len2
-        self.mir.push(X86Inst::MovRR {
-            dst: Operand::Physical(Reg::Rdi),
-            src: Operand::Virtual(lhs_ptr),
-        });
-        self.mir.push(X86Inst::MovRR {
-            dst: Operand::Physical(Reg::Rsi),
-            src: Operand::Virtual(lhs_len),
-        });
-        self.mir.push(X86Inst::MovRR {
-            dst: Operand::Physical(Reg::Rdx),
-            src: Operand::Virtual(rhs_ptr),
-        });
-        self.mir.push(X86Inst::MovRR {
-            dst: Operand::Physical(Reg::Rcx),
-            src: Operand::Virtual(rhs_len),
-        });
-
-        // Call the runtime function
-        let symbol_id = self.intern_symbol(runtime_fn);
-        self.mir.push(X86Inst::CallRel { symbol_id });
-
-        // Result is in RAX (0 or 1)
-        self.mir.push(X86Inst::MovRR {
-            dst: Operand::Virtual(result_vreg),
-            src: Operand::Physical(Reg::Rax),
-        });
-
-        result_vreg
-    }
-
     fn emit_terminator_plan(&mut self, plan: crate::terminator_plan::TerminatorPlan) {
         use crate::terminator_plan::{ReturnMode, ReturnValuePlan, TerminatorPlan};
 
@@ -3506,7 +2526,8 @@ impl<'a> CfgLower<'a> {
         }
 
         // Not yet lowered - lower it now
-        self.lower_value(value);
+        let ctx = self.ctx;
+        crate::value_plan::lower_value(&ctx, self, value);
 
         self.value_map
             .get(&value)
@@ -3520,14 +2541,14 @@ impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
         &mut self,
         value: CfgValue,
         plan: crate::value_plan::ValuePlan,
-    ) -> crate::terminator_plan::MaterializedValue {
+    ) -> crate::value_plan::MaterializedValue {
         let primary = self.get_vreg(value);
         let slots = if plan.shape.requires_complete_slots() {
             self.require_aggregate_slots(value)
         } else {
             Vec::new()
         };
-        crate::terminator_plan::MaterializedValue { primary, slots }
+        crate::value_plan::MaterializedValue { primary, slots }
     }
 
     fn materialize_block_param(
@@ -3536,7 +2557,7 @@ impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
         param_index: u32,
         value: CfgValue,
         plan: crate::value_plan::ValuePlan,
-    ) -> crate::terminator_plan::MaterializedValue {
+    ) -> crate::value_plan::MaterializedValue {
         let primary = self.block_param_vregs[&(target, param_index)];
         let slots = if plan.shape.requires_complete_slots() {
             let slots = self
@@ -3549,7 +2570,7 @@ impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
         } else {
             Vec::new()
         };
-        crate::terminator_plan::MaterializedValue { primary, slots }
+        crate::value_plan::MaterializedValue { primary, slots }
     }
 
     fn emit_block_label(&mut self, block: BlockId) {
@@ -3575,14 +2596,6 @@ impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
         crate::agg_slots::preallocate_block_param_slots(self, value, ty, vreg);
     }
 
-    fn value_is_lowered(&self, value: CfgValue) -> bool {
-        self.value_map.contains_key(&value)
-    }
-
-    fn lower_value(&mut self, value: CfgValue) {
-        CfgLower::lower_value(self, value);
-    }
-
     fn value_description(&self, value: CfgValue) -> String {
         let inst = self.ctx.cfg.get_inst(value);
         crate::format_cfg_inst_data_with_interner(self.ctx.cfg, &inst.data, self.interner)
@@ -3599,8 +2612,8 @@ impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
             .collect()
     }
 
-    fn value_rationale(&self, data: &CfgInstData, ty: Type) -> Option<String> {
-        self.get_lowering_rationale(data, ty)
+    fn value_rationale(&self, kind: crate::value_plan::ValueKind, ty: Type) -> Option<String> {
+        self.get_lowering_rationale(kind, ty)
     }
 
     fn terminator_rationale(
@@ -3628,6 +2641,54 @@ impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
     }
 }
 
+impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
+    fn value_is_lowered(&self, value: CfgValue) -> bool {
+        self.value_map.contains_key(&value)
+    }
+    fn reserve_value_result(&mut self) -> VReg {
+        self.mir.alloc_vreg()
+    }
+    fn resolve_symbol(&self, symbol: lasso::Spur) -> String {
+        self.interner.resolve(&symbol).to_owned()
+    }
+    fn call_arg_register_budget(&self) -> usize {
+        ARG_REGS.len()
+    }
+    fn return_register_budget(&self) -> u32 {
+        RET_REGS.len() as u32
+    }
+    fn emit_value(
+        &mut self,
+        plan: crate::value_plan::ValueEmissionPlan,
+    ) -> crate::value_plan::ValueResult {
+        self.lower_residual_value(plan)
+    }
+    fn emit_call(&mut self, plan: crate::call_plan::CallPlan) -> crate::value_plan::ValueResult {
+        crate::value_plan::ValueResult::Materialized(self.lower_call_plan(plan))
+    }
+    fn emit_intrinsic(
+        &mut self,
+        plan: crate::value_plan::IntrinsicPlan,
+    ) -> crate::value_plan::ValueResult {
+        crate::value_plan::ValueResult::Materialized(self.lower_intrinsic_plan(plan))
+    }
+    fn emit_checked_arithmetic(
+        &mut self,
+        plan: crate::value_plan::ArithmeticPlan,
+    ) -> crate::value_plan::ValueResult {
+        crate::value_plan::ValueResult::Materialized(self.lower_checked_arithmetic(plan))
+    }
+    fn emit_trap(&mut self, plan: crate::value_plan::TrapPlan) -> crate::value_plan::ValueResult {
+        crate::value_plan::ValueResult::Materialized(self.lower_trap(plan))
+    }
+    fn cache_value(&mut self, value: CfgValue, result: crate::value_plan::MaterializedValue) {
+        self.value_map.insert(value, result.primary);
+        if !result.slots.is_empty() {
+            self.struct_slot_vregs.insert(value, result.slots);
+        }
+    }
+}
+
 impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
         &self.ctx
@@ -3640,9 +2701,6 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     }
     fn get_vreg(&mut self, value: CfgValue) -> VReg {
         CfgLower::get_vreg(self, value)
-    }
-    fn map_value(&mut self, value: CfgValue, vreg: VReg) {
-        self.value_map.insert(value, vreg);
     }
     fn emit_load_slot(&mut self, dst: VReg, slot: u32) {
         let offset = self.ctx.local_offset(slot);
@@ -3657,21 +2715,6 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
             dst: Operand::Virtual(dst),
             src: Operand::Virtual(src),
         });
-    }
-    fn emit_load_zero(&mut self, dst: VReg) {
-        self.mir.push(X86Inst::MovRI32 {
-            dst: Operand::Virtual(dst),
-            imm: 0,
-        });
-    }
-    fn emit_load_imm(&mut self, dst: VReg, imm: i64) {
-        self.mir.push(X86Inst::MovRI32 {
-            dst: Operand::Virtual(dst),
-            imm: imm as i32,
-        });
-    }
-    fn collect_array_scalars(&mut self, value: CfgValue) -> Vec<VReg> {
-        self.collect_array_scalar_vregs(value)
     }
     fn emit_store_slot(&mut self, src: VReg, slot: u32) {
         let offset = self.ctx.local_offset(slot);
@@ -3694,9 +2737,6 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
             base: ptr,
             offset: byte_offset,
         });
-    }
-    fn emit_place_addr(&mut self, dst: VReg, place: &Place) {
-        crate::place_lower::lower_place_addr(self, dst, place)
     }
 }
 
@@ -3786,10 +2826,10 @@ impl crate::allocation::BoundsCheckBackend for CfgLower<'_> {
         }
     }
 
-    fn emit_bounds_trap(&mut self, trap: crate::allocation::BoundsTrap) {
+    fn emit_bounds_trap(&mut self, trap: crate::allocation::BoundsTrap, symbol: &'static str) {
         match trap {
             crate::allocation::BoundsTrap::IndexOutOfBounds => {
-                let symbol_id = self.intern_symbol("__rue_bounds_check");
+                let symbol_id = self.intern_symbol(symbol);
                 self.mir.push(X86Inst::CallRel { symbol_id });
             }
         }
@@ -3909,7 +2949,8 @@ impl crate::allocation::ScaleBackend for CfgLower<'_> {
                     });
                     let ok_label = self.new_label();
                     self.mir.push(X86Inst::Jae { label: ok_label });
-                    let symbol_id = self.intern_symbol("__rue_overflow");
+                    let symbol_id =
+                        self.intern_symbol(crate::allocation::RUNTIME_TRAP_SYMBOLS.overflow);
                     self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label });
                 }
@@ -3923,47 +2964,28 @@ impl crate::allocation::ScaleBackend for CfgLower<'_> {
     }
 }
 
-impl crate::storage_lower::StorageLowerBackend for CfgLower<'_> {
-    fn emit_store_ptr_base(&mut self, src: VReg, ptr: VReg) {
-        self.mir.push(X86Inst::MovMRIndexed {
-            base: ptr,
-            offset: 0,
-            src: Operand::Virtual(src),
-        });
-    }
-}
-
-impl crate::aggregate_eq::AggregateEqBackend for CfgLower<'_> {
-    fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
-        &self.ctx
-    }
+impl crate::aggregate_eq::AggregateEqPlanBackend for CfgLower<'_> {
     fn alloc_vreg(&mut self) -> VReg {
         self.mir.alloc_vreg()
-    }
-    fn map_value(&mut self, value: CfgValue, vreg: VReg) {
-        self.value_map.insert(value, vreg);
-    }
-    fn aggregate_slots(&mut self, value: CfgValue) -> Vec<VReg> {
-        self.require_aggregate_slots(value)
     }
     fn emit_bool_const(&mut self, dst: VReg, value: bool) {
         self.mir.push(X86Inst::MovRI32 {
             dst: Operand::Virtual(dst),
-            imm: if value { 1 } else { 0 },
+            imm: value as i32,
         });
     }
     fn emit_slot_eq(&mut self, dst: VReg, lhs: VReg, rhs: VReg, wide: bool) {
-        if wide {
-            self.mir.push(X86Inst::Cmp64RR {
+        self.mir.push(if wide {
+            X86Inst::Cmp64RR {
                 src1: Operand::Virtual(lhs),
                 src2: Operand::Virtual(rhs),
-            });
+            }
         } else {
-            self.mir.push(X86Inst::CmpRR {
+            X86Inst::CmpRR {
                 src1: Operand::Virtual(lhs),
                 src2: Operand::Virtual(rhs),
-            });
-        }
+            }
+        });
         self.mir.push(X86Inst::Sete {
             dst: Operand::Virtual(dst),
         });

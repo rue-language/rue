@@ -86,6 +86,39 @@ If changes touch `rue-codegen`, verify equivalent changes in ALL backends:
 | Liveness analysis | `x86_64/liveness.rs` | `aarch64/liveness.rs` |
 | CFG lowering | `x86_64/cfg_lower.rs` | `aarch64/cfg_lower.rs` |
 
+For CFG/codegen changes, apply the ADR-0048 boundary checklist as well:
+
+- Confirm the shared `value_plan::lower_value` is the only exhaustive
+  `CfgInstData` dispatcher and that the shared CFG/terminator walk is used.
+- Confirm calls, intrinsics, checked arithmetic, traps, and residual values
+  enter their separate normalized domain hooks. Plans must contain decided
+  vregs/slot vectors and ABI facts, never raw `CfgValue` handles.
+- Confirm the adapters do not recompute aggregate slot counts, block-parameter
+  routing, by-reference classification/preloads, bounds ordering, or sret
+  selection. Those decisions belong to the shared core.
+- Inspect every same-purpose function pair in both CFG lowerers. Keep a pair
+  only when it is justified by a concrete target fact such as a physical
+  register, ABI location, flag/NZCV sequence, immediate encoding, MIR form,
+  scheduler fact, peephole, encoder, or native-runtime entry.
+- Reproduce the non-test inventory before making that comparison:
+  `extract_cfg_fns() { awk '/^#\[cfg\(test\)\]/{exit} /^    (pub )?fn
+  /{sub(/^    (pub )?fn /, ""); sub(/\(.*/, ""); print}' "$1" | sort -u;
+  }; x86=$(mktemp); arm=$(mktemp); trap 'rm -f "$x86" "$arm"' EXIT;
+  extract_cfg_fns crates/rue-codegen/src/x86_64/cfg_lower.rs >"$x86";
+  extract_cfg_fns crates/rue-codegen/src/aarch64/cfg_lower.rs >"$arm";
+  comm -12 "$x86" "$arm"; comm -3 "$x86" "$arm"`.
+  The first output is the complete paired-name list and the second is the
+  target-specific remainder. Do not count test helpers, and list shared policy
+  helpers such as width and shift-mask selection separately from the
+  target-fact pairs. When the two backends split one same-purpose target leaf
+  under different names, add an explicit named group for it (as ADR-0048 does
+  for the checked-arithmetic overflow family) rather than treating the name
+  difference as proof that the semantics differ.
+- Add or update a shared-plan test that covers the new semantic case and
+  cross-target tests that prove both adapters consume that plan with their
+  explicit target facts. Do not accept a renamed backend dispatcher or a
+  generic catch-all hook as centralization.
+
 ## Review Output
 
 Provide specific, actionable feedback:
