@@ -2045,6 +2045,7 @@ mod tests {
             symbols,
             section_map,
             machine: crate::elf::ElfMachine::X86_64,
+            format: crate::elf::ObjectFormat::Elf,
         }
     }
 
@@ -2141,6 +2142,7 @@ mod tests {
             }],
             section_map: HashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
+            format: crate::elf::ObjectFormat::Elf,
         };
         let _ = Relocation {
             offset: 0,
@@ -2227,6 +2229,7 @@ mod tests {
             ],
             section_map: HashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
+            format: crate::elf::ObjectFormat::Elf,
         };
 
         let mut linker = Linker::new(ELF_TARGET);
@@ -2591,6 +2594,7 @@ mod tests {
             symbols: vec![null_symbol, bad_symbol, main_symbol],
             section_map: HashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
+            format: crate::elf::ObjectFormat::Elf,
         };
 
         let mut linker = Linker::new(ELF_TARGET);
@@ -2664,6 +2668,7 @@ mod tests {
             symbols: vec![null_symbol, main_symbol], // Only 2 symbols, but relocation references index 999
             section_map: HashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
+            format: crate::elf::ObjectFormat::Elf,
         };
 
         let mut linker = Linker::new(ELF_TARGET);
@@ -3572,6 +3577,7 @@ mod tests {
             symbols: vec![main_symbol],
             section_map: [("__text".to_string(), 0)].into_iter().collect(),
             machine: crate::elf::ElfMachine::Aarch64,
+            format: crate::elf::ObjectFormat::MachO,
         };
 
         let mut linker = Linker::new(Target::Aarch64Macos);
@@ -3631,6 +3637,7 @@ mod tests {
             symbols: vec![main_symbol],
             section_map: [("__text".to_string(), 0)].into_iter().collect(),
             machine: crate::elf::ElfMachine::Aarch64,
+            format: crate::elf::ObjectFormat::MachO,
         };
 
         let mut linker = Linker::new(Target::Aarch64Macos);
@@ -3670,6 +3677,7 @@ mod tests {
             symbols: vec![other_symbol],
             section_map: [("__text".to_string(), 0)].into_iter().collect(),
             machine: crate::elf::ElfMachine::Aarch64,
+            format: crate::elf::ObjectFormat::MachO,
         };
 
         let mut linker = Linker::new(Target::Aarch64Macos);
@@ -3705,6 +3713,10 @@ mod tests {
             symbols,
             section_map,
             machine,
+            format: match machine {
+                crate::elf::ElfMachine::X86_64 => crate::elf::ObjectFormat::Elf,
+                crate::elf::ElfMachine::Aarch64 => crate::elf::ObjectFormat::MachO,
+            },
         }
     }
 

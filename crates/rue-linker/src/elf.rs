@@ -148,6 +148,15 @@ pub struct ObjectFile {
     /// validates this against the link target — without it, an "aarch64"
     /// binary could silently embed x86 code (RUE-131 item 10, RUE-36).
     pub machine: ElfMachine,
+    /// Container format used by this relocatable object.
+    pub format: ObjectFormat,
+}
+
+/// Relocatable object container format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectFormat {
+    Elf,
+    MachO,
 }
 
 /// A section from an object file.
@@ -339,6 +348,8 @@ pub enum ParseError {
     NotRelocatable,
     /// Unsupported machine architecture.
     UnsupportedMachine(u16),
+    /// Unsupported Mach-O CPU architecture.
+    UnsupportedMachOCpu(u32),
     /// Invalid section header.
     InvalidSection(String),
     /// Invalid symbol table.
@@ -367,6 +378,9 @@ impl std::fmt::Display for ParseError {
             ParseError::NotRelocatable => write!(f, "not a relocatable object file"),
             ParseError::UnsupportedMachine(m) => {
                 write!(f, "unsupported ELF machine type: 0x{:x}", m)
+            }
+            ParseError::UnsupportedMachOCpu(cpu) => {
+                write!(f, "unsupported Mach-O CPU type: 0x{:x}", cpu)
             }
             ParseError::InvalidSection(s) => write!(f, "invalid section: {}", s),
             ParseError::InvalidSymbol(s) => write!(f, "invalid symbol: {}", s),
@@ -419,6 +433,10 @@ impl ObjectFile {
         let magic = read_u32(data, 0);
         if magic != MH_MAGIC_64 {
             return Err(ParseError::InvalidMagic);
+        }
+        let cpu = read_u32(data, 4);
+        if cpu != crate::constants::CPU_TYPE_ARM64 {
+            return Err(ParseError::UnsupportedMachOCpu(cpu));
         }
 
         // Parse header
@@ -873,6 +891,7 @@ impl ObjectFile {
             section_map,
             // The Mach-O parser only accepts CPU_TYPE_ARM64 objects.
             machine: ElfMachine::Aarch64,
+            format: ObjectFormat::MachO,
         })
     }
 
@@ -1242,6 +1261,7 @@ impl ObjectFile {
             symbols,
             section_map,
             machine,
+            format: ObjectFormat::Elf,
         })
     }
 
