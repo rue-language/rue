@@ -22,6 +22,7 @@
 //! AIR -> CfgBuilder -> CFG -> [optimize] -> CfgLower -> MIR
 //! ```
 
+mod classify;
 mod constfold;
 mod constopt;
 mod cse;

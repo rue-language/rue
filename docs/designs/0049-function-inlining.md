@@ -593,22 +593,23 @@ Tracking placeholders; this draft implements none of them.
   (by-value materialization at full slot width; by-ref place redirection limited
   to simple local/parameter roots), callee-lifetime storage + copied
   parameter-drop handling (§3), and return→block-param wiring. Unit-tested in
-  `rue-cfg`. (file RUE-NNN)
+  `rue-cfg`. (file RUE-929)
 - [ ] **Phase 2: Free-function driver at `-O2`** — two-phase construction; build
   the call-site graph by CFG scan (§5); conservative leaf/small thresholds;
   single-call-site inlining *without* callee removal; recursion refusal via
   call-site SCC; differential CLI coverage. Inlined callers are **not cached
-  yet** (fail the export gate, §4c). (file RUE-NNN)
+  yet** (fail the export gate, §4c). (file RUE-930)
 - [ ] **Phase 3: `-O3` thresholds** — larger caps, non-leaf callees, shared
-  code-growth budget with unrolling (ADR-0054). (file RUE-NNN)
+  code-growth budget with unrolling (ADR-0054). (file RUE-931)
 - [ ] **Phase 4: Durable cache integration for inlined callers** — multi-body
   `CfgDomainProjection` (§4c), callee-body-fingerprint + policy-version cache key
-  (§4b); turn caching on for inlined callers. (file RUE-NNN)
+  (§4b); turn caching on for inlined callers. (file RUE-932)
 - [ ] **Phase 5: Whole-program dead-function elimination** — separate pass that
   removes now-unreachable functions (including single-call-site callees the
-  inliner consumed) under full reachability analysis (§6). (file RUE-NNN)
+  inliner consumed) under full reachability analysis (§6). (file RUE-933)
 - [ ] **Phase 6: Methods/destructors** — extend as the ADR-0050 method/destructor
-  caller surfaces complete. (file RUE-NNN)
+  caller surfaces complete. (file RUE-NNN — awaits the ADR-0050 method/destructor
+  caller surfaces before it can be scoped and filed.)
 
 ## Consequences
 
