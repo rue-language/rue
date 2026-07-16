@@ -43,9 +43,23 @@ A *block-like expression* is an `if`, `match`, `while`, `loop`, or block (`{ ...
 
 {{ rule(id="5.3:7", cat="normative") }}
 
-When a block-like expression in statement position is immediately followed by a `-`, the `-` begins a *new* statement — a unary negation — rather than continuing the block-like expression as the left operand of a subtraction. For example, in a block containing `if c { a } else { b }` immediately followed by `-x`, the `if` expression is one statement and `-x` is a separate statement whose `-` is unary negation, not the subtraction `(if c { a } else { b }) - x`. The `-` is singled out because it is the only operator that is both a unary (prefix) and a binary (infix) operator, so it is the only one whose meaning at this boundary is otherwise ambiguous. This rule applies only in statement position: a block-like expression used as an operand (for example, on the right-hand side of a `let` binding, as in `let n = if c { a } else { b } - x;`) participates in the surrounding subtraction as usual.
+A block-like expression in statement position is complete on its own and does *not* continue into a surrounding infix binary expression. When such an expression is immediately followed by an infix binary operator (for example `+`, `*`, `==`, `&&`), it is a syntax error at the operator, rather than the block-like expression becoming the left operand of that operator. To use a block-like expression as the operand of a binary operator, wrap it in parentheses, which places it in operand position: `(if c { a } else { b }) + x`. The one exception is the `-` operator, described next.
 
 {{ rule(id="5.3:8") }}
+
+```rue
+fn main() -> i32 {
+    if true { 10 } else { 20 } + 5     // error: `+` cannot continue a
+                                       // statement-position block-like expression
+    (if true { 10 } else { 20 }) + 5   // ok: parentheses opt into operand use
+}
+```
+
+{{ rule(id="5.3:9", cat="normative") }}
+
+The `-` operator is the sole exception to the syntax-error rule above, because it is the only operator that is both a unary (prefix) and a binary (infix) operator, so its meaning at this boundary is otherwise ambiguous. When a block-like expression in statement position is immediately followed by a `-`, the `-` begins a *new* statement — a unary negation — rather than continuing the block-like expression as the left operand of a subtraction. For example, in a block containing `if c { a } else { b }` immediately followed by `-x`, the `if` expression is one statement and `-x` is a separate statement whose `-` is unary negation, not the subtraction `(if c { a } else { b }) - x`. Both the syntax-error rule and this `-` exception apply only in statement position: a block-like expression used as an operand (for example, on the right-hand side of a `let` binding, as in `let n = if c { a } else { b } - x;`) participates in the surrounding expression as usual.
+
+{{ rule(id="5.3:10") }}
 
 ```rue
 fn main() -> i32 {

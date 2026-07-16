@@ -248,8 +248,10 @@ fn main() -> i32 {
     let mut x = 0;
     // Left operand evaluated first: sees x=0, sets x=1, returns 1
     // Right operand evaluated second: sees x=1, sets x=2, returns 2
-    // Result: 1 + 2 = 3
-    { x = x + 1; x } + { x = x + 1; x }
+    // Result: 1 + 2 = 3. The left block is parenthesized so it is in operand
+    // position: in statement position a leading block is a complete statement
+    // and a following `+` is a syntax error (5.3:7 / RUE-918).
+    ({ x = x + 1; x }) + { x = x + 1; x }
 }
 """
 exit_code = 3
