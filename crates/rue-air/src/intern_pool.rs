@@ -1625,12 +1625,11 @@ impl FrozenTypeInternPool {
             .types
             .iter()
             .enumerate()
-            .filter_map(|(index, data)| {
-                matches!(data, TypeData::Array { .. }).then(|| {
-                    ArrayTypeId::from_pool_index(
-                        checked_pool_index(index).expect("type pool index invariant"),
-                    )
-                })
+            .filter(|(_, data)| matches!(data, TypeData::Array { .. }))
+            .map(|(index, _)| {
+                ArrayTypeId::from_pool_index(
+                    checked_pool_index(index).expect("type pool index invariant"),
+                )
             })
     }
 
