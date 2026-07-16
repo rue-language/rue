@@ -767,16 +767,9 @@ fn drop_plan<A: ValueLowerAdapter>(
             let struct_def = ctx.type_pool.struct_def(struct_id);
             if struct_def.is_builtin {
                 if let Some(destructor) = &struct_def.destructor {
-                    let mut destructor_slots = slots;
-                    // Destructors take their aggregate `self` through the
-                    // Rue by-value ABI, whose physical argument slots are
-                    // reversed from the logical representation.  Keep this
-                    // decision in the shared drop plan so both adapters pass
-                    // the same runtime-owned object to the destructor.
-                    destructor_slots.reverse();
                     actions.push(DropAction {
                         symbol: destructor.clone(),
-                        slots: destructor_slots,
+                        slots,
                     });
                 }
             } else {
@@ -2718,7 +2711,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_aggregate_drop_reverses_rue_slots_on_both_adapters() {
+    fn builtin_aggregate_drop_preserves_legacy_slots_on_both_adapters() {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::new();
         let name = interner.get_or_intern("DropAggregate");
@@ -2783,10 +2776,7 @@ mod tests {
         assert_eq!(x86_value.slots.len(), 3);
         assert_eq!(x86_actions.len(), 1);
         assert_eq!(x86_actions[0].symbol, "DropAggregate::__drop");
-        assert_eq!(
-            x86_actions[0].slots,
-            x86_value.slots.iter().rev().copied().collect::<Vec<_>>()
-        );
+        assert_eq!(x86_actions[0].slots, x86_value.slots);
 
         let arm_ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
         let mut arm = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux);
@@ -2795,10 +2785,7 @@ mod tests {
         assert_eq!(arm_value.slots.len(), 3);
         assert_eq!(arm_actions.len(), 1);
         assert_eq!(arm_actions[0].symbol, "DropAggregate::__drop");
-        assert_eq!(
-            arm_actions[0].slots,
-            arm_value.slots.iter().rev().copied().collect::<Vec<_>>()
-        );
+        assert_eq!(arm_actions[0].slots, arm_value.slots);
     }
 
     #[test]
