@@ -79,6 +79,8 @@ use std::collections::HashSet;
 
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, PlaceBase};
 
+use super::dce;
+
 /// Work counters for one run (RUE-794 convention): one classification scan, one
 /// forward rewriting scan, and one batched use-rewrite. No fixpoint loop.
 #[derive(Debug, Default, Clone, Copy)]
@@ -108,6 +110,14 @@ enum SlotClass {
 pub fn run(cfg: &mut Cfg) -> Stats {
     let mut stats = Stats::default();
     let num_locals = cfg.num_locals() as usize;
+
+    // Both classification and rewriting are restricted to blocks reachable
+    // AFTER simplify's constant-terminator folding. A load in a statically
+    // dead arm never executes, is never dominated by anything, and must not
+    // be forwarded (it tripped the Rule 1 dominance invariant — 2026-07-16
+    // optimizer hunt); an unreachable store likewise must not count against
+    // (or for) a slot's classification.
+    let reachable = dce::compute_reachable_blocks(cfg);
 
     // ------------------------------------------------------------------
     // Precompute the set of values used as by-ref call arguments. Such a
@@ -162,6 +172,9 @@ pub fn run(cfg: &mut Cfg) -> Stats {
     }
 
     for block in cfg.blocks() {
+        if !reachable.contains(block.id.as_u32()) {
+            continue;
+        }
         for &value in &block.insts {
             match &cfg.get_inst(value).data {
                 CfgInstData::Alloc { slot, init } | CfgInstData::Store { slot, value: init } => {
@@ -214,6 +227,9 @@ pub fn run(cfg: &mut Cfg) -> Stats {
 
     for block_idx in 0..cfg.block_count() {
         let block_id = BlockId::from_raw(block_idx as u32);
+        if !reachable.contains(block_idx as u32) {
+            continue;
+        }
         for slot in last_store.iter_mut() {
             *slot = None;
         }
@@ -679,5 +695,60 @@ mod tests {
         let again = run(&mut cfg);
         assert_eq!(again.loads_forwarded_single_write, 0);
         assert_eq!(again.loads_forwarded_block_local, 0);
+    }
+    #[test]
+    fn test_load_in_unreachable_block_not_forwarded() {
+        // A constant-folded-away arm can still hold a Load of a single-write
+        // slot. That load never executes and is dominated by nothing; it must
+        // not be forwarded, and must not trip the Rule 1 dominance invariant
+        // (2026-07-16 optimizer-hunt ICE at forward.rs debug_assert).
+        let mut cfg = Cfg::new(Type::I32, 1, 0, "test".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let init = push_in(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::I32);
+        push_in(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc { slot: 0, init },
+            Type::UNIT,
+        );
+        let dead = cfg.new_block();
+        let live = cfg.new_block();
+        // entry jumps straight to the live block (as after simplify folded a
+        // constant-false branch); the dead block still holds a load.
+        cfg.set_terminator(
+            entry,
+            Terminator::Goto {
+                target: live,
+                args_start: 0,
+                args_len: 0,
+            },
+        );
+        let dead_load = push_in(&mut cfg, dead, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(
+            dead,
+            Terminator::Return {
+                value: Some(dead_load),
+            },
+        );
+        let live_load = push_in(&mut cfg, live, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(
+            live,
+            Terminator::Return {
+                value: Some(live_load),
+            },
+        );
+
+        let stats = run(&mut cfg);
+        // The reachable load forwards; the unreachable one is untouched.
+        assert_eq!(stats.loads_forwarded_single_write, 1);
+        assert!(matches!(
+            cfg.get_inst(dead_load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+        assert!(matches!(
+            cfg.get_block(live).terminator,
+            Terminator::Return { value: Some(v) } if v == init
+        ));
     }
 }

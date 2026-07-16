@@ -574,6 +574,15 @@ pub struct Cfg {
     /// RUE-521 O1+ segfault. By-ref call arguments are the analogous
     /// per-instruction escape, handled directly in constopt's scan.
     address_taken_slots: std::collections::HashSet<u32>,
+    /// Parameter ABI slots whose ADDRESS escapes through an address-taking
+    /// intrinsic (`@raw` / `@raw_mut` / `@field_ptr` applied to a parameter),
+    /// recorded at construction like `address_taken_slots`. A by-value
+    /// parameter normally cannot change between reads, which is what lets
+    /// CSE key repeated `Param` reads (RUE-914) — but a raw pointer obtained
+    /// from the parameter's storage can mutate it (`@ptr_write`), so reads
+    /// on either side of such a write are NOT interchangeable. Passes that
+    /// treat parameter reads as pure must consult this set.
+    address_taken_params: std::collections::HashSet<u32>,
 }
 
 impl Cfg {
@@ -650,6 +659,7 @@ impl Cfg {
             fn_name,
             param_modes: param_modes.into(),
             address_taken_slots: std::collections::HashSet::new(),
+            address_taken_params: std::collections::HashSet::new(),
         }
     }
 
@@ -666,6 +676,22 @@ impl Cfg {
     #[inline]
     pub fn is_address_taken(&self, slot: u32) -> bool {
         self.address_taken_slots.contains(&slot)
+    }
+
+    /// Record that parameter ABI slot `slot`'s address escapes through an
+    /// address-taking intrinsic. See the `address_taken_params` field docs:
+    /// repeated reads of such a parameter are not interchangeable, because a
+    /// raw pointer into its storage may write between them.
+    #[inline]
+    pub fn mark_param_address_taken(&mut self, slot: u32) {
+        self.address_taken_params.insert(slot);
+    }
+
+    /// Whether parameter ABI slot `slot`'s address escapes through an
+    /// address-taking intrinsic (see [`Cfg::mark_param_address_taken`]).
+    #[inline]
+    pub fn is_param_address_taken(&self, slot: u32) -> bool {
+        self.address_taken_params.contains(&slot)
     }
 
     /// Get the return type.

@@ -290,6 +290,12 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "cli.differential_opt",
+        "param_raw_mut_write_reread_across_opt_levels",
+        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        &[],
+    ),
+    Entry::new(
         "cli.divergence",
         "break_mid_block_no_double_drop",
         intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
