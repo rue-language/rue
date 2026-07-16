@@ -567,11 +567,12 @@ pub struct Cfg {
     /// (`@raw` / `@raw_mut` / `@field_ptr`), recorded at construction by
     /// CfgBuilder (which has the interner to recognize the names — opt passes
     /// don't). Codegen lowers those intrinsics by taking the operand place's
-    /// address, so its `Load`/`PlaceRead` must survive optimization: constprop
+    /// address, so its `Load`/`PlaceRead` must survive optimization: constant
+    /// propagation
     /// consults this to disqualify the slot, otherwise the Load becomes a
     /// `Const` and the constant is dereferenced as an address — the verified
     /// RUE-521 O1+ segfault. By-ref call arguments are the analogous
-    /// per-instruction escape, handled directly in constprop's scan.
+    /// per-instruction escape, handled directly in constopt's scan.
     address_taken_slots: std::collections::HashSet<u32>,
 }
 
