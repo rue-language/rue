@@ -6,7 +6,7 @@
 
 use crate::platform;
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Debug intrinsic: print a signed 64-bit integer.
     ///
     /// Called by `@dbg(expr)` when the expression is a signed integer type.
@@ -24,7 +24,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Debug intrinsic: print an unsigned 64-bit integer.
     ///
     /// Called by `@dbg(expr)` when the expression is an unsigned integer type.
@@ -42,7 +42,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Debug intrinsic: print a boolean.
     ///
     /// Called by `@dbg(expr)` when the expression is a boolean.
@@ -61,7 +61,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Debug intrinsic: print a string.
     ///
     /// Called by `@dbg(expr)` when the expression is a String type.

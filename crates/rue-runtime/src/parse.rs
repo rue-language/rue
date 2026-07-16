@@ -8,19 +8,7 @@
 //! negative value for an unsigned type) yields `None` rather than trapping, so
 //! callers recover instead of aborting.
 
-/// Result of an `@parse_*` intrinsic: a tagged-union `Option(int)` written via
-/// sret. The compiler lays a payload-carrying enum out as slot 0 =
-/// discriminant followed by the payload slots (RUE-221), so the in-memory
-/// layout of `Option(iN)` is `[disc, value]`. This struct mirrors that layout
-/// exactly (RUE-6).
-#[repr(C)]
-pub struct OptionIntResult {
-    /// Discriminant slot: `some_disc` on success, `none_disc` on failure.
-    pub disc: u64,
-    /// Payload slot: the parsed integer's bit pattern (only meaningful when
-    /// `disc == some_disc`). Narrower types occupy the low bits.
-    pub value: u64,
-}
+pub use rue_runtime_abi::OptionIntResult;
 
 /// Parse decimal ASCII into an `i64`, returning `None` on empty input, an
 /// invalid character, or overflow. Shared core for the signed parsers.
@@ -157,7 +145,7 @@ unsafe fn write_parse_result(
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// extern "C" fn __rue_parse_i32(out, ptr, len, some_disc, none_disc)
     ///
     /// # Safety
@@ -179,7 +167,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-define_for_all_platforms! {
+define_runtime_implementation! {
     /// extern "C" fn __rue_parse_i64(out, ptr, len, some_disc, none_disc)
     ///
     /// # Safety
@@ -200,7 +188,7 @@ define_for_all_platforms! {
     }
 }
 
-define_for_all_platforms! {
+define_runtime_implementation! {
     /// extern "C" fn __rue_parse_u32(out, ptr, len, some_disc, none_disc)
     ///
     /// # Safety
@@ -221,7 +209,7 @@ define_for_all_platforms! {
     }
 }
 
-define_for_all_platforms! {
+define_runtime_implementation! {
     /// extern "C" fn __rue_parse_u64(out, ptr, len, some_disc, none_disc)
     ///
     /// # Safety

@@ -100,31 +100,19 @@ pub(crate) extern "C" fn __rue_stack_overflow_handler(_sig: i32) -> ! {
     platform::exit(101)
 }
 
-/// Raw program entry point for Linux x86-64.
-///
-/// `_start` is reached directly from the kernel, so it must not have a
-/// compiler-generated function prologue. The kernel supplies a 16-byte-aligned
-/// stack; the shim re-establishes that invariant explicitly, then `call` gives
-/// the ordinary Rust helper the SysV-required `rsp % 16 == 8` function-entry
-/// alignment. All further calls are made by normal Rust code.
-#[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
-core::arch::global_asm!(
-    ".pushsection .text._start,\"ax\",@progbits",
-    ".global _start",
-    ".type _start,@function",
-    "_start:",
-    "and rsp, -16",
-    "call __rue_x86_64_linux_start",
-    // The helper is non-returning. Trap if that contract is ever violated.
-    "ud2",
-    ".size _start, .-_start",
-    ".popsection",
-);
+#[cfg(all(
+    not(test),
+    any(
+        all(target_arch = "x86_64", target_os = "linux"),
+        all(target_arch = "aarch64", target_os = "macos"),
+        all(target_arch = "aarch64", target_os = "linux")
+    )
+))]
+const _: extern "C" fn(i32) -> ! = __rue_stack_overflow_handler;
 
 /// Normal SysV function called by the prologue-free x86-64 Linux entry shim.
 #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-extern "C" fn __rue_x86_64_linux_start() -> ! {
+pub(crate) fn __rue_x86_64_linux_start() -> ! {
     unsafe extern "C" {
         fn main() -> i32;
     }
@@ -151,8 +139,7 @@ extern "C" fn __rue_x86_64_linux_start() -> ! {
 /// This must only be entered by the macOS process loader with the initial
 /// stack and register state required by AAPCS64.
 #[cfg(all(not(test), target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn _main() -> ! {
+pub(crate) unsafe fn _main() -> ! {
     use core::arch::asm;
 
     // main is defined by the user's code
@@ -196,8 +183,7 @@ pub unsafe extern "C" fn _main() -> ! {
 /// This must only be entered by the Linux process loader with the initial
 /// stack and register state required by AAPCS64.
 #[cfg(all(not(test), target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start() -> ! {
+pub(crate) unsafe fn _start() -> ! {
     use core::arch::asm;
 
     // main is defined by the user's code
@@ -231,7 +217,7 @@ pub unsafe extern "C" fn _start() -> ! {
     platform::exit(exit_code)
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Exit the process with the given status code.
     ///
     /// This is the main entry point called by Rue-generated code when `main()`

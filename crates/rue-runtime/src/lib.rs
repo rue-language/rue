@@ -108,22 +108,15 @@ compile_error!(
 );
 
 // ============================================================================
-// Platform-agnostic macro for reducing code duplication
+// Platform-agnostic runtime implementations
 // ============================================================================
-//
-// Many runtime functions have identical implementations across platforms,
-// differing only in their `#[cfg]` attributes. This macro generates all
-// three platform-specific versions from a single definition.
 
-/// Define a function for all supported platforms with identical implementation.
-///
-/// This macro generates three `#[cfg]`-gated versions of the same function,
-/// one for each supported platform (x86_64 Linux, aarch64 macOS, aarch64 Linux).
+/// Define the Rust implementation behind a manifest-declared runtime wrapper.
 ///
 /// # Usage
 ///
 /// ```ignore
-/// define_for_all_platforms! {
+/// define_runtime_implementation! {
 ///     /// Documentation for the function
 ///     pub extern "C" fn function_name(arg: Type) -> ReturnType {
 ///         // implementation
@@ -131,44 +124,20 @@ compile_error!(
 /// }
 /// ```
 #[macro_export]
-macro_rules! define_for_all_platforms {
+macro_rules! define_runtime_implementation {
     (
         $(#[$meta:meta])*
         pub unsafe extern "C" fn $name:ident($($arg:ident : $arg_ty:ty),* $(,)?) $(-> $ret:ty)? $body:block
     ) => {
-        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
         $(#[$meta])*
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
-
-        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-        $(#[$meta])*
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
-
-        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-        $(#[$meta])*
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
+        pub unsafe fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
     };
     (
         $(#[$meta:meta])*
         pub extern "C" fn $name:ident($($arg:ident : $arg_ty:ty),* $(,)?) $(-> $ret:ty)? $body:block
     ) => {
-        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
         $(#[$meta])*
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
-
-        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-        $(#[$meta])*
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
-
-        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-        $(#[$meta])*
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
+        pub fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
     };
 }
 
@@ -185,6 +154,256 @@ pub mod parse;
 pub mod random;
 pub mod string;
 
+macro_rules! call_runtime_helper_implementation {
+    (__rue_exit($($argument:expr),*)) => { crate::entry::__rue_exit($($argument),*) };
+    (__rue_alloc($($argument:expr),*)) => { crate::string::__rue_alloc($($argument),*) };
+    (__rue_free($($argument:expr),*)) => { crate::string::__rue_free($($argument),*) };
+    (__rue_realloc($($argument:expr),*)) => { crate::string::__rue_realloc($($argument),*) };
+    (__rue_div_by_zero($($argument:expr),*)) => { crate::error::__rue_div_by_zero($($argument),*) };
+    (__rue_overflow($($argument:expr),*)) => { crate::error::__rue_overflow($($argument),*) };
+    (__rue_intcast_overflow($($argument:expr),*)) => { crate::error::__rue_intcast_overflow($($argument),*) };
+    (__rue_bounds_check($($argument:expr),*)) => { crate::error::__rue_bounds_check($($argument),*) };
+    (__rue_panic($($argument:expr),*)) => { crate::error::__rue_panic($($argument),*) };
+    (__rue_panic_no_msg($($argument:expr),*)) => { crate::error::__rue_panic_no_msg($($argument),*) };
+    (__rue_assert_failed($($argument:expr),*)) => { crate::error::__rue_assert_failed($($argument),*) };
+    (__rue_dbg_i64($($argument:expr),*)) => { crate::debug::__rue_dbg_i64($($argument),*) };
+    (__rue_dbg_u64($($argument:expr),*)) => { crate::debug::__rue_dbg_u64($($argument),*) };
+    (__rue_dbg_bool($($argument:expr),*)) => { crate::debug::__rue_dbg_bool($($argument),*) };
+    (__rue_dbg_str($($argument:expr),*)) => { crate::debug::__rue_dbg_str($($argument),*) };
+    (__rue_str_eq($($argument:expr),*)) => { crate::string::__rue_str_eq($($argument),*) };
+    (__rue_str_byte_at($($argument:expr),*)) => { crate::string::__rue_str_byte_at($($argument),*) };
+    (__rue_str_char_scalar($($argument:expr),*)) => { crate::string::__rue_str_char_scalar($($argument),*) };
+    (__rue_str_char_next($($argument:expr),*)) => { crate::string::__rue_str_char_next($($argument),*) };
+    (__rue_str_char_scalar_lossy($($argument:expr),*)) => { crate::string::__rue_str_char_scalar_lossy($($argument),*) };
+    (__rue_str_char_next_lossy($($argument:expr),*)) => { crate::string::__rue_str_char_next_lossy($($argument),*) };
+    (__rue_to_string($($argument:expr),*)) => { crate::string::__rue_to_string($($argument),*) };
+    (__rue_to_string_unsigned($($argument:expr),*)) => { crate::string::__rue_to_string_unsigned($($argument),*) };
+    (__rue_print($($argument:expr),*)) => { crate::io::__rue_print($($argument),*) };
+    (__rue_println($($argument:expr),*)) => { crate::io::__rue_println($($argument),*) };
+    (__rue_str_print($($argument:expr),*)) => { crate::io::__rue_str_print($($argument),*) };
+    (__rue_str_println($($argument:expr),*)) => { crate::io::__rue_str_println($($argument),*) };
+    (__rue_read_line($($argument:expr),*)) => { crate::io::__rue_read_line($($argument),*) };
+    (__rue_parse_i32($($argument:expr),*)) => { crate::parse::__rue_parse_i32($($argument),*) };
+    (__rue_parse_i64($($argument:expr),*)) => { crate::parse::__rue_parse_i64($($argument),*) };
+    (__rue_parse_u32($($argument:expr),*)) => { crate::parse::__rue_parse_u32($($argument),*) };
+    (__rue_parse_u64($($argument:expr),*)) => { crate::parse::__rue_parse_u64($($argument),*) };
+    (__rue_random_u32($($argument:expr),*)) => { crate::random::__rue_random_u32($($argument),*) };
+    (__rue_random_u64($($argument:expr),*)) => { crate::random::__rue_random_u64($($argument),*) };
+    (__rue_invalid_utf8($($argument:expr),*)) => { crate::error::__rue_invalid_utf8($($argument),*) };
+}
+
+macro_rules! declare_runtime_helper {
+    (
+        safe $function:ident($($argument:ident : $rust_type:ty),* $(,)?) $(-> $result:ty)?
+    ) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $function($($argument: $rust_type),*) $(-> $result)? {
+            call_runtime_helper_implementation!($function($($argument),*))
+        }
+    };
+    (
+        unsafe $function:ident($($argument:ident : $rust_type:ty),* $(,)?) $(-> $result:ty)?
+    ) => {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $function($($argument: $rust_type),*) $(-> $result)? {
+            // SAFETY: This wrapper exposes exactly the caller obligations
+            // recorded by the canonical runtime ABI manifest.
+            unsafe { call_runtime_helper_implementation!($function($($argument),*)) }
+        }
+    };
+}
+
+macro_rules! declare_runtime_helpers {
+    (
+        $(
+            $variant:ident => $safety:ident $function:ident(
+                $($argument:ident : $rust_type:ty),* $(,)?
+            ) $(-> $result:ty)? {
+                symbol: $symbol:literal,
+                parameters: $parameters:expr,
+                result: $abi_result:expr,
+                safety: $contract:expr,
+                returns: $returns:expr
+            }
+        ),+ $(,)?
+    ) => {
+        $(
+            declare_runtime_helper! {
+                $safety $function($($argument: $rust_type),*) $(-> $result)?
+            }
+        )+
+    };
+}
+
+rue_runtime_abi::for_each_runtime_helper!(declare_runtime_helpers);
+
+macro_rules! call_reserved_export_implementation {
+    (memcpy($($argument:expr),*)) => { crate::memory::memcpy($($argument),*) };
+    (memmove($($argument:expr),*)) => { crate::memory::memmove($($argument),*) };
+    (memset($($argument:expr),*)) => { crate::memory::memset($($argument),*) };
+    (memcmp($($argument:expr),*)) => { crate::memory::memcmp($($argument),*) };
+    (bcmp($($argument:expr),*)) => { crate::memory::bcmp($($argument),*) };
+    (_main($($argument:expr),*)) => { crate::entry::_main($($argument),*) };
+    (__rue_x86_64_linux_start($($argument:expr),*)) => {
+        crate::entry::__rue_x86_64_linux_start($($argument),*)
+    };
+    (_start($($argument:expr),*)) => { crate::entry::_start($($argument),*) };
+}
+
+macro_rules! declare_reserved_function {
+    (
+        all unsafe $function:ident($($argument:ident : $rust_type:ty),* $(,)?)
+        $(-> $result:ty)?
+    ) => {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $function($($argument: $rust_type),*) $(-> $result)? {
+            // SAFETY: The reserved-export manifest records the complete caller
+            // contract for this compiler-built boundary.
+            unsafe { call_reserved_export_implementation!($function($($argument),*)) }
+        }
+    };
+    (
+        aarch64_macos unsafe $function:ident($($argument:ident : $rust_type:ty),* $(,)?)
+        $(-> $result:ty)?
+    ) => {
+        #[cfg(all(not(test), target_arch = "aarch64", target_os = "macos"))]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $function($($argument: $rust_type),*) $(-> $result)? {
+            // SAFETY: This is entered only through the platform entry ABI.
+            unsafe { call_reserved_export_implementation!($function($($argument),*)) }
+        }
+    };
+    (
+        x86_64_linux safe $function:ident($($argument:ident : $rust_type:ty),* $(,)?)
+        $(-> $result:ty)?
+    ) => {
+        #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $function($($argument: $rust_type),*) $(-> $result)? {
+            call_reserved_export_implementation!($function($($argument),*))
+        }
+    };
+}
+
+macro_rules! declare_linux_entry {
+    (linux unsafe $function:ident() -> $result:ty) => {
+        #[cfg(all(not(test), target_arch = "aarch64", target_os = "linux"))]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $function() -> $result {
+            // SAFETY: This is entered only through the platform entry ABI.
+            unsafe { call_reserved_export_implementation!($function()) }
+        }
+
+        #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
+        core::arch::global_asm!(
+            concat!(".pushsection .text.", stringify!($function), ",\"ax\",@progbits"),
+            concat!(".global ", stringify!($function)),
+            concat!(".type ", stringify!($function), ",@function"),
+            concat!(stringify!($function), ":"),
+            "and rsp, -16",
+            "call {start}",
+            "ud2",
+            concat!(".size ", stringify!($function), ", .-", stringify!($function)),
+            ".popsection",
+            start = sym __rue_x86_64_linux_start,
+        );
+
+        #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
+        unsafe extern "C" {
+            fn $function() -> $result;
+        }
+
+        #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
+        const _: unsafe extern "C" fn() -> $result = $function;
+    };
+}
+
+macro_rules! declare_reserved_assembly {
+    (x86_64_linux unsafe $function:ident()) => {
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        core::arch::global_asm!(
+            concat!(".globl ", stringify!($function)),
+            concat!(".hidden ", stringify!($function)),
+            concat!(stringify!($function), ":"),
+            "mov rax, 15",
+            "syscall",
+        );
+
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        unsafe extern "C" {
+            pub(crate) fn $function();
+        }
+
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        const _: unsafe extern "C" fn() = $function;
+    };
+}
+
+macro_rules! declare_reserved_exports {
+    (
+        $(
+            ($variant:ident => $($row:tt)*)
+        ),+ $(,)?
+    ) => {
+        $(
+            declare_reserved_exports!(@row $variant => $($row)*);
+        )+
+    };
+    (
+        @row $variant:ident => function $target:ident $safety:ident $function:ident(
+            $($argument:ident : $rust_type:ty),* $(,)?
+        ) $(-> $result:ty)? {
+            class: $class:path,
+            signature: $signature:ident
+        }
+    ) => {
+        declare_reserved_function! {
+            $target $safety $function($($argument: $rust_type),*) $(-> $result)?
+        }
+    };
+    (
+        @row $variant:ident => linux_entry $target:ident $safety:ident $function:ident()
+            -> $result:ty {
+                class: $class:path,
+                signature: $signature:ident
+            }
+    ) => {
+        declare_linux_entry! {
+            $target $safety $function() -> $result
+        }
+    };
+    (
+        @row $variant:ident => assembly $target:ident $safety:ident $function:ident()
+            $(-> $result:ty)? {
+                class: $class:path,
+                signature: $signature:ident
+            }
+    ) => {
+        declare_reserved_assembly! {
+            $target $safety $function()
+        }
+    };
+    (
+        @row RuntimeAbiVersion => marker all {
+            class: $class:path,
+            size: 1
+        }
+    ) => {};
+}
+
+rue_runtime_abi::for_each_reserved_runtime_export!(declare_reserved_exports);
+
+macro_rules! declare_runtime_abi_marker {
+    ($version:literal, $marker:ident) => {
+        #[doc(hidden)]
+        #[used]
+        #[unsafe(no_mangle)]
+        pub static $marker: u8 = 0;
+    };
+}
+
+rue_runtime_abi::runtime_abi_version!(declare_runtime_abi_marker);
+
 // Re-export platform functions for tests
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use x86_64_linux::{exit, write, write_all, write_stderr};
@@ -196,156 +415,7 @@ pub use aarch64_macos::{exit, write, write_all, write_stderr};
 pub use aarch64_linux::{exit, write, write_all, write_stderr};
 
 #[cfg(test)]
-mod export_safety_tests {
-    extern crate std;
-
-    use self::std::{string::String, vec::Vec};
-    const MODULE_SOURCES: &[(&str, &str)] = &[
-        ("aarch64_linux", include_str!("aarch64_linux.rs")),
-        ("aarch64_macos", include_str!("aarch64_macos.rs")),
-        ("debug", include_str!("debug.rs")),
-        ("entry", include_str!("entry.rs")),
-        ("error", include_str!("error.rs")),
-        ("heap", include_str!("heap.rs")),
-        ("io", include_str!("io.rs")),
-        ("memory", include_str!("memory.rs")),
-        ("parse", include_str!("parse.rs")),
-        ("random", include_str!("random.rs")),
-        ("string", include_str!("string.rs")),
-        ("x86_64_linux", include_str!("x86_64_linux.rs")),
-    ];
-
-    /// Every extern function declaration whose signature contains a raw
-    /// pointer: symbol, whether it is unsafe, and declaration count. Counts are
-    /// one for macro-defined exports and three for hand-written platform copies.
-    /// This is intentionally checked against the
-    /// source declaration rather than by assigning function pointers: Rust
-    /// permits a safe function pointer to coerce to an unsafe one, which would
-    /// let an accidentally-safe export pass a type-only test.
-    const POINTER_EXPORTS: &[(&str, bool, usize)] = &[
-        ("__rue_alloc", false, 1),
-        ("__rue_dbg_str", true, 1),
-        ("__rue_free", false, 1),
-        ("__rue_panic", true, 1),
-        ("__rue_parse_i32", true, 1),
-        ("__rue_parse_i64", true, 1),
-        ("__rue_parse_u32", true, 1),
-        ("__rue_parse_u64", true, 1),
-        ("__rue_print", true, 1),
-        ("__rue_println", true, 1),
-        ("__rue_read_line", true, 3),
-        ("__rue_realloc", true, 1),
-        ("__rue_str_byte_at", true, 1),
-        ("__rue_str_char_next", true, 1),
-        ("__rue_str_char_next_lossy", true, 1),
-        ("__rue_str_char_scalar", true, 1),
-        ("__rue_str_char_scalar_lossy", true, 1),
-        ("__rue_str_eq", true, 1),
-        ("__rue_str_print", true, 1),
-        ("__rue_str_println", true, 1),
-        ("__rue_to_string", true, 1),
-        ("__rue_to_string_unsigned", true, 1),
-        ("bcmp", true, 1),
-        ("memcmp", true, 1),
-        ("memcpy", true, 1),
-        ("memmove", true, 1),
-        ("memset", true, 1),
-    ];
-
-    fn pointer_exports(source: &str) -> Vec<(&str, bool)> {
-        let lines: Vec<_> = source.lines().collect();
-        let mut exports = Vec::new();
-        let mut line_index = 0;
-
-        while line_index < lines.len() {
-            let line = lines[line_index].trim_start();
-            let has_c_abi = line.contains("extern \"C\" fn ");
-            let has_export_attr = lines[line_index.saturating_sub(8)..line_index]
-                .iter()
-                .any(|line| line.contains("no_mangle"));
-            let looks_like_function =
-                line.contains(" fn ") || line.starts_with("fn ") || line.starts_with("unsafe fn ");
-            if line.starts_with("///") || !looks_like_function || (!has_c_abi && !has_export_attr) {
-                line_index += 1;
-                continue;
-            }
-            let declaration_prefix = line
-                .split_once(" fn ")
-                .map(|(prefix, _)| prefix)
-                .unwrap_or(line);
-            let is_unsafe = declaration_prefix
-                .split_whitespace()
-                .any(|word| word == "unsafe");
-
-            let mut signature = String::from(line);
-            while !signature.contains('{') {
-                line_index += 1;
-                signature.push(' ');
-                signature.push_str(lines[line_index].trim());
-            }
-
-            if signature.contains("*const ") || signature.contains("*mut ") {
-                let after_fn = line
-                    .split_once(" fn ")
-                    .map(|(_, rest)| rest)
-                    .or_else(|| line.strip_prefix("fn "))
-                    .or_else(|| line.strip_prefix("unsafe fn "))
-                    .expect("export declaration has fn keyword");
-                let name = after_fn
-                    .split_once('(')
-                    .expect("export declaration has arguments")
-                    .0;
-                exports.push((name, is_unsafe));
-            }
-            line_index += 1;
-        }
-
-        exports
-    }
-
-    #[test]
-    fn raw_pointer_export_safety_is_explicit_and_complete() {
-        let mut actual = Vec::new();
-        for &(_, source) in MODULE_SOURCES {
-            actual.extend(pointer_exports(source));
-        }
-        actual.extend(pointer_exports(include_str!("lib.rs")));
-        actual.sort_unstable();
-
-        let mut counted = Vec::new();
-        for &(name, is_unsafe) in &actual {
-            match counted.last_mut() {
-                Some((last_name, last_unsafe, count))
-                    if *last_name == name && *last_unsafe == is_unsafe =>
-                {
-                    *count += 1;
-                }
-                _ => counted.push((name, is_unsafe, 1)),
-            }
-        }
-
-        assert_eq!(counted, POINTER_EXPORTS);
-    }
-
-    #[test]
-    fn every_declared_runtime_module_is_in_the_export_inventory() {
-        let lib_source = include_str!("lib.rs");
-        let mut declared = Vec::new();
-        for line in lib_source.lines().map(str::trim) {
-            let declaration = line
-                .strip_prefix("pub mod ")
-                .or_else(|| line.strip_prefix("mod "));
-            if let Some(name) = declaration.and_then(|rest| rest.strip_suffix(';')) {
-                declared.push(name);
-            }
-        }
-        declared.sort_unstable();
-
-        let mut inventoried: Vec<_> = MODULE_SOURCES.iter().map(|(name, _)| *name).collect();
-        inventoried.sort_unstable();
-        assert_eq!(inventoried, declared);
-    }
-
+mod boundary_tests {
     #[test]
     fn pointer_taking_safe_exports_have_no_pointer_precondition() {
         // Free is a deliberate bump-allocator no-op, so it never inspects its

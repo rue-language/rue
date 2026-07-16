@@ -8,6 +8,9 @@ rue_crate(
     name = "rue-runtime",
     tests = False,
     crate = "rue_runtime",
+    deps = [
+        "//crates/rue-runtime-abi:rue-runtime-abi",
+    ],
     # Force static linkage to ensure the [staticlib] subtarget is available
     preferred_linkage = "static",
     # Minimize output size and ensure no_std compatibility
@@ -34,6 +37,9 @@ rust_test(
     name = "rue-runtime-test",
     srcs = glob(["src/**/*.rs"]),
     crate = "rue_runtime",
+    deps = [
+        "//crates/rue-runtime-abi:rue-runtime-abi",
+    ],
 )
 
 # The x86-64 Linux entry point is raw process-entry code and cannot be exercised

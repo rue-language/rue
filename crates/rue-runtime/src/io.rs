@@ -8,6 +8,7 @@
 use crate::heap;
 use crate::platform;
 use crate::string::STRING_MIN_CAPACITY;
+pub use rue_runtime_abi::OptionStrBufResult;
 
 // =============================================================================
 // String output (RUE-1: print / println)
@@ -25,7 +26,7 @@ use crate::string::STRING_MIN_CAPACITY;
 // function takes ownership, so the caller's String stays valid and is dropped
 // by its owner as usual.
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Write a String's raw bytes to stdout with no trailing newline.
     ///
     /// Called by the `print(s: String)` builtin free function (RUE-1). Writes
@@ -59,7 +60,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Write a shared two-word `str` view to stdout.
     pub unsafe extern "C" fn __rue_str_print(ptr: *const u8, len: u64) {
         if len > 0 {
@@ -69,7 +70,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Write a String's raw bytes to stdout followed by a single newline.
     ///
     /// Called by the `println(s: String)` builtin free function (RUE-1). Writes
@@ -103,7 +104,7 @@ crate::define_for_all_platforms! {
     }
 }
 
-crate::define_for_all_platforms! {
+crate::define_runtime_implementation! {
     /// Write a shared two-word `str` view followed by a newline.
     pub unsafe extern "C" fn __rue_str_println(ptr: *const u8, len: u64) {
         if len > 0 {
@@ -117,22 +118,6 @@ crate::define_for_all_platforms! {
 /// Initial buffer size for reading lines.
 /// This is a reasonable size for most interactive input.
 const READ_LINE_INITIAL_CAPACITY: u64 = 128;
-
-/// Result of `@read_line`: a tagged-union `Option(StrBuf)` written via sret.
-///
-/// The compiler lays a payload-carrying enum out as slot 0 = discriminant
-/// followed by the payload slots (RUE-221), so the in-memory layout of
-/// `Option(StrBuf)` is `[disc, ptr, len, cap]`. This struct mirrors that
-/// layout exactly so the runtime can write the whole `Option` in one place and
-/// codegen simply loads the four slots back (RUE-6).
-#[repr(C)]
-pub struct OptionStrBufResult {
-    /// Discriminant slot: `some_disc` on success, `none_disc` at EOF.
-    pub disc: u64,
-    pub ptr: *mut u8,
-    pub len: u64,
-    pub cap: u64,
-}
 
 /// Read a line from standard input, returning `Option(StrBuf)`.
 ///
@@ -171,44 +156,8 @@ pub struct OptionStrBufResult {
 ///
 /// `out` must be valid, aligned, writable storage for one
 /// [`OptionStrBufResult`] and must remain exclusively accessible for the call.
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub unsafe extern "C" fn __rue_read_line(
-    out: *mut OptionStrBufResult,
-    some_disc: u64,
-    none_disc: u64,
-) {
-    read_line_impl(out, some_disc, none_disc);
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-#[allow(non_snake_case)]
-/// # Safety
-///
-/// `out` must be valid, aligned, writable storage for one
-/// [`OptionStrBufResult`] and must remain exclusively accessible for the call.
-pub unsafe extern "C" fn __rue_read_line(
-    out: *mut OptionStrBufResult,
-    some_disc: u64,
-    none_disc: u64,
-) {
-    read_line_impl(out, some_disc, none_disc);
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-#[allow(non_snake_case)]
-/// # Safety
-///
-/// `out` must be valid, aligned, writable storage for one
-/// [`OptionStrBufResult`] and must remain exclusively accessible for the call.
-pub unsafe extern "C" fn __rue_read_line(
-    out: *mut OptionStrBufResult,
-    some_disc: u64,
-    none_disc: u64,
-) {
+pub unsafe fn __rue_read_line(out: *mut OptionStrBufResult, some_disc: u64, none_disc: u64) {
     read_line_impl(out, some_disc, none_disc);
 }
 

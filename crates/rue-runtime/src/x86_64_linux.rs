@@ -449,33 +449,6 @@ const SA_ONSTACK: u64 = 0x0800_0000;
 /// signal-return trampoline.
 const SA_RESTORER: u64 = 0x0400_0000;
 
-/// Linux x86-64 syscall number for rt_sigreturn.
-const SYS_RT_SIGRETURN: u64 = 15;
-
-// On x86-64 Linux the kernel provides no signal-return trampoline: the raw
-// `rt_sigaction` syscall requires userspace to supply one via `sa_restorer` +
-// `SA_RESTORER`, and *signal delivery itself fails* (a second, SI_KERNEL
-// SIGSEGV that force-kills the process) if it is missing — even when the
-// handler never returns. glibc hides this by always installing its own
-// trampoline; a freestanding runtime must define its own. This one simply
-// issues the `rt_sigreturn` syscall. Our handler exits and never returns, so
-// this is never actually executed, but it must be present and valid for the
-// kernel to accept and deliver the signal.
-core::arch::global_asm!(
-    ".globl __rue_rt_sigreturn",
-    ".hidden __rue_rt_sigreturn",
-    "__rue_rt_sigreturn:",
-    "mov rax, {sysno}",
-    "syscall",
-    sysno = const SYS_RT_SIGRETURN,
-);
-
-unsafe extern "C" {
-    /// Signal-return trampoline defined in `global_asm!` above. Address only —
-    /// never called directly from Rust.
-    fn __rue_rt_sigreturn();
-}
-
 /// Kernel `struct sigaction` layout on x86-64 Linux (the ABI `rt_sigaction`
 /// expects). Field order differs from the userspace/POSIX struct: on x86-64 the
 /// mask comes last. `sa_restorer` must point at a valid signal-return
@@ -581,7 +554,7 @@ pub fn install_stack_overflow_handler(handler: extern "C" fn(i32) -> !) {
     let act = KernelSigaction {
         sa_handler: handler as usize,
         sa_flags: SA_ONSTACK | SA_RESTORER,
-        sa_restorer: __rue_rt_sigreturn as usize,
+        sa_restorer: crate::__rue_rt_sigreturn as usize,
         sa_mask: 0,
     };
     // SAFETY: `act` is a valid KernelSigaction; SIGSEGV is a valid signal.
