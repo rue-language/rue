@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/steveklabnik/Code/rue/.codex/hooks/bookmark-guard.sh'"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'if [ -n \"$CLAUDE_ENV_FILE\" ]; then echo \"source ~/.profile\" >> \"$CLAUDE_ENV_FILE\"; fi'"
+          }
+        ]
+      }
+    ]
+  }
+}

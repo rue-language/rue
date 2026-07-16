@@ -31,14 +31,16 @@ It is a compile-time error for one source file to define two top-level
 items with the same name, whether of the same kind (duplicate definition,
 E0436) or of different kinds (a `const` and a `fn` sharing a name, also
 E0436). This check is per-file: it never considers items in other loaded
-files.
+files. The sole exception is the program entry point `main`, whose
+uniqueness is enforced program-wide (rule 10.5:5).
 
 {{ rule(id="10.5:2", cat="normative") }}
 
 Top-level names are scoped to their defining source file (their module).
 Two loaded files **MAY** define top-level items with the same name — of
 the same kind or of different kinds — regardless of visibility and
-regardless of directory. Each file's items are reachable from other files
+regardless of directory, with the single exception of the entry point
+`main` (rule 10.5:5). Each file's items are reachable from other files
 only through a module binding (`m.item`, rule 10.4:1); an unqualified
 reference to a name defined only in another loaded file is a
 name-resolution error (E0201/E0202/E0204, rule 10.3:8), never a silent
@@ -58,6 +60,40 @@ fn main() -> i32 {
     let a = @import("a");
     let b = @import("b");
     a.shared() + b.shared()    // 3: each call resolves in its own module
+}
+```
+
+## Program-Wide Uniqueness of `main`
+
+{{ rule(id="10.5:5", cat="legality-rule") }}
+
+The program entry point `main` is the one top-level name whose uniqueness
+is enforced across the entire program rather than per-file. It is a
+compile-time error (E0436) for two loaded files to each define a top-level
+`main`, even when only one of them is the root file's `main` and the other
+`main` is never called. This is an exception to rule 10.5:2: every other
+top-level name — including `shared` in the 10.5:3 example — remains
+module-scoped and may be duplicated freely across files. The check is
+performed eagerly at declaration gathering, before body reachability is
+known (rule 10.5:4), so a duplicate `main` in a loaded-but-unreferenced
+module is still reported. The restriction exists because an executable
+import graph has exactly one entry point, invoked through the executable
+entry ABI (rules 6.1:7, 6.1:8); ADR-0047 records the rationale and tracks
+the root-module end state that will eventually localize entry-point
+selection.
+
+{{ rule(id="10.5:6", cat="example") }}
+
+```rue
+// helper.rue
+pub fn main() -> i32 { 0 }        // second entry point
+pub fn answer() -> i32 { 42 }
+
+// main.rue
+const helper = @import("helper.rue");
+
+fn main() -> i32 {                // error E0436: `main` is already defined
+    helper.answer()               // helper.main is never called, but is rejected
 }
 ```
 

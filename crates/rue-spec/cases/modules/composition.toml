@@ -39,6 +39,35 @@ pub fn go2() -> i32 { LIMIT }
 exit_code = 1
 
 [[case]]
+name = "imported_module_second_main_rejected"
+spec = ["10.5:5"]
+description = "`main` is unique program-wide: an imported module defining its own `main` is rejected with E0436 even though that `main` is never called (exception to 10.5:2)"
+source = """
+const helper = @import("helper");
+fn main() -> i32 { helper.answer() }
+"""
+aux_files = { "helper.rue" = """
+pub fn main() -> i32 { 0 }
+pub fn answer() -> i32 { 42 }
+""" }
+compile_fail = true
+error_contains = "E0436"
+
+[[case]]
+name = "non_main_duplicate_names_across_files_still_ok"
+spec = ["10.5:5"]
+description = "The program-wide `main` rule is specific to `main`: every other top-level name, including a duplicated `shared`, remains module-scoped and compiles"
+source = """
+fn main() -> i32 {
+    let a = @import("a");
+    let b = @import("b");
+    a.shared() + b.shared()
+}
+"""
+aux_files = { "a.rue" = "pub fn shared() -> i32 { 1 }", "b.rue" = "pub fn shared() -> i32 { 2 }" }
+exit_code = 3
+
+[[case]]
 name = "same_file_duplicate_function_error"
 spec = ["10.5:1"]
 description = "Two top-level items with one name in ONE file are a duplicate-definition error; the check is per-file"
