@@ -17,6 +17,7 @@
 //! ```
 
 mod build;
+mod dominators;
 mod inst;
 pub mod opt;
 mod verify;
