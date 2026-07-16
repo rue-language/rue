@@ -21,6 +21,15 @@ while discussing RUE-430/RUE-434. It is a design decision, not an implementation
 Concrete CLI, manifest, dependency-reporting, and package-resolution work should
 be tracked as separate Linear issues.
 
+**Amendment (RUE-920/RUE-921).** The single-root-module model here is the
+authority for entry-point selection: the program entry point is the root
+module's `main` (spec 6.1:38). An interim guard added under RUE-582 rejected a
+second top-level `main` in *any* loaded module program-wide, a transitional
+approximation from before top-level names became module-scoped. RUE-920 retired
+that guard: a `main` in a non-root module is now an ordinary namespaced function,
+which is exactly what this ADR's root-module model implies. Same-file duplicate
+names remain per-file conflicts (spec 10.5:1).
+
 ## Summary
 
 A Rue compilation target has exactly one **semantic root module**. The program's

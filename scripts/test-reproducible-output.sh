@@ -175,20 +175,22 @@ assert_source_order_independent_ir() {
     local ir_a="$root_a/tmp/source-order-ir.txt"
     local ir_b="$root_b/tmp/source-order-ir.txt"
 
-    # RUE-620: keep noise-a as the semantic root while moving main across an
-    # unrelated sibling. That changes process-local interner allocation without
-    # changing which files or definitions make up the program.
+    # RUE-620: permute the unrelated noise siblings around a fixed root. That
+    # changes process-local interner allocation without changing which files
+    # or definitions make up the program. (main.rue is pinned first: the root
+    # module owns the entry point since RUE-920/spec 6.1:38, so it can no
+    # longer move across the siblings the way the original gate did.)
     (
         cd "$root_a/project/source-order"
         "$RUE_BINARY" -j1 \
             --emit air --emit cfg --emit lowering \
-            noise-a.rue main.rue noise-b.rue > "$ir_a"
+            main.rue noise-a.rue noise-b.rue > "$ir_a"
     )
     "$RUE_BINARY" -j32 \
         --emit air --emit cfg --emit lowering \
-        "$root_b/project/source-order/noise-a.rue" \
+        "$root_b/project/source-order/main.rue" \
         "$root_b/project/source-order/noise-b.rue" \
-        "$root_b/project/source-order/main.rue" > "$ir_b"
+        "$root_b/project/source-order/noise-a.rue" > "$ir_b"
 
     assert_identical "source-order-permuted AIR/CFG/lowering" "$ir_a" "$ir_b"
 
@@ -210,9 +212,11 @@ emit_semantic_order_pair() {
     local output_a="$root_a/tmp/semantic-order-${target_tag}-o${opt}-a.txt"
     local output_b="$root_b/tmp/semantic-order-${target_tag}-o${opt}-b.txt"
 
-    # The semantic root remains first, while left/right exchange both source
-    # position and FileId. shared.rue is deliberately discovered through each
-    # nested sibling's root-relative import rather than listed positionally.
+    # The siblings are discovered through the root's imports (RUE-920/spec
+    # 6.1:38 moved the entry point into the designated root, retiring the
+    # positional sibling listing). Perturbation now comes from manifest order,
+    # parallelism, environment, and path spelling. shared.rue is deliberately
+    # discovered through each nested sibling's root-relative import.
     (
         umask 022
         cd "$root_a/project/semantic-order"
@@ -224,7 +228,7 @@ emit_semantic_order_pair() {
             "$RUE_BINARY" "-O$opt" -j1 --target "$target" \
             --source-manifest ../sources.manifest \
             "$@" \
-            root.rue left/types.rue right/types.rue > "$output_a"
+            root.rue > "$output_a"
     )
     (
         umask 077
@@ -236,9 +240,7 @@ emit_semantic_order_pair() {
             "$RUE_BINARY" "-O$opt" -j32 --target "$target" \
             --source-manifest "$root_b/project/sources.manifest" \
             "$@" \
-            "$root_b/project/semantic-order/./root.rue" \
-            "$root_b/project/semantic-order/right/../right/types.rue" \
-            "$root_b/project/semantic-order/left/./types.rue" > "$output_b"
+            "$root_b/project/semantic-order/./root.rue" > "$output_b"
     )
 
     assert_identical \
@@ -361,7 +363,7 @@ compile_semantic_order_pair() {
             TZ=UTC \
             "$RUE_BINARY" "-O$opt" -j1 \
             --source-manifest ../sources.manifest \
-            root.rue left/types.rue right/types.rue -o "$output_a"
+            root.rue -o "$output_a"
     )
     (
         umask 077
@@ -372,9 +374,7 @@ compile_semantic_order_pair() {
             TZ=Pacific/Honolulu \
             "$RUE_BINARY" "-O$opt" -j32 \
             --source-manifest "$root_b/project/sources.manifest" \
-            "$root_b/project/semantic-order/./root.rue" \
-            "$root_b/project/semantic-order/right/../right/types.rue" \
-            "$root_b/project/semantic-order/left/./types.rue" -o "$output_b"
+            "$root_b/project/semantic-order/./root.rue" -o "$output_b"
     )
 
     assert_identical "semantic-order native -O$opt program" "$output_a" "$output_b"

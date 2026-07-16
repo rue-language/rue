@@ -36,7 +36,10 @@ fn left_entry(value: i32) -> i32 {
     payload.score()
 }
 
-fn main() -> i32 {
+// The program body: called by the root module's `main` (spec 6.1:38 moved the
+// entry point into the designated root; this module keeps the semantic
+// payload the gate asserts on).
+pub fn run() -> i32 {
     let seed = shared.identity(i32, 38);
     let result = left_entry(seed);
     @dbg(result);

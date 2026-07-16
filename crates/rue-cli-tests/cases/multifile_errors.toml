@@ -113,18 +113,22 @@ error_contains = [
 name = "binary_expr_span_in_second_file"
 description = """
 RUE-175: make_binary built the merged span with Span.new, dropping the
-FileId. The E0206 on the `if 1 + 2` condition in main.rue (passed second)
-alternated between main.rue:2:8 and a misaligned caret in lib.rue depending on
-hash-map iteration order. It must always point at main.rue:2:8.
+FileId. The E0206 on the `if 1 + 2` condition in the imported (non-root)
+lib.rue alternated between lib.rue:2:8 and a misaligned caret in the root file
+depending on hash-map iteration order. It must always point at lib.rue:2:8.
+(RUE-920 modernized this case from legacy positional inputs to @import; the
+regression surface — span attribution to a non-root FileId — is unchanged.)
 """
 files = [
-    { path = "lib.rue", source = """
-pub fn helper() -> i64 {
-    return 1;
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+
+fn main() -> i32 {
+    return lib.check();
 }
 """ },
-    { path = "main.rue", source = """
-fn main() -> i32 {
+    { path = "lib.rue", source = """
+pub fn check() -> i32 {
     if 1 + 2 {
         return 1;
     }
@@ -132,10 +136,10 @@ fn main() -> i32 {
 }
 """ },
 ]
-args = ["lib.rue", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0206", "main.rue:2:8"]
-compile_stderr_not_contains = ["lib.rue"]
+error_contains = ["E0206", "lib.rue:2:8"]
+compile_stderr_not_contains = ["main.rue:"]
 
 [[case]]
 name = "binary_expr_span_swapped_order"
@@ -167,17 +171,20 @@ compile_stderr_not_contains = ["lib.rue"]
 name = "unary_expr_span_in_second_file"
 description = """
 RUE-175: make_unary also built its merged span (operator start .. operand end)
-with Span.new. The E0206 on the `if -1` condition must point at main.rue:2:8,
-never at lib.rue.
+with Span.new. The E0206 on the `if -1` condition in the imported (non-root)
+lib.rue must point at lib.rue:2:8, never at the root file. (RUE-920 modernized
+this case from legacy positional inputs to @import.)
 """
 files = [
-    { path = "lib.rue", source = """
-pub fn helper() -> i64 {
-    return 1;
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+
+fn main() -> i32 {
+    return lib.check();
 }
 """ },
-    { path = "main.rue", source = """
-fn main() -> i32 {
+    { path = "lib.rue", source = """
+pub fn check() -> i32 {
     if -1 {
         return 1;
     }
@@ -185,62 +192,69 @@ fn main() -> i32 {
 }
 """ },
 ]
-args = ["lib.rue", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0206", "main.rue:2:8"]
-compile_stderr_not_contains = ["lib.rue"]
+error_contains = ["E0206", "lib.rue:2:8"]
+compile_stderr_not_contains = ["main.rue:"]
 
 [[case]]
 name = "field_assign_span_in_second_file"
 description = """
 RUE-175: field-assignment shape. The E0206 for assigning a bool to an i64
-field must be attributed to main.rue:4:5, never to lib.rue.
+field in the imported (non-root) lib.rue must be attributed to lib.rue:4:5,
+never to the root file. (RUE-920 modernized this case from legacy positional
+inputs to @import.)
 """
 files = [
-    { path = "lib.rue", source = """
-pub fn helper() -> i64 {
-    return 1;
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+
+fn main() -> i32 {
+    return lib.check();
 }
 """ },
-    { path = "main.rue", source = """
+    { path = "lib.rue", source = """
 struct P { x: i64 }
-fn main() -> i32 {
+pub fn check() -> i32 {
     let mut p = P { x: 1 };
     p.x = true;
     return 0;
 }
 """ },
 ]
-args = ["lib.rue", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0206", "main.rue:4:5"]
-compile_stderr_not_contains = ["lib.rue"]
+error_contains = ["E0206", "lib.rue:4:5"]
+compile_stderr_not_contains = ["main.rue:"]
 
 [[case]]
 name = "index_expr_span_in_second_file"
 description = """
 RUE-175: index-expression shape. The E0206 whose primary span is the postfix
-index expression `a[0]` (used where a bool is required) must be attributed to
-main.rue:3:13, never to lib.rue.
+index expression `a[0]` (used where a bool is required) in the imported
+(non-root) lib.rue must be attributed to lib.rue:3:13, never to the root file.
+(RUE-920 modernized this case from legacy positional inputs to @import.)
 """
 files = [
-    { path = "lib.rue", source = """
-pub fn helper() -> i64 {
-    return 1;
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+
+fn main() -> i32 {
+    return lib.check();
 }
 """ },
-    { path = "main.rue", source = """
-fn main() -> i32 {
+    { path = "lib.rue", source = """
+pub fn check() -> i32 {
     let mut a = [1, 2, 3];
     let i = a[0] && true;
     return 0;
 }
 """ },
 ]
-args = ["lib.rue", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0206", "main.rue:3:13"]
-compile_stderr_not_contains = ["lib.rue"]
+error_contains = ["E0206", "lib.rue:3:13"]
+compile_stderr_not_contains = ["main.rue:"]
 
 [[case]]
 name = "directive_span_in_second_file"

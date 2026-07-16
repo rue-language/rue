@@ -821,7 +821,13 @@ mod tests {
                 "struct clash {} fn clash() {} fn main() -> i32 { 0 }",
                 "fn helper() {}",
             ),
-            ("fn main() -> i32 { 1 }", "fn main() -> i32 { 2 }"),
+            // (RUE-920) A second top-level `main` in a non-root module is no
+            // longer a frontend error, so it cannot appear in this
+            // error-determinism corpus; a same-file duplicate still is one.
+            (
+                "fn main() -> i32 { 1 } fn main() -> i32 { 2 }",
+                "fn helper() {}",
+            ),
             ("fn main() -> i32 { missing_name }", "fn helper() {}"),
         ];
         for (left, right) in cases {
@@ -1358,21 +1364,20 @@ mod tests {
     }
 
     #[test]
-    fn test_cross_file_duplicate_main() {
-        // main() defined in multiple files
+    fn test_cross_file_main_is_root_module_scoped() {
+        // RUE-920: `main` is scoped to the root module, not program-wide unique.
+        // With a.rue as root (first source), b.rue's `main` is an ordinary
+        // namespaced function, so the program compiles instead of failing with
+        // a duplicate-main error. The root's `main` remains the entry point.
         let sources = vec![
             SourceView::new("a.rue", "fn main() -> i32 { 1 }", FileId::new(1)),
             SourceView::new("b.rue", "fn main() -> i32 { 2 }", FileId::new(2)),
         ];
         let result = test_compile_sources(&sources, &CompileOptions::default());
-        assert!(result.is_err(), "should fail with duplicate main");
-
-        let errors = result.unwrap_err();
-        let err_msg = errors.first().unwrap().to_string();
         assert!(
-            err_msg.contains("main"),
-            "error should mention duplicate main: {}",
-            err_msg
+            result.is_ok(),
+            "cross-module `main` must compile under RUE-920: {:?}",
+            result.err()
         );
     }
 

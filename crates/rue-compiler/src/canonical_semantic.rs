@@ -1805,7 +1805,11 @@ mod tests {
                 2,
                 "/old/helper.rue",
                 "helper.rue",
-                "pub fn helper() -> i32 { 42 }",
+                // helper.rue carries its own `main` so the `different_root`
+                // case below (root = file 2) is a valid program. Under RUE-920
+                // a non-root `main` is an ordinary namespaced function, so this
+                // `main` is inert when file 1 is the root.
+                "pub fn helper() -> i32 { 42 } fn main() -> i32 { 0 }",
             ),
         ];
         let base_snapshot = snapshot(&sources, 1);

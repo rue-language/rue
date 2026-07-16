@@ -43,16 +43,32 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 
     pub(super) fn internal_function_name(&self, source_name: Spur, file_id: FileId) -> Spur {
         let source = self.interner.resolve(&source_name);
-        if source == "main" {
+        // The program entry point is the ROOT module's `main`: it keeps the
+        // unmangled `main` symbol the runtime `_start`/`__main` glue calls
+        // (spec 6.1:38, RUE-920/RUE-921). When no root is designated (single-file
+        // callers that never call `set_root_file_id`) that lone file is the
+        // root, so its `main` keeps the bare name too.
+        let file_is_root = self.root_file_id.is_none_or(|root| root == file_id);
+        if source == "main" && file_is_root {
             return source_name;
         }
-        // Preserve the historical symbol rule exactly in this preparatory
-        // slice: receiverless associated functions count too. Correct free
-        // function classification is indexed separately for body lookup.
-        if self
-            .declaration_index
-            .non_receiver_name_multiplicity(source_name)
-            > 1
+        // A `main` in any OTHER module is an ordinary namespaced function
+        // (spec 6.1:38). It must never keep the bare `main` symbol — even as the
+        // only `main` in the program — so it cannot collide with the root's
+        // entry point and so a root that lacks `main` still fails with
+        // `NoMainFunction` instead of silently adopting an imported entry
+        // point. Force it down the mangling path regardless of multiplicity.
+        //
+        // Otherwise preserve the historical symbol rule exactly in this
+        // preparatory slice: receiverless associated functions count too.
+        // Correct free function classification is indexed separately for body
+        // lookup.
+        let non_root_main = source == "main";
+        if non_root_main
+            || self
+                .declaration_index
+                .non_receiver_name_multiplicity(source_name)
+                > 1
         {
             let module_component = self
                 .get_symbol_path(file_id)

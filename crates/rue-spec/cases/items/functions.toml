@@ -42,6 +42,20 @@ compile_fail = true
 error_contains = ["E0211", "`main` must return `i32` or `()`"]
 
 [[case]]
+name = "root_without_main_errors_even_if_import_has_main"
+spec = ["6.1:7", "6.1:38"]
+description = "The entry-point requirement (6.1:7) is checked against the root module: a root that lacks `main` is rejected even when an imported module defines one (6.1:38)"
+source = """
+fn start() -> i32 {
+    let m = @import("m");
+    m.answer()
+}
+"""
+aux_files = { "m.rue" = "pub fn main() -> i32 { 1 }\npub fn answer() -> i32 { 2 }" }
+compile_fail = true
+error_contains = ["E0200", "no main function"]
+
+[[case]]
 name = "main_basic_{variant}"
 spec = ["6.1:1"]
 source = "{source}"

@@ -39,6 +39,32 @@ pub fn go2() -> i32 { LIMIT }
 exit_code = 1
 
 [[case]]
+name = "imported_module_main_is_ordinary_and_callable"
+spec = ["10.5:2", "6.1:38"]
+description = "A top-level `main` in a non-root (imported) module is an ordinary namespaced function: it does not conflict with the root's entry point and is callable through its module path, returning its own value"
+source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m.main()
+}
+"""
+aux_files = { "m.rue" = "pub fn main() -> i32 { 42 }" }
+exit_code = 42
+
+[[case]]
+name = "root_main_is_entry_point_over_imported_main"
+spec = ["10.5:2", "6.1:38"]
+description = "When both the root and an imported module define `main`, the root module's `main` is the program entry point"
+source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m.value() + 3
+}
+"""
+aux_files = { "m.rue" = "pub fn main() -> i32 { 99 }\npub fn value() -> i32 { 2 }" }
+exit_code = 5
+
+[[case]]
 name = "same_file_duplicate_function_error"
 spec = ["10.5:1"]
 description = "Two top-level items with one name in ONE file are a duplicate-definition error; the check is per-file"

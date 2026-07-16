@@ -14494,17 +14494,21 @@ fn main() -> i32 { selected.value() }"#,
         assert_eq!(signature.work().durable_bodies.candidate_fallbacks, 2);
         assert_eq!(signature.work().body_analysis.bodies_attempted, 2);
 
+        // Both files carry a top-level `main` so either can serve as the root
+        // (RUE-920: a non-root `main` is an ordinary, inert function). Only the
+        // designated root's `main` is the entry point, so switching the root
+        // still forces a body re-analysis without a duplicate-main error.
         let both_roots = snapshot(
             &[
                 (101, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }"),
-                (102, "/p/other.rue", "other.rue", "fn other() -> i32 { 2 }"),
+                (102, "/p/other.rue", "other.rue", "fn main() -> i32 { 2 }"),
             ],
             101,
         );
         let other_root = snapshot(
             &[
                 (101, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }"),
-                (102, "/p/other.rue", "other.rue", "fn other() -> i32 { 2 }"),
+                (102, "/p/other.rue", "other.rue", "fn main() -> i32 { 2 }"),
             ],
             102,
         );
