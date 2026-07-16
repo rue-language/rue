@@ -983,6 +983,12 @@ pub struct RewriteBuffer<I> {
     after: Vec<I>,
 }
 
+impl<I> Default for RewriteBuffer<I> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<I> RewriteBuffer<I> {
     pub fn new() -> Self {
         Self {
