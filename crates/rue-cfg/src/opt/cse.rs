@@ -204,7 +204,12 @@ fn never_written_params(cfg: &Cfg) -> Vec<bool> {
     let num_params = cfg.num_params() as usize;
     let mut never_written = vec![false; num_params];
     for (slot, flag) in never_written.iter_mut().enumerate() {
-        *flag = !cfg.is_param_writable(slot as u32);
+        // A parameter whose ADDRESS escapes through @raw/@raw_mut/@field_ptr
+        // is mutable through the raw pointer (@ptr_write), so its reads are
+        // NOT interchangeable even though nothing writes it directly — keying
+        // such reads merged a post-write read into the stale pre-write value
+        // (found by the 2026-07-16 optimizer hunt).
+        *flag = !cfg.is_param_writable(slot as u32) && !cfg.is_param_address_taken(slot as u32);
     }
 
     for block in cfg.blocks() {
@@ -622,5 +627,27 @@ mod tests {
             cfg.get_inst(result).data
         );
         assert!(matches!(cfg.get_inst(add2).data, CfgInstData::Const(0)));
+    }
+    #[test]
+    fn test_address_taken_param_not_keyed() {
+        // A parameter whose address escapes via @raw_mut can be mutated
+        // through @ptr_write, so its repeated reads must NOT dedupe
+        // (2026-07-16 optimizer-hunt miscompile: post-write read merged into
+        // the stale pre-write value).
+        let mut cfg = Cfg::new(Type::I32, 0, 1, "test".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        cfg.mark_param_address_taken(0);
+        let p1 = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let p2 = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let sum = push(&mut cfg, CfgInstData::Add(p1, p2), Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sum) });
+
+        let stats = run(&mut cfg);
+        assert_eq!(
+            stats.duplicates_replaced, 0,
+            "address-taken param reads must not dedupe"
+        );
+        assert!(matches!(cfg.get_inst(p2).data, CfgInstData::Param { .. }));
     }
 }

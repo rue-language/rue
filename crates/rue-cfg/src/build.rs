@@ -923,10 +923,20 @@ impl<'a> CfgBuilder<'a> {
                 {
                     match &self.cfg.get_inst(place_val).data {
                         CfgInstData::Load { slot } => self.cfg.mark_address_taken(*slot),
-                        CfgInstData::PlaceRead { place } => {
-                            if let PlaceBase::Local(slot) = place.base {
-                                self.cfg.mark_address_taken(slot);
-                            }
+                        CfgInstData::PlaceRead { place } => match place.base {
+                            PlaceBase::Local(slot) => self.cfg.mark_address_taken(slot),
+                            // A parameter's address escaping means repeated
+                            // Param reads are no longer interchangeable
+                            // (@ptr_write can mutate the storage between
+                            // them) — record it so CSE's param keying skips
+                            // the slot (RUE-914 hunt finding).
+                            PlaceBase::Param(slot) => self.cfg.mark_param_address_taken(slot),
+                        },
+                        // A bare scalar parameter lowers directly to a Param
+                        // value with no backing local; its address escaping
+                        // must be recorded on the PARAM slot.
+                        CfgInstData::Param { index } => {
+                            self.cfg.mark_param_address_taken(*index);
                         }
                         _ => {}
                     }

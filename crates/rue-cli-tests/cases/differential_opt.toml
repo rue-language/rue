@@ -630,3 +630,47 @@ fn main() -> i32 {
 """ }]
 stdout = "105\n"
 exit_code = 105
+
+# Optimizer-hunt regressions (2026-07-16): a parameter whose address escapes
+# via @raw_mut and is written through @ptr_write must be re-read after the
+# write — CSE's param keying merged the post-write read into the stale
+# pre-write value at -O2/-O3 (1006 became 12).
+[[case]]
+name = "param_raw_mut_write_reread_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn f(x: i32) -> i32 {
+    let y = x + 1;
+    let p: ptr mut i32 = checked { @raw_mut(x) };
+    checked {
+        @ptr_write(p, 999);
+    };
+    let z = x + 1;
+    y + z
+}
+
+fn main() -> i32 {
+    @dbg(f(5));
+    0
+}
+""" }]
+stdout = """1006
+"""
+exit_code = 0
+
+# Optimizer-hunt regression (2026-07-16): a constant-false arm holding a
+# call-initialized local ICEd the forward pass's dominance invariant at
+# -O2/-O3 (the load in the dead arm was forwarded despite being unreachable).
+[[case]]
+name = "dead_arm_call_local_no_ice_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn ident(x: i32) -> i32 { x }
+
+fn main() -> i32 {
+    let v25: i32 = ident(3);
+    return if false { v25 } else { 7 };
+}
+""" }]
+stdout = ""
+exit_code = 7
