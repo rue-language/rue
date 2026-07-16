@@ -468,20 +468,24 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
 fn every_known_missing_runtime_call_has_a_closed_kind() {
     use UnsupportedRuntimeCallKind as RuntimeCall;
 
-    for (name, expected) in [
-        ("__rue_print", RuntimeCall::Print),
-        ("__rue_println", RuntimeCall::Println),
-        ("__rue_str_print", RuntimeCall::Print),
-        ("__rue_str_println", RuntimeCall::Println),
+    for (kind, expected) in [
+        (RuntimeCallKind::StrPrintAggregate, RuntimeCall::Print),
+        (RuntimeCallKind::StrPrintProjected, RuntimeCall::Print),
+        (RuntimeCallKind::StrPrintlnAggregate, RuntimeCall::Println),
+        (RuntimeCallKind::StrPrintlnProjected, RuntimeCall::Println),
     ] {
         assert_eq!(
-            unsupported_runtime_call_kind(name),
+            unsupported_runtime_call_kind(kind),
             Some(expected),
-            "{name}"
+            "{kind:?}"
         );
     }
-    for name in ["__rue_str_eq", "user_function", "new_runtime_helper"] {
-        assert_eq!(unsupported_runtime_call_kind(name), None, "{name}");
+    for kind in [
+        RuntimeCallKind::StrByteAt,
+        RuntimeCallKind::DebugI64,
+        RuntimeCallKind::AllocBytes,
+    ] {
+        assert_eq!(unsupported_runtime_call_kind(kind), None, "{kind:?}");
     }
 }
 

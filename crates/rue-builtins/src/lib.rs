@@ -439,47 +439,34 @@ pub fn is_reserved_enum_name(name: &str) -> bool {
     BUILTIN_ENUMS.iter().any(|e| e.name == name)
 }
 
-/// Runtime symbols exported UNMANGLED outside the `__rue_` prefix, because
-/// their exact names are load-bearing (RUE-354):
-///
-/// - `memcpy`/`memmove`/`memset`/`memcmp`/`bcmp` (`rue-runtime/src/memory.rs`):
-///   rustc/LLVM lowers copies and comparisons to calls with exactly these
-///   compiler-builtin names, so they cannot be moved under `__rue_`.
-/// - `_start` / `_main` (`rue-runtime/src/entry.rs`): the program entry points
-///   the linker resolves on Linux and macOS respectively.
-///
-/// Keep this list in sync with the `#[unsafe(no_mangle)]` items in those two
-/// files — a missed name surfaces as a confusing duplicate-symbol link error
-/// (E1000) instead of the intended E0435 declaration-time diagnostic.
-const RUNTIME_EXPORTED_NAMES: &[&str] = &[
-    "memcpy", "memmove", "memset", "memcmp", "bcmp", "_start", "_main",
-];
-
 /// Check if a name is reserved for a runtime/codegen helper function, and thus
 /// may not be used as a user-defined function name.
 ///
 /// A user function with one of these names would collide with a symbol emitted
-/// by the runtime or codegen. Almost every such symbol lives under the reserved
-/// `__rue_` prefix — allocation, exit, and operator helpers such as
-/// `__rue_alloc`, `__rue_exit`, and `__rue_str_eq` — but the runtime also
-/// exports a handful of unmangled
-/// names whose spellings are fixed by the platform or by rustc/LLVM lowering:
-/// see [`RUNTIME_EXPORTED_NAMES`]. Reserving exactly `__rue_*` plus that short
-/// fixed list (rather than growing the set for every new builtin) means
+/// by the runtime or codegen. The reserved namespace covers runtime helpers,
+/// compiler-generated functions, and target shims. The typed ABI manifest
+/// separately classifies entry points and compiler-built memory routines whose
+/// externally fixed names do not use that namespace. This means
 /// `<BuiltinType>__<method>` spellings like `String__len` are ordinary, legal
 /// user identifiers (RUE-125). Depending on link order a real collision either
 /// fails to link or silently binds calls to the wrong definition, so these
 /// names are rejected at declaration time with a clear diagnostic.
 pub fn is_reserved_function_name(name: &str) -> bool {
-    // Runtime internal helpers, built-in methods, drop glue, operators — every
-    // compiler/runtime symbol not in RUNTIME_EXPORTED_NAMES is emitted under
-    // this prefix.
     if name.starts_with("__rue_") {
         return true;
     }
-    // Entry points and compiler-builtin memory routines the runtime exports
-    // under their fixed platform names (RUE-354).
-    RUNTIME_EXPORTED_NAMES.contains(&name)
+    rue_runtime_abi::ReservedExportId::ALL
+        .iter()
+        .copied()
+        .any(|id| {
+            use rue_runtime_abi::ReservedExportClass;
+
+            let export = id.export();
+            matches!(
+                export.class,
+                ReservedExportClass::CompilerBuiltMemory | ReservedExportClass::ProgramEntry
+            ) && export.symbol == name
+        })
 }
 
 #[cfg(test)]

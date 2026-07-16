@@ -67,19 +67,20 @@ fn stable_text_runtime_calls_require_exact_metadata() {
         budget: STEP_BUDGET,
         depth: 0,
     };
-    for (name, kind) in [
-        ("__rue_str_print", RuntimeCall::Print),
-        ("__rue_str_println", RuntimeCall::Println),
+    for (runtime, kind) in [
+        (RuntimeCallKind::StrPrintAggregate, RuntimeCall::Print),
+        (RuntimeCallKind::StrPrintlnAggregate, RuntimeCall::Println),
     ] {
+        let name = runtime.helper().symbol();
         let (types, modes, result) = find_call_metadata(&state, name);
         let values = [Value::str_view("x")];
         assert_eq!(
-            interp.classify_unsupported_runtime_call(name, &values, &types, &modes, result),
+            interp.classify_unsupported_runtime_call(runtime, &values, &types, &modes, result),
             UnsupportedKind::SemanticGap(Semantic::RuntimeCall(kind))
         );
         for values in [&[][..], &[Value::str_view("x"), Value::str_view("y")][..]] {
             assert_eq!(
-                interp.classify_unsupported_runtime_call(name, values, &types, &modes, result),
+                interp.classify_unsupported_runtime_call(runtime, values, &types, &modes, result),
                 UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity)
             );
         }
@@ -92,17 +93,23 @@ fn stable_text_runtime_calls_require_exact_metadata() {
             (&types[..], &[][..]),
         ] {
             assert_eq!(
-                interp.classify_unsupported_runtime_call(name, &values, types, modes, result),
+                interp.classify_unsupported_runtime_call(runtime, &values, types, modes, result),
                 UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity)
             );
         }
         assert_eq!(
-            interp.classify_unsupported_runtime_call(name, &values, &[Type::BOOL], &modes, result,),
+            interp.classify_unsupported_runtime_call(
+                runtime,
+                &values,
+                &[Type::BOOL],
+                &modes,
+                result,
+            ),
             UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
         );
         assert_eq!(
             interp.classify_unsupported_runtime_call(
-                name,
+                runtime,
                 &values,
                 &types,
                 &[CfgArgMode::Borrow],
@@ -112,7 +119,7 @@ fn stable_text_runtime_calls_require_exact_metadata() {
         );
         assert_eq!(
             interp.classify_unsupported_runtime_call(
-                name,
+                runtime,
                 &[Value::Int(0)],
                 &types,
                 &modes,
@@ -121,17 +128,17 @@ fn stable_text_runtime_calls_require_exact_metadata() {
             UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
         );
         assert_eq!(
-            interp.classify_unsupported_runtime_call(name, &values, &types, &modes, Type::BOOL),
+            interp.classify_unsupported_runtime_call(runtime, &values, &types, &modes, Type::BOOL,),
             UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
         );
     }
-    for name in [
-        "__rue_str_eq",
-        "__rue_fn_user_function",
-        "__rue_new_runtime_helper",
+    for runtime in [
+        RuntimeCallKind::StrByteAt,
+        RuntimeCallKind::DebugI64,
+        RuntimeCallKind::AllocBytes,
     ] {
         assert_eq!(
-            interp.classify_unsupported_runtime_call(name, &[], &[], &[], Type::UNIT),
+            interp.classify_unsupported_runtime_call(runtime, &[], &[], &[], Type::UNIT),
             UnsupportedKind::ContractViolation(ContractViolationKind::MissingFunctionBody)
         );
     }
@@ -238,7 +245,7 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
 
     assert_eq!(
         expect_modeled_value(interp.string_builtin(
-            "__rue_str_char_scalar",
+            RuntimeCallKind::StrCharScalar,
             &args,
             &types,
             &modes,
@@ -248,7 +255,7 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
     );
     assert_eq!(
         expect_modeled_value(interp.string_builtin(
-            "__rue_str_char_next",
+            RuntimeCallKind::StrCharNext,
             &args,
             &types,
             &modes,
@@ -264,7 +271,7 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
     ];
     assert_eq!(
         expect_modeled_value(interp.string_builtin(
-            "__rue_str_char_scalar_lossy",
+            RuntimeCallKind::StrCharScalarLossy,
             &invalid,
             &types,
             &modes,
@@ -272,13 +279,19 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
         )),
         Some(Value::Int('\u{fffd}' as i128))
     );
-    match interp.string_builtin("__rue_str_char_scalar", &invalid, &types, &modes, Type::U32) {
+    match interp.string_builtin(
+        RuntimeCallKind::StrCharScalar,
+        &invalid,
+        &types,
+        &modes,
+        Type::U32,
+    ) {
         Err(Flow::Panic(panic)) => assert_eq!(panic.kind, TrapKind::InvalidUtf8),
         _ => panic!("strict invalid UTF-8 must trap"),
     }
 
     let arity = expect_flow_unsupported(interp.string_builtin(
-        "__rue_str_char_scalar",
+        RuntimeCallKind::StrCharScalar,
         &args[..2],
         &types[..2],
         &modes[..2],
@@ -290,7 +303,7 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
     );
     let wrong_types = [Type::U64, Type::U64, Type::U64];
     let signature = expect_flow_unsupported(interp.string_builtin(
-        "__rue_str_char_scalar",
+        RuntimeCallKind::StrCharScalar,
         &args,
         &wrong_types,
         &modes,

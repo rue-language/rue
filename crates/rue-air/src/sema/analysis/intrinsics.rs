@@ -353,13 +353,13 @@ impl<'a> BodySema<'a> {
                 if is_next { Type::U64 } else { Type::U32 },
             ));
         }
-        let (fn_name, ret_ty) = match (is_next, lossy) {
-            (true, false) => ("__rue_str_char_next", Type::U64),
-            (true, true) => ("__rue_str_char_next_lossy", Type::U64),
-            (false, false) => ("__rue_str_char_scalar", Type::U32),
-            (false, true) => ("__rue_str_char_scalar_lossy", Type::U32),
+        let (runtime, ret_ty) = match (is_next, lossy) {
+            (true, false) => (crate::RuntimeCallKind::StrCharNext, Type::U64),
+            (true, true) => (crate::RuntimeCallKind::StrCharNextLossy, Type::U64),
+            (false, false) => (crate::RuntimeCallKind::StrCharScalar, Type::U32),
+            (false, true) => (crate::RuntimeCallKind::StrCharScalarLossy, Type::U32),
         };
-        let call_name = self.interner.get_or_intern(fn_name);
+        let call_name = self.interner.get_or_intern(runtime.helper().symbol());
         let (ptr, len, temp_scope) =
             self.project_strbuf_text_fields(air, coll_result.air_ref, coll_result.ty, span, ctx)?;
         let extra = vec![
@@ -373,12 +373,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&extra);
         let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
-                runtime: Some(match (is_next, lossy) {
-                    (true, false) => crate::RuntimeCallKind::StrCharNext,
-                    (true, true) => crate::RuntimeCallKind::StrCharNextLossy,
-                    (false, false) => crate::RuntimeCallKind::StrCharScalar,
-                    (false, true) => crate::RuntimeCallKind::StrCharScalarLossy,
-                }),
+                runtime: Some(runtime),
                 name: call_name,
                 args_start,
                 args_len: 3,

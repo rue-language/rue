@@ -246,6 +246,29 @@ sh_test(
 )
 
 sh_test(
+    name = "runtime-abi-inventory-validation",
+    test = "scripts/validate-runtime-abi-inventory.py",
+    args = [
+        "--source", "rue-air=$(location //crates/rue-air:runtime-abi-inventory-sources)",
+        "--source", "rue-builtins=$(location //crates/rue-builtins:runtime-abi-inventory-sources)",
+        "--source", "rue-cfg=$(location //crates/rue-cfg:runtime-abi-inventory-sources)",
+        "--source", "rue-codegen=$(location //crates/rue-codegen:runtime-abi-inventory-sources)",
+        "--source", "rue-compiler=$(location //crates/rue-compiler:runtime-abi-inventory-sources)",
+        "--source", "rue-linker=$(location //crates/rue-linker:runtime-abi-inventory-sources)",
+        "--source", "rue-oracle=$(location //crates/rue-oracle:runtime-abi-inventory-sources)",
+    ],
+)
+
+sh_test(
+    name = "runtime-abi-inventory-tool-tests",
+    test = "scripts/test-runtime-abi-inventory.py",
+    resources = ["scripts/validate-runtime-abi-inventory.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+sh_test(
     name = "benchmark-tool-tests",
     test = "scripts/test-benchmark-tools.py",
     env = {
