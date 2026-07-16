@@ -1117,10 +1117,22 @@ impl Linker {
         }
 
         // Find entry point (always a global symbol).
-        // On macOS, symbols have underscore prefix, so try both with and without.
+        //
+        // The global symbol table is keyed by source-level names: parsing strips
+        // the single leading underscore that Mach-O adds to every symbol (see
+        // `strip_macho_underscore`). The caller passes the entry point by its
+        // on-disk Mach-O name (e.g. the runtime's `_main` is requested here as
+        // its emitted `__main`), so strip it the same way before looking it up.
+        // We still try the raw and one-more-prefixed forms so an already
+        // source-level entry name, or a differently-prefixed one, resolves too.
+        // Getting the strip right made `_foo`/`__foo` distinct but also shortened
+        // the runtime entry to `_main`, so this lookup must strip in lockstep
+        // (RUE-919).
+        let stripped_entry = crate::util::strip_macho_underscore(entry_point);
         let entry_vaddr = symbol_addresses
             .globals
             .get(entry_point)
+            .or_else(|| symbol_addresses.globals.get(stripped_entry))
             .or_else(|| symbol_addresses.globals.get(&format!("_{}", entry_point)))
             .copied()
             .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))?;

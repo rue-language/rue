@@ -1,0 +1,65 @@
+# Leading underscores are significant in symbol names (RUE-919).
+#
+# The internal linker's Mach-O emission prepends exactly one leading underscore
+# to every symbol, and parsing must strip exactly one to round-trip. A previous
+# off-by-one "preserve double underscore" strip collapsed `_foo` and `__foo`
+# onto the same `__foo` symbol, so a program defining both failed to link with
+# `duplicate symbol: __foo`. Fixing the strip also shortened the runtime entry
+# symbol (`_main` on disk `__main` -> `_main`), so the linker's entry-point
+# lookup was taught to strip in lockstep.
+#
+# The spec token grammar allows any number of leading underscores in an
+# identifier (subject only to the reserved `__rue_*` / `_start` set), so `_foo`,
+# `__foo`, and `___foo` are three distinct functions that must link and run.
+
+[section]
+id = "cli.underscore_symbol_names"
+name = "Leading-underscore symbol names stay distinct"
+description = "Functions differing only in leading-underscore count link as distinct symbols and run correctly."
+
+# The core RUE-919 repro: `_foo` and `__foo` are distinct identifiers. Before the
+# fix this failed with `duplicate symbol: __foo`; now it links and prints both.
+[[case]]
+name = "single_and_double_underscore_distinct"
+files = [{ path = "main.rue", source = """
+fn _foo() -> i32 { 111 }
+fn __foo() -> i32 { 222 }
+fn main() -> i32 {
+    @dbg(_foo());
+    @dbg(__foo());
+    0
+}
+""" }]
+stdout = "111\n222\n"
+
+# Boundary coverage across the underscore count: bare, one, two, and three
+# leading underscores are four distinct functions.
+[[case]]
+name = "underscore_count_boundary_distinct"
+files = [{ path = "main.rue", source = """
+fn foo() -> i32 { 1 }
+fn _foo() -> i32 { 2 }
+fn __foo() -> i32 { 3 }
+fn ___foo() -> i32 { 4 }
+fn main() -> i32 {
+    @dbg(foo());
+    @dbg(_foo());
+    @dbg(__foo());
+    @dbg(___foo());
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n"
+
+# A double-underscore function returning its value as the exit code exercises the
+# entry-point path alongside a user-defined `__`-prefixed symbol: main must still
+# resolve even though the corrected strip shortened the runtime entry symbol.
+[[case]]
+name = "double_underscore_drives_exit_code"
+files = [{ path = "main.rue", source = """
+fn __answer() -> i32 { 42 }
+fn main() -> i32 {
+    __answer()
+}
+""" }]
+exit_code = 42

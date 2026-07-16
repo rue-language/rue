@@ -620,18 +620,17 @@ impl ObjectFile {
                     String::new()
                 };
 
-                // Strip leading underscore from Mach-O symbols (but preserve double underscores)
-                // On macOS, all symbols get ONE leading underscore added, so:
-                // - "main" becomes "_main" -> strip to "main"
-                // - "__main" becomes "___main" -> strip ONE to "__main"
-                // - ".rodata.str0" becomes "_.rodata.str0" -> strip to ".rodata.str0"
-                // We need to strip exactly one leading underscore to match what relocations expect
-                if name.starts_with('_') && !name.starts_with("__") {
-                    name = name[1..].to_string();
-                } else if name.starts_with("___") {
-                    // Triple underscore: original had __, so strip one to get back to __
-                    name = name[1..].to_string();
-                }
+                // Undo the single leading underscore that Mach-O emission adds to
+                // every symbol. Emission prepends EXACTLY ONE `_` regardless of the
+                // original name, so the exact inverse strips EXACTLY ONE. This
+                // round-trips for any number of leading underscores (RUE-919):
+                // - "main"          -> emitted "_main"          -> "main"
+                // - "_foo"          -> emitted "__foo"          -> "_foo"
+                // - "__foo"         -> emitted "___foo"         -> "__foo"
+                // - ".rodata.str0"  -> emitted "_.rodata.str0"  -> ".rodata.str0"
+                // The previous "preserve double underscore" logic was off by one and
+                // collapsed "_foo" and "__foo" onto the same "__foo" symbol.
+                name = crate::util::strip_macho_underscore(&name).to_string();
 
                 // Determine binding (external or local)
                 // N_PEXT (0x10) makes a symbol private even if N_EXT is set
@@ -1380,6 +1379,57 @@ mod tests {
         // The function should be defined in a section
         let sym = func_sym.unwrap();
         assert!(sym.section_index.is_some());
+    }
+
+    /// Mach-O emit -> parse must round-trip the function symbol name for any
+    /// number of leading underscores. The emitter prepends exactly one `_` and
+    /// the parser strips exactly one, so distinct identifiers such as `_foo` and
+    /// `__foo` stay distinct rather than collapsing (RUE-919).
+    #[test]
+    fn test_macho_symbol_name_round_trip() {
+        use crate::emit::ObjectBuilder;
+        use rue_target::Target;
+
+        for name in ["foo", "_foo", "__foo", "___foo"] {
+            let obj_bytes = ObjectBuilder::new(Target::Aarch64Macos, name)
+                .code(vec![0xC0, 0x03, 0x5F, 0xD6]) // ret
+                .build();
+            let obj = ObjectFile::parse(&obj_bytes)
+                .unwrap_or_else(|e| panic!("should parse Mach-O for {name:?}: {e:?}"));
+            let found = obj.symbols.iter().find(|s| s.name == name);
+            assert!(
+                found.is_some(),
+                "Mach-O round-trip lost symbol {name:?}; symbols = {:?}",
+                obj.symbols.iter().map(|s| &s.name).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    /// ELF emit -> parse must NOT add or strip underscores: names pass through
+    /// verbatim on both supported ELF targets. This guards the underscore-count
+    /// boundary on the ELF path so the Mach-O-only strip never leaks into it
+    /// (RUE-919).
+    #[test]
+    fn test_elf_symbol_name_round_trip() {
+        use crate::emit::ObjectBuilder;
+        use rue_target::Target;
+
+        for target in [Target::X86_64Linux, Target::Aarch64Linux] {
+            for name in ["foo", "_foo", "__foo", "___foo"] {
+                let obj_bytes = ObjectBuilder::new(target, name)
+                    .code(vec![0xC3]) // x86 ret (payload is irrelevant to symbol names)
+                    .build();
+                let obj = ObjectFile::parse(&obj_bytes).unwrap_or_else(|e| {
+                    panic!("should parse ELF for {name:?} ({target:?}): {e:?}")
+                });
+                let found = obj.symbols.iter().find(|s| s.name == name);
+                assert!(
+                    found.is_some(),
+                    "ELF round-trip lost symbol {name:?} ({target:?}); symbols = {:?}",
+                    obj.symbols.iter().map(|s| &s.name).collect::<Vec<_>>(),
+                );
+            }
+        }
     }
 
     // ---------------------------------------------------------------------
