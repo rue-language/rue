@@ -23,6 +23,7 @@
 mod constfold;
 mod constopt;
 mod dce;
+mod simplify;
 
 use crate::Cfg;
 use rue_air::FrozenTypeInternPool;
@@ -149,6 +150,12 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel, type_pool: &FrozenTypeInternPool
             // deep chains stay linear instead of forcing quadratic full-CFG
             // rescans (RUE-794).
             constopt::run(cfg);
+
+            // Constant-condition terminator folding (RUE-910): Branch on a
+            // folded BoolConst / Switch on a folded Const becomes a Goto, so
+            // the statically dead arms drop out of reachability before DCE
+            // computes it.
+            simplify::run(cfg);
 
             // Dead code elimination: remove unused values and unreachable blocks
             dce::run(cfg);
