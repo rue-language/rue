@@ -21,7 +21,7 @@
 //! ```
 
 mod constfold;
-mod constprop;
+mod constopt;
 mod dce;
 
 use crate::Cfg;
@@ -135,19 +135,15 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel) {
             // No optimization
         }
         OptLevel::O1 | OptLevel::O2 | OptLevel::O3 => {
-            // Interleave constant folding with store-to-load constant
-            // propagation until a fixpoint: folding a let's initializer can
-            // expose a constant store, and propagating it into Loads can
-            // expose new foldable operations (chains of single-assignment
-            // lets, RUE-154). Terminates because every change replaces a
-            // non-constant instruction with a constant.
-            loop {
-                let folded = constfold::run(cfg);
-                let propagated = constprop::run(cfg);
-                if !folded && !propagated {
-                    break;
-                }
-            }
+            // Constant folding interleaved with store-to-load constant
+            // propagation: folding a let's initializer can expose a constant
+            // store, and propagating it into Loads can expose new foldable
+            // operations (chains of single-assignment lets, RUE-154). The
+            // sparse worklist driver reaches that fixpoint by revisiting an
+            // instruction only when one of its inputs becomes constant, so
+            // deep chains stay linear instead of forcing quadratic full-CFG
+            // rescans (RUE-794).
+            constopt::run(cfg);
 
             // Dead code elimination: remove unused values and unreachable blocks
             dce::run(cfg);

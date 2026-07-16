@@ -897,7 +897,7 @@ impl<'a> CfgBuilder<'a> {
                 // @raw/@raw_mut/@field_ptr take the ADDRESS of their place
                 // operand (arg 0): codegen requires that operand to still be a
                 // `Load`/`PlaceRead` when it lowers the intrinsic. Pin the
-                // operand's base slot so optimization passes (constprop) never
+                // operand's base slot so optimization passes (constopt) never
                 // rewrite its loads into constants — a `Const` operand would be
                 // dereferenced as an address (RUE-521 O1+ segfault).
                 if matches!(self.interner.resolve(name), "raw" | "raw_mut" | "field_ptr")
