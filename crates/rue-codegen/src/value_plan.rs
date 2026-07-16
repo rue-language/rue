@@ -767,9 +767,16 @@ fn drop_plan<A: ValueLowerAdapter>(
             let struct_def = ctx.type_pool.struct_def(struct_id);
             if struct_def.is_builtin {
                 if let Some(destructor) = &struct_def.destructor {
+                    let mut destructor_slots = slots;
+                    // Destructors take their aggregate `self` through the
+                    // Rue by-value ABI, whose physical argument slots are
+                    // reversed from the logical representation.  Keep this
+                    // decision in the shared drop plan so both adapters pass
+                    // the same runtime-owned object to the destructor.
+                    destructor_slots.reverse();
                     actions.push(DropAction {
                         symbol: destructor.clone(),
-                        slots,
+                        slots: destructor_slots,
                     });
                 }
             } else {
@@ -1299,13 +1306,14 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 cache_result(adapter, value, result);
                 Some(ValueKind::Intrinsic)
             } else if name_string == "assert" {
+                let message = values.get(1).map(|arg| MaterializedValue {
+                    primary: arg.primary,
+                    slots: arg.slots.clone(),
+                });
                 let result = adapter.emit_trap(TrapPlan::Assert {
                     condition: values[0].primary,
-                    message: values.get(1).map(|arg| MaterializedValue {
-                        primary: arg.primary,
-                        slots: arg.slots.clone(),
-                    }),
-                    symbol: "__rue_assert_failed".to_string(),
+                    symbol: assert_trap_symbol(message.as_ref()).to_string(),
+                    message,
                 });
                 cache_result(adapter, value, result);
                 Some(ValueKind::Intrinsic)
@@ -1555,6 +1563,14 @@ fn intrinsic_runtime_symbol(
     Some(symbol.to_string())
 }
 
+fn assert_trap_symbol(message: Option<&MaterializedValue>) -> &'static str {
+    if message.is_some_and(|value| value.slots.len() >= 2) {
+        "__rue_panic"
+    } else {
+        "__rue_assert_failed"
+    }
+}
+
 fn power_of_two_shift(ctx: &CfgLowerContext<'_>, value: CfgValue) -> Option<u8> {
     match ctx.cfg.get_inst(value).data {
         CfgInstData::Const(value) if value.is_power_of_two() => Some(value.trailing_zeros() as u8),
@@ -1727,8 +1743,8 @@ pub fn assert_slot_policy(plan: ValuePlan, actual: usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ComparisonPreparation, IntegerWidth, MaterializationRequirement, StoragePolicy,
-        StoreDestination, ValueKind, ValuePlan, ValueShape, assert_slot_policy,
+        ComparisonPreparation, IntegerWidth, MaterializationRequirement, MaterializedValue,
+        StoragePolicy, StoreDestination, ValueKind, ValuePlan, ValueShape, assert_slot_policy,
         comparison_integer_width, integer_range, type_bits, type_range,
     };
     use lasso::{Spur, ThreadedRodeo};
@@ -2699,6 +2715,110 @@ mod tests {
                 .iter()
                 .any(|inst| matches!(inst, Aarch64Inst::Ldr { .. }))
         );
+    }
+
+    #[test]
+    fn builtin_aggregate_drop_reverses_rue_slots_on_both_adapters() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let name = interner.get_or_intern("DropAggregate");
+        let (struct_id, _) = pool.register_struct(
+            name,
+            StructDef {
+                name: "DropAggregate".to_string(),
+                fields: vec![
+                    StructField {
+                        name: "first".to_string(),
+                        ty: Type::U64,
+                    },
+                    StructField {
+                        name: "second".to_string(),
+                        ty: Type::U64,
+                    },
+                    StructField {
+                        name: "third".to_string(),
+                        ty: Type::U64,
+                    },
+                ],
+                is_copy: false,
+                is_linear: false,
+                destructor: Some("DropAggregate::__drop".to_string()),
+                is_builtin: true,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let aggregate_ty = Type::new_struct(struct_id);
+        let mut cfg = Cfg::new(
+            aggregate_ty,
+            0,
+            0,
+            "builtin_aggregate_drop".to_string(),
+            vec![],
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let first = cfg.add_inst(inst(CfgInstData::Const(1), Type::U64));
+        let second = cfg.add_inst(inst(CfgInstData::Const(2), Type::U64));
+        let third = cfg.add_inst(inst(CfgInstData::Const(3), Type::U64));
+        let (fields_start, fields_len) = cfg.push_extra([first, second, third]);
+        let value = cfg.add_inst(inst(
+            CfgInstData::StructInit {
+                struct_id,
+                fields_start,
+                fields_len,
+            },
+            aggregate_ty,
+        ));
+        cfg.get_block_mut(entry)
+            .insts
+            .extend([first, second, third, value]);
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+        let pool = pool.freeze();
+
+        let x86_ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
+        let mut x86 = X86CfgLower::new(&cfg, &pool, &interner);
+        let x86_value = super::operand(&x86_ctx, &mut x86, value);
+        let x86_actions = super::drop_plan(&x86_ctx, &mut x86, value);
+        assert_eq!(x86_value.slots.len(), 3);
+        assert_eq!(x86_actions.len(), 1);
+        assert_eq!(x86_actions[0].symbol, "DropAggregate::__drop");
+        assert_eq!(
+            x86_actions[0].slots,
+            x86_value.slots.iter().rev().copied().collect::<Vec<_>>()
+        );
+
+        let arm_ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
+        let mut arm = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux);
+        let arm_value = super::operand(&arm_ctx, &mut arm, value);
+        let arm_actions = super::drop_plan(&arm_ctx, &mut arm, value);
+        assert_eq!(arm_value.slots.len(), 3);
+        assert_eq!(arm_actions.len(), 1);
+        assert_eq!(arm_actions[0].symbol, "DropAggregate::__drop");
+        assert_eq!(
+            arm_actions[0].slots,
+            arm_value.slots.iter().rev().copied().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn assert_trap_plan_selects_message_runtime_symbol() {
+        let condition = crate::vreg::VReg::new(0);
+        let no_message = MaterializedValue {
+            primary: condition,
+            slots: Vec::new(),
+        };
+        let message = MaterializedValue {
+            primary: crate::vreg::VReg::new(1),
+            slots: vec![crate::vreg::VReg::new(1), crate::vreg::VReg::new(2)],
+        };
+
+        assert_eq!(super::assert_trap_symbol(None), "__rue_assert_failed");
+        assert_eq!(
+            super::assert_trap_symbol(Some(&no_message)),
+            "__rue_assert_failed"
+        );
+        assert_eq!(super::assert_trap_symbol(Some(&message)), "__rue_panic");
     }
 
     #[test]
