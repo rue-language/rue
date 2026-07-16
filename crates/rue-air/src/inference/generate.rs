@@ -1625,28 +1625,6 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate(*arg_ref, ctx);
                     }
                     InferType::Concrete(Type::new_module(crate::types::ModuleId::UNRESOLVED))
-                } else if intrinsic_name == "__rue_iter_len"
-                    || intrinsic_name == "__rue_char_next"
-                    || intrinsic_name == "__rue_char_next_lossy"
-                {
-                    // Compiler-internal `for`-loop leaves (RUE-220):
-                    // @__rue_iter_len(coll) is the loop bound (byte length /
-                    // array length) and @__rue_char_next{,_lossy}(s, p) is the
-                    // next byte offset — both `usize` (u64).
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
-                    }
-                    InferType::Concrete(Type::U64)
-                } else if intrinsic_name == "__rue_char_scalar"
-                    || intrinsic_name == "__rue_char_scalar_lossy"
-                {
-                    // @__rue_char_scalar{,_lossy}(s, p): the Unicode scalar at
-                    // byte offset `p`, a u32 (RUE-220; lossy variant RUE-17
-                    // Phase 3).
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
-                    }
-                    InferType::Concrete(Type::U32)
                 } else {
                     // Generate constraints for arguments (they need to be processed)
                     for arg_ref in args.iter() {
@@ -1654,6 +1632,26 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     // @dbg and other intrinsics return Unit
                     InferType::Concrete(Type::UNIT)
+                }
+            }
+
+            InstData::InternalIntrinsic {
+                intrinsic,
+                args_start,
+                args_len,
+            } => {
+                let args = self.rir.get_inst_refs(*args_start, *args_len);
+                for arg_ref in args {
+                    self.generate(arg_ref, ctx);
+                }
+                match intrinsic {
+                    // The loop bound and next byte offset are usize (u64).
+                    rue_rir::InternalIntrinsic::IterLen
+                    | rue_rir::InternalIntrinsic::CharNext
+                    | rue_rir::InternalIntrinsic::CharNextLossy => InferType::Concrete(Type::U64),
+                    // Character iteration exposes Unicode scalar values.
+                    rue_rir::InternalIntrinsic::CharScalar
+                    | rue_rir::InternalIntrinsic::CharScalarLossy => InferType::Concrete(Type::U32),
                 }
             }
 

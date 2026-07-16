@@ -152,28 +152,65 @@ impl<'a> BodySema<'a> {
         } else if name == known.target_os {
             self.analyze_target_os_intrinsic(air, &args, span)
         } else {
-            // Compiler-internal intrinsics synthesized ONLY by the `for`-loop
-            // desugaring (RUE-220). They never appear in user source (the
-            // parser cannot produce them). Resolving the name string here is
-            // fine: these are rare relative to user-facing intrinsics.
-            match self.interner.resolve(&name) {
-                "__rue_iter_len" => self.analyze_iter_len_intrinsic(air, &args, span, ctx),
-                "__rue_char_scalar" => {
-                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, false, false)
-                }
-                "__rue_char_next" => {
-                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, true, false)
-                }
-                "__rue_char_scalar_lossy" => {
-                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, false, true)
-                }
-                "__rue_char_next_lossy" => {
-                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, true, true)
-                }
-                other => Err(CompileError::new(
-                    ErrorKind::UnknownIntrinsic(other.to_string()),
-                    span,
+            Err(CompileError::new(
+                ErrorKind::UnknownIntrinsic(self.interner.resolve(&name).to_string()),
+                span,
+            ))
+        }
+    }
+
+    pub(crate) fn analyze_internal_intrinsic_impl(
+        &mut self,
+        air: &mut Air,
+        intrinsic: rue_rir::InternalIntrinsic,
+        args_start: u32,
+        args_len: u32,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args_len != intrinsic.arity() {
+            let argument = if intrinsic.arity() == 1 {
+                "argument"
+            } else {
+                "arguments"
+            };
+            return Err(CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "internal intrinsic `{}` expects {} {}, found {}",
+                    intrinsic.as_str(),
+                    intrinsic.arity(),
+                    argument,
+                    args_len
                 )),
+                span,
+            ));
+        }
+
+        let args: Vec<RirCallArg> = self
+            .rir
+            .get_inst_refs(args_start, args_len)
+            .into_iter()
+            .map(|value| RirCallArg {
+                value,
+                mode: RirArgMode::Normal,
+            })
+            .collect();
+
+        match intrinsic {
+            rue_rir::InternalIntrinsic::IterLen => {
+                self.analyze_iter_len_intrinsic(air, &args, span, ctx)
+            }
+            rue_rir::InternalIntrinsic::CharScalar => {
+                self.analyze_string_char_op_intrinsic(air, &args, span, ctx, false, false)
+            }
+            rue_rir::InternalIntrinsic::CharNext => {
+                self.analyze_string_char_op_intrinsic(air, &args, span, ctx, true, false)
+            }
+            rue_rir::InternalIntrinsic::CharScalarLossy => {
+                self.analyze_string_char_op_intrinsic(air, &args, span, ctx, false, true)
+            }
+            rue_rir::InternalIntrinsic::CharNextLossy => {
+                self.analyze_string_char_op_intrinsic(air, &args, span, ctx, true, true)
             }
         }
     }
@@ -188,11 +225,12 @@ impl<'a> BodySema<'a> {
     // and restored so iterating does not consume the source.
     // ========================================================================
 
-    /// `@__rue_iter_len(coll)` → the loop bound (`usize`), dispatching the
+    /// [`rue_rir::InternalIntrinsic::IterLen`] computes the loop bound
+    /// (`usize`), dispatching the
     /// iterable kind by the collection's type: an array's length `N` (a
     /// compile-time constant), or a StrBuf's source-defined byte length. This
     /// is where the whole `for` loop is preview-gated (RUE-220):
-    /// every for-loop emits exactly one `@__rue_iter_len`.
+    /// every for-loop emits exactly one `IterLen`.
     pub(super) fn analyze_iter_len_intrinsic(
         &mut self,
         air: &mut Air,
@@ -276,8 +314,8 @@ impl<'a> BodySema<'a> {
         ))
     }
 
-    /// `@__rue_char_scalar(s, offset)` → the Unicode scalar (`u32`) at byte
-    /// `offset`, and `@__rue_char_next(s, offset)` → the byte offset of the
+    /// `CharScalar` computes the Unicode scalar (`u32`) at byte `offset`, and
+    /// `CharNext` computes the byte offset of the
     /// next character (`usize`). Both back `for c in s.chars()`; the receiver
     /// must be a String. When `lossy` is false these trap at runtime on invalid
     /// UTF-8; when true (`.chars_lossy()`) they substitute U+FFFD instead

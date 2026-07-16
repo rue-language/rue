@@ -198,6 +198,7 @@ impl<'a> BodySema<'a> {
 
             // Intrinsic operations
             InstData::Intrinsic { .. }
+            | InstData::InternalIntrinsic { .. }
             | InstData::TypeIntrinsic { .. }
             | InstData::OffsetOf { .. } => self.analyze_intrinsic_ops(air, inst_ref, ctx),
 
