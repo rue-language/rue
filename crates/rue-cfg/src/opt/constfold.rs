@@ -40,15 +40,29 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
         }
         CfgInstData::Sub(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| checked_sub(a, b, ty))
+                // x - x is 0 with no possible overflow, for any x (RUE-912).
+                .or_else(|| (lhs == rhs).then_some(CfgInstData::Const(0)))
         }
         CfgInstData::Mul(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| checked_mul(a, b, ty))
+                // x * 0 is 0 with no possible overflow, even for non-constant
+                // x; x's own instruction stays behind for DCE's trap-aware
+                // liveness rules (RUE-912).
+                .or_else(|| {
+                    (get_const_int(cfg, *lhs) == Some(0) || get_const_int(cfg, *rhs) == Some(0))
+                        .then_some(CfgInstData::Const(0))
+                })
         }
         CfgInstData::Div(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| checked_div(a, b, ty))
         }
         CfgInstData::Mod(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| checked_mod(a, b, ty))
+                // x % 1 is 0 for any x: the divisor is a nonzero constant and
+                // the implied quotient is x itself, so neither trap can fire.
+                // (x % -1 is NOT safe — MIN % -1 traps — and -1's canonical
+                // constant is all-ones, which this test rejects.)
+                .or_else(|| (get_const_int(cfg, *rhs) == Some(1)).then_some(CfgInstData::Const(0)))
         }
 
         // Comparisons (result is always bool)
@@ -80,9 +94,20 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
         }
 
         // Bitwise
-        CfgInstData::BitAnd(lhs, rhs) => fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| Some(a & b)),
+        CfgInstData::BitAnd(lhs, rhs) => {
+            fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| Some(a & b))
+                // x & 0 is 0 for any x; bitwise ops never trap (RUE-912).
+                .or_else(|| {
+                    (get_const_int(cfg, *lhs) == Some(0) || get_const_int(cfg, *rhs) == Some(0))
+                        .then_some(CfgInstData::Const(0))
+                })
+        }
         CfgInstData::BitOr(lhs, rhs) => fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| Some(a | b)),
-        CfgInstData::BitXor(lhs, rhs) => fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| Some(a ^ b)),
+        CfgInstData::BitXor(lhs, rhs) => {
+            fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| Some(a ^ b))
+                // x ^ x is 0 for any x; bitwise ops never trap (RUE-912).
+                .or_else(|| (lhs == rhs).then_some(CfgInstData::Const(0)))
+        }
         CfgInstData::Shl(lhs, rhs) => fold_shift(cfg, *lhs, *rhs, ty, true),
         CfgInstData::Shr(lhs, rhs) => fold_shift(cfg, *lhs, *rhs, ty, false),
 

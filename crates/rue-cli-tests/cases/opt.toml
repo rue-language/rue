@@ -119,3 +119,41 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "-O2", "-o", "prog"]
 exit_code = 42
+
+# RUE-912 peephole must not strength-reduce trapping shapes. x * 8 with a
+# dynamic x that overflows must still trap at every level: reducing it to a
+# shift would silently wrap instead (the RUE-57 class).
+[[case]]
+name = "peephole_keeps_mul_pow2_overflow_trap_at_O2"
+files = [{ path = "main.rue", source = """
+fn scale(x: i32) -> i32 {
+    x * 8
+}
+
+fn main() -> i32 {
+    scale(268435456);
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+# x % -1 must not be treated like x % 1: MIN % -1 traps (the implied
+# quotient -MIN is unrepresentable), and -1's canonical constant is
+# all-ones, which the fold's == 1 test must reject.
+[[case]]
+name = "peephole_keeps_mod_neg1_overflow_trap_at_O2"
+files = [{ path = "main.rue", source = """
+fn rem(x: i32) -> i32 {
+    x % -1
+}
+
+fn main() -> i32 {
+    rem(-2147483648);
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
