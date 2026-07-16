@@ -137,6 +137,7 @@ pub fn is_reserved_function_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_runtime_abi::RuntimeHelperId;
 
     #[test]
     fn test_is_reserved_function_name() {
@@ -170,6 +171,28 @@ mod tests {
         assert!(!is_reserved_function_name("memcpy2"));
         assert!(!is_reserved_function_name("my_memcpy"));
         assert!(!is_reserved_function_name("_main_loop"));
+    }
+
+    #[test]
+    fn current_builtin_symbol_constants_have_canonical_helper_identities() {
+        // This is deliberately a non-migrating proof. RUE-829 replaces these
+        // raw constants and their consumers with typed helper IDs.
+        assert_eq!(
+            RuntimeHelperId::from_symbol(TO_STRING_RUNTIME_FN),
+            Some(RuntimeHelperId::ToString)
+        );
+        assert_eq!(
+            RuntimeHelperId::from_symbol(TO_STRING_UNSIGNED_RUNTIME_FN),
+            Some(RuntimeHelperId::ToStringUnsigned)
+        );
+        assert_eq!(
+            RuntimeHelperId::from_symbol(PRINT_RUNTIME_FN),
+            Some(RuntimeHelperId::Print)
+        );
+        assert_eq!(
+            RuntimeHelperId::from_symbol(PRINTLN_RUNTIME_FN),
+            Some(RuntimeHelperId::Println)
+        );
     }
 
     // ========================================================================
