@@ -19,6 +19,7 @@ mod intern_pool;
 mod module_registry;
 mod param_arena;
 mod path_norm;
+mod runtime_call;
 mod scope;
 mod sema;
 mod semantic_body;
@@ -43,6 +44,10 @@ pub use intern_pool::{
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};
 pub use path_norm::normalize_module_path;
+pub use runtime_call::{
+    OptionVariant, RuntimeAirArgument, RuntimeAirType, RuntimeCallActivation, RuntimeCallKind,
+    RuntimeOperandOrigin,
+};
 pub use sema::{
     AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisFailure, BodyAnalysisWork,
     BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken, BoundSema,

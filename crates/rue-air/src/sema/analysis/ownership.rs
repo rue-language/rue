@@ -1109,6 +1109,7 @@ impl<'a> BodySema<'a> {
             let ptr_args = air.add_extra(&[zero_ref.as_u32()]);
             air.add_inst(AirInst {
                 data: AirInstData::Intrinsic {
+                    runtime: None,
                     name: self.known.int_to_ptr,
                     args_start: ptr_args,
                     args_len: 1,
@@ -1134,6 +1135,7 @@ impl<'a> BodySema<'a> {
             let raw_args = air.add_extra(&[elem0_read.as_u32()]);
             air.add_inst(AirInst {
                 data: AirInstData::Intrinsic {
+                    runtime: None,
                     name: self.known.raw,
                     args_start: raw_args,
                     args_len: 1,

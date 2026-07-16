@@ -349,6 +349,8 @@ pub enum CfgInstData {
     /// Function call. Arguments are stored in the Cfg's call_args array.
     /// Use `Cfg::get_call_args(args_start, args_len)` to retrieve them.
     Call {
+        /// Typed runtime identity, absent for source-language calls.
+        runtime: Option<rue_air::RuntimeCallKind>,
         /// Function name (interned symbol)
         name: Spur,
         /// Start index into Cfg's call_args array
@@ -360,6 +362,8 @@ pub enum CfgInstData {
     /// Intrinsic call (e.g., @dbg). Arguments are stored in the Cfg's extra array.
     /// Use `Cfg::get_extra(args_start, args_len)` to retrieve them.
     Intrinsic {
+        /// Runtime helper/adaptation selected by semantic analysis.
+        runtime: Option<rue_air::RuntimeCallKind>,
         /// Intrinsic name (interned symbol)
         name: Spur,
         /// Start index into Cfg's extra array
@@ -1383,10 +1387,14 @@ impl Cfg {
                 write!(f, " = {}", value)
             }
             CfgInstData::Call {
+                runtime,
                 name,
                 args_start,
                 args_len,
             } => {
+                if let Some(runtime) = runtime {
+                    write!(f, "runtime.{runtime:?} ")?;
+                }
                 match interner {
                     Some(interner) => write!(f, "call @{}(", interner.resolve(name))?,
                     None => write!(f, "call @{}(", name.into_usize())?,
@@ -1405,10 +1413,14 @@ impl Cfg {
                 write!(f, ")")
             }
             CfgInstData::Intrinsic {
+                runtime,
                 name,
                 args_start,
                 args_len,
             } => {
+                if let Some(runtime) = runtime {
+                    write!(f, "runtime.{runtime:?} ")?;
+                }
                 match interner {
                     Some(interner) => write!(f, "intrinsic @{}(", interner.resolve(name))?,
                     None => write!(f, "intrinsic @{}(", name.into_usize())?,
@@ -1620,6 +1632,7 @@ mod tests {
             entry,
             CfgInst {
                 data: CfgInstData::Call {
+                    runtime: None,
                     name: call,
                     args_start: 0,
                     args_len: 0,
@@ -1632,6 +1645,7 @@ mod tests {
             entry,
             CfgInst {
                 data: CfgInstData::Intrinsic {
+                    runtime: None,
                     name: intrinsic,
                     args_start: 0,
                     args_len: 0,

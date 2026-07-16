@@ -2540,6 +2540,7 @@ fn emit_module_member_call(
 
     let air_ref = air.add_inst(AirInst {
         data: AirInstData::Call {
+            runtime: None,
             name: function_name,
             args_start: call_args_start,
             args_len: call_args_len,

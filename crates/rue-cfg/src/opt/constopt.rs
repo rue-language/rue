@@ -391,6 +391,7 @@ mod tests {
         let ptr = push(
             &mut cfg,
             CfgInstData::Intrinsic {
+                runtime: None,
                 name: raw_sym,
                 args_start,
                 args_len,
@@ -473,6 +474,7 @@ mod tests {
         push(
             &mut cfg,
             CfgInstData::Call {
+                runtime: None,
                 name: Spur::try_from_usize(0).unwrap(),
                 args_start,
                 args_len,
@@ -535,6 +537,7 @@ mod tests {
         push(
             &mut cfg,
             CfgInstData::Call {
+                runtime: None,
                 name: Spur::try_from_usize(0).unwrap(),
                 args_start,
                 args_len,

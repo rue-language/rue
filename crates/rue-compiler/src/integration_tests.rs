@@ -941,6 +941,155 @@ mod integration_tests {
         use super::*;
 
         #[test]
+        fn text_runtime_shapes_survive_air_durability_and_cfg_lowering() {
+            use std::collections::{HashMap, HashSet};
+            use std::sync::Arc;
+
+            let root = FileId::new(1);
+            let strbuf = FileId::new(2);
+            let metadata = SourceMetadata::new_with_trusted_standard_library(
+                root,
+                HashMap::from([
+                    (root, "/project/main.rue".to_owned()),
+                    (strbuf, "/project/std/strbuf.rue".to_owned()),
+                ]),
+                HashMap::from([
+                    (root, "main.rue".to_owned()),
+                    (strbuf, "\0rue-std/strbuf.rue".to_owned()),
+                ]),
+                HashSet::from([strbuf]),
+            )
+            .unwrap();
+            let source = r#"
+const strbuf = @import("std/strbuf.rue");
+
+fn probe_chars() -> u32 {
+    let text = "x" + @to_string(1);
+    for c in text.chars() {
+        return c;
+    }
+    0
+}
+
+fn probe_prints() {
+    println("literal");
+    println("value " + @to_string(1));
+}
+
+fn main() -> i32 {
+    probe_prints();
+    probe_chars();
+    0
+}
+"#;
+            let snapshot = SourceSnapshot::new(
+                metadata,
+                vec![
+                    (root, Arc::new(source.to_owned())),
+                    (
+                        strbuf,
+                        Arc::new(
+                            r#"
+pub struct StrBuf {
+    buf: ptr mut u8,
+    len: u64,
+    cap: u64,
+
+    fn concat_borrowed(borrow first: Self, borrow second: Self) -> Self {
+        Self { buf: first.buf, len: first.len + second.len, cap: 0 }
+    }
+
+    fn len(borrow self) -> u64 { self.len }
+}
+
+drop fn StrBuf(self) { }
+"#
+                            .to_owned(),
+                        ),
+                    ),
+                ],
+            )
+            .unwrap();
+            let (_, semantic, _) =
+                test_frontend_snapshot(&snapshot, &CompileOptions::default()).unwrap();
+            let is_target = |runtime| {
+                matches!(
+                    runtime,
+                    rue_air::RuntimeCallKind::StrCharScalar
+                        | rue_air::RuntimeCallKind::StrCharNext
+                        | rue_air::RuntimeCallKind::StrPrintProjected
+                        | rue_air::RuntimeCallKind::StrPrintlnProjected
+                        | rue_air::RuntimeCallKind::StrPrintAggregate
+                        | rue_air::RuntimeCallKind::StrPrintlnAggregate
+                )
+            };
+            let expected = vec![
+                (rue_air::RuntimeCallKind::StrCharScalar, 3),
+                (rue_air::RuntimeCallKind::StrCharNext, 3),
+                (rue_air::RuntimeCallKind::StrPrintlnAggregate, 1),
+                (rue_air::RuntimeCallKind::StrPrintlnProjected, 2),
+            ];
+
+            let mut air_shapes = semantic
+                .functions()
+                .iter()
+                .flat_map(|function| function.analyzed.air.iter())
+                .filter_map(|(_, inst)| match inst.data {
+                    rue_air::AirInstData::Call {
+                        runtime: Some(runtime),
+                        args_len,
+                        ..
+                    } if is_target(runtime) => Some((runtime, args_len)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            air_shapes.sort_by_key(|(runtime, _)| *runtime as u8);
+            assert_eq!(air_shapes, expected, "AIR must use the manifest shapes");
+
+            let mut durable_shapes = semantic
+                .durable_ordinary_body_payloads()
+                .iter()
+                .flat_map(|payload| payload.instructions.iter())
+                .filter_map(|inst| match &inst.data {
+                    DurableAirInstData::RuntimeCall { runtime, args } if is_target(*runtime) => {
+                        Some((*runtime, args.len() as u32))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            durable_shapes.sort_by_key(|(runtime, _)| *runtime as u8);
+            assert_eq!(
+                durable_shapes, expected,
+                "durable AIR must retain runtime identities and arities"
+            );
+
+            let mut cfg_shapes = semantic
+                .functions()
+                .iter()
+                .flat_map(|function| {
+                    let cfg = &function.cfg;
+                    cfg.blocks()
+                        .iter()
+                        .flat_map(|block| block.insts.iter())
+                        .filter_map(|value| match cfg.get_inst(*value).data {
+                            rue_cfg::CfgInstData::Call {
+                                runtime: Some(runtime),
+                                args_len,
+                                ..
+                            } if is_target(runtime) => Some((runtime, args_len)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            cfg_shapes.sort_by_key(|(runtime, _)| *runtime as u8);
+            assert_eq!(
+                cfg_shapes, expected,
+                "CFG must retain the AIR runtime shapes after durable publication"
+            );
+        }
+
+        #[test]
         fn panic_diverges_through_cfg_and_lowers() {
             // `@panic` is never-typed (RUE-512): the CFG carries a NEVER-typed
             // intrinsic and the block ends in `Unreachable`, not a return, just
@@ -973,6 +1122,24 @@ mod integration_tests {
                     intrinsic_types,
                     vec![Type::NEVER],
                     "{name} must carry the never result into CFG"
+                );
+                let runtime_kinds: Vec<_> = cfg
+                    .blocks()
+                    .iter()
+                    .flat_map(|block| block.insts.iter())
+                    .filter_map(|value| match cfg.get_inst(*value).data {
+                        rue_cfg::CfgInstData::Intrinsic { runtime, .. } => runtime,
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    runtime_kinds,
+                    vec![if name == "trailing_message" {
+                        rue_air::RuntimeCallKind::Panic
+                    } else {
+                        rue_air::RuntimeCallKind::PanicNoMessage
+                    }],
+                    "CompilerSession CFG artifacts must retain typed panic identity"
                 );
 
                 // A diverging panic has no reachable return; the block that
@@ -1032,6 +1199,24 @@ mod integration_tests {
                     intrinsic_types,
                     vec![Type::UNIT],
                     "{name} must carry the unit result into CFG"
+                );
+                let runtime_kinds: Vec<_> = cfg
+                    .blocks()
+                    .iter()
+                    .flat_map(|block| block.insts.iter())
+                    .filter_map(|value| match cfg.get_inst(*value).data {
+                        rue_cfg::CfgInstData::Intrinsic { runtime, .. } => runtime,
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    runtime_kinds,
+                    vec![if name == "assertion_with_message" {
+                        rue_air::RuntimeCallKind::AssertWithMessage
+                    } else {
+                        rue_air::RuntimeCallKind::AssertFailed
+                    }],
+                    "CompilerSession CFG artifacts must retain typed assert identity"
                 );
 
                 let return_values: Vec<_> = cfg

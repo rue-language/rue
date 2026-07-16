@@ -179,6 +179,7 @@ fn format_cfg_inst_data_impl(
             format!("param_store %{} = {}", param_slot, value)
         }
         CfgInstData::Call {
+            runtime,
             name,
             args_start,
             args_len,
@@ -191,9 +192,13 @@ fn format_cfg_inst_data_impl(
             let name = interner
                 .map(|interner| interner.resolve(name).to_string())
                 .unwrap_or_else(|| name.into_usize().to_string());
+            let name = runtime
+                .map(|runtime| runtime.helper().helper().symbol.to_string())
+                .unwrap_or(name);
             format!("call @{}({})", name, args.join(", "))
         }
         CfgInstData::Intrinsic {
+            runtime,
             name,
             args_start,
             args_len,
@@ -206,7 +211,10 @@ fn format_cfg_inst_data_impl(
             let name = interner
                 .map(|interner| interner.resolve(name).to_string())
                 .unwrap_or_else(|| name.into_usize().to_string());
-            format!("intrinsic @{}({})", name, args.join(", "))
+            let prefix = runtime
+                .map(|runtime| format!("runtime.{runtime:?} "))
+                .unwrap_or_default();
+            format!("{prefix}intrinsic @{}({})", name, args.join(", "))
         }
         CfgInstData::StructInit {
             struct_id,

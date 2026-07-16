@@ -635,6 +635,7 @@ mod tests {
             entry,
             CfgInst {
                 data: CfgInstData::Call {
+                    runtime: None,
                     name: side_effect_sym,
                     args_start,
                     args_len,

@@ -68,6 +68,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[ptr_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name,
                 args_start,
                 args_len: 1,
@@ -177,6 +178,7 @@ impl<'a> BodySema<'a> {
             air.add_extra(&[ptr_result.air_ref.as_u32(), value_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name,
                 args_start,
                 args_len: 2,
@@ -242,6 +244,7 @@ impl<'a> BodySema<'a> {
             air.add_extra(&[ptr_result.air_ref.as_u32(), offset_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name,
                 args_start,
                 args_len: 2,
@@ -292,6 +295,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[ptr_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name,
                 args_start,
                 args_len: 1,
@@ -372,6 +376,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[addr_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name,
                 args_start,
                 args_len: 1,
@@ -450,6 +455,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[count_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::AllocTyped),
                 name,
                 args_start,
                 args_len: 1,
@@ -513,6 +519,7 @@ impl<'a> BodySema<'a> {
             air.add_extra(&[ptr_result.air_ref.as_u32(), count_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::FreeTyped),
                 name,
                 args_start,
                 args_len: 2,
@@ -582,6 +589,7 @@ impl<'a> BodySema<'a> {
         ]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::ReallocTyped),
                 name,
                 args_start,
                 args_len: 3,
@@ -628,6 +636,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[size.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::AllocBytes),
                 name,
                 args_start,
                 args_len: 1,
@@ -670,6 +679,7 @@ impl<'a> BodySema<'a> {
         ]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::ReallocBytes),
                 name,
                 args_start,
                 args_len: 3,
@@ -706,6 +716,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[ptr.air_ref.as_u32(), size.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::FreeBytes),
                 name,
                 args_start,
                 args_len: 2,
@@ -742,6 +753,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[ptr.air_ref.as_u32(), offset.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name,
                 args_start,
                 args_len: 2,
@@ -784,6 +796,7 @@ impl<'a> BodySema<'a> {
         ]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name,
                 args_start,
                 args_len: 3,
@@ -952,6 +965,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name,
                 args_start,
                 args_len: 1,
@@ -1055,6 +1069,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&arg_refs);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: None,
                 name,
                 args_start,
                 args_len: args.len() as u32,

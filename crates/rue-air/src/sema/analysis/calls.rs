@@ -452,6 +452,7 @@ impl<'a> BodySema<'a> {
 
         let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
+                runtime: None,
                 name: call_name_sym,
                 args_start,
                 args_len,
@@ -801,6 +802,7 @@ impl<'a> BodySema<'a> {
 
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
+                runtime: None,
                 name: call_name_sym,
                 args_start,
                 args_len,

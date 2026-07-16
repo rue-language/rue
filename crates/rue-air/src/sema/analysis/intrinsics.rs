@@ -285,6 +285,7 @@ impl<'a> BodySema<'a> {
             let args_start = air.add_extra(&extra);
             let call_ref = air.add_inst(AirInst {
                 data: AirInstData::Call {
+                    runtime: None,
                     name: call_name,
                     args_start,
                     args_len: 1,
@@ -372,6 +373,12 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&extra);
         let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
+                runtime: Some(match (is_next, lossy) {
+                    (true, false) => crate::RuntimeCallKind::StrCharNext,
+                    (true, true) => crate::RuntimeCallKind::StrCharNextLossy,
+                    (false, false) => crate::RuntimeCallKind::StrCharScalar,
+                    (false, true) => crate::RuntimeCallKind::StrCharScalarLossy,
+                }),
                 name: call_name,
                 args_start,
                 args_len: 3,
@@ -490,6 +497,15 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[arg_ref.as_u32()]);
         let intrinsic_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(if arg_type == Type::BOOL {
+                    crate::RuntimeCallKind::DebugBool
+                } else if self.is_strbuf(arg_type) || self.is_str_like(arg_type) {
+                    crate::RuntimeCallKind::DebugStr
+                } else if arg_type.is_signed() {
+                    crate::RuntimeCallKind::DebugI64
+                } else {
+                    crate::RuntimeCallKind::DebugU64
+                }),
                 name: self.known.dbg,
                 args_start,
                 args_len: 1,
@@ -626,6 +642,7 @@ impl<'a> BodySema<'a> {
             // call, `return`, or `break` (spec 3.4:2, 4.13:5b; RUE-512).
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Intrinsic {
+                    runtime: Some(crate::RuntimeCallKind::PanicNoMessage),
                     name: self.known.panic,
                     args_start: 0,
                     args_len: 0,
@@ -652,6 +669,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[arg_ref.as_u32()]);
         let intrinsic_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::Panic),
                 name: self.known.panic,
                 args_start,
                 args_len: 1,
@@ -735,6 +753,11 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&extra_data);
         let intrinsic_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(if args.len() > 1 {
+                    crate::RuntimeCallKind::AssertWithMessage
+                } else {
+                    crate::RuntimeCallKind::AssertFailed
+                }),
                 name: self.known.assert,
                 args_start,
                 args_len,
@@ -1023,6 +1046,7 @@ impl<'a> BodySema<'a> {
         // into this `Option(StrBuf)` enum (discriminant + StrBuf payload).
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::ReadLine),
                 name,
                 args_start: 0, // No args
                 args_len: 0,
@@ -1120,6 +1144,11 @@ impl<'a> BodySema<'a> {
 
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
+                runtime: Some(if unsigned {
+                    crate::RuntimeCallKind::ToStringUnsigned
+                } else {
+                    crate::RuntimeCallKind::ToString
+                }),
                 name: call_name,
                 args_start,
                 args_len: 1,
@@ -1205,6 +1234,13 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&[arg_ref.as_u32()]);
         let intrinsic_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(match intrinsic_name_str {
+                    "parse_i32" => crate::RuntimeCallKind::ParseI32,
+                    "parse_i64" => crate::RuntimeCallKind::ParseI64,
+                    "parse_u32" => crate::RuntimeCallKind::ParseU32,
+                    "parse_u64" => crate::RuntimeCallKind::ParseU64,
+                    _ => unreachable!(),
+                }),
                 name,
                 args_start,
                 args_len: 1,
@@ -1240,6 +1276,7 @@ impl<'a> BodySema<'a> {
         // Create the intrinsic instruction that returns u32
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::RandomU32),
                 name,
                 args_start: 0, // No args
                 args_len: 0,
@@ -1273,6 +1310,7 @@ impl<'a> BodySema<'a> {
         // Create the intrinsic instruction that returns u64
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
+                runtime: Some(crate::RuntimeCallKind::RandomU64),
                 name,
                 args_start: 0, // No args
                 args_len: 0,
