@@ -1,5 +1,11 @@
 load("//crates:defs.bzl", "rue_crate")
 
+filegroup(
+    name = "runtime-abi-inventory-sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["PUBLIC"],
+)
+
 rue_crate(
     name = "rue-linker",
     deps = [

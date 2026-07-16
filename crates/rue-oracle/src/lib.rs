@@ -63,7 +63,7 @@
 //! - **Deeply-nested `inout` field writes** (non-zero inner offset).
 
 use lasso::ThreadedRodeo;
-use rue_air::{FrozenTypeInternPool, Type, TypeKind, parse_array_type_syntax};
+use rue_air::{FrozenTypeInternPool, RuntimeCallKind, Type, TypeKind, parse_array_type_syntax};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{
     CompileErrors, CompileOptions, CompilerSession, FunctionWithCfg, PreviewFeatures,
@@ -759,12 +759,14 @@ fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
     }
 }
 
-fn unsupported_runtime_call_kind(name: &str) -> Option<UnsupportedRuntimeCallKind> {
-    match name {
-        "__rue_print" => Some(UnsupportedRuntimeCallKind::Print),
-        "__rue_println" => Some(UnsupportedRuntimeCallKind::Println),
-        "__rue_str_print" => Some(UnsupportedRuntimeCallKind::Print),
-        "__rue_str_println" => Some(UnsupportedRuntimeCallKind::Println),
+fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRuntimeCallKind> {
+    match kind {
+        RuntimeCallKind::StrPrintAggregate | RuntimeCallKind::StrPrintProjected => {
+            Some(UnsupportedRuntimeCallKind::Print)
+        }
+        RuntimeCallKind::StrPrintlnAggregate | RuntimeCallKind::StrPrintlnProjected => {
+            Some(UnsupportedRuntimeCallKind::Println)
+        }
         _ => None,
     }
 }
@@ -918,21 +920,20 @@ impl<'a> Interp<'a> {
 
     fn classify_unsupported_runtime_call_static(
         &self,
-        name: &str,
+        kind: RuntimeCallKind,
         arg_types: &[Type],
         arg_modes: &[CfgArgMode],
         result_ty: Type,
     ) -> UnsupportedKind {
-        let Some(runtime_call) = unsupported_runtime_call_kind(name) else {
+        let Some(runtime_call) = unsupported_runtime_call_kind(kind) else {
             return UnsupportedKind::ContractViolation(ContractViolationKind::MissingFunctionBody);
         };
-        let expected_arity = 1;
-        let shared_print = matches!(name, "__rue_str_print" | "__rue_str_println");
-        let arity_matches = if shared_print {
-            matches!(arg_types.len(), 1 | 2) && arg_modes.len() == arg_types.len()
-        } else {
-            arg_types.len() == expected_arity && arg_modes.len() == expected_arity
-        };
+        let projected = matches!(
+            kind,
+            RuntimeCallKind::StrPrintProjected | RuntimeCallKind::StrPrintlnProjected
+        );
+        let expected_arity = if projected { 2 } else { 1 };
+        let arity_matches = arg_types.len() == expected_arity && arg_modes.len() == expected_arity;
         if !arity_matches {
             return UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity);
         }
@@ -942,15 +943,14 @@ impl<'a> Interp<'a> {
 
         let signature_matches = match runtime_call {
             UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => {
-                ((shared_print
-                    && ((arg_types.len() == 1 && self.is_str_like_type(arg_types[0]))
-                        || (arg_types.len() == 2
-                            && self
-                                .pointer_pointee(arg_types[0])
-                                .is_some_and(|(pointee, _)| pointee == Type::U8)
-                            && arg_types[1] == Type::U64)))
-                    || (!shared_print && self.is_owned_string_type(arg_types[0])))
-                    && result_ty == Type::UNIT
+                let text_matches = if projected {
+                    self.pointer_pointee(arg_types[0])
+                        .is_some_and(|(pointee, _)| pointee == Type::U8)
+                        && arg_types[1] == Type::U64
+                } else {
+                    self.is_str_like_type(arg_types[0])
+                };
+                text_matches && result_ty == Type::UNIT
             }
         };
         if signature_matches {
@@ -962,14 +962,14 @@ impl<'a> Interp<'a> {
 
     fn classify_unsupported_runtime_call(
         &self,
-        name: &str,
+        kind: RuntimeCallKind,
         args: &[Value],
         arg_types: &[Type],
         arg_modes: &[CfgArgMode],
         result_ty: Type,
     ) -> UnsupportedKind {
         let static_kind =
-            self.classify_unsupported_runtime_call_static(name, arg_types, arg_modes, result_ty);
+            self.classify_unsupported_runtime_call_static(kind, arg_types, arg_modes, result_ty);
         let UnsupportedKind::SemanticGap(SemanticGapKind::RuntimeCall(runtime_call)) = static_kind
         else {
             return static_kind;
@@ -981,13 +981,13 @@ impl<'a> Interp<'a> {
         let is_int_value = |index: usize| matches!(args[index], Value::Int(_));
         let values_match = match runtime_call {
             UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => {
-                if matches!(name, "__rue_str_print" | "__rue_str_println") {
-                    (args.len() == 1 && matches!(args[0], Value::Str { slots: 2, .. }))
-                        || (args.len() == 2
-                            && matches!(args[0], Value::Str { .. })
-                            && is_int_value(1))
+                if matches!(
+                    kind,
+                    RuntimeCallKind::StrPrintProjected | RuntimeCallKind::StrPrintlnProjected
+                ) {
+                    matches!(args[0], Value::Str { .. }) && is_int_value(1)
                 } else {
-                    matches!(args[0], Value::Str { slots: 3, .. })
+                    matches!(args[0], Value::Str { .. })
                 }
             }
         };
@@ -1872,14 +1872,14 @@ impl<'a> Interp<'a> {
         }
     }
 
-    fn string_builtin_arity(name: &str) -> Option<usize> {
-        match name {
-            "__rue_to_string" | "__rue_to_string_unsigned" => Some(1),
-            "__rue_str_byte_at" => Some(2),
-            "__rue_str_char_scalar"
-            | "__rue_str_char_scalar_lossy"
-            | "__rue_str_char_next"
-            | "__rue_str_char_next_lossy" => Some(3),
+    fn string_builtin_arity(kind: RuntimeCallKind) -> Option<usize> {
+        match kind {
+            RuntimeCallKind::ToString | RuntimeCallKind::ToStringUnsigned => Some(1),
+            RuntimeCallKind::StrByteAt => Some(2),
+            RuntimeCallKind::StrCharScalar
+            | RuntimeCallKind::StrCharScalarLossy
+            | RuntimeCallKind::StrCharNext
+            | RuntimeCallKind::StrCharNextLossy => Some(3),
             _ => None,
         }
     }
@@ -1896,14 +1896,15 @@ impl<'a> Interp<'a> {
     /// an otherwise registrable model gap reached while evaluating an operand.
     fn preflight_string_builtin(
         &self,
-        name: &str,
+        kind: RuntimeCallKind,
         arg_types: &[Type],
         arg_modes: &[CfgArgMode],
         result_ty: Type,
     ) -> Step<bool> {
-        let Some(expected) = Self::string_builtin_arity(name) else {
+        let Some(expected) = Self::string_builtin_arity(kind) else {
             return Ok(false);
         };
+        let name = kind.helper().symbol();
         if arg_types.len() != expected || arg_modes.len() != expected {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArity),
@@ -1920,14 +1921,16 @@ impl<'a> Interp<'a> {
                 format!("builtin '{name}' argument mode drift"),
             ));
         }
-        let argument_types_match = match name {
-            "__rue_to_string" => arg_types[0] == Type::I64,
-            "__rue_to_string_unsigned" => arg_types[0] == Type::U64,
-            "__rue_str_byte_at" => self.is_str_view_type(arg_types[0]) && arg_types[1].is_integer(),
-            "__rue_str_char_scalar"
-            | "__rue_str_char_scalar_lossy"
-            | "__rue_str_char_next"
-            | "__rue_str_char_next_lossy" => {
+        let argument_types_match = match kind {
+            RuntimeCallKind::ToString => arg_types[0] == Type::I64,
+            RuntimeCallKind::ToStringUnsigned => arg_types[0] == Type::U64,
+            RuntimeCallKind::StrByteAt => {
+                self.is_str_view_type(arg_types[0]) && arg_types[1].is_integer()
+            }
+            RuntimeCallKind::StrCharScalar
+            | RuntimeCallKind::StrCharScalarLossy
+            | RuntimeCallKind::StrCharNext
+            | RuntimeCallKind::StrCharNextLossy => {
                 self.pointer_pointee(arg_types[0])
                     .is_some_and(|(pointee, _)| pointee == Type::U8)
                     && arg_types[1] == Type::U64
@@ -1941,11 +1944,17 @@ impl<'a> Interp<'a> {
                 format!("builtin '{name}' argument type drift"),
             ));
         }
-        let result_type_matches = match name {
-            "__rue_to_string" | "__rue_to_string_unsigned" => self.is_owned_string_type(result_ty),
-            "__rue_str_byte_at" => result_ty == Type::U8,
-            "__rue_str_char_scalar" | "__rue_str_char_scalar_lossy" => result_ty == Type::U32,
-            "__rue_str_char_next" | "__rue_str_char_next_lossy" => result_ty == Type::U64,
+        let result_type_matches = match kind {
+            RuntimeCallKind::ToString | RuntimeCallKind::ToStringUnsigned => {
+                self.is_owned_string_type(result_ty)
+            }
+            RuntimeCallKind::StrByteAt => result_ty == Type::U8,
+            RuntimeCallKind::StrCharScalar | RuntimeCallKind::StrCharScalarLossy => {
+                result_ty == Type::U32
+            }
+            RuntimeCallKind::StrCharNext | RuntimeCallKind::StrCharNextLossy => {
+                result_ty == Type::U64
+            }
             _ => unreachable!("arity and result tables must stay exhaustive"),
         };
         if !result_type_matches {
@@ -1961,30 +1970,33 @@ impl<'a> Interp<'a> {
     /// ordinary source-defined function with a CFG body.
     fn string_builtin(
         &self,
-        name: &str,
+        kind: RuntimeCallKind,
         args: &[Value],
         arg_types: &[Type],
         arg_modes: &[CfgArgMode],
         result_ty: Type,
     ) -> Step<Option<Value>> {
-        if !self.preflight_string_builtin(name, arg_types, arg_modes, result_ty)? {
+        if !self.preflight_string_builtin(kind, arg_types, arg_modes, result_ty)? {
             return Ok(None);
         }
+        let name = kind.helper().symbol();
         if args.len() != arg_types.len() {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArity),
                 format!("builtin '{name}' runtime argument count drift"),
             ));
         }
-        let shapes_match = match name {
-            "__rue_to_string" | "__rue_to_string_unsigned" => matches!(args[0], Value::Int(_)),
-            "__rue_str_byte_at" => {
+        let shapes_match = match kind {
+            RuntimeCallKind::ToString | RuntimeCallKind::ToStringUnsigned => {
+                matches!(args[0], Value::Int(_))
+            }
+            RuntimeCallKind::StrByteAt => {
                 matches!(args[0], Value::Str { slots: 2, .. }) && matches!(args[1], Value::Int(_))
             }
-            "__rue_str_char_scalar"
-            | "__rue_str_char_scalar_lossy"
-            | "__rue_str_char_next"
-            | "__rue_str_char_next_lossy" => {
+            RuntimeCallKind::StrCharScalar
+            | RuntimeCallKind::StrCharScalarLossy
+            | RuntimeCallKind::StrCharNext
+            | RuntimeCallKind::StrCharNextLossy => {
                 matches!(args[0], Value::Str { .. })
                     && matches!(args[1], Value::Int(_))
                     && matches!(args[2], Value::Int(_))
@@ -2017,10 +2029,12 @@ impl<'a> Interp<'a> {
             }
             Ok(bytes[..len as usize].to_vec())
         };
-        let out = match name {
-            "__rue_to_string" => Value::string((args[0].as_int() as i64).to_string()),
-            "__rue_to_string_unsigned" => Value::string((args[0].as_int() as u64).to_string()),
-            "__rue_str_byte_at" => {
+        let out = match kind {
+            RuntimeCallKind::ToString => Value::string((args[0].as_int() as i64).to_string()),
+            RuntimeCallKind::ToStringUnsigned => {
+                Value::string((args[0].as_int() as u64).to_string())
+            }
+            RuntimeCallKind::StrByteAt => {
                 let bytes = string_bytes(&args[0])?;
                 let index = args[1].as_int();
                 if index < 0 || index as u128 >= bytes.len() as u128 {
@@ -2028,14 +2042,14 @@ impl<'a> Interp<'a> {
                 }
                 Value::Int(bytes[index as usize] as i128)
             }
-            "__rue_str_char_scalar" => {
+            RuntimeCallKind::StrCharScalar => {
                 let bytes = str_bytes(&args[0], &args[1])?;
                 match char_at(&bytes, args[2].as_int()) {
                     Some((scalar, _)) => Value::Int(scalar as i128),
                     None => return Err(Flow::Panic(Panic::runtime(TrapKind::InvalidUtf8))),
                 }
             }
-            "__rue_str_char_next" => {
+            RuntimeCallKind::StrCharNext => {
                 let bytes = str_bytes(&args[0], &args[1])?;
                 let offset = args[2].as_int();
                 match char_at(&bytes, offset) {
@@ -2043,11 +2057,11 @@ impl<'a> Interp<'a> {
                     None => return Err(Flow::Panic(Panic::runtime(TrapKind::InvalidUtf8))),
                 }
             }
-            "__rue_str_char_scalar_lossy" => {
+            RuntimeCallKind::StrCharScalarLossy => {
                 let bytes = str_bytes(&args[0], &args[1])?;
                 Value::Int(char_at_lossy(&bytes, args[2].as_int()).0 as i128)
             }
-            "__rue_str_char_next_lossy" => {
+            RuntimeCallKind::StrCharNextLossy => {
                 let bytes = str_bytes(&args[0], &args[1])?;
                 let offset = args[2].as_int();
                 Value::Int(offset + char_at_lossy(&bytes, offset).1 as i128)
@@ -2411,10 +2425,10 @@ impl<'a> Interp<'a> {
                 Value::Unit
             }
             CfgInstData::Call {
+                runtime,
                 name,
                 args_start,
                 args_len,
-                ..
             } => {
                 let fname = self.interner().resolve(name).to_string();
                 let call_args = cfg.get_call_args(*args_start, *args_len).to_vec();
@@ -2423,16 +2437,29 @@ impl<'a> Interp<'a> {
                     .map(|arg| cfg.get_inst(arg.value).ty)
                     .collect();
                 let arg_modes: Vec<CfgArgMode> = call_args.iter().map(|arg| arg.mode).collect();
-                let is_string_builtin =
-                    self.preflight_string_builtin(&fname, &arg_types, &arg_modes, ty)?;
-                let missing_call_kind = if !is_string_builtin && self.find_cfg(&fname).is_none() {
+                let is_string_builtin = if let Some(runtime) = runtime {
+                    self.preflight_string_builtin(*runtime, &arg_types, &arg_modes, ty)?
+                } else {
+                    false
+                };
+                let missing_call_kind = if !is_string_builtin && runtime.is_some() {
                     let kind = self.classify_unsupported_runtime_call_static(
-                        &fname, &arg_types, &arg_modes, ty,
+                        runtime.expect("checked above"),
+                        &arg_types,
+                        &arg_modes,
+                        ty,
                     );
                     if kind.model_gap().is_none() {
                         return Err(unsupported(kind, format!("call to '{fname}'")));
                     }
                     Some(kind)
+                } else if !is_string_builtin && self.find_cfg(&fname).is_none() {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::MissingFunctionBody,
+                        ),
+                        format!("call to '{fname}'"),
+                    ));
                 } else {
                     None
                 };
@@ -2469,12 +2496,22 @@ impl<'a> Interp<'a> {
                 }
                 // Builtin String methods have no CFG body; dispatch them here.
                 if is_string_builtin {
-                    self.string_builtin(&fname, &argvals, &arg_types, &arg_modes, ty)?
-                        .expect("preflight recognized this String builtin")
+                    self.string_builtin(
+                        runtime.expect("typed runtime string builtin"),
+                        &argvals,
+                        &arg_types,
+                        &arg_modes,
+                        ty,
+                    )?
+                    .expect("preflight recognized this String builtin")
                 } else if missing_call_kind.is_some() {
                     return Err(unsupported(
                         self.classify_unsupported_runtime_call(
-                            &fname, &argvals, &arg_types, &arg_modes, ty,
+                            runtime.expect("typed unsupported runtime call"),
+                            &argvals,
+                            &arg_types,
+                            &arg_modes,
+                            ty,
                         ),
                         format!("call to '{fname}'"),
                     ));

@@ -5657,10 +5657,11 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        // Lower to `__rue_str_byte_at(self, index) -> u8`. The 2-word `str`
-        // value is passed by value; codegen decomposes it into ptr/len argument
-        // registers, exactly as it decomposes the 3-word String for byte_at.
-        let call_name = self.interner.get_or_intern("__rue_str_byte_at");
+        // Lower through the typed runtime-call contract. The 2-word `str`
+        // value is passed by value; codegen decomposes it into pointer/length
+        // argument registers.
+        let runtime = crate::RuntimeCallKind::StrByteAt;
+        let call_name = self.interner.get_or_intern(runtime.helper().symbol());
         let extra = [
             base_result.air_ref.as_u32(),
             AirArgMode::Normal.as_u32(),
@@ -5670,7 +5671,7 @@ impl<'a> BodySema<'a> {
         let args_start = air.add_extra(&extra);
         let call_ref = air.add_inst(AirInst {
             data: AirInstData::Call {
-                runtime: Some(crate::RuntimeCallKind::StrByteAt),
+                runtime: Some(runtime),
                 name: call_name,
                 args_start,
                 args_len: 2,
