@@ -1354,6 +1354,15 @@ impl<'a> CfgLower<'a> {
                 dst: Operand::Virtual(dst),
             },
         });
+        // `setcc` writes only the destination byte.  The shared boolean
+        // value is subsequently consumed as a full-width integer by branch
+        // and arithmetic lowering, so clear the upper bits before exposing
+        // the result to the rest of the MIR.  This is an x86-64 fact; AArch64
+        // `cset` already defines the complete 64-bit register.
+        self.mir.push(X86Inst::Movzx {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(dst),
+        });
         dst
     }
 
@@ -3158,6 +3167,45 @@ mod tests {
                 .iter()
                 .any(|inst| matches!(inst, X86Inst::StringConstCap { .. }))
         );
+    }
+
+    #[test]
+    fn strbuf_style_boolean_branch_zero_extends_x86_setcc_result() {
+        let mir = lower_to_mir(
+            "struct StrBuf { cap: u64 }\n\
+             fn main() -> i32 {\n\
+                 let s = StrBuf { cap: 1 };\n\
+                 if s.cap > 0 { 0 } else { 101 }\n\
+             }",
+        );
+
+        let mut saw_setcc = false;
+        for pair in mir.instructions().windows(2) {
+            let Some(dst) = (match &pair[0] {
+                X86Inst::Sete { dst }
+                | X86Inst::Setne { dst }
+                | X86Inst::Setl { dst }
+                | X86Inst::Setg { dst }
+                | X86Inst::Setle { dst }
+                | X86Inst::Setge { dst }
+                | X86Inst::Setb { dst }
+                | X86Inst::Seta { dst }
+                | X86Inst::Setbe { dst }
+                | X86Inst::Setae { dst } => Some(*dst),
+                _ => None,
+            }) else {
+                continue;
+            };
+            saw_setcc = true;
+            assert!(matches!(
+                pair[1],
+                X86Inst::Movzx {
+                    dst: next_dst,
+                    src: next_src,
+                } if next_dst == dst && next_src == dst
+            ));
+        }
+        assert!(saw_setcc, "regression test must lower at least one setcc");
     }
 
     #[test]
