@@ -456,6 +456,14 @@ fn finalize_function_body_analysis(
     add_unused_function_warnings(sema, &referenced_for_unused_warnings, &mut all_warnings);
     all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
 
+    // Error results do not expose a SemaOutput, so do not manufacture a
+    // frozen pool merely to discard it. In particular, an unresolved
+    // declaration must remain visibly Declared rather than being laundered
+    // into an empty Complete definition to satisfy freeze.
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
     let output = SemaOutput {
         functions,
         strings: global_strings,
@@ -558,7 +566,7 @@ fn finalize_function_body_analysis(
         type_pool: std::mem::take(&mut sema.type_pool).freeze(),
     };
 
-    errors.into_result_with(output)
+    Ok(output)
 }
 
 /// Emit warnings for unused free functions.

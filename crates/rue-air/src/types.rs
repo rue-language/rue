@@ -7,6 +7,8 @@
 //! instantiations — well beyond the original i32-only prototype this comment
 //! once described.
 
+use crate::type_encoding::{self, Composite, Decoded, Primitive};
+
 /// A unique identifier for a struct definition.
 ///
 /// The inner value is a pool index into [`TypeInternPool`](crate::TypeInternPool),
@@ -209,10 +211,8 @@ pub enum TypeKind {
 /// # Encoding
 ///
 /// The u32 value uses a tag-based encoding:
-/// - Primitives (0-12): I8=0, I16=1, I32=2, I64=3, U8=4, U16=5, U32=6, U64=7,
-///   Bool=8, Unit=9, Error=10, Never=11, ComptimeType=12
-/// - Composites: low byte is tag (TAG_STRUCT, TAG_ENUM, TAG_ARRAY, TAG_MODULE),
-///   high 24 bits are the ID
+/// Primitive and composite values use the centralized encoding in
+/// `type_encoding`; composite payloads are 24-bit pool or module identifiers.
 ///
 /// # Usage
 ///
@@ -270,16 +270,6 @@ impl std::fmt::Debug for Type {
     }
 }
 
-// Composite type tag constants
-// These are used in the low byte of the u32 encoding to identify composite types.
-// The high 24 bits contain the ID (StructId, EnumId, ArrayTypeId, ModuleId, or pointer type IDs).
-const TAG_STRUCT: u32 = 100;
-const TAG_ENUM: u32 = 101;
-const TAG_ARRAY: u32 = 102;
-const TAG_MODULE: u32 = 103;
-const TAG_PTR_CONST: u32 = 104;
-const TAG_PTR_MUT: u32 = 105;
-
 // Primitive type constants
 impl Type {
     pub(crate) const fn raw_encoding(self) -> u32 {
@@ -287,69 +277,77 @@ impl Type {
     }
 
     /// 8-bit signed integer
-    pub const I8: Type = Type(0);
+    pub const I8: Type = Type(Primitive::I8.encode());
     /// 16-bit signed integer
-    pub const I16: Type = Type(1);
+    pub const I16: Type = Type(Primitive::I16.encode());
     /// 32-bit signed integer
-    pub const I32: Type = Type(2);
+    pub const I32: Type = Type(Primitive::I32.encode());
     /// 64-bit signed integer
-    pub const I64: Type = Type(3);
+    pub const I64: Type = Type(Primitive::I64.encode());
     /// 8-bit unsigned integer
-    pub const U8: Type = Type(4);
+    pub const U8: Type = Type(Primitive::U8.encode());
     /// 16-bit unsigned integer
-    pub const U16: Type = Type(5);
+    pub const U16: Type = Type(Primitive::U16.encode());
     /// 32-bit unsigned integer
-    pub const U32: Type = Type(6);
+    pub const U32: Type = Type(Primitive::U32.encode());
     /// 64-bit unsigned integer
-    pub const U64: Type = Type(7);
+    pub const U64: Type = Type(Primitive::U64.encode());
     /// Boolean
-    pub const BOOL: Type = Type(8);
+    pub const BOOL: Type = Type(Primitive::Bool.encode());
     /// The unit type (for functions that don't return a value)
-    pub const UNIT: Type = Type(9);
+    pub const UNIT: Type = Type(Primitive::Unit.encode());
     /// An error type (used during type checking to continue after errors)
-    pub const ERROR: Type = Type(10);
+    pub const ERROR: Type = Type(Primitive::Error.encode());
     /// The never type - represents computations that don't return
-    pub const NEVER: Type = Type(11);
+    pub const NEVER: Type = Type(Primitive::Never.encode());
     /// The comptime type - the type of types themselves
-    pub const COMPTIME_TYPE: Type = Type(12);
+    pub const COMPTIME_TYPE: Type = Type(Primitive::ComptimeType.encode());
 }
 
 // Composite type constructors
 impl Type {
+    #[inline]
+    const fn new_composite(kind: Composite, payload: u32) -> Type {
+        match type_encoding::encode_composite(kind, payload) {
+            Some(raw) => Type(raw),
+            None => panic!("type encoding payload exceeds 24 bits"),
+        }
+    }
+
     /// Create a struct type from a StructId.
     #[inline]
     pub const fn new_struct(id: StructId) -> Type {
-        Type(TAG_STRUCT | ((id.0 as u32) << 8))
+        Self::new_composite(Composite::Struct, id.0)
     }
 
     /// Create an enum type from an EnumId.
     #[inline]
     pub const fn new_enum(id: EnumId) -> Type {
-        Type(TAG_ENUM | ((id.0 as u32) << 8))
+        Self::new_composite(Composite::Enum, id.0)
     }
 
     /// Create an array type from an ArrayTypeId.
     #[inline]
     pub const fn new_array(id: ArrayTypeId) -> Type {
-        Type(TAG_ARRAY | ((id.0 as u32) << 8))
+        Self::new_composite(Composite::Array, id.0)
     }
 
     /// Create a raw const pointer type from a PtrConstTypeId.
     #[inline]
     pub const fn new_ptr_const(id: PtrConstTypeId) -> Type {
-        Type(TAG_PTR_CONST | ((id.0 as u32) << 8))
+        Self::new_composite(Composite::PtrConst, id.0)
     }
 
     /// Create a raw mut pointer type from a PtrMutTypeId.
     #[inline]
     pub const fn new_ptr_mut(id: PtrMutTypeId) -> Type {
-        Type(TAG_PTR_MUT | ((id.0 as u32) << 8))
+        Self::new_composite(Composite::PtrMut, id.0)
     }
 
     /// Create a module type from a ModuleId.
     #[inline]
     pub const fn new_module(id: ModuleId) -> Type {
-        Type(TAG_MODULE | ((id.0 as u32) << 8))
+        Self::new_composite(Composite::Module, id.0)
     }
 }
 
@@ -548,10 +546,10 @@ impl Type {
             panic!(
                 "invalid Type encoding: raw value {:#010x} (tag={}, id={}). \
                  This indicates data corruption or a bug in Type construction. \
-                 Valid tags are 0-12 (primitives) or 100-105 (composites).",
+                 The tag or payload is malformed or reserved.",
                 self.0,
-                self.0 & 0xFF,
-                self.0 >> 8
+                self.0 & type_encoding::TAG_MASK,
+                self.0 >> type_encoding::PAYLOAD_SHIFT
             )
         })
     }
@@ -575,28 +573,44 @@ impl Type {
     /// ```
     #[inline]
     pub fn try_kind(&self) -> Option<TypeKind> {
-        let tag = self.0 & 0xFF;
-        match tag {
-            0 => Some(TypeKind::I8),
-            1 => Some(TypeKind::I16),
-            2 => Some(TypeKind::I32),
-            3 => Some(TypeKind::I64),
-            4 => Some(TypeKind::U8),
-            5 => Some(TypeKind::U16),
-            6 => Some(TypeKind::U32),
-            7 => Some(TypeKind::U64),
-            8 => Some(TypeKind::Bool),
-            9 => Some(TypeKind::Unit),
-            10 => Some(TypeKind::Error),
-            11 => Some(TypeKind::Never),
-            12 => Some(TypeKind::ComptimeType),
-            TAG_STRUCT => Some(TypeKind::Struct(StructId(self.0 >> 8))),
-            TAG_ENUM => Some(TypeKind::Enum(EnumId(self.0 >> 8))),
-            TAG_ARRAY => Some(TypeKind::Array(ArrayTypeId(self.0 >> 8))),
-            TAG_PTR_CONST => Some(TypeKind::PtrConst(PtrConstTypeId(self.0 >> 8))),
-            TAG_PTR_MUT => Some(TypeKind::PtrMut(PtrMutTypeId(self.0 >> 8))),
-            TAG_MODULE => Some(TypeKind::Module(ModuleId(self.0 >> 8))),
-            _ => None,
+        match type_encoding::decode(self.0)? {
+            Decoded::Primitive(Primitive::I8) => Some(TypeKind::I8),
+            Decoded::Primitive(Primitive::I16) => Some(TypeKind::I16),
+            Decoded::Primitive(Primitive::I32) => Some(TypeKind::I32),
+            Decoded::Primitive(Primitive::I64) => Some(TypeKind::I64),
+            Decoded::Primitive(Primitive::U8) => Some(TypeKind::U8),
+            Decoded::Primitive(Primitive::U16) => Some(TypeKind::U16),
+            Decoded::Primitive(Primitive::U32) => Some(TypeKind::U32),
+            Decoded::Primitive(Primitive::U64) => Some(TypeKind::U64),
+            Decoded::Primitive(Primitive::Bool) => Some(TypeKind::Bool),
+            Decoded::Primitive(Primitive::Unit) => Some(TypeKind::Unit),
+            Decoded::Primitive(Primitive::Error) => Some(TypeKind::Error),
+            Decoded::Primitive(Primitive::Never) => Some(TypeKind::Never),
+            Decoded::Primitive(Primitive::ComptimeType) => Some(TypeKind::ComptimeType),
+            Decoded::Composite {
+                kind: Composite::Struct,
+                payload,
+            } => Some(TypeKind::Struct(StructId(payload))),
+            Decoded::Composite {
+                kind: Composite::Enum,
+                payload,
+            } => Some(TypeKind::Enum(EnumId(payload))),
+            Decoded::Composite {
+                kind: Composite::Array,
+                payload,
+            } => Some(TypeKind::Array(ArrayTypeId(payload))),
+            Decoded::Composite {
+                kind: Composite::Module,
+                payload,
+            } => Some(TypeKind::Module(ModuleId(payload))),
+            Decoded::Composite {
+                kind: Composite::PtrConst,
+                payload,
+            } => Some(TypeKind::PtrConst(PtrConstTypeId(payload))),
+            Decoded::Composite {
+                kind: Composite::PtrMut,
+                payload,
+            } => Some(TypeKind::PtrMut(PtrMutTypeId(payload))),
         }
     }
 
@@ -706,7 +720,19 @@ impl Type {
     /// Optimized: checks tag range directly (0-7 are integer types).
     #[inline]
     pub fn is_integer(&self) -> bool {
-        self.0 <= 7
+        matches!(
+            type_encoding::decode(self.0),
+            Some(Decoded::Primitive(
+                Primitive::I8
+                    | Primitive::I16
+                    | Primitive::I32
+                    | Primitive::I64
+                    | Primitive::U8
+                    | Primitive::U16
+                    | Primitive::U32
+                    | Primitive::U64
+            ))
+        )
     }
 
     /// Check if this is an error type.
@@ -730,14 +756,14 @@ impl Type {
     /// Check if this is a struct type.
     #[inline]
     pub fn is_struct(&self) -> bool {
-        (self.0 & 0xFF) == TAG_STRUCT
+        type_encoding::has_composite_kind(self.0, Composite::Struct)
     }
 
     /// Get the struct ID if this is a struct type.
     #[inline]
     pub fn as_struct(&self) -> Option<StructId> {
         if self.is_struct() {
-            Some(StructId(self.0 >> 8))
+            Some(StructId(self.0 >> type_encoding::PAYLOAD_SHIFT))
         } else {
             None
         }
@@ -746,14 +772,14 @@ impl Type {
     /// Check if this is an array type.
     #[inline]
     pub fn is_array(&self) -> bool {
-        (self.0 & 0xFF) == TAG_ARRAY
+        type_encoding::has_composite_kind(self.0, Composite::Array)
     }
 
     /// Get the array type ID if this is an array type.
     #[inline]
     pub fn as_array(&self) -> Option<ArrayTypeId> {
         if self.is_array() {
-            Some(ArrayTypeId(self.0 >> 8))
+            Some(ArrayTypeId(self.0 >> type_encoding::PAYLOAD_SHIFT))
         } else {
             None
         }
@@ -762,14 +788,14 @@ impl Type {
     /// Check if this is an enum type.
     #[inline]
     pub fn is_enum(&self) -> bool {
-        (self.0 & 0xFF) == TAG_ENUM
+        type_encoding::has_composite_kind(self.0, Composite::Enum)
     }
 
     /// Get the enum ID if this is an enum type.
     #[inline]
     pub fn as_enum(&self) -> Option<EnumId> {
         if self.is_enum() {
-            Some(EnumId(self.0 >> 8))
+            Some(EnumId(self.0 >> type_encoding::PAYLOAD_SHIFT))
         } else {
             None
         }
@@ -778,14 +804,14 @@ impl Type {
     /// Check if this is a module type.
     #[inline]
     pub fn is_module(&self) -> bool {
-        (self.0 & 0xFF) == TAG_MODULE
+        type_encoding::has_composite_kind(self.0, Composite::Module)
     }
 
     /// Get the module ID if this is a module type.
     #[inline]
     pub fn as_module(&self) -> Option<ModuleId> {
         if self.is_module() {
-            Some(ModuleId(self.0 >> 8))
+            Some(ModuleId(self.0 >> type_encoding::PAYLOAD_SHIFT))
         } else {
             None
         }
@@ -794,14 +820,14 @@ impl Type {
     /// Check if this is a raw const pointer type.
     #[inline]
     pub fn is_ptr_const(&self) -> bool {
-        (self.0 & 0xFF) == TAG_PTR_CONST
+        type_encoding::has_composite_kind(self.0, Composite::PtrConst)
     }
 
     /// Get the pointer type ID if this is a ptr const type.
     #[inline]
     pub fn as_ptr_const(&self) -> Option<PtrConstTypeId> {
         if self.is_ptr_const() {
-            Some(PtrConstTypeId(self.0 >> 8))
+            Some(PtrConstTypeId(self.0 >> type_encoding::PAYLOAD_SHIFT))
         } else {
             None
         }
@@ -810,14 +836,14 @@ impl Type {
     /// Check if this is a raw mut pointer type.
     #[inline]
     pub fn is_ptr_mut(&self) -> bool {
-        (self.0 & 0xFF) == TAG_PTR_MUT
+        type_encoding::has_composite_kind(self.0, Composite::PtrMut)
     }
 
     /// Get the pointer type ID if this is a ptr mut type.
     #[inline]
     pub fn as_ptr_mut(&self) -> Option<PtrMutTypeId> {
         if self.is_ptr_mut() {
-            Some(PtrMutTypeId(self.0 >> 8))
+            Some(PtrMutTypeId(self.0 >> type_encoding::PAYLOAD_SHIFT))
         } else {
             None
         }
@@ -826,15 +852,19 @@ impl Type {
     /// Check if this is any raw pointer type (ptr const or ptr mut).
     #[inline]
     pub fn is_ptr(&self) -> bool {
-        let tag = self.0 & 0xFF;
-        tag == TAG_PTR_CONST || tag == TAG_PTR_MUT
+        self.is_ptr_const() || self.is_ptr_mut()
     }
 
     /// Check if this is a signed integer type.
     /// Optimized: checks tag range directly (0-3 are signed integers).
     #[inline]
     pub fn is_signed(&self) -> bool {
-        self.0 <= 3
+        matches!(
+            type_encoding::decode(self.0),
+            Some(Decoded::Primitive(
+                Primitive::I8 | Primitive::I16 | Primitive::I32 | Primitive::I64
+            ))
+        )
     }
 
     /// Check if this is a Copy type (can be implicitly duplicated).
@@ -854,21 +884,13 @@ impl Type {
     /// types since it doesn't have access to StructDefs or array type information.
     /// Use Sema.is_type_copy() for full checking.
     pub fn is_copy(&self) -> bool {
-        let tag = self.0 & 0xFF;
-        match tag {
-            // Primitive Copy types (I8..Unit = 0..9)
-            0..=9 => true,
-            // Error, Never, ComptimeType are Copy for convenience
-            10..=12 => true,
-            // Enum types are Copy (they're small discriminant values)
-            TAG_ENUM => true,
-            // Module types are Copy (they're just compile-time namespace references)
-            TAG_MODULE => true,
-            // Struct types are move types by default
-            TAG_STRUCT => false,
-            // Arrays may be Copy if element type is Copy (need TypeInternPool to check)
-            TAG_ARRAY => false,
-            _ => false,
+        match type_encoding::decode(self.0) {
+            Some(Decoded::Primitive(_)) => true,
+            Some(Decoded::Composite {
+                kind: Composite::Enum | Composite::Module,
+                ..
+            }) => true,
+            Some(Decoded::Composite { .. }) | None => false,
         }
     }
 
@@ -891,7 +913,7 @@ impl Type {
     /// Optimized: checks for I64 (3) or U64 (7).
     #[inline]
     pub fn is_64_bit(&self) -> bool {
-        self.0 == 3 || self.0 == 7
+        matches!(*self, Type::I64 | Type::U64)
     }
 
     /// Check if this type can coerce to the target type.
@@ -909,7 +931,12 @@ impl Type {
     #[inline]
     #[must_use]
     pub fn is_unsigned(&self) -> bool {
-        self.0 >= 4 && self.0 <= 7
+        matches!(
+            type_encoding::decode(self.0),
+            Some(Decoded::Primitive(
+                Primitive::U8 | Primitive::U16 | Primitive::U32 | Primitive::U64
+            ))
+        )
     }
 
     /// Check if a u64 value fits within the range of this integer type.
@@ -921,15 +948,15 @@ impl Type {
     /// For non-integer types, returns `false`.
     #[must_use]
     pub fn literal_fits(&self, value: u64) -> bool {
-        match self.0 {
-            0 => value <= i8::MAX as u64,  // I8
-            1 => value <= i16::MAX as u64, // I16
-            2 => value <= i32::MAX as u64, // I32
-            3 => value <= i64::MAX as u64, // I64
-            4 => value <= u8::MAX as u64,  // U8
-            5 => value <= u16::MAX as u64, // U16
-            6 => value <= u32::MAX as u64, // U32
-            7 => true,                     // U64 - Any u64 value fits
+        match self.try_kind() {
+            Some(TypeKind::I8) => value <= i8::MAX as u64,
+            Some(TypeKind::I16) => value <= i16::MAX as u64,
+            Some(TypeKind::I32) => value <= i32::MAX as u64,
+            Some(TypeKind::I64) => value <= i64::MAX as u64,
+            Some(TypeKind::U8) => value <= u8::MAX as u64,
+            Some(TypeKind::U16) => value <= u16::MAX as u64,
+            Some(TypeKind::U32) => value <= u32::MAX as u64,
+            Some(TypeKind::U64) => true,
             _ => false,
         }
     }
@@ -939,12 +966,12 @@ impl Type {
     /// Returns `None` for non-integer types.
     #[must_use]
     pub fn int_bit_width(&self) -> Option<u32> {
-        if self.is_integer() {
-            // Tags 0..=3 are i8..i64, 4..=7 are u8..u64; the low two bits
-            // select the width in both groups.
-            Some(8 << (self.0 & 3))
-        } else {
-            None
+        match self.try_kind()? {
+            TypeKind::I8 | TypeKind::U8 => Some(8),
+            TypeKind::I16 | TypeKind::U16 => Some(16),
+            TypeKind::I32 | TypeKind::U32 => Some(32),
+            TypeKind::I64 | TypeKind::U64 => Some(64),
+            _ => None,
         }
     }
 
@@ -980,11 +1007,11 @@ impl Type {
     /// Returns `true` if the negated value fits, `false` otherwise.
     #[must_use]
     pub fn negated_literal_fits(&self, value: u64) -> bool {
-        match self.0 {
-            0 => value <= (i8::MIN as i64).unsigned_abs(),  // I8
-            1 => value <= (i16::MIN as i64).unsigned_abs(), // I16
-            2 => value <= (i32::MIN as i64).unsigned_abs(), // I32
-            3 => value <= (i64::MIN).unsigned_abs(),        // I64
+        match self.try_kind() {
+            Some(TypeKind::I8) => value <= (i8::MIN as i64).unsigned_abs(),
+            Some(TypeKind::I16) => value <= (i16::MIN as i64).unsigned_abs(),
+            Some(TypeKind::I32) => value <= (i32::MIN as i64).unsigned_abs(),
+            Some(TypeKind::I64) => value <= (i64::MIN).unsigned_abs(),
             _ => false,
         }
     }
@@ -993,7 +1020,7 @@ impl Type {
     ///
     /// Since Type is now a u32 newtype, this simply returns the inner value.
     #[inline]
-    pub fn as_u32(&self) -> u32 {
+    pub(crate) fn as_u32(&self) -> u32 {
         self.0
     }
 
@@ -1007,7 +1034,7 @@ impl Type {
     /// This method trusts that the input is a valid encoding. For untrusted data,
     /// use [`try_from_u32`](Self::try_from_u32) which validates the encoding.
     #[inline]
-    pub fn from_u32(v: u32) -> Self {
+    pub(crate) fn from_u32(v: u32) -> Self {
         Type(v)
     }
 
@@ -1040,15 +1067,7 @@ impl Type {
     /// Returns `true` if the value represents a valid primitive or composite type.
     #[inline]
     pub fn is_valid_encoding(v: u32) -> bool {
-        let tag = v & 0xFF;
-        match tag {
-            // Primitive types: I8=0 through ComptimeType=12
-            0..=12 => true,
-            // Composite types with valid tags
-            TAG_STRUCT | TAG_ENUM | TAG_ARRAY | TAG_PTR_CONST | TAG_PTR_MUT | TAG_MODULE => true,
-            // Everything else is invalid
-            _ => false,
-        }
+        type_encoding::decode(v).is_some()
     }
 
     /// Check if this Type has a valid encoding.
@@ -1928,7 +1947,9 @@ mod tests {
     #[test]
     fn test_is_valid_encoding_invalid() {
         // Tags between primitives and composites are invalid (13-99)
-        for tag in 13..100u32 {
+        for tag in type_encoding::RESERVED_AFTER_PRIMITIVES_START
+            ..=type_encoding::RESERVED_AFTER_PRIMITIVES_END
+        {
             assert!(
                 !Type::is_valid_encoding(tag),
                 "tag {} should be invalid",
@@ -1937,13 +1958,22 @@ mod tests {
         }
 
         // Tags above composites are invalid (106+)
-        for tag in 106..=255u32 {
+        for tag in type_encoding::RESERVED_AFTER_COMPOSITES_START
+            ..=type_encoding::RESERVED_AFTER_COMPOSITES_END
+        {
             assert!(
                 !Type::is_valid_encoding(tag),
                 "tag {} should be invalid",
                 tag
             );
         }
+
+        // Primitive tags cannot carry a composite payload. This used to
+        // silently decode as I8 because only the low byte was inspected.
+        assert!(!Type::is_valid_encoding(1 << type_encoding::PAYLOAD_SHIFT));
+        assert!(!Type::is_valid_encoding(
+            (17 << type_encoding::PAYLOAD_SHIFT) | Primitive::Never.encode()
+        ));
     }
 
     #[test]
@@ -1965,6 +1995,22 @@ mod tests {
         assert!(Type::try_from_u32(99).is_none());
         assert!(Type::try_from_u32(106).is_none());
         assert!(Type::try_from_u32(255).is_none());
+        assert!(Type::try_from_u32(1 << type_encoding::PAYLOAD_SHIFT).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "type encoding payload exceeds 24 bits")]
+    fn composite_constructor_rejects_payload_overflow() {
+        let _ = Type::new_struct(StructId(type_encoding::MAX_PAYLOAD + 1));
+    }
+
+    #[test]
+    fn composite_constructor_accepts_maximum_payload() {
+        let ty = Type::new_module(ModuleId(type_encoding::MAX_PAYLOAD));
+        assert_eq!(
+            ty.try_kind(),
+            Some(TypeKind::Module(ModuleId(type_encoding::MAX_PAYLOAD)))
+        );
     }
 
     #[test]

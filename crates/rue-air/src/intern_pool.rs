@@ -14,8 +14,9 @@
 //! - **Structs and enums** are nominal types (same name = same type)
 //! - **Arrays** are structural types (same element type + length = same type)
 //!
-//! Primitive types (i8-i64, u8-u64, bool, unit, never, error) are encoded directly
-//! in the `InternedType` index using reserved indices 0-15, requiring no pool lookup.
+//! The transitional `InternedType` wrapper consumes the same authoritative
+//! primitive assignments as [`Type`]. Its compatibility-only pool-index
+//! encoding is centralized beside the live encoding and is removed by RUE-838.
 //!
 //! [`Type`] is the compact compiler-facing handle. Composite `StructId`,
 //! `EnumId`, `ArrayTypeId`, and pointer IDs are indices into this pool, while
@@ -36,6 +37,7 @@ use lasso::Spur;
 use rue_span::FileId;
 
 use crate::path_norm::{mangle_symbol_component, normalize_module_path};
+use crate::type_encoding::{self, Decoded, Primitive};
 use crate::types::{
     ArrayTypeId, EnumDef, EnumId, LangItem, PtrConstTypeId, PtrMutTypeId, StructDef, StructId,
     Type, TypeKind,
@@ -43,49 +45,29 @@ use crate::types::{
 
 /// Interned type index - 32 bits, Copy, cheap comparison.
 ///
-/// Reserved indices 0-15 are primitives (no lookup needed).
-/// Index 16+ are composite types stored in the pool.
-///
-/// # Primitive Encoding
-///
-/// The following indices are reserved for primitive types:
-/// - 0: i8
-/// - 1: i16
-/// - 2: i32
-/// - 3: i64
-/// - 4: u8
-/// - 5: u16
-/// - 6: u32
-/// - 7: u64
-/// - 8: bool
-/// - 9: unit
-/// - 10: never
-/// - 11: error
-/// - 12-15: reserved for future primitives
+/// Primitive values are exactly the authoritative [`Type`] encodings.
+/// Composite values use the centralized transitional pool-index encoding.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct InternedType(u32);
 
 impl InternedType {
-    // Reserved indices for primitives
-    pub const I8: InternedType = InternedType(0);
-    pub const I16: InternedType = InternedType(1);
-    pub const I32: InternedType = InternedType(2);
-    pub const I64: InternedType = InternedType(3);
-    pub const U8: InternedType = InternedType(4);
-    pub const U16: InternedType = InternedType(5);
-    pub const U32: InternedType = InternedType(6);
-    pub const U64: InternedType = InternedType(7);
-    pub const BOOL: InternedType = InternedType(8);
-    pub const UNIT: InternedType = InternedType(9);
-    pub const NEVER: InternedType = InternedType(10);
-    pub const ERROR: InternedType = InternedType(11);
-
-    const PRIMITIVE_COUNT: u32 = 16;
+    pub const I8: InternedType = InternedType(Type::I8.raw_encoding());
+    pub const I16: InternedType = InternedType(Type::I16.raw_encoding());
+    pub const I32: InternedType = InternedType(Type::I32.raw_encoding());
+    pub const I64: InternedType = InternedType(Type::I64.raw_encoding());
+    pub const U8: InternedType = InternedType(Type::U8.raw_encoding());
+    pub const U16: InternedType = InternedType(Type::U16.raw_encoding());
+    pub const U32: InternedType = InternedType(Type::U32.raw_encoding());
+    pub const U64: InternedType = InternedType(Type::U64.raw_encoding());
+    pub const BOOL: InternedType = InternedType(Type::BOOL.raw_encoding());
+    pub const UNIT: InternedType = InternedType(Type::UNIT.raw_encoding());
+    pub const ERROR: InternedType = InternedType(Type::ERROR.raw_encoding());
+    pub const NEVER: InternedType = InternedType(Type::NEVER.raw_encoding());
 
     /// Check if this is a primitive type (no pool lookup needed).
     #[inline]
     pub fn is_primitive(self) -> bool {
-        self.0 < Self::PRIMITIVE_COUNT
+        type_encoding::compatibility::is_primitive(self.0)
     }
 
     /// Get the raw index value.
@@ -94,23 +76,28 @@ impl InternedType {
         self.0
     }
 
-    /// Create an InternedType from a raw index.
+    /// Create an `InternedType` from a raw compatibility encoding.
     ///
-    /// # Safety
-    ///
-    /// The caller must ensure the index is valid (either a primitive index 0-15,
-    /// or a composite index that exists in the pool).
+    /// Pool ownership and bounds are validated separately by pool APIs.
     #[inline]
-    pub fn from_raw(index: u32) -> Self {
-        InternedType(index)
+    pub fn try_from_raw(index: u32) -> Option<Self> {
+        if type_encoding::compatibility::is_primitive(index)
+            || type_encoding::compatibility::decode_pool_index(index).is_some()
+        {
+            Some(InternedType(index))
+        } else {
+            None
+        }
     }
 
     /// Create an InternedType for a composite type from its pool index.
     ///
-    /// The pool index is offset by `PRIMITIVE_COUNT` to produce the final index.
+    /// The pool index is mapped through the centralized compatibility encoding.
     #[inline]
     fn from_pool_index(pool_index: u32) -> Self {
-        InternedType(pool_index + Self::PRIMITIVE_COUNT)
+        let encoded = type_encoding::compatibility::encode_pool_index(pool_index)
+            .expect("intern pool index overflow");
+        InternedType(encoded)
     }
 
     /// Get the pool index for a composite type.
@@ -118,35 +105,33 @@ impl InternedType {
     /// Returns `None` for primitive types.
     #[inline]
     pub fn pool_index(self) -> Option<u32> {
-        if self.is_primitive() {
-            None
-        } else {
-            Some(self.0 - Self::PRIMITIVE_COUNT)
-        }
+        type_encoding::compatibility::decode_pool_index(self.0)
     }
 }
 
 impl std::fmt::Debug for InternedType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_primitive() {
-            let name = match self.0 {
-                0 => "i8",
-                1 => "i16",
-                2 => "i32",
-                3 => "i64",
-                4 => "u8",
-                5 => "u16",
-                6 => "u32",
-                7 => "u64",
-                8 => "bool",
-                9 => "()",
-                10 => "!",
-                11 => "<error>",
-                _ => "<reserved>",
+        if let Some(Decoded::Primitive(primitive)) = type_encoding::decode(self.0) {
+            let name = match primitive {
+                Primitive::I8 => "i8",
+                Primitive::I16 => "i16",
+                Primitive::I32 => "i32",
+                Primitive::I64 => "i64",
+                Primitive::U8 => "u8",
+                Primitive::U16 => "u16",
+                Primitive::U32 => "u32",
+                Primitive::U64 => "u64",
+                Primitive::Bool => "bool",
+                Primitive::Unit => "()",
+                Primitive::Error => "<error>",
+                Primitive::Never => "!",
+                Primitive::ComptimeType => "type",
             };
             write!(f, "InternedType({name})")
+        } else if let Some(pool_index) = self.pool_index() {
+            write!(f, "InternedType(pool:{pool_index})")
         } else {
-            write!(f, "InternedType(pool:{})", self.0 - Self::PRIMITIVE_COUNT)
+            write!(f, "InternedType(invalid:{:#x})", self.0)
         }
     }
 }
@@ -161,6 +146,15 @@ impl std::fmt::Debug for InternedType {
 /// - **Array**, **PtrConst**, and **PtrMut** are structural types: identity comes from element/pointee type
 #[derive(Debug, Clone)]
 pub enum TypeData {
+    /// Private anonymous-construction slot. No live [`Type`] is issued for it.
+    ReservedStruct,
+
+    /// Named struct identity whose definition has not completed yet.
+    DeclaredStruct(StructData),
+
+    /// Named enum identity whose definition has not completed yet.
+    DeclaredEnum(EnumData),
+
     /// User-defined struct (nominal type).
     ///
     /// Two structs with the same fields but different names are different types.
@@ -186,6 +180,15 @@ pub enum TypeData {
     ///
     /// `ptr mut T` - pointer to mutable data.
     PtrMut { pointee: InternedType },
+}
+
+impl TypeData {
+    fn is_incomplete(&self) -> bool {
+        matches!(
+            self,
+            Self::ReservedStruct | Self::DeclaredStruct(_) | Self::DeclaredEnum(_)
+        )
+    }
 }
 
 /// Data for a struct type in the intern pool.
@@ -261,7 +264,7 @@ pub struct FrozenTypeInternPool {
 
 #[derive(Debug)]
 struct TypeInternPoolInner {
-    /// All composite type data, indexed by (InternedType.0 - PRIMITIVE_COUNT).
+    /// All composite type data, indexed by the decoded compatibility pool index.
     types: Vec<TypeData>,
 
     /// Structural type deduplication: (element, len) -> InternedType for arrays.
@@ -290,7 +293,17 @@ struct TypeInternPoolInner {
     lang_item_structs: HashMap<LangItem, StructId>,
 }
 
+fn checked_pool_index(index: usize) -> Option<u32> {
+    let index = u32::try_from(index).ok()?;
+    (index <= type_encoding::MAX_PAYLOAD).then_some(index)
+}
+
 impl TypeInternPoolInner {
+    fn next_pool_index(&self) -> u32 {
+        checked_pool_index(self.types.len())
+            .expect("type intern pool exceeds the 24-bit Type payload capacity")
+    }
+
     #[inline]
     fn data(&self, index: u32) -> &TypeData {
         &self.types[index as usize]
@@ -298,7 +311,7 @@ impl TypeInternPoolInner {
 
     fn try_struct_def(&self, id: StructId) -> Option<&StructDef> {
         match self.types.get(id.0 as usize)? {
-            TypeData::Struct(data) => Some(&data.def),
+            TypeData::DeclaredStruct(data) | TypeData::Struct(data) => Some(&data.def),
             _ => None,
         }
     }
@@ -310,7 +323,7 @@ impl TypeInternPoolInner {
 
     fn try_enum_def(&self, id: EnumId) -> Option<&EnumDef> {
         match self.types.get(id.0 as usize)? {
-            TypeData::Enum(data) => Some(&data.def),
+            TypeData::DeclaredEnum(data) | TypeData::Enum(data) => Some(&data.def),
             _ => None,
         }
     }
@@ -322,32 +335,26 @@ impl TypeInternPoolInner {
 
     fn interned_to_type(&self, ty: InternedType) -> Type {
         if ty.is_primitive() {
-            return match ty.0 {
-                0 => Type::I8,
-                1 => Type::I16,
-                2 => Type::I32,
-                3 => Type::I64,
-                4 => Type::U8,
-                5 => Type::U16,
-                6 => Type::U32,
-                7 => Type::U64,
-                8 => Type::BOOL,
-                9 => Type::UNIT,
-                10 => Type::NEVER,
-                11 => Type::ERROR,
-                _ => panic!("Unknown primitive index: {}", ty.0),
-            };
+            return Type::try_from_u32(ty.0)
+                .expect("InternedType primitive must use the canonical Type encoding");
         }
 
         let index = ty.pool_index().expect("non-primitive must have pool index");
         match self.data(index) {
-            TypeData::Struct(_) => Type::new_struct(StructId::from_pool_index(index)),
-            TypeData::Enum(_) => Type::new_enum(EnumId::from_pool_index(index)),
+            TypeData::DeclaredStruct(_) | TypeData::Struct(_) => {
+                Type::new_struct(StructId::from_pool_index(index))
+            }
+            TypeData::DeclaredEnum(_) | TypeData::Enum(_) => {
+                Type::new_enum(EnumId::from_pool_index(index))
+            }
             TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(index)),
             TypeData::PtrConst { .. } => {
                 Type::new_ptr_const(PtrConstTypeId::from_pool_index(index))
             }
             TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index)),
+            TypeData::ReservedStruct => {
+                panic!("reserved pool entry {index} cannot be issued as a Type")
+            }
         }
     }
 
@@ -444,7 +451,7 @@ impl TypeInternPoolInner {
 
     fn struct_symbol_name(&self, id: StructId) -> String {
         let data = match self.data(id.0) {
-            TypeData::Struct(data) => data,
+            TypeData::DeclaredStruct(data) | TypeData::Struct(data) => data,
             other => panic!("Expected struct at pool index {}, got {:?}", id.0, other),
         };
         if !data.def.is_builtin && self.nominal_name_collides(data.name) {
@@ -459,7 +466,7 @@ impl TypeInternPoolInner {
 
     fn enum_symbol_name(&self, id: EnumId) -> String {
         let data = match self.data(id.0) {
-            TypeData::Enum(data) => data,
+            TypeData::DeclaredEnum(data) | TypeData::Enum(data) => data,
             other => panic!("Expected enum at pool index {}, got {:?}", id.0, other),
         };
         if self.nominal_name_collides(data.name) {
@@ -524,10 +531,10 @@ impl TypeInternPoolInner {
         };
         for data in &self.types {
             match data {
-                TypeData::Struct(_) => stats.struct_count += 1,
-                TypeData::Enum(_) => stats.enum_count += 1,
+                TypeData::DeclaredStruct(_) | TypeData::Struct(_) => stats.struct_count += 1,
+                TypeData::DeclaredEnum(_) | TypeData::Enum(_) => stats.enum_count += 1,
                 TypeData::Array { .. } => stats.array_count += 1,
-                TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {}
+                TypeData::ReservedStruct | TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {}
             }
         }
         stats
@@ -558,12 +565,20 @@ impl TypeInternPool {
     /// remain separate: type definitions retain stable string names rather than
     /// storing a [`Spur`] from a CFG or codegen request.
     pub fn freeze(self) -> FrozenTypeInternPool {
+        let inner = self
+            .inner
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((index, entry)) = inner
+            .types
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.is_incomplete())
+        {
+            panic!("cannot freeze incomplete type-pool entry {index}: {entry:?}");
+        }
         FrozenTypeInternPool {
-            inner: Arc::new(
-                self.inner
-                    .into_inner()
-                    .unwrap_or_else(PoisonError::into_inner),
-            ),
+            inner: Arc::new(inner),
         }
     }
 
@@ -615,7 +630,7 @@ impl TypeInternPool {
         }
 
         // Create new struct type
-        let pool_index = inner.types.len() as u32;
+        let pool_index = inner.next_pool_index();
         let interned = InternedType::from_pool_index(pool_index);
         let struct_id = StructId::from_pool_index(pool_index);
 
@@ -623,6 +638,41 @@ impl TypeInternPool {
         inner.struct_by_file_name.insert(key, interned);
 
         (struct_id, true)
+    }
+
+    /// Register a named struct identity whose definition will be completed
+    /// after declaration type references have been resolved.
+    pub(crate) fn declare_struct(&self, name: Spur, shell: StructDef) -> (StructId, bool) {
+        let key = (shell.file_id, name);
+        {
+            let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+            if let Some(&existing) = inner.struct_by_file_name.get(&key) {
+                return (
+                    StructId::from_pool_index(
+                        existing.pool_index().expect("struct must have pool index"),
+                    ),
+                    false,
+                );
+            }
+        }
+
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(&existing) = inner.struct_by_file_name.get(&key) {
+            return (
+                StructId::from_pool_index(
+                    existing.pool_index().expect("struct must have pool index"),
+                ),
+                false,
+            );
+        }
+
+        let pool_index = inner.next_pool_index();
+        let interned = InternedType::from_pool_index(pool_index);
+        inner
+            .types
+            .push(TypeData::DeclaredStruct(StructData { name, def: shell }));
+        inner.struct_by_file_name.insert(key, interned);
+        (StructId::from_pool_index(pool_index), true)
     }
 
     /// Reserve a struct ID without registering the full definition yet.
@@ -645,28 +695,11 @@ impl TypeInternPool {
     /// let def = StructDef { name: name.clone(), ... };
     /// pool.complete_struct_registration(struct_id, name_spur, def);
     /// ```
-    pub fn reserve_struct_id(&self) -> StructId {
+    pub(crate) fn reserve_struct_id(&self) -> StructId {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
-        // Reserve a slot by pushing a placeholder
-        // We use a placeholder Struct with empty data that will be overwritten
-        let pool_index = inner.types.len() as u32;
-
-        // Push a placeholder - this reserves the index
-        // The placeholder will be replaced by complete_struct_registration
-        inner.types.push(TypeData::Struct(StructData {
-            name: Spur::default(),
-            def: StructDef {
-                name: String::new(),
-                fields: vec![],
-                is_copy: false,
-                is_linear: false,
-                destructor: None,
-                is_builtin: false,
-                is_pub: false,
-                file_id: rue_span::FileId::DEFAULT,
-            },
-        }));
+        let pool_index = inner.next_pool_index();
+        inner.types.push(TypeData::ReservedStruct);
 
         StructId::from_pool_index(pool_index)
     }
@@ -682,7 +715,12 @@ impl TypeInternPool {
     /// - The struct_id wasn't created by `reserve_struct_id`
     /// - The slot at struct_id doesn't contain a placeholder struct
     /// - A struct with the given name already exists
-    pub fn complete_struct_registration(&self, struct_id: StructId, name: Spur, def: StructDef) {
+    pub(crate) fn complete_struct_registration(
+        &self,
+        struct_id: StructId,
+        name: Spur,
+        def: StructDef,
+    ) {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         let pool_index = struct_id.0 as usize;
 
@@ -694,7 +732,12 @@ impl TypeInternPool {
             inner.types.len()
         );
 
-        // Check that a struct with this name doesn't already exist
+        assert!(
+            matches!(inner.types.get(pool_index), Some(TypeData::ReservedStruct)),
+            "pool index {} is not a reserved struct entry",
+            pool_index
+        );
+
         assert!(
             !inner.struct_by_file_name.contains_key(&(def.file_id, name)),
             "Struct with this name already exists"
@@ -705,8 +748,39 @@ impl TypeInternPool {
         inner.types[pool_index] = TypeData::Struct(StructData { name, def });
 
         // Register in the defining-file lookup.
-        let interned = InternedType::from_pool_index(pool_index as u32);
+        let interned = InternedType::from_pool_index(struct_id.pool_index());
         inner.struct_by_file_name.insert(key, interned);
+    }
+
+    /// Complete a named struct declaration exactly once.
+    pub(crate) fn complete_declared_struct(&self, struct_id: StructId, def: StructDef) {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let pool_index = struct_id.pool_index() as usize;
+        let entry = inner
+            .types
+            .get_mut(pool_index)
+            .unwrap_or_else(|| panic!("Invalid declared struct ID: {pool_index}"));
+        match entry {
+            TypeData::DeclaredStruct(data) => {
+                assert_eq!(
+                    data.def.file_id, def.file_id,
+                    "completed struct changed defining file"
+                );
+                assert_eq!(
+                    data.def.name.as_str(),
+                    def.name.as_str(),
+                    "completed struct changed textual name"
+                );
+                *entry = TypeData::Struct(StructData {
+                    name: data.name,
+                    def,
+                });
+            }
+            other => panic!(
+                "pool index {} is not a declared struct entry: {:?}",
+                pool_index, other
+            ),
+        }
     }
 
     /// Register a new enum (nominal - no deduplication).
@@ -735,13 +809,77 @@ impl TypeInternPool {
         }
 
         // Create new enum type
-        let pool_index = inner.types.len() as u32;
+        let pool_index = inner.next_pool_index();
         let interned = InternedType::from_pool_index(pool_index);
 
         inner.types.push(TypeData::Enum(EnumData { name, def }));
         inner.enum_by_file_name.insert(key, interned);
 
         (EnumId::from_pool_index(pool_index), true)
+    }
+
+    /// Register a named enum identity whose definition will be completed after
+    /// payload type references have been resolved.
+    pub(crate) fn declare_enum(&self, name: Spur, shell: EnumDef) -> (EnumId, bool) {
+        let key = (shell.file_id, name);
+        {
+            let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+            if let Some(&existing) = inner.enum_by_file_name.get(&key) {
+                return (
+                    EnumId::from_pool_index(
+                        existing.pool_index().expect("enum must have pool index"),
+                    ),
+                    false,
+                );
+            }
+        }
+
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(&existing) = inner.enum_by_file_name.get(&key) {
+            return (
+                EnumId::from_pool_index(existing.pool_index().expect("enum must have pool index")),
+                false,
+            );
+        }
+
+        let pool_index = inner.next_pool_index();
+        let interned = InternedType::from_pool_index(pool_index);
+        inner
+            .types
+            .push(TypeData::DeclaredEnum(EnumData { name, def: shell }));
+        inner.enum_by_file_name.insert(key, interned);
+        (EnumId::from_pool_index(pool_index), true)
+    }
+
+    /// Complete a named enum declaration exactly once.
+    pub(crate) fn complete_declared_enum(&self, enum_id: EnumId, def: EnumDef) {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let pool_index = enum_id.pool_index() as usize;
+        let entry = inner
+            .types
+            .get_mut(pool_index)
+            .unwrap_or_else(|| panic!("Invalid declared enum ID: {pool_index}"));
+        match entry {
+            TypeData::DeclaredEnum(data) => {
+                assert_eq!(
+                    data.def.file_id, def.file_id,
+                    "completed enum changed defining file"
+                );
+                assert_eq!(
+                    data.def.name.as_str(),
+                    def.name.as_str(),
+                    "completed enum changed textual name"
+                );
+                *entry = TypeData::Enum(EnumData {
+                    name: data.name,
+                    def,
+                });
+            }
+            other => panic!(
+                "pool index {} is not a declared enum entry: {:?}",
+                pool_index, other
+            ),
+        }
     }
 
     /// Intern an array type (structural - deduplicates).
@@ -768,7 +906,7 @@ impl TypeInternPool {
         }
 
         // Create new array type
-        let pool_index = inner.types.len() as u32;
+        let pool_index = inner.next_pool_index();
         let interned = InternedType::from_pool_index(pool_index);
 
         inner.types.push(TypeData::Array { element, len });
@@ -799,7 +937,7 @@ impl TypeInternPool {
         }
 
         // Create new pointer type
-        let pool_index = inner.types.len() as u32;
+        let pool_index = inner.next_pool_index();
         let interned = InternedType::from_pool_index(pool_index);
 
         inner.types.push(TypeData::PtrConst { pointee });
@@ -830,7 +968,7 @@ impl TypeInternPool {
         }
 
         // Create new pointer type
-        let pool_index = inner.types.len() as u32;
+        let pool_index = inner.next_pool_index();
         let interned = InternedType::from_pool_index(pool_index);
 
         inner.types.push(TypeData::PtrMut { pointee });
@@ -879,7 +1017,10 @@ impl TypeInternPool {
         if ty.is_primitive() {
             return false;
         }
-        matches!(self.get(ty), Some(TypeData::Struct(_)))
+        matches!(
+            self.get(ty),
+            Some(TypeData::DeclaredStruct(_) | TypeData::Struct(_))
+        )
     }
 
     /// Check if this is an enum type.
@@ -887,7 +1028,10 @@ impl TypeInternPool {
         if ty.is_primitive() {
             return false;
         }
-        matches!(self.get(ty), Some(TypeData::Enum(_)))
+        matches!(
+            self.get(ty),
+            Some(TypeData::DeclaredEnum(_) | TypeData::Enum(_))
+        )
     }
 
     /// Check if this is an array type.
@@ -970,7 +1114,7 @@ impl TypeInternPool {
         assert!(
             matches!(
                 inner.types.get(struct_id.0 as usize),
-                Some(TypeData::Struct(_))
+                Some(TypeData::DeclaredStruct(_) | TypeData::Struct(_))
             ),
             "language items can only be assigned to registered structs"
         );
@@ -1245,7 +1389,11 @@ impl TypeInternPool {
             .iter()
             .enumerate()
             .filter_map(|(idx, data)| match data {
-                TypeData::Struct(_) => Some(StructId::from_pool_index(idx as u32)),
+                TypeData::DeclaredStruct(_) | TypeData::Struct(_) => {
+                    Some(StructId::from_pool_index(
+                        checked_pool_index(idx).expect("type pool index invariant"),
+                    ))
+                }
                 _ => None,
             })
             .collect()
@@ -1262,7 +1410,9 @@ impl TypeInternPool {
             .iter()
             .enumerate()
             .filter_map(|(idx, data)| match data {
-                TypeData::Enum(_) => Some(EnumId::from_pool_index(idx as u32)),
+                TypeData::DeclaredEnum(_) | TypeData::Enum(_) => Some(EnumId::from_pool_index(
+                    checked_pool_index(idx).expect("type pool index invariant"),
+                )),
                 _ => None,
             })
             .collect()
@@ -1279,7 +1429,9 @@ impl TypeInternPool {
             .iter()
             .enumerate()
             .filter_map(|(idx, data)| match data {
-                TypeData::Array { .. } => Some(ArrayTypeId(idx as u32)),
+                TypeData::Array { .. } => Some(ArrayTypeId::from_pool_index(
+                    checked_pool_index(idx).expect("type pool index invariant"),
+                )),
                 _ => None,
             })
             .collect()
@@ -1363,22 +1515,7 @@ impl TypeInternPool {
         if !ty.is_primitive() {
             return None;
         }
-
-        Some(match ty.0 {
-            0 => Type::I8,
-            1 => Type::I16,
-            2 => Type::I32,
-            3 => Type::I64,
-            4 => Type::U8,
-            5 => Type::U16,
-            6 => Type::U32,
-            7 => Type::U64,
-            8 => Type::BOOL,
-            9 => Type::UNIT,
-            10 => Type::NEVER,
-            11 => Type::ERROR,
-            _ => return None,
-        })
+        Type::try_from_u32(ty.0)
     }
 }
 
@@ -1463,7 +1600,11 @@ impl FrozenTypeInternPool {
             .iter()
             .enumerate()
             .filter(|(_, data)| matches!(data, TypeData::Struct(_)))
-            .map(|(index, _)| StructId::from_pool_index(index as u32))
+            .map(|(index, _)| {
+                StructId::from_pool_index(
+                    checked_pool_index(index).expect("type pool index invariant"),
+                )
+            })
     }
 
     pub fn all_enum_ids(&self) -> impl Iterator<Item = EnumId> + '_ {
@@ -1472,7 +1613,11 @@ impl FrozenTypeInternPool {
             .iter()
             .enumerate()
             .filter(|(_, data)| matches!(data, TypeData::Enum(_)))
-            .map(|(index, _)| EnumId::from_pool_index(index as u32))
+            .map(|(index, _)| {
+                EnumId::from_pool_index(
+                    checked_pool_index(index).expect("type pool index invariant"),
+                )
+            })
     }
 
     pub fn all_array_ids(&self) -> impl Iterator<Item = ArrayTypeId> + '_ {
@@ -1481,7 +1626,11 @@ impl FrozenTypeInternPool {
             .iter()
             .enumerate()
             .filter_map(|(index, data)| {
-                matches!(data, TypeData::Array { .. }).then_some(ArrayTypeId(index as u32))
+                matches!(data, TypeData::Array { .. }).then(|| {
+                    ArrayTypeId::from_pool_index(
+                        checked_pool_index(index).expect("type pool index invariant"),
+                    )
+                })
             })
     }
 
@@ -1491,7 +1640,11 @@ impl FrozenTypeInternPool {
             .iter()
             .enumerate()
             .filter(|(_, data)| matches!(data, TypeData::PtrConst { .. }))
-            .map(|(index, _)| PtrConstTypeId::from_pool_index(index as u32))
+            .map(|(index, _)| {
+                PtrConstTypeId::from_pool_index(
+                    checked_pool_index(index).expect("type pool index invariant"),
+                )
+            })
     }
 
     pub fn all_ptr_mut_ids(&self) -> impl Iterator<Item = PtrMutTypeId> + '_ {
@@ -1500,7 +1653,11 @@ impl FrozenTypeInternPool {
             .iter()
             .enumerate()
             .filter(|(_, data)| matches!(data, TypeData::PtrMut { .. }))
-            .map(|(index, _)| PtrMutTypeId::from_pool_index(index as u32))
+            .map(|(index, _)| {
+                PtrMutTypeId::from_pool_index(
+                    checked_pool_index(index).expect("type pool index invariant"),
+                )
+            })
     }
 
     pub fn len(&self) -> usize {
@@ -1603,6 +1760,19 @@ mod tests {
         assert_eq!(InternedType::U8.index(), 4);
         assert_eq!(InternedType::BOOL.index(), 8);
         assert_eq!(InternedType::UNIT.index(), 9);
+        assert_eq!(
+            InternedType::ERROR.index(),
+            Type::ERROR.raw_encoding(),
+            "compatibility wrapper must not swap Error and Never"
+        );
+        assert_eq!(
+            InternedType::NEVER.index(),
+            Type::NEVER.raw_encoding(),
+            "compatibility wrapper must not swap Error and Never"
+        );
+        assert!(InternedType::try_from_raw(13).is_none());
+        assert!(InternedType::try_from_raw(255).is_none());
+        assert!(InternedType::try_from_raw(Type::COMPTIME_TYPE.raw_encoding()).is_none());
     }
 
     #[test]
@@ -1645,6 +1815,157 @@ mod tests {
         let pool = TypeInternPool::new();
         assert!(pool.is_empty());
         assert_eq!(pool.len(), 0);
+    }
+
+    fn struct_def(name: &str, fields: Vec<StructField>) -> StructDef {
+        StructDef {
+            name: name.into(),
+            fields,
+            is_copy: false,
+            is_linear: false,
+            destructor: None,
+            is_builtin: false,
+            is_pub: false,
+            file_id: FileId::DEFAULT,
+        }
+    }
+
+    fn enum_def(name: &str) -> EnumDef {
+        EnumDef {
+            name: name.into(),
+            variants: vec![],
+            variant_payloads: vec![],
+            is_pub: false,
+            file_id: FileId::DEFAULT,
+        }
+    }
+
+    #[test]
+    fn checked_pool_index_enforces_type_payload_capacity() {
+        let maximum = type_encoding::MAX_PAYLOAD as usize;
+        assert_eq!(
+            checked_pool_index(maximum),
+            Some(type_encoding::MAX_PAYLOAD)
+        );
+        assert_eq!(checked_pool_index(maximum + 1), None);
+    }
+
+    #[test]
+    fn declared_struct_has_identity_before_single_completion() {
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let name = interner.get_or_intern("Node");
+        let (id, is_new) = pool.declare_struct(name, struct_def("Node", vec![]));
+        assert!(is_new);
+
+        let interned = pool.struct_id_to_interned(id);
+        assert!(matches!(
+            pool.get(interned),
+            Some(TypeData::DeclaredStruct(_))
+        ));
+        assert!(pool.is_struct(interned));
+        assert!(pool.get_struct_def(interned).is_none());
+
+        // The declared identity is legal in a recursive pointer graph before
+        // the nominal definition completes.
+        let next_id = pool.intern_ptr_mut_from_type(Type::new_struct(id));
+        let next = Type::new_ptr_mut(next_id);
+        pool.complete_declared_struct(
+            id,
+            struct_def(
+                "Node",
+                vec![StructField {
+                    name: "next".into(),
+                    ty: next,
+                }],
+            ),
+        );
+
+        assert!(matches!(pool.get(interned), Some(TypeData::Struct(_))));
+        assert_eq!(pool.get_struct_def(interned).unwrap().fields[0].ty, next);
+        let frozen = pool.freeze();
+        assert_eq!(frozen.ptr_mut_def(next_id), Type::new_struct(id));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a declared struct entry")]
+    fn declared_struct_cannot_complete_twice() {
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let name = interner.get_or_intern("Once");
+        let (id, _) = pool.declare_struct(name, struct_def("Once", vec![]));
+        pool.complete_declared_struct(id, struct_def("Once", vec![]));
+        pool.complete_declared_struct(id, struct_def("Once", vec![]));
+    }
+
+    #[test]
+    #[should_panic(expected = "completed struct changed textual name")]
+    fn declared_struct_completion_rejects_name_change() {
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let name = interner.get_or_intern("Before");
+        let (id, _) = pool.declare_struct(name, struct_def("Before", vec![]));
+        pool.complete_declared_struct(id, struct_def("After", vec![]));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a declared enum entry")]
+    fn declared_enum_cannot_complete_twice() {
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let name = interner.get_or_intern("Once");
+        let (id, _) = pool.declare_enum(name, enum_def("Once"));
+        pool.complete_declared_enum(id, enum_def("Once"));
+        pool.complete_declared_enum(id, enum_def("Once"));
+    }
+
+    #[test]
+    #[should_panic(expected = "completed enum changed textual name")]
+    fn declared_enum_completion_rejects_name_change() {
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let name = interner.get_or_intern("Before");
+        let (id, _) = pool.declare_enum(name, enum_def("Before"));
+        pool.complete_declared_enum(id, enum_def("After"));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a declared struct entry")]
+    fn declared_completion_rejects_wrong_nominal_kind() {
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let name = interner.get_or_intern("Choice");
+        let (id, _) = pool.declare_enum(name, enum_def("Choice"));
+        pool.complete_declared_struct(
+            StructId::from_pool_index(id.pool_index()),
+            struct_def("Choice", vec![]),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot freeze incomplete type-pool entry")]
+    fn freeze_rejects_declared_entry() {
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let name = interner.get_or_intern("Later");
+        pool.declare_struct(name, struct_def("Later", vec![]));
+        let _ = pool.freeze();
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot freeze incomplete type-pool entry")]
+    fn freeze_rejects_reserved_entry() {
+        let pool = TypeInternPool::new();
+        pool.reserve_struct_id();
+        let _ = pool.freeze();
+    }
+
+    #[test]
+    fn error_recovery_structural_types_may_freeze() {
+        let pool = TypeInternPool::new();
+        let array_id = pool.intern_array_from_type(Type::ERROR, 1);
+        let frozen = pool.freeze();
+        assert_eq!(frozen.array_def(array_id), (Type::ERROR, 1));
     }
 
     #[test]

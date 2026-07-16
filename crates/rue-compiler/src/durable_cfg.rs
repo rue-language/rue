@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use lasso::{Key, Spur};
@@ -6,6 +6,24 @@ use rue_air::{AirInstData, AnalyzedFunction, Type, TypeKind};
 use rue_span::Span;
 
 use crate::{DurableAirInstData, DurableOrdinaryBodyPayload, DurableType};
+
+fn deduplicate_type_mappings(
+    mappings: Vec<(Type, DurableType)>,
+) -> Result<Vec<(Type, DurableType)>, CfgDomainFailure> {
+    let mut positions: HashMap<Type, usize> = HashMap::with_capacity(mappings.len());
+    let mut unique: Vec<(Type, DurableType)> = Vec::with_capacity(mappings.len());
+    for (current, stable) in mappings {
+        if let Some(&position) = positions.get(&current) {
+            if unique[position].1 != stable {
+                return Err(CfgDomainFailure::Shape);
+            }
+        } else {
+            positions.insert(current, unique.len());
+            unique.push((current, stable));
+        }
+    }
+    Ok(unique)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StableCfgInput {
@@ -297,11 +315,7 @@ impl CfgDomainProjection {
                 }
             }
         }
-        types.sort_by_key(|(ty, _)| ty.as_u32());
-        types.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
-        if types.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return Err(CfgDomainFailure::Shape);
-        }
+        let types = deduplicate_type_mappings(types)?;
         stable_strings.sort_by_key(|(index, _)| *index);
         stable_strings.dedup();
         spans.sort_by_key(|(span, _)| (span.file_id.index(), span.start, span.end));
@@ -423,6 +437,28 @@ mod tests {
             )],
             symbols: vec![(symbol, StableCfgSymbol::Intrinsic(Arc::from("stable")))],
         }
+    }
+
+    #[test]
+    fn type_mapping_deduplication_preserves_encounter_order_and_rejects_conflicts() {
+        let mappings = deduplicate_type_mappings(vec![
+            (Type::I64, DurableType::I64),
+            (Type::I32, DurableType::I32),
+            (Type::I64, DurableType::I64),
+        ])
+        .unwrap();
+        assert_eq!(
+            mappings,
+            vec![(Type::I64, DurableType::I64), (Type::I32, DurableType::I32)]
+        );
+
+        assert_eq!(
+            deduplicate_type_mappings(vec![
+                (Type::I32, DurableType::I32),
+                (Type::I32, DurableType::I64),
+            ]),
+            Err(CfgDomainFailure::Shape)
+        );
     }
 
     #[test]

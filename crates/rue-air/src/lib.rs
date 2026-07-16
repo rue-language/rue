@@ -25,6 +25,7 @@ mod sema;
 mod semantic_body;
 mod semantic_import;
 pub mod specialize;
+mod type_encoding;
 mod types;
 
 pub use canonical_imports::CanonicalImportView;
