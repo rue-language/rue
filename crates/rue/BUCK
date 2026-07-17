@@ -1,5 +1,17 @@
 load("//crates:defs.bzl", "rue_binary")
 
+_DEPS = [
+    "//crates/rue-compiler:rue-compiler",
+    "//crates/rue-rir:rue-rir",
+    "//crates/rue-target:rue-target",
+    "//third-party:libc",
+    "//third-party:serde",
+    "//third-party:serde_json",
+    "//third-party:sha2",
+    "//third-party:tracing",
+    "//third-party:tracing-subscriber",
+]
+
 export_file(
     name = "benchmark-definition",
     src = "src/main.rs",
@@ -8,15 +20,22 @@ export_file(
 
 rue_binary(
     name = "rue",
-    deps = [
-        "//crates/rue-compiler:rue-compiler",
-        "//crates/rue-rir:rue-rir",
-        "//crates/rue-target:rue-target",
-        "//third-party:libc",
-        "//third-party:serde",
-        "//third-party:serde_json",
-        "//third-party:sha2",
-        "//third-party:tracing",
-        "//third-party:tracing-subscriber",
+    deps = _DEPS,
+    rustc_flags = [
+        "--check-cfg=cfg(rue_benchmark_allocations)",
+        "--check-cfg=cfg(test)",
     ],
+)
+
+# Allocation accounting changes the global allocator and is intentionally
+# isolated from the production compiler target.
+rue_binary(
+    name = "rue-benchmark",
+    deps = _DEPS,
+    rustc_flags = [
+        "--cfg=rue_benchmark_allocations",
+        "--check-cfg=cfg(rue_benchmark_allocations)",
+        "--check-cfg=cfg(test)",
+    ],
+    tests = False,
 )

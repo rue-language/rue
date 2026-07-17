@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use lasso::{Key, Spur};
 use rue_error::{CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, ice};
-use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
+use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::{FileId, Span};
 
 use super::{
@@ -311,7 +311,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         }
     }
     /// Check if a directive list contains the @copy directive
-    pub(crate) fn has_copy_directive(&self, directives: &[RirDirective]) -> bool {
+    pub(crate) fn has_copy_directive<'r>(
+        &self,
+        directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
+    ) -> bool {
         let copy_sym = self.interner.get("copy");
         for directive in directives {
             if Some(directive.name) == copy_sym {
@@ -361,14 +364,14 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 }
 
 impl<'a> Sema<'a> {
-    pub(crate) fn has_allow_directive(
+    pub(crate) fn has_allow_directive<'r>(
         &self,
-        directives: &[RirDirective],
+        mut directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
         warning_name: &str,
     ) -> bool {
         let allow_sym = self.interner.get("allow");
         let warning_sym = self.interner.get(warning_name);
-        directives.iter().any(|directive| {
+        directives.any(|directive| {
             Some(directive.name) == allow_sym
                 && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
         })
@@ -447,7 +450,7 @@ impl<'a> Sema<'a> {
                     let key = (inst.span.file_id, *name);
 
                     let directives = self.rir.get_directives(*directives_start, *directives_len);
-                    let is_copy = self.has_copy_directive(&directives);
+                    let is_copy = self.has_copy_directive(directives.iter());
 
                     // Linear types cannot be @copy
                     if *is_linear && is_copy {
@@ -924,9 +927,9 @@ impl<'a> Sema<'a> {
 
                 // Check for duplicate field names
                 let mut seen_fields: HashSet<Spur> = HashSet::new();
-                for (field_name, _) in &fields {
-                    if !seen_fields.insert(*field_name) {
-                        let field_name_str = self.interner.resolve(&*field_name).to_string();
+                for (field_name, _) in fields.values() {
+                    if !seen_fields.insert(field_name) {
+                        let field_name_str = self.interner.resolve(&field_name).to_string();
                         return Err(CompileError::new(
                             ErrorKind::DuplicateField {
                                 struct_name,
@@ -947,16 +950,16 @@ impl<'a> Sema<'a> {
                         super::DeclarationTypeDependencyKind::Field,
                     ));
                 let mut resolved_fields = Vec::new();
-                for (field_name, field_type) in &fields {
+                for (field_name, field_type) in fields.values() {
                     // A slice type `[T]` is second-class (ADR-0037, ADR-0043,
                     // RUE-322): storing it in a struct field would let the
                     // fat-pointer view escape its borrow's scope (E0488).
                     self.reject_slice_escape(
-                        *field_type,
+                        field_type,
                         inst.span,
                         ErrorKind::SliceInAggregateField,
                     )?;
-                    let field_ty = self.resolve_type(*field_type, inst.span)?;
+                    let field_ty = self.resolve_type(field_type, inst.span)?;
                     // spec 4.14:6 — type values cannot exist at runtime. A
                     // struct field of type `type` is a runtime storage slot for
                     // a type value, which is forbidden; reject it at the
@@ -973,7 +976,7 @@ impl<'a> Sema<'a> {
                         ));
                     }
                     resolved_fields.push(StructField {
-                        name: self.interner.resolve(&*field_name).to_string(),
+                        name: self.interner.resolve(&field_name).to_string(),
                         ty: field_ty,
                     });
                 }
@@ -1216,7 +1219,7 @@ impl<'a> Sema<'a> {
         span: Span,
     ) -> CompileResult<()> {
         let directives = self.rir.get_directives(directives_start, directives_len);
-        if !self.has_copy_directive(&directives) {
+        if !self.has_copy_directive(directives.iter()) {
             return Ok(());
         }
 
@@ -1406,9 +1409,10 @@ impl<'a> Sema<'a> {
 
         let params = self.rir.get_params(params_start, params_len);
         let directives = self.rir.get_directives(directives_start, directives_len);
-        let allow_unused_function = self.has_allow_directive(&directives, "unused_function");
-        let allow_unused_variable = self.has_allow_directive(&directives, "unused_variable");
-        let allow_unreachable_code = self.has_allow_directive(&directives, "unreachable_code");
+        let allow_unused_function = self.has_allow_directive(directives.iter(), "unused_function");
+        let allow_unused_variable = self.has_allow_directive(directives.iter(), "unused_variable");
+        let allow_unreachable_code =
+            self.has_allow_directive(directives.iter(), "unreachable_code");
 
         let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
         let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
@@ -1865,7 +1869,7 @@ impl<'a> Sema<'a> {
                         "compiler import preflight rejects malformed @import calls"
                     );
                     let arg_refs = self.rir.get_inst_refs(*args_start, *args_len);
-                    let arg_inst = self.rir.get(arg_refs[0]);
+                    let arg_inst = self.rir.get(arg_refs.get(0).unwrap());
                     let import_path = match &arg_inst.data {
                         InstData::StringConst(path_spur) => {
                             self.interner.resolve(path_spur).to_string()
@@ -2659,7 +2663,7 @@ impl<'a> Sema<'a> {
         let param_modes = self.param_arena.modes(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
         let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-        let args = self.rir.get_call_args(args_start, args_len).to_vec();
+        let args = self.rir.get_call_args(args_start, args_len);
         if args.len() != param_names.len() {
             return Err(CompileError::new(
                 ErrorKind::ConstExprNotSupported {

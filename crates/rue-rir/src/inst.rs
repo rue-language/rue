@@ -74,7 +74,7 @@ impl RirParamMode {
 }
 
 /// A parameter in a function declaration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct RirParam {
     /// Parameter name
     pub name: Spur,
@@ -126,7 +126,7 @@ impl RirArgMode {
 }
 
 /// An argument in a function call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct RirCallArg {
     /// The argument expression
     pub value: InstRef,
@@ -196,6 +196,237 @@ impl RirPattern {
             RirPattern::Int { span, .. } => *span,
             RirPattern::Bool(_, span) => *span,
             RirPattern::Path { span, .. } => *span,
+        }
+    }
+}
+
+/// A lazily decoded, borrowing view of a match pattern stored in RIR.
+///
+/// Unlike [`RirPattern`], a path pattern's bindings remain in the compact RIR
+/// word store and are decoded only as they are traversed.
+#[derive(Debug, Clone)]
+pub enum RirPatternView<'a> {
+    Wildcard(Span),
+    Int {
+        value: u64,
+        negative: bool,
+        span: Span,
+    },
+    Bool(bool, Span),
+    Path {
+        module: Option<InstRef>,
+        ctor_head: Option<InstRef>,
+        type_name: Spur,
+        variant: Spur,
+        bindings: RirSymbols<'a>,
+        span: Span,
+    },
+}
+
+impl RirPatternView<'_> {
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Wildcard(span) | Self::Bool(_, span) => *span,
+            Self::Int { span, .. } | Self::Path { span, .. } => *span,
+        }
+    }
+
+    /// Materialize an owned pattern when it must outlive the RIR borrow.
+    pub fn to_owned(&self) -> RirPattern {
+        match self {
+            Self::Wildcard(span) => RirPattern::Wildcard(*span),
+            Self::Int {
+                value,
+                negative,
+                span,
+            } => RirPattern::Int {
+                value: *value,
+                negative: *negative,
+                span: *span,
+            },
+            Self::Bool(value, span) => RirPattern::Bool(*value, *span),
+            Self::Path {
+                module,
+                ctor_head,
+                type_name,
+                variant,
+                bindings,
+                span,
+            } => RirPattern::Path {
+                module: *module,
+                ctor_head: *ctor_head,
+                type_name: *type_name,
+                variant: *variant,
+                bindings: bindings.to_vec(),
+                span: *span,
+            },
+        }
+    }
+}
+
+/// A reusable, zero-allocation view of fixed-width records in the RIR word store.
+pub struct RirSlice<'a, T> {
+    words: &'a [u32],
+    width: usize,
+    decode: fn(&[u32]) -> T,
+}
+
+impl<T> std::fmt::Debug for RirSlice<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RirSlice")
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+impl<T> Clone for RirSlice<'_, T> {
+    fn clone(&self) -> Self {
+        Self {
+            words: self.words,
+            width: self.width,
+            decode: self.decode,
+        }
+    }
+}
+
+impl<'a, T: 'a> RirSlice<'a, T> {
+    fn new(words: &'a [u32], width: usize, decode: fn(&[u32]) -> T) -> Self {
+        assert!(width != 0 && words.len().is_multiple_of(width));
+        for record in words.chunks_exact(width) {
+            decode(record);
+        }
+        Self {
+            words,
+            width,
+            decode,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.words.len() / self.width
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.words.is_empty()
+    }
+
+    pub fn iter(&self) -> DecodedIter<impl ExactSizeIterator<Item = T> + Clone + 'a> {
+        DecodedIter(self.values())
+    }
+
+    pub fn values(&self) -> impl ExactSizeIterator<Item = T> + Clone + 'a {
+        RirSliceIter {
+            words: self.words.chunks_exact(self.width),
+            decode: self.decode,
+        }
+    }
+
+    pub fn get(&self, index: usize) -> Option<T> {
+        self.values().nth(index)
+    }
+
+    pub fn to_vec(&self) -> Vec<T> {
+        self.values().collect()
+    }
+}
+
+impl<'a, T> IntoIterator for RirSlice<'a, T> {
+    type Item = T;
+    type IntoIter = RirSliceIter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        RirSliceIter {
+            words: self.words.chunks_exact(self.width),
+            decode: self.decode,
+        }
+    }
+}
+
+impl<'a, T> IntoIterator for &RirSlice<'a, T> {
+    type Item = Decoded<T>;
+    type IntoIter = DecodedIter<RirSliceIter<'a, T>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        DecodedIter(RirSliceIter {
+            words: self.words.chunks_exact(self.width),
+            decode: self.decode,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Decoded<T>(T);
+
+impl<T> std::ops::Deref for Decoded<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DecodedIter<I>(I);
+
+impl<I: Iterator> Iterator for DecodedIter<I> {
+    type Item = Decoded<I::Item>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(Decoded)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for DecodedIter<I> {}
+
+pub struct RirSliceIter<'a, T> {
+    words: std::slice::ChunksExact<'a, u32>,
+    decode: fn(&[u32]) -> T,
+}
+
+impl<T> Clone for RirSliceIter<'_, T> {
+    fn clone(&self) -> Self {
+        Self {
+            words: self.words.clone(),
+            decode: self.decode,
+        }
+    }
+}
+
+impl<T> Iterator for RirSliceIter<'_, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.words.next().map(self.decode)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.words.size_hint()
+    }
+}
+
+impl<T> ExactSizeIterator for RirSliceIter<'_, T> {}
+
+pub type RirSymbols<'a> = RirSlice<'a, Spur>;
+
+/// A borrowing directive view. Arguments are decoded lazily from RIR.
+#[derive(Debug, Clone)]
+pub struct RirDirectiveView<'a> {
+    pub name: Spur,
+    pub args: RirSymbols<'a>,
+    pub span: Span,
+}
+
+impl RirDirectiveView<'_> {
+    /// Materialize an owned directive when it must outlive the RIR borrow.
+    pub fn to_owned(&self) -> RirDirective {
+        RirDirective {
+            name: self.name,
+            args: self.args.to_vec(),
+            span: self.span,
         }
     }
 }
@@ -362,11 +593,10 @@ impl Rir {
     }
 
     /// Retrieve InstRefs from the extra array.
-    pub fn get_inst_refs(&self, start: u32, len: u32) -> Vec<InstRef> {
-        self.get_extra(start, len)
-            .iter()
-            .map(|&v| InstRef::from_raw(v))
-            .collect()
+    pub fn get_inst_refs(&self, start: u32, len: u32) -> RirSlice<'_, InstRef> {
+        RirSlice::new(self.get_extra(start, len), 1, |record| {
+            InstRef::from_raw(record[0])
+        })
     }
 
     /// Store a slice of Spurs and return (start, len).
@@ -377,11 +607,10 @@ impl Rir {
     }
 
     /// Retrieve Spurs from the extra array.
-    pub fn get_symbols(&self, start: u32, len: u32) -> Vec<Spur> {
-        self.get_extra(start, len)
-            .iter()
-            .map(|&v| Spur::try_from_usize(v as usize).unwrap())
-            .collect()
+    pub fn get_symbols(&self, start: u32, len: u32) -> RirSymbols<'_> {
+        RirSlice::new(self.get_extra(start, len), 1, |record| {
+            Spur::try_from_usize(record[0] as usize).unwrap()
+        })
     }
 
     /// Store RirCallArgs and return (start, len).
@@ -397,15 +626,13 @@ impl Rir {
     }
 
     /// Retrieve RirCallArgs from the extra array.
-    pub fn get_call_args(&self, start: u32, len: u32) -> Vec<RirCallArg> {
-        let data = self.get_extra(start, len * CALL_ARG_SIZE);
-        let mut args = Vec::with_capacity(len as usize);
-        for chunk in data.chunks(CALL_ARG_SIZE as usize) {
-            let value = InstRef::from_raw(chunk[0]);
-            let mode = RirArgMode::from_u32(chunk[1]);
-            args.push(RirCallArg { value, mode });
-        }
-        args
+    pub fn get_call_args(&self, start: u32, len: u32) -> RirSlice<'_, RirCallArg> {
+        let words = len.checked_mul(CALL_ARG_SIZE).unwrap();
+        let data = self.get_extra(start, words);
+        RirSlice::new(data, CALL_ARG_SIZE as usize, |chunk| RirCallArg {
+            value: InstRef::from_raw(chunk[0]),
+            mode: RirArgMode::from_u32(chunk[1]),
+        })
     }
 
     /// Store RirParams and return (start, len).
@@ -427,24 +654,16 @@ impl Rir {
     }
 
     /// Retrieve RirParams from the extra array.
-    pub fn get_params(&self, start: u32, len: u32) -> Vec<RirParam> {
-        let data = self.get_extra(start, len * PARAM_SIZE);
-        let mut params = Vec::with_capacity(len as usize);
-        for chunk in data.chunks(PARAM_SIZE as usize) {
-            let name = Spur::try_from_usize(chunk[0] as usize).unwrap();
-            let ty = Spur::try_from_usize(chunk[1] as usize).unwrap();
-            let mode = RirParamMode::from_u32(chunk[2]);
-            let is_comptime = chunk[3] != 0;
-            let span = Span::with_file(FileId::new(chunk[4]), chunk[5], chunk[6]);
-            params.push(RirParam {
-                name,
-                ty,
-                mode,
-                is_comptime,
-                span,
-            });
-        }
-        params
+    pub fn get_params(&self, start: u32, len: u32) -> RirSlice<'_, RirParam> {
+        let words = len.checked_mul(PARAM_SIZE).unwrap();
+        let data = self.get_extra(start, words);
+        RirSlice::new(data, PARAM_SIZE as usize, |chunk| RirParam {
+            name: Spur::try_from_usize(chunk[0] as usize).unwrap(),
+            ty: Spur::try_from_usize(chunk[1] as usize).unwrap(),
+            mode: RirParamMode::from_u32(chunk[2]),
+            is_comptime: chunk[3] != 0,
+            span: Span::with_file(FileId::new(chunk[4]), chunk[5], chunk[6]),
+        })
     }
 
     /// Store match arms (pattern + body pairs) and return (start, arm_count).
@@ -526,87 +745,14 @@ impl Rir {
     }
 
     /// Retrieve match arms from the extra array.
-    pub fn get_match_arms(&self, start: u32, arm_count: u32) -> Vec<(RirPattern, InstRef)> {
-        let mut arms = Vec::with_capacity(arm_count as usize);
-        let mut pos = start as usize;
-
-        for _ in 0..arm_count {
-            let kind = self.extra[pos];
-            match kind {
-                k if k == PatternKind::Wildcard as u32 => {
-                    let span = Self::decode_pattern_span(&self.extra, pos);
-                    let body = InstRef::from_raw(self.extra[pos + 4]);
-                    arms.push((RirPattern::Wildcard(span), body));
-                    pos += PATTERN_WILDCARD_SIZE as usize;
-                }
-                k if k == PatternKind::Int as u32 => {
-                    let span = Self::decode_pattern_span(&self.extra, pos);
-                    let value_lo = self.extra[pos + 4] as u64;
-                    let value_hi = self.extra[pos + 5] as u64;
-                    let value = value_lo | (value_hi << 32);
-                    let negative = self.extra[pos + 6] != 0;
-                    let body = InstRef::from_raw(self.extra[pos + 7]);
-                    arms.push((
-                        RirPattern::Int {
-                            value,
-                            negative,
-                            span,
-                        },
-                        body,
-                    ));
-                    pos += PATTERN_INT_SIZE as usize;
-                }
-                k if k == PatternKind::Bool as u32 => {
-                    let span = Self::decode_pattern_span(&self.extra, pos);
-                    let value = self.extra[pos + 4] != 0;
-                    let body = InstRef::from_raw(self.extra[pos + 5]);
-                    arms.push((RirPattern::Bool(value, span), body));
-                    pos += PATTERN_BOOL_SIZE as usize;
-                }
-                k if k == PatternKind::Path as u32 => {
-                    let span = Self::decode_pattern_span(&self.extra, pos);
-                    // Decode module: u32::MAX means None
-                    let module_raw = self.extra[pos + 4];
-                    let module = if module_raw == u32::MAX {
-                        None
-                    } else {
-                        Some(InstRef::from_raw(module_raw))
-                    };
-                    // Decode ctor_head (inline type-constructor pattern head,
-                    // RUE-596): u32::MAX means None.
-                    let ctor_head_raw = self.extra[pos + 5];
-                    let ctor_head = if ctor_head_raw == u32::MAX {
-                        None
-                    } else {
-                        Some(InstRef::from_raw(ctor_head_raw))
-                    };
-                    let type_name = Spur::try_from_usize(self.extra[pos + 6] as usize).unwrap();
-                    let variant = Spur::try_from_usize(self.extra[pos + 7] as usize).unwrap();
-                    // Variable-length payload bindings (RUE-221).
-                    let n_bindings = self.extra[pos + 8] as usize;
-                    let mut bindings = Vec::with_capacity(n_bindings);
-                    for i in 0..n_bindings {
-                        bindings
-                            .push(Spur::try_from_usize(self.extra[pos + 9 + i] as usize).unwrap());
-                    }
-                    let body = InstRef::from_raw(self.extra[pos + 9 + n_bindings]);
-                    arms.push((
-                        RirPattern::Path {
-                            module,
-                            ctor_head,
-                            type_name,
-                            variant,
-                            bindings,
-                            span,
-                        },
-                        body,
-                    ));
-                    pos += 10 + n_bindings;
-                }
-                _ => panic!("Unknown pattern kind: {}", kind),
-            }
-        }
-        arms
+    pub fn get_match_arms(&self, start: u32, arm_count: u32) -> RirMatchArms<'_> {
+        let view = RirMatchArms {
+            extra: &self.extra,
+            start: start as usize,
+            len: arm_count as usize,
+        };
+        view.iter().for_each(drop);
+        view
     }
 
     /// Store field initializers (name, value) and return (start, len).
@@ -622,15 +768,15 @@ impl Rir {
     }
 
     /// Retrieve field initializers from the extra array.
-    pub fn get_field_inits(&self, start: u32, len: u32) -> Vec<(Spur, InstRef)> {
-        let data = self.get_extra(start, len * FIELD_INIT_SIZE);
-        let mut fields = Vec::with_capacity(len as usize);
-        for chunk in data.chunks(FIELD_INIT_SIZE as usize) {
-            let name = Spur::try_from_usize(chunk[0] as usize).unwrap();
-            let value = InstRef::from_raw(chunk[1]);
-            fields.push((name, value));
-        }
-        fields
+    pub fn get_field_inits(&self, start: u32, len: u32) -> RirSlice<'_, (Spur, InstRef)> {
+        let words = len.checked_mul(FIELD_INIT_SIZE).unwrap();
+        let data = self.get_extra(start, words);
+        RirSlice::new(data, FIELD_INIT_SIZE as usize, |chunk| {
+            (
+                Spur::try_from_usize(chunk[0] as usize).unwrap(),
+                InstRef::from_raw(chunk[1]),
+            )
+        })
     }
 
     /// Store field declarations (name, type) and return (start, len).
@@ -646,15 +792,15 @@ impl Rir {
     }
 
     /// Retrieve field declarations from the extra array.
-    pub fn get_field_decls(&self, start: u32, len: u32) -> Vec<(Spur, Spur)> {
-        let data = self.get_extra(start, len * FIELD_DECL_SIZE);
-        let mut fields = Vec::with_capacity(len as usize);
-        for chunk in data.chunks(FIELD_DECL_SIZE as usize) {
-            let name = Spur::try_from_usize(chunk[0] as usize).unwrap();
-            let ty = Spur::try_from_usize(chunk[1] as usize).unwrap();
-            fields.push((name, ty));
-        }
-        fields
+    pub fn get_field_decls(&self, start: u32, len: u32) -> RirSlice<'_, (Spur, Spur)> {
+        let words = len.checked_mul(FIELD_DECL_SIZE).unwrap();
+        let data = self.get_extra(start, words);
+        RirSlice::new(data, FIELD_DECL_SIZE as usize, |chunk| {
+            (
+                Spur::try_from_usize(chunk[0] as usize).unwrap(),
+                Spur::try_from_usize(chunk[1] as usize).unwrap(),
+            )
+        })
     }
 
     /// Store directives and return (start, directive_count).
@@ -680,29 +826,222 @@ impl Rir {
     }
 
     /// Retrieve directives from the extra array.
-    pub fn get_directives(&self, start: u32, directive_count: u32) -> Vec<RirDirective> {
-        let mut directives = Vec::with_capacity(directive_count as usize);
-        let mut pos = start as usize;
-
-        for _ in 0..directive_count {
-            let name = Spur::try_from_usize(self.extra[pos] as usize).unwrap();
-            let span_start = self.extra[pos + 1];
-            let span_len = self.extra[pos + 2];
-            let file_id = rue_span::FileId::new(self.extra[pos + 3]);
-            let span = Span::with_file(file_id, span_start, span_start + span_len);
-            let args_len = self.extra[pos + 4] as usize;
-            pos += 5;
-
-            let args: Vec<Spur> = (0..args_len)
-                .map(|i| Spur::try_from_usize(self.extra[pos + i] as usize).unwrap())
-                .collect();
-            pos += args_len;
-
-            directives.push(RirDirective { name, args, span });
-        }
-        directives
+    pub fn get_directives(&self, start: u32, directive_count: u32) -> RirDirectives<'_> {
+        let view = RirDirectives {
+            extra: &self.extra,
+            start: start as usize,
+            len: directive_count as usize,
+        };
+        view.iter().for_each(drop);
+        view
     }
 }
+
+/// Reusable zero-allocation view over variable-width RIR match arms.
+#[derive(Debug, Clone)]
+pub struct RirMatchArms<'a> {
+    extra: &'a [u32],
+    start: usize,
+    len: usize,
+}
+
+impl<'a> RirMatchArms<'a> {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn iter(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (RirPatternView<'a>, InstRef)> + Clone + 'a {
+        RirMatchArmsIter {
+            extra: self.extra,
+            pos: self.start,
+            remaining: self.len,
+        }
+    }
+
+    pub fn get(&self, index: usize) -> Option<(RirPatternView<'a>, InstRef)> {
+        self.iter().nth(index)
+    }
+
+    pub fn to_vec(&self) -> Vec<(RirPatternView<'a>, InstRef)> {
+        self.iter().collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RirMatchArmsIter<'a> {
+    extra: &'a [u32],
+    pos: usize,
+    remaining: usize,
+}
+
+impl<'a> Iterator for RirMatchArmsIter<'a> {
+    type Item = (RirPatternView<'a>, InstRef);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let pos = self.pos;
+        let kind = self.extra[pos];
+        let result = match kind {
+            k if k == PatternKind::Wildcard as u32 => {
+                let span = Rir::decode_pattern_span(self.extra, pos);
+                let body = InstRef::from_raw(self.extra[pos + 4]);
+                self.pos += PATTERN_WILDCARD_SIZE as usize;
+                (RirPatternView::Wildcard(span), body)
+            }
+            k if k == PatternKind::Int as u32 => {
+                let span = Rir::decode_pattern_span(self.extra, pos);
+                let value_lo = self.extra[pos + 4] as u64;
+                let value_hi = self.extra[pos + 5] as u64;
+                let value = value_lo | (value_hi << 32);
+                let negative = self.extra[pos + 6] != 0;
+                let body = InstRef::from_raw(self.extra[pos + 7]);
+                self.pos += PATTERN_INT_SIZE as usize;
+                (
+                    RirPatternView::Int {
+                        value,
+                        negative,
+                        span,
+                    },
+                    body,
+                )
+            }
+            k if k == PatternKind::Bool as u32 => {
+                let span = Rir::decode_pattern_span(self.extra, pos);
+                let value = self.extra[pos + 4] != 0;
+                let body = InstRef::from_raw(self.extra[pos + 5]);
+                self.pos += PATTERN_BOOL_SIZE as usize;
+                (RirPatternView::Bool(value, span), body)
+            }
+            k if k == PatternKind::Path as u32 => {
+                let span = Rir::decode_pattern_span(self.extra, pos);
+                // Decode module: u32::MAX means None
+                let module_raw = self.extra[pos + 4];
+                let module = if module_raw == u32::MAX {
+                    None
+                } else {
+                    Some(InstRef::from_raw(module_raw))
+                };
+                // Decode ctor_head (inline type-constructor pattern head,
+                // RUE-596): u32::MAX means None.
+                let ctor_head_raw = self.extra[pos + 5];
+                let ctor_head = if ctor_head_raw == u32::MAX {
+                    None
+                } else {
+                    Some(InstRef::from_raw(ctor_head_raw))
+                };
+                let type_name = Spur::try_from_usize(self.extra[pos + 6] as usize).unwrap();
+                let variant = Spur::try_from_usize(self.extra[pos + 7] as usize).unwrap();
+                // Variable-length payload bindings (RUE-221).
+                let n_bindings = self.extra[pos + 8] as usize;
+                let bindings =
+                    RirSlice::new(&self.extra[pos + 9..pos + 9 + n_bindings], 1, |record| {
+                        Spur::try_from_usize(record[0] as usize).unwrap()
+                    });
+                let body = InstRef::from_raw(self.extra[pos + 9 + n_bindings]);
+                self.pos += 10 + n_bindings;
+                (
+                    RirPatternView::Path {
+                        module,
+                        ctor_head,
+                        type_name,
+                        variant,
+                        bindings,
+                        span,
+                    },
+                    body,
+                )
+            }
+            _ => panic!("Unknown pattern kind: {}", kind),
+        };
+        self.remaining -= 1;
+        Some(result)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for RirMatchArmsIter<'_> {}
+
+/// Reusable zero-allocation view over variable-width RIR directives.
+#[derive(Debug, Clone)]
+pub struct RirDirectives<'a> {
+    extra: &'a [u32],
+    start: usize,
+    len: usize,
+}
+
+impl<'a> RirDirectives<'a> {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = RirDirectiveView<'a>> + Clone + 'a {
+        RirDirectivesIter {
+            extra: self.extra,
+            pos: self.start,
+            remaining: self.len,
+        }
+    }
+
+    pub fn get(&self, index: usize) -> Option<RirDirectiveView<'a>> {
+        self.iter().nth(index)
+    }
+
+    pub fn to_vec(&self) -> Vec<RirDirectiveView<'a>> {
+        self.iter().collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RirDirectivesIter<'a> {
+    extra: &'a [u32],
+    pos: usize,
+    remaining: usize,
+}
+
+impl<'a> Iterator for RirDirectivesIter<'a> {
+    type Item = RirDirectiveView<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let name = Spur::try_from_usize(self.extra[self.pos] as usize).unwrap();
+        let span_start = self.extra[self.pos + 1];
+        let span_len = self.extra[self.pos + 2];
+        let file_id = FileId::new(self.extra[self.pos + 3]);
+        let span = Span::with_file(file_id, span_start, span_start + span_len);
+        let args_len = self.extra[self.pos + 4] as usize;
+        let args_start = self.pos + 5;
+        let args_end = args_start + args_len;
+        let args = RirSlice::new(&self.extra[args_start..args_end], 1, |record| {
+            Spur::try_from_usize(record[0] as usize).unwrap()
+        });
+        self.pos = args_end;
+        self.remaining -= 1;
+        Some(RirDirectiveView { name, args, span })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for RirDirectivesIter<'_> {}
 
 /// A single RIR instruction.
 #[derive(Debug, Clone)]
@@ -1371,9 +1710,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
     }
 
     /// Format a list of call arguments.
-    fn format_call_args(&self, args: &[RirCallArg]) -> String {
-        args.iter()
-            .map(|arg| self.format_call_arg(arg))
+    fn format_call_args(&self, args: impl IntoIterator<Item = RirCallArg>) -> String {
+        args.into_iter()
+            .map(|arg| self.format_call_arg(&arg))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -1382,7 +1721,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
     /// (empty string when there are none).
     fn format_directives(&self, start: u32, len: u32) -> String {
         let directives = self.rir.get_directives(start, len);
-        if directives.is_empty() {
+        if directives.len() == 0 {
             return String::new();
         }
         let dir_names: Vec<String> = directives
@@ -1393,10 +1732,10 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
     }
 
     /// Format a pattern for printing.
-    fn format_pattern(&self, pat: &RirPattern) -> String {
+    fn format_pattern(&self, pat: &RirPatternView<'_>) -> String {
         match pat {
-            RirPattern::Wildcard(_) => "_".to_string(),
-            RirPattern::Int {
+            RirPatternView::Wildcard(_) => "_".to_string(),
+            RirPatternView::Int {
                 value, negative, ..
             } => {
                 if *negative {
@@ -1405,8 +1744,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     value.to_string()
                 }
             }
-            RirPattern::Bool(b, _) => b.to_string(),
-            RirPattern::Path {
+            RirPatternView::Bool(b, _) => b.to_string(),
+            RirPatternView::Path {
                 module,
                 type_name,
                 variant,
@@ -1428,7 +1767,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     base
                 } else {
                     let names: Vec<&str> =
-                        bindings.iter().map(|b| self.interner.resolve(b)).collect();
+                        bindings.iter().map(|b| self.interner.resolve(&b)).collect();
                     format!("{}({})", base, names.join(", "))
                 }
             }
@@ -1654,8 +1993,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .map(|(pat, body)| {
                             format!(
                                 "{} => {}",
-                                self.format_pattern(pat),
-                                self.display_ref(*body)
+                                self.format_pattern(&pat),
+                                self.display_ref(body)
                             )
                         })
                         .collect();
@@ -1702,7 +2041,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     };
                     let params = self.rir.get_params(*params_start, *params_len);
                     let params_str: Vec<String> = params
-                        .iter()
+                        .values()
                         .map(|p| {
                             let comptime_prefix = if p.is_comptime { "comptime " } else { "" };
                             let mode_prefix = match p.mode {
@@ -1774,7 +2113,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 } => {
                     let name_str = self.interner.resolve(&*name);
                     let args = self.rir.get_call_args(*args_start, *args_len);
-                    writeln!(out, "call {}({})", name_str, self.format_call_args(&args)).unwrap();
+                    writeln!(out, "call {}({})", name_str, self.format_call_args(args)).unwrap();
                 }
                 InstData::Intrinsic {
                     name,
@@ -1784,8 +2123,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let name_str = self.interner.resolve(&*name);
                     let args = self.rir.get_inst_refs(*args_start, *args_len);
                     let args_str: Vec<String> = args
-                        .iter()
-                        .map(|a| self.display_ref(*a).to_string())
+                        .values()
+                        .map(|a| self.display_ref(a).to_string())
                         .collect();
                     writeln!(out, "intrinsic @{}({})", name_str, args_str.join(", ")).unwrap();
                 }
@@ -1796,8 +2135,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 } => {
                     let args = self.rir.get_inst_refs(*args_start, *args_len);
                     let args_str: Vec<String> = args
-                        .iter()
-                        .map(|a| self.display_ref(*a).to_string())
+                        .values()
+                        .map(|a| self.display_ref(a).to_string())
                         .collect();
                     writeln!(
                         out,
@@ -1881,24 +2220,24 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let name_str = self.interner.resolve(&*name);
                     let fields = self.rir.get_field_decls(*fields_start, *fields_len);
                     let fields_str: Vec<String> = fields
-                        .iter()
+                        .values()
                         .map(|(fname, ftype)| {
                             format!(
                                 "{}: {}",
-                                self.interner.resolve(&*fname),
-                                self.interner.resolve(&*ftype)
+                                self.interner.resolve(&fname),
+                                self.interner.resolve(&ftype)
                             )
                         })
                         .collect();
                     let linear_str = if *is_linear { "linear " } else { "" };
                     let directives_str = self.format_directives(*directives_start, *directives_len);
                     let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
-                    let methods_str = if methods.is_empty() {
+                    let methods_str = if methods.len() == 0 {
                         String::new()
                     } else {
                         let method_refs: Vec<String> = methods
-                            .iter()
-                            .map(|m| self.display_ref(*m).to_string())
+                            .values()
+                            .map(|m| self.display_ref(m).to_string())
                             .collect();
                         format!(" methods: [{}]", method_refs.join(", "))
                     };
@@ -1931,12 +2270,12 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let type_str = self.interner.resolve(&*type_name);
                     let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                     let fields_str: Vec<String> = fields
-                        .iter()
+                        .values()
                         .map(|(fname, value)| {
                             format!(
                                 "{}: {}",
-                                self.interner.resolve(&*fname),
-                                self.display_ref(*value)
+                                self.interner.resolve(&fname),
+                                self.display_ref(value)
                             )
                         })
                         .collect();
@@ -1994,7 +2333,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .iter()
                         .enumerate()
                         .map(|(i, v)| {
-                            let base = self.interner.resolve(&*v).to_string();
+                            let base = self.interner.resolve(&v).to_string();
                             match payload_arities.get(i) {
                                 Some(k) if *k > 0 => format!("{}/{}", base, k),
                                 _ => base,
@@ -2035,8 +2374,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 } => {
                     let elements = self.rir.get_inst_refs(*elems_start, *elems_len);
                     let elems_str: Vec<String> = elements
-                        .iter()
-                        .map(|e| self.display_ref(*e).to_string())
+                        .values()
+                        .map(|e| self.display_ref(e).to_string())
                         .collect();
                     writeln!(out, "array_init [{}]", elems_str.join(", ")).unwrap();
                 }
@@ -2088,7 +2427,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         "method_call {}.{}({})",
                         self.display_ref(*receiver),
                         self.interner.resolve(&*method),
-                        self.format_call_args(&args)
+                        self.format_call_args(args)
                     )
                     .unwrap();
                 }
@@ -2130,22 +2469,22 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 } => {
                     write!(out, "struct {{ ").unwrap();
                     let fields = self.rir.get_field_decls(*fields_start, *fields_len);
-                    for (i, (name, ty)) in fields.iter().enumerate() {
+                    for (i, (name, ty)) in fields.values().enumerate() {
                         if i > 0 {
                             write!(out, ", ").unwrap();
                         }
-                        let name_str = self.interner.resolve(name);
-                        let ty_str = self.interner.resolve(ty);
+                        let name_str = self.interner.resolve(&name);
+                        let ty_str = self.interner.resolve(&ty);
                         write!(out, "{}: {}", name_str, ty_str).unwrap();
                     }
                     // Print methods if any
                     if *methods_len > 0 {
                         let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
                         let methods_str: Vec<String> = methods
-                            .iter()
-                            .map(|m| self.display_ref(*m).to_string())
+                            .values()
+                            .map(|m| self.display_ref(m).to_string())
                             .collect();
-                        if !fields.is_empty() {
+                        if fields.len() != 0 {
                             write!(out, ", ").unwrap();
                         }
                         write!(out, "methods: [{}]", methods_str.join(", ")).unwrap();
@@ -2174,7 +2513,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .iter()
                         .enumerate()
                         .map(|(i, v)| {
-                            let base = self.interner.resolve(&*v).to_string();
+                            let base = self.interner.resolve(&v).to_string();
                             match payload_arities.get(i) {
                                 Some(k) if *k > 0 => format!("{}/{}", base, k),
                                 _ => base,
@@ -2199,6 +2538,60 @@ impl fmt::Display for RirPrinter<'_, '_> {
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    struct CountingAllocator;
+
+    thread_local! {
+        static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+        static ALLOCATION_COUNT: Cell<usize> = const { Cell::new(0) };
+    }
+
+    unsafe impl GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            COUNT_ALLOCATIONS.with(|enabled| {
+                if enabled.get() {
+                    ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
+                }
+            });
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            COUNT_ALLOCATIONS.with(|enabled| {
+                if enabled.get() {
+                    ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
+                }
+            });
+            unsafe { System.alloc_zeroed(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            COUNT_ALLOCATIONS.with(|enabled| {
+                if enabled.get() {
+                    ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
+                }
+            });
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+    fn allocations_during(f: impl FnOnce()) -> usize {
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+        ALLOCATION_COUNT.with(|count| count.set(0));
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
+        f();
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+        ALLOCATION_COUNT.with(Cell::get)
+    }
 
     #[test]
     fn test_inst_ref_size() {
@@ -2363,7 +2756,7 @@ mod tests {
             },
         ]);
 
-        let args = rir.get_call_args(args_start, args_len);
+        let args = rir.get_call_args(args_start, args_len).to_vec();
         assert_eq!(args.len(), 3);
         assert_eq!(args[0].value, InstRef::from_raw(1));
         assert_eq!(args[0].mode, RirArgMode::Normal);
@@ -2410,7 +2803,7 @@ mod tests {
 
         assert_eq!(decoded.len(), modes.len());
         assert_eq!(
-            decoded.iter().map(|param| param.mode).collect::<Vec<_>>(),
+            decoded.values().map(|param| param.mode).collect::<Vec<_>>(),
             modes
         );
         assert_eq!(modes.map(RirParamMode::as_u32), [0, 1, 2]);
@@ -2432,6 +2825,251 @@ mod tests {
         let params_start = rir.add_extra(&[0, 0, 99, 0, 0, 0, 0]);
 
         let _ = rir.get_params(params_start, 1);
+    }
+
+    #[test]
+    fn borrowing_payload_views_are_exact_for_empty_fixed_and_variable_records() {
+        fn exact_len(iter: impl ExactSizeIterator) -> usize {
+            iter.len()
+        }
+
+        let mut rir = Rir::new();
+        assert_eq!(exact_len(rir.get_inst_refs(0, 0).values()), 0);
+        assert_eq!(exact_len(rir.get_symbols(0, 0).iter()), 0);
+        assert_eq!(exact_len(rir.get_call_args(0, 0).values()), 0);
+        assert_eq!(exact_len(rir.get_params(0, 0).values()), 0);
+        assert_eq!(exact_len(rir.get_match_arms(0, 0).iter()), 0);
+        assert_eq!(exact_len(rir.get_field_inits(0, 0).values()), 0);
+        assert_eq!(exact_len(rir.get_field_decls(0, 0).values()), 0);
+        assert_eq!(exact_len(rir.get_directives(0, 0).iter()), 0);
+
+        let interner = ThreadedRodeo::new();
+        let type_name = interner.get_or_intern("Shape");
+        let variant = interner.get_or_intern("Rect");
+        let left = interner.get_or_intern("left");
+        let right = interner.get_or_intern("right");
+        let body = rir.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(20, 21),
+        });
+        let (arms_start, arms_len) = rir.add_match_arms(&[(
+            RirPattern::Path {
+                module: None,
+                ctor_head: None,
+                type_name,
+                variant,
+                bindings: vec![left, right],
+                span: Span::new(3, 18),
+            },
+            body,
+        )]);
+        let arms = rir.get_match_arms(arms_start, arms_len);
+        assert_eq!(arms.len(), 1);
+        let (pattern, decoded_body) = arms.iter().next().unwrap();
+        assert_eq!(arms.len(), 1);
+        assert_eq!(decoded_body, body);
+        let RirPatternView::Path { bindings, span, .. } = pattern else {
+            panic!("expected path-pattern view")
+        };
+        assert_eq!(span, Span::new(3, 18));
+        assert_eq!(exact_len(bindings.iter()), 2);
+        assert_eq!(bindings.to_vec(), vec![left, right]);
+
+        let directive_name = interner.get_or_intern("allow");
+        let warning = interner.get_or_intern("unused_variable");
+        let (directives_start, directives_len) = rir.add_directives(&[RirDirective {
+            name: directive_name,
+            args: vec![warning],
+            span: Span::new(30, 42),
+        }]);
+        let directives = rir.get_directives(directives_start, directives_len);
+        assert_eq!(directives.len(), 1);
+        let directive = directives.iter().next().unwrap();
+        assert_eq!(directive.span, Span::new(30, 42));
+        assert_eq!(exact_len(directive.args.iter()), 1);
+        assert_eq!(directive.args.to_vec(), vec![warning]);
+    }
+
+    #[test]
+    fn every_borrowing_payload_family_traverses_without_allocating() {
+        let interner = ThreadedRodeo::new();
+        let first = interner.get_or_intern("first");
+        let second = interner.get_or_intern("second");
+        let ty = interner.get_or_intern("i32");
+        let directive_name = interner.get_or_intern("allow");
+        let span = Span::new(1, 2);
+        let refs = [InstRef::from_raw(1), InstRef::from_raw(2)];
+        let mut rir = Rir::new();
+        let inst_refs = rir.add_inst_refs(&refs);
+        let symbols = rir.add_symbols(&[first, second]);
+        let call_args = rir.add_call_args(&[
+            RirCallArg {
+                value: refs[0],
+                mode: RirArgMode::Normal,
+            },
+            RirCallArg {
+                value: refs[1],
+                mode: RirArgMode::Inout,
+            },
+        ]);
+        let params = rir.add_params(&[
+            RirParam {
+                name: first,
+                ty,
+                mode: RirParamMode::Normal,
+                is_comptime: false,
+                span,
+            },
+            RirParam {
+                name: second,
+                ty,
+                mode: RirParamMode::Inout,
+                is_comptime: false,
+                span,
+            },
+        ]);
+        let match_arms = rir.add_match_arms(&[(
+            RirPattern::Path {
+                module: None,
+                ctor_head: None,
+                type_name: ty,
+                variant: first,
+                bindings: vec![second],
+                span,
+            },
+            refs[0],
+        )]);
+        let field_inits = rir.add_field_inits(&[(first, refs[0]), (second, refs[1])]);
+        let field_decls = rir.add_field_decls(&[(first, ty), (second, ty)]);
+        let directives = rir.add_directives(&[RirDirective {
+            name: directive_name,
+            args: vec![first, second],
+            span,
+        }]);
+
+        let checks = [
+            (
+                "inst refs",
+                allocations_during(|| {
+                    std::hint::black_box(
+                        rir.get_inst_refs(inst_refs.0, inst_refs.1).values().count(),
+                    );
+                }),
+            ),
+            (
+                "symbols",
+                allocations_during(|| {
+                    std::hint::black_box(rir.get_symbols(symbols.0, symbols.1).values().count());
+                }),
+            ),
+            (
+                "call args",
+                allocations_during(|| {
+                    std::hint::black_box(
+                        rir.get_call_args(call_args.0, call_args.1).values().count(),
+                    );
+                }),
+            ),
+            (
+                "params",
+                allocations_during(|| {
+                    std::hint::black_box(rir.get_params(params.0, params.1).values().count());
+                }),
+            ),
+            (
+                "match arms",
+                allocations_during(|| {
+                    std::hint::black_box(
+                        rir.get_match_arms(match_arms.0, match_arms.1)
+                            .iter()
+                            .count(),
+                    );
+                }),
+            ),
+            (
+                "field inits",
+                allocations_during(|| {
+                    std::hint::black_box(
+                        rir.get_field_inits(field_inits.0, field_inits.1)
+                            .values()
+                            .count(),
+                    );
+                }),
+            ),
+            (
+                "field decls",
+                allocations_during(|| {
+                    std::hint::black_box(
+                        rir.get_field_decls(field_decls.0, field_decls.1)
+                            .values()
+                            .count(),
+                    );
+                }),
+            ),
+            (
+                "directives",
+                allocations_during(|| {
+                    std::hint::black_box(
+                        rir.get_directives(directives.0, directives.1)
+                            .iter()
+                            .count(),
+                    );
+                }),
+            ),
+        ];
+        for (family, allocations) in checks {
+            assert_eq!(allocations, 0, "{family} traversal allocated");
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn fixed_payload_view_rejects_an_out_of_bounds_range() {
+        let rir = Rir::new();
+        let _ = rir.get_call_args(0, 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn variable_payload_view_rejects_a_truncated_path_record() {
+        let mut rir = Rir::new();
+        let start = rir.add_extra(&[
+            PatternKind::Path as u32,
+            0,
+            1,
+            0,
+            u32::MAX,
+            u32::MAX,
+            0,
+            0,
+            2,
+            0,
+        ]);
+        let _ = rir.get_match_arms(start, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid RirArgMode value: 99")]
+    fn fixed_payload_view_eagerly_rejects_a_malformed_later_record() {
+        let mut rir = Rir::new();
+        let start = rir.add_extra(&[0, RirArgMode::Normal.as_u32(), 1, 99]);
+        let _ = rir.get_call_args(start, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unknown pattern kind: 99")]
+    fn match_arm_view_eagerly_rejects_a_malformed_later_record() {
+        let mut rir = Rir::new();
+        let start = rir.add_extra(&[PatternKind::Wildcard as u32, 0, 0, 0, 0, 99]);
+        let _ = rir.get_match_arms(start, 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn directive_view_eagerly_rejects_a_truncated_later_record() {
+        let mut rir = Rir::new();
+        let start = rir.add_extra(&[0, 0, 0, 0, 0, 0]);
+        let _ = rir.get_directives(start, 2);
     }
 
     // RirPrinter tests
@@ -3328,7 +3966,11 @@ mod tests {
             },
         ];
         let (start, len) = rir.add_directives(&original);
-        let decoded = rir.get_directives(start, len);
+        let decoded: Vec<_> = rir
+            .get_directives(start, len)
+            .iter()
+            .map(|directive| directive.to_owned())
+            .collect();
         assert_eq!(decoded, original);
     }
 

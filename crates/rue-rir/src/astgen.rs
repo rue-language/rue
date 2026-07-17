@@ -1644,7 +1644,7 @@ mod tests {
             } => {
                 assert_eq!(interner.resolve(&*name), "main");
                 let params = rir.get_params(*params_start, *params_len);
-                assert!(params.is_empty());
+                assert_eq!(params.len(), 0);
                 assert_eq!(interner.resolve(&*return_type), "i32");
                 assert!(!has_self); // Regular functions don't have self
                 // Body should be the int constant
@@ -1970,7 +1970,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(interner.resolve(&*name), "Point");
-                let methods = rir.get_inst_refs(*methods_start, *methods_len);
+                let methods = rir.get_inst_refs(*methods_start, *methods_len).to_vec();
                 assert_eq!(methods.len(), 1);
 
                 // Check the method is a FnDecl with has_self=true
@@ -2066,7 +2066,7 @@ mod tests {
             } => {
                 assert_eq!(interner.resolve(&*method), "get_x");
                 let args = rir.get_call_args(*args_start, *args_len);
-                assert!(args.is_empty()); // No explicit args (self is implicit)
+                assert_eq!(args.len(), 0); // No explicit args (self is implicit)
             }
             _ => panic!("expected MethodCall"),
         }
@@ -2110,7 +2110,7 @@ mod tests {
                 }
                 assert_eq!(interner.resolve(&*method), "origin");
                 let args = rir.get_call_args(*args_start, *args_len);
-                assert!(args.is_empty());
+                assert_eq!(args.len(), 0);
             }
             _ => panic!("expected MethodCall"),
         }
@@ -2142,7 +2142,11 @@ mod tests {
                 arms_len,
                 ..
             } => {
-                let arms = rir.get_match_arms(*arms_start, *arms_len);
+                let arms: Vec<_> = rir
+                    .get_match_arms(*arms_start, *arms_len)
+                    .iter()
+                    .map(|(pattern, body)| (pattern.to_owned(), body))
+                    .collect();
                 assert_eq!(arms.len(), 1);
                 assert!(matches!(arms[0].0, RirPattern::Wildcard(_)));
             }
@@ -2176,7 +2180,11 @@ mod tests {
                 arms_len,
                 ..
             } => {
-                let arms = rir.get_match_arms(*arms_start, *arms_len);
+                let arms: Vec<_> = rir
+                    .get_match_arms(*arms_start, *arms_len)
+                    .iter()
+                    .map(|(pattern, body)| (pattern.to_owned(), body))
+                    .collect();
                 assert_eq!(arms.len(), 3);
                 assert!(matches!(
                     arms[0].0,
@@ -2226,7 +2234,11 @@ mod tests {
                 arms_len,
                 ..
             } => {
-                let arms = rir.get_match_arms(*arms_start, *arms_len);
+                let arms: Vec<_> = rir
+                    .get_match_arms(*arms_start, *arms_len)
+                    .iter()
+                    .map(|(pattern, body)| (pattern.to_owned(), body))
+                    .collect();
                 assert_eq!(arms.len(), 3);
                 assert!(matches!(
                     arms[0].0,
@@ -2275,7 +2287,11 @@ mod tests {
                 arms_len,
                 ..
             } => {
-                let arms = rir.get_match_arms(*arms_start, *arms_len);
+                let arms: Vec<_> = rir
+                    .get_match_arms(*arms_start, *arms_len)
+                    .iter()
+                    .map(|(pattern, body)| (pattern.to_owned(), body))
+                    .collect();
                 assert_eq!(arms.len(), 2);
                 assert!(matches!(arms[0].0, RirPattern::Bool(true, _)));
                 assert!(matches!(arms[1].0, RirPattern::Bool(false, _)));
@@ -2311,7 +2327,11 @@ mod tests {
                 arms_len,
                 ..
             } => {
-                let arms = rir.get_match_arms(*arms_start, *arms_len);
+                let arms: Vec<_> = rir
+                    .get_match_arms(*arms_start, *arms_len)
+                    .iter()
+                    .map(|(pattern, body)| (pattern.to_owned(), body))
+                    .collect();
                 assert_eq!(arms.len(), 3);
 
                 // Check first arm is Color.Red
@@ -2319,8 +2339,8 @@ mod tests {
                     RirPattern::Path {
                         type_name, variant, ..
                     } => {
-                        assert_eq!(interner.resolve(&*type_name), "Color");
-                        assert_eq!(interner.resolve(&*variant), "Red");
+                        assert_eq!(interner.resolve(type_name), "Color");
+                        assert_eq!(interner.resolve(variant), "Red");
                     }
                     _ => panic!("expected Path pattern"),
                 }
@@ -2330,8 +2350,8 @@ mod tests {
                     RirPattern::Path {
                         type_name, variant, ..
                     } => {
-                        assert_eq!(interner.resolve(&*type_name), "Color");
-                        assert_eq!(interner.resolve(&*variant), "Green");
+                        assert_eq!(interner.resolve(type_name), "Color");
+                        assert_eq!(interner.resolve(variant), "Green");
                     }
                     _ => panic!("expected Path pattern"),
                 }
@@ -2341,8 +2361,8 @@ mod tests {
                     RirPattern::Path {
                         type_name, variant, ..
                     } => {
-                        assert_eq!(interner.resolve(&*type_name), "Color");
-                        assert_eq!(interner.resolve(&*variant), "Blue");
+                        assert_eq!(interner.resolve(type_name), "Color");
+                        assert_eq!(interner.resolve(variant), "Blue");
                     }
                     _ => panic!("expected Path pattern"),
                 }
@@ -2451,7 +2471,7 @@ mod tests {
                 methods_len,
                 ..
             } => {
-                let methods = rir.get_inst_refs(*methods_start, *methods_len);
+                let methods = rir.get_inst_refs(*methods_start, *methods_len).to_vec();
                 let method_inst = rir.get(methods[0]);
                 match &method_inst.data {
                     InstData::FnDecl {
@@ -2464,7 +2484,7 @@ mod tests {
                         assert_eq!(interner.resolve(&*name), "add");
                         assert!(*has_self);
                         // params should contain 'amount', not 'self'
-                        let params = rir.get_params(*params_start, *params_len);
+                        let params = rir.get_params(*params_start, *params_len).to_vec();
                         assert_eq!(params.len(), 1);
                         assert_eq!(interner.resolve(&params[0].name), "amount");
                     }
@@ -2541,7 +2561,7 @@ mod tests {
                 methods_len,
             } => {
                 // Should have 2 fields (x and y)
-                let fields = rir.get_field_decls(*fields_start, *fields_len);
+                let fields = rir.get_field_decls(*fields_start, *fields_len).to_vec();
                 assert_eq!(fields.len(), 2);
                 assert_eq!(interner.resolve(&fields[0].0), "x");
                 assert_eq!(interner.resolve(&fields[1].0), "y");

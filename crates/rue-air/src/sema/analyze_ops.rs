@@ -27,7 +27,7 @@ use rue_error::{
     CompileError, CompileResult, CompileWarning, ErrorKind, MissingFieldsError, OptionExt,
     PreviewFeature, WarningKind,
 };
-use rue_rir::{InstData, InstRef, RirParamMode, RirPattern};
+use rue_rir::{InstData, InstRef, RirParamMode, RirPatternView as RirPattern};
 
 use crate::sema::context::ConstValue;
 use rue_span::Span;
@@ -1286,9 +1286,9 @@ impl<'a> BodySema<'a> {
     ///
     /// The warning shapes and messages mirror the normal per-arm loop exactly,
     /// so a pruned match and an ordinary match report identical diagnostics.
-    fn warn_unreachable_pruned_arms(
+    fn warn_unreachable_pruned_arms<'r>(
         &self,
-        arms: &[(RirPattern, InstRef)],
+        arms: impl Iterator<Item = (rue_rir::RirPatternView<'r>, InstRef)>,
         scrutinee_type: Type,
         ctx: &mut AnalysisContext,
     ) {
@@ -1301,7 +1301,7 @@ impl<'a> BodySema<'a> {
 
             // Any arm after a wildcard is unreachable.
             if let Some(first_wildcard_span) = wildcard_span {
-                let pat_str = match pattern {
+                let pat_str = match &pattern {
                     RirPattern::Wildcard(_) => "_".to_string(),
                     RirPattern::Int {
                         value, negative, ..
@@ -1331,7 +1331,7 @@ impl<'a> BodySema<'a> {
                 continue;
             }
 
-            match pattern {
+            match &pattern {
                 RirPattern::Wildcard(_) => {
                     // A `_` after both booleans are already covered is
                     // unreachable. An integer scrutinee is never fully covered
@@ -1442,8 +1442,8 @@ impl<'a> BodySema<'a> {
                 let mut has_wildcard = false;
                 let mut bool_true_covered = false;
                 let mut bool_false_covered = false;
-                for (pattern, body) in &arms {
-                    let matched = match (pattern, &value) {
+                for (pattern, body) in arms.iter() {
+                    let matched = match (&pattern, &value) {
                         (RirPattern::Wildcard(_), _) => {
                             has_wildcard = true;
                             true
@@ -1477,7 +1477,7 @@ impl<'a> BodySema<'a> {
                         }
                     };
                     if matched && selected.is_none() {
-                        selected = Some(*body);
+                        selected = Some(body);
                     }
                 }
                 // Exhaustiveness is a property of the pattern set, not of
@@ -1507,12 +1507,12 @@ impl<'a> BodySema<'a> {
                     let scrutinee_type =
                         Self::get_resolved_type(ctx, scrutinee, span, "match scrutinee")?;
                     if scrutinee_type.is_integer() {
-                        for (pattern, _) in &arms {
+                        for (pattern, _) in arms.iter() {
                             if let RirPattern::Int {
                                 value: magnitude,
                                 negative,
                                 ..
-                            } = pattern
+                            } = &pattern
                             {
                                 self.check_pattern_int(
                                     *magnitude,
@@ -1531,7 +1531,7 @@ impl<'a> BodySema<'a> {
                     // skipped by the early return, so run them here. Only
                     // pattern shapes are inspected — no arm body is analyzed,
                     // honoring 4.14:19.
-                    self.warn_unreachable_pruned_arms(&arms, scrutinee_type, ctx);
+                    self.warn_unreachable_pruned_arms(arms.iter(), scrutinee_type, ctx);
                     if let Some(body) = selected {
                         ctx.push_scope();
                         let result = self.analyze_inst(air, body, ctx)?;
@@ -1551,7 +1551,7 @@ impl<'a> BodySema<'a> {
         // are ignored — pattern legality is checked on the normal path below.
         let arms_for_expected = self.rir.get_match_arms(arms_start, arms_len);
         let expected_scrutinee = arms_for_expected.iter().find_map(|(pattern, _)| {
-            if let RirPattern::Path { type_name, .. } = pattern {
+            if let RirPattern::Path { type_name, .. } = &pattern {
                 self.resolve_type_with_ctx(*type_name, span, ctx)
                     .ok()
                     .filter(|ty| ty.is_enum())
@@ -1631,7 +1631,7 @@ impl<'a> BodySema<'a> {
 
             // If we've seen a wildcard, everything after is unreachable
             if let Some(first_wildcard_span) = wildcard_span {
-                let pat_str = match pattern {
+                let pat_str = match &pattern {
                     RirPattern::Wildcard(_) => "_".to_string(),
                     RirPattern::Int {
                         value, negative, ..
@@ -1666,7 +1666,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Validate pattern against scrutinee type and check for duplicates
-            match pattern {
+            match &pattern {
                 RirPattern::Wildcard(_) => {
                     // A `_` arm after the preceding arms already cover every
                     // value (both bools, or every enum variant) is unreachable
@@ -1864,7 +1864,7 @@ impl<'a> BodySema<'a> {
             // The enclosing match dispatched on the discriminant, so in this
             // arm the payload is read (move mode) via `EnumPayloadGet`.
             let mut binding_stmts =
-                self.materialize_match_bindings(air, pattern, scrutinee_result.air_ref, ctx)?;
+                self.materialize_match_bindings(air, &pattern, scrutinee_result.air_ref, ctx)?;
 
             // RUE-238: a non-binding arm (a wildcard `_`, or a variant matched
             // without binding its payload) still *consumes* the scrutinee — the
@@ -1890,7 +1890,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Analyze arm body
-            let body_result = self.analyze_inst(air, *body, ctx)?;
+            let body_result = self.analyze_inst(air, body, ctx)?;
             let body_type = body_result.ty;
 
             ctx.pop_scope();
@@ -1909,7 +1909,7 @@ impl<'a> BodySema<'a> {
                         return Err(self.type_mismatch_error(
                             prev,
                             body_type,
-                            self.rir.get(*body).span,
+                            self.rir.get(body).span,
                         ));
                     } else {
                         prev
@@ -1918,7 +1918,7 @@ impl<'a> BodySema<'a> {
             });
 
             // Convert pattern to AIR pattern
-            let air_pattern = match pattern {
+            let air_pattern = match &pattern {
                 RirPattern::Wildcard(_) => AirPattern::Wildcard,
                 RirPattern::Int {
                     value, negative, ..
@@ -2428,13 +2428,13 @@ impl<'a> BodySema<'a> {
         // rather than losing a field (RUE-269). The `_` discard (RUE-601) is
         // exempt: it binds nothing, so any number may repeat (`Rect(_, _)`).
         for (i, name) in bindings.iter().enumerate() {
-            if self.interner.resolve(name) == "_" {
+            if self.interner.resolve(&name) == "_" {
                 continue;
             }
-            if bindings[..i].contains(name) {
+            if bindings.values().take(i).any(|existing| existing == *name) {
                 return Err(CompileError::new(
                     ErrorKind::DuplicatePatternBinding {
-                        name: self.interner.resolve(name).to_string(),
+                        name: self.interner.resolve(&name).to_string(),
                     },
                     pattern_span,
                 ));
@@ -2449,7 +2449,7 @@ impl<'a> BodySema<'a> {
             // discriminant-only match on a payload-carrying variant. The
             // enumerate index `i` still tracks the real field position for the
             // other bindings.
-            if self.interner.resolve(binding_name) == "_" {
+            if self.interner.resolve(&binding_name) == "_" {
                 continue;
             }
             let field_ty = payload[i];
@@ -2879,7 +2879,7 @@ impl<'a> BodySema<'a> {
 
         // Check if @allow(unused_variable) directive is present
         let directives = self.rir.get_directives(directives_start, directives_len);
-        let allow_unused = self.has_allow_directive(&directives, "unused_variable");
+        let allow_unused = self.has_allow_directive(directives.iter(), "unused_variable");
 
         // Allocate slots
         let slot = ctx.next_slot;
@@ -3724,8 +3724,8 @@ impl<'a> BodySema<'a> {
 
         // Check for unknown or duplicate fields
         let mut seen_fields = std::collections::HashSet::new();
-        for (init_field_name, _) in field_inits.iter() {
-            let init_name = self.interner.resolve(&*init_field_name);
+        for (init_field_name, _) in field_inits.values() {
+            let init_name = self.interner.resolve(&init_field_name);
 
             if !field_index_map.contains_key(init_name) {
                 return Err(CompileError::new(
@@ -3769,15 +3769,15 @@ impl<'a> BodySema<'a> {
         let mut analyzed_fields: Vec<Option<AirRef>> = vec![None; struct_def.fields.len()];
         let mut source_order: Vec<usize> = Vec::with_capacity(field_inits.len());
 
-        for (init_field_name, field_value) in field_inits.iter() {
-            let init_name = self.interner.resolve(&*init_field_name);
+        for (init_field_name, field_value) in field_inits.values() {
+            let init_name = self.interner.resolve(&init_field_name);
             let field_idx = field_index_map[init_name];
             let expected_field_type = struct_def.fields[field_idx].ty;
 
             // Check if this is an integer literal that needs type coercion
             // This handles the case where HM inference couldn't resolve the type
             // (e.g., when the struct comes from a comptime type variable)
-            let field_inst = self.rir.get(*field_value);
+            let field_inst = self.rir.get(field_value);
             let field_result = if let InstData::IntConst(value) = &field_inst.data {
                 // Integer literal - use the expected field type directly, but
                 // range-check it first because this shortcut bypasses
@@ -3804,12 +3804,12 @@ impl<'a> BodySema<'a> {
                 // materializes as a static-backed 2-word `str` (first-class,
                 // storable in a struct) rather than a 3-word `String`.
                 let prev_expected = ctx.expected_type.replace(expected_field_type);
-                let r = self.analyze_inst(air, *field_value, ctx);
+                let r = self.analyze_inst(air, field_value, ctx);
                 ctx.expected_type = prev_expected;
                 r?
             } else {
                 // Not an integer literal - analyze normally
-                self.analyze_inst(air, *field_value, ctx)?
+                self.analyze_inst(air, field_value, ctx)?
             };
 
             // Two-types model (ADR-0043, RUE-386): storing into a first-class
@@ -3820,7 +3820,7 @@ impl<'a> BodySema<'a> {
             // `str`); only the same-typed view needs this dedicated check.
             if self.is_str_struct(expected_field_type) {
                 self.reject_non_first_class_str(
-                    *field_value,
+                    field_value,
                     field_result.ty,
                     FirstClassStrSite::Field,
                     span,
@@ -5003,7 +5003,7 @@ impl<'a> BodySema<'a> {
         // the comptime-only `type`, would reach the intern pool and panic
         // (RUE-253).
         for elem_ref in &elem_refs {
-            if let Some(elem_ty) = ctx.resolved_types.get(elem_ref).copied() {
+            if let Some(elem_ty) = ctx.resolved_types.get(&elem_ref).copied() {
                 self.reject_non_runtime_array_element(elem_ty, span)?;
             }
         }
@@ -6272,7 +6272,7 @@ impl<'a> BodySema<'a> {
                 if !*is_comptime {
                     continue;
                 }
-                let value = self.evaluate_const_in_fn(args[i].value, ctx)?;
+                let value = self.evaluate_const_in_fn(args.get(i).unwrap().value, ctx)?;
                 if param_comptime_type[i] {
                     match value {
                         Some(ConstValue::Type(ty)) => {
@@ -6287,7 +6287,7 @@ impl<'a> BodySema<'a> {
                                     reason: "comptime type parameter must be a type literal"
                                         .to_string(),
                                 },
-                                self.rir.get(args[i].value).span,
+                                self.rir.get(args.get(i).unwrap().value).span,
                             ));
                         }
                         None => {
@@ -6295,7 +6295,7 @@ impl<'a> BodySema<'a> {
                                 ErrorKind::ComptimeArgNotConst {
                                     param_name: self.interner.resolve(&param_names[i]).to_string(),
                                 },
-                                self.rir.get(args[i].value).span,
+                                self.rir.get(args.get(i).unwrap().value).span,
                             ));
                         }
                     }
@@ -6306,7 +6306,7 @@ impl<'a> BodySema<'a> {
                         ErrorKind::ComptimeArgNotConst {
                             param_name: self.interner.resolve(&param_names[i]).to_string(),
                         },
-                        self.rir.get(args[i].value).span,
+                        self.rir.get(args.get(i).unwrap().value).span,
                     ));
                 }
             }
@@ -6365,7 +6365,7 @@ impl<'a> BodySema<'a> {
         // Analyze all arguments. Slice parameters (ADR-0043, RUE-322) coerce a
         // `borrow arr` argument into a by-value fat pointer here.
         let air_args =
-            self.analyze_call_args_coerced(air, &args, &param_types, &param_modes, ctx)?;
+            self.analyze_call_args_coerced(air, args.values(), &param_types, &param_modes, ctx)?;
 
         // Handle generic function calls differently
         if is_generic {
@@ -6419,7 +6419,7 @@ impl<'a> BodySema<'a> {
                         // a compile-time constant (RUE-166). The argument is
                         // still also passed at runtime (value parameters are
                         // not erased from the signature).
-                        match self.try_evaluate_const_in_fn(args[i].value, ctx) {
+                        match self.try_evaluate_const_in_fn(args.get(i).unwrap().value, ctx) {
                             Some(const_val) => {
                                 value_args.push(const_val);
                                 value_subst.insert(param_names[i], const_val);
@@ -6430,7 +6430,7 @@ impl<'a> BodySema<'a> {
                                     ErrorKind::ComptimeArgNotConst {
                                         param_name: param_name.clone(),
                                     },
-                                    self.rir.get(args[i].value).span,
+                                    self.rir.get(args.get(i).unwrap().value).span,
                                 )
                                 .with_help(format!(
                                     "parameter '{}' is declared as 'comptime' and requires \
@@ -6478,7 +6478,7 @@ impl<'a> BodySema<'a> {
                             expected: expected.safe_name_with_pool(Some(&self.type_pool)),
                             found: found.safe_name_with_pool(Some(&self.type_pool)),
                         },
-                        self.rir.get(args[i].value).span,
+                        self.rir.get(args.get(i).unwrap().value).span,
                     ));
                 }
             }
@@ -6506,7 +6506,9 @@ impl<'a> BodySema<'a> {
                     if *is_comptime && !param_comptime_type[i] {
                         // This is a comptime VALUE parameter - extract its const value
                         // (evaluated in the calling function's context)
-                        if let Some(const_val) = self.try_evaluate_const_in_fn(args[i].value, ctx) {
+                        if let Some(const_val) =
+                            self.try_evaluate_const_in_fn(args.get(i).unwrap().value, ctx)
+                        {
                             value_subst.insert(param_names[i], const_val);
                         }
                     }

@@ -13,6 +13,8 @@ use tracing::{Level, info_span};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{EnvFilter, Layer as _, fmt};
 
+#[cfg(rue_benchmark_allocations)]
+mod allocation;
 mod timing;
 
 #[cfg(test)]
@@ -1124,6 +1126,15 @@ fn print_timing_output(
                     "size_bytes": bytes.len(),
                 });
             }
+            #[cfg(rue_benchmark_allocations)]
+            {
+                let metrics = allocation::snapshot();
+                payload["compiler_allocations"] = serde_json::json!({
+                    "count": metrics.allocations,
+                    "requested_bytes": metrics.allocated_bytes,
+                    "boundary": "canonical compile root including discovery and backend",
+                });
+            }
             println!("{payload}");
         } else if time_passes {
             // Human-readable output goes to stderr
@@ -1862,6 +1873,10 @@ fn main() {
     // the discovery parse as a second timing root.
     let compile_span = tracing::info_span!("compile", target = %options.target);
     let captured_std_root = env::var_os("RUE_STD_PATH").map(PathBuf::from);
+    #[cfg(rue_benchmark_allocations)]
+    if options.benchmark_json {
+        allocation::begin();
+    }
     let mut import_discovery = {
         let _compile = compile_span.enter();
         match discover_and_load_imports(
@@ -1874,6 +1889,10 @@ fn main() {
             Err(()) => std::process::exit(1),
         }
     };
+    #[cfg(rue_benchmark_allocations)]
+    if options.benchmark_json {
+        allocation::pause();
+    }
     let source_snapshot = import_discovery.source_snapshot.clone();
 
     // Create multi-file diagnostic formatters from the snapshot's borrowed
@@ -1981,6 +2000,10 @@ fn main() {
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
     };
+    #[cfg(rue_benchmark_allocations)]
+    if options.benchmark_json {
+        allocation::resume();
+    }
     let compile_result = {
         let _compile = compile_span.enter();
         import_discovery
@@ -1988,6 +2011,10 @@ fn main() {
             .executable_in_compile_scope(&compile_options)
     };
     drop(compile_span);
+    #[cfg(rue_benchmark_allocations)]
+    if options.benchmark_json {
+        allocation::finish();
+    }
     match compile_result {
         Ok(output) => {
             // Print warnings using the diagnostic formatter

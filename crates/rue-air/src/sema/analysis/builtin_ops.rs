@@ -294,7 +294,7 @@ impl<'a> BodySema<'a> {
             .with_help(format!("`{fn_name}` takes exactly one text argument")));
         }
         self.validate_explicit_call_modes(&args, std::iter::once(RirParamMode::Normal))?;
-        let arg_value = args[0].value;
+        let arg_value = args.get(0).unwrap().value;
 
         // Borrow the argument (like a `+` operand): analyze in projection mode
         // and cancel any move marker so a variable operand is not consumed and
