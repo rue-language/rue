@@ -30,8 +30,8 @@ const std = @import("std");
 
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(1);
-        @free_bytes(p, 1);
+        let p = @alloc_bytes(1, 1);
+        @free_bytes(p, 1, 1);
     };
     std.exit(0);
     1
@@ -46,8 +46,8 @@ description = "A user root named like a std module cannot bypass the raw-byte pr
 files = [{ path = "strbuf.rue", source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(1);
-        @free_bytes(p, 1);
+        let p = @alloc_bytes(1, 1);
+        @free_bytes(p, 1, 1);
     };
     0
 }

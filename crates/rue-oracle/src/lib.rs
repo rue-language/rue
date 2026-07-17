@@ -1268,10 +1268,9 @@ impl<'a> Interp<'a> {
             "read_line" | "random_u32" | "random_u64" | "arg_count" | "env_count" => {
                 args.is_empty()
             }
-            "ptr_write" | "ptr_offset" | "free" | "free_bytes" | "byte_read" => args.len() == 2,
-            "realloc" | "realloc_bytes" | "byte_write" | "byte_copy" | "byte_set" => {
-                args.len() == 3
-            }
+            "ptr_write" | "ptr_offset" | "free" | "byte_read" | "alloc_bytes" => args.len() == 2,
+            "realloc" | "byte_write" | "byte_copy" | "byte_set" | "free_bytes" => args.len() == 3,
+            "realloc_bytes" => args.len() == 4,
             "syscall" => (1..=7).contains(&args.len()),
             _ => args.len() == 1,
         };
@@ -1355,17 +1354,21 @@ impl<'a> Interp<'a> {
                     && result_ty == ty(0)
             }
             "alloc_bytes" => {
-                ty(0) == Type::U64 && self.pointer_pointee(result_ty) == Some((Type::U8, true))
+                ty(0) == Type::U64
+                    && ty(1) == Type::U64
+                    && self.pointer_pointee(result_ty) == Some((Type::U8, true))
             }
             "free_bytes" => {
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
                     && ty(1) == Type::U64
+                    && ty(2) == Type::U64
                     && result_ty == Type::UNIT
             }
             "realloc_bytes" => {
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
                     && ty(1) == Type::U64
                     && ty(2) == Type::U64
+                    && ty(3) == Type::U64
                     && result_ty == ty(0)
             }
             "byte_read" => {

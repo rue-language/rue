@@ -14,14 +14,14 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(3);
+        let p: ptr mut u8 = @alloc_bytes(3, 1);
         @byte_write(p, 0, 11);
         @byte_write(p, 1, 22);
         @byte_write(p, 2, 33);
         let result: i32 = @intCast(@byte_read(p, 0))
             + @intCast(@byte_read(p, 1))
             + @intCast(@byte_read(p, 2));
-        @free_bytes(p, 3);
+        @free_bytes(p, 3, 1);
         result
     }
 }
@@ -36,7 +36,7 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(3);
+        let p = @alloc_bytes(3, 1);
         @byte_write(p, 0, 17);
         @byte_write(p, 1, 34);
         @byte_write(p, 2, 51);
@@ -44,7 +44,7 @@ fn main() -> i32 {
         let result: i32 = @intCast(@byte_read(p, 0))
             + @intCast(@byte_read(p, 1))
             + @intCast(@byte_read(p, 2));
-        @free_bytes(p, 3);
+        @free_bytes(p, 3, 1);
         result
     }
 }
@@ -75,10 +75,10 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(1);
+        let p = @alloc_bytes(1, 1);
         @byte_write(p, 0, 71);
         let result: i32 = @intCast(@byte_read(p, 0));
-        @free_bytes(p, 1);
+        @free_bytes(p, 1, 1);
         result
     }
 }
@@ -93,15 +93,15 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(2);
+        let p: ptr mut u8 = @alloc_bytes(2, 1);
         @byte_write(p, 0, 40);
         @byte_write(p, 1, 2);
-        let q = @realloc_bytes(p, 2, 4);
+        let q = @realloc_bytes(p, 2, 1, 4);
         @byte_write(q, 2, 3);
         let result: i32 = @intCast(@byte_read(q, 0))
             + @intCast(@byte_read(q, 1))
             + @intCast(@byte_read(q, 2));
-        @free_bytes(q, 4);
+        @free_bytes(q, 4, 1);
         result
     }
 }
@@ -116,8 +116,8 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(18446744073709551615);
-        if @ptr_to_int(p) == 0 { 0 } else { @free_bytes(p, 18446744073709551615); 1 }
+        let p: ptr mut u8 = @alloc_bytes(18446744073709551615, 1);
+        if @ptr_to_int(p) == 0 { 0 } else { @free_bytes(p, 18446744073709551615, 1); 1 }
     }
 }
 """
@@ -131,19 +131,19 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(3);
+        let p = @alloc_bytes(3, 1);
         @byte_write(p, 0, 11);
         @byte_write(p, 1, 22);
         @byte_write(p, 2, 33);
-        let q = @realloc_bytes(p, 3, 18446744073709551615);
+        let q = @realloc_bytes(p, 3, 1, 18446744073709551615);
         if @ptr_to_int(q) == 0 {
             let result: i32 = @intCast(@byte_read(p, 0))
                 + @intCast(@byte_read(p, 1))
                 + @intCast(@byte_read(p, 2));
-            @free_bytes(p, 3);
+            @free_bytes(p, 3, 1);
             result
         } else {
-            @free_bytes(q, 18446744073709551615);
+            @free_bytes(q, 18446744073709551615, 1);
             1
         }
     }
@@ -159,7 +159,7 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(0);
+        let p = @alloc_bytes(0, 1);
         if @ptr_to_int(p) == 0 { 0 } else { 1 }
     }
 }
@@ -174,8 +174,8 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(0);
-        @free_bytes(p, 0);
+        let p = @alloc_bytes(0, 1);
+        @free_bytes(p, 0, 1);
         0
     }
 }
@@ -190,9 +190,9 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(1);
+        let p = @alloc_bytes(1, 1);
         @byte_write(p, 0, 42);
-        let q = @realloc_bytes(p, 1, 0);
+        let q = @realloc_bytes(p, 1, 1, 0);
         if @ptr_to_int(q) == 0 { 0 } else { 1 }
     }
 }
@@ -204,7 +204,7 @@ name = "raw_bytes_require_preview"
 spec = ["9.2:14a", "9.2:14e", "8.4:1"]
 source = """
 fn main() -> i32 {
-    checked { let p: ptr mut u8 = @alloc_bytes(1); @free_bytes(p, 1); };
+    checked { let p: ptr mut u8 = @alloc_bytes(1, 1); @free_bytes(p, 1, 1); };
     0
 }
 """
@@ -218,7 +218,7 @@ preview = "raw_bytes"
 preview_should_pass = true
 source = """
 fn main() -> i32 {
-    let p: ptr mut u8 = @alloc_bytes(1);
+    let p: ptr mut u8 = @alloc_bytes(1, 1);
     0
 }
 """
@@ -233,7 +233,7 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(1);
+        let p: ptr mut u8 = @alloc_bytes(1, 1);
         let value: u64 = 1;
         @byte_write(p, 0, value);
     };
@@ -251,17 +251,17 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let src: ptr mut u8 = @alloc_bytes(3);
+        let src: ptr mut u8 = @alloc_bytes(3, 1);
         @byte_write(src, 0, 10);
         @byte_write(src, 1, 20);
         @byte_write(src, 2, 30);
-        let dst: ptr mut u8 = @alloc_bytes(3);
+        let dst: ptr mut u8 = @alloc_bytes(3, 1);
         @byte_copy(dst, src, 3);
         let result: i32 = @intCast(@byte_read(dst, 0))
             + @intCast(@byte_read(dst, 1))
             + @intCast(@byte_read(dst, 2));
-        @free_bytes(src, 3);
-        @free_bytes(dst, 3);
+        @free_bytes(src, 3, 1);
+        @free_bytes(dst, 3, 1);
         result
     }
 }
@@ -276,13 +276,13 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(4);
+        let p: ptr mut u8 = @alloc_bytes(4, 1);
         @byte_set(p, 9, 4);
         let result: i32 = @intCast(@byte_read(p, 0))
             + @intCast(@byte_read(p, 1))
             + @intCast(@byte_read(p, 2))
             + @intCast(@byte_read(p, 3));
-        @free_bytes(p, 4);
+        @free_bytes(p, 4, 1);
         result
     }
 }
@@ -297,15 +297,15 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let dst: ptr mut u8 = @alloc_bytes(2);
+        let dst: ptr mut u8 = @alloc_bytes(2, 1);
         @byte_write(dst, 0, 55);
         @byte_write(dst, 1, 11);
-        let src: ptr mut u8 = @alloc_bytes(2);
+        let src: ptr mut u8 = @alloc_bytes(2, 1);
         @byte_set(src, 99, 2);
         @byte_copy(dst, src, 0);
         let result: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1));
-        @free_bytes(src, 2);
-        @free_bytes(dst, 2);
+        @free_bytes(src, 2, 1);
+        @free_bytes(dst, 2, 1);
         result
     }
 }
@@ -320,18 +320,18 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let src: ptr mut u8 = @alloc_bytes(4);
+        let src: ptr mut u8 = @alloc_bytes(4, 1);
         @byte_write(src, 0, 1);
         @byte_write(src, 1, 2);
         @byte_write(src, 2, 3);
         @byte_write(src, 3, 4);
-        let dst: ptr mut u8 = @alloc_bytes(2);
+        let dst: ptr mut u8 = @alloc_bytes(2, 1);
         @byte_set(dst, 0, 2);
         let src_mid: ptr mut u8 = @int_to_ptr(@ptr_to_int(src) + 1);
         @byte_copy(dst, src_mid, 2);
         let result: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1));
-        @free_bytes(src, 4);
-        @free_bytes(dst, 2);
+        @free_bytes(src, 4, 1);
+        @free_bytes(dst, 2, 1);
         result
     }
 }
@@ -365,9 +365,9 @@ fn use_it(p: ptr mut u8) -> i32 {
     0
 }
 fn main() -> i32 {
-    let p: ptr mut u8 = checked { @alloc_bytes(1) };
+    let p: ptr mut u8 = checked { @alloc_bytes(1, 1) };
     let r = use_it(p);
-    checked { @free_bytes(p, 1); };
+    checked { @free_bytes(p, 1, 1); };
     r
 }
 """
@@ -382,7 +382,7 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(1);
+        let p: ptr mut u8 = @alloc_bytes(1, 1);
         let value: u64 = 1;
         @byte_set(p, value, 1);
     };
@@ -418,11 +418,109 @@ preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut i32 = @alloc_bytes(1);
-        @free_bytes(p, 1);
+        let p: ptr mut i32 = @alloc_bytes(1, 1);
+        @free_bytes(p, 1, 1);
     };
     0
 }
 """
 compile_fail = true
 error_contains = "ptr mut u8"
+
+[[case]]
+name = "alloc_bytes_align_one_round_trip"
+spec = ["9.2:14b", "9.2:14c", "9.2:14j"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(4, 1);
+        @byte_write(p, 0, 20);
+        @byte_write(p, 1, 22);
+        let q = @realloc_bytes(p, 4, 1, 8);
+        @byte_write(q, 2, 3);
+        let result: i32 = @intCast(@byte_read(q, 0))
+            + @intCast(@byte_read(q, 1))
+            + @intCast(@byte_read(q, 2));
+        @free_bytes(q, 8, 1);
+        result
+    }
+}
+"""
+exit_code = 45
+
+[[case]]
+name = "alloc_bytes_align_eight_round_trip"
+spec = ["9.2:14b", "9.2:14c", "9.2:14j"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(16, 8);
+        @byte_write(p, 0, 30);
+        @byte_write(p, 7, 12);
+        let q = @realloc_bytes(p, 16, 8, 32);
+        @byte_write(q, 8, 6);
+        let result: i32 = @intCast(@byte_read(q, 0))
+            + @intCast(@byte_read(q, 7))
+            + @intCast(@byte_read(q, 8));
+        @free_bytes(q, 32, 8);
+        result
+    }
+}
+"""
+exit_code = 48
+
+[[case]]
+name = "alloc_bytes_align_zero_rejected"
+spec = ["9.2:14j"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(1, 0);
+        @free_bytes(p, 1, 1);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "[E0712]"
+
+[[case]]
+name = "realloc_bytes_align_not_power_of_two_rejected"
+spec = ["9.2:14j"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(2, 1);
+        let q = @realloc_bytes(p, 2, 3, 4);
+        @free_bytes(q, 4, 1);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "power of two"
+
+[[case]]
+name = "free_bytes_requires_align_argument"
+spec = ["9.2:14e"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(1, 1);
+        @free_bytes(p, 1);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "[E0701]"

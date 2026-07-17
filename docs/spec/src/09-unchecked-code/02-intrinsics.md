@@ -167,23 +167,27 @@ semantics of `@alloc`, `@realloc`, `@free`, `@ptr_offset`, `@ptr_read`, or
 
 {{ rule(id="9.2:14b", cat="dynamic-semantics") }}
 
-`@alloc_bytes(size)` allocates `size` physical bytes of uninitialized storage
-with byte alignment and returns `ptr mut u8`. `@free_bytes(p, size)` releases a
-block returned by `@alloc_bytes` or `@realloc_bytes`; freeing a null pointer is
-permitted. All size arguments have type `u64`. Allocation failure returns null
-and does not trap. `@alloc_bytes(0)` returns null. `@free_bytes(null, 0)` is
-permitted and has no effect.
+`@alloc_bytes(size, align)` allocates `size` physical bytes of uninitialized
+storage aligned to `align` bytes and returns `ptr mut u8`. `@free_bytes(p, size,
+align)` releases a block returned by `@alloc_bytes` or `@realloc_bytes`; the
+`size` and `align` passed to `@free_bytes` must equal those used to allocate the
+block, and freeing a null pointer is permitted. All `size` and `align` arguments
+have type `u64`, and `align` must be a power of two (9.2:14j). Allocation failure
+returns null and does not trap. `@alloc_bytes(0, align)` returns null.
+`@free_bytes(null, 0, align)` is permitted and has no effect.
 
 {{ rule(id="9.2:14c", cat="dynamic-semantics") }}
 
-`@realloc_bytes(p, old_size, new_size)` resizes a raw-byte block. The first
-`min(old_size, new_size)` physical bytes are preserved. A null `p` behaves like
-`@alloc_bytes(new_size)`. On failure it returns null and leaves the original
-block allocated and unchanged.
+`@realloc_bytes(p, old_size, align, new_size)` resizes a raw-byte block. The
+first `min(old_size, new_size)` physical bytes are preserved. The `align` must
+equal the alignment used to allocate the block, and behaves as an allocation
+with that alignment; a null `p` behaves like `@alloc_bytes(new_size, align)`. On
+failure it returns null and leaves the original block allocated and unchanged.
 
-If `new_size` is zero, `@realloc_bytes(p, old_size, 0)` frees a non-null `p`
-and returns null. If `p` is null, reallocation behaves like
-`@alloc_bytes(new_size)`, including returning null when `new_size` is zero.
+If `new_size` is zero, `@realloc_bytes(p, old_size, align, 0)` frees a non-null
+`p` and returns null. If `p` is null, reallocation behaves like
+`@alloc_bytes(new_size, align)`, including returning null when `new_size` is
+zero.
 
 {{ rule(id="9.2:14d", cat="dynamic-semantics") }}
 
@@ -197,19 +201,21 @@ Offsets are not multiplied by Rue's typed-pointer slot size.
 
 Every raw-byte intrinsic requires both `--preview raw_bytes` and an enclosing
 `checked` block. Allocation and write pointers must be `ptr mut u8`; a byte
-read also accepts `ptr const u8`. Size and offset operands are exactly `u64`,
-and a byte-write value is exactly `u8`.
+read also accepts `ptr const u8`. Size, offset, and alignment operands are
+exactly `u64`, and a byte-write value is exactly `u8`. `@alloc_bytes` takes
+`(size, align)`, `@realloc_bytes` takes `(p, old_size, align, new_size)`, and
+`@free_bytes` takes `(p, size, align)`.
 
 {{ rule(id="9.2:14f", cat="example") }}
 
 ```rue
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(2);
+        let p = @alloc_bytes(2, 1);
         @byte_write(p, 0, 65);
         @byte_write(p, 1, 66);
         let result: i32 = @intCast(@byte_read(p, 1));
-        @free_bytes(p, 2);
+        @free_bytes(p, 2, 1);
         result // 66
     }
 }
@@ -241,19 +247,28 @@ the `@byte_copy` source operand is `ptr const u8` or `ptr mut u8`. The
 ```rue
 fn main() -> i32 {
     checked {
-        let src = @alloc_bytes(3);
+        let src = @alloc_bytes(3, 1);
         @byte_set(src, 7, 3);
-        let dst = @alloc_bytes(3);
+        let dst = @alloc_bytes(3, 1);
         @byte_copy(dst, src, 3);
         let result: i32 = @intCast(@byte_read(dst, 0))
             + @intCast(@byte_read(dst, 1))
             + @intCast(@byte_read(dst, 2));
-        @free_bytes(src, 3);
-        @free_bytes(dst, 3);
+        @free_bytes(src, 3, 1);
+        @free_bytes(dst, 3, 1);
         result // 21
     }
 }
 ```
+
+{{ rule(id="9.2:14j", cat="legality-rule") }}
+
+The `align` argument to `@alloc_bytes`, `@realloc_bytes`, and `@free_bytes` is a
+byte count that must be a power of two. When `align` is a compile-time constant
+that is zero or not a power of two, the program is rejected at compile time.
+A non-constant `align` is not checked at compile time; supplying a value that is
+zero or not a power of two is then undefined behavior (§9.1, ADR-0028), like the
+other unchecked contracts of this family.
 
 ## Field Pointer Intrinsic
 
