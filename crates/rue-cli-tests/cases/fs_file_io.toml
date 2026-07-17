@@ -1,0 +1,424 @@
+# std.fs File IO v0 (RUE-712, ADR-0057) driven end-to-end as a user would: the
+# real std.fs (via RUE_STD_PATH) compiled to a real binary that opens, writes,
+# reads, and closes real files in the harness's per-case temp directory (the
+# program's working directory), asserting byte counts and round-tripped content.
+#
+# std.fs is PURE RUE over @syscall: per-target syscall numbers, open flags,
+# AT_FDCWD, and errno tables are all selected by a @target_arch()/@target_os()
+# match, with no Rust runtime helper. The success-path cases run on every target
+# (openat/read/write/close all return non-error values that are interpreted the
+# same way everywhere). The ERROR-DETECTION cases run on every target too:
+# a failed syscall uniformly returns -errno since RUE-945 normalized Darwin's
+# carry-flag convention in the @syscall lowering, and the
+# current @syscall lowering discards the carry flag, so a failed syscall is
+# indistinguishable from a small-valued success on macOS (ADR-0057, "macOS
+# error-detection gap"; codegen follow-up tracked separately). Linux error paths
+# are correct and validated here on Linux CI.
+
+[section]
+id = "cli.fs_file_io"
+name = "std.fs File IO v0"
+description = "Pure-Rue std.fs over @syscall: create/write/read/append/close round-trips and normalized FileError (RUE-712, ADR-0057)."
+
+# create + write + read-back round-trip. Write 15 bytes, close, reopen, read
+# them back, and assert every byte matches. Exit code is the read count (15).
+[[case]]
+name = "fs_roundtrip"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("roundtrip.dat");
+
+    let msg = "roundtrip-bytes";
+    let mut out = Buf.new();
+    let mut i: u64 = 0;
+    while i < msg.len() { out.push(msg[i]); i = i + 1; }
+
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 91; } };
+    let nw = match f.write(borrow out) { WR.Ok(n) => n, WR.Err(_e) => { return 92; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 93; } };
+
+    let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 94; } };
+    let mut inb = Buf.with_capacity(64);
+    let nr = match g.read(inout inb) { WR.Ok(n) => n, WR.Err(_e) => { return 95; } };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 96; } };
+
+    if nr != nw { return 97; }
+    let mut j: u64 = 0;
+    while j < nr {
+        if inb.get_or(j, 0) != msg[j] { return 98; }
+        j = j + 1;
+    }
+    @dbg(nr);
+    @intCast(nr)
+}
+""" }]
+stdout = "15\n"
+exit_code = 15
+
+# append semantics: create+write "AB", then File.append (O_APPEND) and write
+# "CD" — the second write must land at end-of-file, not truncate. Read back
+# "ABCD" (4 bytes). Proves append does not truncate and positions at the end.
+[[case]]
+name = "fs_append"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("append.dat");
+
+    let mut ab = Buf.new();
+    ab.push(65); ab.push(66); // "AB"
+    let mut cd = Buf.new();
+    cd.push(67); cd.push(68); // "CD"
+
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 81; } };
+    match f.write(borrow ab) { WR.Ok(_n) => {}, WR.Err(_e) => { return 82; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 83; } };
+
+    let mut g = match F.append(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 84; } };
+    match g.write(borrow cd) { WR.Ok(_n) => {}, WR.Err(_e) => { return 85; } };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 86; } };
+
+    let mut h = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 87; } };
+    let mut inb = Buf.with_capacity(64);
+    let nr = match h.read(inout inb) { WR.Ok(n) => n, WR.Err(_e) => { return 88; } };
+    match h.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 89; } };
+
+    if nr != 4 { return 70; }
+    if inb.get_or(0, 0) != 65 { return 71; }
+    if inb.get_or(1, 0) != 66 { return 72; }
+    if inb.get_or(2, 0) != 67 { return 73; }
+    if inb.get_or(3, 0) != 68 { return 74; }
+    @intCast(nr)
+}
+""" }]
+exit_code = 4
+
+# drop-close releases the fd: an inner block opens the file and reads it, then
+# the File is DROPPED at block exit (no explicit close). Reopening afterward and
+# reading the same content proves the drop closed the descriptor and left the
+# file reusable (a leaked or corrupted fd would break the second read).
+[[case]]
+name = "fs_drop_close_reopen"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("dropclose.dat");
+
+    let mut payload = Buf.new();
+    payload.push(72); payload.push(105); // "Hi"
+
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 61; } };
+    match f.write(borrow payload) { WR.Ok(_n) => {}, WR.Err(_e) => { return 62; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 63; } };
+
+    let mut first: u64 = 0;
+    {
+        let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 64; } };
+        let mut b1 = Buf.with_capacity(16);
+        first = match g.read(inout b1) { WR.Ok(n) => n, WR.Err(_e) => { return 65; } };
+        // g is DROPPED here at block exit: its drop fn closes the fd.
+    }
+
+    let mut h = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 66; } };
+    let mut b2 = Buf.with_capacity(16);
+    let second = match h.read(inout b2) { WR.Ok(n) => n, WR.Err(_e) => { return 67; } };
+    match h.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 68; } };
+
+    if first != 2 { return 51; }
+    if second != 2 { return 52; }
+    if b2.get_or(0, 0) != 72 { return 53; }
+    if b2.get_or(1, 0) != 105 { return 54; }
+    @intCast(second)
+}
+""" }]
+exit_code = 2
+
+# consuming close then double-close safety: close(self) closes the fd and, via
+# the fd == -1 sentinel, makes the value's own scope-exit drop a no-op — the fd
+# is closed exactly once. After the consuming close, the OS is free to reuse the
+# descriptor number; a fresh open + read of the SAME file must return the correct
+# content. A missing sentinel guard would let the consumed File's drop close the
+# reused descriptor, corrupting the second file. Program must also exit cleanly.
+[[case]]
+name = "fs_close_then_reopen_safe"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("dclose.dat");
+
+    let mut payload = Buf.new();
+    payload.push(88); payload.push(89); payload.push(90); // "XYZ"
+
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 41; } };
+    match f.write(borrow payload) { WR.Ok(_n) => {}, WR.Err(_e) => { return 42; } };
+    // consuming close: moves f out; sentinel makes its own drop a no-op.
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 43; } };
+
+    let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 44; } };
+    let mut inb = Buf.with_capacity(16);
+    let nr = match g.read(inout inb) { WR.Ok(n) => n, WR.Err(_e) => { return 45; } };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 46; } };
+
+    if nr != 3 { return 31; }
+    if inb.get_or(0, 0) != 88 { return 32; }
+    if inb.get_or(1, 0) != 89 { return 33; }
+    if inb.get_or(2, 0) != 90 { return 34; }
+    @intCast(nr)
+}
+""" }]
+exit_code = 3
+
+# read into a FULL buffer (no spare capacity) -> Err(InvalidInput), NOT Ok(0).
+# This is the anti-footgun contract: Ok(0) means EOF only, so a whole-file loop
+# cannot silently truncate. Runs on EVERY target — a full buffer is rejected
+# BEFORE the read syscall, so the macOS carry-flag gap does not apply and this
+# is not Linux-gated (RUE-712 pre-merge dogfooding fix, ADR-0057 §5).
+[[case]]
+name = "fs_read_full_buffer_invalid"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("full.dat");
+
+    let mut seed = Buf.new();
+    seed.push(65); seed.push(66); // "AB"
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 11; } };
+    match f.write(borrow seed) { WR.Ok(_n) => {}, WR.Err(_e) => { return 12; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 13; } };
+
+    let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 14; } };
+    // A fresh buffer has capacity 0 == len 0: zero spare capacity.
+    let mut full = Buf.new();
+    let code = match g.read(inout full) {
+        WR.Ok(_v) => 1,   // wrong: must not report EOF on a full buffer
+        WR.Err(e) => match e {
+            FE.InvalidInput => 0,
+            _ => 2,
+        },
+    };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => {} };
+    code
+}
+""" }]
+exit_code = 0
+
+# whole-file read loop over a file LARGER than the buffer's initial capacity:
+# reserve a chunk, read, repeat until Ok(0) (EOF). With the InvalidInput contract
+# + ArrayBuf.reserve, the natural loop reads all 20 bytes without truncating at
+# the initial capacity of 8. Exit code is the total byte count (20).
+[[case]]
+name = "fs_read_whole_file_loop"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("wholefile.dat");
+
+    let mut out = Buf.new();
+    let mut k: u64 = 0;
+    while k < 20 { out.push(90); k = k + 1; } // 20 'Z' bytes
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 61; } };
+    match f.write_all(borrow out) { CR.Ok(_u) => {}, CR.Err(_e) => { return 62; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 63; } };
+
+    let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 64; } };
+    let mut buf = Buf.with_capacity(8); // smaller than the 20-byte file
+    let mut total: u64 = 0;
+    let mut done = false;
+    while !done {
+        buf.reserve(8); // ensure spare room every pass; never a full buffer
+        let n = match g.read(inout buf) { WR.Ok(v) => v, WR.Err(_e) => { return 65; } };
+        if n == 0 { done = true; } else { total = total + n; }
+    }
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 66; } };
+
+    if total != 20 { return 51; }
+    if buf.len() != 20 { return 52; }
+    // every byte round-tripped
+    let mut j: u64 = 0;
+    while j < 20 {
+        if buf.get_or(j, 0) != 90 { return 53; }
+        j = j + 1;
+    }
+    @intCast(total)
+}
+""" }]
+exit_code = 20
+
+# reserve(n) then read fills up to the newly reserved capacity: an empty buffer
+# grows via reserve(16), and a single read pulls all 16 file bytes into that
+# spare capacity in one call. Pins that reserve exposes the spare room read needs.
+[[case]]
+name = "fs_reserve_then_read_fills"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("reservefill.dat");
+
+    let mut out = Buf.new();
+    let mut k: u64 = 0;
+    while k < 16 { out.push(67); k = k + 1; } // 16 'C' bytes
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 41; } };
+    match f.write_all(borrow out) { CR.Ok(_u) => {}, CR.Err(_e) => { return 42; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 43; } };
+
+    let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 44; } };
+    let mut buf = Buf.new();
+    buf.reserve(16); // grow an empty buffer to hold 16
+    if buf.capacity() < 16 { return 45; }
+    let n = match g.read(inout buf) { WR.Ok(v) => v, WR.Err(_e) => { return 46; } };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 47; } };
+
+    if n != 16 { return 35; }
+    if buf.len() != 16 { return 36; }
+    let mut j: u64 = 0;
+    while j < 16 {
+        if buf.get_or(j, 0) != 67 { return 37; }
+        j = j + 1;
+    }
+    @intCast(n)
+}
+""" }]
+exit_code = 16
+
+# open a missing file -> Err(NotFound). Runs everywhere: a failed openat
+# returns -ENOENT on all targets (RUE-945 normalized Darwin's carry-flag
+# convention). Validates the normalization ENOENT -> FileError.NotFound.
+[[case]]
+name = "fs_open_missing_not_found"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("no_such_dir_rue712/does_not_exist.dat");
+
+    match F.open(borrow path) {
+        R.Ok(_f) => 1,
+        R.Err(e) => match e {
+            FE.NotFound => 0,
+            _ => 2,
+        },
+    }
+}
+""" }]
+exit_code = 0
+
+# write to a read-only-opened file -> Err. Runs everywhere (RUE-945). The
+# file is created first (so it exists), reopened O_RDONLY, then written: the
+# kernel rejects the write on a read-only descriptor with EBADF, which normalizes
+# to FileError.InvalidInput (ADR-0057 FileError table).
+[[case]]
+name = "fs_write_to_readonly"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("readonly.dat");
+
+    let mut seed = Buf.new();
+    seed.push(122); // "z"
+
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 21; } };
+    match f.write(borrow seed) { WR.Ok(_n) => {}, WR.Err(_e) => { return 22; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 23; } };
+
+    let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 24; } };
+    let mut payload = Buf.new();
+    payload.push(121); // "y"
+    let outcome = match g.write(borrow payload) {
+        WR.Ok(_n) => 1,
+        WR.Err(e) => match e {
+            FE.InvalidInput => 0,
+            _ => 3,
+        },
+    };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => {} };
+    outcome
+}
+""" }]
+exit_code = 0
