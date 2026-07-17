@@ -1108,13 +1108,19 @@ impl<'a> AstGen<'a> {
                 let module = path.base.as_ref().map(|base| self.gen_expr(base));
                 // Inline type-constructor pattern head `F(args).Variant(..)`
                 // (RUE-596): generate the constructor call `F(args)` as its own
-                // instruction; sema reduces it to the enum type at comptime.
+                // instruction; sema reduces it to the enum type at comptime. When
+                // the head is module-qualified (`std.result.Result(i32, i32).Ok`,
+                // RUE-947) the constructor is reached through the module base, so
+                // emit a method call on it exactly as the construction head does;
+                // a bare call would fail to resolve `Result` in local scope.
                 let ctor_head = path.ctor_args.as_ref().map(|args| {
                     let arg_refs: Vec<_> = args.iter().map(|a| self.convert_call_arg(a)).collect();
                     let name = self.symbol(path.type_name.name);
-                    self.rir
-                        .add_call(name, &arg_refs, path.span)
-                        .record_failure(&mut self.payload_error)
+                    match module {
+                        Some(base) => self.rir.add_method_call(base, name, &arg_refs, path.span),
+                        None => self.rir.add_call(name, &arg_refs, path.span),
+                    }
+                    .record_failure(&mut self.payload_error)
                 });
                 // Payload binding names for a tuple-variant pattern (RUE-221).
                 let bindings: Vec<Spur> =

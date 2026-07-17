@@ -489,9 +489,12 @@ accepted with explicit (compile-time-known) arguments: a type-constructor call
 may head a struct literal (`Pair(i32) { first: 1, second: 2 }`), an
 associated-function or enum-variant call (`Result(i32, i32).Ok(v)`,
 `Vec(i32).new()`), and a match pattern (`match r { Result(i32, i32).Ok(v) => … }`).
-Each is evaluated exactly as if the call had been bound to a name first (as
-above); it is pure surface sugar and adds no new typing rule. Eliding the
-arguments (`Option(_).Some(5)`) is not part of this feature.
+The type constructor itself may be reached through a module path, so a
+module-qualified head is admitted in each of these positions, including the
+pattern head (`std.result.Result(i32, i32).Ok(v)`). Each is evaluated exactly as
+if the call had been bound to a name first (as above); it is pure surface sugar
+and adds no new typing rule. Eliding the arguments (`Option(_).Some(5)`) is not
+part of this feature.
 
 {{ rule(id="4.14:24", cat="normative") }}
 

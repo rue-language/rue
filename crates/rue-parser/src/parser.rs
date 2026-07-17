@@ -1737,16 +1737,55 @@ impl Parser {
         }
     }
 
+    /// With the cursor at a `(`, scan to the matching `)` and report whether the
+    /// token immediately after it is a `.`. This distinguishes an inline
+    /// type-constructor call on a pattern head (`Result(i32, i32).Ok`, the group
+    /// precedes a dot) from a variant's payload bindings (`Ok(v)`, the group is
+    /// terminal) during a single left-to-right pass (RUE-947).
+    fn paren_group_precedes_dot(&self) -> bool {
+        debug_assert!(self.at(TokenKind::LParen));
+        let mut cursor = self.cursor;
+        let mut depth = 0usize;
+        while let Some(token) = self.tokens.get(cursor) {
+            match token.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return self.tokens.get(cursor + 1).map(|t| t.kind) == Some(TokenKind::Dot);
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            cursor += 1;
+        }
+        false
+    }
+
     fn path_pattern(&mut self, start: u32) -> PResult<Pattern> {
         let first = self.ident()?;
+        // The inline type-constructor call (RUE-596) attaches to the `type_name`
+        // segment — the last one before the variant. For a local head that is
+        // the first ident (`Result(i32, i32).Ok(v)`); for a module-qualified
+        // head it is a later segment (`std.result.Result(i32, i32).Ok(v)`,
+        // RUE-947). A `(...)` group is the ctor call only when it precedes a
+        // dot; a terminal `(...)` is the variant's payload bindings.
         let mut ctor_args = None;
         if self.at(TokenKind::LParen) {
             ctor_args = Some(self.call_args()?);
         }
         self.expect(TokenKind::Dot)?;
         let mut segments = vec![self.ident()?];
+        if ctor_args.is_none() && self.at(TokenKind::LParen) && self.paren_group_precedes_dot() {
+            ctor_args = Some(self.call_args()?);
+        }
         while self.eat(TokenKind::Dot) {
             segments.push(self.ident()?);
+            if ctor_args.is_none() && self.at(TokenKind::LParen) && self.paren_group_precedes_dot()
+            {
+                ctor_args = Some(self.call_args()?);
+            }
         }
         let variant = segments.pop().unwrap();
         let (type_name, base) = if segments.is_empty() {
