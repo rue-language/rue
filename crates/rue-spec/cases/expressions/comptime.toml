@@ -2751,3 +2751,88 @@ fn main() -> i32 { 0 }
 aux_files = { "mode_type_helper.rue" = "pub fn Box(comptime T: type) -> type { struct { value: T } }" }
 compile_fail = true
 error_contains = "[E0209]"
+
+# RUE-948: a member-access type path (`std.strbuf.StrBuf`) used as a
+# value-position comptime type-constructor argument is comptime-evaluable — it
+# names a re-exported named type, a `const`-item reference under rule 4.14:26 —
+# and must resolve to the same type the accepted return-type position
+# (`-> Result(std.strbuf.StrBuf, i32)`) and the local-alias workaround
+# (`let S = std.strbuf.StrBuf; Result(S, i32)`) already produce. It was wrongly
+# rejected with E1201 in value position only.
+[[case]]
+name = "type_ctor_member_access_path_arg"
+spec = ["4.14:26", "4.14:22"]
+description = "A module-qualified member-access type path as a comptime type-constructor argument resolves like a const reference (RUE-948, the filed repro)."
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let R1 = std.result.Result(std.strbuf.StrBuf, i32);
+    let _ = R1;
+    0
+}
+"""
+real_std = true
+exit_code = 0
+
+# RUE-948: member-access paths compose to any nesting depth, since each argument
+# is recursively comptime-evaluated — a path appearing as the argument of a
+# nested type-constructor call resolves the same way it does at the outer level.
+[[case]]
+name = "type_ctor_member_access_path_arg_deep_nested"
+spec = ["4.14:26", "4.14:22", "4.14:28"]
+description = "Member-access type paths nested inside nested type-constructor calls all resolve (RUE-948 deep nesting)."
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let R = std.result.Result(std.arraybuf.ArrayBuf(std.strbuf.StrBuf), std.fs.FileError);
+    let _ = R;
+    0
+}
+"""
+real_std = true
+exit_code = 0
+
+# RUE-948: the same path spelling works std-independently through a plain
+# import facade, in value position as a type-constructor argument.
+[[case]]
+name = "type_ctor_member_access_path_arg_local_modules"
+spec = ["4.14:26", "4.14:22"]
+description = "A member-access type path through a plain import facade resolves as a comptime type-constructor argument (RUE-948, no std)."
+source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let R = lib.res.Res(lib.strs.Str, i32);
+    let _ = R;
+    0
+}
+"""
+aux_files = { "lib.rue" = """
+pub const strs = @import("strs.rue");
+pub const res = @import("res.rue");
+""", "strs.rue" = "pub struct Str { n: i32 }", "res.rue" = "pub fn Res(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }" }
+exit_code = 0
+
+# RUE-948: with the value-position path now accepted, a qualified pattern head
+# whose ARGS are member-access paths works in BOTH construction and match
+# position (previously the last alias-tax case, failing E0421). The instantiated
+# type is identical across the construction and the two arms, so the payload
+# binds and the arm value is returned.
+[[case]]
+name = "type_ctor_member_access_path_head_construct_and_match"
+spec = ["4.14:26", "4.14:22", "4.14:24"]
+description = "A qualified type-constructor path head whose arguments are member-access paths works in construction and pattern position (RUE-948)."
+source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let r = lib.res.Res(lib.strs.Str, i32).Ok(lib.strs.Str { n: 42 });
+    match r {
+        lib.res.Res(lib.strs.Str, i32).Ok(v) => v.n,
+        lib.res.Res(lib.strs.Str, i32).Err(e) => e,
+    }
+}
+"""
+aux_files = { "lib.rue" = """
+pub const strs = @import("strs.rue");
+pub const res = @import("res.rue");
+""", "strs.rue" = "pub struct Str { n: i32 }", "res.rue" = "pub fn Res(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }" }
+exit_code = 42

@@ -571,7 +571,10 @@ following base cases:
   (`()`);
 - a reference to a `const` item (Chapter 6), whose initializer is itself
   comptime-evaluable — every `const` initializer is required to be
-  comptime-evaluable, so every `const` reference qualifies;
+  comptime-evaluable, so every `const` reference qualifies. This includes a
+  module-qualified member-access path that names a named type re-exported
+  through an import chain (`std.strbuf.StrBuf`), which denotes the same
+  comptime-evaluable type a qualified type annotation of that spelling resolves;
 - a reference to a `comptime` parameter in scope (4.14:5), including a
   `comptime T: type` parameter, whose bound value is fixed at each
   specialization.

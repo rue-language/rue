@@ -6104,16 +6104,26 @@ impl<'a> BodySema<'a> {
                         || self.is_comptime_param_forward(arg.value, ctx);
                     if !is_comptime_known {
                         let param_name = self.interner.resolve(&param_names[i]).to_string();
+                        // A module-qualified member-access value path is
+                        // compile-time known but not yet folded in argument
+                        // position (RUE-948): name that limitation and the
+                        // file-level `const` workaround instead of the generic
+                        // "requires a compile-time known value" wording.
+                        let help = self
+                            .comptime_arg_member_access_help(arg.value, ctx)
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "parameter '{}' is declared as 'comptime' and requires a compile-time known value",
+                                    param_name
+                                )
+                            });
                         return Err(CompileError::new(
                             ErrorKind::ComptimeArgNotConst {
                                 param_name: param_name.clone(),
                             },
                             self.rir.get(arg.value).span,
                         )
-                        .with_help(format!(
-                            "parameter '{}' is declared as 'comptime' and requires a compile-time known value",
-                            param_name
-                        )));
+                        .with_help(help));
                     }
                 }
             }
@@ -6183,17 +6193,26 @@ impl<'a> BodySema<'a> {
                             }
                             None => {
                                 let param_name = self.interner.resolve(&param_names[i]).to_string();
+                                let arg_value = args.get(i).unwrap().value;
+                                // RUE-948: a module-member value path is
+                                // compile-time known but unfolded here; point
+                                // at the file-level `const` workaround.
+                                let help = self
+                                    .comptime_arg_member_access_help(arg_value, ctx)
+                                    .unwrap_or_else(|| {
+                                        format!(
+                                            "parameter '{}' is declared as 'comptime' and requires \
+                                             a compile-time known value",
+                                            param_name
+                                        )
+                                    });
                                 return Err(CompileError::new(
                                     ErrorKind::ComptimeArgNotConst {
                                         param_name: param_name.clone(),
                                     },
-                                    self.rir.get(args.get(i).unwrap().value).span,
+                                    self.rir.get(arg_value).span,
                                 )
-                                .with_help(format!(
-                                    "parameter '{}' is declared as 'comptime' and requires \
-                                     a compile-time known value",
-                                    param_name
-                                )));
+                                .with_help(help));
                             }
                         }
                         runtime_args.push(air_arg.clone());

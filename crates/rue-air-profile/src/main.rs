@@ -68,9 +68,7 @@ fn air_payload_storage_stats(air: &Air) -> AirPayloadStorageStats {
     stats.peak_staging_bytes = stats.peak_staging_bytes.max(
         air.places()
             .iter()
-            .map(|place| {
-                std::mem::size_of_val(air.get_place_projections(place))
-            })
+            .map(|place| std::mem::size_of_val(air.get_place_projections(place)))
             .max()
             .unwrap_or(0),
     );

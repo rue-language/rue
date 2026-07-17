@@ -888,14 +888,29 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 
     fn resolve_qualified_type_name(&mut self, path: &str, span: Span) -> CompileResult<Type> {
         let segments: Vec<&str> = path.split('.').collect();
+        self.resolve_qualified_type_name_in_file(span.file_id, &segments, span)
+    }
+
+    /// Like [`Self::resolve_qualified_type_name`], but with the file whose
+    /// imports anchor the path's first segment made explicit. The comptime
+    /// engine resolves a member-access type path (`std.strbuf.StrBuf` as a
+    /// value-position type-constructor argument) against its environment's
+    /// `defining_file`, the same file the qualified type-annotation path walks
+    /// (RUE-948, mirroring the RUE-511/RUE-609 receiver walk).
+    pub(crate) fn resolve_qualified_type_name_in_file(
+        &mut self,
+        root_file: FileId,
+        segments: &[&str],
+        span: Span,
+    ) -> CompileResult<Type> {
         if segments.len() < 2 || segments.iter().any(|s| s.is_empty()) {
             return Err(CompileError::new(
-                ErrorKind::UnknownType(path.to_string()),
+                ErrorKind::UnknownType(segments.join(".")),
                 span,
             ));
         }
-        let (module_id, module_file_id, _module_file_path) =
-            self.resolve_type_module_prefix(&segments[..segments.len() - 1], span)?;
+        let (module_id, module_file_id, _module_file_path) = self
+            .resolve_type_module_prefix_in_file(root_file, &segments[..segments.len() - 1], span)?;
         let member = segments[segments.len() - 1];
         let member_sym = self.interner.get_or_intern(member);
 
