@@ -39,6 +39,18 @@ The exact current inventory is therefore read through:
 Handwritten code and documentation must not maintain a peer signature or
 export table.
 
+## Runtime ABI versus native Rue ABI
+
+This document describes only the typed target-C boundary from generated Rue
+code to `rue-runtime`. Calls between Rue functions use a separate native Rue
+convention that is intentionally not C-compatible or stable across compiler
+revisions. Rue does not yet expose general foreign imports or exports.
+
+The [FFI ABI conformance audit](notes/ffi-abi-conformance-audit.md) records the
+current native convention, compares both boundaries with System V AMD64,
+AAPCS64, and Apple's arm64 amendments, and defines the executable evidence
+required before the target-C subset is expanded.
+
 ## Target C calling conventions
 
 All callable runtime helpers use the target C convention declared by the
