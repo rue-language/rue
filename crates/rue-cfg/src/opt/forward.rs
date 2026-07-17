@@ -364,7 +364,26 @@ mod tests {
     use super::*;
     use crate::{CfgArgMode, CfgCallArg, CfgInst, Place, Projection, Terminator, Type};
     use lasso::{Key, Spur};
+    use rue_air::{StructDef, StructId, TypeInternPool};
     use rue_span::Span;
+
+    fn test_struct_id() -> StructId {
+        TypeInternPool::new()
+            .register_struct(
+                Spur::try_from_usize(0).unwrap(),
+                StructDef {
+                    name: "Test".to_string(),
+                    fields: vec![],
+                    is_copy: false,
+                    is_linear: false,
+                    destructor: None,
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0
+    }
 
     fn make_cfg(num_locals: u32) -> Cfg {
         let mut cfg = Cfg::new(Type::I32, num_locals, 0, "test".to_string(), vec![]);
@@ -539,7 +558,7 @@ mod tests {
         );
         let field_val = push(&mut cfg, CfgInstData::Const(9), Type::I32);
         let (proj_start, proj_len) = cfg.push_projections([Projection::Field {
-            struct_id: crate::StructId::from_pool_index(0),
+            struct_id: test_struct_id(),
             field_index: 0,
         }]);
         let place = Place {

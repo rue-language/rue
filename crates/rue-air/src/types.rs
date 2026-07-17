@@ -1,20 +1,19 @@
 //! Type system for Rue.
 //!
-//! A [`Type`] is a compact `u32` newtype: an index into a `TypeInternPool`
-//! (ADR-0024), so type equality and lookup are cheap and free of
-//! self-referential lifetimes. The system covers the integer and boolean
-//! primitives, user structs and enums, references and raw pointers, and generic
-//! instantiations — well beyond the original i32-only prototype this comment
-//! once described.
+//! A [`Type`] is a compact `u32` newtype. Primitives use direct tags, while
+//! composite types carry a typed payload issued by a [`TypeInternPool`](crate::TypeInternPool)
+//! (ADR-0024). Equality is therefore cheap and free of self-referential
+//! lifetimes. The system covers integer and boolean primitives, user structs
+//! and enums, references and raw pointers, and generic instantiations.
 
 use crate::type_encoding::{self, Composite, Decoded, Primitive};
 
 /// A unique identifier for a struct definition.
 ///
-/// The inner value is a pool index into [`TypeInternPool`](crate::TypeInternPool),
-/// so the identifier and its definition use one canonical index.
+/// Values are issued by [`TypeInternPool`](crate::TypeInternPool); their raw
+/// storage identity is not part of the public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StructId(pub u32);
+pub struct StructId(pub(crate) u32);
 
 impl StructId {
     /// Create a StructId from a pool index.
@@ -22,7 +21,7 @@ impl StructId {
     /// The pool index is the raw index into `TypeInternPool`'s composite-type
     /// storage.
     #[inline]
-    pub fn from_pool_index(pool_index: u32) -> Self {
+    pub(crate) fn from_pool_index(pool_index: u32) -> Self {
         StructId(pool_index)
     }
 
@@ -30,17 +29,17 @@ impl StructId {
     ///
     /// This is the index into `TypeInternPool.types`.
     #[inline]
-    pub fn pool_index(self) -> u32 {
+    pub(crate) fn pool_index(self) -> u32 {
         self.0
     }
 }
 
 /// A unique identifier for an enum definition.
 ///
-/// The inner value is a pool index into [`TypeInternPool`](crate::TypeInternPool),
-/// so the identifier and its definition use one canonical index.
+/// Values are issued by [`TypeInternPool`](crate::TypeInternPool); their raw
+/// storage identity is not part of the public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EnumId(pub u32);
+pub struct EnumId(pub(crate) u32);
 
 impl EnumId {
     /// Create an EnumId from a pool index.
@@ -48,7 +47,7 @@ impl EnumId {
     /// The pool index is the raw index into `TypeInternPool`'s composite-type
     /// storage.
     #[inline]
-    pub fn from_pool_index(pool_index: u32) -> Self {
+    pub(crate) fn from_pool_index(pool_index: u32) -> Self {
         EnumId(pool_index)
     }
 
@@ -56,15 +55,14 @@ impl EnumId {
     ///
     /// This is the index into `TypeInternPool.types`.
     #[inline]
-    pub fn pool_index(self) -> u32 {
+    pub(crate) fn pool_index(self) -> u32 {
         self.0
     }
 }
 
-/// A unique identifier for an array type.
-/// This is needed because Type is Copy, so we can't use Box<Type> for the element type.
+/// An opaque identifier for an array entry issued by the type pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ArrayTypeId(pub u32);
+pub struct ArrayTypeId(pub(crate) u32);
 
 impl ArrayTypeId {
     /// Create an ArrayTypeId from a pool index.
@@ -72,7 +70,7 @@ impl ArrayTypeId {
     /// The pool index is the raw index into `TypeInternPool`'s composite-type
     /// storage.
     #[inline]
-    pub fn from_pool_index(pool_index: u32) -> Self {
+    pub(crate) fn from_pool_index(pool_index: u32) -> Self {
         ArrayTypeId(pool_index)
     }
 
@@ -80,45 +78,43 @@ impl ArrayTypeId {
     ///
     /// Returns the raw index into the TypeInternPool.
     #[inline]
-    pub fn pool_index(self) -> u32 {
+    pub(crate) fn pool_index(self) -> u32 {
         self.0
     }
 }
 
-/// A unique identifier for a `ptr const T` type.
-/// This is needed because Type is Copy, so we can't use Box<Type> for the pointee type.
+/// An opaque identifier for a `ptr const T` entry issued by the type pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PtrConstTypeId(pub u32);
+pub struct PtrConstTypeId(pub(crate) u32);
 
 impl PtrConstTypeId {
     /// Create a PtrConstTypeId from a pool index.
     #[inline]
-    pub fn from_pool_index(pool_index: u32) -> Self {
+    pub(crate) fn from_pool_index(pool_index: u32) -> Self {
         PtrConstTypeId(pool_index)
     }
 
     /// Get the pool index for this pointer type.
     #[inline]
-    pub fn pool_index(self) -> u32 {
+    pub(crate) fn pool_index(self) -> u32 {
         self.0
     }
 }
 
-/// A unique identifier for a `ptr mut T` type.
-/// This is needed because Type is Copy, so we can't use Box<Type> for the pointee type.
+/// An opaque identifier for a `ptr mut T` entry issued by the type pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PtrMutTypeId(pub u32);
+pub struct PtrMutTypeId(pub(crate) u32);
 
 impl PtrMutTypeId {
     /// Create a PtrMutTypeId from a pool index.
     #[inline]
-    pub fn from_pool_index(pool_index: u32) -> Self {
+    pub(crate) fn from_pool_index(pool_index: u32) -> Self {
         PtrMutTypeId(pool_index)
     }
 
     /// Get the pool index for this pointer type.
     #[inline]
-    pub fn pool_index(self) -> u32 {
+    pub(crate) fn pool_index(self) -> u32 {
         self.0
     }
 }
@@ -260,11 +256,11 @@ impl std::fmt::Debug for Type {
             TypeKind::Error => write!(f, "Type::ERROR"),
             TypeKind::Never => write!(f, "Type::NEVER"),
             TypeKind::ComptimeType => write!(f, "Type::COMPTIME_TYPE"),
-            TypeKind::Struct(id) => write!(f, "Type::new_struct(StructId({}))", id.0),
-            TypeKind::Enum(id) => write!(f, "Type::new_enum(EnumId({}))", id.0),
-            TypeKind::Array(id) => write!(f, "Type::new_array(ArrayTypeId({}))", id.0),
-            TypeKind::PtrConst(id) => write!(f, "Type::new_ptr_const(PtrConstTypeId({}))", id.0),
-            TypeKind::PtrMut(id) => write!(f, "Type::new_ptr_mut(PtrMutTypeId({}))", id.0),
+            TypeKind::Struct(id) => write!(f, "Type::new_struct({id:?})"),
+            TypeKind::Enum(id) => write!(f, "Type::new_enum({id:?})"),
+            TypeKind::Array(id) => write!(f, "Type::new_array({id:?})"),
+            TypeKind::PtrConst(id) => write!(f, "Type::new_ptr_const({id:?})"),
+            TypeKind::PtrMut(id) => write!(f, "Type::new_ptr_mut({id:?})"),
             TypeKind::Module(id) => write!(f, "Type::new_module(ModuleId({}))", id.0),
         }
     }
@@ -1018,7 +1014,8 @@ impl Type {
 
     /// Encode this type as a u32 for storage in extra arrays.
     ///
-    /// Since Type is now a u32 newtype, this simply returns the inner value.
+    /// This is crate-private because packed AIR storage is an invariant-proven
+    /// implementation boundary.
     #[inline]
     pub(crate) fn as_u32(&self) -> u32 {
         self.0
@@ -1026,8 +1023,8 @@ impl Type {
 
     /// Decode a type from a u32 value.
     ///
-    /// Since Type is now a u32 newtype, this simply wraps the value.
-    /// Note: This does not validate the encoding - use with values from `as_u32()`.
+    /// This does not validate the encoding and is only for values previously
+    /// produced by `as_u32()` inside AIR.
     ///
     /// # Safety (not unsafe, but correctness)
     ///

@@ -878,9 +878,7 @@ impl<'a> Sema<'a> {
                     continue;
                 };
                 let cause = (cause.name.clone(), self.format_type_name(cause.ty));
-                let mut def = def;
-                def.is_linear = true;
-                self.type_pool.update_struct_def(struct_id, def);
+                self.type_pool.mark_struct_linear(struct_id);
                 self.infectious_linear.insert(struct_id, cause);
                 changed = true;
             }
@@ -1279,7 +1277,7 @@ impl<'a> Sema<'a> {
                 )
             })?;
 
-        let mut struct_def = self.type_pool.struct_def(struct_id);
+        let struct_def = self.type_pool.struct_def(struct_id);
         if struct_def.destructor.is_some() {
             return Err(CompileError::new(
                 ErrorKind::DuplicateDestructor {
@@ -1314,8 +1312,8 @@ impl<'a> Sema<'a> {
         }
 
         let destructor_name = format!("{}.__drop", type_name_str);
-        struct_def.destructor = Some(destructor_name);
-        self.type_pool.update_struct_def(struct_id, struct_def);
+        self.type_pool
+            .set_struct_destructor(struct_id, destructor_name);
         self.destructor_spans.insert(struct_id, span);
         Ok(())
     }

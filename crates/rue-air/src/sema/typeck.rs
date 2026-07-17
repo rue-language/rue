@@ -359,9 +359,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             let qualified = self.destructor_symbol(struct_id);
             let def = self.type_pool.struct_def(struct_id);
             if def.destructor.as_deref() != Some(qualified.as_str()) {
-                let mut def = def.clone();
-                def.destructor = Some(qualified);
-                self.type_pool.update_struct_def(struct_id, def);
+                self.type_pool
+                    .requalify_struct_destructor(struct_id, qualified);
             }
         }
     }

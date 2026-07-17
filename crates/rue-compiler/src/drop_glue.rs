@@ -602,7 +602,7 @@ fn type_name(ty: Type, type_pool: &FrozenTypeInternPool) -> String {
         TypeKind::Error => "error".to_string(),
         // ComptimeType only exists at compile time
         TypeKind::ComptimeType => "comptime_type".to_string(),
-        TypeKind::Enum(enum_id) => format!("enum{}", enum_id.0),
+        TypeKind::Enum(enum_id) => type_pool.enum_symbol_name(enum_id),
         // Struct types include builtin types like String. File-qualified
         // when the struct name spans files (RUE-571), so arrays of two
         // same-named element types get distinct glue.
@@ -845,5 +845,38 @@ mod tests {
             type_pool.abi_slot_count(drop_enum_ty)
         );
         assert_eq!(param_indices(&enum_glue), [0, 1, 2, 2]);
+    }
+
+    #[test]
+    fn enum_array_drop_glue_names_are_owner_aware_and_match_codegen() {
+        let type_pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("Choice");
+        let make_enum = |file_id| EnumDef {
+            name: "Choice".into(),
+            variants: vec!["Only".into()],
+            variant_payloads: vec![vec![]],
+            is_pub: false,
+            file_id,
+        };
+        let (left, _) = type_pool.register_enum(symbol, make_enum(rue_span::FileId::new(1)));
+        let (right, _) = type_pool.register_enum(symbol, make_enum(rue_span::FileId::new(2)));
+        let left_array = type_pool.intern_array_from_type(Type::new_enum(left), 2);
+        let right_array = type_pool.intern_array_from_type(Type::new_enum(right), 2);
+        let type_pool = type_pool.freeze();
+
+        let left_name = array_drop_glue_name(left_array, &type_pool);
+        let right_name = array_drop_glue_name(right_array, &type_pool);
+        assert_eq!(left_name, "__rue_drop_array_Choice$1_2");
+        assert_eq!(right_name, "__rue_drop_array_Choice$2_2");
+        assert_ne!(left_name, right_name);
+        assert_eq!(
+            left_name,
+            rue_codegen::types::array_drop_glue_name(left_array, &type_pool)
+        );
+        assert_eq!(
+            right_name,
+            rue_codegen::types::array_drop_glue_name(right_array, &type_pool)
+        );
     }
 }

@@ -2481,6 +2481,31 @@ mod tests {
         let v = dummy_value();
         let place = Place::local(0, Type::I32);
         let symbol = Spur::default();
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let (struct_id, _) = pool.register_struct(
+            interner.get_or_intern("PlannerStruct"),
+            StructDef {
+                name: "PlannerStruct".to_string(),
+                fields: vec![],
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let (enum_id, _) = pool.register_enum(
+            interner.get_or_intern("PlannerEnum"),
+            EnumDef {
+                name: "PlannerEnum".to_string(),
+                variants: vec!["Only".to_string()],
+                variant_payloads: vec![],
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
         let cases = vec![
             (CfgInstData::Const(1), ValueKind::Constant),
             (CfgInstData::BoolConst(true), ValueKind::BoolConstant),
@@ -2542,7 +2567,7 @@ mod tests {
             ),
             (
                 CfgInstData::StructInit {
-                    struct_id: rue_air::StructId(0),
+                    struct_id,
                     fields_start: 0,
                     fields_len: 0,
                 },
@@ -2557,7 +2582,7 @@ mod tests {
             ),
             (
                 CfgInstData::EnumVariant {
-                    enum_id: rue_air::EnumId(0),
+                    enum_id,
                     variant_index: 0,
                     payload_start: 0,
                     payload_len: 0,
@@ -2567,7 +2592,7 @@ mod tests {
             (
                 CfgInstData::EnumPayloadGet {
                     base: v,
-                    enum_id: rue_air::EnumId(0),
+                    enum_id,
                     variant_index: 0,
                     field_index: 0,
                 },

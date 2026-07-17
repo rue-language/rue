@@ -1449,7 +1449,7 @@ impl Cfg {
                 fields_start,
                 fields_len,
             } => {
-                write!(f, "struct_init #{} {{", struct_id.0)?;
+                write!(f, "struct_init #{struct_id:?} {{")?;
                 let fields = self.get_extra(*fields_start, *fields_len);
                 for (i, field) in fields.iter().enumerate() {
                     if i > 0 {
@@ -1480,12 +1480,12 @@ impl Cfg {
                 payload_len,
             } => {
                 if *payload_len == 0 {
-                    write!(f, "enum_variant #{}::{}", enum_id.0, variant_index)
+                    write!(f, "enum_variant #{enum_id:?}::{variant_index}")
                 } else {
                     // Print the actual payload operands (like StructInit and
                     // ArrayInit do) so the variant's dataflow inputs are
                     // readable in the dump, not just their count.
-                    write!(f, "enum_variant #{}::{}(", enum_id.0, variant_index)?;
+                    write!(f, "enum_variant #{enum_id:?}::{variant_index}(")?;
                     let payload = self.get_extra(*payload_start, *payload_len);
                     for (i, value) in payload.iter().enumerate() {
                         if i > 0 {
@@ -1504,8 +1504,8 @@ impl Cfg {
             } => {
                 write!(
                     f,
-                    "enum_payload_get {} #{}::{}.{}",
-                    base, enum_id.0, variant_index, field_index
+                    "enum_payload_get {} #{:?}::{}.{}",
+                    base, enum_id, variant_index, field_index
                 )
             }
             CfgInstData::IntCast { value, from_ty } => {
@@ -1528,7 +1528,8 @@ impl Cfg {
         write!(f, "{}", self.place_to_string(place))
     }
 
-    /// Render a place with its projections RESOLVED (e.g. `$0.#2.1($arr)[v3]`),
+    /// Render a place with its projections RESOLVED (e.g.
+    /// `$0.#StructId(2).1($arr)[v3]`),
     /// unlike `Place`'s own `Display`, which cannot see this Cfg's projection
     /// arena and can only print the raw index range (`$0[3..5]`). Use this for
     /// any human-facing dump or tracing description of a place.
@@ -1549,7 +1550,7 @@ impl Cfg {
                     struct_id,
                     field_index,
                 } => {
-                    let _ = write!(out, ".#{}.{}", struct_id.0, field_index);
+                    let _ = write!(out, ".#{struct_id:?}.{field_index}");
                 }
                 Projection::Index { array_type, index } => {
                     let _ = write!(out, "({})[{}]", array_type.name(), index);

@@ -450,11 +450,11 @@ impl<'a> CfgBuilder<'a> {
             builder.lower_inst(root);
         }
 
-        let mut implicit_named_destructors = builder
-            .implicit_named_destructors
-            .into_iter()
-            .collect::<Vec<_>>();
-        implicit_named_destructors.sort_by_key(|id| id.0);
+        let implicit_named_destructors = builder
+            .type_pool
+            .all_struct_ids()
+            .filter(|id| builder.implicit_named_destructors.contains(id))
+            .collect();
         CfgOutput {
             cfg: builder.cfg,
             warnings: builder.warnings,

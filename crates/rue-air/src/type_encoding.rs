@@ -1,9 +1,9 @@
 //! Authoritative compact encoding for live [`Type`](crate::Type) handles.
 //!
 //! This module is the only place that assigns primitive values, composite
-//! tags, payload widths, reserved ranges, or the transitional `InternedType`
-//! pool-index offset. Construction and decoding must go through these helpers
-//! so a raw value cannot acquire different meanings in different consumers.
+//! tags, payload widths, or reserved ranges. Construction and decoding must go
+//! through these helpers so a raw value cannot acquire different meanings in
+//! different consumers.
 
 pub(crate) const TAG_MASK: u32 = 0xff;
 pub(crate) const PAYLOAD_SHIFT: u32 = 8;
@@ -111,47 +111,4 @@ pub(crate) const fn has_composite_kind(raw: u32, expected: Composite) -> bool {
         decode(raw),
         Some(Decoded::Composite { kind, .. }) if kind as u8 == expected as u8
     )
-}
-
-/// Encoding helpers for the compatibility-only `InternedType` wrapper.
-///
-/// Primitive values use the authoritative `Type` primitive encodings exactly.
-/// Pool entries occupy a disjoint range and retain their kind in `TypeData`;
-/// RUE-836/RUE-838 remove this transitional wrapper entirely.
-pub(crate) mod compatibility {
-    use super::{Decoded, decode};
-
-    const POOL_INDEX_OFFSET: u32 = 256;
-
-    pub(crate) const fn encode_pool_index(pool_index: u32) -> Option<u32> {
-        pool_index.checked_add(POOL_INDEX_OFFSET)
-    }
-
-    pub(crate) const fn decode_pool_index(raw: u32) -> Option<u32> {
-        if raw < POOL_INDEX_OFFSET {
-            None
-        } else {
-            Some(raw - POOL_INDEX_OFFSET)
-        }
-    }
-
-    pub(crate) const fn is_primitive(raw: u32) -> bool {
-        matches!(
-            decode(raw),
-            Some(Decoded::Primitive(
-                super::Primitive::I8
-                    | super::Primitive::I16
-                    | super::Primitive::I32
-                    | super::Primitive::I64
-                    | super::Primitive::U8
-                    | super::Primitive::U16
-                    | super::Primitive::U32
-                    | super::Primitive::U64
-                    | super::Primitive::Bool
-                    | super::Primitive::Unit
-                    | super::Primitive::Error
-                    | super::Primitive::Never
-            ))
-        )
-    }
 }

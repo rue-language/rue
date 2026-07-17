@@ -269,6 +269,28 @@ sh_test(
 )
 
 sh_test(
+    name = "type-architecture-inventory-validation",
+    test = "scripts/validate-type-architecture.py",
+    args = [
+        "--source", "rue-air=$(location //crates/rue-air:type-architecture-inventory-sources)",
+        "--source", "rue-cfg=$(location //crates/rue-cfg:type-architecture-inventory-sources)",
+        "--source", "rue-codegen=$(location //crates/rue-codegen:type-architecture-inventory-sources)",
+        "--source", "rue-compiler=$(location //crates/rue-compiler:type-architecture-inventory-sources)",
+        "--source", "rue-compiler-session-bench=$(location //crates/rue-compiler-session-bench:type-architecture-inventory-sources)",
+        "--source", "rue-oracle=$(location //crates/rue-oracle:type-architecture-inventory-sources)",
+    ],
+)
+
+sh_test(
+    name = "type-architecture-inventory-tool-tests",
+    test = "scripts/test-type-architecture.py",
+    resources = ["scripts/validate-type-architecture.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+sh_test(
     name = "benchmark-tool-tests",
     test = "scripts/test-benchmark-tools.py",
     env = {

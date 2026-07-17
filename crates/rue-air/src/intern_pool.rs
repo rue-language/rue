@@ -1,7 +1,7 @@
 //! Type intern pool for efficient type representation.
 //!
-//! This module implements a unified type interning system inspired by Zig's `InternPool`.
-//! All types become 32-bit indices into a canonical pool, enabling:
+//! This module implements canonical composite-type storage inspired by Zig's
+//! `InternPool`. Compact [`Type`] handles enable:
 //!
 //! - O(1) type equality (u32 comparison)
 //! - Efficient memory usage
@@ -15,10 +15,10 @@
 //! - **Arrays** are structural types (same element type + length = same type)
 //!
 //! [`Type`] is the compact compiler-facing handle. Composite `StructId`,
-//! `EnumId`, `ArrayTypeId`, and pointer IDs are indices into this pool, while
-//! the pool stores canonical [`Type`] values directly in structural keys and
-//! children. Definitions and structural identities are therefore resolved
-//! through one pool (ADR-0024).
+//! `EnumId`, `ArrayTypeId`, and pointer IDs are opaque typed storage identities.
+//! The pool stores canonical [`Type`] values directly in structural keys and
+//! children, so definitions and structural identities resolve through one pool
+//! (ADR-0024).
 //!
 //! # Thread Safety
 //!
@@ -38,39 +38,6 @@ use crate::types::{
     ArrayTypeId, EnumDef, EnumId, LangItem, PtrConstTypeId, PtrMutTypeId, StructDef, StructId,
     Type, TypeKind,
 };
-
-/// Private, one-way compatibility encoding retained for RUE-838 cleanup.
-///
-/// No pool storage, key, public API, or compiler phase consumes this wrapper.
-/// It can only project a canonical `Type` into the old untyped pool-index
-/// representation; there is deliberately no conversion back to `Type`.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct InternedType(u32);
-
-#[allow(dead_code)]
-impl InternedType {
-    fn from_type(ty: Type) -> Option<Self> {
-        if type_encoding::compatibility::is_primitive(ty.raw_encoding()) {
-            return Some(Self(ty.raw_encoding()));
-        }
-        let pool_index = match ty.try_kind()? {
-            TypeKind::Struct(id) => id.pool_index(),
-            TypeKind::Enum(id) => id.pool_index(),
-            TypeKind::Array(id) => id.pool_index(),
-            TypeKind::PtrConst(id) => id.pool_index(),
-            TypeKind::PtrMut(id) => id.pool_index(),
-            _ => return None,
-        };
-        Some(Self(type_encoding::compatibility::encode_pool_index(
-            pool_index,
-        )?))
-    }
-
-    fn pool_index(self) -> Option<u32> {
-        type_encoding::compatibility::decode_pool_index(self.0)
-    }
-}
 
 /// Type data stored in the intern pool.
 ///
@@ -377,6 +344,17 @@ impl TypeInternPoolInner {
     fn struct_def(&self, id: StructId) -> &StructDef {
         self.try_struct_def(id)
             .unwrap_or_else(|| panic!("Expected struct at pool index {}", id.0))
+    }
+
+    fn struct_def_mut(&mut self, id: StructId) -> &mut StructDef {
+        let pool_index = id.pool_index() as usize;
+        match self.types.get_mut(pool_index) {
+            Some(TypeData::Struct(data)) => &mut data.def,
+            other => panic!(
+                "Expected complete struct at pool index {}, got {:?}",
+                pool_index, other
+            ),
+        }
     }
 
     fn try_enum_def(&self, id: EnumId) -> Option<&EnumDef> {
@@ -833,7 +811,7 @@ impl TypeInternPool {
 
     /// Register a new struct (nominal - no deduplication).
     ///
-    /// Returns the `StructId` (containing the pool index) and whether it was newly inserted.
+    /// Returns the pool-issued `StructId` and whether it was newly inserted.
     /// If a struct with this name in the same defining file already exists, returns the existing
     /// StructId.
     pub fn register_struct(&self, name: Spur, def: StructDef) -> (StructId, bool) {
@@ -1013,7 +991,7 @@ impl TypeInternPool {
 
     /// Register a new enum (nominal - no deduplication).
     ///
-    /// Returns the `EnumId` (containing the pool index) and whether it was newly inserted.
+    /// Returns the pool-issued `EnumId` and whether it was newly inserted.
     /// If an enum with this name in the same defining file already exists, returns the existing
     /// EnumId.
     pub fn register_enum(&self, name: Spur, def: EnumDef) -> (EnumId, bool) {
@@ -1311,13 +1289,13 @@ impl TypeInternPool {
     // Direct nominal-ID access
     // ========================================================================
     //
-    // These methods allow accessing struct and enum definitions directly via
-    // StructId/EnumId, which now store pool indices instead of vector indices.
+    // These methods access struct and enum definitions through opaque IDs
+    // issued by this pool.
 
     /// Get a struct definition by StructId.
     ///
-    /// The StructId contains a pool index. This method looks up the struct
-    /// in the pool and returns a clone of its definition.
+    /// This method resolves the pool-issued identity and returns a clone of its
+    /// definition.
     ///
     /// # Panics
     ///
@@ -1404,8 +1382,8 @@ impl TypeInternPool {
 
     /// Get an enum definition by EnumId.
     ///
-    /// The EnumId contains a pool index. This method looks up the enum
-    /// in the pool and returns a clone of its definition.
+    /// This method resolves the pool-issued identity and returns a clone of its
+    /// definition.
     ///
     /// # Panics
     ///
@@ -1472,50 +1450,62 @@ impl TypeInternPool {
         inner.enum_symbol_name(enum_id)
     }
 
-    /// Update a struct definition in the pool.
+    /// Monotonically mark a complete struct as linear during semantic
+    /// metadata finalization.
     ///
-    /// This is used during semantic analysis when struct fields are resolved
-    /// after the struct is initially registered.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the StructId doesn't correspond to a struct in the pool.
-    pub fn update_struct_def(&self, struct_id: StructId, new_def: StructDef) {
+    /// This operation is idempotent and cannot change nominal identity,
+    /// fields, or any other completed definition data.
+    pub(crate) fn mark_struct_linear(&self, struct_id: StructId) {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        let pool_index = struct_id.0 as usize;
-        match &mut inner.types[pool_index] {
-            TypeData::Struct(data) => data.def = new_def,
-            other => panic!(
-                "Expected struct at pool index {}, got {:?}",
-                pool_index, other
-            ),
-        }
+        inner.struct_def_mut(struct_id).is_linear = true;
     }
 
-    /// Update an enum definition in the pool.
+    /// Assign a complete struct's destructor symbol exactly once.
     ///
-    /// This is used during semantic analysis when enum variants are resolved
-    /// after the enum is initially registered.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the EnumId doesn't correspond to an enum in the pool.
-    pub fn update_enum_def(&self, enum_id: EnumId, new_def: EnumDef) {
+    /// Destructor discovery is a semantic metadata-finalization step. It
+    /// cannot replace fields or any other completed definition data.
+    pub(crate) fn set_struct_destructor(&self, struct_id: StructId, symbol: String) {
+        assert!(
+            symbol.ends_with(".__drop"),
+            "destructor symbol must end with .__drop"
+        );
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        let pool_index = enum_id.0 as usize;
-        match &mut inner.types[pool_index] {
-            TypeData::Enum(data) => data.def = new_def,
-            other => panic!(
-                "Expected enum at pool index {}, got {:?}",
-                pool_index, other
-            ),
-        }
+        let def = inner.struct_def_mut(struct_id);
+        assert!(!def.is_copy, "a copy struct cannot acquire a destructor");
+        assert!(
+            def.destructor.is_none(),
+            "struct destructor metadata can only be assigned once"
+        );
+        def.destructor = Some(symbol);
+    }
+
+    /// Requalify an already-assigned destructor symbol after nominal-name
+    /// collisions are known.
+    ///
+    /// Requalification changes only symbol spelling and requires a distinct,
+    /// previously assigned destructor; it cannot create or remove one.
+    pub(crate) fn requalify_struct_destructor(&self, struct_id: StructId, symbol: String) {
+        assert!(
+            symbol.ends_with(".__drop"),
+            "destructor symbol must end with .__drop"
+        );
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let destructor = inner
+            .struct_def_mut(struct_id)
+            .destructor
+            .as_mut()
+            .expect("destructor requalification requires assigned metadata");
+        assert_ne!(
+            destructor, &symbol,
+            "destructor requalification requires a different symbol"
+        );
+        *destructor = symbol;
     }
 
     /// Get an array type definition by ArrayTypeId.
     ///
-    /// The ArrayTypeId contains a pool index. This method looks up the array
-    /// in the pool and returns its element type and length as a tuple.
+    /// This method resolves the pool-issued identity and returns its element
+    /// type and length as a tuple.
     ///
     /// # Returns
     ///
@@ -1887,6 +1877,30 @@ impl FrozenTypeInternPool {
             })
     }
 
+    /// Iterate over every canonical composite type in pool storage order.
+    ///
+    /// The returned [`Type`] handles preserve global allocation order without
+    /// exposing the raw pool positions used to encode their typed payloads.
+    pub fn all_types(&self) -> impl ExactSizeIterator<Item = Type> + '_ {
+        self.inner.types.iter().enumerate().map(|(index, data)| {
+            let index = checked_pool_index(index).expect("type pool index invariant");
+            match data {
+                TypeData::Struct(_) => Type::new_struct(StructId::from_pool_index(index)),
+                TypeData::Enum(_) => Type::new_enum(EnumId::from_pool_index(index)),
+                TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(index)),
+                TypeData::PtrConst { .. } => {
+                    Type::new_ptr_const(PtrConstTypeId::from_pool_index(index))
+                }
+                TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index)),
+                TypeData::ReservedStruct
+                | TypeData::DeclaredStruct(_)
+                | TypeData::DeclaredEnum(_) => {
+                    unreachable!("frozen type pool contains an incomplete entry")
+                }
+            }
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.inner.types.len()
     }
@@ -2230,6 +2244,84 @@ mod tests {
         let destructor = first.destructor.as_deref().unwrap();
         let request_symbol = request_symbols.get_or_intern(destructor);
         assert_eq!(request_symbols.resolve(&request_symbol), "Owner.__drop");
+    }
+
+    #[test]
+    fn struct_metadata_finalization_is_narrow_and_monotonic() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (owner, _) = pool.register_struct(
+            declarations.get_or_intern("Owner"),
+            struct_def(
+                "Owner",
+                vec![StructField {
+                    name: "value".into(),
+                    ty: Type::I64,
+                }],
+            ),
+        );
+
+        pool.mark_struct_linear(owner);
+        pool.mark_struct_linear(owner);
+        pool.set_struct_destructor(owner, "Owner.__drop".into());
+        pool.requalify_struct_destructor(owner, "Owner$left.__drop".into());
+
+        let def = pool.struct_def(owner);
+        assert!(def.is_linear);
+        assert_eq!(def.destructor.as_deref(), Some("Owner$left.__drop"));
+        assert_eq!(def.name, "Owner");
+        assert_eq!(def.fields.len(), 1);
+        assert_eq!(def.fields[0].ty, Type::I64);
+    }
+
+    #[test]
+    #[should_panic(expected = "struct destructor metadata can only be assigned once")]
+    fn struct_destructor_metadata_cannot_be_assigned_twice() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (owner, _) = pool.register_struct(
+            declarations.get_or_intern("Owner"),
+            struct_def("Owner", vec![]),
+        );
+        pool.set_struct_destructor(owner, "Owner.__drop".into());
+        pool.set_struct_destructor(owner, "Owner.__drop".into());
+    }
+
+    #[test]
+    #[should_panic(expected = "destructor requalification requires assigned metadata")]
+    fn struct_destructor_cannot_be_created_by_requalification() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (owner, _) = pool.register_struct(
+            declarations.get_or_intern("Owner"),
+            struct_def("Owner", vec![]),
+        );
+        pool.requalify_struct_destructor(owner, "Owner$left.__drop".into());
+    }
+
+    #[test]
+    fn frozen_all_types_preserves_global_storage_order_without_exposing_positions() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (owner, _) = pool.register_struct(
+            declarations.get_or_intern("Owner"),
+            struct_def("Owner", vec![]),
+        );
+        let array = pool.try_intern_array(Type::new_struct(owner), 3).unwrap();
+        let (choice, _) =
+            pool.register_enum(declarations.get_or_intern("Choice"), enum_def("Choice"));
+        let pointer = pool.try_intern_ptr_const(array).unwrap();
+
+        let frozen = pool.freeze();
+        assert_eq!(
+            frozen.all_types().collect::<Vec<_>>(),
+            [
+                Type::new_struct(owner),
+                array,
+                Type::new_enum(choice),
+                pointer
+            ]
+        );
     }
 
     #[test]

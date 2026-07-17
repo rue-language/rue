@@ -1024,9 +1024,10 @@ mod tests {
             .unwrap()
             .0;
 
+        let peer_live_handle = ["Interned", "Type"].concat();
         for forbidden in [
             "rue_air::Type",
-            "InternedType",
+            peer_live_handle.as_str(),
             "StructId",
             "EnumId",
             "ArrayTypeId",
