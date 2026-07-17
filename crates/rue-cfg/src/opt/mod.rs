@@ -28,6 +28,7 @@ mod constopt;
 mod cse;
 mod dce;
 mod forward;
+mod loops;
 mod peephole;
 mod simplify;
 
