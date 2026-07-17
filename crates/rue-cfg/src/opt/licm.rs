@@ -111,10 +111,7 @@ pub struct Stats {
 /// and before DCE (see the module docs). Returns its work counters. The type
 /// pool feeds preheader materialization's typed block-param payloads (RUE-840),
 /// whose capacity failures propagate as the pass error.
-pub fn run(
-    cfg: &mut Cfg,
-    type_pool: &FrozenTypeInternPool,
-) -> Result<Stats, CfgOptimizationError> {
+pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, CfgOptimizationError> {
     let mut stats = Stats::default();
 
     // Recompute dominators + loops from scratch each sweep (ADR-0054). A sweep
@@ -240,6 +237,20 @@ fn is_hoist_candidate(cfg: &Cfg, value: CfgValue, body_has_effect: bool) -> bool
         // Memory reads yield the same value each iteration only when nothing in
         // the loop writes memory (phase-2 conservatism; see the module docs).
         CfgInstData::PlaceRead { .. } | CfgInstData::Load { .. } => !body_has_effect,
+        // A `Param` re-reads its parameter slot; it has no operands, so the
+        // operand walk trivially reports it invariant — but its *value* is only
+        // stable across iterations when the parameter cannot be mutated inside
+        // the loop. A writable (`inout`) or address-taken parameter can be
+        // written by a body `ParamStore` or a raw-pointer `@ptr_write`, so its
+        // read is invariant only when the body has no observable effect, exactly
+        // like a memory read. A by-value, non-address-taken parameter never
+        // changes and hoists freely. (Mirrors CSE's `never_written_params`
+        // guard, RUE-914 — without this a hoisted `inout` read would freeze the
+        // parameter at its entry value and miscompile the loop.)
+        CfgInstData::Param { index } => {
+            !body_has_effect
+                || (!cfg.is_param_writable(index) && !cfg.is_param_address_taken(index))
+        }
         _ => true,
     }
 }
@@ -480,7 +491,13 @@ mod tests {
         let cond = bool_const(&mut cfg, entry);
         let hp = cfg.add_block_param(header, Type::I32);
         let args = cfg.push_goto_args([init]).unwrap();
-        cfg.set_terminator(entry, Terminator::Goto { target: header, args });
+        cfg.set_terminator(
+            entry,
+            Terminator::Goto {
+                target: header,
+                args,
+            },
+        );
 
         cfg.set_terminator(header, branch(cond, body, exit));
 
@@ -490,7 +507,13 @@ mod tests {
         let invariant = push(&mut cfg, body, CfgInstData::BitXor(a, a), Type::I32);
         // Feed the block param back on the loop's back edge so it is well-formed.
         let args = cfg.push_goto_args([varying]).unwrap();
-        cfg.set_terminator(body, Terminator::Goto { target: header, args });
+        cfg.set_terminator(
+            body,
+            Terminator::Goto {
+                target: header,
+                args,
+            },
+        );
         cfg.set_terminator(exit, Terminator::Return { value: None });
         cfg.verify().unwrap();
 
@@ -623,6 +646,103 @@ mod tests {
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 0, "body has a store: Load stays");
         assert_eq!(block_of(&s.cfg, load), Some(s.body));
+    }
+
+    #[test]
+    fn mutable_param_read_hoisted_only_when_body_effect_free() {
+        // A `Param` read re-reads its parameter slot and has no operands, so the
+        // operand walk trivially calls it invariant. But a writable (`inout`)
+        // parameter that the loop body mutates (a `ParamStore`) varies per
+        // iteration: hoisting the read would freeze the parameter at its entry
+        // value and miscompile the loop (the same hazard the Load gate guards,
+        // and CSE's `never_written_params`). It must stay in the body.
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            1,
+            2,
+            "test".to_string(),
+            rue_air::ParamSlotModes::new(vec![true, false], vec![true, false]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+
+        let cond = bool_const(&mut cfg, entry);
+        cfg.set_terminator(entry, goto(header));
+        cfg.set_terminator(header, branch(cond, body, exit));
+
+        // Read the writable inout param 0 and store back to it in the body.
+        let read = push(&mut cfg, body, CfgInstData::Param { index: 0 }, Type::I32);
+        push(
+            &mut cfg,
+            body,
+            CfgInstData::ParamStore {
+                param_slot: 0,
+                value: read,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(body, goto(header));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        cfg.verify().unwrap();
+
+        let stats = run(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(
+            stats.invariants_hoisted, 0,
+            "a mutated inout param read must not hoist"
+        );
+        assert_eq!(block_of(&cfg, read), Some(body), "the inout read stays");
+        cfg.verify().unwrap();
+
+        // A by-value, non-address-taken parameter (slot 1) never changes, so its
+        // read hoists even when the body has an unrelated effect (a Store to a
+        // local): the refinement must not over-restrict.
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            1,
+            2,
+            "test".to_string(),
+            rue_air::ParamSlotModes::new(vec![true, false], vec![true, false]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+
+        let cond = bool_const(&mut cfg, entry);
+        let zero = push(&mut cfg, entry, CfgInstData::Const(0), Type::I32);
+        cfg.set_terminator(entry, goto(header));
+        cfg.set_terminator(header, branch(cond, body, exit));
+
+        let pure_read = push(&mut cfg, body, CfgInstData::Param { index: 1 }, Type::I32);
+        // An unrelated observable effect in the body (a local store).
+        push(
+            &mut cfg,
+            body,
+            CfgInstData::Store {
+                slot: 0,
+                value: zero,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(body, goto(header));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        cfg.verify().unwrap();
+
+        let stats = run(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(
+            stats.invariants_hoisted, 1,
+            "an immutable by-value param read hoists despite an unrelated effect"
+        );
+        assert_eq!(
+            block_of(&cfg, pure_read),
+            Some(entry),
+            "the pure read moved"
+        );
+        cfg.verify().unwrap();
     }
 
     #[test]
