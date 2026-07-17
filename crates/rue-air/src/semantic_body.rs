@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::{Air, ParamSlotModes};
+use crate::ParamSlotModes;
 use crate::{
     AirArgMode, AirPlaceBase, BodyOwnerToken, SemanticImportConstValue, SemanticImportType,
 };
@@ -685,7 +685,7 @@ impl<K, M> SemanticBody<K, M> {
 
 #[derive(Debug)]
 pub struct SemanticImportedBody {
-    pub air: Air,
+    pub air: crate::ValidatedAir,
     pub strings: Vec<String>,
     pub num_locals: u32,
     pub num_param_slots: u32,
@@ -711,7 +711,7 @@ pub struct SemanticBodyCandidateInstallWork {
     pub strings_installed: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticBodyImportFailure {
     Semantic(super::SemanticImportFailure),
     UnsupportedGenericCall,
@@ -726,10 +726,18 @@ pub enum SemanticBodyImportFailure {
     InvalidAnchor,
     WrongNominalKind,
     SizeOverflow,
+    AirBuild(crate::AirBuildError),
+    AirValidation(crate::AirValidationError),
 }
 
 impl From<super::SemanticImportFailure> for SemanticBodyImportFailure {
     fn from(value: super::SemanticImportFailure) -> Self {
         Self::Semantic(value)
+    }
+}
+
+impl From<crate::AirBuildError> for SemanticBodyImportFailure {
+    fn from(value: crate::AirBuildError) -> Self {
+        Self::AirBuild(value)
     }
 }

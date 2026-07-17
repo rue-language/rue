@@ -53,21 +53,11 @@ impl<'a> BodySema<'a> {
         ty: Type,
         span: Span,
         prefix: Vec<AirRef>,
-    ) -> AirRef {
+    ) -> CompileResult<AirRef> {
         if prefix.is_empty() {
-            return value;
+            return Ok(value);
         }
-        let stmts = prefix.iter().map(|r| r.as_u32()).collect::<Vec<_>>();
-        let stmts_start = air.add_extra(&stmts);
-        air.add_inst(AirInst {
-            data: AirInstData::Block {
-                stmts_start,
-                stmts_len: prefix.len() as u32,
-                value,
-            },
-            ty,
-            span,
-        })
+        Ok(air.add_block(&prefix, value, ty, span)?)
     }
 
     /// Project the shared `{ptr, len}` text prefix from a StrBuf value.
@@ -88,8 +78,8 @@ impl<'a> BodySema<'a> {
             AirInstData::Load { slot } => (AirPlaceBase::Local(slot), ty, Vec::new()),
             AirInstData::Param { index } => (AirPlaceBase::Param(index), ty, Vec::new()),
             AirInstData::PlaceRead { place } => {
-                let place = *air.get_place(place);
-                let projections = air.get_place_projections(&place).to_vec();
+                let place = air.get_place(place);
+                let projections = air.get_place_projections(place).to_vec();
                 (place.base, place.base_type, projections)
             }
             _ => {
@@ -118,7 +108,7 @@ impl<'a> BodySema<'a> {
                 struct_id,
                 field_index,
             });
-            let place = air.make_place(base, base_type, field_projections);
+            let place = air.make_place(base, base_type, field_projections)?;
             reads.push(air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place },
                 ty: fields[field_index as usize].ty,
@@ -231,25 +221,24 @@ impl<'a> BodySema<'a> {
         let (rhs_arg, rhs_scope) =
             self.materialize_borrow_argument(air, rhs_result.air_ref, rhs_result.ty, span, ctx)?;
         temp_scope.extend(rhs_scope);
-        let extra_data = [
-            lhs_arg.as_u32(),
-            arg_mode.as_u32(),
-            rhs_arg.as_u32(),
-            arg_mode.as_u32(),
-        ];
-        let args_start = air.add_extra(&extra_data);
-
-        let call_ref = air.add_inst(AirInst {
-            data: AirInstData::Call {
-                runtime: None,
-                name: call_name,
-                args_start,
-                args_len: 2,
-            },
-            ty: string_type,
+        let call_ref = air.add_call(
+            None,
+            call_name,
+            &[
+                AirCallArg {
+                    value: lhs_arg,
+                    mode: arg_mode,
+                },
+                AirCallArg {
+                    value: rhs_arg,
+                    mode: arg_mode,
+                },
+            ],
+            string_type,
             span,
-        });
-        let air_ref = self.wrap_value_with_temp_scope(air, call_ref, string_type, span, temp_scope);
+        )?;
+        let air_ref =
+            self.wrap_value_with_temp_scope(air, call_ref, string_type, span, temp_scope)?;
         Ok(AnalysisResult::new(air_ref, string_type))
     }
 
@@ -334,10 +323,14 @@ impl<'a> BodySema<'a> {
             let (ptr, len, temp_scope) =
                 self.project_strbuf_text_fields(air, arg_result.air_ref, arg_result.ty, span, ctx)?;
             let args = vec![
-                ptr.as_u32(),
-                AirArgMode::Normal.as_u32(),
-                len.as_u32(),
-                AirArgMode::Normal.as_u32(),
+                AirCallArg {
+                    value: ptr,
+                    mode: AirArgMode::Normal,
+                },
+                AirCallArg {
+                    value: len,
+                    mode: AirArgMode::Normal,
+                },
             ];
             (args, temp_scope)
         } else if self.is_strbuf(arg_result.ty) {
@@ -348,37 +341,42 @@ impl<'a> BodySema<'a> {
                 span,
                 ctx,
             )?;
-            (vec![arg.as_u32(), AirArgMode::Normal.as_u32()], temp_scope)
+            (
+                vec![AirCallArg {
+                    value: arg,
+                    mode: AirArgMode::Normal,
+                }],
+                temp_scope,
+            )
         } else {
             (
-                vec![arg_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()],
+                vec![AirCallArg {
+                    value: arg_result.air_ref,
+                    mode: AirArgMode::Normal,
+                }],
                 Vec::new(),
             )
         };
         let (extra_data, temp_scope) = extra_data;
-        let args_start = air.add_extra(&extra_data);
-
-        let call_ref = air.add_inst(AirInst {
-            data: AirInstData::Call {
-                runtime: Some(if name == self.known.println {
-                    if source_strbuf {
-                        crate::RuntimeCallKind::StrPrintlnProjected
-                    } else {
-                        crate::RuntimeCallKind::StrPrintlnAggregate
-                    }
-                } else if source_strbuf {
-                    crate::RuntimeCallKind::StrPrintProjected
+        let call_ref = air.add_call(
+            Some(if name == self.known.println {
+                if source_strbuf {
+                    crate::RuntimeCallKind::StrPrintlnProjected
                 } else {
-                    crate::RuntimeCallKind::StrPrintAggregate
-                }),
-                name: call_name,
-                args_start,
-                args_len: if source_strbuf { 2 } else { 1 },
-            },
-            ty: Type::UNIT,
+                    crate::RuntimeCallKind::StrPrintlnAggregate
+                }
+            } else if source_strbuf {
+                crate::RuntimeCallKind::StrPrintProjected
+            } else {
+                crate::RuntimeCallKind::StrPrintAggregate
+            }),
+            call_name,
+            &extra_data,
+            Type::UNIT,
             span,
-        });
-        let air_ref = self.wrap_value_with_temp_scope(air, call_ref, Type::UNIT, span, temp_scope);
+        )?;
+        let air_ref =
+            self.wrap_value_with_temp_scope(air, call_ref, Type::UNIT, span, temp_scope)?;
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
@@ -533,29 +531,29 @@ impl<'a> BodySema<'a> {
                     ctx,
                 )?;
                 temp_scope.extend(rhs_scope);
-                let args_start = air.add_extra(&[
-                    lhs_arg.as_u32(),
-                    AirArgMode::Borrow.as_u32(),
-                    rhs_arg.as_u32(),
-                    AirArgMode::Borrow.as_u32(),
-                ]);
                 let call_name = self.interner.get_or_intern(&self.method_symbol(
                     struct_id,
                     "equals_borrowed",
                     false,
                 ));
-                let equal = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        runtime: None,
-                        name: call_name,
-                        args_start,
-                        args_len: 2,
-                    },
-                    ty: Type::BOOL,
+                let equal = air.add_call(
+                    None,
+                    call_name,
+                    &[
+                        AirCallArg {
+                            value: lhs_arg,
+                            mode: AirArgMode::Borrow,
+                        },
+                        AirCallArg {
+                            value: rhs_arg,
+                            mode: AirArgMode::Borrow,
+                        },
+                    ],
+                    Type::BOOL,
                     span,
-                });
+                )?;
                 let equal =
-                    self.wrap_value_with_temp_scope(air, equal, Type::BOOL, span, temp_scope);
+                    self.wrap_value_with_temp_scope(air, equal, Type::BOOL, span, temp_scope)?;
                 let value = if matches!(comparison, AirInstData::Ne(..)) {
                     air.add_inst(AirInst {
                         data: AirInstData::Not(equal),

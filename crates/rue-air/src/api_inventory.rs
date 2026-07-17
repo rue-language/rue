@@ -137,3 +137,46 @@ fn canonical_type_surface_has_one_checked_handle_and_private_storage_ids() {
     assert!(pool.contains("pub(crate) fn set_struct_destructor("));
     assert!(pool.contains("pub(crate) fn requalify_struct_destructor("));
 }
+
+#[test]
+fn air_payload_ownership_and_validation_boundary_cannot_regress() {
+    let inst = include_str!("inst.rs");
+    let exports = include_str!("lib.rs");
+    let semantic_output = include_str!("sema/output.rs");
+    let imported_body = include_str!("semantic_body.rs");
+
+    assert!(inst.contains("pub struct AirEditor {"));
+    assert!(inst.contains("pub struct ValidatedAir {"));
+    assert!(inst.contains("impl std::ops::Deref for ValidatedAir"));
+    assert!(!inst.contains("impl std::ops::DerefMut for ValidatedAir"));
+    assert!(!inst.contains("pub fn add_inst("));
+    assert!(!inst.contains("pub fn add_extra("));
+    assert!(!inst.contains("pub fn get_extra("));
+    let validated_impl = inst
+        .split("impl ValidatedAir {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n\nimpl Air {").next())
+        .expect("validated AIR implementation");
+    assert!(validated_impl.contains("pub fn into_editor(self) -> AirEditor"));
+    assert!(!validated_impl.contains("&mut self"));
+
+    // Payload ranges expose logical lengths, but their positions and
+    // construction remain owner-private. They are deliberately non-Copy so a
+    // detached token cannot be casually duplicated into another owner.
+    let range_macro = inst
+        .split("macro_rules! word_range")
+        .nth(1)
+        .and_then(|rest| rest.split("word_range!(AirMatchArms)").next())
+        .expect("typed AIR range macro");
+    assert!(range_macro.contains("start: u32"));
+    assert!(range_macro.contains("extent: u32"));
+    assert!(!range_macro.contains("pub start"));
+    assert!(!range_macro.contains("pub extent"));
+    assert!(!range_macro.contains("Clone"));
+    assert!(!range_macro.contains("Copy"));
+
+    assert!(exports.contains("AirEditor"));
+    assert!(exports.contains("ValidatedAir"));
+    assert!(semantic_output.contains("pub air: crate::ValidatedAir"));
+    assert!(imported_body.contains("pub air: crate::ValidatedAir"));
+}

@@ -24,14 +24,36 @@ use rue_codegen::x86_64::{Emitter as X86Emitter, Operand, Reg, X86Inst, X86Mir};
 fn assert_no_ice<T>(result: &rue_compiler::MultiErrorResult<T>) {
     if let Err(errors) = result {
         for e in errors.iter() {
-            if matches!(
-                e.kind,
-                rue_compiler::ErrorKind::InternalError(_)
-                    | rue_compiler::ErrorKind::InternalCodegenError(_)
-            ) {
+            if is_ice(&e.kind) {
                 panic!("graceful ICE: {e}");
             }
         }
+    }
+}
+
+fn is_ice(kind: &rue_compiler::ErrorKind) -> bool {
+    matches!(
+        kind,
+        rue_compiler::ErrorKind::CompilerProducerInvariant(_)
+            | rue_compiler::ErrorKind::InternalError(_)
+            | rue_compiler::ErrorKind::InternalCodegenError(_)
+    )
+}
+
+#[cfg(test)]
+mod ice_classification_tests {
+    use super::is_ice;
+    use rue_compiler::ErrorKind;
+
+    #[test]
+    fn resource_failures_are_not_ices_but_producer_invariants_are() {
+        assert!(!is_ice(&ErrorKind::CompilerResourceLimit("limit".into())));
+        assert!(!is_ice(&ErrorKind::CompilerResourceExhaustion(
+            "allocation".into()
+        )));
+        assert!(is_ice(&ErrorKind::CompilerProducerInvariant(
+            "bad AIR".into()
+        )));
     }
 }
 

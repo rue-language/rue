@@ -1031,6 +1031,7 @@ impl Type {
     /// This method trusts that the input is a valid encoding. For untrusted data,
     /// use [`try_from_u32`](Self::try_from_u32) which validates the encoding.
     #[inline]
+    #[cfg(test)]
     pub(crate) fn from_u32(v: u32) -> Self {
         Type(v)
     }

@@ -437,27 +437,9 @@ impl<'a> BodySema<'a> {
         let call_name = self.method_symbol(struct_id, &method_name_str, true);
         let call_name_sym = self.interner.get_or_intern(&call_name);
 
-        // Encode call args into extra array
-        let args_len = air_args.len() as u32;
-        let mut extra_data = Vec::with_capacity(air_args.len() * 2);
-        for arg in &air_args {
-            extra_data.push(arg.value.as_u32());
-            extra_data.push(arg.mode.as_u32());
-        }
-        let args_start = air.add_extra(&extra_data);
-
-        let call_ref = air.add_inst(AirInst {
-            data: AirInstData::Call {
-                runtime: None,
-                name: call_name_sym,
-                args_start,
-                args_len,
-            },
-            ty: return_type,
-            span,
-        });
+        let call_ref = air.add_call(None, call_name_sym, &air_args, return_type, span)?;
         let air_ref =
-            self.wrap_value_with_temp_scope(air, call_ref, return_type, span, receiver_temp_scope);
+            self.wrap_value_with_temp_scope(air, call_ref, return_type, span, receiver_temp_scope)?;
         Ok(AnalysisResult::new(air_ref, return_type))
     }
 
@@ -609,13 +591,7 @@ impl<'a> BodySema<'a> {
             }
         }
 
-        Ok(emit_module_member_call(
-            air,
-            function_key,
-            &air_args,
-            fn_info.return_type,
-            span,
-        ))
+        emit_module_member_call(air, function_key, &air_args, fn_info.return_type, span)
     }
 
     /// Analyze a type-qualified associated-function call.
@@ -784,25 +760,7 @@ impl<'a> BodySema<'a> {
         let call_name = self.method_symbol(struct_id, &function_name_str, false);
         let call_name_sym = self.interner.get_or_intern(&call_name);
 
-        // Encode call args into extra array
-        let args_len = air_args.len() as u32;
-        let mut extra_data = Vec::with_capacity(air_args.len() * 2);
-        for arg in &air_args {
-            extra_data.push(arg.value.as_u32());
-            extra_data.push(arg.mode.as_u32());
-        }
-        let args_start = air.add_extra(&extra_data);
-
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Call {
-                runtime: None,
-                name: call_name_sym,
-                args_start,
-                args_len,
-            },
-            ty: return_type,
-            span,
-        });
+        let air_ref = air.add_call(None, call_name_sym, &air_args, return_type, span)?;
         Ok(AnalysisResult::new(air_ref, return_type))
     }
 }

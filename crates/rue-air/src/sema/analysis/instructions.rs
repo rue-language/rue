@@ -593,7 +593,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Emit PlaceWrite instruction
-            let place_ref = Self::build_place_ref(air, &trace);
+            let place_ref = Self::build_place_ref(air, &trace)?;
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::PlaceWrite {
                     place: place_ref,
@@ -793,7 +793,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Emit PlaceWrite instruction
-            let place_ref = Self::build_place_ref(air, &trace);
+            let place_ref = Self::build_place_ref(air, &trace)?;
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::PlaceWrite {
                     place: place_ref,

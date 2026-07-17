@@ -21,9 +21,10 @@
 //! 2. Drops each element in index order (element 0 first, then 1, etc.)
 
 use rue_air::{
-    Air, AirInst, AirInstData, AirPattern, AirRef, AnalyzedFunction, EnumId, FrozenTypeInternPool,
-    StructDef, Type, TypeKind,
+    AirEditor, AirPattern, AirRef, AirValidationContext, AnalyzedFunction, EnumId,
+    FrozenTypeInternPool, StructDef, Type, TypeKind,
 };
+use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::Span;
 
 /// Check if a type needs drop.
@@ -91,7 +92,9 @@ fn type_needs_drop(ty: Type, type_pool: &FrozenTypeInternPool) -> bool {
 /// Synthesize drop glue functions for all structs and arrays that need them.
 ///
 /// Returns a list of synthesized functions that should be added to the compilation.
-pub fn synthesize_drop_glue(type_pool: &FrozenTypeInternPool) -> Vec<AnalyzedFunction> {
+pub fn synthesize_drop_glue(
+    type_pool: &FrozenTypeInternPool,
+) -> CompileResult<Vec<AnalyzedFunction>> {
     let mut drop_glue_functions = Vec::new();
 
     // Create drop glue for structs
@@ -111,7 +114,7 @@ pub fn synthesize_drop_glue(type_pool: &FrozenTypeInternPool) -> Vec<AnalyzedFun
         }
 
         // Create drop glue function for struct
-        let func = create_struct_drop_glue_function(struct_def, struct_id, type_pool);
+        let func = create_struct_drop_glue_function(struct_def, struct_id, type_pool)?;
         drop_glue_functions.push(func);
     }
 
@@ -124,7 +127,7 @@ pub fn synthesize_drop_glue(type_pool: &FrozenTypeInternPool) -> Vec<AnalyzedFun
         }
 
         // Create drop glue function for array
-        let func = create_array_drop_glue_function(array_id, type_pool);
+        let func = create_array_drop_glue_function(array_id, type_pool)?;
         drop_glue_functions.push(func);
     }
 
@@ -136,11 +139,11 @@ pub fn synthesize_drop_glue(type_pool: &FrozenTypeInternPool) -> Vec<AnalyzedFun
             continue;
         }
 
-        let func = create_enum_drop_glue_function(enum_id, type_pool);
+        let func = create_enum_drop_glue_function(enum_id, type_pool)?;
         drop_glue_functions.push(func);
     }
 
-    drop_glue_functions
+    Ok(drop_glue_functions)
 }
 
 /// Create a drop glue function for a single struct.
@@ -148,14 +151,14 @@ fn create_struct_drop_glue_function(
     struct_def: &StructDef,
     struct_id: rue_air::StructId,
     type_pool: &FrozenTypeInternPool,
-) -> AnalyzedFunction {
+) -> CompileResult<AnalyzedFunction> {
     // File-qualified when the struct name spans files (RUE-571) — must match
     // the call side in both codegen backends' cfg_lower.
     let fn_name = format!("__rue_drop_{}", type_pool.struct_symbol_name(struct_id));
     let span = Span::new(0, 0); // Synthetic span
 
     // Create AIR for the drop glue function
-    let mut air = Air::new(Type::UNIT);
+    let mut air = AirEditor::new(Type::UNIT);
 
     // Use the canonical aggregate layout query for the complete flattened ABI.
     let num_param_slots = type_pool.abi_slot_count(Type::new_struct(struct_id));
@@ -177,53 +180,26 @@ fn create_struct_drop_glue_function(
                 TypeKind::Struct(nested_struct_id) => {
                     // Nested struct - load it and drop it
                     // The recursive drop glue will handle its fields
-                    let param_ref = air.add_inst(AirInst {
-                        data: AirInstData::Param {
-                            index: current_param_slot,
-                        },
-                        ty: Type::new_struct(nested_struct_id),
-                        span,
-                    });
-                    let drop_ref = air.add_inst(AirInst {
-                        data: AirInstData::Drop { value: param_ref },
-                        ty: Type::UNIT,
-                        span,
-                    });
+                    let param_ref =
+                        air.add_param(current_param_slot, Type::new_struct(nested_struct_id), span);
+                    let drop_ref = air.add_drop(param_ref, span);
                     drop_statements.push(drop_ref);
                 }
                 TypeKind::Array(array_id) => {
                     // Array field - load it and drop it
                     // The array drop glue will handle dropping each element
-                    let param_ref = air.add_inst(AirInst {
-                        data: AirInstData::Param {
-                            index: current_param_slot,
-                        },
-                        ty: Type::new_array(array_id),
-                        span,
-                    });
-                    let drop_ref = air.add_inst(AirInst {
-                        data: AirInstData::Drop { value: param_ref },
-                        ty: Type::UNIT,
-                        span,
-                    });
+                    let param_ref =
+                        air.add_param(current_param_slot, Type::new_array(array_id), span);
+                    let drop_ref = air.add_drop(param_ref, span);
                     drop_statements.push(drop_ref);
                 }
                 TypeKind::Enum(enum_id) => {
                     // Payload-carrying enum field - load it and drop it. The
                     // enum drop glue dispatches on the active discriminant and
                     // drops only the selected variant's payload.
-                    let param_ref = air.add_inst(AirInst {
-                        data: AirInstData::Param {
-                            index: current_param_slot,
-                        },
-                        ty: Type::new_enum(enum_id),
-                        span,
-                    });
-                    let drop_ref = air.add_inst(AirInst {
-                        data: AirInstData::Drop { value: param_ref },
-                        ty: Type::UNIT,
-                        span,
-                    });
+                    let param_ref =
+                        air.add_param(current_param_slot, Type::new_enum(enum_id), span);
+                    let drop_ref = air.add_drop(param_ref, span);
                     drop_statements.push(drop_ref);
                 }
                 _ => {}
@@ -234,11 +210,7 @@ fn create_struct_drop_glue_function(
     }
 
     // Create the unit value for return
-    let unit_const = air.add_inst(AirInst {
-        data: AirInstData::UnitConst,
-        ty: Type::UNIT,
-        span,
-    });
+    let unit_const = air.add_unit(span);
 
     // If we have drop statements, wrap them in a Block so they get executed
     // The CFG builder uses demand-driven lowering, so statements in a Block
@@ -247,31 +219,16 @@ fn create_struct_drop_glue_function(
         unit_const
     } else {
         // Encode statements into extra array
-        let stmt_u32s: Vec<u32> = drop_statements.iter().map(|r| r.as_u32()).collect();
-        let stmts_start = air.add_extra(&stmt_u32s);
-        let stmts_len = drop_statements.len() as u32;
-        air.add_inst(AirInst {
-            data: AirInstData::Block {
-                stmts_start,
-                stmts_len,
-                value: unit_const,
-            },
-            ty: Type::UNIT,
-            span,
-        })
+        air.add_block(&drop_statements, unit_const, Type::UNIT, span)?
     };
 
     // Add return instruction
-    air.add_inst(AirInst {
-        data: AirInstData::Ret(Some(return_value)),
-        ty: Type::UNIT,
-        span,
-    });
+    air.add_ret(Some(return_value), Type::UNIT, span);
 
     // All parameters are passed by value (normal mode)
     let param_modes = vec![false; num_param_slots as usize];
 
-    AnalyzedFunction {
+    Ok(AnalyzedFunction {
         ordinary_owner: None,
         name: fn_name,
         implicit_drop_source: if struct_def.name.starts_with("__anon_struct_") {
@@ -282,12 +239,16 @@ fn create_struct_drop_glue_function(
                 name: struct_def.name.clone(),
             })
         },
-        air,
+        air: air
+            .finish(AirValidationContext::Canonical(type_pool))
+            .map_err(|error| {
+                CompileError::new(ErrorKind::InternalError(error.to_string()), span)
+            })?,
         num_locals: 0,
         num_param_slots,
         param_modes: param_modes.into(),
         allow_unreachable_code: false,
-    }
+    })
 }
 
 /// Create a drop glue function for an array type.
@@ -297,7 +258,7 @@ fn create_struct_drop_glue_function(
 fn create_array_drop_glue_function(
     array_id: rue_air::ArrayTypeId,
     type_pool: &FrozenTypeInternPool,
-) -> AnalyzedFunction {
+) -> CompileResult<AnalyzedFunction> {
     let fn_name = array_drop_glue_name(array_id, type_pool);
     let span = Span::new(0, 0); // Synthetic span
 
@@ -305,7 +266,7 @@ fn create_array_drop_glue_function(
     let (element_type, length) = type_pool.array_def(array_id);
 
     // Create AIR for the drop glue function
-    let mut air = Air::new(Type::UNIT);
+    let mut air = AirEditor::new(Type::UNIT);
 
     // Use the canonical aggregate layout query for both the element stride and
     // the complete flattened ABI.
@@ -331,48 +292,20 @@ fn create_array_drop_glue_function(
         // Emit Drop for this element
         match element_type.kind() {
             TypeKind::Struct(struct_id) => {
-                let param_ref = air.add_inst(AirInst {
-                    data: AirInstData::Param {
-                        index: current_param_slot,
-                    },
-                    ty: Type::new_struct(struct_id),
-                    span,
-                });
-                let drop_ref = air.add_inst(AirInst {
-                    data: AirInstData::Drop { value: param_ref },
-                    ty: Type::UNIT,
-                    span,
-                });
+                let param_ref =
+                    air.add_param(current_param_slot, Type::new_struct(struct_id), span);
+                let drop_ref = air.add_drop(param_ref, span);
                 drop_statements.push(drop_ref);
             }
             TypeKind::Array(nested_array_id) => {
-                let param_ref = air.add_inst(AirInst {
-                    data: AirInstData::Param {
-                        index: current_param_slot,
-                    },
-                    ty: Type::new_array(nested_array_id),
-                    span,
-                });
-                let drop_ref = air.add_inst(AirInst {
-                    data: AirInstData::Drop { value: param_ref },
-                    ty: Type::UNIT,
-                    span,
-                });
+                let param_ref =
+                    air.add_param(current_param_slot, Type::new_array(nested_array_id), span);
+                let drop_ref = air.add_drop(param_ref, span);
                 drop_statements.push(drop_ref);
             }
             TypeKind::Enum(enum_id) => {
-                let param_ref = air.add_inst(AirInst {
-                    data: AirInstData::Param {
-                        index: current_param_slot,
-                    },
-                    ty: Type::new_enum(enum_id),
-                    span,
-                });
-                let drop_ref = air.add_inst(AirInst {
-                    data: AirInstData::Drop { value: param_ref },
-                    ty: Type::UNIT,
-                    span,
-                });
+                let param_ref = air.add_param(current_param_slot, Type::new_enum(enum_id), span);
+                let drop_ref = air.add_drop(param_ref, span);
                 drop_statements.push(drop_ref);
             }
             _ => {}
@@ -380,50 +313,35 @@ fn create_array_drop_glue_function(
     }
 
     // Create the unit value for return
-    let unit_const = air.add_inst(AirInst {
-        data: AirInstData::UnitConst,
-        ty: Type::UNIT,
-        span,
-    });
+    let unit_const = air.add_unit(span);
 
     // If we have drop statements, wrap them in a Block so they get executed
     let return_value = if drop_statements.is_empty() {
         unit_const
     } else {
-        let stmt_u32s: Vec<u32> = drop_statements.iter().map(|r| r.as_u32()).collect();
-        let stmts_start = air.add_extra(&stmt_u32s);
-        let stmts_len = drop_statements.len() as u32;
-        air.add_inst(AirInst {
-            data: AirInstData::Block {
-                stmts_start,
-                stmts_len,
-                value: unit_const,
-            },
-            ty: Type::UNIT,
-            span,
-        })
+        air.add_block(&drop_statements, unit_const, Type::UNIT, span)?
     };
 
     // Add return instruction
-    air.add_inst(AirInst {
-        data: AirInstData::Ret(Some(return_value)),
-        ty: Type::UNIT,
-        span,
-    });
+    air.add_ret(Some(return_value), Type::UNIT, span);
 
     // All parameters are passed by value (normal mode)
     let param_modes = vec![false; num_param_slots as usize];
 
-    AnalyzedFunction {
+    Ok(AnalyzedFunction {
         ordinary_owner: None,
         name: fn_name,
         implicit_drop_source: None,
-        air,
+        air: air
+            .finish(AirValidationContext::Canonical(type_pool))
+            .map_err(|error| {
+                CompileError::new(ErrorKind::InternalError(error.to_string()), span)
+            })?,
         num_locals: 0,
         num_param_slots,
         param_modes: param_modes.into(),
         allow_unreachable_code: false,
-    }
+    })
 }
 
 /// Create a drop glue function for a payload-carrying enum type (RUE-221).
@@ -437,36 +355,27 @@ fn create_array_drop_glue_function(
 fn create_enum_drop_glue_function(
     enum_id: EnumId,
     type_pool: &FrozenTypeInternPool,
-) -> AnalyzedFunction {
+) -> CompileResult<AnalyzedFunction> {
     let enum_def = type_pool.enum_def(enum_id);
     let fn_name = enum_drop_glue_name(enum_id, type_pool);
     let span = Span::new(0, 0); // Synthetic span
 
-    let mut air = Air::new(Type::UNIT);
+    let mut air = AirEditor::new(Type::UNIT);
 
     // Total ABI slots: discriminant (slot 0) + payload area (largest variant).
     let num_param_slots = type_pool.abi_slot_count(Type::new_enum(enum_id));
 
     // The discriminant lives in param slot 0; the match switches on it.
     let disc_ty = enum_def.discriminant_type();
-    let disc_param = air.add_inst(AirInst {
-        data: AirInstData::Param { index: 0 },
-        ty: disc_ty,
-        span,
-    });
+    let disc_param = air.add_param(0, disc_ty, span);
 
     // A single shared unit value for every arm body and the outer block.
-    let unit_const = air.add_inst(AirInst {
-        data: AirInstData::UnitConst,
-        ty: Type::UNIT,
-        span,
-    });
+    let unit_const = air.add_unit(span);
 
     // Build one Int-pattern arm per variant that carries a droppable payload.
     // Payload fields overlay the union starting at slot 1, so field j of a
     // variant sits at slot `1 + sum(slot_count(field_k) for k < j)`.
-    let mut arm_data: Vec<u32> = Vec::new();
-    let mut arm_count = 0u32;
+    let mut arms = Vec::new();
 
     for variant_index in 0..enum_def.variant_count() {
         let payload = enum_def.variant_payload(variant_index);
@@ -479,89 +388,49 @@ fn create_enum_drop_glue_function(
         for &field_ty in payload {
             let field_slots = type_pool.abi_slot_count(field_ty);
             if type_needs_drop(field_ty, type_pool) {
-                let param_ref = air.add_inst(AirInst {
-                    data: AirInstData::Param { index: field_slot },
-                    ty: field_ty,
-                    span,
-                });
-                let drop_ref = air.add_inst(AirInst {
-                    data: AirInstData::Drop { value: param_ref },
-                    ty: Type::UNIT,
-                    span,
-                });
+                let param_ref = air.add_param(field_slot, field_ty, span);
+                let drop_ref = air.add_drop(param_ref, span);
                 drop_stmts.push(drop_ref);
             }
             field_slot += field_slots;
         }
 
         // Arm body: a Block running the drops, yielding unit.
-        let stmt_u32s: Vec<u32> = drop_stmts.iter().map(|r| r.as_u32()).collect();
-        let stmts_start = air.add_extra(&stmt_u32s);
-        let stmts_len = drop_stmts.len() as u32;
-        let arm_body = air.add_inst(AirInst {
-            data: AirInstData::Block {
-                stmts_start,
-                stmts_len,
-                value: unit_const,
-            },
-            ty: Type::UNIT,
-            span,
-        });
+        let arm_body = air.add_block(&drop_stmts, unit_const, Type::UNIT, span)?;
 
-        AirPattern::Int(variant_index as i64).encode(arm_body, &mut arm_data);
-        arm_count += 1;
+        arms.push((AirPattern::Int(variant_index as i64), arm_body));
     }
 
     // A wildcard default arm (drops nothing) covers variants with no droppable
     // payload and keeps the switch total for codegen.
-    AirPattern::Wildcard.encode(unit_const, &mut arm_data);
-    arm_count += 1;
+    arms.push((AirPattern::Wildcard, unit_const));
 
-    let arms_start = air.add_extra(&arm_data);
-    let match_ref = air.add_inst(AirInst {
-        data: AirInstData::Match {
-            scrutinee: disc_param,
-            arms_start,
-            arms_len: arm_count,
-        },
-        ty: Type::UNIT,
-        span,
-    });
+    let match_ref = air.add_match(disc_param, &arms, Type::UNIT, span)?;
 
     // Return unit; the match runs as a side-effecting statement of the body.
-    let body_stmts = [match_ref.as_u32()];
-    let body_start = air.add_extra(&body_stmts);
-    let body = air.add_inst(AirInst {
-        data: AirInstData::Block {
-            stmts_start: body_start,
-            stmts_len: 1,
-            value: unit_const,
-        },
-        ty: Type::UNIT,
-        span,
-    });
+    let body = air.add_block(&[match_ref], unit_const, Type::UNIT, span)?;
 
-    air.add_inst(AirInst {
-        data: AirInstData::Ret(Some(body)),
-        ty: Type::UNIT,
-        span,
-    });
+    air.add_ret(Some(body), Type::UNIT, span);
 
     let param_modes = vec![false; num_param_slots as usize];
 
-    AnalyzedFunction {
+    Ok(AnalyzedFunction {
         ordinary_owner: None,
         name: fn_name,
         implicit_drop_source: Some(rue_air::ImplicitDropDependencySourceEvent::NamedEnum {
             file: enum_def.file_id.index(),
             name: enum_def.name.clone(),
         }),
-        air,
+        air: air
+            .finish(AirValidationContext::Canonical(type_pool))
+            .map_err(|error| {
+                CompileError::new(ErrorKind::InternalError(error.to_string()), span)
+            })?,
         num_locals: 0,
         num_param_slots,
         param_modes: param_modes.into(),
         allow_unreachable_code: false,
-    }
+    })
 }
 
 /// Generate the drop glue function name for a payload-carrying enum type.
@@ -629,7 +498,7 @@ fn type_name(ty: Type, type_pool: &FrozenTypeInternPool) -> String {
 #[cfg(test)]
 mod tests {
     use lasso::ThreadedRodeo;
-    use rue_air::{EnumDef, StructField, TypeInternPool};
+    use rue_air::{AirInstData, EnumDef, StructField, TypeInternPool};
 
     use super::*;
 
@@ -827,19 +696,20 @@ mod tests {
         let outer_ty = Type::new_struct(outer_id);
         let type_pool = type_pool.freeze();
         let outer =
-            create_struct_drop_glue_function(type_pool.struct_def(outer_id), outer_id, &type_pool);
+            create_struct_drop_glue_function(type_pool.struct_def(outer_id), outer_id, &type_pool)
+                .unwrap();
         assert_eq!(outer.num_param_slots, type_pool.abi_slot_count(outer_ty));
         assert_eq!(outer.num_param_slots, 27);
         assert_eq!(param_indices(&outer), [19, 20, 22, 24]);
 
-        let array = create_array_drop_glue_function(drop_array_id, &type_pool);
+        let array = create_array_drop_glue_function(drop_array_id, &type_pool).unwrap();
         assert_eq!(
             array.num_param_slots,
             type_pool.abi_slot_count(drop_array_ty)
         );
         assert_eq!(param_indices(&array), [0, 1]);
 
-        let enum_glue = create_enum_drop_glue_function(drop_enum_id, &type_pool);
+        let enum_glue = create_enum_drop_glue_function(drop_enum_id, &type_pool).unwrap();
         assert_eq!(
             enum_glue.num_param_slots,
             type_pool.abi_slot_count(drop_enum_ty)

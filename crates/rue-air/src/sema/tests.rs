@@ -1347,16 +1347,9 @@ mod tests {
             .air
             .iter()
             .filter_map(|(_, inst)| match inst.data {
-                AirInstData::Call {
-                    args_start,
-                    args_len,
-                    ..
-                } => Some(
-                    main.air
-                        .get_call_args(args_start, args_len)
-                        .map(|arg| arg.mode)
-                        .collect(),
-                ),
+                AirInstData::Call { ref args, .. } => {
+                    Some(main.air.get_call_args(args).map(|arg| arg.mode).collect())
+                }
                 _ => None,
             })
             .collect();

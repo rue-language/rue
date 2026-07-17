@@ -136,6 +136,41 @@ enum ValidationMode {
     CompleteChild,
 }
 
+struct TypeVisitSet {
+    inline: [Type; 64],
+    len: usize,
+    overflow: Option<HashSet<Type>>,
+}
+
+impl TypeVisitSet {
+    fn new() -> Self {
+        Self {
+            inline: [Type::UNIT; 64],
+            len: 0,
+            overflow: None,
+        }
+    }
+
+    fn insert(&mut self, ty: Type) -> bool {
+        if let Some(overflow) = &mut self.overflow {
+            return overflow.insert(ty);
+        }
+        if self.inline[..self.len].contains(&ty) {
+            return false;
+        }
+        if self.len < self.inline.len() {
+            self.inline[self.len] = ty;
+            self.len += 1;
+            return true;
+        }
+        let mut overflow = HashSet::with_capacity(self.len + 1);
+        overflow.extend(self.inline);
+        let inserted = overflow.insert(ty);
+        self.overflow = Some(overflow);
+        inserted
+    }
+}
+
 impl ValidationMode {
     fn requires_complete(self) -> bool {
         matches!(self, Self::Complete | Self::CompleteChild)
@@ -430,18 +465,22 @@ impl TypeInternPoolInner {
     }
 
     fn validate_structural_child(&self, ty: Type) -> Result<(), TypeValidationError> {
-        self.validate_type_inner(ty, ValidationMode::StructuralChild, &mut HashSet::new())
+        self.validate_type_inner(
+            ty,
+            ValidationMode::StructuralChild,
+            &mut TypeVisitSet::new(),
+        )
     }
 
     fn validate_complete_type(&self, ty: Type) -> Result<(), TypeValidationError> {
-        self.validate_type_inner(ty, ValidationMode::Complete, &mut HashSet::new())
+        self.validate_type_inner(ty, ValidationMode::Complete, &mut TypeVisitSet::new())
     }
 
     fn validate_type_inner(
         &self,
         ty: Type,
         mode: ValidationMode,
-        visited: &mut HashSet<Type>,
+        visited: &mut TypeVisitSet,
     ) -> Result<(), TypeValidationError> {
         let kind = ty.try_kind().ok_or(TypeValidationError::InvalidEncoding)?;
         match kind {
@@ -1401,6 +1440,34 @@ impl TypeInternPool {
     pub fn try_enum_def(&self, enum_id: EnumId) -> Option<EnumDef> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.try_enum_def(enum_id).cloned()
+    }
+
+    pub(crate) fn enum_variant_count(&self, enum_id: EnumId) -> Option<usize> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.try_enum_def(enum_id).map(EnumDef::variant_count)
+    }
+
+    pub(crate) fn enum_variant_payload_len(
+        &self,
+        enum_id: EnumId,
+        variant: usize,
+    ) -> Option<usize> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        let def = inner.try_enum_def(enum_id)?;
+        (variant < def.variant_count()).then(|| def.variant_payload(variant).len())
+    }
+
+    pub(crate) fn enum_variant_payload_type(
+        &self,
+        enum_id: EnumId,
+        variant: usize,
+        field: usize,
+    ) -> Option<Type> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        let def = inner.try_enum_def(enum_id)?;
+        (variant < def.variant_count())
+            .then(|| def.variant_payload(variant).get(field).copied())
+            .flatten()
     }
 
     pub(crate) fn enum_declaration_metadata(

@@ -12,6 +12,7 @@
 //! Load instructions for nested access patterns like `arr[i].field`.
 
 use std::fmt;
+use std::marker::PhantomData;
 
 // Compile-time size assertions to prevent silent size growth during refactoring.
 // These limits are set slightly above current sizes to allow minor changes,
@@ -24,8 +25,245 @@ const _: () = assert!(std::mem::size_of::<AirInst>() <= 48);
 const _: () = assert!(std::mem::size_of::<AirInstData>() <= 32);
 
 use crate::types::{StructId, Type};
+use crate::{FrozenTypeInternPool, TypeInternPool};
 use lasso::{Key, Spur, ThreadedRodeo};
 use rue_span::Span;
+
+/// Structured failure returned by checked AIR payload decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AirPayloadError {
+    pub phase: &'static str,
+    pub family: &'static str,
+    pub range_start: u32,
+    pub range_extent: u32,
+    pub record: usize,
+    pub reason: &'static str,
+}
+
+impl AirPayloadError {
+    fn decode(
+        family: &'static str,
+        range_start: u32,
+        range_extent: u32,
+        record: usize,
+        reason: &'static str,
+    ) -> Self {
+        Self {
+            phase: "AIR payload decode",
+            family,
+            range_start,
+            range_extent,
+            record,
+            reason,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AirBuildErrorKind {
+    ProducerInvariant(&'static str),
+    ResourceLimit,
+    ResourceExhaustion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AirBuildError {
+    pub phase: &'static str,
+    pub family: &'static str,
+    pub operation: &'static str,
+    pub kind: AirBuildErrorKind,
+}
+
+impl fmt::Display for AirBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} {} failed: {:?}",
+            self.phase, self.family, self.operation, self.kind
+        )
+    }
+}
+
+impl std::error::Error for AirBuildError {}
+
+impl From<AirBuildError> for rue_error::CompileError {
+    fn from(error: AirBuildError) -> Self {
+        let kind = match error.kind {
+            AirBuildErrorKind::ProducerInvariant(_) => {
+                rue_error::ErrorKind::CompilerProducerInvariant(error.to_string())
+            }
+            AirBuildErrorKind::ResourceLimit => {
+                rue_error::ErrorKind::CompilerResourceLimit(error.to_string())
+            }
+            AirBuildErrorKind::ResourceExhaustion => {
+                rue_error::ErrorKind::CompilerResourceExhaustion(error.to_string())
+            }
+        };
+        rue_error::CompileError::without_span(kind)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AirValidationError {
+    pub instruction: Option<usize>,
+    pub reason: String,
+}
+
+impl fmt::Display for AirValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.instruction {
+            Some(index) => write!(f, "invalid AIR instruction {index}: {}", self.reason),
+            None => write!(f, "invalid AIR: {}", self.reason),
+        }
+    }
+}
+
+impl std::error::Error for AirValidationError {}
+
+impl From<AirValidationError> for rue_error::CompileError {
+    fn from(error: AirValidationError) -> Self {
+        rue_error::CompileError::without_span(rue_error::ErrorKind::InternalError(
+            error.to_string(),
+        ))
+    }
+}
+
+pub enum AirValidationContext<'a> {
+    Semantic(&'a TypeInternPool),
+    SemanticWithSymbols(&'a TypeInternPool, &'a ThreadedRodeo),
+    Canonical(&'a FrozenTypeInternPool),
+    CanonicalWithSymbols(&'a FrozenTypeInternPool, &'a ThreadedRodeo),
+}
+
+impl AirValidationContext<'_> {
+    fn validate_type(&self, ty: Type) -> Result<(), String> {
+        match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => {
+                if matches!(ty.try_kind(), Some(crate::TypeKind::Error)) {
+                    return Ok(());
+                }
+                pool.validate_complete_type(ty)
+            }
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
+                pool.validate_complete_type(ty)
+            }
+        }
+        .map_err(|error| format!("{error:?}"))
+    }
+
+    fn struct_field_type(&self, id: StructId, field: u32) -> Result<Type, String> {
+        self.validate_type(Type::new_struct(id))?;
+        let fields = match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.struct_def(id).fields,
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
+                pool.struct_def(id).fields.clone()
+            }
+        };
+        fields
+            .get(field as usize)
+            .map(|field| field.ty)
+            .ok_or_else(|| format!("struct field index {field} is out of bounds"))
+    }
+
+    fn array_element_type(&self, ty: Type) -> Result<Type, String> {
+        let id = ty
+            .as_array()
+            .ok_or_else(|| format!("projection base {} is not an array", ty.name()))?;
+        self.validate_type(ty)?;
+        Ok(match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.array_def(id).0,
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool.array_def(id).0,
+        })
+    }
+
+    fn enum_payload_type(
+        &self,
+        id: crate::EnumId,
+        variant: u32,
+        field: u32,
+    ) -> Result<Type, String> {
+        let variant_count = match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool
+                .enum_variant_count(id)
+                .ok_or_else(|| format!("enum identity {:?} is unavailable", id))?,
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
+                pool.enum_def(id).variant_count()
+            }
+        };
+        if variant as usize >= variant_count {
+            return Err(format!("enum variant index {variant} is out of bounds"));
+        }
+        let ty = match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => {
+                pool.enum_variant_payload_type(id, variant as usize, field as usize)
+            }
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool
+                .enum_def(id)
+                .variant_payload(variant as usize)
+                .get(field as usize)
+                .copied(),
+        };
+        ty.ok_or_else(|| format!("enum variant {variant} payload field {field} is out of bounds"))
+    }
+
+    fn enum_payload_len(&self, id: crate::EnumId, variant: u32) -> Result<usize, String> {
+        match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool
+                .enum_variant_payload_len(id, variant as usize)
+                .ok_or_else(|| format!("enum variant index {variant} is out of bounds")),
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
+                let def = pool.enum_def(id);
+                if variant as usize >= def.variant_count() {
+                    Err(format!("enum variant index {variant} is out of bounds"))
+                } else {
+                    Ok(def.variant_payload(variant as usize).len())
+                }
+            }
+        }
+    }
+
+    fn validate_enum_variant(&self, id: crate::EnumId, variant: u32) -> Result<(), String> {
+        let count = match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool
+                .enum_variant_count(id)
+                .ok_or_else(|| format!("enum identity {:?} is unavailable", id))?,
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
+                pool.enum_def(id).variant_count()
+            }
+        };
+        if variant as usize >= count {
+            return Err(format!("enum variant index {variant} is out of bounds"));
+        }
+        Ok(())
+    }
+
+    fn validate_symbol(&self, symbol: Spur) -> Result<(), String> {
+        let interner = match self {
+            Self::SemanticWithSymbols(_, interner) | Self::CanonicalWithSymbols(_, interner) => {
+                Some(*interner)
+            }
+            Self::Semantic(_) | Self::Canonical(_) => None,
+        };
+        if interner.is_some_and(|interner| interner.try_resolve(&symbol).is_none()) {
+            Err(format!(
+                "symbol {} is outside the interner",
+                symbol.into_usize()
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl fmt::Display for AirPayloadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: corrupt {} range start={} extent={} at record {}: {}",
+            self.phase, self.family, self.range_start, self.range_extent, self.record, self.reason
+        )
+    }
+}
 
 // ============================================================================
 // Place Expressions
@@ -69,7 +307,7 @@ impl fmt::Display for AirPlaceRef {
 /// - `arr[i]` → `AirPlace { base: Local(0), base_type: Array, ... }` with `Index` projection
 /// - `point.x` → `AirPlace { base: Local(0), base_type: Point, ... }` with `Field` projection
 /// - `arr[i].x` → the same `Array` base type with `Index` then `Field`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AirPlace {
     /// The base of the place - either a local slot or parameter slot
     pub base: AirPlaceBase,
@@ -79,21 +317,23 @@ pub struct AirPlace {
     /// parameters are flattened and zero-sized parameters can share an ABI
     /// index. Carrying it on the place keeps the first projection typed.
     pub base_type: Type,
-    /// Start index into Air's projections array
-    pub projections_start: u32,
-    /// Number of projections
-    pub projections_len: u32,
+    /// Opaque owner-created range in Air's projection store.
+    projections: AirProjectionRange,
 }
 
 impl AirPlace {
+    /// Number of logical projections in this owner-mediated place.
+    #[inline]
+    pub const fn projection_count(&self) -> usize {
+        self.projections.extent as usize
+    }
     /// Create a place for a local variable with no projections.
     #[inline]
     pub const fn local(slot: u32, base_type: Type) -> Self {
         Self {
             base: AirPlaceBase::Local(slot),
             base_type,
-            projections_start: 0,
-            projections_len: 0,
+            projections: AirProjectionRange::EMPTY,
         }
     }
 
@@ -103,21 +343,20 @@ impl AirPlace {
         Self {
             base: AirPlaceBase::Param(slot),
             base_type,
-            projections_start: 0,
-            projections_len: 0,
+            projections: AirProjectionRange::EMPTY,
         }
     }
 
     /// Returns true if this place has no projections (is just a variable).
     #[inline]
     pub const fn is_simple(&self) -> bool {
-        self.projections_len == 0
+        self.projections.is_empty()
     }
 
     /// Returns the local slot if this is a simple local place with no projections.
     #[inline]
     pub const fn as_local(&self) -> Option<u32> {
-        if self.projections_len == 0 {
+        if self.projections.is_empty() {
             match self.base {
                 AirPlaceBase::Local(slot) => Some(slot),
                 AirPlaceBase::Param(_) => None,
@@ -130,7 +369,7 @@ impl AirPlace {
     /// Returns the param slot if this is a simple param place with no projections.
     #[inline]
     pub const fn as_param(&self) -> Option<u32> {
-        if self.projections_len == 0 {
+        if self.projections.is_empty() {
             match self.base {
                 AirPlaceBase::Param(slot) => Some(slot),
                 AirPlaceBase::Local(_) => None,
@@ -140,6 +379,83 @@ impl AirPlace {
         }
     }
 }
+
+/// Logical marker for the AIR place-projection family.  This marker is
+/// intentionally distinct from every word payload family.
+enum ProjectionFamily {}
+
+/// Opaque range into an AIR owner's projection store.
+///
+/// The raw position is private: callers can only obtain a range while adding
+/// a place to the same owner and can only traverse it through that owner.
+#[repr(C)]
+#[derive(Debug, PartialEq, Eq)]
+struct AirProjectionRange {
+    start: u32,
+    extent: u32,
+    family: PhantomData<fn() -> ProjectionFamily>,
+}
+
+macro_rules! word_range {
+    ($name:ident) => {
+        #[repr(C)]
+        #[derive(Debug, PartialEq, Eq)]
+        pub struct $name {
+            start: u32,
+            extent: u32,
+        }
+        impl $name {
+            pub const fn len(&self) -> usize {
+                self.extent as usize
+            }
+            pub const fn is_empty(&self) -> bool {
+                self.extent == 0
+            }
+        }
+        const _: () = assert!(std::mem::size_of::<$name>() == 8);
+        const _: () = assert!(std::mem::align_of::<$name>() == 4);
+    };
+}
+
+word_range!(AirMatchArms);
+word_range!(AirCallArgs);
+word_range!(AirTypeArgs);
+word_range!(AirConstValueWords);
+word_range!(AirIntrinsicArgs);
+word_range!(AirBlockStatements);
+word_range!(AirStructFields);
+word_range!(AirSourceOrder);
+word_range!(AirArrayElements);
+word_range!(AirEnumPayload);
+
+impl AirMatchArms {
+    const EMPTY: Self = Self {
+        start: 0,
+        extent: 0,
+    };
+}
+
+impl AirCallArgs {
+    /// Number of logical two-word call-argument records.
+    pub const fn count(&self) -> usize {
+        self.extent as usize / 2
+    }
+}
+
+impl AirProjectionRange {
+    const EMPTY: Self = Self {
+        start: 0,
+        extent: 0,
+        family: PhantomData,
+    };
+
+    const fn is_empty(&self) -> bool {
+        self.extent == 0
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<AirProjectionRange>() == 2 * std::mem::size_of::<u32>());
+const _: () = assert!(std::mem::align_of::<AirProjectionRange>() == std::mem::align_of::<u32>());
 
 /// The base of a place - where the memory location starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,8 +468,8 @@ pub enum AirPlaceBase {
 
 /// A projection applied to a place to reach a nested location.
 ///
-/// Projections are stored in `Air::projections` and referenced by
-/// `AirPlace::projections_start` and `AirPlace::projections_len`.
+/// Projections are stored in `Air` and reached through an opaque typed range
+/// owned by the containing place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AirProjection {
     /// Field access: `.field_name`
@@ -195,29 +511,6 @@ pub enum AirArgMode {
     Borrow,
 }
 
-impl AirArgMode {
-    /// Convert to u32 for storage in extra array.
-    #[inline]
-    pub fn as_u32(self) -> u32 {
-        match self {
-            AirArgMode::Normal => 0,
-            AirArgMode::Inout => 1,
-            AirArgMode::Borrow => 2,
-        }
-    }
-
-    /// Convert from u32 stored in extra array.
-    #[inline]
-    pub fn from_u32(v: u32) -> Self {
-        match v {
-            0 => AirArgMode::Normal,
-            1 => AirArgMode::Inout,
-            2 => AirArgMode::Borrow,
-            _ => panic!("invalid AirArgMode value: {}", v),
-        }
-    }
-}
-
 /// An argument in a function call (AIR level).
 #[derive(Debug, Clone)]
 pub struct AirCallArg {
@@ -225,6 +518,51 @@ pub struct AirCallArg {
     pub value: AirRef,
     /// The passing mode for this argument
     pub mode: AirArgMode,
+}
+
+struct CallArgSchema;
+
+impl CallArgSchema {
+    const WIDTH: usize = 2;
+    const VALUE: usize = 0;
+    const MODE: usize = 1;
+
+    fn encode(arg: &AirCallArg) -> [u32; Self::WIDTH] {
+        let mut words = [0; Self::WIDTH];
+        words[Self::VALUE] = arg.value.as_u32();
+        words[Self::MODE] = match arg.mode {
+            AirArgMode::Normal => 0,
+            AirArgMode::Inout => 1,
+            AirArgMode::Borrow => 2,
+        };
+        words
+    }
+
+    fn decode(
+        words: &[u32],
+        range: &AirCallArgs,
+        record: usize,
+    ) -> Result<AirCallArg, AirPayloadError> {
+        debug_assert_eq!(words.len(), Self::WIDTH);
+        let mode = match words[Self::MODE] {
+            0 => AirArgMode::Normal,
+            1 => AirArgMode::Inout,
+            2 => AirArgMode::Borrow,
+            _ => {
+                return Err(AirPayloadError::decode(
+                    "call arguments",
+                    range.start,
+                    range.extent,
+                    record,
+                    "invalid argument mode",
+                ));
+            }
+        };
+        Ok(AirCallArg {
+            value: AirRef::from_raw(words[Self::VALUE]),
+            mode,
+        })
+    }
 }
 
 impl AirCallArg {
@@ -267,47 +605,238 @@ pub enum AirPattern {
     },
 }
 
-/// Pattern type tags for extra array encoding.
-const PATTERN_WILDCARD: u32 = 0;
-const PATTERN_INT: u32 = 1;
-const PATTERN_BOOL: u32 = 2;
-const PATTERN_ENUM_VARIANT: u32 = 3;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatternTag {
+    Wildcard,
+    Int,
+    Bool,
+    EnumVariant,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PatternFields {
+    Wildcard,
+    Int { low: usize, high: usize },
+    Bool { value: usize },
+    EnumVariant { enum_id: usize, variant: usize },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PatternLayout {
+    tag: usize,
+    body: usize,
+    width: usize,
+    fields: PatternFields,
+}
+
+impl PatternTag {
+    const TAG_OFFSET: usize = 0;
+
+    const fn word(self) -> u32 {
+        match self {
+            Self::Wildcard => 0,
+            Self::Int => 1,
+            Self::Bool => 2,
+            Self::EnumVariant => 3,
+        }
+    }
+
+    const fn layout(self) -> PatternLayout {
+        match self {
+            Self::Wildcard => PatternLayout {
+                tag: 0,
+                body: 1,
+                width: 2,
+                fields: PatternFields::Wildcard,
+            },
+            Self::Int => PatternLayout {
+                tag: 0,
+                body: 1,
+                width: 4,
+                fields: PatternFields::Int { low: 2, high: 3 },
+            },
+            Self::Bool => PatternLayout {
+                tag: 0,
+                body: 1,
+                width: 3,
+                fields: PatternFields::Bool { value: 2 },
+            },
+            Self::EnumVariant => PatternLayout {
+                tag: 0,
+                body: 1,
+                width: 4,
+                fields: PatternFields::EnumVariant {
+                    enum_id: 2,
+                    variant: 3,
+                },
+            },
+        }
+    }
+
+    const fn from_word(word: u32) -> Option<Self> {
+        match word {
+            0 => Some(Self::Wildcard),
+            1 => Some(Self::Int),
+            2 => Some(Self::Bool),
+            3 => Some(Self::EnumVariant),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstValueTag {
+    Integer,
+    Bool,
+    Unit,
+    Type,
+    Function,
+}
+
+impl ConstValueTag {
+    fn of(value: &crate::sema::ConstValue) -> Self {
+        match value {
+            crate::sema::ConstValue::Integer(_) => Self::Integer,
+            crate::sema::ConstValue::Bool(_) => Self::Bool,
+            crate::sema::ConstValue::Unit => Self::Unit,
+            crate::sema::ConstValue::Type(_) => Self::Type,
+            crate::sema::ConstValue::Function(_) => Self::Function,
+        }
+    }
+
+    const fn word(self) -> u32 {
+        match self {
+            Self::Integer => 0,
+            Self::Bool => 1,
+            Self::Unit => 2,
+            Self::Type => 3,
+            Self::Function => 4,
+        }
+    }
+
+    const fn payload_width(self) -> usize {
+        match self {
+            Self::Integer => 4,
+            Self::Bool | Self::Type | Self::Function => 1,
+            Self::Unit => 0,
+        }
+    }
+
+    const fn from_word(word: u32) -> Option<Self> {
+        match word {
+            0 => Some(Self::Integer),
+            1 => Some(Self::Bool),
+            2 => Some(Self::Unit),
+            3 => Some(Self::Type),
+            4 => Some(Self::Function),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) fn encode_const_values(
+    values: &[crate::sema::ConstValue],
+) -> Result<Vec<u32>, AirBuildError> {
+    let error = |kind| AirBuildError {
+        phase: "AIR",
+        family: "constant value arguments",
+        operation: "stage",
+        kind,
+    };
+    let word_count = values.iter().try_fold(0usize, |count, value| {
+        count.checked_add(1 + ConstValueTag::of(value).payload_width())
+    });
+    let word_count = word_count.ok_or_else(|| error(AirBuildErrorKind::ResourceLimit))?;
+    let mut words = Vec::new();
+    words
+        .try_reserve(word_count)
+        .map_err(|_| error(AirBuildErrorKind::ResourceExhaustion))?;
+    for value in values {
+        match value {
+            crate::sema::ConstValue::Integer(value) => {
+                words.push(ConstValueTag::Integer.word());
+                let bytes = value.to_le_bytes();
+                for chunk in bytes.chunks_exact(4) {
+                    words.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                }
+            }
+            crate::sema::ConstValue::Bool(value) => {
+                words.push(ConstValueTag::Bool.word());
+                words.push(u32::from(*value));
+            }
+            crate::sema::ConstValue::Unit => words.push(ConstValueTag::Unit.word()),
+            crate::sema::ConstValue::Type(value) => {
+                words.push(ConstValueTag::Type.word());
+                words.push(value.as_u32());
+            }
+            crate::sema::ConstValue::Function(value) => {
+                words.push(ConstValueTag::Function.word());
+                words.push(
+                    u32::try_from(value.into_usize())
+                        .map_err(|_| error(AirBuildErrorKind::ResourceLimit))?,
+                );
+            }
+        }
+    }
+    Ok(words)
+}
 
 impl AirPattern {
-    /// Encode this pattern to the extra array, returning the number of u32s written.
+    fn tag(&self) -> PatternTag {
+        match self {
+            Self::Wildcard => PatternTag::Wildcard,
+            Self::Int(_) => PatternTag::Int,
+            Self::Bool(_) => PatternTag::Bool,
+            Self::EnumVariant { .. } => PatternTag::EnumVariant,
+        }
+    }
+
+    /// Encode this pattern to the extra array using its canonical layout plan.
     /// Format:
     /// - Wildcard: [tag, body_ref] = 2 words
     /// - Int: [tag, body_ref, lo, hi] = 4 words (i64 as two u32s)
     /// - Bool: [tag, body_ref, value] = 3 words
     /// - EnumVariant: [tag, body_ref, enum_id, variant_index] = 4 words
-    pub fn encode(&self, body: AirRef, out: &mut Vec<u32>) {
-        match self {
-            AirPattern::Wildcard => {
-                out.push(PATTERN_WILDCARD);
-                out.push(body.as_u32());
+    fn encode(&self, body: AirRef, out: &mut Vec<u32>) -> Result<(), AirBuildError> {
+        let tag = self.tag();
+        let layout = tag.layout();
+        let mut record = [0; 4];
+        record[layout.tag] = tag.word();
+        record[layout.body] = body.as_u32();
+        match (self, layout.fields) {
+            (AirPattern::Wildcard, PatternFields::Wildcard) => {}
+            (AirPattern::Int(n), PatternFields::Int { low, high }) => {
+                let bytes = n.to_le_bytes();
+                record[low] = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                record[high] = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
             }
-            AirPattern::Int(n) => {
-                out.push(PATTERN_INT);
-                out.push(body.as_u32());
-                // Encode i64 as two u32s (low, high)
-                out.push(*n as u32);
-                out.push((*n >> 32) as u32);
+            (AirPattern::Bool(b), PatternFields::Bool { value }) => {
+                record[value] = u32::from(*b);
             }
-            AirPattern::Bool(b) => {
-                out.push(PATTERN_BOOL);
-                out.push(body.as_u32());
-                out.push(if *b { 1 } else { 0 });
+            (
+                AirPattern::EnumVariant {
+                    enum_id,
+                    variant_index,
+                },
+                PatternFields::EnumVariant {
+                    enum_id: enum_offset,
+                    variant,
+                },
+            ) => {
+                record[enum_offset] = enum_id.0;
+                record[variant] = *variant_index;
             }
-            AirPattern::EnumVariant {
-                enum_id,
-                variant_index,
-            } => {
-                out.push(PATTERN_ENUM_VARIANT);
-                out.push(body.as_u32());
-                out.push(enum_id.0);
-                out.push(*variant_index);
+            _ => {
+                return Err(AirBuildError {
+                    phase: "AIR",
+                    family: "match arms",
+                    operation: "encode",
+                    kind: AirBuildErrorKind::ProducerInvariant("pattern/layout mismatch"),
+                });
             }
         }
+        out.extend_from_slice(&record[..layout.width]);
+        Ok(())
     }
 }
 
@@ -326,36 +855,77 @@ impl Iterator for MatchArmIterator<'_> {
         }
         self.remaining -= 1;
 
-        let tag = self.data[0];
-        let body = AirRef::from_raw(self.data[1]);
+        let tag = PatternTag::from_word(self.data[PatternTag::TAG_OFFSET])?;
+        let layout = tag.layout();
+        let body = AirRef::from_raw(self.data[layout.body]);
 
-        let (pattern, advance) = match tag {
-            PATTERN_WILDCARD => (AirPattern::Wildcard, 2),
-            PATTERN_INT => {
-                let lo = self.data[2] as i64;
-                let hi = (self.data[3] as i64) << 32;
-                (AirPattern::Int(lo | hi), 4)
+        let pattern = match layout.fields {
+            PatternFields::Wildcard => AirPattern::Wildcard,
+            PatternFields::Int { low, high } => {
+                let lo = self.data[low].to_le_bytes();
+                let hi = self.data[high].to_le_bytes();
+                AirPattern::Int(i64::from_le_bytes([
+                    lo[0], lo[1], lo[2], lo[3], hi[0], hi[1], hi[2], hi[3],
+                ]))
             }
-            PATTERN_BOOL => {
-                let b = self.data[2] != 0;
-                (AirPattern::Bool(b), 3)
+            PatternFields::Bool { value } => AirPattern::Bool(self.data[value] != 0),
+            PatternFields::EnumVariant { enum_id, variant } => {
+                let enum_id = crate::types::EnumId(self.data[enum_id]);
+                let variant_index = self.data[variant];
+                AirPattern::EnumVariant {
+                    enum_id,
+                    variant_index,
+                }
             }
-            PATTERN_ENUM_VARIANT => {
-                let enum_id = crate::types::EnumId(self.data[2]);
-                let variant_index = self.data[3];
-                (
-                    AirPattern::EnumVariant {
-                        enum_id,
-                        variant_index,
-                    },
-                    4,
-                )
-            }
-            _ => panic!("invalid pattern tag: {}", tag),
         };
 
-        self.data = &self.data[advance..];
+        self.data = &self.data[layout.width..];
         Some((pattern, body))
+    }
+}
+
+impl ExactSizeIterator for MatchArmIterator<'_> {}
+
+#[derive(Debug)]
+pub struct ConstValueIterator<'a> {
+    words: &'a [u32],
+    remaining: usize,
+}
+
+impl Iterator for ConstValueIterator<'_> {
+    type Item = crate::sema::ConstValue;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let tag = ConstValueTag::from_word(self.words[0])?;
+        let payload = &self.words[1..1 + tag.payload_width()];
+        self.words = &self.words[1 + tag.payload_width()..];
+        self.remaining -= 1;
+        Some(match tag {
+            ConstValueTag::Integer => {
+                let mut bits = 0u128;
+                for (index, word) in payload.iter().copied().enumerate() {
+                    bits |= u128::from(word) << (32 * index);
+                }
+                crate::sema::ConstValue::Integer(bits as i128)
+            }
+            ConstValueTag::Bool => crate::sema::ConstValue::Bool(payload[0] == 1),
+            ConstValueTag::Unit => crate::sema::ConstValue::Unit,
+            ConstValueTag::Type => crate::sema::ConstValue::Type(
+                Type::try_from_u32(payload[0]).expect("validated const type"),
+            ),
+            ConstValueTag::Function => crate::sema::ConstValue::Function(
+                Spur::try_from_usize(payload[0] as usize).expect("validated const symbol"),
+            ),
+        })
+    }
+}
+
+impl ExactSizeIterator for ConstValueIterator<'_> {
+    fn len(&self) -> usize {
+        self.remaining
     }
 }
 
@@ -378,7 +948,7 @@ impl AirRef {
 /// The complete AIR for a function.
 // Clone exists for the loop back-edge move recheck in sema, which re-analyzes
 // a loop body against a scratch copy of the Air and then discards it.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct Air {
     instructions: Vec<AirInst>,
     /// Extra data for variable-length instruction payloads (args, elements, etc.)
@@ -403,11 +973,1273 @@ pub struct Air {
     /// so the binder aliases an element the collection still owns and drops —
     /// dropping the binder too would double-free (RUE-259).
     borrow_slots: Vec<u32>,
+    #[cfg(test)]
+    place_reserve_failure: Option<PlaceReserveFailure>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaceReserveFailure {
+    ProjectionStore,
+    PlaceStore,
+}
+
+/// Read-only storage accounting for benchmark and architecture audits.
+///
+/// Word families share one allocation, so `family_logical_bytes` reports each
+/// family's exact retained contribution while `word_store_capacity_bytes`
+/// reports the allocation once rather than inventing per-family capacity.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AirPayloadStorageStats {
+    pub family_logical_bytes: [usize; 10],
+    pub word_store_logical_bytes: usize,
+    pub word_store_capacity_bytes: usize,
+    pub projection_store_logical_bytes: usize,
+    pub projection_store_capacity_bytes: usize,
+    pub place_store_logical_bytes: usize,
+    pub place_store_capacity_bytes: usize,
+    pub nonempty_match_envelopes: usize,
+    /// Largest logical scratch payload produced by an atomic builder.
+    pub peak_staging_bytes: usize,
+}
+
+/// Stable order of `AirPayloadStorageStats::family_logical_bytes`.
+pub const AIR_PAYLOAD_FAMILY_NAMES: [&str; 10] = [
+    "match_arms",
+    "call_args",
+    "type_args",
+    "const_values",
+    "intrinsic_args",
+    "block_statements",
+    "struct_fields",
+    "source_order",
+    "array_elements",
+    "enum_payload",
+];
+
+#[derive(Clone, Copy)]
+pub(crate) struct AirCheckpoint {
+    instructions: usize,
+    extra: usize,
+    projections: usize,
+    places: usize,
+    param_drops: usize,
+    borrow_slots: usize,
+}
+
+/// The only public mutable AIR form. Payload-bearing instructions are added
+/// atomically so their owner-issued ranges cannot be detached or transferred.
+///
+/// Payload positions deliberately cannot be reconstructed by a consumer:
+///
+/// ```compile_fail
+/// use rue_air::AirCallArgs;
+/// let detached = AirCallArgs { start: 0, extent: 0 };
+/// ```
+#[derive(Debug)]
+pub struct AirEditor {
+    air: Air,
+}
+
+/// Immutable AIR that has crossed the owner/context validation boundary.
+#[derive(Debug)]
+pub struct ValidatedAir {
+    air: Air,
+}
+
+impl std::ops::Deref for ValidatedAir {
+    type Target = Air;
+
+    fn deref(&self) -> &Self::Target {
+        &self.air
+    }
+}
+
+impl std::ops::Deref for AirEditor {
+    type Target = Air;
+
+    fn deref(&self) -> &Self::Target {
+        &self.air
+    }
+}
+
+impl AirEditor {
+    pub fn new(return_type: Type) -> Self {
+        Self {
+            air: Air::new(return_type),
+        }
+    }
+
+    pub fn add_const(&mut self, value: u64, ty: Type, span: Span) -> AirRef {
+        self.air.add_inst(AirInst {
+            data: AirInstData::Const(value),
+            ty,
+            span,
+        })
+    }
+
+    pub fn add_unit(&mut self, span: Span) -> AirRef {
+        self.air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::UNIT,
+            span,
+        })
+    }
+
+    pub fn add_param(&mut self, index: u32, ty: Type, span: Span) -> AirRef {
+        self.air.add_inst(AirInst {
+            data: AirInstData::Param { index },
+            ty,
+            span,
+        })
+    }
+
+    pub fn add_drop(&mut self, value: AirRef, span: Span) -> AirRef {
+        self.air.add_inst(AirInst {
+            data: AirInstData::Drop { value },
+            ty: Type::UNIT,
+            span,
+        })
+    }
+
+    pub fn add_ret(&mut self, value: Option<AirRef>, ty: Type, span: Span) -> AirRef {
+        self.air.add_inst(AirInst {
+            data: AirInstData::Ret(value),
+            ty,
+            span,
+        })
+    }
+
+    pub fn add_add(&mut self, lhs: AirRef, rhs: AirRef, ty: Type, span: Span) -> AirRef {
+        self.air.add_inst(AirInst {
+            data: AirInstData::Add(lhs, rhs),
+            ty,
+            span,
+        })
+    }
+
+    pub fn add_storage_live(&mut self, slot: u32, ty: Type, span: Span) -> AirRef {
+        self.air.add_inst(AirInst {
+            data: AirInstData::StorageLive { slot },
+            ty,
+            span,
+        })
+    }
+
+    pub fn add_alloc(&mut self, slot: u32, init: AirRef, span: Span) -> AirRef {
+        self.air.add_inst(AirInst {
+            data: AirInstData::Alloc { slot, init },
+            ty: Type::UNIT,
+            span,
+        })
+    }
+
+    pub fn add_place_read(&mut self, place: AirPlaceRef, ty: Type, span: Span) -> AirRef {
+        self.air.add_inst(AirInst {
+            data: AirInstData::PlaceRead { place },
+            ty,
+            span,
+        })
+    }
+
+    pub fn add_match(
+        &mut self,
+        scrutinee: AirRef,
+        arms: &[(AirPattern, AirRef)],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.air.add_match(scrutinee, arms, ty, span)
+    }
+
+    pub fn add_call(
+        &mut self,
+        runtime: Option<crate::RuntimeCallKind>,
+        name: Spur,
+        args: &[AirCallArg],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.air.add_call(runtime, name, args, ty, span)
+    }
+
+    pub fn add_call_generic(
+        &mut self,
+        name: Spur,
+        type_args: &[Type],
+        value_args: &[crate::sema::ConstValue],
+        args: &[AirCallArg],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.air
+            .add_call_generic(name, type_args, value_args, args, ty, span)
+    }
+
+    pub fn add_intrinsic(
+        &mut self,
+        runtime: Option<crate::RuntimeCallKind>,
+        name: Spur,
+        args: &[AirRef],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.air.add_intrinsic(runtime, name, args, ty, span)
+    }
+
+    pub fn add_block(
+        &mut self,
+        statements: &[AirRef],
+        value: AirRef,
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.air.add_block(statements, value, ty, span)
+    }
+
+    pub fn add_struct_init(
+        &mut self,
+        struct_id: StructId,
+        fields: &[AirRef],
+        source_order: &[u32],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.air
+            .add_struct_init(struct_id, fields, source_order, ty, span)
+    }
+
+    pub fn add_array_init(
+        &mut self,
+        elements: &[AirRef],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.air.add_array_init(elements, ty, span)
+    }
+
+    pub fn add_enum_variant(
+        &mut self,
+        enum_id: crate::EnumId,
+        variant_index: u32,
+        payload: &[AirRef],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.air
+            .add_enum_variant(enum_id, variant_index, payload, ty, span)
+    }
+
+    pub fn make_place(
+        &mut self,
+        base: AirPlaceBase,
+        base_type: Type,
+        projections: impl IntoIterator<Item = AirProjection>,
+    ) -> Result<AirPlaceRef, AirBuildError> {
+        self.air.make_place(base, base_type, projections)
+    }
+
+    pub fn set_param_drops(&mut self, drops: Vec<(u32, Type)>) {
+        self.air.set_param_drops(drops);
+    }
+
+    pub(crate) fn remap_string_ids(&mut self, map: impl Fn(u32) -> u32) {
+        self.air.remap_string_ids(map);
+    }
+
+    pub(crate) fn rewrite_generic_call_to_call(&mut self, index: usize, name: Spur) {
+        self.air.rewrite_generic_call_to_call(index, name);
+    }
+
+    pub fn finish(
+        self,
+        context: AirValidationContext<'_>,
+    ) -> Result<ValidatedAir, AirValidationError> {
+        self.air.finish(context)
+    }
+}
+
+impl ValidatedAir {
+    pub(crate) fn from_semantic_air(
+        air: Air,
+        pool: &TypeInternPool,
+    ) -> Result<Self, AirValidationError> {
+        air.finish(AirValidationContext::Semantic(pool))
+    }
+
+    pub(crate) fn from_semantic_air_with_symbols(
+        air: Air,
+        pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+    ) -> Result<Self, AirValidationError> {
+        air.finish(AirValidationContext::SemanticWithSymbols(pool, interner))
+    }
+
+    pub fn into_editor(self) -> AirEditor {
+        AirEditor { air: self.air }
+    }
 }
 
 impl Air {
+    fn finish(self, context: AirValidationContext<'_>) -> Result<ValidatedAir, AirValidationError> {
+        let fail = |instruction, reason| AirValidationError {
+            instruction,
+            reason,
+        };
+        let type_cache = std::cell::RefCell::new(([Type::UNIT; 64], 0usize));
+        let validate_type = |ty| -> Result<(), String> {
+            let mut cache = type_cache.borrow_mut();
+            if cache.0[..cache.1].contains(&ty) {
+                return Ok(());
+            }
+            context.validate_type(ty)?;
+            if cache.1 < cache.0.len() {
+                let index = cache.1;
+                cache.0[index] = ty;
+                cache.1 += 1;
+            }
+            Ok(())
+        };
+        validate_type(self.return_type)
+            .map_err(|reason| fail(None, format!("invalid return type: {reason}")))?;
+        for (slot, ty) in &self.param_drops {
+            validate_type(*ty).map_err(|reason| {
+                fail(
+                    None,
+                    format!("invalid parameter-drop type at slot {slot}: {reason}"),
+                )
+            })?;
+        }
+        for (place_index, place) in self.places.iter().enumerate() {
+            validate_type(place.base_type).map_err(|reason| {
+                fail(
+                    None,
+                    format!("invalid place {place_index} base type: {reason}"),
+                )
+            })?;
+            let start = place.projections.start as usize;
+            let end = start
+                .checked_add(place.projections.extent as usize)
+                .ok_or_else(|| fail(None, format!("place {place_index} range overflow")))?;
+            if place.projections.extent == 0 && place.projections.start != 0 {
+                return Err(fail(
+                    None,
+                    format!("place {place_index} has a non-canonical empty range"),
+                ));
+            }
+            if self.projections.get(start..end).is_none() {
+                return Err(fail(
+                    None,
+                    format!("place {place_index} range is outside the projection store"),
+                ));
+            }
+        }
+        for (index, inst) in self.instructions.iter().enumerate() {
+            if inst.span.start > inst.span.end {
+                return Err(fail(
+                    Some(index),
+                    "source span start exceeds its end".into(),
+                ));
+            }
+            validate_type(inst.ty)
+                .map_err(|reason| fail(Some(index), format!("invalid result type: {reason}")))?;
+        }
+        // Places are owner-level records, not instructions. Validate every
+        // projection path here even when no instruction happens to consume it.
+        for (place_index, place) in self.places.iter().enumerate() {
+            let mut current = place.base_type;
+            for projection in self.get_place_projections(place) {
+                current = match *projection {
+                    AirProjection::Field {
+                        struct_id,
+                        field_index,
+                    } => {
+                        if current != Type::new_struct(struct_id) {
+                            return Err(fail(
+                                None,
+                                format!(
+                                    "place {place_index} field projection expects struct {:?}, found {}",
+                                    struct_id,
+                                    current.name()
+                                ),
+                            ));
+                        }
+                        context
+                            .struct_field_type(struct_id, field_index)
+                            .map_err(|reason| {
+                                fail(None, format!("place {place_index}: {reason}"))
+                            })?
+                    }
+                    AirProjection::Index {
+                        array_type,
+                        index: operand,
+                    } => {
+                        if current != array_type {
+                            return Err(fail(
+                                None,
+                                format!(
+                                    "place {place_index} index projection expects {}, found {}",
+                                    array_type.name(),
+                                    current.name()
+                                ),
+                            ));
+                        }
+                        let operand_inst = self
+                            .instructions
+                            .get(operand.as_u32() as usize)
+                            .ok_or_else(|| {
+                                fail(
+                                    None,
+                                    format!(
+                                        "place {place_index} projection index {operand} is outside the instruction store"
+                                    ),
+                                )
+                            })?;
+                        if !operand_inst.ty.is_integer() {
+                            return Err(fail(
+                                None,
+                                format!(
+                                    "place {place_index} projection index has non-integer type {}",
+                                    operand_inst.ty.name()
+                                ),
+                            ));
+                        }
+                        context.array_element_type(array_type).map_err(|reason| {
+                            fail(None, format!("place {place_index}: {reason}"))
+                        })?
+                    }
+                };
+            }
+        }
+        for (index, inst) in self.instructions.iter().enumerate() {
+            let check_ref = |value: AirRef| {
+                if value.as_u32() as usize >= index {
+                    Err(fail(
+                        Some(index),
+                        format!("reference {value} is not defined before its use"),
+                    ))
+                } else {
+                    Ok(())
+                }
+            };
+            let check_place = |place_ref: AirPlaceRef| -> Result<Type, AirValidationError> {
+                let place = self
+                    .places
+                    .get(place_ref.as_u32() as usize)
+                    .ok_or_else(|| {
+                        fail(
+                            Some(index),
+                            format!("place reference {place_ref} is outside the place store"),
+                        )
+                    })?;
+                let mut current = place.base_type;
+                for projection in self.get_place_projections(place) {
+                    current = match *projection {
+                        AirProjection::Field {
+                            struct_id,
+                            field_index,
+                        } => {
+                            if current != Type::new_struct(struct_id) {
+                                return Err(fail(
+                                    Some(index),
+                                    format!(
+                                        "field projection expects struct {:?}, found {}",
+                                        struct_id,
+                                        current.name()
+                                    ),
+                                ));
+                            }
+                            context
+                                .struct_field_type(struct_id, field_index)
+                                .map_err(|reason| fail(Some(index), reason))?
+                        }
+                        AirProjection::Index {
+                            array_type,
+                            index: operand,
+                        } => {
+                            if current != array_type {
+                                return Err(fail(
+                                    Some(index),
+                                    format!(
+                                        "index projection expects {}, found {}",
+                                        array_type.name(),
+                                        current.name()
+                                    ),
+                                ));
+                            }
+                            check_ref(operand)?;
+                            let operand_ty = self.instructions[operand.as_u32() as usize].ty;
+                            if !operand_ty.is_integer() {
+                                return Err(fail(
+                                    Some(index),
+                                    format!(
+                                        "projection index has non-integer type {}",
+                                        operand_ty.name()
+                                    ),
+                                ));
+                            }
+                            context
+                                .array_element_type(array_type)
+                                .map_err(|reason| fail(Some(index), reason))?
+                        }
+                    };
+                }
+                Ok(current)
+            };
+
+            match &inst.data {
+                AirInstData::TypeConst(ty) => validate_type(*ty).map_err(|reason| {
+                    fail(Some(index), format!("invalid type constant: {reason}"))
+                })?,
+                AirInstData::Add(a, b)
+                | AirInstData::Sub(a, b)
+                | AirInstData::Mul(a, b)
+                | AirInstData::WrappingAdd(a, b)
+                | AirInstData::WrappingSub(a, b)
+                | AirInstData::WrappingMul(a, b)
+                | AirInstData::Div(a, b)
+                | AirInstData::Mod(a, b)
+                | AirInstData::Eq(a, b)
+                | AirInstData::Ne(a, b)
+                | AirInstData::Lt(a, b)
+                | AirInstData::Gt(a, b)
+                | AirInstData::Le(a, b)
+                | AirInstData::Ge(a, b)
+                | AirInstData::And(a, b)
+                | AirInstData::Or(a, b)
+                | AirInstData::BitAnd(a, b)
+                | AirInstData::BitOr(a, b)
+                | AirInstData::BitXor(a, b)
+                | AirInstData::Shl(a, b)
+                | AirInstData::Shr(a, b) => {
+                    check_ref(*a)?;
+                    check_ref(*b)?;
+                }
+                AirInstData::Neg(value)
+                | AirInstData::Not(value)
+                | AirInstData::BitNot(value)
+                | AirInstData::Drop { value } => check_ref(*value)?,
+                AirInstData::Branch {
+                    cond,
+                    then_value,
+                    else_value,
+                } => {
+                    check_ref(*cond)?;
+                    check_ref(*then_value)?;
+                    if let Some(value) = else_value {
+                        check_ref(*value)?;
+                    }
+                }
+                AirInstData::Loop { cond, body } => {
+                    check_ref(*cond)?;
+                    check_ref(*body)?;
+                }
+                AirInstData::InfiniteLoop { body } => check_ref(*body)?,
+                AirInstData::Alloc { init, .. }
+                | AirInstData::Store { value: init, .. }
+                | AirInstData::ParamStore { value: init, .. } => check_ref(*init)?,
+                AirInstData::Ret(value) => {
+                    if let Some(value) = value {
+                        check_ref(*value)?;
+                    }
+                }
+                AirInstData::PlaceRead { place } => {
+                    check_place(*place)?;
+                }
+                AirInstData::PlaceWrite { place, value } => {
+                    check_place(*place)?;
+                    check_ref(*value)?;
+                }
+                AirInstData::EnumPayloadGet {
+                    base,
+                    enum_id,
+                    variant_index,
+                    field_index,
+                } => {
+                    check_ref(*base)?;
+                    validate_type(Type::new_enum(*enum_id)).map_err(|reason| {
+                        fail(Some(index), format!("invalid enum identity: {reason}"))
+                    })?;
+                    let payload_ty = context
+                        .enum_payload_type(*enum_id, *variant_index, *field_index)
+                        .map_err(|reason| fail(Some(index), reason))?;
+                    if inst.ty != payload_ty {
+                        return Err(fail(
+                            Some(index),
+                            "enum payload result type does not match its declaration".into(),
+                        ));
+                    }
+                }
+                AirInstData::IntCast { value, from_ty } => {
+                    check_ref(*value)?;
+                    validate_type(*from_ty).map_err(|reason| {
+                        fail(Some(index), format!("invalid cast source type: {reason}"))
+                    })?;
+                }
+                AirInstData::MarkMoved { value, place, .. } => {
+                    check_ref(*value)?;
+                    if let Some(place) = place {
+                        check_place(*place)?;
+                    }
+                }
+                _ => {}
+            }
+            match &inst.data {
+                AirInstData::Match { scrutinee, arms } => {
+                    check_ref(*scrutinee)?;
+                    let scrutinee_ty = self.instructions[scrutinee.as_u32() as usize].ty;
+                    for (pattern, body) in self
+                        .try_get_match_arms(arms)
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        check_ref(body)?;
+                        match pattern {
+                            AirPattern::Wildcard => {}
+                            AirPattern::Int(_) if !scrutinee_ty.is_integer() => {
+                                return Err(fail(
+                                    Some(index),
+                                    format!(
+                                        "integer pattern does not match scrutinee type {}",
+                                        scrutinee_ty.name()
+                                    ),
+                                ));
+                            }
+                            AirPattern::Bool(_) if scrutinee_ty != Type::BOOL => {
+                                return Err(fail(
+                                    Some(index),
+                                    format!(
+                                        "boolean pattern does not match scrutinee type {}",
+                                        scrutinee_ty.name()
+                                    ),
+                                ));
+                            }
+                            AirPattern::EnumVariant {
+                                enum_id,
+                                variant_index,
+                            } => {
+                                validate_type(Type::new_enum(enum_id)).map_err(|reason| {
+                                    fail(Some(index), format!("invalid enum pattern: {reason}"))
+                                })?;
+                                context
+                                    .validate_enum_variant(enum_id, variant_index)
+                                    .map_err(|reason| {
+                                        fail(Some(index), format!("invalid enum pattern: {reason}"))
+                                    })?;
+                                if scrutinee_ty != Type::new_enum(enum_id) {
+                                    return Err(fail(
+                                        Some(index),
+                                        format!(
+                                            "enum pattern {:?} does not match scrutinee type {}",
+                                            enum_id,
+                                            scrutinee_ty.name()
+                                        ),
+                                    ));
+                                }
+                            }
+                            AirPattern::Int(_) | AirPattern::Bool(_) => {}
+                        }
+                    }
+                }
+                AirInstData::Call { name, args, .. } => {
+                    context
+                        .validate_symbol(*name)
+                        .map_err(|reason| fail(Some(index), reason))?;
+                    for arg in self
+                        .try_get_call_args(args)
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        check_ref(arg.value)?;
+                    }
+                }
+                AirInstData::CallGeneric {
+                    name,
+                    type_args,
+                    value_args,
+                    args,
+                    ..
+                } => {
+                    context
+                        .validate_symbol(*name)
+                        .map_err(|reason| fail(Some(index), reason))?;
+                    for &raw in self
+                        .try_get_words(type_args.start, type_args.extent, "type arguments")
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        let ty = Type::try_from_u32(raw).ok_or_else(|| {
+                            fail(Some(index), "invalid type argument encoding".into())
+                        })?;
+                        validate_type(ty).map_err(|reason| {
+                            fail(Some(index), format!("invalid type argument: {reason}"))
+                        })?;
+                    }
+                    for value in self
+                        .try_get_const_values(value_args)
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        if let crate::sema::ConstValue::Type(ty) = value {
+                            validate_type(ty).map_err(|reason| {
+                                fail(
+                                    Some(index),
+                                    format!("invalid constant type argument: {reason}"),
+                                )
+                            })?;
+                        } else if let crate::sema::ConstValue::Function(symbol) = value {
+                            context
+                                .validate_symbol(symbol)
+                                .map_err(|reason| fail(Some(index), reason))?;
+                        }
+                    }
+                    for arg in self
+                        .try_get_call_args(args)
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        check_ref(arg.value)?;
+                    }
+                }
+                AirInstData::Intrinsic { name, args, .. } => {
+                    context
+                        .validate_symbol(*name)
+                        .map_err(|reason| fail(Some(index), reason))?;
+                    for &raw in self
+                        .try_get_words(args.start, args.extent, "intrinsic arguments")
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        check_ref(AirRef::from_raw(raw))?;
+                    }
+                }
+                AirInstData::Block { statements, value } => {
+                    for &raw in self
+                        .try_get_words(statements.start, statements.extent, "block statements")
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        check_ref(AirRef::from_raw(raw))?;
+                    }
+                    check_ref(*value)?;
+                }
+                AirInstData::StructInit {
+                    struct_id,
+                    fields,
+                    source_order,
+                } => {
+                    validate_type(Type::new_struct(*struct_id)).map_err(|reason| {
+                        fail(Some(index), format!("invalid struct identity: {reason}"))
+                    })?;
+                    if inst.ty != Type::new_struct(*struct_id) {
+                        return Err(fail(
+                            Some(index),
+                            "struct initialization result type has a different identity".into(),
+                        ));
+                    }
+                    for &raw in self
+                        .try_get_words(fields.start, fields.extent, "struct fields")
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        check_ref(AirRef::from_raw(raw))?;
+                    }
+                    let order: Vec<_> = self
+                        .try_get_words(source_order.start, source_order.extent, "source order")
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                        .iter()
+                        .map(|&value| value as usize)
+                        .collect();
+                    if order.len() != fields.len() {
+                        return Err(fail(Some(index), "source order length mismatch".into()));
+                    }
+                    let mut seen = vec![false; fields.len()];
+                    for source in order {
+                        if source >= seen.len() || std::mem::replace(&mut seen[source], true) {
+                            return Err(fail(
+                                Some(index),
+                                "source order is not a permutation".into(),
+                            ));
+                        }
+                    }
+                }
+                AirInstData::ArrayInit { elements } => {
+                    validate_type(inst.ty).map_err(|reason| {
+                        fail(Some(index), format!("invalid array identity: {reason}"))
+                    })?;
+                    if inst.ty.as_array().is_none() {
+                        return Err(fail(
+                            Some(index),
+                            "array initialization result is not an array type".into(),
+                        ));
+                    }
+                    for &raw in self
+                        .try_get_words(elements.start, elements.extent, "array elements")
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        check_ref(AirRef::from_raw(raw))?;
+                    }
+                }
+                AirInstData::EnumVariant {
+                    enum_id,
+                    variant_index,
+                    payload,
+                } => {
+                    if inst.ty != Type::new_enum(*enum_id) {
+                        return Err(fail(
+                            Some(index),
+                            "enum construction result type has a different identity".into(),
+                        ));
+                    }
+                    let expected = context
+                        .enum_payload_len(*enum_id, *variant_index)
+                        .map_err(|reason| fail(Some(index), reason))?;
+                    if payload.len() != expected {
+                        return Err(fail(
+                            Some(index),
+                            format!(
+                                "enum payload length {} does not match declaration length {expected}",
+                                payload.len()
+                            ),
+                        ));
+                    }
+                    for &raw in self
+                        .try_get_words(payload.start, payload.extent, "enum payload")
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        check_ref(AirRef::from_raw(raw))?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(ValidatedAir { air: self })
+    }
+
+    fn append_words(
+        &mut self,
+        family: &'static str,
+        words: &[u32],
+    ) -> Result<(u32, u32), AirBuildError> {
+        if words.is_empty() {
+            return Ok((0, 0));
+        }
+        let capacity = || AirBuildError {
+            phase: "AIR",
+            family,
+            operation: "append",
+            kind: AirBuildErrorKind::ResourceLimit,
+        };
+        let start = u32::try_from(self.extra.len()).map_err(|_| capacity())?;
+        let extent = u32::try_from(words.len()).map_err(|_| capacity())?;
+        self.extra
+            .len()
+            .checked_add(words.len())
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(capacity)?;
+        self.extra
+            .try_reserve(words.len())
+            .map_err(|_| AirBuildError {
+                phase: "AIR",
+                family,
+                operation: "reserve",
+                kind: AirBuildErrorKind::ResourceExhaustion,
+            })?;
+        self.extra.extend_from_slice(words);
+        Ok((start, extent))
+    }
+
+    fn append_encoded<T>(
+        &mut self,
+        family: &'static str,
+        values: &[T],
+        encode: impl Fn(&T) -> u32,
+    ) -> Result<(u32, u32), AirBuildError> {
+        if values.is_empty() {
+            return Ok((0, 0));
+        }
+        let capacity = || AirBuildError {
+            phase: "AIR",
+            family,
+            operation: "append",
+            kind: AirBuildErrorKind::ResourceLimit,
+        };
+        let start = u32::try_from(self.extra.len()).map_err(|_| capacity())?;
+        let extent = u32::try_from(values.len()).map_err(|_| capacity())?;
+        self.extra
+            .len()
+            .checked_add(values.len())
+            .and_then(|end| u32::try_from(end).ok())
+            .ok_or_else(capacity)?;
+        self.extra
+            .try_reserve(values.len())
+            .map_err(|_| AirBuildError {
+                phase: "AIR",
+                family,
+                operation: "reserve",
+                kind: AirBuildErrorKind::ResourceExhaustion,
+            })?;
+        self.extra.extend(values.iter().map(encode));
+        Ok((start, extent))
+    }
+
+    fn add_call_args(&mut self, args: &[AirCallArg]) -> Result<AirCallArgs, AirBuildError> {
+        self.preflight_refs("call arguments", args.iter().map(|arg| arg.value))?;
+        if args.is_empty() {
+            return Ok(AirCallArgs {
+                start: 0,
+                extent: 0,
+            });
+        }
+        let overflow = || AirBuildError {
+            phase: "AIR",
+            family: "call arguments",
+            operation: "append",
+            kind: AirBuildErrorKind::ResourceLimit,
+        };
+        let word_count = args
+            .len()
+            .checked_mul(CallArgSchema::WIDTH)
+            .ok_or_else(overflow)?;
+        let start = u32::try_from(self.extra.len()).map_err(|_| overflow())?;
+        let extent = u32::try_from(word_count).map_err(|_| overflow())?;
+        self.extra
+            .len()
+            .checked_add(word_count)
+            .and_then(|end| u32::try_from(end).ok())
+            .ok_or_else(overflow)?;
+        self.extra
+            .try_reserve(word_count)
+            .map_err(|_| AirBuildError {
+                phase: "AIR",
+                family: "call arguments",
+                operation: "reserve",
+                kind: AirBuildErrorKind::ResourceExhaustion,
+            })?;
+        self.extra
+            .extend(args.iter().flat_map(CallArgSchema::encode));
+        Ok(AirCallArgs { start, extent })
+    }
+
+    fn add_intrinsic_args(&mut self, args: &[AirRef]) -> Result<AirIntrinsicArgs, AirBuildError> {
+        let (start, extent) =
+            self.append_encoded("intrinsic arguments", args, |value| value.as_u32())?;
+        Ok(AirIntrinsicArgs { start, extent })
+    }
+
+    fn add_block_statements(
+        &mut self,
+        values: &[AirRef],
+    ) -> Result<AirBlockStatements, AirBuildError> {
+        let (start, extent) =
+            self.append_encoded("block statements", values, |value| value.as_u32())?;
+        Ok(AirBlockStatements { start, extent })
+    }
+
+    fn add_struct_fields(&mut self, values: &[AirRef]) -> Result<AirStructFields, AirBuildError> {
+        let (start, extent) =
+            self.append_encoded("struct fields", values, |value| value.as_u32())?;
+        Ok(AirStructFields { start, extent })
+    }
+
+    fn add_source_order(&mut self, values: &[u32]) -> Result<AirSourceOrder, AirBuildError> {
+        let (start, extent) = self.append_words("source order", values)?;
+        Ok(AirSourceOrder { start, extent })
+    }
+
+    fn add_array_elements(&mut self, values: &[AirRef]) -> Result<AirArrayElements, AirBuildError> {
+        let (start, extent) =
+            self.append_encoded("array elements", values, |value| value.as_u32())?;
+        Ok(AirArrayElements { start, extent })
+    }
+
+    fn add_enum_payload(&mut self, values: &[AirRef]) -> Result<AirEnumPayload, AirBuildError> {
+        let (start, extent) =
+            self.append_encoded("enum payload", values, |value| value.as_u32())?;
+        Ok(AirEnumPayload { start, extent })
+    }
+
+    fn add_type_args(&mut self, values: &[Type]) -> Result<AirTypeArgs, AirBuildError> {
+        let (start, extent) =
+            self.append_encoded("type arguments", values, |value| value.as_u32())?;
+        Ok(AirTypeArgs { start, extent })
+    }
+
+    fn add_const_values(
+        &mut self,
+        values: &[crate::sema::ConstValue],
+    ) -> Result<AirConstValueWords, AirBuildError> {
+        let words = encode_const_values(values)?;
+        let (start, extent) = self.append_words("constant value arguments", &words)?;
+        Ok(AirConstValueWords { start, extent })
+    }
+
+    fn add_match_arms(
+        &mut self,
+        arms: &[(AirPattern, AirRef)],
+        arm_count: u32,
+    ) -> Result<AirMatchArms, AirBuildError> {
+        self.preflight_refs("match arms", arms.iter().map(|(_, body)| *body))?;
+        if arms.is_empty() {
+            return Ok(AirMatchArms::EMPTY);
+        }
+        let word_count = arms.iter().try_fold(1usize, |count, (pattern, _)| {
+            count.checked_add(pattern.tag().layout().width)
+        });
+        let word_count = word_count.ok_or(AirBuildError {
+            phase: "AIR",
+            family: "match arms",
+            operation: "stage",
+            kind: AirBuildErrorKind::ResourceLimit,
+        })?;
+        let start = u32::try_from(self.extra.len()).map_err(|_| AirBuildError {
+            phase: "AIR",
+            family: "match arms",
+            operation: "append",
+            kind: AirBuildErrorKind::ResourceLimit,
+        })?;
+        let extent = u32::try_from(word_count).map_err(|_| AirBuildError {
+            phase: "AIR",
+            family: "match arms",
+            operation: "append",
+            kind: AirBuildErrorKind::ResourceLimit,
+        })?;
+        self.extra
+            .len()
+            .checked_add(word_count)
+            .and_then(|end| u32::try_from(end).ok())
+            .ok_or(AirBuildError {
+                phase: "AIR",
+                family: "match arms",
+                operation: "append",
+                kind: AirBuildErrorKind::ResourceLimit,
+            })?;
+        self.extra
+            .try_reserve(word_count)
+            .map_err(|_| AirBuildError {
+                phase: "AIR",
+                family: "match arms",
+                operation: "reserve",
+                kind: AirBuildErrorKind::ResourceExhaustion,
+            })?;
+        let checkpoint = self.extra.len();
+        self.extra.push(arm_count);
+        for (pattern, body) in arms {
+            if let Err(error) = pattern.encode(*body, &mut self.extra) {
+                self.extra.truncate(checkpoint);
+                return Err(error);
+            }
+        }
+        Ok(AirMatchArms { start, extent })
+    }
+
+    pub(crate) fn add_match(
+        &mut self,
+        scrutinee: AirRef,
+        arms: &[(AirPattern, AirRef)],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.preflight_refs(
+            "match arms",
+            std::iter::once(scrutinee).chain(arms.iter().map(|(_, body)| *body)),
+        )?;
+        let arm_count = u32::try_from(arms.len()).map_err(|_| AirBuildError {
+            phase: "AIR",
+            family: "match arms",
+            operation: "preflight",
+            kind: AirBuildErrorKind::ResourceLimit,
+        })?;
+        self.reserve_instruction("match arms")?;
+        let arms = self.add_match_arms(arms, arm_count)?;
+        Ok(self.push_inst(AirInst {
+            data: AirInstData::Match { scrutinee, arms },
+            ty,
+            span,
+        }))
+    }
+
+    pub(crate) fn add_call(
+        &mut self,
+        runtime: Option<crate::RuntimeCallKind>,
+        name: Spur,
+        args: &[AirCallArg],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.preflight_refs("call arguments", args.iter().map(|arg| arg.value))?;
+        self.reserve_instruction("call arguments")?;
+        let args = self.add_call_args(args)?;
+        Ok(self.push_inst(AirInst {
+            data: AirInstData::Call {
+                runtime,
+                name,
+                args,
+            },
+            ty,
+            span,
+        }))
+    }
+
+    pub(crate) fn add_call_generic(
+        &mut self,
+        name: Spur,
+        type_args: &[Type],
+        value_args: &[crate::sema::ConstValue],
+        args: &[AirCallArg],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.preflight_refs("call arguments", args.iter().map(|arg| arg.value))?;
+        self.reserve_instruction("generic call")?;
+        let checkpoint = self.extra.len();
+        let ranges = (|| {
+            Ok::<_, AirBuildError>((
+                self.add_type_args(type_args)?,
+                self.add_const_values(value_args)?,
+                self.add_call_args(args)?,
+            ))
+        })();
+        let (type_args, value_args, args) = match ranges {
+            Ok(ranges) => ranges,
+            Err(error) => {
+                self.extra.truncate(checkpoint);
+                return Err(error);
+            }
+        };
+        Ok(self.push_inst(AirInst {
+            data: AirInstData::CallGeneric {
+                name,
+                type_args,
+                value_args,
+                args,
+            },
+            ty,
+            span,
+        }))
+    }
+
+    pub(crate) fn add_intrinsic(
+        &mut self,
+        runtime: Option<crate::RuntimeCallKind>,
+        name: Spur,
+        args: &[AirRef],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.preflight_refs("intrinsic arguments", args.iter().copied())?;
+        self.reserve_instruction("intrinsic arguments")?;
+        let args = self.add_intrinsic_args(args)?;
+        Ok(self.push_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                runtime,
+                name,
+                args,
+            },
+            ty,
+            span,
+        }))
+    }
+
+    pub(crate) fn add_block(
+        &mut self,
+        statements: &[AirRef],
+        value: AirRef,
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.preflight_refs(
+            "block statements",
+            statements.iter().copied().chain(std::iter::once(value)),
+        )?;
+        self.reserve_instruction("block statements")?;
+        let statements = self.add_block_statements(statements)?;
+        Ok(self.push_inst(AirInst {
+            data: AirInstData::Block { statements, value },
+            ty,
+            span,
+        }))
+    }
+
+    pub(crate) fn add_struct_init(
+        &mut self,
+        struct_id: StructId,
+        fields: &[AirRef],
+        source_order: &[u32],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        if fields.len() != source_order.len() {
+            return Err(AirBuildError {
+                phase: "AIR",
+                family: "struct initialization",
+                operation: "stage",
+                kind: AirBuildErrorKind::ProducerInvariant("field/source-order length mismatch"),
+            });
+        }
+        for (position, &field) in source_order.iter().enumerate() {
+            if field as usize >= fields.len() || source_order[..position].contains(&field) {
+                return Err(AirBuildError {
+                    phase: "AIR",
+                    family: "struct initialization",
+                    operation: "preflight",
+                    kind: AirBuildErrorKind::ProducerInvariant("source order is not a permutation"),
+                });
+            }
+        }
+        self.preflight_refs("struct fields", fields.iter().copied())?;
+        self.reserve_instruction("struct initialization")?;
+        let checkpoint = self.extra.len();
+        let fields = self.add_struct_fields(fields)?;
+        let source_order = match self.add_source_order(source_order) {
+            Ok(source_order) => source_order,
+            Err(error) => {
+                self.extra.truncate(checkpoint);
+                return Err(error);
+            }
+        };
+        Ok(self.push_inst(AirInst {
+            data: AirInstData::StructInit {
+                struct_id,
+                fields,
+                source_order,
+            },
+            ty,
+            span,
+        }))
+    }
+
+    pub(crate) fn add_array_init(
+        &mut self,
+        elements: &[AirRef],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.preflight_refs("array elements", elements.iter().copied())?;
+        self.reserve_instruction("array elements")?;
+        let elements = self.add_array_elements(elements)?;
+        Ok(self.push_inst(AirInst {
+            data: AirInstData::ArrayInit { elements },
+            ty,
+            span,
+        }))
+    }
+
+    pub(crate) fn add_enum_variant(
+        &mut self,
+        enum_id: crate::EnumId,
+        variant_index: u32,
+        payload: &[AirRef],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.preflight_refs("enum payload", payload.iter().copied())?;
+        self.reserve_instruction("enum payload")?;
+        let payload = self.add_enum_payload(payload)?;
+        Ok(self.push_inst(AirInst {
+            data: AirInstData::EnumVariant {
+                enum_id,
+                variant_index,
+                payload,
+            },
+            ty,
+            span,
+        }))
+    }
     /// Create a new empty AIR.
-    pub fn new(return_type: Type) -> Self {
+    pub(crate) fn new(return_type: Type) -> Self {
         Self {
             instructions: Vec::new(),
             extra: Vec::new(),
@@ -416,11 +2248,13 @@ impl Air {
             places: Vec::new(),
             param_drops: Vec::new(),
             borrow_slots: Vec::new(),
+            #[cfg(test)]
+            place_reserve_failure: None,
         }
     }
 
     /// Record a local slot as a non-owning borrow binding (see `borrow_slots`).
-    pub fn add_borrow_slot(&mut self, slot: u32) {
+    pub(crate) fn add_borrow_slot(&mut self, slot: u32) {
         if !self.borrow_slots.contains(&slot) {
             self.borrow_slots.push(slot);
         }
@@ -434,7 +2268,61 @@ impl Air {
     }
 
     /// Add an instruction and return its reference.
-    pub fn add_inst(&mut self, inst: AirInst) -> AirRef {
+    pub(crate) fn add_inst(&mut self, inst: AirInst) -> AirRef {
+        assert!(
+            !matches!(
+                inst.data,
+                AirInstData::Match { .. }
+                    | AirInstData::Call { .. }
+                    | AirInstData::CallGeneric { .. }
+                    | AirInstData::Intrinsic { .. }
+                    | AirInstData::Block { .. }
+                    | AirInstData::StructInit { .. }
+                    | AirInstData::ArrayInit { .. }
+                    | AirInstData::EnumVariant { .. }
+            ),
+            "payload-bearing AIR nodes require an atomic owner builder"
+        );
+        self.push_inst(inst)
+    }
+
+    fn reserve_instruction(&mut self, family: &'static str) -> Result<(), AirBuildError> {
+        u32::try_from(self.instructions.len()).map_err(|_| AirBuildError {
+            phase: "AIR",
+            family,
+            operation: "insert instruction",
+            kind: AirBuildErrorKind::ResourceLimit,
+        })?;
+        self.instructions.try_reserve(1).map_err(|_| AirBuildError {
+            phase: "AIR",
+            family,
+            operation: "reserve instruction",
+            kind: AirBuildErrorKind::ResourceExhaustion,
+        })
+    }
+
+    fn preflight_refs(
+        &self,
+        family: &'static str,
+        refs: impl IntoIterator<Item = AirRef>,
+    ) -> Result<(), AirBuildError> {
+        if refs
+            .into_iter()
+            .any(|value| value.as_u32() as usize >= self.instructions.len())
+        {
+            return Err(AirBuildError {
+                phase: "AIR",
+                family,
+                operation: "preflight",
+                kind: AirBuildErrorKind::ProducerInvariant(
+                    "instruction reference is outside the current AIR owner",
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn push_inst(&mut self, inst: AirInst) -> AirRef {
         let index = self.instructions.len() as u32;
         self.instructions.push(inst);
         AirRef::from_raw(index)
@@ -449,7 +2337,7 @@ impl Air {
     /// Set the owned-parameter drop list: (ABI slot, type) for each
     /// pass-by-value parameter that the callee owns (and must drop at exit
     /// unless moved out).
-    pub fn set_param_drops(&mut self, param_drops: Vec<(u32, Type)>) {
+    pub(crate) fn set_param_drops(&mut self, param_drops: Vec<(u32, Type)>) {
         self.param_drops = param_drops;
     }
 
@@ -457,7 +2345,7 @@ impl Air {
     /// destructor consumes `self`, and the drop glue (not the destructor
     /// itself) is responsible for dropping the fields afterwards, so the
     /// destructor must not re-drop its own parameter.
-    pub fn clear_param_drops(&mut self) {
+    pub(crate) fn clear_param_drops(&mut self) {
         self.param_drops.clear();
     }
 
@@ -474,11 +2362,41 @@ impl Air {
     /// method like `String.len`). The marker instruction is rewritten in
     /// place to a copy of the wrapped instruction, preserving the value it
     /// produces. No-op when `inst_ref` is not a `MarkMoved`.
-    pub fn cancel_move_marker(&mut self, inst_ref: AirRef) {
+    pub(crate) fn cancel_move_marker(&mut self, inst_ref: AirRef) {
         if let AirInstData::MarkMoved { value, .. } = self.instructions[inst_ref.0 as usize].data {
-            self.instructions[inst_ref.0 as usize].data =
-                self.instructions[value.0 as usize].data.clone();
+            let replacement = match &self.instructions[value.0 as usize].data {
+                AirInstData::Const(value) => AirInstData::Const(*value),
+                AirInstData::BoolConst(value) => AirInstData::BoolConst(*value),
+                AirInstData::StringConst(value) => AirInstData::StringConst(*value),
+                AirInstData::UnitConst => AirInstData::UnitConst,
+                AirInstData::TypeConst(value) => AirInstData::TypeConst(*value),
+                AirInstData::Load { slot } => AirInstData::Load { slot: *slot },
+                AirInstData::Param { index } => AirInstData::Param { index: *index },
+                AirInstData::PlaceRead { place } => AirInstData::PlaceRead { place: *place },
+                other => panic!("cannot cancel move marker around {other:?}"),
+            };
+            self.instructions[inst_ref.0 as usize].data = replacement;
         }
+    }
+
+    pub(crate) fn checkpoint(&self) -> AirCheckpoint {
+        AirCheckpoint {
+            instructions: self.instructions.len(),
+            extra: self.extra.len(),
+            projections: self.projections.len(),
+            places: self.places.len(),
+            param_drops: self.param_drops.len(),
+            borrow_slots: self.borrow_slots.len(),
+        }
+    }
+
+    pub(crate) fn rollback(&mut self, checkpoint: AirCheckpoint) {
+        self.instructions.truncate(checkpoint.instructions);
+        self.extra.truncate(checkpoint.extra);
+        self.projections.truncate(checkpoint.projections);
+        self.places.truncate(checkpoint.places);
+        self.param_drops.truncate(checkpoint.param_drops);
+        self.borrow_slots.truncate(checkpoint.borrow_slots);
     }
 
     /// The return type of this function.
@@ -507,56 +2425,374 @@ impl Air {
             .map(|(i, inst)| (AirRef::from_raw(i as u32), inst))
     }
 
-    /// Add extra data and return the start index.
-    pub fn add_extra(&mut self, data: &[u32]) -> u32 {
-        // Correctness guard (must run in release): `start` and the extra
-        // indices are truncated to u32 below, so an overflow would silently
-        // alias unrelated extra data. Plain `assert!` not `debug_assert!`
-        // (RUE-45).
-        assert!(
-            self.extra.len() <= u32::MAX as usize,
-            "AIR extra data overflow: {} entries exceeds u32::MAX",
-            self.extra.len()
+    /// Account for retained payload storage without allocating.
+    pub fn payload_storage_stats(&self) -> AirPayloadStorageStats {
+        let mut stats = AirPayloadStorageStats {
+            word_store_logical_bytes: self.extra.len() * std::mem::size_of::<u32>(),
+            word_store_capacity_bytes: self.extra.capacity() * std::mem::size_of::<u32>(),
+            projection_store_logical_bytes: self.projections.len()
+                * std::mem::size_of::<AirProjection>(),
+            projection_store_capacity_bytes: self.projections.capacity()
+                * std::mem::size_of::<AirProjection>(),
+            place_store_logical_bytes: self.places.len() * std::mem::size_of::<AirPlace>(),
+            place_store_capacity_bytes: self.places.capacity() * std::mem::size_of::<AirPlace>(),
+            ..AirPayloadStorageStats::default()
+        };
+        let mut account = |family: usize, extent: u32| {
+            let bytes = extent as usize * std::mem::size_of::<u32>();
+            stats.family_logical_bytes[family] += bytes;
+        };
+        for inst in &self.instructions {
+            match &inst.data {
+                AirInstData::Match { arms, .. } => {
+                    account(0, arms.extent);
+                    stats.nonempty_match_envelopes += usize::from(!arms.is_empty());
+                }
+                AirInstData::Call { args, .. } => account(1, args.extent),
+                AirInstData::CallGeneric {
+                    type_args,
+                    value_args,
+                    args,
+                    ..
+                } => {
+                    account(2, type_args.extent);
+                    account(3, value_args.extent);
+                    stats.peak_staging_bytes = stats
+                        .peak_staging_bytes
+                        .max(value_args.extent as usize * std::mem::size_of::<u32>());
+                    account(1, args.extent);
+                }
+                AirInstData::Intrinsic { args, .. } => account(4, args.extent),
+                AirInstData::Block { statements, .. } => account(5, statements.extent),
+                AirInstData::StructInit {
+                    fields,
+                    source_order,
+                    ..
+                } => {
+                    account(6, fields.extent);
+                    account(7, source_order.extent);
+                }
+                AirInstData::ArrayInit { elements } => account(8, elements.extent),
+                AirInstData::EnumVariant { payload, .. } => account(9, payload.extent),
+                _ => {}
+            }
+        }
+        stats.peak_staging_bytes = stats.peak_staging_bytes.max(
+            self.places
+                .iter()
+                .map(|place| {
+                    place.projections.extent as usize * std::mem::size_of::<AirProjection>()
+                })
+                .max()
+                .unwrap_or(0),
         );
-        assert!(
-            self.extra.len().saturating_add(data.len()) <= u32::MAX as usize,
-            "AIR extra data would overflow: {} + {} exceeds u32::MAX",
-            self.extra.len(),
-            data.len()
-        );
-
-        let start = self.extra.len() as u32;
-        self.extra.extend_from_slice(data);
-        start
+        stats
     }
 
-    /// Get extra data slice by start index and length.
-    #[inline]
-    pub fn get_extra(&self, start: u32, len: u32) -> &[u32] {
+    fn try_get_words(
+        &self,
+        start: u32,
+        extent: u32,
+        family: &'static str,
+    ) -> Result<&[u32], AirPayloadError> {
+        if extent == 0 {
+            if start == 0 {
+                return Ok(&[]);
+            }
+            return Err(AirPayloadError::decode(
+                family,
+                start,
+                extent,
+                0,
+                "non-canonical empty range",
+            ));
+        }
+        let raw_start = start;
         let start = start as usize;
-        let end = start + len as usize;
-        &self.extra[start..end]
-    }
-
-    // Helper methods for reading structured data from extra array
-
-    /// Get AirRefs from extra array (for blocks, array elements, intrinsic args, etc.).
-    #[inline]
-    pub fn get_air_refs(&self, start: u32, len: u32) -> impl Iterator<Item = AirRef> + '_ {
-        self.get_extra(start, len)
-            .iter()
-            .map(|&v| AirRef::from_raw(v))
+        let end = start.checked_add(extent as usize).ok_or_else(|| {
+            AirPayloadError::decode(family, raw_start, extent, 0, "range end overflow")
+        })?;
+        self.extra.get(start..end).ok_or_else(|| {
+            AirPayloadError::decode(family, raw_start, extent, 0, "range outside word store")
+        })
     }
 
     /// Get call arguments from extra array.
     /// Each call arg is encoded as 2 u32s: (air_ref, mode).
     #[inline]
-    pub fn get_call_args(&self, start: u32, len: u32) -> impl Iterator<Item = AirCallArg> + '_ {
-        let data = self.get_extra(start, len * 2);
-        data.chunks_exact(2).map(|chunk| AirCallArg {
-            value: AirRef::from_raw(chunk[0]),
-            mode: AirArgMode::from_u32(chunk[1]),
+    pub fn get_call_args(
+        &self,
+        range: &AirCallArgs,
+    ) -> impl ExactSizeIterator<Item = AirCallArg> + '_ {
+        self.try_get_call_args(range)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    pub fn try_get_call_args(
+        &self,
+        range: &AirCallArgs,
+    ) -> Result<impl ExactSizeIterator<Item = AirCallArg> + '_, AirPayloadError> {
+        let data = self.validate_call_args(range)?;
+        let range = AirCallArgs {
+            start: range.start,
+            extent: range.extent,
+        };
+        Ok(data
+            .chunks_exact(CallArgSchema::WIDTH)
+            .enumerate()
+            .map(move |(record, chunk)| {
+                CallArgSchema::decode(chunk, &range, record).expect("validated call argument")
+            }))
+    }
+
+    pub fn get_intrinsic_args(
+        &self,
+        range: &AirIntrinsicArgs,
+    ) -> impl ExactSizeIterator<Item = AirRef> + '_ {
+        self.try_get_words(range.start, range.extent, "intrinsic arguments")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .iter()
+            .copied()
+            .map(AirRef::from_raw)
+    }
+
+    pub fn get_block_statements(
+        &self,
+        range: &AirBlockStatements,
+    ) -> impl ExactSizeIterator<Item = AirRef> + '_ {
+        self.try_get_words(range.start, range.extent, "block statements")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .iter()
+            .copied()
+            .map(AirRef::from_raw)
+    }
+
+    pub fn get_struct_fields(
+        &self,
+        range: &AirStructFields,
+    ) -> impl ExactSizeIterator<Item = AirRef> + '_ {
+        self.try_get_words(range.start, range.extent, "struct fields")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .iter()
+            .copied()
+            .map(AirRef::from_raw)
+    }
+
+    pub fn get_source_order(
+        &self,
+        range: &AirSourceOrder,
+    ) -> impl ExactSizeIterator<Item = usize> + '_ {
+        self.try_get_words(range.start, range.extent, "source order")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .iter()
+            .map(|&v| v as usize)
+    }
+
+    pub fn get_array_elements(
+        &self,
+        range: &AirArrayElements,
+    ) -> impl ExactSizeIterator<Item = AirRef> + '_ {
+        self.try_get_words(range.start, range.extent, "array elements")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .iter()
+            .copied()
+            .map(AirRef::from_raw)
+    }
+
+    pub fn get_enum_payload(
+        &self,
+        range: &AirEnumPayload,
+    ) -> impl ExactSizeIterator<Item = AirRef> + '_ {
+        self.try_get_words(range.start, range.extent, "enum payload")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .iter()
+            .copied()
+            .map(AirRef::from_raw)
+    }
+
+    pub fn get_type_args(&self, range: &AirTypeArgs) -> impl ExactSizeIterator<Item = Type> + '_ {
+        self.try_get_words(range.start, range.extent, "type arguments")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .iter()
+            .map(|&v| Type::try_from_u32(v).expect("validated AIR type argument"))
+    }
+
+    pub fn get_const_values(
+        &self,
+        range: &AirConstValueWords,
+    ) -> impl ExactSizeIterator<Item = crate::sema::ConstValue> + '_ {
+        self.try_get_const_values(range)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    pub fn try_get_const_values(
+        &self,
+        range: &AirConstValueWords,
+    ) -> Result<ConstValueIterator<'_>, AirPayloadError> {
+        let words = self.try_get_words(range.start, range.extent, "constant value arguments")?;
+        let mut cursor = words;
+        let mut count = 0usize;
+        while let Some((&tag_word, rest)) = cursor.split_first() {
+            let tag = ConstValueTag::from_word(tag_word).ok_or_else(|| {
+                AirPayloadError::decode(
+                    "constant value arguments",
+                    range.start,
+                    range.extent,
+                    count,
+                    "invalid constant tag",
+                )
+            })?;
+            let payload = rest.get(..tag.payload_width()).ok_or_else(|| {
+                AirPayloadError::decode(
+                    "constant value arguments",
+                    range.start,
+                    range.extent,
+                    count,
+                    "truncated constant payload",
+                )
+            })?;
+            match tag {
+                ConstValueTag::Bool if !matches!(payload[0], 0 | 1) => {
+                    return Err(AirPayloadError::decode(
+                        "constant value arguments",
+                        range.start,
+                        range.extent,
+                        count,
+                        "invalid boolean",
+                    ));
+                }
+                ConstValueTag::Type if Type::try_from_u32(payload[0]).is_none() => {
+                    return Err(AirPayloadError::decode(
+                        "constant value arguments",
+                        range.start,
+                        range.extent,
+                        count,
+                        "invalid type encoding",
+                    ));
+                }
+                ConstValueTag::Function if Spur::try_from_usize(payload[0] as usize).is_none() => {
+                    return Err(AirPayloadError::decode(
+                        "constant value arguments",
+                        range.start,
+                        range.extent,
+                        count,
+                        "invalid function symbol encoding",
+                    ));
+                }
+                _ => {}
+            }
+            cursor = &rest[tag.payload_width()..];
+            count += 1;
+        }
+        Ok(ConstValueIterator {
+            words,
+            remaining: count,
         })
+    }
+
+    fn validate_call_args(&self, range: &AirCallArgs) -> Result<&[u32], AirPayloadError> {
+        if range.extent as usize % CallArgSchema::WIDTH != 0 {
+            return Err(AirPayloadError::decode(
+                "call arguments",
+                range.start,
+                range.extent,
+                range.extent as usize / CallArgSchema::WIDTH,
+                "partial fixed-width record",
+            ));
+        }
+        let data = self.try_get_words(range.start, range.extent, "call arguments")?;
+        for (record, chunk) in data.chunks_exact(CallArgSchema::WIDTH).enumerate() {
+            CallArgSchema::decode(chunk, range, record)?;
+        }
+        Ok(data)
+    }
+
+    fn validate_match_arms(
+        &self,
+        range: &AirMatchArms,
+    ) -> Result<(&[u32], usize), AirPayloadError> {
+        if range.is_empty() {
+            return Ok((&[], 0));
+        }
+        let bounded = self.try_get_words(range.start, range.extent, "match arms")?;
+        let (&count, data) = bounded.split_first().ok_or_else(|| {
+            AirPayloadError::decode(
+                "match arms",
+                range.start,
+                range.extent,
+                0,
+                "missing envelope",
+            )
+        })?;
+        let count = usize::try_from(count).map_err(|_| {
+            AirPayloadError::decode(
+                "match arms",
+                range.start,
+                range.extent,
+                0,
+                "record count exceeds addressable memory",
+            )
+        })?;
+        let mut cursor = data;
+        for record in 0..count {
+            let tag = match cursor
+                .get(PatternTag::TAG_OFFSET)
+                .copied()
+                .and_then(PatternTag::from_word)
+            {
+                Some(tag) => tag,
+                None if cursor.is_empty() => {
+                    return Err(AirPayloadError::decode(
+                        "match arms",
+                        range.start,
+                        range.extent,
+                        record,
+                        "truncated record",
+                    ));
+                }
+                None => {
+                    return Err(AirPayloadError::decode(
+                        "match arms",
+                        range.start,
+                        range.extent,
+                        record,
+                        "invalid pattern tag",
+                    ));
+                }
+            };
+            let layout = tag.layout();
+            let record_words = cursor.get(..layout.width).ok_or_else(|| {
+                AirPayloadError::decode(
+                    "match arms",
+                    range.start,
+                    range.extent,
+                    record,
+                    "truncated record",
+                )
+            })?;
+            if let PatternFields::Bool { value } = layout.fields {
+                if !matches!(record_words[value], 0 | 1) {
+                    return Err(AirPayloadError::decode(
+                        "match arms",
+                        range.start,
+                        range.extent,
+                        record,
+                        "invalid boolean",
+                    ));
+                }
+            }
+            cursor = &cursor[layout.width..];
+        }
+        if !cursor.is_empty() {
+            return Err(AirPayloadError::decode(
+                "match arms",
+                range.start,
+                range.extent,
+                count,
+                "trailing words",
+            ));
+        }
+        Ok((data, count))
     }
 
     /// Get match arms from extra array.
@@ -564,33 +2800,21 @@ impl Air {
     #[inline]
     pub fn get_match_arms(
         &self,
-        start: u32,
-        len: u32,
-    ) -> impl Iterator<Item = (AirPattern, AirRef)> + '_ {
-        MatchArmIterator {
-            data: &self.extra[start as usize..],
-            remaining: len as usize,
-        }
+        range: &AirMatchArms,
+    ) -> impl ExactSizeIterator<Item = (AirPattern, AirRef)> + '_ {
+        self.try_get_match_arms(range)
+            .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    /// Get struct init data from extra array.
-    /// Returns (field_refs_iterator, source_order_iterator).
-    #[inline]
-    pub fn get_struct_init(
+    pub fn try_get_match_arms(
         &self,
-        fields_start: u32,
-        fields_len: u32,
-        source_order_start: u32,
-    ) -> (
-        impl Iterator<Item = AirRef> + '_,
-        impl Iterator<Item = usize> + '_,
-    ) {
-        let fields = self.get_air_refs(fields_start, fields_len);
-        let source_order = self
-            .get_extra(source_order_start, fields_len)
-            .iter()
-            .map(|&v| v as usize);
-        (fields, source_order)
+        range: &AirMatchArms,
+    ) -> Result<impl ExactSizeIterator<Item = (AirPattern, AirRef)> + '_, AirPayloadError> {
+        let (data, count) = self.validate_match_arms(range)?;
+        Ok(MatchArmIterator {
+            data,
+            remaining: count,
+        })
     }
 
     /// Remap string constant IDs using the provided mapping function.
@@ -598,7 +2822,7 @@ impl Air {
     /// This is used after per-function analysis to convert local string IDs
     /// to global string IDs across all analyzed functions. The mapping function
     /// takes a local string ID and returns the global string ID.
-    pub fn remap_string_ids<F>(&mut self, map_fn: F)
+    pub(crate) fn remap_string_ids<F>(&mut self, map_fn: F)
     where
         F: Fn(u32) -> u32,
     {
@@ -615,63 +2839,173 @@ impl Air {
         &self.instructions
     }
 
-    /// Rewrite the data of an instruction at a given index.
-    ///
-    /// This is used by the specialization pass to rewrite `CallGeneric` to `Call`.
-    /// The type and span are preserved.
-    pub fn rewrite_inst_data(&mut self, index: usize, new_data: AirInstData) {
-        self.instructions[index].data = new_data;
+    pub(crate) fn rewrite_generic_call_to_call(&mut self, index: usize, name: Spur) {
+        let args = match &self.instructions[index].data {
+            AirInstData::CallGeneric { args, .. } => AirCallArgs {
+                start: args.start,
+                extent: args.extent,
+            },
+            _ => panic!("AIR rewrite target is not a generic call"),
+        };
+        self.instructions[index].data = AirInstData::Call {
+            runtime: None,
+            name,
+            args,
+        };
     }
 
     // ========================================================================
     // Place operations
     // ========================================================================
 
-    /// Add projections to the projections array and return (start, len).
-    ///
-    /// Used for PlaceRead and PlaceWrite instructions.
-    pub fn push_projections(
-        &mut self,
-        projs: impl IntoIterator<Item = AirProjection>,
-    ) -> (u32, u32) {
-        let start = self.projections.len() as u32;
-        self.projections.extend(projs);
-        let len = self.projections.len() as u32 - start;
-        (start, len)
-    }
-
-    /// Get a slice from the projections array.
-    #[inline]
-    pub fn get_projections(&self, start: u32, len: u32) -> &[AirProjection] {
-        &self.projections[start as usize..(start + len) as usize]
-    }
-
     /// Get projections for a place.
     #[inline]
     pub fn get_place_projections(&self, place: &AirPlace) -> &[AirProjection] {
-        self.get_projections(place.projections_start, place.projections_len)
+        if place.projections.is_empty() {
+            return &[];
+        }
+        let start = place.projections.start as usize;
+        let end = start
+            .checked_add(place.projections.extent as usize)
+            .expect("corrupt AIR projection range overflow");
+        self.projections
+            .get(start..end)
+            .expect("corrupt AIR projection range outside its owner")
     }
 
     /// Create a place with the given base and projections.
     ///
     /// This adds the projections to the projections array and returns a PlaceRef
     /// that references the place.
-    pub fn make_place(
+    pub(crate) fn make_place(
         &mut self,
         base: AirPlaceBase,
         base_type: Type,
         projs: impl IntoIterator<Item = AirProjection>,
-    ) -> AirPlaceRef {
-        let (projections_start, projections_len) = self.push_projections(projs);
+    ) -> Result<AirPlaceRef, AirBuildError> {
+        // Materialize and validate the entire owner locally before either
+        // owner store is touched.
+        let projs = projs.into_iter();
+        let mut staged = Vec::new();
+        let (lower, _) = projs.size_hint();
+        staged.try_reserve(lower).map_err(|_| AirBuildError {
+            phase: "AIR",
+            family: "place projections",
+            operation: "stage",
+            kind: AirBuildErrorKind::ResourceExhaustion,
+        })?;
+        for projection in projs {
+            if let AirProjection::Index { index, .. } = projection {
+                if index.as_u32() as usize >= self.instructions.len() {
+                    return Err(AirBuildError {
+                        phase: "AIR",
+                        family: "place projections",
+                        operation: "preflight",
+                        kind: AirBuildErrorKind::ProducerInvariant(
+                            "instruction reference is outside the current AIR owner",
+                        ),
+                    });
+                }
+            }
+            if staged.len() == staged.capacity() {
+                staged.try_reserve(1).map_err(|_| AirBuildError {
+                    phase: "AIR",
+                    family: "place projections",
+                    operation: "stage",
+                    kind: AirBuildErrorKind::ResourceExhaustion,
+                })?;
+            }
+            staged.push(projection);
+        }
+
+        let projection_limit = || AirBuildError {
+            phase: "AIR",
+            family: "place projections",
+            operation: "preflight",
+            kind: AirBuildErrorKind::ResourceLimit,
+        };
+        let projection_start =
+            u32::try_from(self.projections.len()).map_err(|_| projection_limit())?;
+        let projection_extent = u32::try_from(staged.len()).map_err(|_| projection_limit())?;
+        self.projections
+            .len()
+            .checked_add(staged.len())
+            .and_then(|end| u32::try_from(end).ok())
+            .ok_or_else(projection_limit)?;
+        let index = u32::try_from(self.places.len()).map_err(|_| AirBuildError {
+            phase: "AIR",
+            family: "places",
+            operation: "preflight",
+            kind: AirBuildErrorKind::ResourceLimit,
+        })?;
+        self.places
+            .len()
+            .checked_add(1)
+            .and_then(|end| u32::try_from(end).ok())
+            .ok_or(AirBuildError {
+                phase: "AIR",
+                family: "places",
+                operation: "preflight",
+                kind: AirBuildErrorKind::ResourceLimit,
+            })?;
+
+        #[cfg(test)]
+        if self.place_reserve_failure == Some(PlaceReserveFailure::ProjectionStore) {
+            self.place_reserve_failure = None;
+            return Err(AirBuildError {
+                phase: "AIR",
+                family: "place projections",
+                operation: "reserve",
+                kind: AirBuildErrorKind::ResourceExhaustion,
+            });
+        }
+        self.projections
+            .try_reserve(staged.len())
+            .map_err(|_| AirBuildError {
+                phase: "AIR",
+                family: "place projections",
+                operation: "reserve",
+                kind: AirBuildErrorKind::ResourceExhaustion,
+            })?;
+        #[cfg(test)]
+        if self.place_reserve_failure == Some(PlaceReserveFailure::PlaceStore) {
+            self.place_reserve_failure = None;
+            return Err(AirBuildError {
+                phase: "AIR",
+                family: "places",
+                operation: "reserve",
+                kind: AirBuildErrorKind::ResourceExhaustion,
+            });
+        }
+        self.places.try_reserve(1).map_err(|_| AirBuildError {
+            phase: "AIR",
+            family: "places",
+            operation: "reserve",
+            kind: AirBuildErrorKind::ResourceExhaustion,
+        })?;
+        let projections = if staged.is_empty() {
+            AirProjectionRange::EMPTY
+        } else {
+            AirProjectionRange {
+                start: projection_start,
+                extent: projection_extent,
+                family: PhantomData,
+            }
+        };
+        // Both stores now have sufficient capacity; these commits cannot fail.
+        self.projections.extend(staged);
         let place = AirPlace {
             base,
             base_type,
-            projections_start,
-            projections_len,
+            projections,
         };
-        let index = self.places.len() as u32;
         self.places.push(place);
-        AirPlaceRef::from_raw(index)
+        Ok(AirPlaceRef::from_raw(index))
+    }
+
+    #[cfg(test)]
+    fn fail_next_place_reserve(&mut self, failure: PlaceReserveFailure) {
+        self.place_reserve_failure = Some(failure);
     }
 
     /// Get a place by reference.
@@ -686,15 +3020,14 @@ impl Air {
         &self.places
     }
 
-    /// Get all projections.
-    #[inline]
-    pub fn projections(&self) -> &[AirProjection] {
+    #[cfg(test)]
+    pub(crate) fn projections(&self) -> &[AirProjection] {
         &self.projections
     }
 }
 
 /// A single AIR instruction.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AirInst {
     pub data: AirInstData,
     pub ty: Type,
@@ -702,7 +3035,7 @@ pub struct AirInst {
 }
 
 /// AIR instruction data - fully typed operations.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum AirInstData {
     /// Integer constant (typed)
     Const(u64),
@@ -802,9 +3135,7 @@ pub enum AirInstData {
         /// The value being matched (scrutinee)
         scrutinee: AirRef,
         /// Start index into extra array for match arms
-        arms_start: u32,
-        /// Number of match arms
-        arms_len: u32,
+        arms: AirMatchArms,
     },
 
     /// Break: exits the innermost loop
@@ -855,9 +3186,7 @@ pub enum AirInstData {
         /// Function name (interned symbol)
         name: Spur,
         /// Start index into extra array for arguments
-        args_start: u32,
-        /// Number of arguments
-        args_len: u32,
+        args: AirCallArgs,
     },
 
     /// Generic function call - requires specialization before codegen.
@@ -880,17 +3209,11 @@ pub enum AirInstData {
         /// Base function name (interned symbol)
         name: Spur,
         /// Start index into extra array for type arguments (raw Type values)
-        type_args_start: u32,
-        /// Number of type arguments
-        type_args_len: u32,
+        type_args: AirTypeArgs,
         /// Start index into extra array for encoded comptime value arguments
-        value_args_start: u32,
-        /// Number of words (not values) in the encoded value-argument stream
-        value_args_len: u32,
+        value_args: AirConstValueWords,
         /// Start index into extra array for runtime arguments
-        args_start: u32,
-        /// Number of runtime arguments
-        args_len: u32,
+        args: AirCallArgs,
     },
 
     /// Intrinsic call (e.g., @dbg)
@@ -900,9 +3223,7 @@ pub enum AirInstData {
         /// Intrinsic name (without @, interned)
         name: Spur,
         /// Start index into extra array for arguments
-        args_start: u32,
-        /// Number of arguments
-        args_len: u32,
+        args: AirIntrinsicArgs,
     },
 
     /// Reference to a function parameter
@@ -916,9 +3237,7 @@ pub enum AirInstData {
     /// enabling demand-driven lowering for short-circuit evaluation.
     Block {
         /// Start index into extra array for statement refs
-        stmts_start: u32,
-        /// Number of statements
-        stmts_len: u32,
+        statements: AirBlockStatements,
         /// The block's resulting value
         value: AirRef,
     },
@@ -929,12 +3248,10 @@ pub enum AirInstData {
         /// The struct type being created
         struct_id: StructId,
         /// Start index into extra array for field refs (in declaration order)
-        fields_start: u32,
-        /// Number of fields
-        fields_len: u32,
+        fields: AirStructFields,
         /// Start index into extra array for source order indices
         /// Each entry is an index into fields, specifying evaluation order
-        source_order_start: u32,
+        source_order: AirSourceOrder,
     },
 
     // Array operations
@@ -942,9 +3259,7 @@ pub enum AirInstData {
     /// The array type is stored in `AirInst.ty` as `Type::new_array(...)`.
     ArrayInit {
         /// Start index into extra array for element refs
-        elems_start: u32,
-        /// Number of elements
-        elems_len: u32,
+        elements: AirArrayElements,
     },
 
     // Place operations
@@ -978,9 +3293,7 @@ pub enum AirInstData {
         /// Start index into the extra array for payload operand `AirRef`s, in
         /// payload declaration order (RUE-221). Zero-length for a
         /// discriminant-only variant.
-        payload_start: u32,
-        /// Number of payload operands.
-        payload_len: u32,
+        payload: AirEnumPayload,
     },
 
     /// Read payload field `field_index` of a tuple variant from an enum value
@@ -1138,14 +3451,9 @@ impl Air {
                 }
                 AirInstData::Loop { cond, body } => writeln!(f, "loop {}, {}", cond, body)?,
                 AirInstData::InfiniteLoop { body } => writeln!(f, "infinite_loop {}", body)?,
-                AirInstData::Match {
-                    scrutinee,
-                    arms_start,
-                    arms_len,
-                } => {
+                AirInstData::Match { scrutinee, arms } => {
                     write!(f, "match {} {{ ", scrutinee)?;
-                    for (i, (pat, body)) in self.get_match_arms(*arms_start, *arms_len).enumerate()
-                    {
+                    for (i, (pat, body)) in self.get_match_arms(arms).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -1180,8 +3488,7 @@ impl Air {
                 AirInstData::Call {
                     runtime,
                     name,
-                    args_start,
-                    args_len,
+                    args,
                 } => {
                     if let Some(runtime) = runtime {
                         write!(f, "runtime.{runtime:?} ")?;
@@ -1190,7 +3497,7 @@ impl Air {
                         Some(interner) => write!(f, "call @{}(", interner.resolve(name))?,
                         None => write!(f, "call @{}(", name.into_usize())?,
                     }
-                    for (i, arg) in self.get_call_args(*args_start, *args_len).enumerate() {
+                    for (i, arg) in self.get_call_args(args).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -1200,41 +3507,30 @@ impl Air {
                 }
                 AirInstData::CallGeneric {
                     name,
-                    type_args_start,
-                    type_args_len,
-                    value_args_start,
-                    value_args_len,
-                    args_start,
-                    args_len,
+                    type_args,
+                    value_args,
+                    args,
                 } => {
                     match interner {
                         Some(interner) => write!(f, "call_generic @{}<", interner.resolve(name))?,
                         None => write!(f, "call_generic @{}<", name.into_usize())?,
                     }
                     // Show type arguments
-                    for i in 0..*type_args_len {
+                    for (i, type_val) in self.get_type_args(type_args).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
-                        let type_val = self.extra[(*type_args_start + i) as usize];
                         write!(f, "type#{}", type_val)?;
                     }
-                    // Show comptime value arguments (decoded from the tagged
-                    // word stream, see specialize::encode_const_values)
-                    for (i, value) in crate::specialize::decode_const_values(
-                        self.get_extra(*value_args_start, *value_args_len),
-                    )
-                    .iter()
-                    .enumerate()
-                    {
-                        if i > 0 || *type_args_len > 0 {
+                    for (i, value) in self.get_const_values(value_args).enumerate() {
+                        if i > 0 || !type_args.is_empty() {
                             write!(f, ", ")?;
                         }
                         write!(f, "value {:?}", value)?;
                     }
                     write!(f, ">(")?;
                     // Show runtime arguments
-                    for (i, arg) in self.get_call_args(*args_start, *args_len).enumerate() {
+                    for (i, arg) in self.get_call_args(args).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -1245,8 +3541,7 @@ impl Air {
                 AirInstData::Intrinsic {
                     runtime,
                     name,
-                    args_start,
-                    args_len,
+                    args,
                 } => {
                     if let Some(runtime) = runtime {
                         write!(f, "runtime.{runtime:?} ")?;
@@ -1255,7 +3550,7 @@ impl Air {
                         Some(interner) => write!(f, "intrinsic @{}(", interner.resolve(name))?,
                         None => write!(f, "intrinsic @sym:{}(", name.into_usize())?,
                     }
-                    for (i, arg) in self.get_air_refs(*args_start, *args_len).enumerate() {
+                    for (i, arg) in self.get_intrinsic_args(args).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -1264,13 +3559,9 @@ impl Air {
                     writeln!(f, ")")?;
                 }
                 AirInstData::Param { index } => writeln!(f, "param {}", index)?,
-                AirInstData::Block {
-                    stmts_start,
-                    stmts_len,
-                    value,
-                } => {
+                AirInstData::Block { statements, value } => {
                     write!(f, "block [")?;
-                    for (i, s) in self.get_air_refs(*stmts_start, *stmts_len).enumerate() {
+                    for (i, s) in self.get_block_statements(statements).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -1280,21 +3571,18 @@ impl Air {
                 }
                 AirInstData::StructInit {
                     struct_id,
-                    fields_start,
-                    fields_len,
-                    source_order_start,
+                    fields,
+                    source_order,
                 } => {
                     write!(f, "struct_init #{struct_id:?} {{")?;
-                    let (fields, source_order) =
-                        self.get_struct_init(*fields_start, *fields_len, *source_order_start);
-                    for (i, field) in fields.enumerate() {
+                    for (i, field) in self.get_struct_fields(fields).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
                         write!(f, "{}", field)?;
                     }
                     write!(f, "}} eval_order=[")?;
-                    for (i, idx) in source_order.enumerate() {
+                    for (i, idx) in self.get_source_order(source_order).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -1302,12 +3590,9 @@ impl Air {
                     }
                     writeln!(f, "]")?;
                 }
-                AirInstData::ArrayInit {
-                    elems_start,
-                    elems_len,
-                } => {
+                AirInstData::ArrayInit { elements } => {
                     write!(f, "array_init [")?;
-                    for (i, elem) in self.get_air_refs(*elems_start, *elems_len).enumerate() {
+                    for (i, elem) in self.get_array_elements(elements).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -1328,14 +3613,13 @@ impl Air {
                 AirInstData::EnumVariant {
                     enum_id,
                     variant_index,
-                    payload_start,
-                    payload_len,
+                    payload,
                 } => {
-                    if *payload_len == 0 {
+                    if payload.is_empty() {
                         writeln!(f, "enum_variant #{enum_id:?}::{variant_index}")?;
                     } else {
                         let payload: Vec<String> = self
-                            .get_air_refs(*payload_start, *payload_len)
+                            .get_enum_payload(payload)
                             .map(|r| r.to_string())
                             .collect();
                         writeln!(
@@ -1494,14 +3778,16 @@ mod tests {
         let mut air = Air::new(Type::I32);
         let struct_id = StructId::from_pool_index(7);
         let base_type = Type::new_struct(struct_id);
-        let place_ref = air.make_place(
-            AirPlaceBase::Param(3),
-            base_type,
-            [AirProjection::Field {
-                struct_id,
-                field_index: 0,
-            }],
-        );
+        let place_ref = air
+            .make_place(
+                AirPlaceBase::Param(3),
+                base_type,
+                [AirProjection::Field {
+                    struct_id,
+                    field_index: 0,
+                }],
+            )
+            .unwrap();
 
         let place = air.get_place(place_ref);
         assert_eq!(place.base, AirPlaceBase::Param(3));
@@ -1516,35 +3802,12 @@ mod tests {
         let intrinsic = interner.get_or_intern("assert");
         let mut air = Air::new(Type::UNIT);
 
-        for data in [
-            AirInstData::Call {
-                runtime: None,
-                name: call,
-                args_start: 0,
-                args_len: 0,
-            },
-            AirInstData::CallGeneric {
-                name: generic,
-                type_args_start: 0,
-                type_args_len: 0,
-                value_args_start: 0,
-                value_args_len: 0,
-                args_start: 0,
-                args_len: 0,
-            },
-            AirInstData::Intrinsic {
-                runtime: None,
-                name: intrinsic,
-                args_start: 0,
-                args_len: 0,
-            },
-        ] {
-            air.add_inst(AirInst {
-                data,
-                ty: Type::UNIT,
-                span: Span::new(0, 0),
-            });
-        }
+        air.add_call(None, call, &[], Type::UNIT, Span::new(0, 0))
+            .unwrap();
+        air.add_call_generic(generic, &[], &[], &[], Type::UNIT, Span::new(0, 0))
+            .unwrap();
+        air.add_intrinsic(None, intrinsic, &[], Type::UNIT, Span::new(0, 0))
+            .unwrap();
 
         let resolved = air.display_with_interner(&interner).to_string();
         assert!(resolved.contains("call @callee()"));
@@ -1556,5 +3819,705 @@ mod tests {
         assert!(raw.contains(&format!("call @{}()", call.into_usize())));
         assert!(raw.contains(&format!("call_generic @{}<>()", generic.into_usize())));
         assert!(raw.contains(&format!("intrinsic @sym:{}()", intrinsic.into_usize())));
+    }
+
+    #[test]
+    fn empty_payloads_are_canonical_and_append_nothing() {
+        let mut air = Air::new(Type::UNIT);
+        assert_eq!(air.append_words("test", &[7]).unwrap(), (0, 1));
+        let before = air.extra.len();
+        assert_eq!(air.append_words("test", &[]).unwrap(), (0, 0));
+        assert_eq!(air.extra.len(), before);
+        assert!(air.try_get_words(0, 0, "test").unwrap().is_empty());
+        assert_eq!(
+            air.try_get_words(1, 0, "test").unwrap_err().reason,
+            "non-canonical empty range"
+        );
+    }
+
+    #[test]
+    fn checked_call_arg_decoder_rejects_truncation_and_invalid_modes() {
+        let mut truncated = Air::new(Type::UNIT);
+        truncated.extra.push(4);
+        let truncated_range = AirCallArgs {
+            start: 0,
+            extent: 2,
+        };
+        assert_eq!(
+            truncated
+                .validate_call_args(&truncated_range)
+                .unwrap_err()
+                .reason,
+            "range outside word store"
+        );
+
+        let mut invalid = Air::new(Type::UNIT);
+        invalid.extra.extend([4, 99]);
+        let invalid_range = AirCallArgs {
+            start: 0,
+            extent: 2,
+        };
+        assert_eq!(
+            invalid
+                .validate_call_args(&invalid_range)
+                .unwrap_err()
+                .reason,
+            "invalid argument mode"
+        );
+
+        let partial_range = AirCallArgs {
+            start: 0,
+            extent: 1,
+        };
+        assert_eq!(
+            invalid
+                .validate_call_args(&partial_range)
+                .unwrap_err()
+                .reason,
+            "partial fixed-width record"
+        );
+    }
+
+    #[test]
+    fn checked_match_arm_decoder_rejects_malformed_envelopes() {
+        fn reason(words: &[u32]) -> &'static str {
+            let mut air = Air::new(Type::UNIT);
+            let (start, extent) = air.append_words("test", words).unwrap();
+            let range = AirMatchArms { start, extent };
+            air.validate_match_arms(&range).unwrap_err().reason
+        }
+
+        assert_eq!(reason(&[1, 99, 0]), "invalid pattern tag");
+        assert_eq!(reason(&[1, PatternTag::Int.word(), 0]), "truncated record");
+        assert_eq!(
+            reason(&[1, PatternTag::Bool.word(), 0, 2]),
+            "invalid boolean"
+        );
+        assert_eq!(
+            reason(&[1, PatternTag::Wildcard.word(), 0, 123]),
+            "trailing words"
+        );
+    }
+
+    #[test]
+    fn checked_const_decoder_rejects_every_malformed_record_shape() {
+        fn reason(words: &[u32]) -> &'static str {
+            let mut air = Air::new(Type::UNIT);
+            let (start, extent) = air.append_words("test", words).unwrap();
+            let range = AirConstValueWords { start, extent };
+            air.try_get_const_values(&range).unwrap_err().reason
+        }
+
+        assert_eq!(reason(&[99]), "invalid constant tag");
+        assert_eq!(
+            reason(&[ConstValueTag::Integer.word(), 1, 2, 3]),
+            "truncated constant payload"
+        );
+        assert_eq!(reason(&[ConstValueTag::Bool.word(), 2]), "invalid boolean");
+        assert_eq!(
+            reason(&[ConstValueTag::Type.word(), u32::MAX]),
+            "invalid type encoding"
+        );
+    }
+
+    #[test]
+    fn atomic_owner_builder_failure_leaves_all_stores_unchanged() {
+        let mut air = Air::new(Type::UNIT);
+        let before = air.checkpoint();
+        let error = air
+            .add_struct_init(
+                StructId::from_pool_index(0),
+                &[],
+                &[0],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.kind,
+            AirBuildErrorKind::ProducerInvariant("field/source-order length mismatch")
+        );
+        assert_eq!(air.checkpoint().instructions, before.instructions);
+        assert_eq!(air.checkpoint().extra, before.extra);
+    }
+
+    #[test]
+    fn validation_rejects_ordinary_forward_refs_and_invalid_places() {
+        let pool = TypeInternPool::new().freeze();
+        let mut forward = Air::new(Type::I32);
+        forward.push_inst(AirInst {
+            data: AirInstData::Add(AirRef::from_raw(0), AirRef::from_raw(0)),
+            ty: Type::I32,
+            span: Span::new(0, 0),
+        });
+        assert!(
+            forward
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err()
+                .reason
+                .contains("not defined before")
+        );
+
+        let mut place = Air::new(Type::I32);
+        place.push_inst(AirInst {
+            data: AirInstData::PlaceRead {
+                place: AirPlaceRef::from_raw(7),
+            },
+            ty: Type::I32,
+            span: Span::new(0, 0),
+        });
+        assert!(
+            place
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err()
+                .reason
+                .contains("outside the place store")
+        );
+    }
+
+    #[test]
+    fn authority_aware_validation_rejects_foreign_symbols() {
+        let foreign = Spur::try_from_usize(0).unwrap();
+        let mut air = AirEditor::new(Type::UNIT);
+        air.add_call(None, foreign, &[], Type::UNIT, Span::new(0, 0))
+            .unwrap();
+        let pool = TypeInternPool::new().freeze();
+        let interner = ThreadedRodeo::new();
+        let error = air
+            .finish(AirValidationContext::CanonicalWithSymbols(&pool, &interner))
+            .unwrap_err();
+        assert!(error.reason.contains("outside the interner"));
+    }
+
+    #[test]
+    fn validation_rejects_foreign_enum_ids_in_match_patterns() {
+        let mut editor = AirEditor::new(Type::UNIT);
+        let scrutinee = editor.add_unit(Span::new(0, 0));
+        let body = editor.add_unit(Span::new(0, 0));
+        editor
+            .add_match(
+                scrutinee,
+                &[(
+                    AirPattern::EnumVariant {
+                        enum_id: crate::EnumId::from_pool_index(0),
+                        variant_index: 0,
+                    },
+                    body,
+                )],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+
+        let pool = TypeInternPool::new().freeze();
+        let error = editor
+            .finish(AirValidationContext::Canonical(&pool))
+            .unwrap_err();
+        assert!(
+            error.reason.contains("invalid enum pattern")
+                && error.reason.contains("PoolIndexOutOfRange"),
+            "unexpected validation error: {}",
+            error.reason
+        );
+    }
+
+    #[test]
+    fn validation_rejects_out_of_range_enum_variants_in_match_patterns() {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let (enum_id, _) = pool.register_enum(
+            interner.get_or_intern("Choice"),
+            crate::EnumDef {
+                name: "Choice".into(),
+                variants: vec!["Only".into()],
+                variant_payloads: Vec::new(),
+                is_pub: false,
+                file_id: rue_span::FileId::DEFAULT,
+            },
+        );
+        let pool = pool.freeze();
+
+        let mut editor = AirEditor::new(Type::UNIT);
+        let scrutinee = editor.air.push_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::new_enum(enum_id),
+            span: Span::new(0, 0),
+        });
+        let body = editor.add_unit(Span::new(0, 0));
+        editor
+            .add_match(
+                scrutinee,
+                &[(
+                    AirPattern::EnumVariant {
+                        enum_id,
+                        variant_index: 1,
+                    },
+                    body,
+                )],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+
+        let error = editor
+            .finish(AirValidationContext::Canonical(&pool))
+            .unwrap_err();
+        assert!(error.reason.contains("variant index 1 is out of bounds"));
+    }
+
+    #[test]
+    fn validation_rejects_enum_patterns_for_a_different_scrutinee_type() {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let (enum_id, _) = pool.register_enum(
+            interner.get_or_intern("Choice"),
+            crate::EnumDef {
+                name: "Choice".into(),
+                variants: vec!["Only".into()],
+                variant_payloads: Vec::new(),
+                is_pub: false,
+                file_id: rue_span::FileId::DEFAULT,
+            },
+        );
+        let pool = pool.freeze();
+
+        let mut editor = AirEditor::new(Type::UNIT);
+        let scrutinee = editor.add_unit(Span::new(0, 0));
+        let body = editor.add_unit(Span::new(0, 0));
+        editor
+            .add_match(
+                scrutinee,
+                &[(
+                    AirPattern::EnumVariant {
+                        enum_id,
+                        variant_index: 0,
+                    },
+                    body,
+                )],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+
+        let error = editor
+            .finish(AirValidationContext::Canonical(&pool))
+            .unwrap_err();
+        assert!(error.reason.contains("does not match scrutinee type"));
+    }
+
+    #[test]
+    fn validation_rejects_literal_patterns_for_the_wrong_scrutinee_type() {
+        let pool = TypeInternPool::new().freeze();
+        for (scrutinee_ty, pattern, expected) in [
+            (Type::BOOL, AirPattern::Int(1), "integer pattern"),
+            (Type::I32, AirPattern::Bool(true), "boolean pattern"),
+            (Type::UNIT, AirPattern::Int(1), "integer pattern"),
+        ] {
+            let mut editor = AirEditor::new(Type::UNIT);
+            let scrutinee = editor.air.push_inst(AirInst {
+                data: AirInstData::UnitConst,
+                ty: scrutinee_ty,
+                span: Span::new(0, 0),
+            });
+            let body = editor.add_unit(Span::new(0, 0));
+            editor
+                .add_match(scrutinee, &[(pattern, body)], Type::UNIT, Span::new(0, 0))
+                .unwrap();
+            let error = editor
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err();
+            assert!(error.reason.contains(expected), "{}", error.reason);
+        }
+    }
+
+    fn projection_test_pool() -> (FrozenTypeInternPool, StructId, StructId, Type) {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let make_struct = |name: &str| crate::StructDef {
+            name: name.into(),
+            fields: vec![crate::StructField {
+                name: "field".into(),
+                ty: Type::I32,
+            }],
+            is_copy: false,
+            is_linear: false,
+            destructor: None,
+            is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
+        };
+        let (first, _) =
+            pool.register_struct(interner.get_or_intern("First"), make_struct("First"));
+        let (second, _) =
+            pool.register_struct(interner.get_or_intern("Second"), make_struct("Second"));
+        let array = Type::new_array(pool.intern_array_from_type(Type::I32, 4));
+        (pool.freeze(), first, second, array)
+    }
+
+    #[test]
+    fn finish_contextually_validates_every_unused_place() {
+        let (pool, first, second, array) = projection_test_pool();
+
+        let mut wrong_field_owner = AirEditor::new(Type::UNIT);
+        wrong_field_owner
+            .make_place(
+                AirPlaceBase::Local(0),
+                Type::new_struct(first),
+                [AirProjection::Field {
+                    struct_id: second,
+                    field_index: 0,
+                }],
+            )
+            .unwrap();
+        assert!(
+            wrong_field_owner
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err()
+                .reason
+                .contains("field projection expects")
+        );
+
+        let mut field_oob = AirEditor::new(Type::UNIT);
+        field_oob
+            .make_place(
+                AirPlaceBase::Local(0),
+                Type::new_struct(first),
+                [AirProjection::Field {
+                    struct_id: first,
+                    field_index: 1,
+                }],
+            )
+            .unwrap();
+        assert!(
+            field_oob
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err()
+                .reason
+                .contains("field index 1 is out of bounds")
+        );
+
+        let mut wrong_array_owner = AirEditor::new(Type::UNIT);
+        let index = wrong_array_owner.add_const(0, Type::I32, Span::new(0, 0));
+        wrong_array_owner
+            .make_place(
+                AirPlaceBase::Local(0),
+                Type::I32,
+                [AirProjection::Index {
+                    array_type: array,
+                    index,
+                }],
+            )
+            .unwrap();
+        assert!(
+            wrong_array_owner
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err()
+                .reason
+                .contains("index projection expects")
+        );
+
+        let mut bad_index_ref = AirEditor::new(Type::UNIT);
+        // Public builders reject this before mutation; inject owner corruption
+        // here to exercise finish-time defense in depth.
+        bad_index_ref.air.projections.push(AirProjection::Index {
+            array_type: array,
+            index: AirRef::from_raw(7),
+        });
+        bad_index_ref.air.places.push(AirPlace {
+            base: AirPlaceBase::Local(0),
+            base_type: array,
+            projections: AirProjectionRange {
+                start: 0,
+                extent: 1,
+                family: PhantomData,
+            },
+        });
+        assert!(
+            bad_index_ref
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err()
+                .reason
+                .contains("outside the instruction store")
+        );
+
+        let mut bad_index_type = AirEditor::new(Type::UNIT);
+        let index = bad_index_type.add_unit(Span::new(0, 0));
+        bad_index_type
+            .make_place(
+                AirPlaceBase::Local(0),
+                array,
+                [AirProjection::Index {
+                    array_type: array,
+                    index,
+                }],
+            )
+            .unwrap();
+        assert!(
+            bad_index_type
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err()
+                .reason
+                .contains("non-integer type")
+        );
+    }
+
+    #[test]
+    fn payload_builder_preflight_failures_do_not_mutate_the_owner() {
+        let symbol = Spur::try_from_usize(0).unwrap();
+        let mut call = Air::new(Type::UNIT);
+        let before = call.checkpoint();
+        let error = call
+            .add_call(
+                None,
+                symbol,
+                &[AirCallArg {
+                    value: AirRef::from_raw(7),
+                    mode: AirArgMode::Normal,
+                }],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.kind,
+            AirBuildErrorKind::ProducerInvariant(_)
+        ));
+        assert_eq!(call.checkpoint().instructions, before.instructions);
+        assert_eq!(call.checkpoint().extra, before.extra);
+
+        let mut matched = Air::new(Type::UNIT);
+        let scrutinee = matched.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::UNIT,
+            span: Span::new(0, 0),
+        });
+        let before = matched.checkpoint();
+        let error = matched
+            .add_match(
+                scrutinee,
+                &[(AirPattern::Wildcard, AirRef::from_raw(7))],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.kind,
+            AirBuildErrorKind::ProducerInvariant(_)
+        ));
+        assert_eq!(matched.checkpoint().instructions, before.instructions);
+        assert_eq!(matched.checkpoint().extra, before.extra);
+
+        let mut structure = Air::new(Type::UNIT);
+        let field = structure.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::UNIT,
+            span: Span::new(0, 0),
+        });
+        let before = structure.checkpoint();
+        let error = structure
+            .add_struct_init(
+                StructId::from_pool_index(0),
+                &[field, field],
+                &[0, 0],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.kind,
+            AirBuildErrorKind::ProducerInvariant("source order is not a permutation")
+        );
+        assert_eq!(structure.checkpoint().instructions, before.instructions);
+        assert_eq!(structure.checkpoint().extra, before.extra);
+    }
+
+    #[test]
+    fn place_builder_failures_leave_both_owner_stores_unchanged() {
+        let mut invalid = Air::new(Type::UNIT);
+        let before = invalid.checkpoint();
+        let error = invalid
+            .make_place(
+                AirPlaceBase::Local(0),
+                Type::UNIT,
+                [AirProjection::Index {
+                    array_type: Type::UNIT,
+                    index: AirRef::from_raw(0),
+                }],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.kind,
+            AirBuildErrorKind::ProducerInvariant(_)
+        ));
+        assert_eq!(invalid.checkpoint().projections, before.projections);
+        assert_eq!(invalid.checkpoint().places, before.places);
+
+        for failure in [
+            PlaceReserveFailure::ProjectionStore,
+            PlaceReserveFailure::PlaceStore,
+        ] {
+            let mut air = Air::new(Type::UNIT);
+            let index = air.add_inst(AirInst {
+                data: AirInstData::Const(0),
+                ty: Type::I32,
+                span: Span::new(0, 0),
+            });
+            let before = air.checkpoint();
+            air.fail_next_place_reserve(failure);
+            let error = air
+                .make_place(
+                    AirPlaceBase::Local(0),
+                    Type::UNIT,
+                    [AirProjection::Index {
+                        array_type: Type::UNIT,
+                        index,
+                    }],
+                )
+                .unwrap_err();
+            assert_eq!(error.kind, AirBuildErrorKind::ResourceExhaustion);
+            assert_eq!(air.checkpoint().projections, before.projections);
+            assert_eq!(air.checkpoint().places, before.places);
+            assert!(air.projections.is_empty());
+            assert!(air.places.is_empty());
+        }
+    }
+
+    #[test]
+    fn payload_errors_report_phase_and_range_context() {
+        let mut air = Air::new(Type::UNIT);
+        air.extra.extend([4, 99]);
+        let error = air
+            .validate_call_args(&AirCallArgs {
+                start: 0,
+                extent: 2,
+            })
+            .unwrap_err();
+        assert_eq!(error.phase, "AIR payload decode");
+        assert_eq!((error.range_start, error.range_extent), (0, 2));
+        assert!(error.to_string().contains("range start=0 extent=2"));
+    }
+
+    #[test]
+    fn build_failure_categories_survive_the_compile_error_boundary() {
+        for (kind, expected_code, is_ice) in [
+            (
+                AirBuildErrorKind::ProducerInvariant("malformed producer data"),
+                rue_error::ErrorCode::INTERNAL_ERROR,
+                true,
+            ),
+            (
+                AirBuildErrorKind::ResourceLimit,
+                rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT,
+                false,
+            ),
+            (
+                AirBuildErrorKind::ResourceExhaustion,
+                rue_error::ErrorCode::COMPILER_RESOURCE_EXHAUSTION,
+                false,
+            ),
+        ] {
+            let error: rue_error::CompileError = AirBuildError {
+                phase: "AIR",
+                family: "test",
+                operation: "test",
+                kind,
+            }
+            .into();
+            assert_eq!(error.kind.code(), expected_code);
+            assert_eq!(
+                matches!(
+                    error.kind,
+                    rue_error::ErrorKind::CompilerProducerInvariant(_)
+                ),
+                is_ice
+            );
+        }
+    }
+
+    #[test]
+    fn projection_ranges_round_trip_without_exposing_positions() {
+        let mut air = Air::new(Type::UNIT);
+        let id = StructId::from_pool_index(1);
+        let place = air
+            .make_place(
+                AirPlaceBase::Local(0),
+                Type::new_struct(id),
+                [AirProjection::Field {
+                    struct_id: id,
+                    field_index: 2,
+                }],
+            )
+            .unwrap();
+        assert_eq!(air.get_place(place).projection_count(), 1);
+        assert_eq!(
+            air.get_place_projections(air.get_place(place)),
+            [AirProjection::Field {
+                struct_id: id,
+                field_index: 2
+            }]
+        );
+    }
+
+    #[test]
+    fn editor_finishes_into_an_immutable_validated_owner() {
+        let mut editor = AirEditor::new(Type::UNIT);
+        let value = editor.add_unit(Span::new(0, 0));
+        editor.add_ret(Some(value), Type::UNIT, Span::new(0, 0));
+
+        let pool = TypeInternPool::new().freeze();
+        let air = editor
+            .finish(AirValidationContext::Canonical(&pool))
+            .unwrap();
+        assert_eq!(air.len(), 2);
+        assert!(matches!(
+            air.get(AirRef::from_raw(1)).data,
+            AirInstData::Ret(_)
+        ));
+    }
+
+    #[test]
+    fn validation_rejects_a_payload_range_detached_from_its_owner() {
+        let symbol = Spur::try_from_usize(0).unwrap();
+        let mut source = AirEditor::new(Type::UNIT);
+        let source_value = source.add_unit(Span::new(0, 0));
+        let call = source
+            .add_call(
+                None,
+                symbol,
+                &[AirCallArg {
+                    value: source_value,
+                    mode: AirArgMode::Normal,
+                }],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+        let foreign = match &source.air.get(call).data {
+            AirInstData::Call { args, .. } => AirCallArgs {
+                start: args.start,
+                extent: args.extent,
+            },
+            _ => unreachable!(),
+        };
+
+        // This corruption is only expressible inside the owner module. Public
+        // producers cannot construct a range or insert an arbitrary node.
+        let mut destination = AirEditor::new(Type::UNIT);
+        destination.add_unit(Span::new(0, 0));
+        destination.air.push_inst(AirInst {
+            data: AirInstData::Call {
+                runtime: None,
+                name: symbol,
+                args: foreign,
+            },
+            ty: Type::UNIT,
+            span: Span::new(0, 0),
+        });
+
+        let pool = TypeInternPool::new().freeze();
+        let error = destination
+            .finish(AirValidationContext::Canonical(&pool))
+            .unwrap_err();
+        assert!(error.reason.contains("range outside word store"));
     }
 }

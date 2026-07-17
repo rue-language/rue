@@ -207,6 +207,7 @@ pub(crate) fn import_staged_body(
     let imported = crate::SemanticImportEpoch::import_body_with(
         body,
         body_span,
+        &scratch,
         |value| import_type(sema, &scratch, value),
         |identity| {
             if identity.kind != DK::Struct {
@@ -451,9 +452,15 @@ fn finalize_function_body_analysis(
                 })
                 .collect();
 
-            analyzed
-                .air
-                .remap_string_ids(|local_id| local_to_global[local_id as usize]);
+            let mut editor = analyzed.air.into_editor();
+            editor.remap_string_ids(|local_id| local_to_global[local_id as usize]);
+            analyzed.air = match editor.finish(crate::AirValidationContext::SemanticWithSymbols(
+                &sema.type_pool,
+                sema.interner,
+            )) {
+                Ok(air) => air,
+                Err(error) => return Err(CompileError::from(error).into()),
+            };
         }
         functions.push(analyzed);
     }
@@ -1427,13 +1434,25 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                         sema.body_analysis_work.local_strings_produced += local_strings.len();
                         sema.analyzed_body_owners
                             .push(super::AnalyzedBodyOwnerEvent::Anonymous);
+                        let validated = match crate::ValidatedAir::from_semantic_air_with_symbols(
+                            air,
+                            &sema.type_pool,
+                            sema.interner,
+                        ) {
+                            Ok(air) => air,
+                            Err(error) => {
+                                sema.body_analysis_work.bodies_failed += 1;
+                                errors.push(error.into());
+                                continue;
+                            }
+                        };
                         let analyzed = AnalyzedFunction {
                             ordinary_owner: None,
                             name: full_name,
                             implicit_drop_source: Some(
                                 super::ImplicitDropDependencySourceEvent::Anonymous,
                             ),
-                            air,
+                            air: validated,
                             num_locals,
                             num_param_slots,
                             param_modes: param_modes_result,
@@ -2521,26 +2540,9 @@ fn emit_module_member_call(
     air_args: &[AirCallArg],
     return_type: Type,
     span: Span,
-) -> AnalysisResult {
-    let mut extra_data = Vec::with_capacity(air_args.len() * 2);
-    for arg in air_args {
-        extra_data.push(arg.value.as_u32());
-        extra_data.push(arg.mode.as_u32());
-    }
-    let call_args_start = air.add_extra(&extra_data);
-    let call_args_len = air_args.len() as u32;
-
-    let air_ref = air.add_inst(AirInst {
-        data: AirInstData::Call {
-            runtime: None,
-            name: function_name,
-            args_start: call_args_start,
-            args_len: call_args_len,
-        },
-        ty: return_type,
-        span,
-    });
-    AnalysisResult::new(air_ref, return_type)
+) -> CompileResult<AnalysisResult> {
+    let air_ref = air.add_call(None, function_name, air_args, return_type, span)?;
+    Ok(AnalysisResult::new(air_ref, return_type))
 }
 
 impl<'a> BodySema<'a> {
@@ -2649,11 +2651,14 @@ mod error_invariant_tests {
     }
 
     fn func_named(name: &str, air: Air) -> AnalyzedFunction {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
         AnalyzedFunction {
             name: name.to_string(),
             ordinary_owner: None,
             implicit_drop_source: None,
-            air,
+            air: crate::ValidatedAir::from_semantic_air_with_symbols(air, &pool, &interner)
+                .expect("test AIR must validate"),
             num_locals: 0,
             num_param_slots: 0,
             param_modes: ParamSlotModes::default(),

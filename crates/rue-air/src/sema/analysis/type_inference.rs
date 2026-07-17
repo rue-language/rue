@@ -449,7 +449,7 @@ impl<'a> BodySema<'a> {
             // only computed rvalues need the temporary spill below.
             if let Some(trace) = self.try_trace_place(inst_ref, air, ctx)? {
                 let field_type = trace.result_type();
-                let place = Self::build_place_ref(air, &trace);
+                let place = Self::build_place_ref(air, &trace)?;
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::PlaceRead { place },
                     ty: field_type,

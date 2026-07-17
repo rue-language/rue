@@ -346,21 +346,18 @@ impl<'a> BodySema<'a> {
             let call_name = self
                 .interner
                 .get_or_intern(&self.method_symbol(struct_id, "len", true));
-            let mode = AirArgMode::Borrow;
-            let extra = [receiver.as_u32(), mode.as_u32()];
-            let args_start = air.add_extra(&extra);
-            let call_ref = air.add_inst(AirInst {
-                data: AirInstData::Call {
-                    runtime: None,
-                    name: call_name,
-                    args_start,
-                    args_len: 1,
-                },
-                ty: Type::U64,
+            let call_ref = air.add_call(
+                None,
+                call_name,
+                &[AirCallArg {
+                    value: receiver,
+                    mode: AirArgMode::Borrow,
+                }],
+                Type::U64,
                 span,
-            });
+            )?;
             let call_ref =
-                self.wrap_value_with_temp_scope(air, call_ref, Type::U64, span, temp_scope);
+                self.wrap_value_with_temp_scope(air, call_ref, Type::U64, span, temp_scope)?;
             return Ok(AnalysisResult::new(call_ref, Type::U64));
         }
 
@@ -428,26 +425,27 @@ impl<'a> BodySema<'a> {
         let call_name = self.interner.get_or_intern(runtime.helper().symbol());
         let (ptr, len, temp_scope) =
             self.project_strbuf_text_fields(air, coll_result.air_ref, coll_result.ty, span, ctx)?;
-        let extra = vec![
-            ptr.as_u32(),
-            AirArgMode::Normal.as_u32(),
-            len.as_u32(),
-            AirArgMode::Normal.as_u32(),
-            pos_result.air_ref.as_u32(),
-            AirArgMode::Normal.as_u32(),
-        ];
-        let args_start = air.add_extra(&extra);
-        let call_ref = air.add_inst(AirInst {
-            data: AirInstData::Call {
-                runtime: Some(runtime),
-                name: call_name,
-                args_start,
-                args_len: 3,
-            },
-            ty: ret_ty,
+        let call_ref = air.add_call(
+            Some(runtime),
+            call_name,
+            &[
+                AirCallArg {
+                    value: ptr,
+                    mode: AirArgMode::Normal,
+                },
+                AirCallArg {
+                    value: len,
+                    mode: AirArgMode::Normal,
+                },
+                AirCallArg {
+                    value: pos_result.air_ref,
+                    mode: AirArgMode::Normal,
+                },
+            ],
+            ret_ty,
             span,
-        });
-        let call_ref = self.wrap_value_with_temp_scope(air, call_ref, ret_ty, span, temp_scope);
+        )?;
+        let call_ref = self.wrap_value_with_temp_scope(air, call_ref, ret_ty, span, temp_scope)?;
         Ok(AnalysisResult::new(call_ref, ret_ty))
     }
 
@@ -555,27 +553,23 @@ impl<'a> BodySema<'a> {
         } else {
             (arg_result.air_ref, Vec::new())
         };
-        let args_start = air.add_extra(&[arg_ref.as_u32()]);
-        let intrinsic_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(if arg_type == Type::BOOL {
-                    crate::RuntimeCallKind::DebugBool
-                } else if self.is_strbuf(arg_type) || self.is_str_like(arg_type) {
-                    crate::RuntimeCallKind::DebugStr
-                } else if arg_type.is_signed() {
-                    crate::RuntimeCallKind::DebugI64
-                } else {
-                    crate::RuntimeCallKind::DebugU64
-                }),
-                name: self.known.dbg,
-                args_start,
-                args_len: 1,
-            },
-            ty: Type::UNIT,
+        let intrinsic_ref = air.add_intrinsic(
+            Some(if arg_type == Type::BOOL {
+                crate::RuntimeCallKind::DebugBool
+            } else if self.is_strbuf(arg_type) || self.is_str_like(arg_type) {
+                crate::RuntimeCallKind::DebugStr
+            } else if arg_type.is_signed() {
+                crate::RuntimeCallKind::DebugI64
+            } else {
+                crate::RuntimeCallKind::DebugU64
+            }),
+            self.known.dbg,
+            &[arg_ref],
+            Type::UNIT,
             span,
-        });
+        )?;
         let air_ref =
-            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::UNIT, span, temp_scope);
+            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::UNIT, span, temp_scope)?;
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
@@ -701,16 +695,13 @@ impl<'a> BodySema<'a> {
             // silent no-op. `@panic` has type `!` (never): it diverges and never
             // returns, so it participates in never coercion just like a `-> !`
             // call, `return`, or `break` (spec 3.4:2, 4.13:5b; RUE-512).
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::Intrinsic {
-                    runtime: Some(crate::RuntimeCallKind::PanicNoMessage),
-                    name: self.known.panic,
-                    args_start: 0,
-                    args_len: 0,
-                },
-                ty: Type::NEVER,
+            let air_ref = air.add_intrinsic(
+                Some(crate::RuntimeCallKind::PanicNoMessage),
+                self.known.panic,
+                &[],
+                Type::NEVER,
                 span,
-            });
+            )?;
             return Ok(AnalysisResult::new(air_ref, Type::NEVER));
         }
 
@@ -727,19 +718,15 @@ impl<'a> BodySema<'a> {
         } else {
             (arg_result.air_ref, Vec::new())
         };
-        let args_start = air.add_extra(&[arg_ref.as_u32()]);
-        let intrinsic_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::Panic),
-                name: self.known.panic,
-                args_start,
-                args_len: 1,
-            },
-            ty: Type::NEVER,
+        let intrinsic_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::Panic),
+            self.known.panic,
+            &[arg_ref],
+            Type::NEVER,
             span,
-        });
+        )?;
         let air_ref =
-            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::NEVER, span, temp_scope);
+            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::NEVER, span, temp_scope)?;
         Ok(AnalysisResult::new(air_ref, Type::NEVER))
     }
 
@@ -776,7 +763,7 @@ impl<'a> BodySema<'a> {
         }
 
         // Build args for AIR
-        let mut extra_data = vec![cond_result.air_ref.as_u32()];
+        let mut extra_data = vec![cond_result.air_ref];
         let mut temp_scope = Vec::new();
         if args.len() > 1 {
             let msg_result = self.analyze_inst_for_projection(air, args[1].value, ctx)?;
@@ -801,7 +788,7 @@ impl<'a> BodySema<'a> {
             } else {
                 msg_result.air_ref
             };
-            extra_data.push(msg_ref.as_u32());
+            extra_data.push(msg_ref);
             if !temp_scope.is_empty() {
                 // The message's hoisted owner scope must not jump ahead of the
                 // condition. Lower it first; the intrinsic reuses the cached
@@ -810,24 +797,19 @@ impl<'a> BodySema<'a> {
             }
         }
 
-        let args_len = extra_data.len() as u32;
-        let args_start = air.add_extra(&extra_data);
-        let intrinsic_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(if args.len() > 1 {
-                    crate::RuntimeCallKind::AssertWithMessage
-                } else {
-                    crate::RuntimeCallKind::AssertFailed
-                }),
-                name: self.known.assert,
-                args_start,
-                args_len,
-            },
-            ty: Type::UNIT,
+        let intrinsic_ref = air.add_intrinsic(
+            Some(if args.len() > 1 {
+                crate::RuntimeCallKind::AssertWithMessage
+            } else {
+                crate::RuntimeCallKind::AssertFailed
+            }),
+            self.known.assert,
+            &extra_data,
+            Type::UNIT,
             span,
-        });
+        )?;
         let air_ref =
-            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::UNIT, span, temp_scope);
+            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::UNIT, span, temp_scope)?;
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
@@ -1105,16 +1087,13 @@ impl<'a> BodySema<'a> {
 
         // The intrinsic lowers to a runtime call whose result codegen packs
         // into this `Option(StrBuf)` enum (discriminant + StrBuf payload).
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::ReadLine),
-                name,
-                args_start: 0, // No args
-                args_len: 0,
-            },
-            ty: option_ty,
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::ReadLine),
+            name,
+            &[],
+            option_ty,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, option_ty))
     }
 
@@ -1199,24 +1178,20 @@ impl<'a> BodySema<'a> {
         debug_assert_eq!(runtime_helper.parameters.len(), 2);
         let call_name = self.interner.get_or_intern(runtime_helper.symbol);
 
-        // Encode the single by-value argument as a (value, mode) pair.
-        let extra_data = [arg_air_ref.as_u32(), AirArgMode::Normal.as_u32()];
-        let args_start = air.add_extra(&extra_data);
-
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Call {
-                runtime: Some(if unsigned {
-                    crate::RuntimeCallKind::ToStringUnsigned
-                } else {
-                    crate::RuntimeCallKind::ToString
-                }),
-                name: call_name,
-                args_start,
-                args_len: 1,
-            },
-            ty: string_type,
+        let air_ref = air.add_call(
+            Some(if unsigned {
+                crate::RuntimeCallKind::ToStringUnsigned
+            } else {
+                crate::RuntimeCallKind::ToString
+            }),
+            call_name,
+            &[AirCallArg {
+                value: arg_air_ref,
+                mode: AirArgMode::Normal,
+            }],
+            string_type,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, string_type))
     }
 
@@ -1292,25 +1267,21 @@ impl<'a> BodySema<'a> {
         } else {
             (arg_result.air_ref, Vec::new())
         };
-        let args_start = air.add_extra(&[arg_ref.as_u32()]);
-        let intrinsic_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(match intrinsic_name_str {
-                    "parse_i32" => crate::RuntimeCallKind::ParseI32,
-                    "parse_i64" => crate::RuntimeCallKind::ParseI64,
-                    "parse_u32" => crate::RuntimeCallKind::ParseU32,
-                    "parse_u64" => crate::RuntimeCallKind::ParseU64,
-                    _ => unreachable!(),
-                }),
-                name,
-                args_start,
-                args_len: 1,
-            },
-            ty: option_ty,
+        let intrinsic_ref = air.add_intrinsic(
+            Some(match intrinsic_name_str {
+                "parse_i32" => crate::RuntimeCallKind::ParseI32,
+                "parse_i64" => crate::RuntimeCallKind::ParseI64,
+                "parse_u32" => crate::RuntimeCallKind::ParseU32,
+                "parse_u64" => crate::RuntimeCallKind::ParseU64,
+                _ => unreachable!(),
+            }),
+            name,
+            &[arg_ref],
+            option_ty,
             span,
-        });
+        )?;
         let air_ref =
-            self.wrap_value_with_temp_scope(air, intrinsic_ref, option_ty, span, temp_scope);
+            self.wrap_value_with_temp_scope(air, intrinsic_ref, option_ty, span, temp_scope)?;
         Ok(AnalysisResult::new(air_ref, option_ty))
     }
 
@@ -1335,16 +1306,13 @@ impl<'a> BodySema<'a> {
         }
 
         // Create the intrinsic instruction that returns u32
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::RandomU32),
-                name,
-                args_start: 0, // No args
-                args_len: 0,
-            },
-            ty: Type::U32,
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::RandomU32),
+            name,
+            &[],
+            Type::U32,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, Type::U32))
     }
 
@@ -1369,16 +1337,13 @@ impl<'a> BodySema<'a> {
         }
 
         // Create the intrinsic instruction that returns u64
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::RandomU64),
-                name,
-                args_start: 0, // No args
-                args_len: 0,
-            },
-            ty: Type::U64,
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::RandomU64),
+            name,
+            &[],
+            Type::U64,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, Type::U64))
     }
 
@@ -1406,16 +1371,7 @@ impl<'a> BodySema<'a> {
                 span,
             ));
         }
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(runtime),
-                name,
-                args_start: 0,
-                args_len: 0,
-            },
-            ty: Type::U64,
-            span,
-        });
+        let air_ref = air.add_intrinsic(Some(runtime), name, &[], Type::U64, span)?;
         Ok(AnalysisResult::new(air_ref, Type::U64))
     }
 
@@ -1446,17 +1402,7 @@ impl<'a> BodySema<'a> {
         }
         let index = self.analyze_inst(air, args[0].value, ctx)?;
         self.require_process_index_type(display, index.ty, span)?;
-        let args_start = air.add_extra(&[index.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(runtime),
-                name,
-                args_start,
-                args_len: 1,
-            },
-            ty: Type::U64,
-            span,
-        });
+        let air_ref = air.add_intrinsic(Some(runtime), name, &[index.air_ref], Type::U64, span)?;
         Ok(AnalysisResult::new(air_ref, Type::U64))
     }
 
@@ -1497,17 +1443,7 @@ impl<'a> BodySema<'a> {
         {
             return Err(self.type_mismatch_error(expected, result_ty, span));
         }
-        let args_start = air.add_extra(&[index.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(runtime),
-                name,
-                args_start,
-                args_len: 1,
-            },
-            ty: result_ty,
-            span,
-        });
+        let air_ref = air.add_intrinsic(Some(runtime), name, &[index.air_ref], result_ty, span)?;
         Ok(AnalysisResult::new(air_ref, result_ty))
     }
 
