@@ -1,0 +1,17 @@
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mut text = StrBuf.new();
+    text.push_str("runtime");
+    text.push_str(" matrix");
+    println(text);
+    checked {
+        let values: ptr mut i32 = @alloc(2);
+        @ptr_write(values, 19);
+        @ptr_write(@ptr_offset(values, 1), 23);
+        let result = @ptr_read(values) + @ptr_read(@ptr_offset(values, 1));
+        @free(values, 2);
+        result
+    }
+}

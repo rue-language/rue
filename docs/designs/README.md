@@ -196,7 +196,7 @@ The table is generated from ADR frontmatter. Run
 | [0031](0031-robust-performance-testing.md) | Robust Performance Testing Infrastructure | Proposal | tooling, ci, performance |
 | [0032](0032-data-structure-selection.md) | Data Structure Selection for Small Collections | Implemented | performance, implementation |
 | [0033](0033-sema-pipeline-unification.md) | Sema Pipeline Unification | Rejected | compiler, semantics, architecture |
-| [0034](0034-cross-target-runtime.md) | Per-Target Runtime Archives for Cross-Compilation | Accepted | runtime, cross-compilation, build-system, targets |
+| [0034](0034-cross-target-runtime.md) | Per-Target Runtime Archives for Cross-Compilation | Implemented | runtime, cross-compilation, build-system, targets |
 | [0035](0035-string-model-byte-strings.md) | String model: byte strings (conventionally UTF-8) with loud pragmatism | Accepted | strings, text, unicode, stdlib |
 | [0036](0036-behavior-classification-preference.md) | Behavior classification preference: prefer the most-defined category | Accepted | spec, conformance, safety, principle |
 | [0037](0037-exclusivity-model-access-point-based.md) | Exclusivity model: access-point-based, statically enforced (Hylo-style) | Accepted | ownership, exclusivity, borrows, semantics, principle |
