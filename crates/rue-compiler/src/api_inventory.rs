@@ -195,6 +195,7 @@ fn canonical_semantic_body_has_no_compiler_owned_peer_algebra() {
         "pub enum DurableProjection",
         "pub enum DurablePattern",
         "pub struct DurableBodyAnchor",
+        "pub struct DurableSpecializationIdentity",
     ] {
         assert!(
             !durable_body.contains(removed),
@@ -205,6 +206,12 @@ fn canonical_semantic_body_has_no_compiler_owned_peer_algebra() {
         durable_body
             .contains("pub body: rue_air::SemanticBody<StableDefinitionKey, crate::ModuleId>"),
         "durable envelope must retain rue-air's canonical body algebra directly"
+    );
+    assert!(
+        durable_body.contains(
+            "rue_air::SemanticSpecializationIdentity<StableDefinitionKey, crate::ModuleId>"
+        ),
+        "specialized envelopes must retain rue-air's canonical identity directly"
     );
 }
 

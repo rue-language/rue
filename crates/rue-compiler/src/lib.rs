@@ -144,8 +144,8 @@ pub use durable_body::{
     DurableAirInstData, DurableAirRef, DurableBodyAnchor, DurableBodyConversionFailure,
     DurableBodyProjectionFailure, DurableBodyWork, DurableCallArg, DurableMatchArm,
     DurableOrdinaryBody, DurableOrdinaryBodyPayload, DurablePattern, DurablePlace, DurablePlaceRef,
-    DurableProjection, DurableSpecializationIdentity, DurableSpecializedBody,
-    DurableSpecializedBodyPayload, convert_semantic_specialized_body_exports,
+    DurableProjection, DurableSpecializedBody, DurableSpecializedBodyPayload,
+    convert_semantic_specialized_body_exports,
 };
 pub use durable_semantics::{
     DURABLE_SEMANTIC_SCHEMA_VERSION, DurableConstValue, DurableDeclarationPayload,

@@ -32,7 +32,9 @@ pub(crate) struct StableCfgInput {
     pub identity: Arc<str>,
     pub body_span: Span,
     pub body: DurableOrdinaryBodyPayload,
-    pub specialization: Option<crate::DurableSpecializationIdentity>,
+    pub specialization: Option<
+        rue_air::SemanticSpecializationIdentity<crate::StableDefinitionKey, crate::ModuleId>,
+    >,
     pub type_inputs: Arc<[crate::StableDefinitionInputFingerprint]>,
 }
 
