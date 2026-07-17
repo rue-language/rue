@@ -186,6 +186,29 @@ fn query_attempts_have_one_family_owned_representation() {
 }
 
 #[test]
+fn canonical_semantic_body_has_no_compiler_owned_peer_algebra() {
+    let durable_body = include_str!("durable_body.rs");
+    for removed in [
+        "pub enum DurableAirInstData",
+        "pub struct DurableAirInst",
+        "pub struct DurablePlace",
+        "pub enum DurableProjection",
+        "pub enum DurablePattern",
+        "pub struct DurableBodyAnchor",
+    ] {
+        assert!(
+            !durable_body.contains(removed),
+            "compiler-owned canonical body mirror returned: {removed}"
+        );
+    }
+    assert!(
+        durable_body
+            .contains("pub body: rue_air::SemanticBody<StableDefinitionKey, crate::ModuleId>"),
+        "durable envelope must retain rue-air's canonical body algebra directly"
+    );
+}
+
+#[test]
 fn import_resolution_remains_discovery_owned() {
     let production = PRODUCTION_MODULES
         .iter()

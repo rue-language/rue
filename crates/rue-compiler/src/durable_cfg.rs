@@ -2,16 +2,18 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use lasso::{Key, Spur};
-use rue_air::{AirInstData, AnalyzedFunction, Type, TypeKind};
+use rue_air::{AirInstData, AnalyzedFunction, SemanticImportType, Type, TypeKind};
 use rue_span::Span;
 
-use crate::{DurableAirInstData, DurableOrdinaryBodyPayload, DurableType};
+use crate::{DurableAirInstData, DurableOrdinaryBodyPayload};
+
+type CanonicalType = SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>;
 
 fn deduplicate_type_mappings(
-    mappings: Vec<(Type, DurableType)>,
-) -> Result<Vec<(Type, DurableType)>, CfgDomainFailure> {
+    mappings: Vec<(Type, CanonicalType)>,
+) -> Result<Vec<(Type, CanonicalType)>, CfgDomainFailure> {
     let mut positions: HashMap<Type, usize> = HashMap::with_capacity(mappings.len());
-    let mut unique: Vec<(Type, DurableType)> = Vec::with_capacity(mappings.len());
+    let mut unique: Vec<(Type, CanonicalType)> = Vec::with_capacity(mappings.len());
     for (current, stable) in mappings {
         if let Some(&position) = positions.get(&current) {
             if unique[position].1 != stable {
@@ -45,12 +47,12 @@ pub(crate) enum LayoutDependencyFailure {
 pub(crate) fn body_type_dependencies(
     body: &DurableOrdinaryBodyPayload,
 ) -> BTreeSet<crate::StableDefinitionKey> {
-    fn visit(value: &DurableType, keys: &mut BTreeSet<crate::StableDefinitionKey>) {
+    fn visit(value: &CanonicalType, keys: &mut BTreeSet<crate::StableDefinitionKey>) {
         match value {
-            DurableType::Nominal(key) => {
+            SemanticImportType::Nominal(key) => {
                 keys.insert(key.clone());
             }
-            DurableType::Array { element, .. } => visit(element, keys),
+            SemanticImportType::Array { element, .. } => visit(element, keys),
             _ => {}
         }
     }
@@ -93,9 +95,8 @@ pub(crate) fn body_type_dependencies(
             for arg in args.iter() {
                 if let Some(argument) = body.instructions.get(arg.value as usize) {
                     match &argument.ty {
-                        DurableType::PtrConst(pointee) | DurableType::PtrMut(pointee) => {
-                            visit(pointee, &mut keys)
-                        }
+                        SemanticImportType::PtrConst(pointee)
+                        | SemanticImportType::PtrMut(pointee) => visit(pointee, &mut keys),
                         _ => {}
                     }
                 }
@@ -215,13 +216,15 @@ pub(crate) fn transitive_body_type_dependencies(
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum StableCfgSymbol {
     Callable(crate::StableDefinitionKey),
-    Specialization(crate::DurableSpecializationIdentity),
+    Specialization(
+        rue_air::SemanticSpecializationIdentity<crate::StableDefinitionKey, crate::ModuleId>,
+    ),
     Intrinsic(Arc<str>),
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CfgDomainProjection {
-    types: Vec<(Type, DurableType)>,
+    types: Vec<(Type, CanonicalType)>,
     strings: Vec<(u32, Arc<str>)>,
     spans: Vec<(Span, crate::DurableBodyAnchor)>,
     symbols: Vec<(Spur, StableCfgSymbol)>,
@@ -336,24 +339,24 @@ impl CfgDomainProjection {
         })
     }
 
-    fn stable_type(&self, value: Type) -> Result<DurableType, CfgDomainFailure> {
+    fn stable_type(&self, value: Type) -> Result<CanonicalType, CfgDomainFailure> {
         self.types
             .iter()
             .find(|(current, _)| *current == value)
             .map(|(_, stable)| stable.clone())
             .ok_or(CfgDomainFailure::Missing)
     }
-    fn current_type(&self, value: &DurableType) -> Result<Type, CfgDomainFailure> {
+    fn current_type(&self, value: &CanonicalType) -> Result<Type, CfgDomainFailure> {
         self.types
             .iter()
             .find(|(_, stable)| stable == value)
             .map(|(current, _)| *current)
             .ok_or(CfgDomainFailure::Missing)
     }
-    fn stable_nominal(&self, value: Type) -> Result<DurableType, CfgDomainFailure> {
+    fn stable_nominal(&self, value: Type) -> Result<CanonicalType, CfgDomainFailure> {
         self.stable_type(value)
     }
-    fn current_nominal(&self, value: &DurableType) -> Result<Type, CfgDomainFailure> {
+    fn current_nominal(&self, value: &CanonicalType) -> Result<Type, CfgDomainFailure> {
         self.current_type(value)
     }
 
@@ -434,7 +437,7 @@ mod tests {
 
     fn projection(symbol: Spur) -> CfgDomainProjection {
         CfgDomainProjection {
-            types: vec![(Type::I32, DurableType::I32)],
+            types: vec![(Type::I32, SemanticImportType::I32)],
             strings: Vec::new(),
             spans: vec![(
                 Span::new(4, 5),
@@ -447,20 +450,23 @@ mod tests {
     #[test]
     fn type_mapping_deduplication_preserves_encounter_order_and_rejects_conflicts() {
         let mappings = deduplicate_type_mappings(vec![
-            (Type::I64, DurableType::I64),
-            (Type::I32, DurableType::I32),
-            (Type::I64, DurableType::I64),
+            (Type::I64, SemanticImportType::I64),
+            (Type::I32, SemanticImportType::I32),
+            (Type::I64, SemanticImportType::I64),
         ])
         .unwrap();
         assert_eq!(
             mappings,
-            vec![(Type::I64, DurableType::I64), (Type::I32, DurableType::I32)]
+            vec![
+                (Type::I64, SemanticImportType::I64),
+                (Type::I32, SemanticImportType::I32)
+            ]
         );
 
         assert_eq!(
             deduplicate_type_mappings(vec![
-                (Type::I32, DurableType::I32),
-                (Type::I32, DurableType::I64),
+                (Type::I32, SemanticImportType::I32),
+                (Type::I32, SemanticImportType::I64),
             ]),
             Err(CfgDomainFailure::Shape)
         );

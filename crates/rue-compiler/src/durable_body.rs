@@ -1,9 +1,8 @@
 //! Versioned, request-independent ordinary-body candidates.
 //!
-//! This is deliberately a compiler-owned algebra rather than an alias for
-//! `rue_air::SemanticBody`.  AIR's structured body is an exchange DTO; values
-//! in this module are the only representation eligible for retention between
-//! frontend revisions.
+//! The compiler owns the authorization envelope while `rue-air` owns the
+//! request-independent body algebra stored inside it. Compact live AIR remains
+//! separate and is relocated only at export and import boundaries.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -11,9 +10,8 @@ use std::{
 };
 
 use rue_air::{
-    AirArgMode, AirPlaceBase, SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind,
-    SemanticBodyInstData, SemanticBodyPattern, SemanticBodyProjection, SemanticImportConstValue,
-    SemanticImportType,
+    SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind, SemanticBodyInstData,
+    SemanticBodyPattern, SemanticBodyProjection, SemanticImportConstValue, SemanticImportType,
 };
 
 use crate::{
@@ -21,202 +19,21 @@ use crate::{
     StableDefinitionKey, StableDefinitionKind,
 };
 
-pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 5;
-pub const DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION: u32 = 3;
+pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 6;
+pub const DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION: u32 = 4;
 
-pub type DurableAirRef = u32;
-pub type DurablePlaceRef = u32;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DurableBodyAnchor {
-    pub start: u32,
-    pub end: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DurablePattern {
-    Wildcard,
-    Int(i64),
-    Bool(bool),
-    EnumVariant {
-        enum_key: StableDefinitionKey,
-        variant_index: u32,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurableMatchArm {
-    pub pattern: DurablePattern,
-    pub body: DurableAirRef,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurableCallArg {
-    pub value: DurableAirRef,
-    pub mode: AirArgMode,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DurableProjection {
-    Field {
-        struct_key: StableDefinitionKey,
-        field_index: u32,
-    },
-    Index {
-        array_type: DurableType,
-        index: DurableAirRef,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurablePlace {
-    pub base: AirPlaceBase,
-    pub base_type: DurableType,
-    pub projections: Arc<[DurableProjection]>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurableAirInst {
-    pub data: DurableAirInstData,
-    pub ty: DurableType,
-    pub anchor: DurableBodyAnchor,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DurableAirInstData {
-    Const(u64),
-    BoolConst(bool),
-    StringConst(u32),
-    UnitConst,
-    TypeConst(DurableType),
-    Add(DurableAirRef, DurableAirRef),
-    Sub(DurableAirRef, DurableAirRef),
-    Mul(DurableAirRef, DurableAirRef),
-    WrappingAdd(DurableAirRef, DurableAirRef),
-    WrappingSub(DurableAirRef, DurableAirRef),
-    WrappingMul(DurableAirRef, DurableAirRef),
-    Div(DurableAirRef, DurableAirRef),
-    Mod(DurableAirRef, DurableAirRef),
-    Eq(DurableAirRef, DurableAirRef),
-    Ne(DurableAirRef, DurableAirRef),
-    Lt(DurableAirRef, DurableAirRef),
-    Gt(DurableAirRef, DurableAirRef),
-    Le(DurableAirRef, DurableAirRef),
-    Ge(DurableAirRef, DurableAirRef),
-    And(DurableAirRef, DurableAirRef),
-    Or(DurableAirRef, DurableAirRef),
-    BitAnd(DurableAirRef, DurableAirRef),
-    BitOr(DurableAirRef, DurableAirRef),
-    BitXor(DurableAirRef, DurableAirRef),
-    Shl(DurableAirRef, DurableAirRef),
-    Shr(DurableAirRef, DurableAirRef),
-    Neg(DurableAirRef),
-    Not(DurableAirRef),
-    BitNot(DurableAirRef),
-    Branch {
-        cond: DurableAirRef,
-        then_value: DurableAirRef,
-        else_value: Option<DurableAirRef>,
-    },
-    Loop {
-        cond: DurableAirRef,
-        body: DurableAirRef,
-    },
-    InfiniteLoop {
-        body: DurableAirRef,
-    },
-    Match {
-        scrutinee: DurableAirRef,
-        arms: Arc<[DurableMatchArm]>,
-    },
-    Break,
-    Continue,
-    Alloc {
-        slot: u32,
-        init: DurableAirRef,
-    },
-    Load {
-        slot: u32,
-    },
-    Store {
-        slot: u32,
-        value: DurableAirRef,
-    },
-    ParamStore {
-        param_slot: u32,
-        value: DurableAirRef,
-    },
-    Ret(Option<DurableAirRef>),
-    Call {
-        function: StableDefinitionKey,
-        args: Arc<[DurableCallArg]>,
-    },
-    RuntimeCall {
-        runtime: rue_air::RuntimeCallKind,
-        args: Arc<[DurableCallArg]>,
-    },
-    CallSpecialized {
-        identity: DurableSpecializationIdentity,
-        args: Arc<[DurableCallArg]>,
-    },
-    Intrinsic {
-        runtime: Option<rue_air::RuntimeCallKind>,
-        name: Arc<str>,
-        args: Arc<[DurableCallArg]>,
-    },
-    Param {
-        index: u32,
-    },
-    Block {
-        statements: Arc<[DurableAirRef]>,
-        value: DurableAirRef,
-    },
-    StructInit {
-        struct_key: StableDefinitionKey,
-        fields: Arc<[DurableAirRef]>,
-        source_order: Arc<[u32]>,
-    },
-    ArrayInit {
-        elements: Arc<[DurableAirRef]>,
-    },
-    PlaceRead {
-        place: DurablePlaceRef,
-    },
-    PlaceWrite {
-        place: DurablePlaceRef,
-        value: DurableAirRef,
-    },
-    EnumVariant {
-        enum_key: StableDefinitionKey,
-        variant_index: u32,
-        payload: Arc<[DurableAirRef]>,
-    },
-    EnumPayloadGet {
-        base: DurableAirRef,
-        enum_key: StableDefinitionKey,
-        variant_index: u32,
-        field_index: u32,
-    },
-    IntCast {
-        value: DurableAirRef,
-        from_ty: DurableType,
-    },
-    Drop {
-        value: DurableAirRef,
-    },
-    StorageLive {
-        slot: u32,
-    },
-    StorageDead {
-        slot: u32,
-    },
-    MarkMoved {
-        value: DurableAirRef,
-        slot: u32,
-        is_param: bool,
-        place: Option<DurablePlaceRef>,
-    },
-}
+/// Durable specialization of AIR's canonical body algebra. These aliases keep
+/// compiler consumers explicit about the stable identity domain.
+pub type DurableAirRef = rue_air::SemanticBodyRef;
+pub type DurablePlaceRef = rue_air::SemanticBodyPlaceRef;
+pub type DurableBodyAnchor = rue_air::SemanticBodyAnchor;
+pub type DurablePattern = rue_air::SemanticBodyPattern<StableDefinitionKey>;
+pub type DurableMatchArm = rue_air::SemanticBodyMatchArm<StableDefinitionKey>;
+pub type DurableCallArg = rue_air::SemanticBodyCallArg;
+pub type DurableProjection = rue_air::SemanticBodyProjection<StableDefinitionKey, crate::ModuleId>;
+pub type DurablePlace = rue_air::SemanticBodyPlace<StableDefinitionKey, crate::ModuleId>;
+pub type DurableAirInst = rue_air::SemanticBodyInst<StableDefinitionKey, crate::ModuleId>;
+pub type DurableAirInstData = rue_air::SemanticBodyInstData<StableDefinitionKey, crate::ModuleId>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableOrdinaryBodyPayload {
@@ -225,19 +42,24 @@ pub struct DurableOrdinaryBodyPayload {
     /// Exact current-revision body/signature input captured with the live
     /// stable issuer. Finalization rejects a same-owner stale payload.
     pub expected_inputs: crate::StableDefinitionInputFingerprint,
-    pub return_type: DurableType,
-    pub instructions: Arc<[DurableAirInst]>,
-    pub places: Arc<[DurablePlace]>,
-    pub strings: Arc<[Arc<str>]>,
-    pub param_drops: Arc<[(u32, DurableType)]>,
-    pub borrow_slots: Arc<[u32]>,
-    pub num_locals: u32,
-    pub num_param_slots: u32,
-    pub param_by_ref: Arc<[bool]>,
-    pub param_writable: Arc<[bool]>,
-    // Warning-producing bodies are rejected from this schema. Global unused
-    // and CFG warnings are outside this artifact and are always recomputed.
-    pub allow_unreachable_code: bool,
+    /// The canonical request-independent semantic body algebra. Authorization
+    /// remains a property of this complete versioned envelope, never of the
+    /// bare body value.
+    pub body: rue_air::SemanticBody<StableDefinitionKey, crate::ModuleId>,
+}
+
+impl std::ops::Deref for DurableOrdinaryBodyPayload {
+    type Target = rue_air::SemanticBody<StableDefinitionKey, crate::ModuleId>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.body
+    }
+}
+
+impl std::ops::DerefMut for DurableOrdinaryBodyPayload {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.body
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +77,7 @@ pub struct DurableSpecializationIdentity {
     pub value_arguments: Arc<[crate::DurableConstValue]>,
 }
 
+#[cfg(test)]
 impl DurableSpecializationIdentity {
     fn import_dto(&self) -> rue_air::SemanticSpecializationIdentity<StableDefinitionKey, Arc<str>> {
         rue_air::SemanticSpecializationIdentity {
@@ -531,6 +354,22 @@ impl<'a> DefinitionJoinIndex<'a> {
         work: &mut DurableBodyWork,
     ) -> Result<&'a StableDefinitionKey, DurableBodyConversionFailure> {
         work.stable_key_joins += 1;
+        match self
+            .definitions
+            .get(&DefinitionJoinIdentity::from(identity))
+        {
+            Some(IndexedDefinition::Unique(key)) => Ok(key),
+            Some(IndexedDefinition::Ambiguous) => {
+                Err(DurableBodyConversionFailure::AmbiguousStableDefinition)
+            }
+            None => Err(DurableBodyConversionFailure::MissingStableDefinition),
+        }
+    }
+
+    fn join_readonly(
+        &self,
+        identity: &SemanticBodyDefinitionIdentity,
+    ) -> Result<&'a StableDefinitionKey, DurableBodyConversionFailure> {
         match self
             .definitions
             .get(&DefinitionJoinIdentity::from(identity))
@@ -825,330 +664,71 @@ pub fn convert_semantic_body_exports(
         work.atomic_discards += usize::from(!exports.is_empty());
         return Err(DurableBodyConversionFailure::ForeignRevision);
     }
+
     let join_index = DefinitionJoinIndex::new(merged, definitions);
-    let convert = |export: &rue_air::SemanticBodyExport,
-                   work: &mut DurableBodyWork|
-     -> Result<DurableOrdinaryBodyPayload, DurableBodyConversionFailure> {
-        work.conversion_attempts += 1;
-        let owner_record = definitions
-            .definition_for_body_token(export.owner)
-            .map_err(|_| DurableBodyConversionFailure::ForeignOwnerToken)?;
-        let owner = owner_record.stable_key().clone();
-        if !matches!(
-            owner.kind(),
-            StableDefinitionKind::Function
-                | StableDefinitionKind::Method
-                | StableDefinitionKind::AssociatedFunction
-                | StableDefinitionKind::Destructor
-        ) {
-            return Err(DurableBodyConversionFailure::WrongDefinitionKind);
-        }
-        let expected_inputs = crate::session::stable_definition_input_fingerprint(
-            merged.definitions().source_snapshot(),
-            owner_record,
-        )
-        .map_err(|_| DurableBodyConversionFailure::FingerprintUnavailable)?;
-        let body = &export.body;
-        if !body.warnings.is_empty() {
-            return Err(DurableBodyConversionFailure::WarningProducingBody);
-        }
-        let key = |identity: &SemanticBodyDefinitionIdentity, work: &mut DurableBodyWork| {
-            join_definition(identity, &join_index, work).cloned()
-        };
-        let ty = |value: &SemanticImportType<SemanticBodyDefinitionIdentity, Arc<str>>,
-                  work: &mut DurableBodyWork| {
-            durable_type(value, merged, &join_index, work)
-        };
-        let arg = |arg: &rue_air::SemanticBodyCallArg| DurableCallArg {
-            value: arg.value,
-            mode: arg.mode,
-        };
-        let pattern = |value: &SemanticBodyPattern<SemanticBodyDefinitionIdentity>,
-                       work: &mut DurableBodyWork|
-         -> Result<DurablePattern, DurableBodyConversionFailure> {
-            Ok(match value {
-                SemanticBodyPattern::Wildcard => DurablePattern::Wildcard,
-                SemanticBodyPattern::Int(value) => DurablePattern::Int(*value),
-                SemanticBodyPattern::Bool(value) => DurablePattern::Bool(*value),
-                SemanticBodyPattern::EnumVariant {
-                    enum_key,
-                    variant_index,
-                } => {
-                    let enum_key = key(enum_key, work)?;
-                    if enum_key.kind() != StableDefinitionKind::Enum {
-                        return Err(DurableBodyConversionFailure::WrongDefinitionKind);
-                    }
-                    DurablePattern::EnumVariant {
-                        enum_key,
-                        variant_index: *variant_index,
-                    }
-                }
-            })
-        };
-        let data = |value: &SemanticBodyInstData<SemanticBodyDefinitionIdentity, Arc<str>>,
-                    work: &mut DurableBodyWork|
-         -> Result<DurableAirInstData, DurableBodyConversionFailure> {
-            macro_rules! bin {
-                ($variant:ident, $a:expr, $b:expr) => {
-                    DurableAirInstData::$variant(*$a, *$b)
-                };
-            }
-            Ok(match value {
-                SemanticBodyInstData::Const(v) => DurableAirInstData::Const(*v),
-                SemanticBodyInstData::BoolConst(v) => DurableAirInstData::BoolConst(*v),
-                SemanticBodyInstData::StringConst(v) => DurableAirInstData::StringConst(*v),
-                SemanticBodyInstData::UnitConst => DurableAirInstData::UnitConst,
-                SemanticBodyInstData::TypeConst(v) => DurableAirInstData::TypeConst(ty(v, work)?),
-                SemanticBodyInstData::Add(a, b) => bin!(Add, a, b),
-                SemanticBodyInstData::Sub(a, b) => bin!(Sub, a, b),
-                SemanticBodyInstData::Mul(a, b) => bin!(Mul, a, b),
-                SemanticBodyInstData::WrappingAdd(a, b) => bin!(WrappingAdd, a, b),
-                SemanticBodyInstData::WrappingSub(a, b) => bin!(WrappingSub, a, b),
-                SemanticBodyInstData::WrappingMul(a, b) => bin!(WrappingMul, a, b),
-                SemanticBodyInstData::Div(a, b) => bin!(Div, a, b),
-                SemanticBodyInstData::Mod(a, b) => bin!(Mod, a, b),
-                SemanticBodyInstData::Eq(a, b) => bin!(Eq, a, b),
-                SemanticBodyInstData::Ne(a, b) => bin!(Ne, a, b),
-                SemanticBodyInstData::Lt(a, b) => bin!(Lt, a, b),
-                SemanticBodyInstData::Gt(a, b) => bin!(Gt, a, b),
-                SemanticBodyInstData::Le(a, b) => bin!(Le, a, b),
-                SemanticBodyInstData::Ge(a, b) => bin!(Ge, a, b),
-                SemanticBodyInstData::And(a, b) => bin!(And, a, b),
-                SemanticBodyInstData::Or(a, b) => bin!(Or, a, b),
-                SemanticBodyInstData::BitAnd(a, b) => bin!(BitAnd, a, b),
-                SemanticBodyInstData::BitOr(a, b) => bin!(BitOr, a, b),
-                SemanticBodyInstData::BitXor(a, b) => bin!(BitXor, a, b),
-                SemanticBodyInstData::Shl(a, b) => bin!(Shl, a, b),
-                SemanticBodyInstData::Shr(a, b) => bin!(Shr, a, b),
-                SemanticBodyInstData::Neg(v) => DurableAirInstData::Neg(*v),
-                SemanticBodyInstData::Not(v) => DurableAirInstData::Not(*v),
-                SemanticBodyInstData::BitNot(v) => DurableAirInstData::BitNot(*v),
-                SemanticBodyInstData::Branch {
-                    cond,
-                    then_value,
-                    else_value,
-                } => DurableAirInstData::Branch {
-                    cond: *cond,
-                    then_value: *then_value,
-                    else_value: *else_value,
-                },
-                SemanticBodyInstData::Loop { cond, body } => DurableAirInstData::Loop {
-                    cond: *cond,
-                    body: *body,
-                },
-                SemanticBodyInstData::InfiniteLoop { body } => {
-                    DurableAirInstData::InfiniteLoop { body: *body }
-                }
-                SemanticBodyInstData::Match { scrutinee, arms } => DurableAirInstData::Match {
-                    scrutinee: *scrutinee,
-                    arms: arms
-                        .iter()
-                        .map(|arm| {
-                            Ok(DurableMatchArm {
-                                pattern: pattern(&arm.pattern, work)?,
-                                body: arm.body,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, DurableBodyConversionFailure>>()?
-                        .into(),
-                },
-                SemanticBodyInstData::Break => DurableAirInstData::Break,
-                SemanticBodyInstData::Continue => DurableAirInstData::Continue,
-                SemanticBodyInstData::Alloc { slot, init } => DurableAirInstData::Alloc {
-                    slot: *slot,
-                    init: *init,
-                },
-                SemanticBodyInstData::Load { slot } => DurableAirInstData::Load { slot: *slot },
-                SemanticBodyInstData::Store { slot, value } => DurableAirInstData::Store {
-                    slot: *slot,
-                    value: *value,
-                },
-                SemanticBodyInstData::ParamStore { param_slot, value } => {
-                    DurableAirInstData::ParamStore {
-                        param_slot: *param_slot,
-                        value: *value,
-                    }
-                }
-                SemanticBodyInstData::Ret(value) => DurableAirInstData::Ret(*value),
-                SemanticBodyInstData::Call { function, args } => DurableAirInstData::Call {
-                    function: key(function, work)?,
-                    args: args.iter().map(arg).collect::<Vec<_>>().into(),
-                },
-                SemanticBodyInstData::RuntimeCall { runtime, args } => {
-                    DurableAirInstData::RuntimeCall {
-                        runtime: *runtime,
-                        args: args.iter().map(arg).collect::<Vec<_>>().into(),
-                    }
-                }
-                SemanticBodyInstData::CallSpecialized { identity, args } => {
-                    DurableAirInstData::CallSpecialized {
-                        identity: durable_specialization_identity(
-                            identity,
-                            merged,
-                            &join_index,
-                            work,
-                        )?,
-                        args: args.iter().map(arg).collect::<Vec<_>>().into(),
-                    }
-                }
-                SemanticBodyInstData::CallGeneric => {
-                    return Err(DurableBodyConversionFailure::UnsupportedGenericCall);
-                }
-                SemanticBodyInstData::Intrinsic {
-                    runtime,
-                    name,
-                    args,
-                } => DurableAirInstData::Intrinsic {
-                    runtime: *runtime,
-                    name: name.clone(),
-                    args: args.iter().map(arg).collect::<Vec<_>>().into(),
-                },
-                SemanticBodyInstData::Param { index } => {
-                    DurableAirInstData::Param { index: *index }
-                }
-                SemanticBodyInstData::Block { statements, value } => DurableAirInstData::Block {
-                    statements: statements.clone(),
-                    value: *value,
-                },
-                SemanticBodyInstData::StructInit {
-                    struct_key,
-                    fields,
-                    source_order,
-                } => DurableAirInstData::StructInit {
-                    struct_key: key(struct_key, work)?,
-                    fields: fields.clone(),
-                    source_order: source_order.clone(),
-                },
-                SemanticBodyInstData::ArrayInit { elements } => DurableAirInstData::ArrayInit {
-                    elements: elements.clone(),
-                },
-                SemanticBodyInstData::PlaceRead { place } => {
-                    DurableAirInstData::PlaceRead { place: *place }
-                }
-                SemanticBodyInstData::PlaceWrite { place, value } => {
-                    DurableAirInstData::PlaceWrite {
-                        place: *place,
-                        value: *value,
-                    }
-                }
-                SemanticBodyInstData::EnumVariant {
-                    enum_key,
-                    variant_index,
-                    payload,
-                } => DurableAirInstData::EnumVariant {
-                    enum_key: key(enum_key, work)?,
-                    variant_index: *variant_index,
-                    payload: payload.clone(),
-                },
-                SemanticBodyInstData::EnumPayloadGet {
-                    base,
-                    enum_key,
-                    variant_index,
-                    field_index,
-                } => DurableAirInstData::EnumPayloadGet {
-                    base: *base,
-                    enum_key: key(enum_key, work)?,
-                    variant_index: *variant_index,
-                    field_index: *field_index,
-                },
-                SemanticBodyInstData::IntCast { value, from_ty } => DurableAirInstData::IntCast {
-                    value: *value,
-                    from_ty: ty(from_ty, work)?,
-                },
-                SemanticBodyInstData::Drop { value } => DurableAirInstData::Drop { value: *value },
-                SemanticBodyInstData::StorageLive { slot } => {
-                    DurableAirInstData::StorageLive { slot: *slot }
-                }
-                SemanticBodyInstData::StorageDead { slot } => {
-                    DurableAirInstData::StorageDead { slot: *slot }
-                }
-                SemanticBodyInstData::MarkMoved {
-                    value,
-                    slot,
-                    is_param,
-                    place,
-                } => DurableAirInstData::MarkMoved {
-                    value: *value,
-                    slot: *slot,
-                    is_param: *is_param,
-                    place: *place,
-                },
-            })
-        };
-        let instructions = body
-            .instructions
-            .iter()
-            .map(|instruction| {
-                Ok(DurableAirInst {
-                    data: data(&instruction.data, work)?,
-                    ty: ty(&instruction.ty, work)?,
-                    anchor: DurableBodyAnchor {
-                        start: instruction.anchor.start,
-                        end: instruction.anchor.end,
-                    },
-                })
-            })
-            .collect::<Result<Vec<_>, DurableBodyConversionFailure>>()?;
-        let places = body
-            .places
-            .iter()
-            .map(|place| {
-                Ok(DurablePlace {
-                    base: place.base,
-                    base_type: ty(&place.base_type, work)?,
-                    projections: place
-                        .projections
-                        .iter()
-                        .map(|projection| {
-                            Ok(match projection {
-                                SemanticBodyProjection::Field {
-                                    struct_key,
-                                    field_index,
-                                } => DurableProjection::Field {
-                                    struct_key: key(struct_key, work)?,
-                                    field_index: *field_index,
-                                },
-                                SemanticBodyProjection::Index { array_type, index } => {
-                                    DurableProjection::Index {
-                                        array_type: ty(array_type, work)?,
-                                        index: *index,
-                                    }
-                                }
-                            })
-                        })
-                        .collect::<Result<Vec<_>, DurableBodyConversionFailure>>()?
-                        .into(),
-                })
-            })
-            .collect::<Result<Vec<_>, DurableBodyConversionFailure>>()?;
-        let result = DurableOrdinaryBodyPayload {
-            schema_version: DURABLE_ORDINARY_BODY_SCHEMA_VERSION,
-            owner,
-            expected_inputs,
-            return_type: ty(&body.return_type, work)?,
-            instructions: instructions.into(),
-            places: places.into(),
-            strings: body.strings.clone(),
-            param_drops: body
-                .param_drops
-                .iter()
-                .map(|(slot, value)| Ok((*slot, ty(value, work)?)))
-                .collect::<Result<Vec<_>, DurableBodyConversionFailure>>()?
-                .into(),
-            borrow_slots: body.borrow_slots.clone(),
-            num_locals: body.num_locals,
-            num_param_slots: body.num_param_slots,
-            param_by_ref: body.param_by_ref.clone(),
-            param_writable: body.param_writable.clone(),
-            allow_unreachable_code: body.allow_unreachable_code,
-        };
-        work.conversion_completions += 1;
-        Ok(result)
-    };
     let mut converted = Vec::with_capacity(exports.len());
     for export in exports {
-        match convert(export, work) {
-            Ok(body) => converted.push(body),
+        work.conversion_attempts += 1;
+        let result =
+            (|| {
+                let owner_record = definitions
+                    .definition_for_body_token(export.owner)
+                    .map_err(|_| DurableBodyConversionFailure::ForeignOwnerToken)?;
+                let owner = owner_record.stable_key().clone();
+                if !matches!(
+                    owner.kind(),
+                    StableDefinitionKind::Function
+                        | StableDefinitionKind::Method
+                        | StableDefinitionKind::AssociatedFunction
+                        | StableDefinitionKind::Destructor
+                ) {
+                    return Err(DurableBodyConversionFailure::WrongDefinitionKind);
+                }
+                if !export.body.warnings.is_empty() {
+                    return Err(DurableBodyConversionFailure::WarningProducingBody);
+                }
+                if export.body.instructions.iter().any(|instruction| {
+                    matches!(instruction.data, SemanticBodyInstData::CallGeneric)
+                }) {
+                    return Err(DurableBodyConversionFailure::UnsupportedGenericCall);
+                }
+
+                let expected_inputs = crate::session::stable_definition_input_fingerprint(
+                    merged.definitions().source_snapshot(),
+                    owner_record,
+                )
+                .map_err(|_| DurableBodyConversionFailure::FingerprintUnavailable)?;
+                let stable_key_joins = std::cell::Cell::new(0usize);
+                let body = export.body.try_map_keys(
+                    &|identity| {
+                        stable_key_joins.set(stable_key_joins.get() + 1);
+                        join_index.join_readonly(identity).cloned()
+                    },
+                    &|path| {
+                        merged
+                            .ast()
+                            .modules()
+                            .iter()
+                            .find(|module| module.module_id().as_str() == path.as_ref())
+                            .map(|module| module.module_id().clone())
+                            .ok_or(DurableBodyConversionFailure::UnresolvedModule)
+                    },
+                );
+                work.stable_key_joins += stable_key_joins.get();
+                let body = body?;
+                Ok(DurableOrdinaryBodyPayload {
+                    schema_version: DURABLE_ORDINARY_BODY_SCHEMA_VERSION,
+                    owner,
+                    expected_inputs,
+                    body,
+                })
+            })();
+
+        match result {
+            Ok(payload) => {
+                work.conversion_completions += 1;
+                converted.push(payload);
+            }
             Err(error) => {
                 work.conversion_failures += 1;
                 work.atomic_discards += 1;
@@ -1237,55 +817,68 @@ impl DurableOrdinaryBody {
 
 impl DurableOrdinaryBodyPayload {
     pub(crate) fn referenced_definition_keys(&self) -> BTreeSet<StableDefinitionKey> {
-        fn visit_type(value: &DurableType, keys: &mut BTreeSet<StableDefinitionKey>) {
+        fn visit_type(
+            value: &SemanticImportType<StableDefinitionKey, crate::ModuleId>,
+            keys: &mut BTreeSet<StableDefinitionKey>,
+        ) {
             match value {
-                DurableType::Nominal(key) => {
+                SemanticImportType::Nominal(key) => {
                     keys.insert(key.clone());
                 }
-                DurableType::Array { element, .. }
-                | DurableType::PtrConst(element)
-                | DurableType::PtrMut(element) => visit_type(element, keys),
+                SemanticImportType::Array { element, .. }
+                | SemanticImportType::PtrConst(element)
+                | SemanticImportType::PtrMut(element) => visit_type(element, keys),
                 _ => {}
             }
         }
 
+        fn visit_specialization(
+            identity: &rue_air::SemanticSpecializationIdentity<
+                StableDefinitionKey,
+                crate::ModuleId,
+            >,
+            keys: &mut BTreeSet<StableDefinitionKey>,
+        ) {
+            keys.insert(identity.base.clone());
+            for value in identity.type_arguments.iter() {
+                visit_type(value, keys);
+            }
+            for value in identity.value_arguments.iter() {
+                match value {
+                    SemanticImportConstValue::Type(value) => visit_type(value, keys),
+                    SemanticImportConstValue::Function(key) => {
+                        keys.insert(key.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         let mut keys = BTreeSet::new();
-        visit_type(&self.return_type, &mut keys);
-        for instruction in self.instructions.iter() {
+        visit_type(&self.body.return_type, &mut keys);
+        for instruction in self.body.instructions.iter() {
             visit_type(&instruction.ty, &mut keys);
             match &instruction.data {
-                DurableAirInstData::TypeConst(value)
-                | DurableAirInstData::IntCast { from_ty: value, .. } => {
+                SemanticBodyInstData::TypeConst(value)
+                | SemanticBodyInstData::IntCast { from_ty: value, .. } => {
                     visit_type(value, &mut keys);
                 }
-                DurableAirInstData::Call { function, .. } => {
+                SemanticBodyInstData::Call { function, .. } => {
                     keys.insert(function.clone());
                 }
-                DurableAirInstData::CallSpecialized { identity, .. } => {
-                    keys.insert(identity.base.clone());
-                    for ty in identity.type_arguments.iter() {
-                        visit_type(ty, &mut keys);
-                    }
-                    for value in identity.value_arguments.iter() {
-                        match value {
-                            crate::DurableConstValue::Type(ty) => visit_type(ty, &mut keys),
-                            crate::DurableConstValue::Function(key) => {
-                                keys.insert(key.clone());
-                            }
-                            _ => {}
-                        }
-                    }
+                SemanticBodyInstData::CallSpecialized { identity, .. } => {
+                    visit_specialization(identity, &mut keys);
                 }
-                DurableAirInstData::StructInit { struct_key, .. } => {
+                SemanticBodyInstData::StructInit { struct_key, .. } => {
                     keys.insert(struct_key.clone());
                 }
-                DurableAirInstData::EnumVariant { enum_key, .. }
-                | DurableAirInstData::EnumPayloadGet { enum_key, .. } => {
+                SemanticBodyInstData::EnumVariant { enum_key, .. }
+                | SemanticBodyInstData::EnumPayloadGet { enum_key, .. } => {
                     keys.insert(enum_key.clone());
                 }
-                DurableAirInstData::Match { arms, .. } => {
+                SemanticBodyInstData::Match { arms, .. } => {
                     for arm in arms.iter() {
-                        if let DurablePattern::EnumVariant { enum_key, .. } = &arm.pattern {
+                        if let SemanticBodyPattern::EnumVariant { enum_key, .. } = &arm.pattern {
                             keys.insert(enum_key.clone());
                         }
                     }
@@ -1293,70 +886,70 @@ impl DurableOrdinaryBodyPayload {
                 _ => {}
             }
         }
-        for place in self.places.iter() {
+        for place in self.body.places.iter() {
             visit_type(&place.base_type, &mut keys);
             for projection in place.projections.iter() {
                 match projection {
-                    DurableProjection::Field { struct_key, .. } => {
+                    SemanticBodyProjection::Field { struct_key, .. } => {
                         keys.insert(struct_key.clone());
                     }
-                    DurableProjection::Index { array_type, .. } => {
+                    SemanticBodyProjection::Index { array_type, .. } => {
                         visit_type(array_type, &mut keys);
                     }
                 }
             }
         }
-        for (_, value) in self.param_drops.iter() {
+        for (_, value) in self.body.param_drops.iter() {
             visit_type(value, &mut keys);
         }
         keys
     }
 
-    /// Project the durable algebra into AIR's neutral import DTO. This does not
-    /// allocate any AIR instruction, type, string, nominal, or function ID.
     pub fn project_semantic_body(
         &self,
         work: &mut DurableBodyWork,
     ) -> Result<rue_air::SemanticBody<StableDefinitionKey, Arc<str>>, DurableBodyProjectionFailure>
     {
-        use rue_air::{SemanticBodyInstData as S, SemanticBodyPattern as P};
         work.projection_attempts += 1;
         if self.schema_version != DURABLE_ORDINARY_BODY_SCHEMA_VERSION {
             work.projection_failures += 1;
             return Err(DurableBodyProjectionFailure::SchemaVersionMismatch);
         }
-        if self.param_by_ref.len() != self.num_param_slots as usize
-            || self.param_writable.len() != self.num_param_slots as usize
+        if self.body.param_by_ref.len() != self.body.num_param_slots as usize
+            || self.body.param_writable.len() != self.body.num_param_slots as usize
             || self
+                .body
                 .param_writable
                 .iter()
-                .zip(self.param_by_ref.iter())
+                .zip(self.body.param_by_ref.iter())
                 .any(|(writable, by_ref)| *writable && !*by_ref)
         {
             work.projection_failures += 1;
             return Err(DurableBodyProjectionFailure::InvalidParameterModes);
         }
         if self
+            .body
             .param_drops
             .iter()
-            .any(|(slot, _)| *slot >= self.num_param_slots)
+            .any(|(slot, _)| *slot >= self.body.num_param_slots)
         {
             work.projection_failures += 1;
             return Err(DurableBodyProjectionFailure::InvalidParameterDrop);
         }
         if self
+            .body
             .borrow_slots
             .iter()
-            .any(|slot| *slot >= self.num_locals)
+            .any(|slot| *slot >= self.body.num_locals)
         {
             work.projection_failures += 1;
             return Err(DurableBodyProjectionFailure::InvalidBorrowSlot);
         }
-        let instruction_len = self.instructions.len();
-        let place_len = self.places.len();
-        for place in self.places.iter() {
+        let instruction_len = self.body.instructions.len();
+        let place_len = self.body.places.len();
+        for place in self.body.places.iter() {
             for projection in place.projections.iter() {
-                if let DurableProjection::Index { index, .. } = projection
+                if let SemanticBodyProjection::Index { index, .. } = projection
                     && *index as usize >= instruction_len
                 {
                     work.projection_failures += 1;
@@ -1364,12 +957,12 @@ impl DurableOrdinaryBodyPayload {
                 }
             }
         }
-        for (current, instruction) in self.instructions.iter().enumerate() {
+        for (current, instruction) in self.body.instructions.iter().enumerate() {
             if instruction.anchor.start > instruction.anchor.end {
                 work.projection_failures += 1;
                 return Err(DurableBodyProjectionFailure::InvalidAnchor);
             }
-            let check = |value: DurableAirRef| {
+            let check = |value: rue_air::SemanticBodyRef| {
                 let index = value as usize;
                 if index >= instruction_len {
                     Err(DurableBodyProjectionFailure::InvalidInstructionReference)
@@ -1379,10 +972,10 @@ impl DurableOrdinaryBodyPayload {
                     Ok(())
                 }
             };
-            let check_all = |values: &[DurableAirRef]| -> Result<_, _> {
+            let check_all = |values: &[rue_air::SemanticBodyRef]| -> Result<_, _> {
                 values.iter().try_for_each(|value| check(*value))
             };
-            use DurableAirInstData as D;
+            use SemanticBodyInstData as D;
             let validated = match &instruction.data {
                 D::Const(_)
                 | D::BoolConst(_)
@@ -1394,8 +987,9 @@ impl DurableOrdinaryBodyPayload {
                 | D::Param { .. }
                 | D::StorageLive { .. }
                 | D::StorageDead { .. } => Ok(()),
+                D::CallGeneric => Err(DurableBodyProjectionFailure::InvalidInstructionReference),
                 D::StringConst(index) => {
-                    if *index as usize >= self.strings.len() {
+                    if *index as usize >= self.body.strings.len() {
                         Err(DurableBodyProjectionFailure::InvalidStringReference)
                     } else {
                         Ok(())
@@ -1422,11 +1016,11 @@ impl DurableOrdinaryBodyPayload {
                 | D::BitXor(a, b)
                 | D::Shl(a, b)
                 | D::Shr(a, b) => check(*a).and_then(|()| check(*b)),
-                D::Neg(v)
-                | D::Not(v)
-                | D::BitNot(v)
-                | D::Drop { value: v }
-                | D::IntCast { value: v, .. } => check(*v),
+                D::Neg(value)
+                | D::Not(value)
+                | D::BitNot(value)
+                | D::Drop { value }
+                | D::IntCast { value, .. } => check(*value),
                 D::Branch {
                     cond,
                     then_value,
@@ -1498,241 +1092,17 @@ impl DurableOrdinaryBodyPayload {
                 return Err(error);
             }
         }
-        let arg = |a: &DurableCallArg| rue_air::SemanticBodyCallArg {
-            value: a.value,
-            mode: a.mode,
-        };
-        let pattern = |p: &DurablePattern| match p {
-            DurablePattern::Wildcard => P::Wildcard,
-            DurablePattern::Int(v) => P::Int(*v),
-            DurablePattern::Bool(v) => P::Bool(*v),
-            DurablePattern::EnumVariant {
-                enum_key,
-                variant_index,
-            } => P::EnumVariant {
-                enum_key: enum_key.clone(),
-                variant_index: *variant_index,
-            },
-        };
-        let data = |d: &DurableAirInstData| -> S<StableDefinitionKey, Arc<str>> {
-            macro_rules! bin {
-                ($v:ident, $a:expr, $b:expr) => {
-                    S::$v(*$a, *$b)
-                };
-            }
-            match d {
-                DurableAirInstData::Const(v) => S::Const(*v),
-                DurableAirInstData::BoolConst(v) => S::BoolConst(*v),
-                DurableAirInstData::StringConst(v) => S::StringConst(*v),
-                DurableAirInstData::UnitConst => S::UnitConst,
-                DurableAirInstData::TypeConst(v) => S::TypeConst(v.import_dto()),
-                DurableAirInstData::Add(a, b) => bin!(Add, a, b),
-                DurableAirInstData::Sub(a, b) => bin!(Sub, a, b),
-                DurableAirInstData::Mul(a, b) => bin!(Mul, a, b),
-                DurableAirInstData::WrappingAdd(a, b) => bin!(WrappingAdd, a, b),
-                DurableAirInstData::WrappingSub(a, b) => bin!(WrappingSub, a, b),
-                DurableAirInstData::WrappingMul(a, b) => bin!(WrappingMul, a, b),
-                DurableAirInstData::Div(a, b) => bin!(Div, a, b),
-                DurableAirInstData::Mod(a, b) => bin!(Mod, a, b),
-                DurableAirInstData::Eq(a, b) => bin!(Eq, a, b),
-                DurableAirInstData::Ne(a, b) => bin!(Ne, a, b),
-                DurableAirInstData::Lt(a, b) => bin!(Lt, a, b),
-                DurableAirInstData::Gt(a, b) => bin!(Gt, a, b),
-                DurableAirInstData::Le(a, b) => bin!(Le, a, b),
-                DurableAirInstData::Ge(a, b) => bin!(Ge, a, b),
-                DurableAirInstData::And(a, b) => bin!(And, a, b),
-                DurableAirInstData::Or(a, b) => bin!(Or, a, b),
-                DurableAirInstData::BitAnd(a, b) => bin!(BitAnd, a, b),
-                DurableAirInstData::BitOr(a, b) => bin!(BitOr, a, b),
-                DurableAirInstData::BitXor(a, b) => bin!(BitXor, a, b),
-                DurableAirInstData::Shl(a, b) => bin!(Shl, a, b),
-                DurableAirInstData::Shr(a, b) => bin!(Shr, a, b),
-                DurableAirInstData::Neg(v) => S::Neg(*v),
-                DurableAirInstData::Not(v) => S::Not(*v),
-                DurableAirInstData::BitNot(v) => S::BitNot(*v),
-                DurableAirInstData::Branch {
-                    cond,
-                    then_value,
-                    else_value,
-                } => S::Branch {
-                    cond: *cond,
-                    then_value: *then_value,
-                    else_value: *else_value,
-                },
-                DurableAirInstData::Loop { cond, body } => S::Loop {
-                    cond: *cond,
-                    body: *body,
-                },
-                DurableAirInstData::InfiniteLoop { body } => S::InfiniteLoop { body: *body },
-                DurableAirInstData::Match { scrutinee, arms } => S::Match {
-                    scrutinee: *scrutinee,
-                    arms: arms
-                        .iter()
-                        .map(|a| rue_air::SemanticBodyMatchArm {
-                            pattern: pattern(&a.pattern),
-                            body: a.body,
-                        })
-                        .collect::<Vec<_>>()
-                        .into(),
-                },
-                DurableAirInstData::Break => S::Break,
-                DurableAirInstData::Continue => S::Continue,
-                DurableAirInstData::Alloc { slot, init } => S::Alloc {
-                    slot: *slot,
-                    init: *init,
-                },
-                DurableAirInstData::Load { slot } => S::Load { slot: *slot },
-                DurableAirInstData::Store { slot, value } => S::Store {
-                    slot: *slot,
-                    value: *value,
-                },
-                DurableAirInstData::ParamStore { param_slot, value } => S::ParamStore {
-                    param_slot: *param_slot,
-                    value: *value,
-                },
-                DurableAirInstData::Ret(v) => S::Ret(*v),
-                DurableAirInstData::Call { function, args } => S::Call {
-                    function: function.clone(),
-                    args: args.iter().map(arg).collect::<Vec<_>>().into(),
-                },
-                DurableAirInstData::RuntimeCall { runtime, args } => S::RuntimeCall {
-                    runtime: *runtime,
-                    args: args.iter().map(arg).collect::<Vec<_>>().into(),
-                },
-                DurableAirInstData::CallSpecialized { identity, args } => S::CallSpecialized {
-                    identity: identity.import_dto(),
-                    args: args.iter().map(arg).collect::<Vec<_>>().into(),
-                },
-                DurableAirInstData::Intrinsic {
-                    runtime,
-                    name,
-                    args,
-                } => S::Intrinsic {
-                    runtime: *runtime,
-                    name: name.clone(),
-                    args: args.iter().map(arg).collect::<Vec<_>>().into(),
-                },
-                DurableAirInstData::Param { index } => S::Param { index: *index },
-                DurableAirInstData::Block { statements, value } => S::Block {
-                    statements: statements.clone(),
-                    value: *value,
-                },
-                DurableAirInstData::StructInit {
-                    struct_key,
-                    fields,
-                    source_order,
-                } => S::StructInit {
-                    struct_key: struct_key.clone(),
-                    fields: fields.clone(),
-                    source_order: source_order.clone(),
-                },
-                DurableAirInstData::ArrayInit { elements } => S::ArrayInit {
-                    elements: elements.clone(),
-                },
-                DurableAirInstData::PlaceRead { place } => S::PlaceRead { place: *place },
-                DurableAirInstData::PlaceWrite { place, value } => S::PlaceWrite {
-                    place: *place,
-                    value: *value,
-                },
-                DurableAirInstData::EnumVariant {
-                    enum_key,
-                    variant_index,
-                    payload,
-                } => S::EnumVariant {
-                    enum_key: enum_key.clone(),
-                    variant_index: *variant_index,
-                    payload: payload.clone(),
-                },
-                DurableAirInstData::EnumPayloadGet {
-                    base,
-                    enum_key,
-                    variant_index,
-                    field_index,
-                } => S::EnumPayloadGet {
-                    base: *base,
-                    enum_key: enum_key.clone(),
-                    variant_index: *variant_index,
-                    field_index: *field_index,
-                },
-                DurableAirInstData::IntCast { value, from_ty } => S::IntCast {
-                    value: *value,
-                    from_ty: from_ty.import_dto(),
-                },
-                DurableAirInstData::Drop { value } => S::Drop { value: *value },
-                DurableAirInstData::StorageLive { slot } => S::StorageLive { slot: *slot },
-                DurableAirInstData::StorageDead { slot } => S::StorageDead { slot: *slot },
-                DurableAirInstData::MarkMoved {
-                    value,
-                    slot,
-                    is_param,
-                    place,
-                } => S::MarkMoved {
-                    value: *value,
-                    slot: *slot,
-                    is_param: *is_param,
-                    place: *place,
-                },
-            }
-        };
-        let body = rue_air::SemanticBody {
-            return_type: self.return_type.import_dto(),
-            instructions: self
-                .instructions
-                .iter()
-                .map(|i| rue_air::SemanticBodyInst {
-                    data: data(&i.data),
-                    ty: i.ty.import_dto(),
-                    anchor: rue_air::SemanticBodyAnchor {
-                        start: i.anchor.start,
-                        end: i.anchor.end,
-                    },
-                })
-                .collect::<Vec<_>>()
-                .into(),
-            places: self
-                .places
-                .iter()
-                .map(|p| rue_air::SemanticBodyPlace {
-                    base: p.base,
-                    base_type: p.base_type.import_dto(),
-                    projections: p
-                        .projections
-                        .iter()
-                        .map(|q| match q {
-                            DurableProjection::Field {
-                                struct_key,
-                                field_index,
-                            } => rue_air::SemanticBodyProjection::Field {
-                                struct_key: struct_key.clone(),
-                                field_index: *field_index,
-                            },
-                            DurableProjection::Index { array_type, index } => {
-                                rue_air::SemanticBodyProjection::Index {
-                                    array_type: array_type.import_dto(),
-                                    index: *index,
-                                }
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .into(),
-                })
-                .collect::<Vec<_>>()
-                .into(),
-            strings: self.strings.clone(),
-            param_drops: self
-                .param_drops
-                .iter()
-                .map(|(s, t)| (*s, t.import_dto()))
-                .collect::<Vec<_>>()
-                .into(),
-            borrow_slots: self.borrow_slots.clone(),
-            num_locals: self.num_locals,
-            num_param_slots: self.num_param_slots,
-            param_by_ref: self.param_by_ref.clone(),
-            param_writable: self.param_writable.clone(),
-            allow_unreachable_code: self.allow_unreachable_code,
-            warnings: Arc::from([]),
-        };
+        if !self.body.warnings.is_empty() {
+            work.projection_failures += 1;
+            return Err(DurableBodyProjectionFailure::InvalidAnchor);
+        }
+        let body = self
+            .body
+            .try_map_keys(
+                &|key| Ok::<_, std::convert::Infallible>(key.clone()),
+                &|module| Ok::<_, std::convert::Infallible>(Arc::from(module.as_str())),
+            )
+            .expect("canonical body key projection is infallible");
         work.projection_completions += 1;
         work.instructions_projected += body.instructions.len();
         work.places_projected += body.places.len();
@@ -1769,24 +1139,27 @@ mod tests {
                 body_or_initializer: Some(crate::StableDefinitionFingerprint::for_test(3)),
                 precision: crate::StableDefinitionFingerprintPrecision::SignatureAndBody,
             },
-            return_type: DurableType::Unit,
-            instructions: instructions.into(),
-            places: Arc::from([]),
-            strings: Arc::from([]),
-            param_drops: Arc::from([]),
-            borrow_slots: Arc::from([]),
-            num_locals: 0,
-            num_param_slots: 0,
-            param_by_ref: Arc::from([]),
-            param_writable: Arc::from([]),
-            allow_unreachable_code: false,
+            body: rue_air::SemanticBody {
+                return_type: SemanticImportType::Unit,
+                instructions: instructions.into(),
+                places: Arc::from([]),
+                strings: Arc::from([]),
+                param_drops: Arc::from([]),
+                borrow_slots: Arc::from([]),
+                num_locals: 0,
+                num_param_slots: 0,
+                param_by_ref: Arc::from([]),
+                param_writable: Arc::from([]),
+                allow_unreachable_code: false,
+                warnings: Arc::from([]),
+            },
         }
     }
 
     fn instruction(data: DurableAirInstData) -> DurableAirInst {
         DurableAirInst {
             data,
-            ty: DurableType::Unit,
+            ty: SemanticImportType::Unit,
             anchor: DurableBodyAnchor { start: 0, end: 0 },
         }
     }

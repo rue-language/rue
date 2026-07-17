@@ -13501,7 +13501,7 @@ fn main() -> i32 { selected.value() }"#,
         // Projection and stable-key mapping accept this durable shape, but an
         // imported completed specialization has no declaration-scoped generic
         // context in which this type can be resolved.
-        call.type_arguments = Arc::from([crate::DurableType::GenericParameter(0)]);
+        call.type_arguments = Arc::from([rue_air::SemanticImportType::GenericParameter(0)]);
 
         let optimized = CompileOptions {
             opt_level: OptLevel::O1,
@@ -14193,8 +14193,8 @@ fn main() -> i32 { selected.value() }"#,
         let cache = session.last_successful_body_cache.as_mut().unwrap();
         let mut bodies = cache.bodies.to_vec();
         bodies[0].payload.return_type =
-            crate::DurableType::PtrConst(Box::new(crate::DurableType::Array {
-                element: Box::new(crate::DurableType::I32),
+            rue_air::SemanticImportType::PtrConst(Box::new(rue_air::SemanticImportType::Array {
+                element: Box::new(rue_air::SemanticImportType::I32),
                 len: 3,
             }));
         let mut instructions = bodies[0].payload.instructions.to_vec();
