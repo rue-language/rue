@@ -127,7 +127,8 @@ pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};
 // Immutable query artifacts and stable identities returned by CompilerSession.
 pub use bound_definitions::{
     BoundDefinitionId, BoundDefinitionRecord, BoundDefinitionSet, BoundDefinitionWork,
-    StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace, StableNamedTypeKey,
+    SnapshotBoundDefinitionId, StableDefinitionKey, StableDefinitionKind,
+    StableDefinitionNamespace, StableNamedTypeKey,
 };
 pub use canonical_lower::{CanonicalRirOutput, CanonicalRirWork};
 pub use canonical_merge::{CanonicalMergeWork, CanonicalMergedAst, CanonicalMergedProgram};

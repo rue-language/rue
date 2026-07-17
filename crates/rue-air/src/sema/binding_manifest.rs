@@ -15,6 +15,7 @@ use super::{ConstValue, Sema, SemaOutput};
 use crate::types::{
     ArrayLen, PtrMutability, Type, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
 };
+use crate::{StableDefinitionKind, StableDefinitionNamespace};
 
 /// A nominal declaration identity valid for one successful binding request.
 /// Consumers must join this identity to their own stable definition universe
@@ -23,7 +24,7 @@ use crate::types::{
 pub struct SemanticNominalIdentity {
     pub file_id: FileId,
     pub name: Arc<str>,
-    pub kind: SemanticBindingKind,
+    pub kind: StableDefinitionKind,
 }
 
 /// An owned resolved type with no `Type`, pool ID, interner symbol, or RIR handle.
@@ -194,8 +195,8 @@ impl DeclarationResolutionFailure {
 pub struct SemanticDeclarationShellIdentity {
     pub module_path: Arc<str>,
     pub is_trusted_standard_library: bool,
-    pub namespace: SemanticBindingNamespace,
-    pub kind: SemanticBindingKind,
+    pub namespace: StableDefinitionNamespace,
+    pub kind: StableDefinitionKind,
     pub name: Arc<str>,
     pub owner: Option<Arc<str>>,
 }
@@ -250,34 +251,14 @@ pub enum DeclarationInstallFailure {
     UnsupportedDeclaration,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SemanticBindingNamespace {
-    Value,
-    Type,
-    Destructor,
-    Method,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SemanticBindingKind {
-    Function,
-    Struct,
-    Enum,
-    ValueConst,
-    ModuleBinding,
-    Destructor,
-    Method,
-    AssociatedFunction,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticBinding {
     /// Request-local source file containing this declaration.
     pub file_id: FileId,
     /// Request-local declaration location; excluded from stable identity.
     pub declaration_span: Span,
-    pub namespace: SemanticBindingNamespace,
-    pub kind: SemanticBindingKind,
+    pub namespace: StableDefinitionNamespace,
+    pub kind: StableDefinitionKind,
     pub name: Arc<str>,
     pub owner: Option<Arc<str>>,
     /// Source visibility; destructors are never public.
@@ -799,13 +780,13 @@ impl Sema<'_> {
             SemanticExportType::Nominal(nominal) => {
                 let name = self.interner.get_or_intern(nominal.name.as_ref());
                 match nominal.kind {
-                    SemanticBindingKind::Struct => Type::new_struct(
+                    StableDefinitionKind::Struct => Type::new_struct(
                         *self
                             .structs_by_file_name
                             .get(&(nominal.file_id, name))
                             .ok_or(DeclarationInstallFailure::MissingNominal)?,
                     ),
-                    SemanticBindingKind::Enum => Type::new_enum(
+                    StableDefinitionKind::Enum => Type::new_enum(
                         *self
                             .enums_by_file_name
                             .get(&(nominal.file_id, name))
@@ -1004,15 +985,15 @@ impl<'a> BoundSema<'a> {
             .iter()
             .filter_map(|binding| {
                 let kind = match binding.kind {
-                    SemanticBindingKind::Function => super::BodyOwnerKind::FreeFunction,
-                    SemanticBindingKind::Method => super::BodyOwnerKind::Method,
-                    SemanticBindingKind::AssociatedFunction => {
+                    StableDefinitionKind::Function => super::BodyOwnerKind::FreeFunction,
+                    StableDefinitionKind::Method => super::BodyOwnerKind::Method,
+                    StableDefinitionKind::AssociatedFunction => {
                         super::BodyOwnerKind::AssociatedFunction
                     }
-                    SemanticBindingKind::Destructor => super::BodyOwnerKind::Destructor,
+                    StableDefinitionKind::Destructor => super::BodyOwnerKind::Destructor,
                     _ => return None,
                 };
-                let name = if binding.kind == SemanticBindingKind::Destructor {
+                let name = if binding.kind == StableDefinitionKind::Destructor {
                     binding
                         .owner
                         .as_deref()
@@ -1021,7 +1002,7 @@ impl<'a> BoundSema<'a> {
                 } else {
                     binding.name.to_string()
                 };
-                let owner = if binding.kind == SemanticBindingKind::Destructor {
+                let owner = if binding.kind == StableDefinitionKind::Destructor {
                     Some(name.clone())
                 } else {
                     binding.owner.as_ref().map(ToString::to_string)
@@ -1125,9 +1106,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
             | InstData::EnumDecl { name, is_pub, .. } = &inst.data
             {
                 let kind = if matches!(inst.data, InstData::StructDecl { .. }) {
-                    SemanticBindingKind::Struct
+                    StableDefinitionKind::Struct
                 } else {
-                    SemanticBindingKind::Enum
+                    StableDefinitionKind::Enum
                 };
                 nominals.push(PendingNominalPayload {
                     shell: SemanticDeclarationShell {
@@ -1136,7 +1117,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                             is_trusted_standard_library: self
                                 .trusted_standard_library_files
                                 .contains(&inst.span.file_id),
-                            namespace: SemanticBindingNamespace::Type,
+                            namespace: StableDefinitionNamespace::Type,
                             kind,
                             name: Arc::from(self.interner.resolve(name)),
                             owner: None,
@@ -1176,9 +1157,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 } if !self.declaration_index.is_anonymous_method(inst_ref) => {
                     let owner = candidate.named_method_owner;
                     let kind = match (owner, *has_self) {
-                        (Some(_), true) => SemanticBindingKind::Method,
-                        (Some(_), false) => SemanticBindingKind::AssociatedFunction,
-                        (None, _) => SemanticBindingKind::Function,
+                        (Some(_), true) => StableDefinitionKind::Method,
+                        (Some(_), false) => StableDefinitionKind::AssociatedFunction,
+                        (None, _) => StableDefinitionKind::Function,
                     };
                     let params = self.rir.params(params);
                     let names = params
@@ -1196,9 +1177,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                             .trusted_standard_library_files
                             .contains(&inst.span.file_id),
                         namespace: if owner.is_some() {
-                            SemanticBindingNamespace::Method
+                            StableDefinitionNamespace::Method
                         } else {
-                            SemanticBindingNamespace::Value
+                            StableDefinitionNamespace::Value
                         },
                         kind,
                         name: Arc::from(self.interner.resolve(name)),
@@ -1224,11 +1205,11 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         is_trusted_standard_library: self
                             .trusted_standard_library_files
                             .contains(&inst.span.file_id),
-                        namespace: SemanticBindingNamespace::Value,
+                        namespace: StableDefinitionNamespace::Value,
                         // Function aliases are classified only after evaluating
                         // the initializer; their stable value identity is already
                         // complete here.
-                        kind: SemanticBindingKind::ValueConst,
+                        kind: StableDefinitionKind::ValueConst,
                         name: Arc::from(self.interner.resolve(name)),
                         owner: None,
                     },
@@ -1247,8 +1228,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         is_trusted_standard_library: self
                             .trusted_standard_library_files
                             .contains(&inst.span.file_id),
-                        namespace: SemanticBindingNamespace::Destructor,
-                        kind: SemanticBindingKind::Destructor,
+                        namespace: StableDefinitionNamespace::Destructor,
+                        kind: StableDefinitionKind::Destructor,
                         name: Arc::from(self.interner.resolve(type_name)),
                         owner: Some(Arc::from(self.interner.resolve(type_name))),
                     },
@@ -1332,7 +1313,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
                         file_id: def.file_id,
                         name: Arc::from(def.name),
-                        kind: SemanticBindingKind::Struct,
+                        kind: StableDefinitionKind::Struct,
                     }))
                 }
             }
@@ -1348,7 +1329,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
                         file_id: def.file_id,
                         name: Arc::from(def.name),
-                        kind: SemanticBindingKind::Enum,
+                        kind: StableDefinitionKind::Enum,
                     }))
                 }
             }
@@ -1477,11 +1458,11 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         for identity in manifest
             .bindings
             .iter()
-            .filter(|b| b.kind != SemanticBindingKind::ModuleBinding)
+            .filter(|b| b.kind != StableDefinitionKind::ModuleBinding)
         {
             let name = self.interner.get_or_intern(identity.name.as_ref());
             let payload = match identity.kind {
-                SemanticBindingKind::Function => {
+                StableDefinitionKind::Function => {
                     let internal = *self
                         .functions_by_file_name
                         .get(&(identity.file_id, name))
@@ -1498,7 +1479,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         is_unchecked: info.is_unchecked,
                     }
                 }
-                SemanticBindingKind::Method | SemanticBindingKind::AssociatedFunction => {
+                StableDefinitionKind::Method | StableDefinitionKind::AssociatedFunction => {
                     let owner = self.interner.get_or_intern(
                         identity
                             .owner
@@ -1538,7 +1519,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         is_unchecked: false,
                     }
                 }
-                SemanticBindingKind::Struct => {
+                StableDefinitionKind::Struct => {
                     let sid = *self
                         .structs_by_file_name
                         .get(&(identity.file_id, name))
@@ -1555,7 +1536,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         is_linear: def.is_linear,
                     }
                 }
-                SemanticBindingKind::Enum => {
+                StableDefinitionKind::Enum => {
                     let eid = *self
                         .enums_by_file_name
                         .get(&(identity.file_id, name))
@@ -1578,7 +1559,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         variants: variants.into(),
                     }
                 }
-                SemanticBindingKind::ValueConst => {
+                StableDefinitionKind::ValueConst => {
                     let info = self
                         .constants_by_file_name
                         .get(&(identity.file_id, name))
@@ -1608,8 +1589,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         value,
                     }
                 }
-                SemanticBindingKind::Destructor => SemanticDeclarationPayload::Destructor,
-                SemanticBindingKind::ModuleBinding => unreachable!(),
+                StableDefinitionKind::Destructor => SemanticDeclarationPayload::Destructor,
+                StableDefinitionKind::ModuleBinding => unreachable!(),
             };
             records.push(SemanticDeclarationExport {
                 identity: identity.clone(),
@@ -1637,8 +1618,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
             work.rir_instructions_visited += 1;
             let mut emit = |file_id: FileId,
                             declaration_span: Span,
-                            namespace: SemanticBindingNamespace,
-                            kind: SemanticBindingKind,
+                            namespace: StableDefinitionNamespace,
+                            kind: StableDefinitionKind,
                             name: &Spur,
                             owner: Option<Arc<str>>,
                             is_public: bool| {
@@ -1665,8 +1646,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     emit(
                         inst.span.file_id,
                         inst.span,
-                        SemanticBindingNamespace::Value,
-                        SemanticBindingKind::Function,
+                        StableDefinitionNamespace::Value,
+                        StableDefinitionKind::Function,
                         name,
                         None,
                         *is_pub,
@@ -1687,8 +1668,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     emit(
                         inst.span.file_id,
                         inst.span,
-                        SemanticBindingNamespace::Type,
-                        SemanticBindingKind::Struct,
+                        StableDefinitionNamespace::Type,
+                        StableDefinitionKind::Struct,
                         name,
                         None,
                         *is_pub,
@@ -1714,11 +1695,11 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         emit(
                             method_inst.span.file_id,
                             method_inst.span,
-                            SemanticBindingNamespace::Method,
+                            StableDefinitionNamespace::Method,
                             if *has_self {
-                                SemanticBindingKind::Method
+                                StableDefinitionKind::Method
                             } else {
-                                SemanticBindingKind::AssociatedFunction
+                                StableDefinitionKind::AssociatedFunction
                             },
                             name,
                             Some(owner.clone()),
@@ -1736,8 +1717,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     emit(
                         inst.span.file_id,
                         inst.span,
-                        SemanticBindingNamespace::Type,
-                        SemanticBindingKind::Enum,
+                        StableDefinitionNamespace::Type,
+                        StableDefinitionKind::Enum,
                         name,
                         None,
                         *is_pub,
@@ -1748,17 +1729,17 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     let key = (inst.span.file_id, *name);
                     let kind = if self.module_bindings.contains_key(&key) {
                         work.module_bindings_emitted += 1;
-                        SemanticBindingKind::ModuleBinding
+                        StableDefinitionKind::ModuleBinding
                     } else if self.constants_by_file_name.contains_key(&key) {
                         work.constants_emitted += 1;
-                        SemanticBindingKind::ValueConst
+                        StableDefinitionKind::ValueConst
                     } else {
                         panic!("manifest const must be a classified bound winner")
                     };
                     emit(
                         inst.span.file_id,
                         inst.span,
-                        SemanticBindingNamespace::Value,
+                        StableDefinitionNamespace::Value,
                         kind,
                         name,
                         None,
@@ -1778,8 +1759,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     emit(
                         inst.span.file_id,
                         inst.span,
-                        SemanticBindingNamespace::Destructor,
-                        SemanticBindingKind::Destructor,
+                        StableDefinitionNamespace::Destructor,
+                        StableDefinitionKind::Destructor,
                         type_name,
                         Some(Arc::from(self.interner.resolve(type_name))),
                         false,
@@ -2138,7 +2119,7 @@ mod tests {
         assert!(first.bindings().iter().any(|binding| {
             binding.name.as_ref() == "make"
                 && binding.owner.as_deref() == Some("Resource")
-                && binding.kind == SemanticBindingKind::AssociatedFunction
+                && binding.kind == StableDefinitionKind::AssociatedFunction
         }));
         assert!(
             first
@@ -2178,7 +2159,7 @@ mod tests {
             .unwrap();
         assert!(bound.binding_manifest().bindings().iter().any(|binding| {
             binding.name.as_ref() == "exposed"
-                && binding.kind == SemanticBindingKind::Method
+                && binding.kind == StableDefinitionKind::Method
                 && binding.is_public
         }));
     }
@@ -2201,11 +2182,11 @@ mod tests {
         )
         .unwrap();
         assert!(manifest.bindings().iter().any(|binding| {
-            binding.name.as_ref() == "value" && binding.kind == SemanticBindingKind::ValueConst
+            binding.name.as_ref() == "value" && binding.kind == StableDefinitionKind::ValueConst
         }));
         assert!(manifest.bindings().iter().any(|binding| {
             binding.name.as_ref() == "imported"
-                && binding.kind == SemanticBindingKind::ModuleBinding
+                && binding.kind == StableDefinitionKind::ModuleBinding
         }));
         assert_eq!(manifest.work().constants_emitted, 1);
         assert_eq!(manifest.work().module_bindings_emitted, 1);
@@ -2376,12 +2357,12 @@ mod tests {
         assert!(
             left[..4]
                 .iter()
-                .all(|identity| identity.namespace == SemanticBindingNamespace::Type)
+                .all(|identity| identity.namespace == StableDefinitionNamespace::Type)
         );
         assert!(
             left[4..]
                 .iter()
-                .all(|identity| identity.namespace != SemanticBindingNamespace::Type)
+                .all(|identity| identity.namespace != StableDefinitionNamespace::Type)
         );
     }
 

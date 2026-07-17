@@ -62,7 +62,7 @@ pub(crate) fn import_staged_body(
     >,
     body_span: Span,
 ) -> Result<crate::SemanticImportedBody, crate::SemanticBodyImportFailure> {
-    use crate::{SemanticBodyDefinitionKind as DK, SemanticBodyImportFailure as BF};
+    use crate::{SemanticBodyImportFailure as BF, StableDefinitionKind as DK};
     use crate::{
         SemanticImportFailure as F, SemanticImportNominalKind as NK, SemanticImportType as T,
     };
@@ -161,7 +161,7 @@ pub(crate) fn import_staged_body(
             .interner
             .get(identity.name.as_ref())
             .ok_or(BF::Semantic(F::MissingFunction))?;
-        if identity.kind == DK::FreeFunction {
+        if identity.kind == DK::Function {
             return sema
                 .functions_by_file_name
                 .get(&(FileId::new(identity.file_id), name))

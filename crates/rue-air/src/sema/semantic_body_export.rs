@@ -7,10 +7,10 @@ use rue_span::Span;
 use super::{AnalyzedFunction, BodyOwnerToken, BodySema};
 use crate::{
     AirInstData, AirPattern, AirProjection, SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg,
-    SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind, SemanticBodyExport,
-    SemanticBodyExportFailure as F, SemanticBodyInst, SemanticBodyInstData, SemanticBodyMatchArm,
-    SemanticBodyPattern, SemanticBodyPlace, SemanticBodyProjection, SemanticImportConstValue,
-    SemanticImportType, SemanticSpecializationIdentity, SemanticSpecializedBodyExport, Type,
+    SemanticBodyDefinitionIdentity, SemanticBodyExport, SemanticBodyExportFailure as F,
+    SemanticBodyInst, SemanticBodyInstData, SemanticBodyMatchArm, SemanticBodyPattern,
+    SemanticBodyPlace, SemanticBodyProjection, SemanticImportConstValue, SemanticImportType,
+    SemanticSpecializationIdentity, SemanticSpecializedBodyExport, StableDefinitionKind, Type,
     TypeKind,
 };
 
@@ -523,7 +523,7 @@ impl BodySema<'_> {
             return Ok(SemanticBodyDefinitionIdentity {
                 file_id: info.file_id.index(),
                 name: Arc::from(self.interner.resolve(&self.source_function_name(symbol))),
-                kind: SemanticBodyDefinitionKind::FreeFunction,
+                kind: StableDefinitionKind::Function,
                 owner: None,
             });
         }
@@ -541,11 +541,11 @@ impl BodySema<'_> {
                 file_id: info.span.file_id.index(),
                 name: Arc::from(method),
                 kind: if method == "__drop" {
-                    SemanticBodyDefinitionKind::Destructor
+                    StableDefinitionKind::Destructor
                 } else if info.has_self {
-                    SemanticBodyDefinitionKind::Method
+                    StableDefinitionKind::Method
                 } else {
-                    SemanticBodyDefinitionKind::AssociatedFunction
+                    StableDefinitionKind::AssociatedFunction
                 },
                 owner: Some(Arc::from(owner.name.as_str())),
             });
@@ -561,7 +561,7 @@ impl BodySema<'_> {
         Ok(SemanticBodyDefinitionIdentity {
             file_id: def.file_id.index(),
             name: Arc::from(def.name.as_str()),
-            kind: SemanticBodyDefinitionKind::Struct,
+            kind: StableDefinitionKind::Struct,
             owner: None,
         })
     }
@@ -574,7 +574,7 @@ impl BodySema<'_> {
         Ok(SemanticBodyDefinitionIdentity {
             file_id: def.file_id.index(),
             name: Arc::from(def.name.as_str()),
-            kind: SemanticBodyDefinitionKind::Enum,
+            kind: StableDefinitionKind::Enum,
             owner: None,
         })
     }

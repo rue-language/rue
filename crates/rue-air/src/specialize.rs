@@ -822,32 +822,30 @@ fn create_specialized_function(
             crate::sema::NamedConstDependencyTargetEvent::ValueConst { file, name } => (
                 *file,
                 name.as_str(),
-                crate::SemanticBodyDefinitionKind::ValueConst,
+                crate::StableDefinitionKind::ValueConst,
             ),
-            crate::sema::NamedConstDependencyTargetEvent::FreeFunction { file, name } => (
-                *file,
-                name.as_str(),
-                crate::SemanticBodyDefinitionKind::FreeFunction,
-            ),
+            crate::sema::NamedConstDependencyTargetEvent::FreeFunction { file, name } => {
+                (*file, name.as_str(), crate::StableDefinitionKind::Function)
+            }
             crate::sema::NamedConstDependencyTargetEvent::NamedType { file, name, kind } => (
                 *file,
                 name.as_str(),
                 match kind {
                     crate::sema::DeclarationTypeDependencyTargetKind::Struct => {
-                        crate::SemanticBodyDefinitionKind::Struct
+                        crate::StableDefinitionKind::Struct
                     }
                     crate::sema::DeclarationTypeDependencyTargetKind::Enum => {
-                        crate::SemanticBodyDefinitionKind::Enum
+                        crate::StableDefinitionKind::Enum
                     }
                     crate::sema::DeclarationTypeDependencyTargetKind::ValueConst => {
-                        crate::SemanticBodyDefinitionKind::ValueConst
+                        crate::StableDefinitionKind::ValueConst
                     }
                 },
             ),
             crate::sema::NamedConstDependencyTargetEvent::ModuleBinding { file, name } => (
                 *file,
                 name.as_str(),
-                crate::SemanticBodyDefinitionKind::ModuleBinding,
+                crate::StableDefinitionKind::ModuleBinding,
             ),
         };
         dependencies.push(crate::SemanticBodyDefinitionIdentity {
@@ -863,13 +861,13 @@ fn create_specialized_function(
             name: std::sync::Arc::from(event.target_name.as_str()),
             kind: match event.target_kind {
                 crate::sema::DeclarationTypeDependencyTargetKind::Struct => {
-                    crate::SemanticBodyDefinitionKind::Struct
+                    crate::StableDefinitionKind::Struct
                 }
                 crate::sema::DeclarationTypeDependencyTargetKind::Enum => {
-                    crate::SemanticBodyDefinitionKind::Enum
+                    crate::StableDefinitionKind::Enum
                 }
                 crate::sema::DeclarationTypeDependencyTargetKind::ValueConst => {
-                    crate::SemanticBodyDefinitionKind::ValueConst
+                    crate::StableDefinitionKind::ValueConst
                 }
             },
             owner: None,
@@ -879,7 +877,7 @@ fn create_specialized_function(
         dependencies.push(crate::SemanticBodyDefinitionIdentity {
             file_id: event.callable_file,
             name: std::sync::Arc::from(event.callable_name.as_str()),
-            kind: crate::SemanticBodyDefinitionKind::FreeFunction,
+            kind: crate::StableDefinitionKind::Function,
             owner: None,
         });
     }
