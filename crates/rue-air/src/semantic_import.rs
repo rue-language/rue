@@ -65,6 +65,74 @@ pub enum SemanticImportType<K, M> {
     GenericParameter(u32),
 }
 
+macro_rules! semantic_import_type_schema {
+    ($consumer:ident) => {
+        $consumer! {
+            I8, SemanticImportType::I8, 0, "i8";
+            I16, SemanticImportType::I16, 1, "i16";
+            I32, SemanticImportType::I32, 2, "i32";
+            I64, SemanticImportType::I64, 3, "i64";
+            U8, SemanticImportType::U8, 4, "u8";
+            U16, SemanticImportType::U16, 5, "u16";
+            U32, SemanticImportType::U32, 6, "u32";
+            U64, SemanticImportType::U64, 7, "u64";
+            Bool, SemanticImportType::Bool, 8, "bool";
+            Unit, SemanticImportType::Unit, 9, "unit";
+            Never, SemanticImportType::Never, 10, "never";
+            ComptimeType, SemanticImportType::ComptimeType, 11, "comptime_type";
+            BuiltinNominal, SemanticImportType::BuiltinNominal { .. }, 12, "builtin_nominal";
+            Nominal, SemanticImportType::Nominal(..), 13, "nominal";
+            Array, SemanticImportType::Array { .. }, 14, "array";
+            PtrConst, SemanticImportType::PtrConst(..), 15, "ptr_const";
+            PtrMut, SemanticImportType::PtrMut(..), 16, "ptr_mut";
+            Module, SemanticImportType::Module(..), 17, "module";
+            GenericParameter, SemanticImportType::GenericParameter(..), 18, "generic_parameter";
+        }
+    };
+}
+
+macro_rules! define_semantic_import_type_schema {
+    ($( $kind:ident, $pattern:pat, $tag:literal, $name:literal; )*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(u8)]
+        pub enum SemanticImportTypeKind {
+            $( $kind = $tag, )*
+        }
+
+        pub const SEMANTIC_IMPORT_TYPE_KINDS: &[SemanticImportTypeKind] = &[
+            $( SemanticImportTypeKind::$kind, )*
+        ];
+
+        impl SemanticImportTypeKind {
+            pub const fn schema_tag(self) -> u8 {
+                self as u8
+            }
+
+            pub const fn display_name(self) -> &'static str {
+                match self {
+                    $( Self::$kind => $name, )*
+                }
+            }
+        }
+
+        impl std::fmt::Display for SemanticImportTypeKind {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(self.display_name())
+            }
+        }
+
+        impl<K, M> SemanticImportType<K, M> {
+            pub const fn kind(&self) -> SemanticImportTypeKind {
+                match self {
+                    $( $pattern => SemanticImportTypeKind::$kind, )*
+                }
+            }
+        }
+    };
+}
+
+semantic_import_type_schema!(define_semantic_import_type_schema);
+
 /// One post-order step in the canonical type algebra. Recursive children have
 /// already been folded to `T`, so projection, validation, and import share one
 /// exhaustive schema traversal.
@@ -104,6 +172,60 @@ pub enum SemanticImportConstValue<K, M> {
     Function(K),
     Unit,
 }
+
+macro_rules! semantic_import_const_schema {
+    ($consumer:ident) => {
+        $consumer! {
+            Integer, SemanticImportConstValue::Integer(..), 0, "integer";
+            Bool, SemanticImportConstValue::Bool(..), 1, "bool";
+            Type, SemanticImportConstValue::Type(..), 2, "type";
+            Function, SemanticImportConstValue::Function(..), 3, "function";
+            Unit, SemanticImportConstValue::Unit, 4, "unit";
+        }
+    };
+}
+
+macro_rules! define_semantic_import_const_schema {
+    ($( $kind:ident, $pattern:pat, $tag:literal, $name:literal; )*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(u8)]
+        pub enum SemanticImportConstKind {
+            $( $kind = $tag, )*
+        }
+
+        pub const SEMANTIC_IMPORT_CONST_KINDS: &[SemanticImportConstKind] = &[
+            $( SemanticImportConstKind::$kind, )*
+        ];
+
+        impl SemanticImportConstKind {
+            pub const fn schema_tag(self) -> u8 {
+                self as u8
+            }
+
+            pub const fn display_name(self) -> &'static str {
+                match self {
+                    $( Self::$kind => $name, )*
+                }
+            }
+        }
+
+        impl std::fmt::Display for SemanticImportConstKind {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(self.display_name())
+            }
+        }
+
+        impl<K, M> SemanticImportConstValue<K, M> {
+            pub const fn kind(&self) -> SemanticImportConstKind {
+                match self {
+                    $( $pattern => SemanticImportConstKind::$kind, )*
+                }
+            }
+        }
+    };
+}
+
+semantic_import_const_schema!(define_semantic_import_const_schema);
 
 impl<K, M> SemanticImportType<K, M> {
     /// Fold this value in post-order through the canonical schema visitor.
@@ -1289,6 +1411,31 @@ mod tests {
             kind,
             is_public: true,
             lang_item: None,
+        }
+    }
+
+    #[test]
+    fn canonical_schema_kinds_have_stable_unique_tags_and_names() {
+        assert_eq!(SEMANTIC_IMPORT_TYPE_KINDS.len(), 19);
+        for (tag, kind) in SEMANTIC_IMPORT_TYPE_KINDS.iter().copied().enumerate() {
+            assert_eq!(usize::from(kind.schema_tag()), tag);
+            assert_eq!(kind.to_string(), kind.display_name());
+            assert!(
+                SEMANTIC_IMPORT_TYPE_KINDS[..tag]
+                    .iter()
+                    .all(|earlier| earlier.display_name() != kind.display_name())
+            );
+        }
+
+        assert_eq!(SEMANTIC_IMPORT_CONST_KINDS.len(), 5);
+        for (tag, kind) in SEMANTIC_IMPORT_CONST_KINDS.iter().copied().enumerate() {
+            assert_eq!(usize::from(kind.schema_tag()), tag);
+            assert_eq!(kind.to_string(), kind.display_name());
+            assert!(
+                SEMANTIC_IMPORT_CONST_KINDS[..tag]
+                    .iter()
+                    .all(|earlier| earlier.display_name() != kind.display_name())
+            );
         }
     }
 
