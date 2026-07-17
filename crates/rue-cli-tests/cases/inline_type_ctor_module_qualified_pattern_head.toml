@@ -53,3 +53,26 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 40
+
+# A wide integer payload literal on the module-qualified construction head must
+# be typed at the declared i64 payload width, not defaulted to i32. The local
+# `Result(i64, i32).Ok(41)` form was fixed in RUE-599; the module-qualified route
+# (which resolves the head through the nested method-call path RUE-947 wired) was
+# still dropping the expectation and failing with E0206 until RUE-950. Driven
+# end-to-end through the real binary and real std.
+[[case]]
+name = "module_qualified_head_wide_payload_literal_runs"
+description = "`std.result.Result(i64, i32).Ok(41)` widens the payload literal to i64 end-to-end (RUE-950)."
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let r = std.result.Result(i64, i32).Ok(41);
+    match r {
+        std.result.Result(i64, i32).Ok(v) => if v == 41 { 42 } else { 1 },
+        std.result.Result(i64, i32).Err(e) => e,
+    }
+}
+""" }]
+exit_code = 42
