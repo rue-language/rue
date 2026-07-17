@@ -12,14 +12,13 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         inst_ref: InstRef,
         name: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirIntrinsicArgsRange,
         span: Span,
         result_expected: Option<Type>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // Intrinsic arguments are stored as plain InstRefs
-        let arg_refs = self.rir.get_inst_refs(args_start, args_len);
+        let arg_refs = self.rir.intrinsic_args(args);
         let args: Vec<RirCallArg> = arg_refs
             .into_iter()
             .map(|value| RirCallArg {
@@ -230,11 +229,11 @@ impl<'a> BodySema<'a> {
         &mut self,
         air: &mut Air,
         intrinsic: rue_rir::InternalIntrinsic,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirInternalIntrinsicArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        let args_len = self.rir.internal_intrinsic_args(args).len() as u32;
         if args_len != intrinsic.arity() {
             let argument = if intrinsic.arity() == 1 {
                 "argument"
@@ -255,7 +254,7 @@ impl<'a> BodySema<'a> {
 
         let args: Vec<RirCallArg> = self
             .rir
-            .get_inst_refs(args_start, args_len)
+            .internal_intrinsic_args(args)
             .into_iter()
             .map(|value| RirCallArg {
                 value,

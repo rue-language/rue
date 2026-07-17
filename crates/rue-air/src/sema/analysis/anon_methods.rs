@@ -20,18 +20,16 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
         &mut self,
         struct_id: StructId,
         struct_type: Type,
-        methods_start: u32,
-        methods_len: u32,
+        methods: &rue_rir::RirAnonStructMethodsRange,
         _span: Span,
     ) -> CompileResult<()> {
-        let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+        let method_refs = self.rir.anon_struct_methods(methods);
 
         for method_ref in method_refs {
             let method_inst = self.rir.get(method_ref);
             if let InstData::FnDecl {
                 name: method_name,
-                params_start,
-                params_len,
+                params,
                 return_type,
                 body,
                 has_self,
@@ -55,7 +53,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 }
 
                 // Resolve parameter types (Self -> this anonymous struct's type)
-                let params = self.rir.get_params(*params_start, *params_len);
+                let params = self.rir.params(params);
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
                 let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
                 let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
@@ -110,18 +108,16 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
         &mut self,
         struct_id: StructId,
         struct_type: Type,
-        methods_start: u32,
-        methods_len: u32,
+        methods: &rue_rir::RirAnonStructMethodsRange,
         _span: Span,
     ) -> Option<()> {
-        let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+        let method_refs = self.rir.anon_struct_methods(methods);
 
         for method_ref in method_refs {
             let method_inst = self.rir.get(method_ref);
             if let InstData::FnDecl {
                 name: method_name,
-                params_start,
-                params_len,
+                params,
                 return_type,
                 body,
                 has_self,
@@ -137,7 +133,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 }
 
                 // Resolve parameter types using comptime-safe resolution
-                let params = self.rir.get_params(*params_start, *params_len);
+                let params = self.rir.params(params);
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
                 let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
                 let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
@@ -200,20 +196,18 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
     /// misleading E1200 mis-located at the `let` that instantiates it.
     pub(crate) fn find_method_own_comptime_type_param(
         &self,
-        methods_start: u32,
-        methods_len: u32,
+        methods: &rue_rir::RirAnonStructMethodsRange,
     ) -> Option<(Span, String)> {
-        let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+        let method_refs = self.rir.anon_struct_methods(methods);
         for method_ref in method_refs {
             let method_inst = self.rir.get(method_ref);
             if let InstData::FnDecl {
                 name: method_name,
-                params_start,
-                params_len,
+                params,
                 ..
             } = &method_inst.data
             {
-                let params = self.rir.get_params(*params_start, *params_len);
+                let params = self.rir.params(params);
                 for p in params {
                     // A method-owned `comptime T: type` parameter: `comptime`
                     // modifier plus the `type` type. (The enclosing
@@ -249,13 +243,12 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
         &mut self,
         struct_id: StructId,
         struct_type: Type,
-        methods_start: u32,
-        methods_len: u32,
+        methods: &rue_rir::RirAnonStructMethodsRange,
         _span: Span,
         type_subst: &std::collections::HashMap<Spur, Type>,
         value_subst: &std::collections::HashMap<Spur, ConstValue>,
     ) -> Option<()> {
-        let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+        let method_refs = self.rir.anon_struct_methods(methods);
 
         // Track method names in this registration batch to detect duplicates
         let mut seen_methods: std::collections::HashSet<Spur> = std::collections::HashSet::new();
@@ -272,8 +265,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
             let method_inst = self.rir.get(method_ref);
             if let InstData::FnDecl {
                 name: method_name,
-                params_start,
-                params_len,
+                params,
                 return_type,
                 body,
                 has_self,
@@ -295,7 +287,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 }
 
                 // Resolve parameter types using comptime-safe resolution with substitution
-                let params = self.rir.get_params(*params_start, *params_len);
+                let params = self.rir.params(params);
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
                 let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
                 let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
@@ -381,18 +373,16 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
     /// so that `Self` matches `Self` even before we know the concrete StructId.
     pub(crate) fn extract_anon_method_sigs(
         &self,
-        methods_start: u32,
-        methods_len: u32,
+        methods: &rue_rir::RirAnonStructMethodsRange,
     ) -> Vec<super::super::AnonMethodSig> {
-        let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+        let method_refs = self.rir.anon_struct_methods(methods);
         let mut sigs = Vec::with_capacity(method_refs.len());
 
         for method_ref in method_refs {
             let method_inst = self.rir.get(method_ref);
             if let InstData::FnDecl {
                 name,
-                params_start,
-                params_len,
+                params,
                 return_type,
                 has_self,
                 self_mode,
@@ -403,7 +393,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 // modes and comptime flags affect the callable contract just as
                 // types do, so anonymous types that differ in any of them must
                 // not share one StructId/method body (RUE-634).
-                let params = self.rir.get_params(*params_start, *params_len);
+                let params = self.rir.params(params);
                 let param_types: Vec<Spur> = params.iter().map(|p| p.ty).collect();
                 let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
                 let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();

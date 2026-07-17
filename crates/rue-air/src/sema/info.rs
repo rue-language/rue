@@ -22,9 +22,9 @@ pub struct FunctionInfo {
     pub return_type_sym: Spur,
     /// RIR body ref for generic specialization
     pub body: rue_rir::InstRef,
-    /// RIR params indices for type symbol lookup during specialization
-    pub rir_params_start: u32,
-    pub rir_params_len: u32,
+    /// Owning source declaration. Variable payload descriptors remain attached
+    /// to this instruction and are borrowed from the RIR on demand.
+    pub declaration: rue_rir::InstRef,
     /// Span of the function declaration
     pub span: Span,
     /// Whether this function has any comptime parameters (type or value) and
@@ -43,6 +43,15 @@ pub struct FunctionInfo {
     pub allow_unreachable_code: bool,
     /// File ID this function was declared in (for visibility checking)
     pub file_id: FileId,
+}
+
+impl FunctionInfo {
+    pub(crate) fn rir_params<'a>(&self, rir: &'a rue_rir::Rir) -> &'a rue_rir::RirParamsRange {
+        let rue_rir::InstData::FnDecl { params, .. } = &rir.get(self.declaration).data else {
+            unreachable!("function metadata declaration must remain a FnDecl")
+        };
+        params
+    }
 }
 
 /// Information about a method in an impl block.

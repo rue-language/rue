@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use lasso::{Key, Spur};
+use lasso::Spur;
 use rue_error::{CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, ice};
 use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::{FileId, Span};
@@ -152,7 +152,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                         param_names: self.param_arena.names(info.params).to_vec(),
                         param_type_syms: self
                             .rir
-                            .get_params(info.rir_params_start, info.rir_params_len)
+                            .params(info.rir_params(self.rir))
                             .iter()
                             .map(|p| p.ty)
                             .collect(),
@@ -388,15 +388,14 @@ impl<'a> Sema<'a> {
                 InstData::EnumDecl {
                     is_pub,
                     name,
-                    variants_start,
-                    variants_len,
+                    variants,
                     ..
                 } => {
                     let enum_name = self.interner.resolve(&*name).to_string();
 
                     let key = (inst.span.file_id, *name);
 
-                    let variants = self.rir.get_symbols(*variants_start, *variants_len);
+                    let variants = self.rir.enum_variants(variants);
 
                     // Check for duplicate variant names
                     let mut seen_variants: HashSet<Spur> = HashSet::new();
@@ -438,8 +437,7 @@ impl<'a> Sema<'a> {
                     self.enums_by_file_name.insert(key, enum_id);
                 }
                 InstData::StructDecl {
-                    directives_start,
-                    directives_len,
+                    directives,
                     is_pub,
                     is_linear,
                     name,
@@ -449,7 +447,7 @@ impl<'a> Sema<'a> {
 
                     let key = (inst.span.file_id, *name);
 
-                    let directives = self.rir.get_directives(*directives_start, *directives_len);
+                    let directives = self.rir.directives(directives);
                     let is_copy = self.has_copy_directive(directives.iter());
 
                     // Linear types cannot be @copy
@@ -780,41 +778,41 @@ impl<'a> Sema<'a> {
     pub(crate) fn resolve_enum_payloads(&mut self) -> CompileResult<()> {
         // Collect the work first to avoid borrowing `self.rir` while mutating
         // the type pool through `self`.
-        let mut jobs: Vec<(Spur, u32, u32, Span)> = Vec::new();
-        for (_, inst) in self.rir.iter() {
-            if let InstData::EnumDecl {
-                name,
-                payloads_start,
-                payloads_len,
-                ..
-            } = &inst.data
-            {
-                jobs.push((*name, *payloads_start, *payloads_len, inst.span));
+        let mut jobs: Vec<(Spur, InstRef, Span)> = Vec::new();
+        for (inst_ref, inst) in self.rir.iter() {
+            if let InstData::EnumDecl { name, .. } = &inst.data {
+                jobs.push((*name, inst_ref, inst.span));
             }
         }
 
-        for (name, payloads_start, payloads_len, span) in jobs {
+        for (name, declaration, span) in jobs {
+            let InstData::EnumDecl {
+                payloads, variants, ..
+            } = &self.rir.get(declaration).data
+            else {
+                unreachable!()
+            };
+            let payload_symbols: Vec<Vec<Spur>> = self
+                .rir
+                .enum_payloads(payloads, variants)
+                .map(|payload| payload.to_vec())
+                .collect();
             let source_name = self.interner.resolve(&name).to_string();
             self.declaration_type_observer =
-                (payloads_len > 0 && !source_name.starts_with("__anon_enum_")).then_some((
+                (payload_symbols.iter().any(|payload| !payload.is_empty())
+                    && !source_name.starts_with("__anon_enum_"))
+                .then_some((
                     span.file_id,
                     source_name,
                     None,
                     super::DeclarationTypeDependencySourceKind::Enum,
                     super::DeclarationTypeDependencyKind::Payload,
                 ));
-            let words = self.rir.get_extra(payloads_start, payloads_len).to_vec();
             // Decode per-variant payload type symbols.
             let mut variant_payloads: Vec<Vec<Type>> = Vec::new();
-            let mut i = 0usize;
-            while i < words.len() {
-                let k = words[i] as usize;
-                i += 1;
-                let mut payload = Vec::with_capacity(k);
-                for _ in 0..k {
-                    let ty_sym = Spur::try_from_usize(words[i] as usize)
-                        .expect("valid interned type symbol in payload region");
-                    i += 1;
+            for symbols in payload_symbols {
+                let mut payload = Vec::with_capacity(symbols.len());
+                for ty_sym in symbols {
                     // A slice type `[T]` is second-class (ADR-0037, ADR-0043,
                     // RUE-322): an enum payload is aggregate storage, so it
                     // cannot hold a fat-pointer view (E0488).
@@ -894,13 +892,7 @@ impl<'a> Sema<'a> {
     /// Resolve struct field types. Must run before @copy validation.
     pub(crate) fn resolve_struct_fields(&mut self) -> CompileResult<()> {
         for (_, inst) in self.rir.iter() {
-            if let InstData::StructDecl {
-                name,
-                fields_start,
-                fields_len,
-                ..
-            } = &inst.data
-            {
+            if let InstData::StructDecl { name, fields, .. } = &inst.data {
                 let name_str = self.interner.resolve(&*name).to_string();
                 // Get the struct ID from the lookup table
                 let struct_id = *self
@@ -923,7 +915,7 @@ impl<'a> Sema<'a> {
                     })?;
 
                 let struct_name = name_str.clone();
-                let fields = self.rir.get_field_decls(*fields_start, *fields_len);
+                let fields = self.rir.struct_fields(fields);
 
                 // Check for duplicate field names
                 let mut seen_fields: HashSet<Spur> = HashSet::new();
@@ -1120,21 +1112,14 @@ impl<'a> Sema<'a> {
         for (inst_ref, inst) in self.rir.iter() {
             match &inst.data {
                 InstData::StructDecl {
-                    directives_start,
-                    directives_len,
+                    directives,
                     name,
-                    methods_start,
-                    methods_len,
+                    methods,
                     ..
                 } => {
-                    self.validate_copy_struct(
-                        *directives_start,
-                        *directives_len,
-                        *name,
-                        inst.span,
-                    )?;
+                    self.validate_copy_struct(directives, *name, inst.span)?;
                     // Collect methods defined inline in the struct
-                    self.collect_struct_methods(*name, *methods_start, *methods_len, inst.span)?;
+                    self.collect_struct_methods(*name, methods, inst.span)?;
                 }
 
                 InstData::DropFnDecl { type_name, .. } => {
@@ -1142,13 +1127,10 @@ impl<'a> Sema<'a> {
                 }
 
                 InstData::FnDecl {
-                    directives_start,
-                    directives_len,
                     is_pub,
                     is_unchecked,
                     name,
-                    params_start,
-                    params_len,
+                    params,
                     return_type,
                     body,
                     has_self,
@@ -1161,7 +1143,7 @@ impl<'a> Sema<'a> {
                     // methods alike — so checking here before the
                     // signature-collection skips below covers them all in one
                     // place without double-reporting.
-                    self.check_duplicate_param_names(*params_start, *params_len)?;
+                    self.check_duplicate_param_names(params)?;
 
                     // Skip methods (has_self = true) - these are handled elsewhere:
                     // - Named struct methods are collected via ImplDecl
@@ -1183,16 +1165,13 @@ impl<'a> Sema<'a> {
                         continue;
                     }
                     self.collect_function_signature(
+                        inst_ref,
                         *name,
-                        *params_start,
-                        *params_len,
                         *return_type,
                         *body,
                         inst.span,
                         *is_pub,
                         *is_unchecked,
-                        *directives_start,
-                        *directives_len,
                     )?;
                 }
 
@@ -1213,12 +1192,11 @@ impl<'a> Sema<'a> {
     /// Validate that a @copy struct only contains Copy type fields.
     fn validate_copy_struct(
         &self,
-        directives_start: u32,
-        directives_len: u32,
+        directives: &rue_rir::RirDirectivesRange,
         name: Spur,
         span: Span,
     ) -> CompileResult<()> {
-        let directives = self.rir.get_directives(directives_start, directives_len);
+        let directives = self.rir.directives(directives);
         if !self.has_copy_directive(directives.iter()) {
             return Ok(());
         }
@@ -1327,16 +1305,13 @@ impl<'a> Sema<'a> {
         let copy_sym = self.interner.get("copy")?;
         for (_, inst) in self.rir.iter() {
             if let InstData::StructDecl {
-                name,
-                directives_start,
-                directives_len,
-                ..
+                name, directives, ..
             } = &inst.data
             {
                 if *name != type_name {
                     continue;
                 }
-                let directives = self.rir.get_directives(*directives_start, *directives_len);
+                let directives = self.rir.directives(directives);
                 return directives
                     .iter()
                     .find(|d| d.name == copy_sym)
@@ -1356,8 +1331,8 @@ impl<'a> Sema<'a> {
     /// receiver is carried separately (`has_self`) — so `fn m(self, a, a)`
     /// still errors on the repeated `a` while `self` plus one distinct param
     /// is fine.
-    fn check_duplicate_param_names(&self, params_start: u32, params_len: u32) -> CompileResult<()> {
-        let params = self.rir.get_params(params_start, params_len);
+    fn check_duplicate_param_names(&self, params: &rue_rir::RirParamsRange) -> CompileResult<()> {
+        let params = self.rir.params(params);
         let mut seen: HashSet<Spur> = HashSet::with_capacity(params.len());
         for param in &params {
             if !seen.insert(param.name) {
@@ -1375,16 +1350,13 @@ impl<'a> Sema<'a> {
     /// Collect a function signature for forward reference.
     fn collect_function_signature(
         &mut self,
+        declaration: InstRef,
         name: Spur,
-        params_start: u32,
-        params_len: u32,
         return_type_sym: Spur,
         body: InstRef,
         span: Span,
         is_pub: bool,
         is_unchecked: bool,
-        directives_start: u32,
-        directives_len: u32,
     ) -> CompileResult<()> {
         // Reject user functions whose name collides with a runtime/codegen helper
         // symbol (e.g. `__rue_str_eq`, `__rue_alloc`, `_start`). Without this, such a
@@ -1407,8 +1379,16 @@ impl<'a> Sema<'a> {
             super::DeclarationTypeDependencyKind::Signature,
         ));
 
-        let params = self.rir.get_params(params_start, params_len);
-        let directives = self.rir.get_directives(directives_start, directives_len);
+        let InstData::FnDecl {
+            params: rir_params_range,
+            directives: directives_range,
+            ..
+        } = &self.rir.get(declaration).data
+        else {
+            unreachable!()
+        };
+        let params = self.rir.params(rir_params_range);
+        let directives = self.rir.directives(directives_range);
         let allow_unused_function = self.has_allow_directive(directives.iter(), "unused_function");
         let allow_unused_variable = self.has_allow_directive(directives.iter(), "unused_variable");
         let allow_unreachable_code =
@@ -1530,8 +1510,7 @@ impl<'a> Sema<'a> {
                 return_type: ret_type,
                 return_type_sym,
                 body,
-                rir_params_start: params_start,
-                rir_params_len: params_len,
+                declaration,
                 span,
                 is_generic,
                 is_pub,
@@ -1549,8 +1528,7 @@ impl<'a> Sema<'a> {
     fn collect_struct_methods(
         &mut self,
         type_name: Spur,
-        methods_start: u32,
-        methods_len: u32,
+        methods: &rue_rir::RirStructMethodsRange,
         span: Span,
     ) -> CompileResult<()> {
         let struct_id = match self.structs_by_file_name.get(&(span.file_id, type_name)) {
@@ -1565,13 +1543,12 @@ impl<'a> Sema<'a> {
         };
         let struct_type = Type::new_struct(struct_id);
 
-        let methods = self.rir.get_inst_refs(methods_start, methods_len);
+        let methods = self.rir.struct_methods(methods);
         for method_ref in methods {
             let method_inst = self.rir.get(method_ref);
             if let InstData::FnDecl {
                 name: method_name,
-                params_start,
-                params_len,
+                params,
                 return_type,
                 body,
                 has_self,
@@ -1606,7 +1583,7 @@ impl<'a> Sema<'a> {
                     ));
                 }
 
-                let params = self.rir.get_params(*params_start, *params_len);
+                let params = self.rir.params(params);
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
                 let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
                 let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
@@ -1858,17 +1835,14 @@ impl<'a> Sema<'a> {
 
         match &init_inst.data {
             // @import("path") evaluates to a module at compile time.
-            InstData::Intrinsic {
-                name,
-                args_start,
-                args_len,
-            } => {
+            InstData::Intrinsic { name, args } => {
                 if *name == self.known.import {
                     assert_eq!(
-                        *args_len, 1,
+                        self.rir.intrinsic_args(args).len(),
+                        1,
                         "compiler import preflight rejects malformed @import calls"
                     );
-                    let arg_refs = self.rir.get_inst_refs(*args_start, *args_len);
+                    let arg_refs = self.rir.intrinsic_args(args);
                     let arg_inst = self.rir.get(arg_refs.get(0).unwrap());
                     let import_path = match &arg_inst.data {
                         InstData::StringConst(path_spur) => {
@@ -1977,18 +1951,16 @@ impl<'a> Sema<'a> {
             InstData::MethodCall {
                 receiver,
                 method,
-                args_start,
-                args_len,
+                args,
             } => {
-                let (receiver, method, args_start, args_len) =
-                    (*receiver, *method, *args_start, *args_len);
+                let (receiver, method) = (*receiver, *method);
                 match self.eval_const_initializer(receiver, file_id, None)? {
                     ConstInit::Module(module_ty) => {
                         let module_id = module_ty
                             .as_module()
                             .expect("ConstInit::Module holds a module type");
                         self.eval_module_member_comptime_call(
-                            module_id, method, args_start, args_len, file_id, span,
+                            module_id, method, args, file_id, span,
                         )
                     }
                     ConstInit::Value(_) => Err(CompileError::new(
@@ -2226,13 +2198,8 @@ impl<'a> Sema<'a> {
             // A block's tail expression carries the context; `let` initializers
             // are typed by their own value (no annotation context available
             // here), and non-tail statements carry no expected type.
-            InstData::Block { extra_start, len } => {
-                let stmt_refs: Vec<InstRef> = self
-                    .rir
-                    .get_extra(*extra_start, *len)
-                    .iter()
-                    .map(|&raw| InstRef::from_raw(raw))
-                    .collect();
+            InstData::Block { instructions } => {
+                let stmt_refs: Vec<InstRef> = self.rir.block_insts(instructions).values().collect();
                 let n = stmt_refs.len();
                 let mut tail_ty = None;
                 for (i, &stmt_ref) in stmt_refs.iter().enumerate() {
@@ -2310,13 +2277,8 @@ impl<'a> Sema<'a> {
                 let inner = *inner;
                 self.ensure_const_init_deps_collected(inner, file_id)
             }
-            InstData::Block { extra_start, len } => {
-                let stmt_refs: Vec<InstRef> = self
-                    .rir
-                    .get_extra(*extra_start, *len)
-                    .iter()
-                    .map(|&raw| InstRef::from_raw(raw))
-                    .collect();
+            InstData::Block { instructions } => {
+                let stmt_refs: Vec<InstRef> = self.rir.block_insts(instructions).values().collect();
                 for stmt_ref in stmt_refs {
                     self.ensure_const_init_deps_collected(stmt_ref, file_id)?;
                 }
@@ -2403,13 +2365,8 @@ impl<'a> Sema<'a> {
                 let inner = *inner;
                 self.collect_const_module_members(inner, file_id, out)
             }
-            InstData::Block { extra_start, len } => {
-                let stmt_refs: Vec<InstRef> = self
-                    .rir
-                    .get_extra(*extra_start, *len)
-                    .iter()
-                    .map(|&raw| InstRef::from_raw(raw))
-                    .collect();
+            InstData::Block { instructions } => {
+                let stmt_refs: Vec<InstRef> = self.rir.block_insts(instructions).values().collect();
                 for stmt_ref in stmt_refs {
                     self.collect_const_module_members(stmt_ref, file_id, out)?;
                 }
@@ -2591,8 +2548,7 @@ impl<'a> Sema<'a> {
         &mut self,
         module_id: crate::types::ModuleId,
         member: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         accessing_file: FileId,
         span: Span,
     ) -> CompileResult<ConstInit> {
@@ -2663,7 +2619,7 @@ impl<'a> Sema<'a> {
         let param_modes = self.param_arena.modes(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
         let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-        let args = self.rir.get_call_args(args_start, args_len);
+        let args = self.rir.call_args(args);
         if args.len() != param_names.len() {
             return Err(CompileError::new(
                 ErrorKind::ConstExprNotSupported {
@@ -2796,43 +2752,19 @@ impl<'a> Sema<'a> {
         let Some(inst_ref) = self.declaration_index.first_free_function(target, file_id) else {
             return Ok(None);
         };
-        let (
-            span,
-            is_pub,
-            params_start,
-            params_len,
-            return_type,
-            body,
-            is_unchecked,
-            directives_start,
-            directives_len,
-        ) = {
+        let (span, is_pub, return_type, body, is_unchecked) = {
             let inst = self.rir.get(inst_ref);
             let InstData::FnDecl {
                 is_pub,
-                params_start,
-                params_len,
                 return_type,
                 body,
                 is_unchecked,
-                directives_start,
-                directives_len,
                 ..
             } = &inst.data
             else {
                 unreachable!("free-function index contains only FnDecl instructions");
             };
-            (
-                inst.span,
-                *is_pub,
-                *params_start,
-                *params_len,
-                *return_type,
-                *body,
-                *is_unchecked,
-                *directives_start,
-                *directives_len,
-            )
+            (inst.span, *is_pub, *return_type, *body, *is_unchecked)
         };
 
         let internal_target = self.internal_function_name(target, span.file_id);
@@ -2846,16 +2778,13 @@ impl<'a> Sema<'a> {
                 return Ok(None);
             }
             let collected = self.collect_function_signature(
+                inst_ref,
                 target,
-                params_start,
-                params_len,
                 return_type,
                 body,
                 span,
                 is_pub,
                 is_unchecked,
-                directives_start,
-                directives_len,
             );
             self.fn_signatures_in_flight.remove(&internal_target);
             collected?;

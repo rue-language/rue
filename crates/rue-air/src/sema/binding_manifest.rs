@@ -468,8 +468,7 @@ impl<'a> DeclarationShells<'a> {
                     },
                     InstData::StructDecl {
                         is_linear: syntax_linear,
-                        fields_start,
-                        fields_len,
+                        fields: rir_fields,
                         ..
                     },
                 ) => {
@@ -489,7 +488,7 @@ impl<'a> DeclarationShells<'a> {
                     if self
                         .sema
                         .rir
-                        .get_field_decls(*fields_start, *fields_len)
+                        .struct_fields(rir_fields)
                         .values()
                         .map(|(name, _)| self.sema.interner.resolve(&name))
                         .ne(fields.iter().map(|field| field.0.as_ref()))
@@ -595,18 +594,16 @@ impl<'a> DeclarationShells<'a> {
                     let InstData::FnDecl {
                         name,
                         return_type,
-                        params_start,
-                        params_len,
+                        params,
                         self_mode,
-                        directives_start,
-                        directives_len,
+                        directives,
                         ..
                     } = &self.sema.rir.get(pending.declaration).data
                     else {
                         return Err(DeclarationInstallFailure::KindMismatch);
                     };
                     let type_name = self.sema.interner.get_or_intern("type");
-                    let rir_parameters = self.sema.rir.get_params(*params_start, *params_len);
+                    let rir_parameters = self.sema.rir.params(params);
                     if parameters
                         .iter()
                         .zip(rir_parameters.iter())
@@ -672,10 +669,7 @@ impl<'a> DeclarationShells<'a> {
                         let internal = self
                             .sema
                             .internal_function_name(*name, pending.shell.declaration_span.file_id);
-                        let directives = self
-                            .sema
-                            .rir
-                            .get_directives(*directives_start, *directives_len);
+                        let directives = self.sema.rir.directives(directives);
                         let allow_unused_function = self
                             .sema
                             .has_allow_directive(directives.iter(), "unused_function");
@@ -696,8 +690,7 @@ impl<'a> DeclarationShells<'a> {
                                 return_type: return_type_value,
                                 return_type_sym: *return_type,
                                 body,
-                                rir_params_start: *params_start,
-                                rir_params_len: *params_len,
+                                declaration: pending.declaration,
                                 span: pending.shell.declaration_span,
                                 is_generic: pending.shell.is_generic,
                                 is_pub: pending.shell.is_public,
@@ -1157,8 +1150,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     is_pub,
                     is_unchecked,
                     name,
-                    params_start,
-                    params_len,
+                    params,
                     body,
                     has_self,
                     ..
@@ -1169,7 +1161,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         (Some(_), false) => SemanticBindingKind::AssociatedFunction,
                         (None, _) => SemanticBindingKind::Function,
                     };
-                    let params = self.rir.get_params(*params_start, *params_len);
+                    let params = self.rir.params(params);
                     let names = params
                         .iter()
                         .map(|param| Arc::from(self.interner.resolve(&param.name)))
@@ -1358,8 +1350,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         self.export_callable_signature(
             info.params,
             info.return_type,
-            info.rir_params_start,
-            info.rir_params_len,
+            info.rir_params(self.rir),
             info.return_type_sym,
         )
     }
@@ -1368,11 +1359,10 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         &self,
         range: crate::ParamRange,
         return_type: Type,
-        params_start: u32,
-        params_len: u32,
+        rir_params: &rue_rir::RirParamsRange,
         return_type_sym: Spur,
     ) -> Result<(Arc<[SemanticExportParameter]>, SemanticExportType), SemanticExportFailure> {
-        let rir_params = self.rir.get_params(params_start, params_len);
+        let rir_params = self.rir.params(rir_params);
         let type_name = self.interner.get("type");
         let generic_names = rir_params
             .iter()
@@ -1497,8 +1487,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         .get(&(sid, name))
                         .ok_or(SemanticExportFailure::UnmappedFunction)?;
                     let InstData::FnDecl {
-                        params_start,
-                        params_len,
+                        params,
                         return_type,
                         ..
                     } = &self.rir.get(declaration).data
@@ -1508,8 +1497,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     let (parameters, result) = self.export_callable_signature(
                         info.params,
                         info.return_type,
-                        *params_start,
-                        *params_len,
+                        params,
                         *return_type,
                     )?;
                     SemanticDeclarationPayload::Callable {
@@ -1656,8 +1644,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 }
                 InstData::StructDecl {
                     name,
-                    methods_start,
-                    methods_len,
+                    methods,
                     is_pub,
                     ..
                 } => {
@@ -1676,7 +1663,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         *is_pub,
                     );
                     work.types_emitted += 1;
-                    for method_ref in self.rir.get_inst_refs(*methods_start, *methods_len) {
+                    for method_ref in self.rir.struct_methods(methods) {
                         work.named_method_edges_visited += 1;
                         let method_inst = self.rir.get(method_ref);
                         let InstData::FnDecl {
@@ -2145,7 +2132,7 @@ mod tests {
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
-        let mut rir = astgen.finish();
+        let mut rir = astgen.finish_editor();
         let method = rir
             .iter()
             .find_map(|(reference, inst)| match inst.data {
@@ -2153,10 +2140,7 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        let InstData::FnDecl { is_pub, .. } = &mut rir.get_mut(method).data else {
-            unreachable!()
-        };
-        *is_pub = true;
+        rir.set_function_public(method, true).unwrap();
         let bound = Sema::new(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();

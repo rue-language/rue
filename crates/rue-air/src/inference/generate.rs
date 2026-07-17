@@ -960,8 +960,7 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Local variable allocation
             InstData::Alloc {
-                directives_start: _,
-                directives_len: _,
+                directives: _,
                 name,
                 is_mut,
                 ty: type_annotation,
@@ -1115,11 +1114,7 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Function call
-            InstData::Call {
-                name,
-                args_start,
-                args_len,
-            } => {
+            InstData::Call { name, args } => {
                 let alias_target = self
                     .const_function_aliases
                     .and_then(|aliases| aliases.get(&(span.file_id, *name)))
@@ -1129,7 +1124,7 @@ impl<'a> ConstraintGenerator<'a> {
                         .and_then(|functions| functions.get(&(span.file_id, *name)))
                         .copied()
                 });
-                let args = self.rir.get_call_args(*args_start, *args_len);
+                let args = self.rir.call_args(args);
                 // `print(s)` / `println(s)` builtin free functions (RUE-1):
                 // generate the argument and yield unit. Semantic analysis
                 // validates the shared text family (`StrBuf`, `str`, `Str(N)`),
@@ -1313,13 +1308,9 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Intrinsic call
-            InstData::Intrinsic {
-                name,
-                args_start,
-                args_len,
-            } => {
+            InstData::Intrinsic { name, args } => {
                 let intrinsic_name = self.interner.resolve(name);
-                let args = self.rir.get_inst_refs(*args_start, *args_len);
+                let args = self.rir.intrinsic_args(args);
 
                 if intrinsic_name == "intCast" || intrinsic_name == "cast" {
                     // @intCast: target type is inferred from context.
@@ -1686,12 +1677,8 @@ impl<'a> ConstraintGenerator<'a> {
                 }
             }
 
-            InstData::InternalIntrinsic {
-                intrinsic,
-                args_start,
-                args_len,
-            } => {
-                let args = self.rir.get_inst_refs(*args_start, *args_len);
+            InstData::InternalIntrinsic { intrinsic, args } => {
+                let args = self.rir.internal_intrinsic_args(args);
                 for arg_ref in args {
                     self.generate(arg_ref, ctx);
                 }
@@ -1724,12 +1711,11 @@ impl<'a> ConstraintGenerator<'a> {
             } => InferType::Concrete(Type::U64),
 
             // Block
-            InstData::Block { extra_start, len } => {
+            InstData::Block { instructions } => {
                 self.enter_scope(ctx);
                 let mut last_ty = InferType::Concrete(Type::UNIT);
-                let block_insts = self.rir.get_extra(*extra_start, *len);
-                for &inst_raw in block_insts {
-                    let block_inst_ref = InstRef::from_raw(inst_raw);
+                let block_insts = self.rir.block_insts(instructions);
+                for block_inst_ref in block_insts.values() {
                     let info = self.generate(block_inst_ref, ctx);
                     last_ty = info.ty;
                 }
@@ -1891,13 +1877,9 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Continue => InferType::Concrete(Type::NEVER),
 
             // Match expression
-            InstData::Match {
-                scrutinee,
-                arms_start,
-                arms_len,
-            } => {
+            InstData::Match { scrutinee, arms } => {
                 let scrutinee_info = self.generate(*scrutinee, ctx);
-                let arms = self.rir.get_match_arms(*arms_start, *arms_len);
+                let arms = self.rir.match_arms(arms);
 
                 // Comptime-known scrutinee (spec 4.14:19): when the scrutinee
                 // is a comptime value known for this specialization, sema
@@ -2023,8 +2005,7 @@ impl<'a> ConstraintGenerator<'a> {
                 module,
                 ctor_head,
                 type_name,
-                fields_start,
-                fields_len,
+                fields,
                 shorthand_span: _,
             } => {
                 // Inline type-constructor literal heads (`F(args) { ... }`,
@@ -2070,7 +2051,7 @@ impl<'a> ConstraintGenerator<'a> {
                         })
                 };
 
-                let fields = self.rir.get_field_inits(*fields_start, *fields_len);
+                let fields = self.rir.field_inits(fields);
                 if let Some(struct_ty) = struct_ty {
                     // Constrain each initializer against its field's declared
                     // type, so literal initializers are range-checked at the
@@ -2254,11 +2235,8 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Array initialization
-            InstData::ArrayInit {
-                elems_start,
-                elems_len,
-            } => {
-                let elements = self.rir.get_inst_refs(*elems_start, *elems_len);
+            InstData::ArrayInit { elements } => {
+                let elements = self.rir.array_elements(elements);
                 if elements.is_empty() {
                     // Empty array - need type annotation to know element type
                     // Use a fresh type variable for the element type
@@ -2270,8 +2248,8 @@ impl<'a> ConstraintGenerator<'a> {
                 } else {
                     // Get element type from first element, constrain rest to match
                     let first_info = self.generate(elements.get(0).unwrap(), ctx);
-                    for elem_ref in elements.iter().skip(1) {
-                        let elem_info = self.generate(*elem_ref, ctx);
+                    for elem_ref in elements.values().skip(1) {
+                        let elem_info = self.generate(elem_ref, ctx);
                         self.add_constraint(Constraint::equal(
                             elem_info.ty,
                             first_info.ty.clone(),
@@ -2368,8 +2346,7 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::MethodCall {
                 receiver,
                 method,
-                args_start,
-                args_len,
+                args,
             } => {
                 // `Type.method(args)` where the receiver names a type is an
                 // associated-function call / enum tuple-variant construction
@@ -2395,14 +2372,7 @@ impl<'a> ConstraintGenerator<'a> {
                         || self.enum_type_for(&name, span.file_id).is_some())
                 {
                     return {
-                        let ty = self.generate_type_qualified_call(
-                            name,
-                            *method,
-                            *args_start,
-                            *args_len,
-                            span,
-                            ctx,
-                        );
+                        let ty = self.generate_type_qualified_call(name, *method, args, span, ctx);
                         self.record_type(inst_ref, ty.clone());
                         ExprInfo::new(ty, span)
                     };
@@ -2429,13 +2399,8 @@ impl<'a> ConstraintGenerator<'a> {
                     && let Some(member_ty) = self
                         .struct_type_for_module(module_ref, &type_name)
                         .or_else(|| self.enum_type_for_module(module_ref, &type_name))
-                    && let Some(result) = self.generate_call_on_reduced_type(
-                        member_ty,
-                        *method,
-                        *args_start,
-                        *args_len,
-                        ctx,
-                    )
+                    && let Some(result) =
+                        self.generate_call_on_reduced_type(member_ty, *method, args, ctx)
                 {
                     self.record_type(inst_ref, result.clone());
                     return ExprInfo::new(result, span);
@@ -2443,7 +2408,7 @@ impl<'a> ConstraintGenerator<'a> {
 
                 // Generate type for receiver
                 let receiver_info = self.generate(*receiver, ctx);
-                let args = self.rir.get_call_args(*args_start, *args_len);
+                let call_args = self.rir.call_args(args);
 
                 // A string literal is otherwise defaulted only after solving,
                 // but method lookup needs a receiver type while constraints
@@ -2468,7 +2433,7 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     let param_types = method_sig.param_types.clone();
                     let return_type = method_sig.return_type.clone();
-                    for (arg, param_type) in args.iter().zip(param_types.iter()) {
+                    for (arg, param_type) in call_args.iter().zip(param_types.iter()) {
                         let arg_info = self.generate(arg.value, ctx);
                         self.add_constraint(Constraint::equal(
                             arg_info.ty,
@@ -2508,10 +2473,11 @@ impl<'a> ConstraintGenerator<'a> {
                                     .copied()
                             });
                         if let Some(func) = function_key.and_then(|key| self.functions.get(&key)) {
-                            if !func.is_generic && args.len() == func.param_types.len() {
+                            if !func.is_generic && call_args.len() == func.param_types.len() {
                                 // Constrain each argument against its declared
                                 // parameter type (same as a direct Call).
-                                for (arg, param_ty) in args.iter().zip(func.param_types.iter()) {
+                                for (arg, param_ty) in call_args.iter().zip(func.param_types.iter())
+                                {
                                     let arg_info = self.generate(arg.value, ctx);
                                     // Slice and `borrow str` parameters coerce
                                     // from a `borrow` argument; skip strict
@@ -2538,7 +2504,7 @@ impl<'a> ConstraintGenerator<'a> {
                                 // defaulted to i32, clashing with the instantiated
                                 // i64 parameter (the non-generic path above already
                                 // constrains, and same-file generic Calls do too).
-                                let arg_infos: Vec<ExprInfo> = args
+                                let arg_infos: Vec<ExprInfo> = call_args
                                     .iter()
                                     .map(|arg| self.generate(arg.value, ctx))
                                     .collect();
@@ -2546,7 +2512,7 @@ impl<'a> ConstraintGenerator<'a> {
                                     std::collections::HashMap::new();
                                 let mut value_subst: std::collections::HashMap<lasso::Spur, i128> =
                                     std::collections::HashMap::new();
-                                for (i, arg) in args.iter().enumerate() {
+                                for (i, arg) in call_args.iter().enumerate() {
                                     if i >= func.param_comptime.len()
                                         || !func.param_comptime[i]
                                         || i >= func.param_names.len()
@@ -2600,7 +2566,7 @@ impl<'a> ConstraintGenerator<'a> {
                             } else {
                                 // Arity mismatch: just process the arguments;
                                 // sema checks the rest.
-                                for arg in args.iter() {
+                                for arg in call_args.iter() {
                                     self.generate(arg.value, ctx);
                                 }
                             }
@@ -2613,7 +2579,7 @@ impl<'a> ConstraintGenerator<'a> {
                             }
                         } else {
                             // Unknown member - sema reports UndefinedFunction
-                            for arg in args.iter() {
+                            for arg in call_args.iter() {
                                 self.generate(arg.value, ctx);
                             }
                             InferType::Concrete(Type::ERROR)
@@ -2654,17 +2620,12 @@ impl<'a> ConstraintGenerator<'a> {
                             .inline_ctor_head_types
                             .and_then(|heads| heads.get(receiver).copied())
                             .or(module_member_ty)
-                            && let Some(result) = self.generate_call_on_reduced_type(
-                                reduced,
-                                *method,
-                                *args_start,
-                                *args_len,
-                                ctx,
-                            )
+                            && let Some(result) =
+                                self.generate_call_on_reduced_type(reduced, *method, args, ctx)
                         {
                             result
                         } else {
-                            for arg in args.iter() {
+                            for arg in call_args.iter() {
                                 self.generate(arg.value, ctx);
                             }
                             InferType::Var(self.fresh_var())
@@ -2679,7 +2640,7 @@ impl<'a> ConstraintGenerator<'a> {
                             if let Some(method_sig) = self.method_sig(&method_key) {
                                 // Generate constraints for arguments
                                 for (arg, param_type) in
-                                    args.iter().zip(method_sig.param_types.iter())
+                                    call_args.iter().zip(method_sig.param_types.iter())
                                 {
                                     // View/string compatibility is
                                     // representation-aware and authoritative
@@ -2702,14 +2663,14 @@ impl<'a> ConstraintGenerator<'a> {
                             } else {
                                 // Method not found - sema will report the error
                                 // Still generate arg types to catch errors in arguments
-                                for arg in args.iter() {
+                                for arg in call_args.iter() {
                                     self.generate(arg.value, ctx);
                                 }
                                 InferType::Concrete(Type::ERROR)
                             }
                         } else {
                             // Non-struct receiver - sema will report the error
-                            for arg in args.iter() {
+                            for arg in call_args.iter() {
                                 self.generate(arg.value, ctx);
                             }
                             InferType::Concrete(Type::ERROR)
@@ -2719,7 +2680,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // receiver and diagnoses later (mirrors FieldGet's
                     // fallback, RUE-126/RUE-119).
                     _ => {
-                        for arg in args.iter() {
+                        for arg in call_args.iter() {
                             self.generate(arg.value, ctx);
                         }
                         InferType::Var(self.fresh_var())
@@ -2922,8 +2883,7 @@ impl<'a> ConstraintGenerator<'a> {
         &mut self,
         type_name: Spur,
         function: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut ConstraintContext,
     ) -> InferType {
@@ -2931,8 +2891,7 @@ impl<'a> ConstraintGenerator<'a> {
         // Checked first so it takes precedence over the struct-method path
         // below.
         if let Some(enum_ty) = self.enum_type_for(&type_name, span.file_id)
-            && let Some(result) =
-                self.generate_call_on_reduced_type(enum_ty, function, args_start, args_len, ctx)
+            && let Some(result) = self.generate_call_on_reduced_type(enum_ty, function, args, ctx)
         {
             return result;
         }
@@ -2946,13 +2905,12 @@ impl<'a> ConstraintGenerator<'a> {
         if let Some(struct_ty) = self.struct_type_for(&type_name, span.file_id)
             && struct_ty.as_struct().is_some()
         {
-            if let Some(result) =
-                self.generate_call_on_reduced_type(struct_ty, function, args_start, args_len, ctx)
+            if let Some(result) = self.generate_call_on_reduced_type(struct_ty, function, args, ctx)
             {
                 return result;
             }
             // Method not found - sema reports the error; still process args.
-            let args = self.rir.get_call_args(args_start, args_len);
+            let args = self.rir.call_args(args);
             for arg in args.iter() {
                 self.generate(arg.value, ctx);
             }
@@ -2960,7 +2918,7 @@ impl<'a> ConstraintGenerator<'a> {
         }
 
         // Type not found - sema reports the error; still process args.
-        let args = self.rir.get_call_args(args_start, args_len);
+        let args = self.rir.call_args(args);
         for arg in args.iter() {
             self.generate(arg.value, ctx);
         }
@@ -2982,8 +2940,7 @@ impl<'a> ConstraintGenerator<'a> {
         &mut self,
         ty: Type,
         function: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         ctx: &mut ConstraintContext,
     ) -> Option<InferType> {
         if let Some(enum_id) = ty.as_enum() {
@@ -2991,7 +2948,7 @@ impl<'a> ConstraintGenerator<'a> {
             let payload = def
                 .find_variant(self.interner.resolve(&function))
                 .map(|vidx| def.variant_payload(vidx).to_vec())?;
-            let args = self.rir.get_call_args(args_start, args_len);
+            let args = self.rir.call_args(args);
             for (i, arg) in args.iter().enumerate() {
                 let arg_info = self.generate(arg.value, ctx);
                 if let Some(&pty) = payload.get(i) {
@@ -3007,7 +2964,7 @@ impl<'a> ConstraintGenerator<'a> {
         }
         let struct_id = ty.as_struct()?;
         let method_sig = self.method_sig(&(struct_id, function))?;
-        let args = self.rir.get_call_args(args_start, args_len);
+        let args = self.rir.call_args(args);
         for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
             let defer_equality = self.is_slice_struct_type(param_type.clone());
             let arg_info = self.generate(arg.value, ctx);
@@ -3637,8 +3594,9 @@ mod tests {
     use lasso::ThreadedRodeo;
 
     /// Helper to create a minimal RIR, interner, and type pool for testing.
-    fn make_test_rir_interner_and_type_pool() -> (Rir, ThreadedRodeo, TypeInternPool) {
-        let rir = Rir::new();
+    fn make_test_rir_interner_and_type_pool() -> (rue_rir::RirEditor, ThreadedRodeo, TypeInternPool)
+    {
+        let rir = rue_rir::RirEditor::new();
         let interner = ThreadedRodeo::new();
         let type_pool = TypeInternPool::new();
         (rir, interner, type_pool)
@@ -3724,16 +3682,8 @@ mod tests {
                 })
             });
             let arg_refs: Vec<_> = arg.into_iter().collect();
-            let (args_start, args_len) = rir.add_inst_refs(&arg_refs);
             let name = interner.get_or_intern(name);
-            let intrinsic = rir.add_inst(rue_rir::Inst {
-                data: InstData::Intrinsic {
-                    name,
-                    args_start,
-                    args_len,
-                },
-                span: Span::new(0, 6),
-            });
+            let intrinsic = rir.add_intrinsic(name, &arg_refs, Span::new(0, 6)).unwrap();
 
             let mut cgen = ConstraintGenerator::new(
                 &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
@@ -4253,13 +4203,7 @@ mod tests {
         let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: { } (empty block)
-        let block = rir.add_inst(rue_rir::Inst {
-            data: InstData::Block {
-                extra_start: 0,
-                len: 0,
-            },
-            span: Span::new(0, 2),
-        });
+        let block = rir.add_block(&[], Span::new(0, 2)).unwrap();
 
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
@@ -4337,18 +4281,16 @@ mod tests {
             data: InstData::IntConst(42),
             span: Span::new(4, 6),
         });
-        let (args_start, args_len) = rir.add_call_args(&[rue_rir::RirCallArg {
-            value: arg,
-            mode: rue_rir::RirArgMode::Normal,
-        }]);
-        let call = rir.add_inst(rue_rir::Inst {
-            data: InstData::Call {
-                name: func_name,
-                args_start,
-                args_len,
-            },
-            span: Span::new(0, 7),
-        });
+        let call = rir
+            .add_call(
+                func_name,
+                &[rue_rir::RirCallArg {
+                    value: arg,
+                    mode: rue_rir::RirArgMode::Normal,
+                }],
+                Span::new(0, 7),
+            )
+            .unwrap();
 
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
@@ -4379,18 +4321,16 @@ mod tests {
             data: InstData::IntConst(42),
             span: Span::new(8, 10),
         });
-        let (args_start, args_len) = rir.add_call_args(&[rue_rir::RirCallArg {
-            value: arg,
-            mode: rue_rir::RirArgMode::Normal,
-        }]);
-        let call = rir.add_inst(rue_rir::Inst {
-            data: InstData::Call {
-                name: unknown_func,
-                args_start,
-                args_len,
-            },
-            span: Span::new(0, 11),
-        });
+        let call = rir
+            .add_call(
+                unknown_func,
+                &[rue_rir::RirCallArg {
+                    value: arg,
+                    mode: rue_rir::RirArgMode::Normal,
+                }],
+                Span::new(0, 11),
+            )
+            .unwrap();
 
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
@@ -4449,16 +4389,13 @@ mod tests {
         });
         let pattern3 = rue_rir::RirPattern::Wildcard(Span::new(30, 31));
 
-        let arms = vec![(pattern1, body1), (pattern2, body2), (pattern3, body3)];
-        let (arms_start, arms_len) = rir.add_match_arms(&arms);
-        let match_inst = rir.add_inst(rue_rir::Inst {
-            data: InstData::Match {
+        let match_inst = rir
+            .add_match(
                 scrutinee,
-                arms_start,
-                arms_len,
-            },
-            span: Span::new(0, 40),
-        });
+                &[(pattern1, body1), (pattern2, body2), (pattern3, body3)],
+                Span::new(0, 40),
+            )
+            .unwrap();
 
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,

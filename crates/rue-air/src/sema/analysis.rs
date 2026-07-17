@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use lasso::{Key, Spur, ThreadedRodeo};
+use lasso::{Spur, ThreadedRodeo};
 use rue_error::{
     CompileError, CompileErrors, CompileResult, CompileWarning, ErrorKind,
     IntrinsicTypeMismatchError, MultiErrorResult, OptionExt, PreviewFeature, WarningKind,
@@ -639,42 +639,26 @@ fn collect_static_function_references(sema: &BodySema<'_>) -> HashSet<Spur> {
             // without scanning these, a constructor used only in type
             // positions warned "unused function" (RUE-608).
             InstData::FnDecl {
-                params_start,
-                params_len,
+                params,
                 return_type,
                 ..
             } => {
-                for param in sema.rir.get_params(*params_start, *params_len) {
+                for param in sema.rir.params(params) {
                     mark_type_syntax_refs(sema, param.ty, inst.span.file_id, &mut referenced);
                 }
                 mark_type_syntax_refs(sema, *return_type, inst.span.file_id, &mut referenced);
             }
-            InstData::StructDecl {
-                fields_start,
-                fields_len,
-                ..
-            } => {
-                for (_, field_ty) in sema.rir.get_field_decls(*fields_start, *fields_len) {
+            InstData::StructDecl { fields, .. } => {
+                for (_, field_ty) in sema.rir.struct_fields(fields) {
                     mark_type_syntax_refs(sema, field_ty, inst.span.file_id, &mut referenced);
                 }
             }
             InstData::EnumDecl {
-                payloads_start,
-                payloads_len,
-                ..
+                payloads, variants, ..
             } => {
-                // Self-describing payload region: `[k, t0, .., t_{k-1}]` per
-                // variant (see `resolve_enum_payloads`).
-                let words = sema.rir.get_extra(*payloads_start, *payloads_len);
-                let mut i = 0usize;
-                while i < words.len() {
-                    let k = words[i] as usize;
-                    i += 1;
-                    for _ in 0..k {
-                        if let Some(ty_sym) = Spur::try_from_usize(words[i] as usize) {
-                            mark_type_syntax_refs(sema, ty_sym, inst.span.file_id, &mut referenced);
-                        }
-                        i += 1;
+                for payload in sema.rir.enum_payloads(payloads, variants) {
+                    for ty_sym in payload {
+                        mark_type_syntax_refs(sema, ty_sym, inst.span.file_id, &mut referenced);
                     }
                 }
             }
@@ -1070,40 +1054,29 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 continue;
             };
             let inst = sema.rir.get(declaration);
-            let (name, params_start, params_len, return_type, body, has_self, span) =
-                if let InstData::FnDecl {
-                    name,
-                    params_start,
-                    params_len,
-                    return_type,
-                    body,
-                    has_self,
-                    ..
-                } = &inst.data
-                {
-                    (
-                        *name,
-                        *params_start,
-                        *params_len,
-                        *return_type,
-                        *body,
-                        *has_self,
-                        inst.span,
-                    )
-                } else {
-                    unreachable!("free-function index contains only FnDecl instructions");
-                };
+            let (name, params, return_type, body, has_self, span) = if let InstData::FnDecl {
+                name,
+                params,
+                return_type,
+                body,
+                has_self,
+                ..
+            } = &inst.data
+            {
+                (*name, params, *return_type, *body, *has_self, inst.span)
+            } else {
+                unreachable!("free-function index contains only FnDecl instructions");
+            };
 
             debug_assert_eq!(name, source_name);
             debug_assert!(!has_self);
-            debug_assert_eq!(params_start, fn_info.rir_params_start);
-            debug_assert_eq!(params_len, fn_info.rir_params_len);
+            debug_assert_eq!(params, fn_info.rir_params(sema.rir));
             debug_assert_eq!(return_type, fn_info.return_type_sym);
             debug_assert_eq!(body, fn_info.body);
             debug_assert_eq!(span, fn_info.span);
             debug_assert_eq!(span.file_id, fn_info.file_id);
 
-            let params = sema.rir.get_params(params_start, params_len);
+            let params = sema.rir.params(params);
 
             let ordinary_owner = sema.body_owner_token(
                 fn_info.file_id,
@@ -1501,8 +1474,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
             let method_inst = sema.rir.get(method_ref);
             let InstData::FnDecl {
                 name: m_name,
-                params_start,
-                params_len,
+                params,
                 return_type,
                 body,
                 has_self,
@@ -1518,7 +1490,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
             debug_assert_eq!(*has_self, method_info.has_self);
             debug_assert_eq!(*self_mode, method_info.self_mode);
 
-            let params = sema.rir.get_params(*params_start, *params_len);
+            let params = sema.rir.params(params);
             let full_name = sema.method_symbol(struct_id, &method_name_str, *has_self);
             let generic = sema
                 .param_arena
