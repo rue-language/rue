@@ -214,7 +214,7 @@ The table is generated from ADR frontmatter. Run
 | [0049](0049-function-inlining.md) | Function Inlining | Accepted | compiler, codegen, optimization |
 | [0050](0050-semantic-dependency-manifest.md) | Stable semantic dependency manifests | Accepted | compiler, incremental, tooling |
 | [0051](0051-canonical-import-resolution-authority.md) | CanonicalImportGraph as the sole import-resolution authority | Accepted | architecture, compiler, modules, incremental, tooling |
-| [0052](0052-canonical-physical-type-layout.md) | Canonical Physical Type Layout | Proposal | types, semantics, compiler, codegen, abi, memory |
+| [0052](0052-canonical-physical-type-layout.md) | Canonical Physical Type Layout | Accepted | types, semantics, compiler, codegen, abi, memory |
 | [0053](0053-typed-compiler-query-state.md) | Typed CompilerSession query state | Accepted | architecture, compiler, incremental, tooling |
 | [0054](0054-loop-optimizations.md) | Loop Optimizations — LICM and Unrolling | Accepted | compiler, codegen, optimization |
 | [0055](0055-typed-runtime-abi-manifest.md) | Typed compiler-runtime ABI manifest | Implemented | architecture, compiler, runtime, abi, codegen |
