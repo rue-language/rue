@@ -6,12 +6,12 @@
 use super::*;
 
 impl<'a> BodySema<'a> {
-    pub(super) fn analyze_single_function(
+    pub(super) fn analyze_single_function<P>(
         &mut self,
         infer_ctx: &InferenceContext,
         fn_name: &str,
         return_type: Spur,
-        params: &[rue_rir::RirParam],
+        params: P,
         body: InstRef,
         span: Span,
         allow_unused_variable: bool,
@@ -22,12 +22,14 @@ impl<'a> BodySema<'a> {
         Vec<String>,
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
-    )> {
+    )>
+    where
+        P: ExactSizeIterator<Item = rue_rir::RirParam> + Clone,
+    {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Resolve parameter types and modes
         let param_info: Vec<(Spur, Type, RirParamMode, bool)> = params
-            .iter()
             .map(|p| {
                 let ty = self.resolve_type(p.ty, span)?;
                 // spec 4.14:5 — a parameter of type `type` must be marked
@@ -79,12 +81,12 @@ impl<'a> BodySema<'a> {
     /// The `infer_ctx` provides pre-computed type information for constraint generation.
     ///
     /// Returns the analyzed function, any warnings, and local strings collected during analysis.
-    pub(super) fn analyze_method_function(
+    pub(super) fn analyze_method_function<P>(
         &mut self,
         infer_ctx: &InferenceContext,
         full_name: &str,
         return_type: Spur,
-        params: &[rue_rir::RirParam],
+        params: P,
         body: InstRef,
         span: Span,
         struct_type: Type,
@@ -96,7 +98,10 @@ impl<'a> BodySema<'a> {
         Vec<String>,
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
-    )> {
+    )>
+    where
+        P: ExactSizeIterator<Item = rue_rir::RirParam> + Clone,
+    {
         // `Self` in a method signature (return or parameter position) resolves
         // to the enclosing struct's type, just like the receiver (RUE-123).
         let ret_type = self.resolve_type_with_self(return_type, struct_type, span)?;
@@ -112,7 +117,7 @@ impl<'a> BodySema<'a> {
         }
 
         // Add regular parameters with their modes
-        for p in params.iter() {
+        for p in params {
             let ty = self.resolve_type_with_self(p.ty, struct_type, span)?;
             // spec 4.14:5 — a parameter of type `type` must be marked
             // `comptime` (RUE-217); reject the runtime-`type` case cleanly

@@ -17,7 +17,7 @@ use rue_error::{
     CompileError, CompileErrors, CompileResult, CompileWarning, ErrorKind,
     IntrinsicTypeMismatchError, MultiErrorResult, OptionExt, PreviewFeature, WarningKind,
 };
-use rue_rir::{InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParamMode};
+use rue_rir::{InstData, InstRef, Rir, RirArgMode, RirCallArg, RirParamMode};
 use rue_span::{FileId, Span};
 use rue_target::{Arch, Os};
 
@@ -1231,7 +1231,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 &infer_ctx,
                 &fn_name_str,
                 return_type,
-                &params,
+                params.values(),
                 body,
                 span,
                 fn_info.allow_unused_variable,
@@ -1672,7 +1672,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 &infer_ctx,
                 &full_name,
                 *return_type,
-                &params,
+                params.values(),
                 *body,
                 method_inst.span,
                 method_info.struct_type,
@@ -2412,16 +2412,21 @@ pub(crate) fn root_variable_of(rir: &Rir, inst_ref: InstRef) -> Option<Spur> {
 ///
 /// The law of exclusivity: either one mutable (inout) access OR any number of
 /// immutable (borrow) accesses, never both simultaneously.
-fn check_exclusive_access_in(
+fn check_exclusive_access_in<A>(
     rir: &Rir,
     interner: &ThreadedRodeo,
-    args: &[RirCallArg],
+    args: A,
     call_span: Span,
-) -> CompileResult<()> {
+) -> CompileResult<()>
+where
+    A: IntoIterator,
+    A::Item: std::ops::Deref<Target = RirCallArg>,
+{
     let mut inout_vars: HashSet<Spur> = HashSet::new();
     let mut borrow_vars: HashSet<Spur> = HashSet::new();
 
     for arg in args {
+        let arg = &*arg;
         let maybe_var_symbol = root_variable_of(rir, arg.value);
 
         // Check that inout/borrow arguments are lvalues
@@ -2492,7 +2497,7 @@ fn check_module_member_call(
     member_file_id: FileId,
     fn_name_str: &str,
     param_types: &[Type],
-    args: &[RirCallArg],
+    argument_count: usize,
     accessible: bool,
     via_reexport: bool,
     span: Span,
@@ -2523,11 +2528,11 @@ fn check_module_member_call(
     }
 
     // Check argument count
-    if args.len() != param_types.len() {
+    if argument_count != param_types.len() {
         return Err(CompileError::new(
             ErrorKind::WrongArgumentCount {
                 expected: param_types.len(),
-                found: args.len(),
+                found: argument_count,
             },
             span,
         ));

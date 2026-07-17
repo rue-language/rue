@@ -34,9 +34,9 @@ impl FirstClassStrSite {
 
 impl<'a> BodySema<'a> {
     /// Check if directives contain @allow for a specific warning name.
-    pub(crate) fn has_allow_directive(
+    pub(crate) fn has_allow_directive<'r>(
         &self,
-        directives: &[RirDirective],
+        directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
         warning_name: &str,
     ) -> bool {
         let allow_sym = self.interner.get("allow");
@@ -638,11 +638,11 @@ impl<'a> BodySema<'a> {
 
     /// Check exclusivity rules for inout and borrow parameters in a call
     /// (adapter over the shared [`check_exclusive_access_in`], RUE-141).
-    pub(crate) fn check_exclusive_access(
-        &self,
-        args: &[RirCallArg],
-        call_span: Span,
-    ) -> CompileResult<()> {
+    pub(crate) fn check_exclusive_access<A>(&self, args: A, call_span: Span) -> CompileResult<()>
+    where
+        A: IntoIterator,
+        A::Item: std::ops::Deref<Target = RirCallArg>,
+    {
         check_exclusive_access_in(self.rir, self.interner, args, call_span)
     }
 
@@ -839,18 +839,21 @@ impl<'a> BodySema<'a> {
     /// through the existing by-value aggregate ABI (the parameter is by-value —
     /// see [`crate::sema::Sema`] parameter setup). All other arguments retain
     /// the ordinary by-value/by-reference analysis in this same chokepoint.
-    pub(crate) fn analyze_call_args_coerced(
+    pub(crate) fn analyze_call_args_coerced<A>(
         &mut self,
         air: &mut Air,
-        args: &[RirCallArg],
+        args: A,
         param_types: &[Type],
         param_modes: &[RirParamMode],
         ctx: &mut AnalysisContext,
-    ) -> CompileResult<Vec<AirCallArg>> {
+    ) -> CompileResult<Vec<AirCallArg>>
+    where
+        A: ExactSizeIterator<Item = rue_rir::RirCallArg> + Clone,
+    {
         // Loan-frame discipline (RUE-523): a by-value move of a root this call
         // passes `inout`/`borrow` conflicts in either argument order.
         let frame: Vec<(Spur, CallLoanKind)> = args
-            .iter()
+            .clone()
             .filter_map(|arg| {
                 let kind = if arg.is_inout() {
                     CallLoanKind::Inout
@@ -875,16 +878,19 @@ impl<'a> BodySema<'a> {
 
     /// The argument loop behind [`Sema::analyze_call_args_coerced`], factored
     /// out so the loan frame is popped on every exit path.
-    fn analyze_call_args_coerced_inner(
+    fn analyze_call_args_coerced_inner<A>(
         &mut self,
         air: &mut Air,
-        args: &[RirCallArg],
+        args: A,
         param_types: &[Type],
         param_modes: &[RirParamMode],
         ctx: &mut AnalysisContext,
-    ) -> CompileResult<Vec<AirCallArg>> {
+    ) -> CompileResult<Vec<AirCallArg>>
+    where
+        A: ExactSizeIterator<Item = rue_rir::RirCallArg>,
+    {
         let mut air_args = Vec::with_capacity(args.len());
-        for (i, arg) in args.iter().enumerate() {
+        for (i, arg) in args.enumerate() {
             // A `str` parameter (ADR-0043 Phase 3, RUE-324) is a first-class
             // 2-word value, not a `borrow`-materialized fat pointer. A string
             // literal argument materializes as a `str` under the expected type;
@@ -915,7 +921,7 @@ impl<'a> BodySema<'a> {
                 // rejected non-lvalue `borrow` arguments (E0427) before
                 // argument analysis began.
                 if arg.is_borrow() && self.is_str_struct(str_ty) {
-                    let value = self.coerce_borrow_str_place_to_view(air, arg, str_ty, ctx)?;
+                    let value = self.coerce_borrow_str_place_to_view(air, &arg, str_ty, ctx)?;
                     air_args.push(AirCallArg {
                         value,
                         // The 2-word view is passed BY VALUE (multi-slot
@@ -974,7 +980,7 @@ impl<'a> BodySema<'a> {
                 .is_some_and(|pt| self.slice_element_type(*pt).is_some());
             if is_slice_param && !is_inout_str_param && !is_exact_str_fixed_ref {
                 let slice_ty = param_types[i];
-                let value = self.coerce_borrow_array_to_slice(air, arg, slice_ty, ctx)?;
+                let value = self.coerce_borrow_array_to_slice(air, &arg, slice_ty, ctx)?;
                 air_args.push(AirCallArg {
                     value,
                     // The fat pointer is passed BY VALUE (multi-slot aggregate).
@@ -984,7 +990,7 @@ impl<'a> BodySema<'a> {
             }
 
             let byref_root = if arg.is_inout() || arg.is_borrow() {
-                let root = require_byref_place_arg(self.rir, arg)?;
+                let root = require_byref_place_arg(self.rir, &arg)?;
                 if arg.is_inout()
                     && !ctx.locals.contains_key(&root)
                     && ctx

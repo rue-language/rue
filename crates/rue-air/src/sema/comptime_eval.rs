@@ -51,7 +51,7 @@ use std::sync::LazyLock;
 
 use lasso::{Key, Spur};
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
-use rue_rir::{InstData, InstRef, RepeatCount, RirPattern};
+use rue_rir::{InstData, InstRef, RepeatCount};
 use rue_span::{FileId, Span};
 
 use super::context::{AnalysisContext, ConstValue, LocalVar, ParamInfo};
@@ -228,14 +228,14 @@ impl<'a> ComptimeEnv<'a> {
 /// - `None` — the match can't be decided at compile time here (an enum-variant
 ///   `Path` pattern, or a scrutinee whose kind the pattern can't compare
 ///   against), so the caller treats the whole `match` as non-evaluable.
-fn const_pattern_matches(pattern: &RirPattern, scrut: ConstValue) -> Option<bool> {
+fn const_pattern_matches(pattern: &rue_rir::RirPatternView<'_>, scrut: ConstValue) -> Option<bool> {
     match pattern {
-        RirPattern::Wildcard(_) => Some(true),
-        RirPattern::Bool(b, _) => match scrut {
+        rue_rir::RirPatternView::Wildcard(_) => Some(true),
+        rue_rir::RirPatternView::Bool(b, _) => match scrut {
             ConstValue::Bool(sb) => Some(sb == *b),
             _ => None,
         },
-        RirPattern::Int {
+        rue_rir::RirPatternView::Int {
             value, negative, ..
         } => match scrut {
             ConstValue::Integer(n) => {
@@ -247,7 +247,7 @@ fn const_pattern_matches(pattern: &RirPattern, scrut: ConstValue) -> Option<bool
         },
         // Enum-variant patterns aren't representable as a `ConstValue` (there
         // is no comptime enum-value form), so they can't be decided here.
-        RirPattern::Path { .. } => None,
+        rue_rir::RirPatternView::Path { .. } => None,
     }
 }
 
@@ -855,7 +855,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     return Ok(None);
                 };
                 let arms = self.rir.get_match_arms(arms_start, arms_len);
-                for (pattern, body) in arms {
+                for (pattern, body) in arms.iter() {
                     match const_pattern_matches(&pattern, scrut) {
                         Some(true) => return self.eval_const_expr(body, env),
                         Some(false) => continue,
@@ -947,7 +947,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     };
 
                     let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
-                    let first_method_ref = method_refs[0];
+                    let first_method_ref = method_refs.get(0).unwrap();
                     let first_method_inst = self.rir.get(first_method_ref);
                     if let InstData::FnDecl {
                         name: method_name, ..
@@ -1631,7 +1631,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let param_modes = self.param_arena.modes(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
         let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-        let args = self.rir.get_call_args(args_start, args_len).to_vec();
+        let args = self.rir.get_call_args(args_start, args_len);
         if args.len() != param_names.len() {
             return Ok(None);
         }
@@ -2099,7 +2099,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     .rir
                     .get_match_arms(*arms_start, *arms_len)
                     .iter()
-                    .map(|(_, body)| *body)
+                    .map(|(_, body)| body)
                     .collect();
                 for body in bodies {
                     self.walk_comptime_type_locals(

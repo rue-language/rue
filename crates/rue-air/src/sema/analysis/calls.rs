@@ -379,7 +379,7 @@ impl<'a> BodySema<'a> {
                         RirArgMode::Borrow
                     },
                 });
-                excl_args.extend(args.iter().cloned());
+                excl_args.extend(args.iter().map(|arg| *arg));
                 self.check_exclusive_access(&excl_args, span)?;
 
                 // By-ref receivers are borrows, not moves. The receiver was
@@ -425,7 +425,7 @@ impl<'a> BodySema<'a> {
         }
         let args_result = self.analyze_call_args_coerced(
             air,
-            &args,
+            args.values(),
             &method_param_types,
             &method_param_modes,
             ctx,
@@ -556,7 +556,7 @@ impl<'a> BodySema<'a> {
             fn_info.file_id,
             &fn_name_str,
             &param_types,
-            &args,
+            args.len(),
             accessible,
             via_reexport,
             span,
@@ -596,7 +596,7 @@ impl<'a> BodySema<'a> {
         // calls do (RUE-559) — std functions taking `borrow s: str` are called
         // this way.
         let air_args =
-            self.analyze_call_args_coerced(air, &args, &param_types, &param_modes, ctx)?;
+            self.analyze_call_args_coerced(air, args.values(), &param_types, &param_modes, ctx)?;
 
         // Inference cannot recover the defining file for a function-local
         // `let m = @import(...)`: the intrinsic deliberately carries an
@@ -777,7 +777,7 @@ impl<'a> BodySema<'a> {
         // source modes remain Borrow (RUE-634).
         let air_args = self.analyze_call_args_coerced(
             air,
-            &args,
+            args.values(),
             &method_param_types,
             &method_param_modes,
             ctx,

@@ -1911,7 +1911,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // errors when arms disagree). This is a strict subset of the
                 // scrutinees sema prunes, so the selected arm always has an
                 // inferred type when sema later prunes to it.
-                if let Some(selected) = self.comptime_selected_arm(*scrutinee, &arms) {
+                if let Some(selected) = self.comptime_selected_arm(*scrutinee, arms.iter()) {
                     self.enter_scope(ctx);
                     let body_info = self.generate(selected, ctx);
                     self.exit_scope(ctx);
@@ -1923,7 +1923,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let mut arm_types: Vec<ExprInfo> = Vec::new();
                 for (pattern, body) in arms.iter() {
                     // Patterns constrain the scrutinee type
-                    let pattern_ty = self.pattern_type(pattern);
+                    let pattern_ty = self.pattern_type(&pattern);
                     self.add_constraint(Constraint::equal(
                         scrutinee_info.ty.clone(),
                         pattern_ty,
@@ -1936,14 +1936,14 @@ impl<'a> ConstraintGenerator<'a> {
                     // (RUE-221). Without this, `Circle(r) => r` leaves `r`
                     // unbound and its type poisons the match result.
                     self.enter_scope(ctx);
-                    if let rue_rir::RirPattern::Path {
+                    if let rue_rir::RirPatternView::Path {
                         module,
                         type_name,
                         variant,
                         bindings,
                         span: pat_span,
                         ..
-                    } = pattern
+                    } = &pattern
                     {
                         if !bindings.is_empty() {
                             // NOTE: an inline type-constructor pattern head
@@ -1969,7 +1969,7 @@ impl<'a> ConstraintGenerator<'a> {
                                 for (i, bname) in bindings.iter().enumerate() {
                                     // A `_` payload (RUE-601) binds nothing —
                                     // skip registering a local for it.
-                                    if self.interner.resolve(bname) == "_" {
+                                    if self.interner.resolve(&bname) == "_" {
                                         continue;
                                     }
                                     if let Some(&pty) = payload.get(i) {
@@ -1988,7 +1988,7 @@ impl<'a> ConstraintGenerator<'a> {
                     }
 
                     // Generate body and collect its type
-                    let body_info = self.generate(*body, ctx);
+                    let body_info = self.generate(body, ctx);
                     self.exit_scope(ctx);
                     arm_types.push(body_info);
                 }
@@ -2077,9 +2077,9 @@ impl<'a> ConstraintGenerator<'a> {
                     // field's width instead of silently wrapping
                     // (`S { a: 300 }` with a: u8 used to truncate to 44).
                     // (RUE-72)
-                    for (field_name, value_ref) in fields.iter() {
-                        let value_info = self.generate(*value_ref, ctx);
-                        if let Some(field_ty) = self.field_type_of(struct_ty, *field_name) {
+                    for (field_name, value_ref) in fields.values() {
+                        let value_info = self.generate(value_ref, ctx);
+                        if let Some(field_ty) = self.field_type_of(struct_ty, field_name) {
                             let expected = self.type_to_infer(field_ty);
                             // A `str` field (ADR-0043 Phase 3, RUE-324) accepts a
                             // string literal (HM type `String`) by coercion; skip
@@ -2100,8 +2100,8 @@ impl<'a> ConstraintGenerator<'a> {
                     // skipping them left compound initializers (`-1`, `1+2`)
                     // with unresolved variables, which sema then reported as
                     // an internal compiler error (RUE-170).
-                    for (_, value_ref) in fields.iter() {
-                        self.generate(*value_ref, ctx);
+                    for (_, value_ref) in fields.values() {
+                        self.generate(value_ref, ctx);
                     }
                     InferType::Concrete(Type::ERROR)
                 }
@@ -2269,7 +2269,7 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                 } else {
                     // Get element type from first element, constrain rest to match
-                    let first_info = self.generate(elements[0], ctx);
+                    let first_info = self.generate(elements.get(0).unwrap(), ctx);
                     for elem_ref in elements.iter().skip(1) {
                         let elem_info = self.generate(*elem_ref, ctx);
                         self.add_constraint(Constraint::equal(
@@ -3164,16 +3164,16 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     /// Get the inferred type for a pattern.
-    fn pattern_type(&mut self, pattern: &rue_rir::RirPattern) -> InferType {
+    fn pattern_type(&mut self, pattern: &rue_rir::RirPatternView<'_>) -> InferType {
         match pattern {
-            rue_rir::RirPattern::Wildcard(_) => {
+            rue_rir::RirPatternView::Wildcard(_) => {
                 // Wildcard matches anything - use a fresh type variable
                 let var = self.fresh_var();
                 InferType::Var(var)
             }
-            rue_rir::RirPattern::Int { .. } => InferType::IntLiteral,
-            rue_rir::RirPattern::Bool(_, _) => InferType::Concrete(Type::BOOL),
-            rue_rir::RirPattern::Path {
+            rue_rir::RirPatternView::Int { .. } => InferType::IntLiteral,
+            rue_rir::RirPatternView::Bool(_, _) => InferType::Concrete(Type::BOOL),
+            rue_rir::RirPatternView::Path {
                 module, type_name, ..
             } => {
                 let enum_ty = module
@@ -3421,12 +3421,12 @@ impl<'a> ConstraintGenerator<'a> {
     /// handled here are a strict subset of those sema prunes with the same
     /// value and patterns, so whenever this prunes, sema also prunes to the
     /// *same* arm — the only arm whose body inference generated a type for.
-    fn comptime_selected_arm(
+    fn comptime_selected_arm<'r>(
         &self,
         scrutinee: InstRef,
-        arms: &[(rue_rir::RirPattern, InstRef)],
+        arms: impl Iterator<Item = (rue_rir::RirPatternView<'r>, InstRef)>,
     ) -> Option<InstRef> {
-        use rue_rir::RirPattern;
+        use rue_rir::RirPatternView as RirPattern;
 
         // Only prune inside a specialization that has comptime value params in
         // scope (mirrors sema's `!ctx.comptime_value_vars.is_empty()` gate in
@@ -3443,7 +3443,7 @@ impl<'a> ConstraintGenerator<'a> {
         let mut bool_true_covered = false;
         let mut bool_false_covered = false;
         for (pattern, body) in arms {
-            let matched = match pattern {
+            let matched = match &pattern {
                 RirPattern::Wildcard(_) => {
                     has_wildcard = true;
                     true
@@ -3479,7 +3479,7 @@ impl<'a> ConstraintGenerator<'a> {
                 _ => return None,
             };
             if matched && selected.is_none() {
-                selected = Some(*body);
+                selected = Some(body);
             }
         }
 

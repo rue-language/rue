@@ -584,13 +584,20 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.body_analysis_work.named_const_dependency_events += 1;
     }
 
-    pub(crate) fn validate_explicit_call_modes(
+    pub(crate) fn validate_explicit_call_modes<A>(
         &self,
-        args: &[rue_rir::RirCallArg],
+        args: A,
         expected_modes: impl ExactSizeIterator<Item = rue_rir::RirParamMode>,
-    ) -> rue_error::CompileResult<()> {
+    ) -> rue_error::CompileResult<()>
+    where
+        A: IntoIterator,
+        A::IntoIter: ExactSizeIterator,
+        A::Item: std::ops::Deref<Target = rue_rir::RirCallArg>,
+    {
+        let args = args.into_iter();
         assert_eq!(args.len(), expected_modes.len());
-        for (arg, expected_mode) in args.iter().zip(expected_modes) {
+        for (arg, expected_mode) in args.zip(expected_modes) {
+            let arg = &*arg;
             use rue_rir::{RirArgMode, RirParamMode};
             match (expected_mode, arg.mode) {
                 (RirParamMode::Inout, RirArgMode::Inout)

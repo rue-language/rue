@@ -906,7 +906,7 @@ mod tests {
                     return None;
                 };
                 (interner.resolve(&name) == "import").then(|| {
-                    let argument = rir.get_inst_refs(args_start, 1)[0];
+                    let argument = rir.get_inst_refs(args_start, 1).get(0).unwrap();
                     let rue_rir::InstData::StringConst(specifier) = rir.get(argument).data else {
                         unreachable!()
                     };

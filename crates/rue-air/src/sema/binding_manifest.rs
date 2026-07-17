@@ -490,8 +490,8 @@ impl<'a> DeclarationShells<'a> {
                         .sema
                         .rir
                         .get_field_decls(*fields_start, *fields_len)
-                        .iter()
-                        .map(|(name, _)| self.sema.interner.resolve(name))
+                        .values()
+                        .map(|(name, _)| self.sema.interner.resolve(&name))
                         .ne(fields.iter().map(|field| field.0.as_ref()))
                     {
                         return Err(DeclarationInstallFailure::NominalShapeMismatch);
@@ -678,13 +678,13 @@ impl<'a> DeclarationShells<'a> {
                             .get_directives(*directives_start, *directives_len);
                         let allow_unused_function = self
                             .sema
-                            .has_allow_directive(&directives, "unused_function");
+                            .has_allow_directive(directives.iter(), "unused_function");
                         let allow_unused_variable = self
                             .sema
-                            .has_allow_directive(&directives, "unused_variable");
+                            .has_allow_directive(directives.iter(), "unused_variable");
                         let allow_unreachable_code = self
                             .sema
-                            .has_allow_directive(&directives, "unreachable_code");
+                            .has_allow_directive(directives.iter(), "unreachable_code");
                         self.sema
                             .functions_by_file_name
                             .insert((pending.shell.declaration_span.file_id, *name), internal);
