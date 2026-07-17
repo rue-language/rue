@@ -2314,6 +2314,49 @@ compile_fail = true
 error_contains = "[E0209]"
 
 [[case]]
+name = "inline_type_ctor_module_qualified_pattern_head"
+spec = ["4.14:23"]
+preview = "inline_type_ctor_paths"
+preview_should_pass = true
+real_std = true
+description = "Under the preview, a module-qualified type-constructor call heads a match pattern: match r { std.result.Result(i32, i32).Ok(v) => .. } (RUE-947)"
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let ok = std.result.Result(i32, i32).Ok(40);
+    let err = std.result.Result(i32, i32).Err(2);
+    let a = match ok {
+        std.result.Result(i32, i32).Ok(v) => v,
+        std.result.Result(i32, i32).Err(e) => e,
+    };
+    let b = match err {
+        std.result.Result(i32, i32).Ok(v) => v,
+        std.result.Result(i32, i32).Err(e) => e,
+    };
+    a + b
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "module_qualified_type_ctor_pattern_head_requires_preview"
+spec = ["4.14:23"]
+real_std = true
+description = "A module-qualified inline type-constructor pattern head is gated behind the inline_type_ctor_paths preview feature; without it, E1100 rather than a raw parse error (RUE-947)"
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let ok = std.result.Result(i32, i32).Ok(40);
+    match ok {
+        std.result.Result(i32, i32).Ok(v) => v,
+        std.result.Result(i32, i32).Err(e) => e,
+    }
+}
+"""
+compile_fail = true
+error_contains = ["E1100", "inline_type_ctor_paths"]
+
+[[case]]
 name = "inline_type_ctor_enum_head_wide_payload_literal"
 spec = ["4.14:23"]
 preview = "inline_type_ctor_paths"
