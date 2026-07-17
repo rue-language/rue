@@ -187,9 +187,7 @@ pub(crate) use durable_semantics::{
 };
 pub(crate) use import_graph::validate_canonical_import_graph;
 #[cfg(test)]
-pub(crate) use linking::{
-    parse_runtime_archive, runtime_for_target, runtime_for_target_with_host, validate_runtime,
-};
+pub(crate) use linking::{parse_runtime_archive, validate_runtime};
 pub(crate) use parsed_modules::CanonicalParseUpdate;
 pub(crate) use queries::build_functions_and_cfgs;
 #[cfg(test)]

@@ -13,22 +13,8 @@ description = "Cross-compile and link-path behavior, including diagnostic cleanl
 # eprintln spew to stderr (it used to print ~270 lines from link_macho and
 # MachOBuilder).
 #
-# Platform behavior differs, so the case is written as a *native macOS success*
-# case and xfailed on the linux hosts:
-#   - macOS: aarch64-macos is the NATIVE target — it compiles & links cleanly,
-#     so this runs as a real regression test (DEBUG guard + successful compile).
-#   - linux (x86-64 / aarch64): aarch64-macos can't cross-link. Since the
-#     RUE-36 stopgap, the compile fails *by design* with the clear
-#     cross-target-runtime error. RUE-85 was the older, *confusing* form of
-#     that failure (a deep Mach-O `E1000: unsupported relocation: Plt32` — the
-#     host x86 runtime's Plt32 relocs fed into the aarch64 Mach-O reloc path);
-#     the RUE-36 guard replaced it with the clear diagnostic now pinned by
-#     `cross_link_to_aarch64_macos_refused` below, so RUE-85 is resolved.
-#     What still fails here is that cross-linking can't yet *produce a runnable
-#     aarch64-macos binary* on a linux host — that needs per-target runtime
-#     archives (RUE-36 / ADR-0034). Hence the xfail is marked known_bug RUE-36
-#     (not RUE-85, which is done): when per-target runtimes land, drop
-#     `known_bug_on` and this becomes a real test on linux too.
+# Per-target runtimes make this a success case on every host. The output is not
+# executed when foreign; RUE-864 adds complete structural matrix validation.
 [[case]]
 name = "aarch64_macos_link_no_debug_spew"
 files = [{ path = "main.rue", source = """
@@ -37,78 +23,40 @@ fn main() -> i32 { 0 }
 args = ["main.rue", "--target", "aarch64-macos", "-o", "prog"]
 compile_only = true
 compile_stderr_not_contains = ["DEBUG"]
-known_bug = "RUE-36"
-known_bug_on = ["x86-64-linux", "aarch64-linux"]
 
 # ---------------------------------------------------------------------------
-# RUE-36 / ADR-0034: cross-target links are refused with a clear error.
-#
-# The compiler embeds exactly one rue-runtime staticlib, built for the HOST.
-# Before the stopgap, `--target <foreign>` happily linked host x86-64 machine
-# code into an "AArch64" ELF (objdump-verified) and reported success. Now the
-# driver refuses at link time with an error that names both targets, cites
-# RUE-36, and points the user at `--emit asm` (which still works for every
-# target on every host).
-#
-# Whether a given `--target` is foreign depends on the host, so each refusal
-# case is scoped with `only_on` to the hosts where the target is a true
-# cross-compile. When per-target runtimes land (ADR-0034), these flip into
-# "cross-compile succeeds and the ELF machine field is correct" cases.
+# RUE-36 / ADR-0034: cross-target executable links select target runtimes.
+# Each case is scoped to hosts where the requested target is foreign.
 # ---------------------------------------------------------------------------
 
 [[case]]
-name = "cross_link_to_aarch64_linux_refused"
-description = "On non-aarch64-linux hosts, --target aarch64-linux must fail clearly instead of emitting an ELF with host machine code (RUE-36)."
+name = "cross_link_to_aarch64_linux_succeeds"
+description = "On non-aarch64-linux hosts, --target aarch64-linux links with the target runtime."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { 0 }
 """ }]
 args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
-compile_fail = true
-error_contains = [
-    "cannot link an executable for aarch64-linux",
-    "only embeds",
-    "runtime library",
-    "RUE-36",
-    "--emit asm",
-]
+compile_only = true
 only_on = ["x86-64-linux", "aarch64-macos"]
 
 [[case]]
-name = "cross_link_to_x86_64_linux_refused"
-description = "On aarch64 hosts, --target x86-64-linux must fail clearly instead of emitting an ELF with host machine code (RUE-36)."
+name = "cross_link_to_x86_64_linux_succeeds"
+description = "On aarch64 hosts, --target x86-64-linux links with the target runtime."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { 0 }
 """ }]
 args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
-compile_fail = true
-error_contains = [
-    "cannot link an executable for x86-64-linux",
-    "only embeds",
-    "runtime library",
-    "RUE-36",
-    "--emit asm",
-]
+compile_only = true
 only_on = ["aarch64-linux", "aarch64-macos"]
 
 [[case]]
-name = "cross_link_to_aarch64_macos_refused"
-description = "On linux hosts, --target aarch64-macos must fail with the RUE-36 cross-target-runtime error (not a deep Mach-O link failure)."
+name = "cross_link_to_aarch64_macos_succeeds"
+description = "On linux hosts, --target aarch64-macos links with the target runtime without debug spew."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { 0 }
 """ }]
 args = ["main.rue", "--target", "aarch64-macos", "-o", "prog"]
-compile_fail = true
-error_contains = [
-    "cannot link an executable for aarch64-macos",
-    "only embeds",
-    "runtime library",
-    "RUE-36",
-    "--emit asm",
-]
-# RUE-85 regression: this must be the clean up-front refusal, never the old
-# confusing deep Mach-O link failure (`E1000: unsupported relocation: Plt32`,
-# from the host x86 runtime's Plt32 relocs hitting the aarch64 Mach-O reloc
-# path). Guard the exact stale text so it can't come back.
+compile_only = true
 compile_stderr_not_contains = ["Plt32", "unsupported relocation"]
 only_on = ["x86-64-linux", "aarch64-linux"]
 

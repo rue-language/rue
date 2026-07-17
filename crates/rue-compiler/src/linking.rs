@@ -106,66 +106,30 @@ impl Drop for TempLinkDir {
     }
 }
 
-/// The rue-runtime staticlib archive bytes, embedded at compile time.
-/// This is linked into every Rue executable.
-///
-/// NOTE: there is exactly one embedded archive and it is built for the
-/// *host* this compiler binary was built on. Linking an executable for any
-/// other target is therefore refused (see [`runtime_for_target`] and
-/// RUE-36 / ADR-0034) until per-target runtime archives are embedded.
-static RUNTIME_BYTES: &[u8] = include_bytes!("librue_runtime.a");
-static EMBEDDED_RUNTIME_VALIDATION: std::sync::OnceLock<Result<(), String>> =
+/// The three target-specific rue-runtime staticlibs embedded at compile time.
+static RUNTIME_X86_64_LINUX: &[u8] = include_bytes!("librue_runtime-x86_64-unknown-linux-gnu.a");
+static RUNTIME_AARCH64_LINUX: &[u8] = include_bytes!("librue_runtime-aarch64-unknown-linux-gnu.a");
+static RUNTIME_AARCH64_MACOS: &[u8] = include_bytes!("librue_runtime-aarch64-apple-darwin.a");
+static RUNTIME_X86_64_LINUX_VALIDATION: std::sync::OnceLock<Result<(), String>> =
+    std::sync::OnceLock::new();
+static RUNTIME_AARCH64_LINUX_VALIDATION: std::sync::OnceLock<Result<(), String>> =
+    std::sync::OnceLock::new();
+static RUNTIME_AARCH64_MACOS_VALIDATION: std::sync::OnceLock<Result<(), String>> =
     std::sync::OnceLock::new();
 
-/// Return the embedded rue-runtime archive for `target`, or a clear error
-/// if this compiler build doesn't carry a runtime for that target.
-///
-/// The build system embeds only the host-configuration staticlib, so any
-/// cross-target link would silently pull host machine code into the foreign
-/// binary (the original RUE-36 failure mode: an "AArch64" ELF whose entry
-/// point was x86-64 code). Refusing here turns that into an honest,
-/// actionable error while leaving cross-target code generation (`--emit
-/// asm`, `--emit mir`, ...) fully usable. ADR-0034 describes the full fix
-/// (per-target runtime archives selected at link time).
-pub(crate) fn runtime_for_target(target: Target) -> CompileResult<&'static [u8]> {
-    runtime_for_target_with_host(target, Target::host(), Target::host_description())
-}
-
-pub(crate) fn runtime_for_target_with_host(
-    target: Target,
-    host: Option<Target>,
-    host_description: &str,
-) -> CompileResult<&'static [u8]> {
-    match host {
-        Some(host) if target == host => Ok(RUNTIME_BYTES),
-        Some(host) => Err(CompileError::without_span(ErrorKind::LinkError(format!(
-            "cannot link an executable for {target}: this rue compiler was built for {host} \
-             and only embeds the {host} runtime library, so the result would not run on \
-             {target} (RUE-36). Cross-target code generation still works: use \
-             `--emit asm` to inspect {target} assembly.",
-        )))),
-        None => Err(CompileError::without_span(ErrorKind::LinkError(format!(
-            "cannot link an executable for {target}: this rue compiler was built on {} \
-             and does not have a supported host runtime to embed (RUE-36). Cross-target \
-             code generation still works: use `--emit asm` to inspect {target} assembly.",
-            host_description
-        )))),
+/// Return the embedded rue-runtime archive matching `target`.
+pub(crate) fn runtime_for_target(target: Target) -> &'static [u8] {
+    match target {
+        Target::X86_64Linux => RUNTIME_X86_64_LINUX,
+        Target::Aarch64Linux => RUNTIME_AARCH64_LINUX,
+        Target::Aarch64Macos => RUNTIME_AARCH64_MACOS,
     }
 }
 
-/// Validate that the embedded runtime archive is well-formed.
-///
-/// This is called by tests to ensure the runtime is valid at build time.
-/// Returns an error message if validation fails.
+/// Validate the embedded runtime selected for `target`.
 #[cfg(test)]
-pub(crate) fn validate_runtime() -> Result<(), String> {
-    let target = Target::host().ok_or_else(|| {
-        format!(
-            "cannot validate embedded rue-runtime archive on {}",
-            Target::host_description()
-        )
-    })?;
-    validate_runtime_archive(RUNTIME_BYTES, target).map(|_| ())
+pub(crate) fn validate_runtime(target: Target) -> Result<(), String> {
+    validate_runtime_archive(runtime_for_target(target), target).map(|_| ())
 }
 
 pub(crate) fn parse_runtime_archive(runtime_bytes: &[u8]) -> Result<Archive, String> {
@@ -456,11 +420,14 @@ fn validate_runtime_archive(runtime_bytes: &[u8], target: Target) -> Result<Arch
         let inventory = runtime_archive_inventory(&archive)?;
         validate_runtime_inventory(&inventory, runtime_target(target))
     };
-    let is_embedded_host_runtime = runtime_bytes.len() == RUNTIME_BYTES.len()
-        && std::ptr::eq(runtime_bytes.as_ptr(), RUNTIME_BYTES.as_ptr())
-        && Target::host() == Some(target);
-    if is_embedded_host_runtime {
-        EMBEDDED_RUNTIME_VALIDATION.get_or_init(validate).clone()?;
+    let embedded_runtime = runtime_for_target(target);
+    let embedded_validation = match target {
+        Target::X86_64Linux => &RUNTIME_X86_64_LINUX_VALIDATION,
+        Target::Aarch64Linux => &RUNTIME_AARCH64_LINUX_VALIDATION,
+        Target::Aarch64Macos => &RUNTIME_AARCH64_MACOS_VALIDATION,
+    };
+    if std::ptr::eq(runtime_bytes, embedded_runtime) {
+        embedded_validation.get_or_init(validate).clone()?;
     } else {
         validate()?;
     }
@@ -474,9 +441,7 @@ pub(crate) fn link_internal_with_warnings(
 ) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "internal").entered();
 
-    // Refuse cross-target links up front: only the host runtime is embedded
-    // (RUE-36), and linking without a matching runtime is impossible.
-    let runtime_bytes = runtime_for_target(options.target).map_err(CompileErrors::from)?;
+    let runtime_bytes = runtime_for_target(options.target);
 
     let mut linker = Linker::new(options.target);
 
@@ -542,10 +507,9 @@ pub(crate) fn link_system_with_warnings(
 ) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "system", command = linker_cmd).entered();
 
-    // Refuse cross-target links up front: only the host runtime is embedded
-    // (RUE-36); a system linker would happily mix architectures (or fail
-    // with an opaque message), so catch it here with a clear error.
-    let runtime_bytes = runtime_for_target(options.target).map_err(CompileErrors::from)?;
+    let runtime_bytes = runtime_for_target(options.target);
+    // The system linker consumes the archive bytes directly, so validate the
+    // embedded target and typed ABI before writing them to disk.
     validate_runtime_archive(runtime_bytes, options.target)
         .map_err(link_error)
         .map_err(CompileErrors::from)?;
@@ -639,6 +603,10 @@ mod runtime_archive_validation_tests {
         RUNTIME_ABI_VERSION_SYMBOL, ReservedExportId, ReservedExportKind, RuntimeHelperId,
         RuntimeTarget,
     };
+
+    fn host_runtime() -> &'static [u8] {
+        runtime_for_target(Target::host().expect("tests require a supported host"))
+    }
 
     fn function(name: &str) -> RuntimeDefinedSymbol {
         RuntimeDefinedSymbol {
@@ -759,6 +727,23 @@ mod runtime_archive_validation_tests {
         match Target::host().unwrap() {
             Target::X86_64Linux => Target::Aarch64Linux,
             Target::Aarch64Linux | Target::Aarch64Macos => Target::X86_64Linux,
+        }
+    }
+
+    #[test]
+    fn embedded_runtime_selection_rejects_every_wrong_archive() {
+        for &target in Target::all() {
+            for &archive_target in Target::all() {
+                if target == archive_target {
+                    continue;
+                }
+                let error = validate_runtime_archive(runtime_for_target(archive_target), target)
+                    .expect_err("runtime validation must reject a foreign archive");
+                assert!(
+                    error.contains("expected"),
+                    "{archive_target} archive accepted for {target}: {error}"
+                );
+            }
         }
     }
 
@@ -933,7 +918,7 @@ mod runtime_archive_validation_tests {
     #[test]
     fn archive_bytes_reject_missing_and_misspelled_helper() {
         let bytes = replace_export_name(
-            RUNTIME_BYTES,
+            host_runtime(),
             RuntimeHelperId::Alloc.symbol(),
             "__rue_alloq",
         );
@@ -951,7 +936,7 @@ mod runtime_archive_validation_tests {
     #[test]
     fn archive_bytes_reject_duplicate_helper() {
         let duplicate = host_object(RuntimeHelperId::Alloc.symbol());
-        let bytes = append_archive_member(RUNTIME_BYTES, "duplicate.o", &duplicate);
+        let bytes = append_archive_member(host_runtime(), "duplicate.o", &duplicate);
         let err = validation_error(&bytes);
         assert!(
             err.contains("runtime helper `__rue_alloc` is defined 2 times"),
@@ -962,7 +947,7 @@ mod runtime_archive_validation_tests {
     #[test]
     fn archive_bytes_reject_stale_marker() {
         let bytes = replace_export_name(
-            RUNTIME_BYTES,
+            host_runtime(),
             RUNTIME_ABI_VERSION_SYMBOL,
             "__rue_runtime_abi_v0",
         );
@@ -978,7 +963,7 @@ mod runtime_archive_validation_tests {
     #[test]
     fn archive_bytes_reject_missing_and_duplicate_current_marker() {
         let missing = replace_export_name(
-            RUNTIME_BYTES,
+            host_runtime(),
             RUNTIME_ABI_VERSION_SYMBOL,
             "__rue_runtime_abj_v1",
         );
@@ -991,7 +976,7 @@ mod runtime_archive_validation_tests {
         );
 
         let duplicate = host_object(RUNTIME_ABI_VERSION_SYMBOL);
-        let bytes = append_archive_member(RUNTIME_BYTES, "marker.o", &duplicate);
+        let bytes = append_archive_member(host_runtime(), "marker.o", &duplicate);
         let err = validation_error(&bytes);
         assert!(
             err.contains(&format!(
@@ -1006,7 +991,7 @@ mod runtime_archive_validation_tests {
         let object = ObjectBuilder::new(foreign_target(), "foreign")
             .code(vec![0; 4])
             .build();
-        let bytes = append_archive_member(RUNTIME_BYTES, "foreign.o", &object);
+        let bytes = append_archive_member(host_runtime(), "foreign.o", &object);
         let err = validation_error(&bytes);
         assert!(err.contains("expected"), "{err}");
         assert!(err.contains("object"), "{err}");
@@ -1015,7 +1000,7 @@ mod runtime_archive_validation_tests {
     #[test]
     fn archive_bytes_reject_non_applicable_reserved_export() {
         let object = host_object(non_applicable_export());
-        let bytes = append_archive_member(RUNTIME_BYTES, "wrong-os.o", &object);
+        let bytes = append_archive_member(host_runtime(), "wrong-os.o", &object);
         let err = validation_error(&bytes);
         assert!(
             err.contains(&format!(
@@ -1029,7 +1014,7 @@ mod runtime_archive_validation_tests {
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     #[test]
     fn x86_64_linux_sigreturn_export_is_callable_code() {
-        let archive = parse_runtime_archive(RUNTIME_BYTES).unwrap();
+        let archive = parse_runtime_archive(host_runtime()).unwrap();
         let inventory = runtime_archive_inventory(&archive).unwrap();
         let symbol = inventory
             .symbols
@@ -1134,9 +1119,9 @@ mod runtime_archive_validation_tests {
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     #[test]
     fn real_macho_marker_mutations_reject_nonzero_value_and_nonunit_extent() {
-        let (data_offset, value_offset, value) = macho_marker_offsets(RUNTIME_BYTES);
+        let (data_offset, value_offset, value) = macho_marker_offsets(host_runtime());
 
-        let mut nonzero = RUNTIME_BYTES.to_vec();
+        let mut nonzero = host_runtime().to_vec();
         nonzero[data_offset] = 1;
         let err = validation_error(&nonzero);
         assert!(
@@ -1144,7 +1129,7 @@ mod runtime_archive_validation_tests {
             "{err}"
         );
 
-        let mut oversized = RUNTIME_BYTES.to_vec();
+        let mut oversized = host_runtime().to_vec();
         oversized[value_offset..value_offset + 8].copy_from_slice(&(value - 1).to_le_bytes());
         let err = validation_error(&oversized);
         assert!(err.contains("has size 2, expected 1 byte"), "{err}");

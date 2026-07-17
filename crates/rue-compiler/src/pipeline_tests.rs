@@ -926,21 +926,11 @@ mod tests {
             }
         }
 
-        for options in [
-            CompileOptions {
-                linker: LinkerMode::System("/definitely/missing/rue-linker".to_string()),
-                ..CompileOptions::default()
-            },
-            CompileOptions {
-                target: *Target::all()
-                    .iter()
-                    .find(|&&target| target != Target::host().unwrap())
-                    .expect("at least one non-host target"),
-                ..CompileOptions::default()
-            },
-        ] {
-            compile_snapshot(&snapshots[0], &options).unwrap_err();
-        }
+        let missing_linker = CompileOptions {
+            linker: LinkerMode::System("/definitely/missing/rue-linker".to_string()),
+            ..CompileOptions::default()
+        };
+        compile_snapshot(&snapshots[0], &missing_linker).unwrap_err();
     }
 
     #[test]
@@ -979,8 +969,11 @@ mod tests {
     }
 
     #[test]
-    fn test_embedded_runtime_is_valid() {
-        validate_runtime().expect("embedded runtime should be valid");
+    fn test_embedded_runtimes_are_valid() {
+        for &target in Target::all() {
+            validate_runtime(target)
+                .unwrap_or_else(|error| panic!("embedded {target} runtime is invalid: {error}"));
+        }
     }
 
     #[test]
@@ -989,40 +982,6 @@ mod tests {
             .expect_err("empty archive wrapper must not validate as a usable runtime");
 
         assert_eq!(err, "embedded rue-runtime archive contains no object files");
-    }
-
-    /// The embedded runtime is host-only (RUE-36 / ADR-0034): linking for
-    /// the host target must succeed; any other target must be refused with
-    /// an error that names both targets and points at `--emit asm`.
-    #[test]
-    fn test_runtime_only_available_for_host_target() {
-        let host = Target::host().unwrap();
-        assert!(runtime_for_target(host).is_ok());
-
-        for &target in Target::all() {
-            if target == host {
-                continue;
-            }
-            let err =
-                runtime_for_target(target).expect_err("cross-target link must be refused (RUE-36)");
-            let msg = err.to_string();
-            assert!(msg.contains(&target.to_string()), "names target: {msg}");
-            assert!(msg.contains(&host.to_string()), "names host: {msg}");
-            assert!(msg.contains("RUE-36"), "references RUE-36: {msg}");
-            assert!(msg.contains("--emit asm"), "suggests --emit asm: {msg}");
-        }
-    }
-
-    #[test]
-    fn test_runtime_refused_on_unsupported_host() {
-        let err = runtime_for_target_with_host(Target::X86_64Linux, None, "x86-64-macos")
-            .expect_err("unsupported host must not link by pretending to be another target");
-        let msg = err.to_string();
-
-        assert!(msg.contains("x86-64-linux"), "names target: {msg}");
-        assert!(msg.contains("x86-64-macos"), "names host: {msg}");
-        assert!(msg.contains("RUE-36"), "references RUE-36: {msg}");
-        assert!(msg.contains("--emit asm"), "suggests --emit asm: {msg}");
     }
 
     /// RUE-347: a break-less `loop {}` in value position has type `!` and
