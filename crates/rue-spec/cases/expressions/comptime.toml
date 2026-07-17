@@ -2211,9 +2211,9 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "type_constructor_struct_literal_head_requires_preview"
+name = "inline_type_ctor_struct_literal_head_accepted"
 spec = ["4.14:23"]
-description = "An inline type-constructor struct-literal head F(args) { ... } is gated behind the inline_type_ctor_paths preview feature; without it, E1100 (RUE-596)"
+description = "An inline type-constructor struct-literal head F(args) { ... } is accepted with no preview flag (RUE-596, stabilized RUE-598)"
 source = """
 fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
 fn main() -> i32 {
@@ -2221,15 +2221,12 @@ fn main() -> i32 {
     p.first
 }
 """
-compile_fail = true
-error_contains = ["E1100", "inline_type_ctor_paths"]
+exit_code = 1
 
 [[case]]
 name = "inline_type_ctor_struct_literal_head"
 spec = ["4.14:23"]
-preview = "inline_type_ctor_paths"
-preview_should_pass = true
-description = "Under the preview, a type-constructor call heads a struct literal: Pair(i32) { ... } (RUE-596)"
+description = "A type-constructor call heads a struct literal: Pair(i32) { ... } (RUE-596)"
 source = """
 fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
 fn main() -> i32 {
@@ -2242,9 +2239,7 @@ exit_code = 42
 [[case]]
 name = "inline_type_ctor_enum_variant_head"
 spec = ["4.14:23"]
-preview = "inline_type_ctor_paths"
-preview_should_pass = true
-description = "Under the preview, a type-constructor call heads an enum-variant construction: Result(i32, i32).Ok(v) (RUE-596)"
+description = "A type-constructor call heads an enum-variant construction: Result(i32, i32).Ok(v) (RUE-596)"
 source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn main() -> i32 {
@@ -2258,9 +2253,7 @@ exit_code = 42
 [[case]]
 name = "inline_type_ctor_assoc_fn_head"
 spec = ["4.14:23"]
-preview = "inline_type_ctor_paths"
-preview_should_pass = true
-description = "Under the preview, a type-constructor call heads an associated-function call: Counter(i32).zero() (RUE-596)"
+description = "A type-constructor call heads an associated-function call: Counter(i32).zero() (RUE-596)"
 source = """
 fn Counter(comptime T: type) -> type {
     struct {
@@ -2279,9 +2272,7 @@ exit_code = 42
 [[case]]
 name = "inline_type_ctor_pattern_head"
 spec = ["4.14:23"]
-preview = "inline_type_ctor_paths"
-preview_should_pass = true
-description = "Under the preview, a type-constructor call heads a match pattern: match r { Result(i32, i32).Ok(v) => .. } (RUE-596)"
+description = "A type-constructor call heads a match pattern: match r { Result(i32, i32).Ok(v) => .. } (RUE-596)"
 source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn main() -> i32 {
@@ -2297,8 +2288,6 @@ exit_code = 42
 [[case]]
 name = "inline_type_ctor_pattern_head_propagates_argument_mode_error"
 spec = ["4.10:3", "4.14:23"]
-preview = "inline_type_ctor_paths"
-preview_should_pass = true
 description = "The authoritative inline pattern-head reducer propagates an exact argument-mode error instead of degrading it to an unresolved-pattern diagnostic (RUE-634)"
 source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
@@ -2316,10 +2305,8 @@ error_contains = "[E0209]"
 [[case]]
 name = "inline_type_ctor_module_qualified_pattern_head"
 spec = ["4.14:23"]
-preview = "inline_type_ctor_paths"
-preview_should_pass = true
 real_std = true
-description = "Under the preview, a module-qualified type-constructor call heads a match pattern: match r { std.result.Result(i32, i32).Ok(v) => .. } (RUE-947)"
+description = "A module-qualified type-constructor call heads a match pattern: match r { std.result.Result(i32, i32).Ok(v) => .. } (RUE-947)"
 source = """
 const std = @import("std");
 fn main() -> i32 {
@@ -2339,10 +2326,10 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "module_qualified_type_ctor_pattern_head_requires_preview"
+name = "module_qualified_type_ctor_pattern_head_accepted"
 spec = ["4.14:23"]
 real_std = true
-description = "A module-qualified inline type-constructor pattern head is gated behind the inline_type_ctor_paths preview feature; without it, E1100 rather than a raw parse error (RUE-947)"
+description = "A module-qualified inline type-constructor pattern head is accepted with no preview flag (RUE-947, stabilized RUE-598)"
 source = """
 const std = @import("std");
 fn main() -> i32 {
@@ -2353,14 +2340,11 @@ fn main() -> i32 {
     }
 }
 """
-compile_fail = true
-error_contains = ["E1100", "inline_type_ctor_paths"]
+exit_code = 40
 
 [[case]]
 name = "inline_type_ctor_enum_head_wide_payload_literal"
 spec = ["4.14:23"]
-preview = "inline_type_ctor_paths"
-preview_should_pass = true
 description = "An integer payload literal on an inline enum-variant head is typed at the declared payload type, not defaulted to i32: Result(i64, i32).Ok(41) (RUE-599)"
 source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
@@ -2378,8 +2362,6 @@ exit_code = 42
 [[case]]
 name = "inline_type_ctor_enum_head_payload_literal_range_checked"
 spec = ["4.14:23"]
-preview = "inline_type_ctor_paths"
-preview_should_pass = true
 description = "An integer payload literal on an inline enum-variant head is range-checked at the declared payload width: Wrap(u8).Some(300) is E0800 (RUE-599)"
 source = """
 fn Wrap(comptime T: type) -> type { enum { Some(T), None } }
@@ -2395,8 +2377,6 @@ error_contains = ["E0800", "u8"]
 [[case]]
 name = "inline_type_ctor_assoc_fn_head_wide_param_literal"
 spec = ["4.14:23"]
-preview = "inline_type_ctor_paths"
-preview_should_pass = true
 description = "An integer argument literal on an inline assoc-fn head is typed at the declared parameter type, not defaulted to i32: Box(u64).make(8) (RUE-599)"
 source = """
 fn Box(comptime T: type) -> type {
@@ -2415,8 +2395,6 @@ exit_code = 42
 [[case]]
 name = "inline_type_ctor_struct_literal_head_wide_field_literal"
 spec = ["4.14:23"]
-preview = "inline_type_ctor_paths"
-preview_should_pass = true
 description = "An integer field-initializer literal on an inline struct-literal head is typed at the declared field type: Pair(i64) { ... } (RUE-599)"
 source = """
 fn Pair(comptime T: type) -> type { struct { first: T, second: T } }

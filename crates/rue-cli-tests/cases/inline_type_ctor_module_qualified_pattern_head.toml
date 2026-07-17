@@ -1,21 +1,20 @@
 # Module-qualified inline type-constructor call as a PATTERN head (RUE-947,
-# preview `inline_type_ctor_paths`, relaxing spec 4.14:23). The construction head
-# `std.result.Result(F, FE).Ok(x)` already worked under the preview (RUE-596);
-# the matching PATTERN head `std.result.Result(F, FE).Ok(v) => ..` previously
-# failed with a raw E0100 parse error regardless of the flag. It now parses and
-# flows through the same preview gate as the local head, resolving to the same
-# specialized enum so match arms unify. Driven end-to-end through the real binary
-# against the real standard library.
+# spec 4.14:23). The construction head `std.result.Result(F, FE).Ok(x)` already
+# worked (RUE-596); the matching PATTERN head `std.result.Result(F, FE).Ok(v) =>
+# ..` previously failed with a raw E0100 parse error. It now parses and resolves
+# to the same specialized enum so match arms unify. Accepted with no preview flag
+# (stabilized RUE-598). Driven end-to-end through the real binary against the
+# real standard library.
 
 [section]
 id = "cli.inline_type_ctor_module_qualified_pattern_head"
 name = "Module-qualified inline type-constructor pattern head"
-description = "`std.result.Result(F, FE).Ok(v) => ..` as a match pattern head, preview-gated, against real std (RUE-947)."
+description = "`std.result.Result(F, FE).Ok(v) => ..` as a match pattern head, against real std (RUE-947)."
 
 [[case]]
 name = "module_qualified_pattern_head_runs"
 description = "A ruewc-style match over `std.result.Result(F, FE)` binds both variant payloads through module-qualified pattern heads."
-args = ["main.rue", "--preview", "inline_type_ctor_paths", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -39,8 +38,9 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "module_qualified_pattern_head_gated_without_preview"
-description = "Without --preview the module-qualified head is rejected with the E1100 preview-required diagnostic, not a raw E0100 parse error."
+name = "module_qualified_pattern_head_accepted_without_flag"
+description = "The module-qualified pattern head compiles and runs with no preview flag (stabilized RUE-598)."
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -52,5 +52,4 @@ fn main() -> i32 {
     }
 }
 """ }]
-compile_fail = true
-error_contains = ["E1100", "inline_type_ctor_paths"]
+exit_code = 40

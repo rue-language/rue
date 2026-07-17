@@ -512,14 +512,6 @@ pub enum PreviewFeature {
     /// collection/string trio. Gated until the fat-pointer ABI lands on both
     /// backends.
     Slices,
-    /// Inline type-constructor call heads (RUE-596, relaxing spec 4.14:23): a
-    /// type-constructor call with explicit comptime args used directly as a
-    /// struct-literal head (`Pair(i32) { .. }`), an associated-function / enum-
-    /// variant head (`Result(i32, i32).Ok(v)`), or a pattern head
-    /// (`match r { Result(i32, i32).Ok(v) => .. }`). Reduces to today's
-    /// bind-first form (`let P = F(args); P.NAME`). Elided args (`Option(_)`)
-    /// remain out of scope (RUE-401).
-    InlineTypeCtorPath,
     /// Raw physical-byte heap and memory access intrinsics (RUE-879). These
     /// operations intentionally bypass Rue's slot-sized typed-pointer model so
     /// source-defined packed representations can use the runtime byte ABI.
@@ -545,7 +537,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::Slices => "slices",
-            PreviewFeature::InlineTypeCtorPath => "inline_type_ctor_paths",
             PreviewFeature::RawBytes => "raw_bytes",
         }
     }
@@ -556,7 +547,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::Slices => "ADR-0043",
-            PreviewFeature::InlineTypeCtorPath => "ADR-0025",
             PreviewFeature::RawBytes => "RUE-879",
         }
     }
@@ -566,7 +556,6 @@ impl PreviewFeature {
         &[
             PreviewFeature::TestInfra,
             PreviewFeature::Slices,
-            PreviewFeature::InlineTypeCtorPath,
             PreviewFeature::RawBytes,
         ]
     }
@@ -592,7 +581,6 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "slices" => Ok(PreviewFeature::Slices),
-            "inline_type_ctor_paths" => Ok(PreviewFeature::InlineTypeCtorPath),
             "raw_bytes" => Ok(PreviewFeature::RawBytes),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
@@ -2589,10 +2577,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(
-            names,
-            "test_infra, slices, inline_type_ctor_paths, raw_bytes"
-        );
+        assert_eq!(names, "test_infra, slices, raw_bytes");
     }
 
     #[test]
@@ -2669,15 +2654,16 @@ mod tests {
 
     #[test]
     fn test_preview_feature_stabilized_are_unknown() {
-        // for_loops, method_receivers, enum_payloads, array_repeat, and
-        // field_init_shorthand were stabilized (no longer gated) — their names
-        // must now be rejected.
+        // for_loops, method_receivers, enum_payloads, array_repeat,
+        // field_init_shorthand, and inline_type_ctor_paths were stabilized (no
+        // longer gated) — their names must now be rejected.
         for name in [
             "for_loops",
             "method_receivers",
             "enum_payloads",
             "array_repeat",
             "field_init_shorthand",
+            "inline_type_ctor_paths",
         ] {
             assert!(
                 name.parse::<PreviewFeature>().is_err(),

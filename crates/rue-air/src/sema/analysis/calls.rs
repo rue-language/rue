@@ -142,38 +142,22 @@ impl<'a> BodySema<'a> {
                 .analyze_module_member_call_impl(air, module_id, method, args_range, span, ctx);
         }
 
-        // Inline type-constructor call head (RUE-596, preview
-        // `inline_type_ctor_paths`, relaxing spec 4.14:23): `F(args).NAME(..)`
-        // where `F(args)` reduced to a concrete type at comptime. Resolve
-        // `.NAME` as an enum-variant construction or associated-function call on
-        // the reduced type — exactly as if it had been bound with
-        // `let P = F(args); P.NAME(..)`. The receiver's stray `TypeConst` is a
-        // comptime-only no-op (CFG build drops it). Only a struct/enum reduced
-        // type takes this path; any other kind (e.g. `const X = i32; X.foo()`)
-        // falls through to the ordinary `MethodCallOnNonStruct` diagnostic, and
-        // the bound-name form (`let P = F(args); P.NAME`) never reaches here.
-        // Elided args (`Option(_)`) stay out of scope (RUE-401).
+        // Inline type-constructor call head (RUE-596, spec 4.14:23):
+        // `F(args).NAME(..)` where `F(args)` reduced to a concrete type at
+        // comptime. Resolve `.NAME` as an enum-variant construction or
+        // associated-function call on the reduced type — exactly as if it had
+        // been bound with `let P = F(args); P.NAME(..)`. The receiver's stray
+        // `TypeConst` is a comptime-only no-op (CFG build drops it). Only a
+        // struct/enum reduced type takes this path; any other kind (e.g.
+        // `const X = i32; X.foo()`) falls through to the ordinary
+        // `MethodCallOnNonStruct` diagnostic, and the bound-name form
+        // (`let P = F(args); P.NAME`) never reaches here. Elided args
+        // (`Option(_)`) stay out of scope (RUE-401).
         if receiver_type == Type::COMPTIME_TYPE
             && let AirInstData::TypeConst(reduced_ty) = air.get(receiver_result.air_ref).data
         {
-            // The preview gate covers exactly what RUE-596 added: a CALL as
-            // the path head (`F(args).NAME(..)`). A bare qualified member
-            // that merely evaluates to a type (`m.Alias.new()`) is ordinary
-            // module-member access and must not trip the call-head gate
-            // (RUE-631).
-            let receiver_is_call_head = matches!(
-                self.rir.get(receiver).data,
-                rue_rir::InstData::Call { .. } | rue_rir::InstData::MethodCall { .. }
-            );
             match reduced_ty.kind() {
                 TypeKind::Enum(enum_id) => {
-                    if receiver_is_call_head {
-                        self.require_preview(
-                            PreviewFeature::InlineTypeCtorPath,
-                            "an inline type-constructor call as a path head",
-                            span,
-                        )?;
-                    }
                     let variant_name = self.interner.resolve(&method).to_string();
                     let def = self.type_pool.enum_def(enum_id);
                     if let Some(vidx) = def.find_variant(&variant_name) {
@@ -197,13 +181,6 @@ impl<'a> BodySema<'a> {
                     ));
                 }
                 TypeKind::Struct(struct_id) => {
-                    if receiver_is_call_head {
-                        self.require_preview(
-                            PreviewFeature::InlineTypeCtorPath,
-                            "an inline type-constructor call as a path head",
-                            span,
-                        )?;
-                    }
                     return self.analyze_assoc_fn_call_impl(
                         air,
                         method,

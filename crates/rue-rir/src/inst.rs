@@ -352,7 +352,7 @@ pub enum RirPattern {
         module: Option<InstRef>,
         /// Optional inline type-constructor call head — the instruction that
         /// reduces to the enum type at comptime for `F(args).Variant(..)`
-        /// (RUE-596, preview `inline_type_ctor_paths`). When `Some`, the enum is
+        /// (RUE-596, spec 4.14:23). When `Some`, the enum is
         /// the reduction of this head and `type_name` is only the constructor
         /// function's name; `None` for an ordinary `Enum.Variant` pattern.
         ctor_head: Option<InstRef>,
@@ -3439,7 +3439,7 @@ pub enum InstData {
         module: Option<InstRef>,
         /// Optional inline type-constructor call head — the instruction that
         /// reduces to the struct type at comptime for `F(args) { ... }` (RUE-596,
-        /// preview `inline_type_ctor_paths`). When `Some`, the struct type is
+        /// spec 4.14:23). When `Some`, the struct type is
         /// the reduction of this head and `type_name` is only the constructor
         /// function's name (kept for diagnostics); `None` for `Name { ... }`.
         ctor_head: Option<InstRef>,

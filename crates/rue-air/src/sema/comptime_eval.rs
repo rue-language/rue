@@ -50,7 +50,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use lasso::Spur;
-use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
+use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_rir::{InstData, InstRef, RepeatCount};
 use rue_span::{FileId, Span};
 
@@ -2090,7 +2090,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     }
 
     /// Pre-reduce inline type-constructor heads (`F(args).Variant(..)`,
-    /// `F(args) { .. }`; RUE-596, preview `inline_type_ctor_paths`) to their
+    /// `F(args) { .. }`; RUE-596, spec 4.14:23) to their
     /// concrete struct/enum types before HM inference runs (RUE-599).
     ///
     /// The constraint generator has no comptime interpreter, so an inline
@@ -2112,9 +2112,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// inert. `comptime_local_types` carries the body's `let`-bound type
     /// aliases so a head like `Result(T, i32)` with `let T = i64;` reduces.
     ///
-    /// Gated on the preview feature so non-preview compiles pay nothing;
-    /// when `inline_type_ctor_paths` stabilizes (RUE-598), remove the gate
-    /// and cache the candidate scan if it shows up in `--time-passes`.
+    /// Runs on every compile (inline type-constructor heads are stable since
+    /// RUE-598). Cache the candidate scan if it shows up in `--time-passes`.
     ///
     /// [`precompute_comptime_type_locals`]: Sema::precompute_comptime_type_locals
     pub(crate) fn precompute_inline_ctor_head_types(
@@ -2123,12 +2122,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         value_subst: Option<&HashMap<Spur, ConstValue>>,
         comptime_local_types: &HashMap<Spur, Type>,
     ) -> HashMap<InstRef, Type> {
-        if !self
-            .preview_features
-            .contains(&PreviewFeature::InlineTypeCtorPath)
-        {
-            return HashMap::new();
-        }
         // A head is the receiver of a `.NAME(..)` path whose receiver is
         // itself a call (`F(args).Ok(x)`, or module-qualified
         // `m.F(args).Ok(x)`, which RIR spells as a nested MethodCall), or a
