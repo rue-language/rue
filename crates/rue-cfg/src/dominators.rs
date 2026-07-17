@@ -228,14 +228,9 @@ fn successors_of(cfg: &Cfg, block: BlockId) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch {
-            cases_start,
-            cases_len,
-            default,
-            ..
-        } => {
+        Terminator::Switch { cases, default, .. } => {
             let mut out: Vec<BlockId> = cfg
-                .get_switch_cases(*cases_start, *cases_len)
+                .switch_cases(cases)
                 .iter()
                 .map(|(_, target)| *target)
                 .collect();
@@ -259,8 +254,7 @@ mod tests {
     fn goto(target: BlockId) -> Terminator {
         Terminator::Goto {
             target,
-            args_start: 0,
-            args_len: 0,
+            args: crate::payload::CfgGotoArgs::EMPTY,
         }
     }
 
@@ -279,11 +273,9 @@ mod tests {
         Terminator::Branch {
             cond,
             then_block,
-            then_args_start: 0,
-            then_args_len: 0,
+            then_args: crate::payload::CfgThenArgs::EMPTY,
             else_block,
-            else_args_start: 0,
-            else_args_len: 0,
+            else_args: crate::payload::CfgElseArgs::EMPTY,
         }
     }
 

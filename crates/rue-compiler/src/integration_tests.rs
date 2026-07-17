@@ -1071,12 +1071,14 @@ drop fn StrBuf(self) { }
                     cfg.blocks()
                         .iter()
                         .flat_map(|block| block.insts.iter())
-                        .filter_map(|value| match cfg.get_inst(*value).data {
+                        .filter_map(|value| match &cfg.get_inst(*value).data {
                             rue_cfg::CfgInstData::Call {
                                 runtime: Some(runtime),
-                                args_len,
                                 ..
-                            } if is_target(runtime) => Some((runtime, args_len)),
+                            } if is_target(*runtime) => Some((
+                                *runtime,
+                                cfg.get_call_args(&cfg.get_inst(*value).data).len() as u32,
+                            )),
                             _ => None,
                         })
                         .collect::<Vec<_>>()

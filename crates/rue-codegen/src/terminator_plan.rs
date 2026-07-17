@@ -361,43 +361,36 @@ pub fn plan_terminator<A: TerminatorAdapter>(
     fn_name: &str,
     ret_reg_budget: u32,
 ) -> TerminatorPlan {
-    match block.terminator {
-        Terminator::Goto {
-            target,
-            args_start,
-            args_len,
-        } => TerminatorPlan::Goto {
+    match &block.terminator {
+        Terminator::Goto { target, .. } => TerminatorPlan::Goto {
             edge: moves_for_edge(
                 ctx,
                 adapter,
-                ctx.cfg.get_extra(args_start, args_len),
-                target,
+                ctx.cfg.get_goto_args(&block.terminator),
+                *target,
                 block.id,
             ),
         },
         Terminator::Branch {
             cond,
             then_block,
-            then_args_start,
-            then_args_len,
             else_block,
-            else_args_start,
-            else_args_len,
+            ..
         } => {
-            let condition_plan = ValuePlan::for_value(ctx, cond);
-            let condition = adapter.materialize_value(cond, condition_plan).primary;
+            let condition_plan = ValuePlan::for_value(ctx, *cond);
+            let condition = adapter.materialize_value(*cond, condition_plan).primary;
             let then_edge = moves_for_edge(
                 ctx,
                 adapter,
-                ctx.cfg.get_extra(then_args_start, then_args_len),
-                then_block,
+                ctx.cfg.get_branch_then_args(&block.terminator),
+                *then_block,
                 block.id,
             );
             let mut else_edge = moves_for_edge(
                 ctx,
                 adapter,
-                ctx.cfg.get_extra(else_args_start, else_args_len),
-                else_block,
+                ctx.cfg.get_branch_else_args(&block.terminator),
+                *else_block,
                 block.id,
             );
             // A branch whose two arms name the next physical block still has
@@ -414,18 +407,15 @@ pub fn plan_terminator<A: TerminatorAdapter>(
             }
         }
         Terminator::Switch {
-            scrutinee,
-            cases_start,
-            cases_len,
-            default,
+            scrutinee, default, ..
         } => {
-            let value_plan = ValuePlan::for_value(ctx, scrutinee);
-            let scrutinee_vreg = adapter.materialize_value(scrutinee, value_plan).primary;
-            let ty = ctx.cfg.get_inst(scrutinee).ty;
+            let value_plan = ValuePlan::for_value(ctx, *scrutinee);
+            let scrutinee_vreg = adapter.materialize_value(*scrutinee, value_plan).primary;
+            let ty = ctx.cfg.get_inst(*scrutinee).ty;
             let width = value_plan::comparison_integer_width(ty);
             let cases = ctx
                 .cfg
-                .get_switch_cases(cases_start, cases_len)
+                .get_switch_cases(&block.terminator)
                 .iter()
                 .copied()
                 .map(|(value, target)| SwitchCasePlan { value, target })
@@ -434,12 +424,12 @@ pub fn plan_terminator<A: TerminatorAdapter>(
                 scrutinee: scrutinee_vreg,
                 width,
                 cases,
-                default,
+                default: *default,
             }
         }
         Terminator::Return { value } => {
             let mode = if fn_name == "main" {
-                let value = value.map(|value| {
+                let value = (*value).map(|value| {
                     let plan = ValuePlan::for_value(ctx, value);
                     adapter.materialize_value(value, plan).primary
                 });
@@ -464,7 +454,7 @@ pub fn plan_terminator<A: TerminatorAdapter>(
                 }
             } else {
                 ReturnMode::Function {
-                    value: value.map_or(ReturnValuePlan::ZeroSized, |value| {
+                    value: (*value).map_or(ReturnValuePlan::ZeroSized, |value| {
                         return_value(ctx, adapter, value, ret_reg_budget)
                     }),
                 }
@@ -584,7 +574,7 @@ mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
     use rue_air::{FrozenTypeInternPool, StructDef, StructField, TypeInternPool};
-    use rue_cfg::{Cfg, CfgInst, CfgInstData, Terminator};
+    use rue_cfg::{Cfg, CfgInst, CfgInstData};
     use rue_span::{FileId, Span};
     use rue_target::Target;
 
@@ -685,46 +675,13 @@ mod tests {
         let else_block = cfg.new_block();
         let join = cfg.new_block();
         cfg.entry = entry;
-        let condition =
-            cfg.add_inst_to_block(entry, inst(CfgInstData::BoolConst(true), Type::BOOL));
-        let value = cfg.add_inst_to_block(entry, inst(CfgInstData::Const(7), Type::I32));
+        let condition = cfg.append_inst(entry, inst(CfgInstData::BoolConst(true), Type::BOOL));
+        let value = cfg.append_inst(entry, inst(CfgInstData::Const(7), Type::I32));
         let join_value = cfg.add_block_param(join, Type::I32);
-        cfg.set_terminator(
-            entry,
-            Terminator::Branch {
-                cond: condition,
-                then_block,
-                then_args_start: 0,
-                then_args_len: 0,
-                else_block,
-                else_args_start: 0,
-                else_args_len: 0,
-            },
-        );
-        let (then_join_start, then_join_len) = cfg.push_extra([value]);
-        cfg.set_terminator(
-            then_block,
-            Terminator::Goto {
-                target: join,
-                args_start: then_join_start,
-                args_len: then_join_len,
-            },
-        );
-        let (else_join_start, else_join_len) = cfg.push_extra([value]);
-        cfg.set_terminator(
-            else_block,
-            Terminator::Goto {
-                target: join,
-                args_start: else_join_start,
-                args_len: else_join_len,
-            },
-        );
-        cfg.set_terminator(
-            join,
-            Terminator::Return {
-                value: Some(join_value),
-            },
-        );
+        cfg.set_branch(entry, condition, then_block, [], else_block, []);
+        cfg.set_goto(then_block, join, [value]);
+        cfg.set_goto(else_block, join, [value]);
+        cfg.set_return(join, Some(join_value));
         (cfg, pool, interner)
     }
 
@@ -735,31 +692,12 @@ mod tests {
         let entry = cfg.new_block();
         let target = cfg.new_block();
         cfg.entry = entry;
-        let condition =
-            cfg.add_inst_to_block(entry, inst(CfgInstData::BoolConst(true), Type::BOOL));
-        let then_value = cfg.add_inst_to_block(entry, inst(CfgInstData::Const(1), Type::I32));
-        let else_value = cfg.add_inst_to_block(entry, inst(CfgInstData::Const(2), Type::I32));
+        let condition = cfg.append_inst(entry, inst(CfgInstData::BoolConst(true), Type::BOOL));
+        let then_value = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I32));
+        let else_value = cfg.append_inst(entry, inst(CfgInstData::Const(2), Type::I32));
         let target_value = cfg.add_block_param(target, Type::I32);
-        let (then_args_start, then_args_len) = cfg.push_extra([then_value]);
-        let (else_args_start, else_args_len) = cfg.push_extra([else_value]);
-        cfg.set_terminator(
-            entry,
-            Terminator::Branch {
-                cond: condition,
-                then_block: target,
-                then_args_start,
-                then_args_len,
-                else_block: target,
-                else_args_start,
-                else_args_len,
-            },
-        );
-        cfg.set_terminator(
-            target,
-            Terminator::Return {
-                value: Some(target_value),
-            },
-        );
+        cfg.set_branch(entry, condition, target, [then_value], target, [else_value]);
+        cfg.set_return(target, Some(target_value));
         (cfg, pool, interner)
     }
 
@@ -771,35 +709,11 @@ mod tests {
         let body = cfg.new_block();
         let exit = cfg.new_block();
         cfg.entry = header;
-        let condition =
-            cfg.add_inst_to_block(header, inst(CfgInstData::BoolConst(true), Type::BOOL));
-        let result = cfg.add_inst_to_block(header, inst(CfgInstData::Const(1), Type::I32));
-        cfg.set_terminator(
-            header,
-            Terminator::Branch {
-                cond: condition,
-                then_block: body,
-                then_args_start: 0,
-                then_args_len: 0,
-                else_block: exit,
-                else_args_start: 0,
-                else_args_len: 0,
-            },
-        );
-        cfg.set_terminator(
-            body,
-            Terminator::Goto {
-                target: header,
-                args_start: 0,
-                args_len: 0,
-            },
-        );
-        cfg.set_terminator(
-            exit,
-            Terminator::Return {
-                value: Some(result),
-            },
-        );
+        let condition = cfg.append_inst(header, inst(CfgInstData::BoolConst(true), Type::BOOL));
+        let result = cfg.append_inst(header, inst(CfgInstData::Const(1), Type::I32));
+        cfg.set_branch(header, condition, body, [], exit, []);
+        cfg.set_goto(body, header, []);
+        cfg.set_return(exit, Some(result));
         (cfg, pool, interner)
     }
 
@@ -813,20 +727,15 @@ mod tests {
         let third = cfg.new_block();
         let default = cfg.new_block();
         cfg.entry = entry;
-        let scrutinee = cfg.add_inst_to_block(entry, inst(CfgInstData::Const(u64::MAX), ty));
-        let (cases_start, cases_len) =
-            cfg.push_switch_cases([(-1, third), (7, first), (42, second)]);
-        cfg.set_terminator(
+        let scrutinee = cfg.append_inst(entry, inst(CfgInstData::Const(u64::MAX), ty));
+        cfg.set_switch(
             entry,
-            Terminator::Switch {
-                scrutinee,
-                cases_start,
-                cases_len,
-                default,
-            },
+            scrutinee,
+            [(-1, third), (7, first), (42, second)],
+            default,
         );
         for block in [first, second, third, default] {
-            cfg.set_terminator(block, Terminator::Return { value: None });
+            cfg.set_return(block, None);
         }
         (cfg, pool, interner)
     }
@@ -839,57 +748,26 @@ mod tests {
         let else_block = cfg.new_block();
         let cleanup = cfg.new_block();
         cfg.entry = entry;
-        let condition =
-            cfg.add_inst_to_block(entry, inst(CfgInstData::BoolConst(true), Type::BOOL));
-        let left = cfg.add_inst_to_block(entry, inst(CfgInstData::Const(3), Type::I32));
-        let right = cfg.add_inst_to_block(entry, inst(CfgInstData::Const(4), Type::I32));
-        let (fields_start, fields_len) = cfg.push_extra([left, right]);
-        let aggregate = cfg.add_inst_to_block(
-            entry,
-            inst(
-                CfgInstData::StructInit {
-                    struct_id: match aggregate_ty.kind() {
-                        rue_air::TypeKind::Struct(id) => id,
-                        _ => panic!("fixture aggregate must be a struct"),
-                    },
-                    fields_start,
-                    fields_len,
+        let condition = cfg.append_inst(entry, inst(CfgInstData::BoolConst(true), Type::BOOL));
+        let left = cfg.append_inst(entry, inst(CfgInstData::Const(3), Type::I32));
+        let right = cfg.append_inst(entry, inst(CfgInstData::Const(4), Type::I32));
+        let aggregate = cfg
+            .append_struct_init(
+                entry,
+                match aggregate_ty.kind() {
+                    rue_air::TypeKind::Struct(id) => id,
+                    _ => panic!("fixture aggregate must be a struct"),
                 },
+                [left, right],
                 aggregate_ty,
-            ),
-        );
+                Span::new(0, 0),
+            )
+            .unwrap();
         let _cleanup_param = cfg.add_block_param(cleanup, aggregate_ty);
-        cfg.set_terminator(
-            entry,
-            Terminator::Branch {
-                cond: condition,
-                then_block,
-                then_args_start: 0,
-                then_args_len: 0,
-                else_block,
-                else_args_start: 0,
-                else_args_len: 0,
-            },
-        );
-        let (then_cleanup_start, then_cleanup_len) = cfg.push_extra([aggregate]);
-        cfg.set_terminator(
-            then_block,
-            Terminator::Goto {
-                target: cleanup,
-                args_start: then_cleanup_start,
-                args_len: then_cleanup_len,
-            },
-        );
-        let (else_cleanup_start, else_cleanup_len) = cfg.push_extra([aggregate]);
-        cfg.set_terminator(
-            else_block,
-            Terminator::Goto {
-                target: cleanup,
-                args_start: else_cleanup_start,
-                args_len: else_cleanup_len,
-            },
-        );
-        cfg.set_terminator(cleanup, Terminator::Return { value: None });
+        cfg.set_branch(entry, condition, then_block, [], else_block, []);
+        cfg.set_goto(then_block, cleanup, [aggregate]);
+        cfg.set_goto(else_block, cleanup, [aggregate]);
+        cfg.set_return(cleanup, None);
         (cfg, pool, interner)
     }
 
@@ -902,31 +780,21 @@ mod tests {
         let entry = cfg.new_block();
         cfg.entry = entry;
         let values = (0..fields)
-            .map(|value| {
-                cfg.add_inst_to_block(entry, inst(CfgInstData::Const(value as u64), Type::I64))
-            })
+            .map(|value| cfg.append_inst(entry, inst(CfgInstData::Const(value as u64), Type::I64)))
             .collect::<Vec<_>>();
-        let (fields_start, fields_len) = cfg.push_extra(values);
-        let aggregate = cfg.add_inst_to_block(
-            entry,
-            inst(
-                CfgInstData::StructInit {
-                    struct_id: match aggregate_ty.kind() {
-                        rue_air::TypeKind::Struct(id) => id,
-                        _ => panic!("fixture aggregate must be a struct"),
-                    },
-                    fields_start,
-                    fields_len,
+        let aggregate = cfg
+            .append_struct_init(
+                entry,
+                match aggregate_ty.kind() {
+                    rue_air::TypeKind::Struct(id) => id,
+                    _ => panic!("fixture aggregate must be a struct"),
                 },
+                values,
                 aggregate_ty,
-            ),
-        );
-        cfg.set_terminator(
-            entry,
-            Terminator::Return {
-                value: Some(aggregate),
-            },
-        );
+                Span::new(0, 0),
+            )
+            .unwrap();
+        cfg.set_return(entry, Some(aggregate));
         (cfg, pool, interner)
     }
 
@@ -940,32 +808,12 @@ mod tests {
         let entry = cfg.new_block();
         let target = cfg.new_block();
         cfg.entry = entry;
-        let zero = cfg.add_inst_to_block(
-            entry,
-            inst(
-                CfgInstData::ArrayInit {
-                    elements_start: 0,
-                    elements_len: 0,
-                },
-                array_ty,
-            ),
-        );
+        let zero = cfg
+            .append_array_init(entry, [], array_ty, Span::new(0, 0))
+            .unwrap();
         let target_param = cfg.add_block_param(target, array_ty);
-        let (args_start, args_len) = cfg.push_extra([zero]);
-        cfg.set_terminator(
-            entry,
-            Terminator::Goto {
-                target,
-                args_start,
-                args_len,
-            },
-        );
-        cfg.set_terminator(
-            target,
-            Terminator::Return {
-                value: Some(target_param),
-            },
-        );
+        cfg.set_goto(entry, target, [zero]);
+        cfg.set_return(target, Some(target_param));
         (cfg, pool, interner)
     }
 
@@ -1140,7 +988,7 @@ mod tests {
         let mut cfg = Cfg::new(Type::UNIT, 0, 0, "trap".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
-        cfg.set_terminator(entry, Terminator::Unreachable);
+        cfg.set_unreachable(entry);
         let (x86, x86_debug, arm, arm_debug) = lower_both(&cfg, &pool, &interner);
         let trace = assert_same_policy_trace(&cfg, &x86_debug, &arm_debug);
         assert_eq!(
@@ -1174,35 +1022,23 @@ mod tests {
         let mut scalar_cfg = Cfg::new(Type::I32, 0, 0, "scalar".to_string(), vec![]);
         let scalar_entry = scalar_cfg.new_block();
         scalar_cfg.entry = scalar_entry;
-        let scalar =
-            scalar_cfg.add_inst_to_block(scalar_entry, inst(CfgInstData::Const(9), Type::I32));
-        scalar_cfg.set_terminator(
-            scalar_entry,
-            Terminator::Return {
-                value: Some(scalar),
-            },
-        );
+        let scalar = scalar_cfg.append_inst(scalar_entry, inst(CfgInstData::Const(9), Type::I32));
+        scalar_cfg.set_return(scalar_entry, Some(scalar));
 
         let unit_pool = FrozenTypeInternPool::new();
         let unit_interner = ThreadedRodeo::new();
         let mut unit_cfg = Cfg::new(Type::UNIT, 0, 0, "unit".to_string(), vec![]);
         let unit_entry = unit_cfg.new_block();
         unit_cfg.entry = unit_entry;
-        unit_cfg.set_terminator(unit_entry, Terminator::Return { value: None });
+        unit_cfg.set_return(unit_entry, None);
 
         let main_pool = FrozenTypeInternPool::new();
         let main_interner = ThreadedRodeo::new();
         let mut main_cfg = Cfg::new(Type::I32, 0, 0, "main".to_string(), vec![]);
         let main_entry = main_cfg.new_block();
         main_cfg.entry = main_entry;
-        let main_value =
-            main_cfg.add_inst_to_block(main_entry, inst(CfgInstData::Const(0), Type::I32));
-        main_cfg.set_terminator(
-            main_entry,
-            Terminator::Return {
-                value: Some(main_value),
-            },
-        );
+        let main_value = main_cfg.append_inst(main_entry, inst(CfgInstData::Const(0), Type::I32));
+        main_cfg.set_return(main_entry, Some(main_value));
 
         for (cfg, pool, interner, expected_kind) in [
             (
@@ -1245,36 +1081,13 @@ mod tests {
         let first = multi_cfg.new_block();
         let second = multi_cfg.new_block();
         multi_cfg.entry = multi_entry;
-        let condition = multi_cfg
-            .add_inst_to_block(multi_entry, inst(CfgInstData::BoolConst(true), Type::BOOL));
-        let first_value =
-            multi_cfg.add_inst_to_block(first, inst(CfgInstData::Const(1), Type::I32));
-        let second_value =
-            multi_cfg.add_inst_to_block(second, inst(CfgInstData::Const(2), Type::I32));
-        multi_cfg.set_terminator(
-            multi_entry,
-            Terminator::Branch {
-                cond: condition,
-                then_block: first,
-                then_args_start: 0,
-                then_args_len: 0,
-                else_block: second,
-                else_args_start: 0,
-                else_args_len: 0,
-            },
-        );
-        multi_cfg.set_terminator(
-            first,
-            Terminator::Return {
-                value: Some(first_value),
-            },
-        );
-        multi_cfg.set_terminator(
-            second,
-            Terminator::Return {
-                value: Some(second_value),
-            },
-        );
+        let condition =
+            multi_cfg.append_inst(multi_entry, inst(CfgInstData::BoolConst(true), Type::BOOL));
+        let first_value = multi_cfg.append_inst(first, inst(CfgInstData::Const(1), Type::I32));
+        let second_value = multi_cfg.append_inst(second, inst(CfgInstData::Const(2), Type::I32));
+        multi_cfg.set_branch(multi_entry, condition, first, [], second, []);
+        multi_cfg.set_return(first, Some(first_value));
+        multi_cfg.set_return(second, Some(second_value));
         let (x86, x86_debug, arm, arm_debug) = lower_both(&multi_cfg, &multi_pool, &multi_interner);
         let trace = assert_same_policy_trace(&multi_cfg, &x86_debug, &arm_debug);
         assert_eq!(

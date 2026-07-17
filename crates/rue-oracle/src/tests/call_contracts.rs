@@ -26,17 +26,11 @@ fn find_call_metadata(
         for block in function.cfg.blocks() {
             for &value in &block.insts {
                 let inst = function.cfg.get_inst(value);
-                let CfgInstData::Call {
-                    name,
-                    args_start,
-                    args_len,
-                    ..
-                } = &inst.data
-                else {
+                let CfgInstData::Call { name, .. } = &inst.data else {
                     continue;
                 };
                 if state.interner.resolve(name) == expected_name {
-                    let args = function.cfg.get_call_args(*args_start, *args_len);
+                    let args = function.cfg.get_call_args(&inst.data);
                     return (
                         args.iter()
                             .map(|arg| function.cfg.get_inst(arg.value).ty)
@@ -190,23 +184,13 @@ fn find_intrinsic_in_function<'a>(
         .flat_map(|block| block.insts.iter().copied())
     {
         let inst = cfg.get_inst(value);
-        let CfgInstData::Intrinsic {
-            name,
-            args_start,
-            args_len,
-            ..
-        } = &inst.data
-        else {
+        let CfgInstData::Intrinsic { name, .. } = &inst.data else {
             continue;
         };
         if state.interner.resolve(name) != expected_name {
             continue;
         }
-        let item = (
-            value,
-            cfg.get_extra(*args_start, *args_len).to_vec(),
-            inst.ty,
-        );
+        let item = (value, cfg.get_intrinsic_args(&inst.data).to_vec(), inst.ty);
         assert!(
             found.replace(item).is_none(),
             "expected exactly one @{expected_name} in {function_name}"
@@ -432,30 +416,14 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
             )
         };
 
+        let type_pool = &state.type_pool;
         let cfg = &mut state.functions[main_index].cfg;
-        let (args_start, args_len) = match cfg.get_inst(call).data {
-            CfgInstData::Call {
-                args_start,
-                args_len,
-                ..
-            } => (args_start, args_len),
-            _ => unreachable!("selected a Call"),
-        };
-        let mut args = cfg.get_call_args(args_start, args_len).to_vec();
+        let mut args = cfg.get_call_args(&cfg.get_inst(call).data).to_vec();
         assert_eq!(args.len(), 1, "{callee_name} probe arity");
         args[0].value = random;
         args[0].mode = replacement_mode;
-        let (args_start, args_len) = cfg.push_call_args(args);
-        let CfgInstData::Call {
-            args_start: stored_start,
-            args_len: stored_len,
-            ..
-        } = &mut cfg.get_inst_mut(call).data
-        else {
-            unreachable!("selected a Call")
-        };
-        *stored_start = args_start;
-        *stored_len = args_len;
+        cfg.try_edit(type_pool, |editor| editor.replace_call_args(call, args))
+            .unwrap();
 
         let cfg = &state.functions[main_index].cfg;
         let mut interp = Interp {
@@ -543,18 +511,13 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
             ),
             _ => unreachable!(),
         };
-        let (args_start, args_len) = cfg.push_extra(replacement_args);
-        let CfgInstData::Intrinsic {
-            args_start: stored_start,
-            args_len: stored_len,
-            ..
-        } = &mut cfg.get_inst_mut(outer).data
-        else {
-            unreachable!("selected an intrinsic")
-        };
-        *stored_start = args_start;
-        *stored_len = args_len;
-        cfg.get_inst_mut(outer).ty = replacement_ty;
+        let type_pool = &state.type_pool;
+        cfg.try_edit(type_pool, |editor| {
+            editor.replace_intrinsic_args(outer, replacement_args)?;
+            editor.replace_inst_type(outer, replacement_ty)?;
+            Ok::<_, rue_cfg::CfgEditError>(())
+        })
+        .unwrap();
 
         let cfg = &state.functions[main_index].cfg;
         let mut interp = Interp {
@@ -767,10 +730,13 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         .iter()
         .position(|function| function.cfg.fn_name() == "user_pointer")
         .expect("user_pointer CFG");
+    let type_pool = &drift_state.type_pool;
     drift_state.functions[drift_user_index]
         .cfg
-        .get_inst_mut(drift_user_inst)
-        .ty = drift_slice_result;
+        .try_edit(type_pool, |editor| {
+            editor.replace_inst_type(drift_user_inst, drift_slice_result)
+        })
+        .unwrap();
     let (drift_cfg, drift_inst, drift_args, drift_result) =
         find_intrinsic_in_function(&drift_state, "user_pointer", "int_to_ptr");
     let drift_interp = Interp {
@@ -818,13 +784,13 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             )
         })
         .expect("outer result cast");
+    let type_pool = &extra_use_state.type_pool;
     extra_use_state.functions[extra_main]
         .cfg
-        .get_inst_mut(outer_cast)
-        .data = CfgInstData::IntCast {
-        value: extra_slice_inst,
-        from_ty: drift_slice_result,
-    };
+        .try_edit(type_pool, |editor| {
+            editor.replace_int_cast(outer_cast, extra_slice_inst, drift_slice_result)
+        })
+        .unwrap();
     let (extra_cfg, extra_inst, extra_args, extra_result) =
         find_intrinsic_in_function(&extra_use_state, "main", "int_to_ptr");
     let extra_interp = Interp {
@@ -864,15 +830,11 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             .iter()
             .flat_map(|block| block.insts.iter().copied())
             .find(|value| {
-                let CfgInstData::StructInit {
-                    fields_start,
-                    fields_len,
-                    ..
-                } = cfg.get_inst(*value).data
-                else {
+                let data = &cfg.get_inst(*value).data;
+                let CfgInstData::StructInit { .. } = data else {
                     return false;
                 };
-                cfg.get_extra(fields_start, fields_len).first() == Some(&extra_init_pointer)
+                cfg.get_struct_fields(data).first() == Some(&extra_init_pointer)
             })
             .expect("empty-slice StructInit");
         let outer_cast = cfg
@@ -883,13 +845,13 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             .expect("outer result cast");
         (slice_init, cfg.get_inst(slice_init).ty, outer_cast)
     };
+    let type_pool = &extra_init_use_state.type_pool;
     extra_init_use_state.functions[extra_init_main]
         .cfg
-        .get_inst_mut(outer_cast)
-        .data = CfgInstData::IntCast {
-        value: slice_init,
-        from_ty: slice_ty,
-    };
+        .try_edit(type_pool, |editor| {
+            editor.replace_int_cast(outer_cast, slice_init, slice_ty)
+        })
+        .unwrap();
     let (extra_init_cfg, extra_init_inst, extra_init_args, extra_init_result) =
         find_intrinsic_in_function(&extra_init_use_state, "main", "int_to_ptr");
     assert_eq!(extra_init_cfg.value_use_count(extra_init_inst), 1);
@@ -931,15 +893,11 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             .iter()
             .flat_map(|block| block.insts.iter().copied())
             .find(|value| {
-                let CfgInstData::StructInit {
-                    fields_start,
-                    fields_len,
-                    ..
-                } = cfg.get_inst(*value).data
-                else {
+                let data = &cfg.get_inst(*value).data;
+                let CfgInstData::StructInit { .. } = data else {
                     return false;
                 };
-                cfg.get_extra(fields_start, fields_len).first() == Some(&wrong_consumer_pointer)
+                cfg.get_struct_fields(data).first() == Some(&wrong_consumer_pointer)
             })
             .expect("empty-slice StructInit");
         let (consumer, args) = cfg
@@ -947,15 +905,11 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             .iter()
             .flat_map(|block| block.insts.iter().copied())
             .find_map(|value| {
-                let CfgInstData::Call {
-                    args_start,
-                    args_len,
-                    ..
-                } = cfg.get_inst(value).data
-                else {
+                let data = &cfg.get_inst(value).data;
+                let CfgInstData::Call { .. } = data else {
                     return None;
                 };
-                let args = cfg.get_call_args(args_start, args_len);
+                let args = cfg.get_call_args(data);
                 args.iter()
                     .any(|arg| arg.value == init)
                     .then(|| (value, args.to_vec()))
@@ -969,18 +923,12 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         .expect("empty-slice call argument");
     assert_eq!(slice_arg.mode, CfgArgMode::Normal);
     slice_arg.mode = CfgArgMode::Borrow;
+    let type_pool = &wrong_consumer_state.type_pool;
     let cfg = &mut wrong_consumer_state.functions[wrong_consumer_main].cfg;
-    let (args_start, args_len) = cfg.push_call_args(consumer_args);
-    let CfgInstData::Call {
-        args_start: old_start,
-        args_len: old_len,
-        ..
-    } = &mut cfg.get_inst_mut(consumer).data
-    else {
-        unreachable!("consumer stopped being a call")
-    };
-    *old_start = args_start;
-    *old_len = args_len;
+    cfg.try_edit(type_pool, |editor| {
+        editor.replace_call_args(consumer, consumer_args)
+    })
+    .unwrap();
     let (wrong_consumer_cfg, wrong_consumer_inst, wrong_consumer_args, wrong_consumer_result) =
         find_intrinsic_in_function(&wrong_consumer_state, "main", "int_to_ptr");
     assert_eq!(wrong_consumer_cfg.value_use_count(wrong_consumer_inst), 1);
@@ -1021,22 +969,21 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             .iter()
             .flat_map(|block| block.insts.iter().copied())
             .find(|value| {
-                let CfgInstData::StructInit {
-                    fields_start,
-                    fields_len,
-                    ..
-                } = cfg.get_inst(*value).data
-                else {
+                let data = &cfg.get_inst(*value).data;
+                let CfgInstData::StructInit { .. } = data else {
                     return false;
                 };
-                cfg.get_extra(fields_start, fields_len).first() == Some(&wrong_init_pointer)
+                cfg.get_struct_fields(data).first() == Some(&wrong_init_pointer)
             })
             .expect("empty-slice StructInit")
     };
+    let type_pool = &wrong_init_state.type_pool;
     wrong_init_state.functions[wrong_init_main]
         .cfg
-        .get_inst_mut(slice_init)
-        .ty = Type::UNIT;
+        .try_edit(type_pool, |editor| {
+            editor.replace_inst_type(slice_init, Type::UNIT)
+        })
+        .unwrap();
     let (wrong_init_cfg, wrong_init_inst, wrong_init_args, wrong_init_result) =
         find_intrinsic_in_function(&wrong_init_state, "main", "int_to_ptr");
     let wrong_init_interp = Interp {
@@ -1062,7 +1009,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
 }
 
 #[test]
-fn field_pointer_gaps_require_in_bounds_projection_metadata() {
+fn validated_cfg_rejects_out_of_bounds_field_pointer_projection_metadata() {
     let source = "struct Pair { a: i32, b: i32 }
         fn main() -> i32 {
             let mut p = Pair { a: 1, b: 2 };
@@ -1108,34 +1055,25 @@ fn field_pointer_gaps_require_in_bounds_projection_metadata() {
         (place.base, place.base_type, struct_id)
     };
     let out_of_bounds = state.type_pool.struct_def(struct_id).field_count() as u32;
-    let invalid_place = state.functions[main_index].cfg.make_place(
-        base,
-        base_type,
-        [Projection::Field {
-            struct_id,
-            field_index: out_of_bounds,
-        }],
-    );
-    state.functions[main_index]
+    let type_pool = &state.type_pool;
+    let error = state.functions[main_index]
         .cfg
-        .get_inst_mut(field_read)
-        .data = CfgInstData::PlaceRead {
-        place: invalid_place,
-    };
-    let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "main", "field_ptr");
-    let interp = Interp {
-        state: &state,
-        stdout: String::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-    };
-    assert_eq!(
-        interp.classify_unsupported_intrinsic(cfg, inst, "field_ptr", &args, result),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature)
-    );
+        .try_edit(type_pool, |editor| {
+            editor.replace_place_read(
+                field_read,
+                base,
+                base_type,
+                [Projection::Field {
+                    struct_id,
+                    field_index: out_of_bounds,
+                }],
+            )
+        })
+        .expect_err("ValidatedCfg must reject an out-of-bounds field projection");
+    assert!(matches!(
+        error,
+        rue_cfg::CfgEditTransactionError::Verification(_)
+    ));
 }
 
 #[test]

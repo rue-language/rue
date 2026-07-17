@@ -2860,7 +2860,7 @@ mod tests {
             func.allow_unreachable_code,
         );
 
-        CfgLower::new(&cfg_output.cfg, type_pool, &interner)
+        CfgLower::new(cfg_output.cfg.as_ref().unwrap(), type_pool, &interner)
             .lower()
             .expect("test lowering should succeed")
     }

@@ -304,9 +304,13 @@ fn get_enum_variant(cfg: &Cfg, value: CfgValue) -> Option<(EnumId, u32, u32)> {
         CfgInstData::EnumVariant {
             enum_id,
             variant_index,
-            payload_len,
+            payload,
             ..
-        } => Some((*enum_id, *variant_index, *payload_len)),
+        } => Some((
+            *enum_id,
+            *variant_index,
+            cfg.enum_payload(payload).len() as u32,
+        )),
         _ => None,
     }
 }

@@ -136,12 +136,8 @@ pub fn run(cfg: &mut Cfg) -> Stats {
                 // place: the callee may write through it (inout), and the
                 // by-ref lowering needs the arg to remain a Load/PlaceRead.
                 // Disqualify any local the argument is rooted at.
-                CfgInstData::Call {
-                    args_start,
-                    args_len,
-                    ..
-                } => {
-                    for arg in cfg.get_call_args(*args_start, *args_len) {
+                CfgInstData::Call { args, .. } => {
+                    for arg in cfg.call_args(args) {
                         if !arg.is_by_ref() {
                             continue;
                         }
@@ -262,7 +258,7 @@ pub fn run(cfg: &mut Cfg) -> Stats {
             let payload = const_payload(cfg, value)
                 .expect("became_const events carry Const/BoolConst values");
             for &load in &loads_of_slot[slot as usize] {
-                cfg.get_inst_mut(load).data = payload.clone();
+                cfg.get_inst_mut(load).data = payload.duplicate_with_owner();
                 stats.loads_rewritten += 1;
                 became_const.push_back(load);
             }
@@ -389,15 +385,14 @@ mod tests {
             Type::UNIT,
         );
         let load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
-        let (args_start, args_len) = cfg.push_extra(vec![load]);
+        let args = cfg.push_intrinsic_args(vec![load]).unwrap();
         let raw_sym = Spur::try_from_usize(0).unwrap();
         let ptr = push(
             &mut cfg,
             CfgInstData::Intrinsic {
                 runtime: None,
                 name: raw_sym,
-                args_start,
-                args_len,
+                args,
             },
             Type::I32,
         );
@@ -470,17 +465,18 @@ mod tests {
             Type::UNIT,
         );
         let arg_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
-        let (args_start, args_len) = cfg.push_call_args([CfgCallArg {
-            value: arg_load,
-            mode: CfgArgMode::Inout,
-        }]);
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: arg_load,
+                mode: CfgArgMode::Inout,
+            }])
+            .unwrap();
         push(
             &mut cfg,
             CfgInstData::Call {
                 runtime: None,
                 name: Spur::try_from_usize(0).unwrap(),
-                args_start,
-                args_len,
+                args,
             },
             Type::UNIT,
         );
@@ -533,17 +529,18 @@ mod tests {
             Type::UNIT,
         );
         let arg_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
-        let (args_start, args_len) = cfg.push_call_args([CfgCallArg {
-            value: arg_load,
-            mode: CfgArgMode::Normal,
-        }]);
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: arg_load,
+                mode: CfgArgMode::Normal,
+            }])
+            .unwrap();
         push(
             &mut cfg,
             CfgInstData::Call {
                 runtime: None,
                 name: Spur::try_from_usize(0).unwrap(),
-                args_start,
-                args_len,
+                args,
             },
             Type::UNIT,
         );

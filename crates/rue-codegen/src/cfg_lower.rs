@@ -181,14 +181,9 @@ fn format_cfg_inst_data_impl(
         CfgInstData::ParamStore { param_slot, value } => {
             format!("param_store %{} = {}", param_slot, value)
         }
-        CfgInstData::Call {
-            runtime,
-            name,
-            args_start,
-            args_len,
-        } => {
+        CfgInstData::Call { runtime, name, .. } => {
             let args: Vec<String> = cfg
-                .get_call_args(*args_start, *args_len)
+                .get_call_args(data)
                 .iter()
                 .map(|a| format!("{}", a.value))
                 .collect();
@@ -200,14 +195,9 @@ fn format_cfg_inst_data_impl(
                 .unwrap_or(name);
             format!("call @{}({})", name, args.join(", "))
         }
-        CfgInstData::Intrinsic {
-            runtime,
-            name,
-            args_start,
-            args_len,
-        } => {
+        CfgInstData::Intrinsic { runtime, name, .. } => {
             let args: Vec<String> = cfg
-                .get_extra(*args_start, *args_len)
+                .get_intrinsic_args(data)
                 .iter()
                 .map(|v| format!("{}", v))
                 .collect();
@@ -219,13 +209,9 @@ fn format_cfg_inst_data_impl(
                 .unwrap_or_default();
             format!("{prefix}intrinsic @{}({})", name, args.join(", "))
         }
-        CfgInstData::StructInit {
-            struct_id,
-            fields_start,
-            fields_len,
-        } => {
+        CfgInstData::StructInit { struct_id, .. } => {
             let fields: Vec<String> = cfg
-                .get_extra(*fields_start, *fields_len)
+                .get_struct_fields(data)
                 .iter()
                 .map(|v| format!("{}", v))
                 .collect();

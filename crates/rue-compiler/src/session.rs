@@ -976,9 +976,11 @@ mod durable_body_integration_tests {
                 imported.allow_unreachable_code,
             );
             assert!(cfg_output.errors.is_empty());
-            rue_cfg::opt::optimize(&mut cfg_output.cfg, rue_cfg::OptLevel::O0, &frozen_types);
+            let cfg = cfg_output.cfg.take().unwrap();
+            cfg_output.cfg =
+                Some(rue_cfg::opt::optimize(cfg, rue_cfg::OptLevel::O0, &frozen_types).unwrap());
             assert_eq!(
-                normalize_epoch_symbols(&cfg_output.cfg.to_string()),
+                normalize_epoch_symbols(&cfg_output.cfg.as_ref().unwrap().to_string()),
                 normalize_epoch_symbols(&ordinary.cfg.to_string())
             );
             assert!(cfg_output.warnings.is_empty());

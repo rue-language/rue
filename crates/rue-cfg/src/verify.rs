@@ -30,10 +30,67 @@
 //! DCE can detach dead arena values, then verifies the remaining live graph
 //! again after all passes.
 
-use crate::inst::{BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
+use crate::PayloadError;
+use crate::inst::{
+    BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, ValidatedCfg,
+};
 use rue_air::{FrozenTypeInternPool, Type, TypeKind};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CfgVerificationLocation {
+    Artifact,
+    Instruction { block: BlockId, value: CfgValue },
+    Terminator { block: BlockId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfgVerificationError {
+    function: String,
+    location: CfgVerificationLocation,
+    message: String,
+    payload: Option<PayloadError>,
+}
+
+impl CfgVerificationError {
+    pub fn location(&self) -> CfgVerificationLocation {
+        self.location
+    }
+
+    pub fn payload(&self) -> Option<&PayloadError> {
+        self.payload.as_ref()
+    }
+}
+
+impl std::fmt::Display for CfgVerificationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CFG verification failed in `{}`: {}",
+            self.function, self.message
+        )
+    }
+}
+
+impl std::error::Error for CfgVerificationError {}
+
 impl Cfg {
+    /// Consume an editor and publish it only after whole-owner verification.
+    pub fn finish(
+        self,
+        type_pool: &FrozenTypeInternPool,
+    ) -> Result<ValidatedCfg, CfgVerificationError> {
+        self.verify_with_type_pool(type_pool)?;
+        Ok(ValidatedCfg(self))
+    }
+
+    pub(crate) fn finish_after_optimization(
+        self,
+        type_pool: &FrozenTypeInternPool,
+    ) -> Result<ValidatedCfg, CfgVerificationError> {
+        self.verify_after_optimization_with_type_pool(type_pool)?;
+        Ok(ValidatedCfg(self))
+    }
+
     /// Count every operand use of `needle` across instructions and
     /// terminators.
     ///
@@ -51,33 +108,27 @@ impl Cfg {
                     .count();
             }
             match &block.terminator {
-                Terminator::Goto {
-                    args_start,
-                    args_len,
-                    ..
-                } => {
+                Terminator::Goto { args: _, .. } => {
                     count += self
-                        .get_extra(*args_start, *args_len)
+                        .get_goto_args(&block.terminator)
                         .iter()
                         .filter(|value| **value == needle)
                         .count();
                 }
                 Terminator::Branch {
                     cond,
-                    then_args_start,
-                    then_args_len,
-                    else_args_start,
-                    else_args_len,
+                    then_args: _,
+                    else_args: _,
                     ..
                 } => {
                     count += usize::from(*cond == needle);
                     count += self
-                        .get_extra(*then_args_start, *then_args_len)
+                        .get_branch_then_args(&block.terminator)
                         .iter()
                         .filter(|value| **value == needle)
                         .count();
                     count += self
-                        .get_extra(*else_args_start, *else_args_len)
+                        .get_branch_else_args(&block.terminator)
                         .iter()
                         .filter(|value| **value == needle)
                         .count();
@@ -100,15 +151,18 @@ impl Cfg {
     /// See the module docs for the invariants and the rationale for the hard
     /// panic. This is a compiler-bug guard: a well-formed pipeline never trips
     /// it; the check is paid to pin future lowering regressions to their source.
-    pub fn verify(&self) {
-        Verifier::new(self, None, true).verify();
+    pub fn verify(&self) -> Result<(), CfgVerificationError> {
+        Verifier::new(self, None, true).verify()
     }
 
     /// Verify with the active semantic type pool, enabling exact aggregate
     /// layouts and projection-chain validation. Production callers must use
     /// this entry point.
-    pub fn verify_with_type_pool(&self, type_pool: &FrozenTypeInternPool) {
-        Verifier::new(self, Some(type_pool), true).verify();
+    pub fn verify_with_type_pool(
+        &self,
+        type_pool: &FrozenTypeInternPool,
+    ) -> Result<(), CfgVerificationError> {
+        Verifier::new(self, Some(type_pool), true).verify()
     }
 
     /// Verify the optimized live graph. DCE intentionally retains dead values
@@ -118,8 +172,8 @@ impl Cfg {
     pub(crate) fn verify_after_optimization_with_type_pool(
         &self,
         type_pool: &FrozenTypeInternPool,
-    ) {
-        Verifier::new(self, Some(type_pool), false).verify();
+    ) -> Result<(), CfgVerificationError> {
+        Verifier::new(self, Some(type_pool), false).verify()
     }
 
     /// Collect every `CfgValue` operand referenced by an instruction into
@@ -174,35 +228,22 @@ impl Cfg {
                 out.push(*value);
             }
 
-            CfgInstData::Call {
-                args_start,
-                args_len,
-                ..
-            } => {
-                for arg in self.get_call_args(*args_start, *args_len) {
+            CfgInstData::Call { args, .. } => {
+                for arg in self.call_args(args) {
                     out.push(arg.value);
                 }
             }
-            CfgInstData::Intrinsic {
-                args_start,
-                args_len,
-                ..
-            } => out.extend_from_slice(self.get_extra(*args_start, *args_len)),
+            CfgInstData::Intrinsic { args, .. } => out.extend_from_slice(self.intrinsic_args(args)),
 
-            CfgInstData::StructInit {
-                fields_start,
-                fields_len,
-                ..
-            } => out.extend_from_slice(self.get_extra(*fields_start, *fields_len)),
-            CfgInstData::ArrayInit {
-                elements_start,
-                elements_len,
-            } => out.extend_from_slice(self.get_extra(*elements_start, *elements_len)),
-            CfgInstData::EnumVariant {
-                payload_start,
-                payload_len,
-                ..
-            } => out.extend_from_slice(self.get_extra(*payload_start, *payload_len)),
+            CfgInstData::StructInit { fields, .. } => {
+                out.extend_from_slice(self.struct_fields(fields))
+            }
+            CfgInstData::ArrayInit { elements } => {
+                out.extend_from_slice(self.array_elements(elements))
+            }
+            CfgInstData::EnumVariant { payload, .. } => {
+                out.extend_from_slice(self.enum_payload(payload))
+            }
             CfgInstData::EnumPayloadGet { base, .. } => out.push(*base),
 
             CfgInstData::IntCast { value, .. } => out.push(*value),
@@ -252,77 +293,94 @@ impl<'a> Verifier<'a> {
         }
     }
 
-    fn fail(&self, message: impl std::fmt::Display) -> ! {
-        panic!(
-            "internal compiler error: CFG verification failed in function `{}`: {}. This is a compiler bug (RUE-797).",
-            self.cfg.fn_name(),
-            message
-        )
+    fn error(&self, message: impl std::fmt::Display) -> CfgVerificationError {
+        CfgVerificationError {
+            function: self.cfg.fn_name().to_string(),
+            location: CfgVerificationLocation::Artifact,
+            message: message.to_string(),
+            payload: None,
+        }
     }
 
-    fn verify(mut self) {
-        self.verify_block_table_and_attachments();
-        self.verify_targets_and_slices();
+    fn payload_error(
+        &self,
+        location: CfgVerificationLocation,
+        error: PayloadError,
+    ) -> CfgVerificationError {
+        CfgVerificationError {
+            function: self.cfg.fn_name().to_string(),
+            location,
+            message: error.to_string(),
+            payload: Some(error),
+        }
+    }
+
+    fn verify(mut self) -> Result<(), CfgVerificationError> {
+        self.verify_block_table_and_attachments()?;
+        self.verify_targets_and_slices()?;
         self.compute_reachability();
         self.compute_dominators();
 
         for block in self.cfg.blocks() {
             let block_index = block.id.as_u32() as usize;
             if self.reachable[block_index] && matches!(block.terminator, Terminator::None) {
-                self.fail(format_args!(
+                return Err(self.error(format_args!(
                     "reachable block {} has no terminator",
                     block.id
-                ));
+                )));
             }
 
             for (position, &value) in block.insts.iter().enumerate() {
-                self.verify_inst(block.id, position, value);
+                self.verify_inst(block.id, position, value)?;
             }
             if !matches!(block.terminator, Terminator::None) {
-                self.verify_terminator_use(block.id, &block.terminator);
+                self.verify_terminator_use(block.id, &block.terminator)?;
             }
         }
+        Ok(())
     }
 
-    fn verify_block_table_and_attachments(&mut self) {
+    fn verify_block_table_and_attachments(&mut self) -> Result<(), CfgVerificationError> {
         let block_count = self.cfg.block_count();
         if self.cfg.entry.as_u32() as usize >= block_count {
-            self.fail(format_args!(
+            return Err(self.error(format_args!(
                 "entry block {} is out of bounds (only {} blocks exist)",
                 self.cfg.entry, block_count
-            ));
+            )));
         }
 
         for (expected, block) in self.cfg.blocks().iter().enumerate() {
             if block.id.as_u32() as usize != expected {
-                self.fail(format_args!(
+                return Err(self.error(format_args!(
                     "block table slot {} contains mismatched id {}",
                     expected, block.id
-                ));
+                )));
             }
             for (index, &(value, stored_ty)) in block.params.iter().enumerate() {
                 self.attach(
                     value,
                     Attachment::Param { block: block.id },
                     "block parameter",
-                );
-                let inst = self.inst(value, block.id, "block parameter");
+                )?;
+                let inst = self.inst(value, block.id, "block parameter")?;
                 match inst.data {
                     CfgInstData::BlockParam { index: actual } if actual == index as u32 => {}
-                    CfgInstData::BlockParam { index: actual } => self.fail(format_args!(
+                    CfgInstData::BlockParam { index: actual } => return Err(self.error(format_args!(
                         "block parameter {} in block {} is stored at index {} but declares index {}",
                         value, block.id, index, actual
-                    )),
-                    ref other => self.fail(format_args!(
+                    ))),
+                    ref other => {
+                        return Err(self.error(format_args!(
                         "block parameter {} in block {} has non-BlockParam data {:?}",
                         value, block.id, other
-                    )),
+                    )))
+                    }
                 }
                 if inst.ty != stored_ty {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "block parameter {} in block {} stores type {:?} but its value has type {:?}",
                         value, block.id, stored_ty, inst.ty
-                    ));
+                    )));
                 }
             }
             for (position, &value) in block.insts.iter().enumerate() {
@@ -333,15 +391,15 @@ impl<'a> Verifier<'a> {
                         position,
                     },
                     "instruction",
-                );
+                )?;
                 if matches!(
-                    self.inst(value, block.id, "instruction").data,
+                    self.inst(value, block.id, "instruction")?.data,
                     CfgInstData::BlockParam { .. }
                 ) {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "ordinary instruction {} in block {} has BlockParam data",
                         value, block.id
-                    ));
+                    )));
                 }
             }
         }
@@ -349,34 +407,41 @@ impl<'a> Verifier<'a> {
         if self.require_complete_attachments {
             for (index, attachment) in self.attachments.iter().enumerate() {
                 if attachment.is_none() {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "value v{} is unattached (every value must be exactly one block parameter or ordinary instruction)",
                         index
-                    ));
+                    )));
                 }
             }
         }
+        Ok(())
     }
 
-    fn attach(&mut self, value: CfgValue, attachment: Attachment, role: &str) {
+    fn attach(
+        &mut self,
+        value: CfgValue,
+        attachment: Attachment,
+        role: &str,
+    ) -> Result<(), CfgVerificationError> {
         let index = value.as_u32() as usize;
         if index >= self.attachments.len() {
-            self.fail(format_args!(
+            return Err(self.error(format_args!(
                 "{} {} references an undefined value (only {} values exist)",
                 role,
                 value,
                 self.attachments.len()
-            ));
+            )));
         }
         if let Some(previous) = self.attachments[index] {
-            self.fail(format_args!(
+            return Err(self.error(format_args!(
                 "value {} has duplicate attachments ({}, then {})",
                 value,
                 Self::attachment_name(previous),
                 Self::attachment_name(attachment)
-            ));
+            )));
         }
         self.attachments[index] = Some(attachment);
+        Ok(())
     }
 
     fn attachment_name(attachment: Attachment) -> String {
@@ -388,194 +453,122 @@ impl<'a> Verifier<'a> {
         }
     }
 
-    fn inst(&self, value: CfgValue, block: BlockId, role: &str) -> &crate::inst::CfgInst {
+    fn inst(
+        &self,
+        value: CfgValue,
+        block: BlockId,
+        role: &str,
+    ) -> Result<&crate::inst::CfgInst, CfgVerificationError> {
         if value.as_u32() as usize >= self.cfg.value_count() {
-            self.fail(format_args!(
+            return Err(self.error(format_args!(
                 "{} {} in block {} is undefined (only {} values exist)",
                 role,
                 value,
                 block,
                 self.cfg.value_count()
-            ));
+            )));
         }
-        self.cfg.get_inst(value)
+        Ok(self.cfg.get_inst(value))
     }
 
-    fn verify_targets_and_slices(&self) {
+    fn verify_targets_and_slices(&self) -> Result<(), CfgVerificationError> {
         for block in self.cfg.blocks() {
             for &value in &block.insts {
-                let data = &self.inst(value, block.id, "instruction").data;
+                let data = &self.inst(value, block.id, "instruction")?.data;
+                let location = CfgVerificationLocation::Instruction {
+                    block: block.id,
+                    value,
+                };
                 match data {
-                    CfgInstData::Call {
-                        args_start,
-                        args_len,
-                        ..
-                    } => self.check_range(
-                        *args_start,
-                        *args_len,
-                        self.cfg.call_args_len(),
-                        block.id,
-                        value,
-                        "call-argument",
-                    ),
-                    CfgInstData::Intrinsic {
-                        args_start,
-                        args_len,
-                        ..
-                    } => self.check_extra(*args_start, *args_len, block.id, value, "intrinsic"),
-                    CfgInstData::StructInit {
-                        fields_start,
-                        fields_len,
-                        ..
-                    } => self.check_extra(
-                        *fields_start,
-                        *fields_len,
-                        block.id,
-                        value,
-                        "struct fields",
-                    ),
-                    CfgInstData::ArrayInit {
-                        elements_start,
-                        elements_len,
-                    } => self.check_extra(
-                        *elements_start,
-                        *elements_len,
-                        block.id,
-                        value,
-                        "array elements",
-                    ),
-                    CfgInstData::EnumVariant {
-                        payload_start,
-                        payload_len,
-                        ..
-                    } => self.check_extra(
-                        *payload_start,
-                        *payload_len,
-                        block.id,
-                        value,
-                        "enum payload",
-                    ),
+                    CfgInstData::Call { args, .. } => {
+                        self.cfg
+                            .checked_call_args(args)
+                            .map_err(|error| self.payload_error(location, error))?;
+                    }
+                    CfgInstData::Intrinsic { args, .. } => {
+                        self.cfg
+                            .checked_intrinsic_args(args)
+                            .map_err(|error| self.payload_error(location, error))?;
+                    }
+                    CfgInstData::StructInit { fields, .. } => {
+                        self.cfg
+                            .checked_struct_fields(fields)
+                            .map_err(|error| self.payload_error(location, error))?;
+                    }
+                    CfgInstData::ArrayInit { elements } => {
+                        self.cfg
+                            .checked_array_elements(elements)
+                            .map_err(|error| self.payload_error(location, error))?;
+                    }
+                    CfgInstData::EnumVariant { payload, .. } => {
+                        self.cfg
+                            .checked_enum_payload(payload)
+                            .map_err(|error| self.payload_error(location, error))?;
+                    }
                     CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {
-                        self.check_range(
-                            place.proj_start,
-                            place.proj_len,
-                            self.cfg.projections_len(),
-                            block.id,
-                            value,
-                            "projection",
-                        )
+                        self.cfg
+                            .checked_place_projections(place)
+                            .map_err(|error| self.payload_error(location, error))?;
                     }
                     _ => {}
                 }
             }
+            let location = CfgVerificationLocation::Terminator { block: block.id };
             match &block.terminator {
-                Terminator::Goto {
-                    target,
-                    args_start,
-                    args_len,
-                } => {
-                    self.check_target(block.id, *target, "goto");
-                    self.check_term_extra(*args_start, *args_len, block.id, "goto arguments");
+                Terminator::Goto { target, args } => {
+                    self.check_target(block.id, *target, "goto")?;
+                    self.cfg
+                        .checked_goto_args(args)
+                        .map_err(|error| self.payload_error(location, error))?;
                 }
                 Terminator::Branch {
                     then_block,
-                    then_args_start,
-                    then_args_len,
+                    then_args,
                     else_block,
-                    else_args_start,
-                    else_args_len,
+                    else_args,
                     ..
                 } => {
-                    self.check_target(block.id, *then_block, "branch then");
-                    self.check_target(block.id, *else_block, "branch else");
-                    self.check_term_extra(
-                        *then_args_start,
-                        *then_args_len,
-                        block.id,
-                        "branch then arguments",
-                    );
-                    self.check_term_extra(
-                        *else_args_start,
-                        *else_args_len,
-                        block.id,
-                        "branch else arguments",
-                    );
+                    self.check_target(block.id, *then_block, "branch then")?;
+                    self.check_target(block.id, *else_block, "branch else")?;
+                    self.cfg
+                        .checked_then_args(then_args)
+                        .map_err(|error| self.payload_error(location, error))?;
+                    self.cfg
+                        .checked_else_args(else_args)
+                        .map_err(|error| self.payload_error(location, error))?;
                 }
-                Terminator::Switch {
-                    cases_start,
-                    cases_len,
-                    default,
-                    ..
-                } => {
-                    self.check_range(
-                        *cases_start,
-                        *cases_len,
-                        self.cfg.switch_cases_len(),
-                        block.id,
-                        CfgValue::from_raw(0),
-                        "switch-case",
-                    );
-                    for &(_, target) in self.cfg.get_switch_cases(*cases_start, *cases_len) {
-                        self.check_target(block.id, target, "switch case");
+                Terminator::Switch { cases, default, .. } => {
+                    let cases = self
+                        .cfg
+                        .checked_switch_cases(cases)
+                        .map_err(|error| self.payload_error(location, error))?;
+                    for &(_, target) in cases {
+                        self.check_target(block.id, target, "switch case")?;
                     }
-                    self.check_target(block.id, *default, "switch default");
+                    self.check_target(block.id, *default, "switch default")?;
                 }
                 Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
             }
         }
+        Ok(())
     }
 
-    fn check_target(&self, from: BlockId, target: BlockId, role: &str) {
+    fn check_target(
+        &self,
+        from: BlockId,
+        target: BlockId,
+        role: &str,
+    ) -> Result<(), CfgVerificationError> {
         if target.as_u32() as usize >= self.cfg.block_count() {
-            self.fail(format_args!(
+            return Err(self.error(format_args!(
                 "{} target {} from block {} is out of bounds (only {} blocks exist)",
                 role,
                 target,
                 from,
                 self.cfg.block_count()
-            ));
+            )));
         }
-    }
-
-    fn check_extra(&self, start: u32, len: u32, block: BlockId, value: CfgValue, role: &str) {
-        self.check_range(start, len, self.cfg.extra_len(), block, value, role);
-    }
-
-    fn check_term_extra(&self, start: u32, len: u32, block: BlockId, role: &str) {
-        let end = start.checked_add(len).map(|v| v as usize);
-        if end.is_none_or(|end| start as usize > end || end > self.cfg.extra_len()) {
-            self.fail(format_args!(
-                "{} in terminator of block {} uses out-of-bounds slice {}..{} (storage length {})",
-                role,
-                block,
-                start,
-                end.map_or_else(|| "overflow".to_string(), |v| v.to_string()),
-                self.cfg.extra_len()
-            ));
-        }
-    }
-
-    fn check_range(
-        &self,
-        start: u32,
-        len: u32,
-        storage_len: usize,
-        block: BlockId,
-        value: CfgValue,
-        role: &str,
-    ) {
-        let end = start.checked_add(len).map(|v| v as usize);
-        if end.is_none_or(|end| start as usize > end || end > storage_len) {
-            self.fail(format_args!(
-                "{} slice for instruction {} in block {} is out of bounds: {}..{} (storage length {})",
-                role,
-                value,
-                block,
-                start,
-                end.map_or_else(|| "overflow".to_string(), |v| v.to_string()),
-                storage_len
-            ));
-        }
+        Ok(())
     }
 
     fn compute_reachability(&mut self) {
@@ -601,13 +594,8 @@ impl<'a> Verifier<'a> {
                 f(*then_block);
                 f(*else_block);
             }
-            Terminator::Switch {
-                cases_start,
-                cases_len,
-                default,
-                ..
-            } => {
-                for &(_, target) in self.cfg.get_switch_cases(*cases_start, *cases_len) {
+            Terminator::Switch { cases, default, .. } => {
+                for &(_, target) in self.cfg.switch_cases(cases) {
                     f(target);
                 }
                 f(*default);
@@ -669,64 +657,80 @@ impl<'a> Verifier<'a> {
         }
     }
 
-    fn verify_inst(&self, block: BlockId, position: usize, value: CfgValue) {
-        let inst = self.inst(value, block, "instruction");
+    fn verify_inst(
+        &self,
+        block: BlockId,
+        position: usize,
+        value: CfgValue,
+    ) -> Result<(), CfgVerificationError> {
+        let inst = self.inst(value, block, "instruction")?;
         match &inst.data {
             CfgInstData::Param { index } => {
-                self.check_param_slot(*index, inst.ty, block, value, "Param")
+                self.check_param_slot(*index, inst.ty, block, value, "Param")?
             }
             CfgInstData::Alloc { slot, init } => self.check_local_slot(
                 *slot,
-                self.inst(*init, block, "allocation initializer").ty,
+                self.inst(*init, block, "allocation initializer")?.ty,
                 block,
                 value,
                 "Alloc",
-            ),
+            )?,
             CfgInstData::Load { slot } => {
-                self.check_local_slot(*slot, inst.ty, block, value, "Load")
+                self.check_local_slot(*slot, inst.ty, block, value, "Load")?
             }
             CfgInstData::Store {
                 slot,
                 value: stored,
             } => self.check_local_slot(
                 *slot,
-                self.inst(*stored, block, "stored value").ty,
+                self.inst(*stored, block, "stored value")?.ty,
                 block,
                 value,
                 "Store",
-            ),
+            )?,
             CfgInstData::StorageLive { slot, local_ty } => {
-                self.check_local_slot(*slot, *local_ty, block, value, "StorageLive")
+                self.check_local_slot(*slot, *local_ty, block, value, "StorageLive")?
             }
             CfgInstData::StorageDead { slot, local_ty } => {
-                self.check_local_slot(*slot, *local_ty, block, value, "StorageDead")
+                self.check_local_slot(*slot, *local_ty, block, value, "StorageDead")?
             }
             CfgInstData::ParamStore {
                 param_slot,
                 value: stored,
             } => self.check_param_slot(
                 *param_slot,
-                self.inst(*stored, block, "stored parameter value").ty,
+                self.inst(*stored, block, "stored parameter value")?.ty,
                 block,
                 value,
                 "ParamStore",
-            ),
+            )?,
             CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {
-                self.verify_place(block, value, place)
+                self.verify_place(block, value, place)?
             }
             CfgInstData::BlockParam { .. } => unreachable!(),
             _ => {}
         }
+        let mut operand_result = Ok(());
         self.for_each_inst_operand(block, value, &inst.data, |operand, role| {
-            self.verify_use(block, Some(position), operand, role)
+            if operand_result.is_ok() {
+                operand_result = self.verify_use(block, Some(position), operand, role);
+            }
         });
+        operand_result
     }
 
-    fn check_local_slot(&self, slot: u32, ty: Type, block: BlockId, value: CfgValue, role: &str) {
-        let width = self.abi_slot_count(ty, block, value, role);
+    fn check_local_slot(
+        &self,
+        slot: u32,
+        ty: Type,
+        block: BlockId,
+        value: CfgValue,
+        role: &str,
+    ) -> Result<(), CfgVerificationError> {
+        let width = self.abi_slot_count(ty, block, value, role)?;
         let end = slot.checked_add(width);
         if end.is_none_or(|end| end > self.cfg.num_locals()) {
-            self.fail(format_args!(
+            return Err(self.error(format_args!(
                 "{} instruction {} in block {} uses local slot range {}..{} for type {:?}, but only {} local slots exist",
                 role,
                 value,
@@ -735,22 +739,30 @@ impl<'a> Verifier<'a> {
                 end.map_or_else(|| "overflow".to_string(), |end| end.to_string()),
                 ty,
                 self.cfg.num_locals()
-            ));
+            )));
         }
+        Ok(())
     }
 
-    fn check_param_slot(&self, slot: u32, ty: Type, block: BlockId, value: CfgValue, role: &str) {
+    fn check_param_slot(
+        &self,
+        slot: u32,
+        ty: Type,
+        block: BlockId,
+        value: CfgValue,
+        role: &str,
+    ) -> Result<(), CfgVerificationError> {
         // Borrowed and inout parameters carry one physical pointer slot even
         // when their logical type is a multi-slot aggregate. Places retain the
         // logical type so projection validation can follow the pointee shape.
         let width = if self.cfg.is_param_by_ref(slot) {
             1
         } else {
-            self.abi_slot_count(ty, block, value, role)
+            self.abi_slot_count(ty, block, value, role)?
         };
         let end = slot.checked_add(width);
         if end.is_none_or(|end| end > self.cfg.num_params()) {
-            self.fail(format_args!(
+            return Err(self.error(format_args!(
                 "{} instruction {} in block {} uses parameter slot range {}..{} for type {:?}, but only {} parameter slots exist",
                 role,
                 value,
@@ -759,12 +771,19 @@ impl<'a> Verifier<'a> {
                 end.map_or_else(|| "overflow".to_string(), |end| end.to_string()),
                 ty,
                 self.cfg.num_params()
-            ));
+            )));
         }
+        Ok(())
     }
 
-    fn abi_slot_count(&self, ty: Type, block: BlockId, value: CfgValue, role: &str) -> u32 {
-        match ty.kind() {
+    fn abi_slot_count(
+        &self,
+        ty: Type,
+        block: BlockId,
+        value: CfgValue,
+        role: &str,
+    ) -> Result<u32, CfgVerificationError> {
+        let width = match ty.kind() {
             TypeKind::I8
             | TypeKind::I16
             | TypeKind::I32
@@ -780,52 +799,57 @@ impl<'a> Verifier<'a> {
             TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => 0,
             TypeKind::Struct(struct_id) => {
                 let Some(pool) = self.type_pool else {
-                    return 0;
+                    return Ok(0);
                 };
                 let Some(def) = pool.try_struct_def(struct_id) else {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "{} instruction {} in block {} references invalid struct type {:?}",
                         role, value, block, struct_id
-                    ));
+                    )));
                 };
-                def.fields.iter().fold(0u32, |total, field| {
-                    total.saturating_add(self.abi_slot_count(field.ty, block, value, role))
-                })
+                let mut width = 0u32;
+                for field in &def.fields {
+                    width =
+                        width.saturating_add(self.abi_slot_count(field.ty, block, value, role)?);
+                }
+                width
             }
             TypeKind::Array(array_id) => {
                 let Some(pool) = self.type_pool else {
-                    return 0;
+                    return Ok(0);
                 };
                 let Some((element, len)) = pool.try_array_def(array_id) else {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "{} instruction {} in block {} references invalid array type {:?}",
                         role, value, block, array_id
-                    ));
+                    )));
                 };
-                let element_width = u64::from(self.abi_slot_count(element, block, value, role));
+                let element_width = u64::from(self.abi_slot_count(element, block, value, role)?);
                 u32::try_from(element_width.saturating_mul(len)).unwrap_or(u32::MAX)
             }
             TypeKind::Enum(enum_id) => {
                 let Some(pool) = self.type_pool else {
-                    return 0;
+                    return Ok(0);
                 };
                 let Some(def) = pool.try_enum_def(enum_id) else {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "{} instruction {} in block {} references invalid enum type {:?}",
                         role, value, block, enum_id
-                    ));
+                    )));
                 };
-                let payload_width = (0..def.variant_count())
-                    .map(|index| {
-                        def.variant_payload(index).iter().fold(0u32, |total, &ty| {
-                            total.saturating_add(self.abi_slot_count(ty, block, value, role))
-                        })
-                    })
-                    .max()
-                    .unwrap_or(0);
+                let mut payload_width = 0;
+                for index in 0..def.variant_count() {
+                    let mut variant_width = 0u32;
+                    for &payload_ty in def.variant_payload(index) {
+                        variant_width = variant_width
+                            .saturating_add(self.abi_slot_count(payload_ty, block, value, role)?);
+                    }
+                    payload_width = payload_width.max(variant_width);
+                }
                 1u32.saturating_add(payload_width)
             }
-        }
+        };
+        Ok(width)
     }
 
     fn is_fixed_str_to_view_coercion(&self, source: Type, result: Type) -> bool {
@@ -858,13 +882,18 @@ impl<'a> Verifier<'a> {
                 .all(|(source, result)| source.ty == result.ty)
     }
 
-    fn verify_place(&self, block: BlockId, value: CfgValue, place: &Place) {
+    fn verify_place(
+        &self,
+        block: BlockId,
+        value: CfgValue,
+        place: &Place,
+    ) -> Result<(), CfgVerificationError> {
         match place.base {
             PlaceBase::Local(slot) => {
-                self.check_local_slot(slot, place.base_type, block, value, "place")
+                self.check_local_slot(slot, place.base_type, block, value, "place")?
             }
             PlaceBase::Param(slot) => {
-                self.check_param_slot(slot, place.base_type, block, value, "place")
+                self.check_param_slot(slot, place.base_type, block, value, "place")?
             }
         }
         let projections = self.cfg.get_place_projections(place);
@@ -877,20 +906,20 @@ impl<'a> Verifier<'a> {
                         field_index,
                     } => {
                         let Some(def) = pool.try_struct_def(*struct_id) else {
-                            self.fail(format_args!(
+                            return Err(self.error(format_args!(
                                 "projection {} in place instruction {} in block {} references invalid struct id {:?}",
                                 projection_index, value, block, struct_id
-                            ));
+                            )));
                         };
                         let expected = Type::new_struct(*struct_id);
                         if current_ty != expected {
-                            self.fail(format_args!(
+                            return Err(self.error(format_args!(
                                 "projection {} in place instruction {} in block {} expects container type {:?}, but previous link produced {:?}",
                                 projection_index, value, block, expected, current_ty
-                            ));
+                            )));
                         }
                         let Some(field) = def.fields.get(*field_index as usize) else {
-                            self.fail(format_args!(
+                            return Err(self.error(format_args!(
                                 "projection {} in place instruction {} in block {} references field {} of struct {:?}, which has {} fields",
                                 projection_index,
                                 value,
@@ -898,28 +927,28 @@ impl<'a> Verifier<'a> {
                                 field_index,
                                 struct_id,
                                 def.fields.len()
-                            ));
+                            )));
                         };
                         field.ty
                     }
                     Projection::Index { array_type, .. } => {
                         let TypeKind::Array(array_id) = array_type.kind() else {
-                            self.fail(format_args!(
+                            return Err(self.error(format_args!(
                                 "projection {} in place instruction {} in block {} has non-array container type {:?}",
                                 projection_index, value, block, array_type
-                            ));
+                            )));
                         };
                         let Some((element_ty, _)) = pool.try_array_def(array_id) else {
-                            self.fail(format_args!(
+                            return Err(self.error(format_args!(
                                 "projection {} in place instruction {} in block {} references invalid array id {:?}",
                                 projection_index, value, block, array_id
-                            ));
+                            )));
                         };
                         if current_ty != *array_type {
-                            self.fail(format_args!(
+                            return Err(self.error(format_args!(
                                 "projection {} in place instruction {} in block {} expects container type {:?}, but previous link produced {:?}",
                                 projection_index, value, block, array_type, current_ty
-                            ));
+                            )));
                         }
                         element_ty
                     }
@@ -932,24 +961,24 @@ impl<'a> Verifier<'a> {
                     if inst.ty != current_ty
                         && !self.is_fixed_str_to_view_coercion(current_ty, inst.ty) =>
                 {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "place-read instruction {} in block {} has result type {:?}, but its projection chain produces {:?}",
                         value, block, inst.ty, current_ty
-                    ));
+                    )));
                 }
                 CfgInstData::PlaceWrite { value: stored, .. } => {
-                    let stored_ty = self.inst(*stored, block, "place-write value").ty;
+                    let stored_ty = self.inst(*stored, block, "place-write value")?.ty;
                     if stored_ty != current_ty {
-                        self.fail(format_args!(
+                        return Err(self.error(format_args!(
                             "place-write instruction {} in block {} stores type {:?}, but its projection chain produces {:?}",
                             value, block, stored_ty, current_ty
-                        ));
+                        )));
                     }
                     if inst.ty != Type::UNIT {
-                        self.fail(format_args!(
+                        return Err(self.error(format_args!(
                             "place-write instruction {} in block {} has result type {:?}, expected unit",
                             value, block, inst.ty
-                        ));
+                        )));
                     }
                 }
                 _ => {}
@@ -961,30 +990,30 @@ impl<'a> Verifier<'a> {
                 Projection::Field { struct_id, .. } => Type::new_struct(*struct_id),
                 Projection::Index { array_type, .. } => {
                     if !matches!(array_type.kind(), TypeKind::Array(_)) {
-                        self.fail(format_args!(
+                        return Err(self.error(format_args!(
                             "place in instruction {} in block {} has Index projection with non-array container type {:?}",
                             value, block, array_type
-                        ));
+                        )));
                     }
                     *array_type
                 }
             };
             if place.base_type != required {
-                self.fail(format_args!(
+                return Err(self.error(format_args!(
                     "place in instruction {} in block {} has logical base type {:?}, but its first projection requires base type {:?}",
                     value, block, place.base_type, required
-                ));
+                )));
             }
         }
         for projection in projections {
             if let Projection::Index { array_type, index } = projection {
                 if !matches!(array_type.kind(), TypeKind::Array(_)) {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "place in instruction {} in block {} has Index projection with non-array container type {:?}",
                         value, block, array_type
-                    ));
+                    )));
                 }
-                let index_ty = self.inst(*index, block, "projection index").ty;
+                let index_ty = self.inst(*index, block, "projection index")?.ty;
                 if !matches!(
                     index_ty.kind(),
                     TypeKind::I8
@@ -996,114 +1025,122 @@ impl<'a> Verifier<'a> {
                         | TypeKind::U32
                         | TypeKind::U64
                 ) {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "projection index {} used by instruction {} in block {} has non-integer type {:?}",
                         index, value, block, index_ty
-                    ));
+                    )));
                 }
             }
         }
+        Ok(())
     }
 
-    fn verify_terminator_use(&self, block: BlockId, term: &Terminator) {
+    fn verify_terminator_use(
+        &self,
+        block: BlockId,
+        term: &Terminator,
+    ) -> Result<(), CfgVerificationError> {
         match term {
             Terminator::Goto {
                 target,
-                args_start,
-                args_len,
+                args: _,
             } => {
-                let args = self.cfg.get_extra(*args_start, *args_len);
+                let args = self.cfg.get_goto_args(term);
                 for &arg in args {
-                    self.verify_use(block, None, arg, "goto argument");
+                    self.verify_use(block, None, arg, "goto argument")?;
                 }
-                self.verify_edge(block, *target, args);
+                self.verify_edge(block, *target, args)?;
             }
             Terminator::Branch {
                 cond,
                 then_block,
-                then_args_start,
-                then_args_len,
+                then_args: _,
                 else_block,
-                else_args_start,
-                else_args_len,
+                else_args: _,
             } => {
-                self.verify_use(block, None, *cond, "branch condition");
-                if self.inst(*cond, block, "branch condition").ty != Type::BOOL {
-                    self.fail(format_args!(
+                self.verify_use(block, None, *cond, "branch condition")?;
+                if self.inst(*cond, block, "branch condition")?.ty != Type::BOOL {
+                    return Err(self.error(format_args!(
                         "branch condition {} in block {} has type {:?}, expected bool",
                         cond,
                         block,
                         self.cfg.get_inst(*cond).ty
-                    ));
+                    )));
                 }
-                let then_args = self.cfg.get_extra(*then_args_start, *then_args_len);
+                let then_args = self.cfg.get_branch_then_args(term);
                 for &arg in then_args {
-                    self.verify_use(block, None, arg, "branch-then argument");
+                    self.verify_use(block, None, arg, "branch-then argument")?;
                 }
-                self.verify_edge(block, *then_block, then_args);
-                let else_args = self.cfg.get_extra(*else_args_start, *else_args_len);
+                self.verify_edge(block, *then_block, then_args)?;
+                let else_args = self.cfg.get_branch_else_args(term);
                 for &arg in else_args {
-                    self.verify_use(block, None, arg, "branch-else argument");
+                    self.verify_use(block, None, arg, "branch-else argument")?;
                 }
-                self.verify_edge(block, *else_block, else_args);
+                self.verify_edge(block, *else_block, else_args)?;
             }
             Terminator::Switch {
                 scrutinee,
-                cases_start,
-                cases_len,
+                cases,
                 default,
             } => {
-                self.verify_use(block, None, *scrutinee, "switch scrutinee");
-                for &(_, target) in self.cfg.get_switch_cases(*cases_start, *cases_len) {
-                    self.verify_edge(block, target, &[]);
+                self.verify_use(block, None, *scrutinee, "switch scrutinee")?;
+                for &(_, target) in self.cfg.switch_cases(cases) {
+                    self.verify_edge(block, target, &[])?;
                 }
-                self.verify_edge(block, *default, &[]);
+                self.verify_edge(block, *default, &[])?;
             }
             Terminator::Return { value } => match (self.cfg.return_type(), value) {
                 (Type::UNIT, None) => {}
-                (Type::UNIT, Some(value)) => self.fail(format_args!(
+                (Type::UNIT, Some(value)) => return Err(self.error(format_args!(
                     "return in block {} supplies unit value {}; unit-returning functions must use Return {{ value: None }}",
                     block, value
-                )),
-                (return_ty, None) => self.fail(format_args!(
+                ))),
+                (return_ty, None) => return Err(self.error(format_args!(
                     "return in block {} has no value but function return type is {:?}",
                     block, return_ty
-                )),
+                ))),
                 (return_ty, Some(value)) => {
-                    self.verify_use(block, None, *value, "return value");
+                    self.verify_use(block, None, *value, "return value")?;
                     let value_ty = self.cfg.get_inst(*value).ty;
                     if value_ty != return_ty {
-                        self.fail(format_args!(
+                        return Err(self.error(format_args!(
                             "return value {} in block {} has type {:?}, expected {:?}",
                             value, block, value_ty, return_ty
-                        ));
+                        )));
                     }
                 }
             },
             Terminator::Unreachable | Terminator::None => {}
         }
+        Ok(())
     }
 
-    fn verify_edge(&self, from: BlockId, to: BlockId, args: &[CfgValue]) {
+    fn verify_edge(
+        &self,
+        from: BlockId,
+        to: BlockId,
+        args: &[CfgValue],
+    ) -> Result<(), CfgVerificationError> {
         let params = &self.cfg.get_block(to).params;
         if params.len() != args.len() {
-            self.fail(format_args!(
+            return Err(self.error(format_args!(
                 "edge {} -> {} passes {} block arguments but target expects {}",
                 from,
                 to,
                 args.len(),
                 params.len()
-            ));
+            )));
         }
         for (index, (&arg, &(_, param_ty))) in args.iter().zip(params).enumerate() {
             let arg_ty = self.cfg.get_inst(arg).ty;
             if arg_ty != param_ty {
-                self.fail(format_args!(
+                return Err(self.error(format_args!(
                     "edge {} -> {} argument {} ({}) has type {:?}, target parameter has type {:?} (ill-typed edge)",
                     from, to, index, arg, arg_ty, param_ty
-                ));
+                )));
             }
         }
+        Ok(())
     }
 
     fn verify_use(
@@ -1112,22 +1149,22 @@ impl<'a> Verifier<'a> {
         use_position: Option<usize>,
         value: CfgValue,
         role: &str,
-    ) {
-        let _ = self.inst(value, use_block, role);
+    ) -> Result<(), CfgVerificationError> {
+        let _ = self.inst(value, use_block, role)?;
         let Some(attachment) = self.attachments[value.as_u32() as usize] else {
-            self.fail(format_args!(
+            return Err(self.error(format_args!(
                 "{} {} in block {} refers to an unattached value",
                 role, value, use_block
-            ));
+            )));
         };
         match attachment {
             Attachment::Param { block } if block == use_block => {}
             Attachment::Inst { block, position } if block == use_block => {
                 if use_position.is_some_and(|use_position| position >= use_position) {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "{} {} in block {} is used before its definition at instruction position {}",
                         role, value, use_block, position
-                    ));
+                    )));
                 }
             }
             Attachment::Param { block: def_block }
@@ -1138,13 +1175,14 @@ impl<'a> Verifier<'a> {
                 if self.reachable[use_index]
                     && !self.dominators[use_index][def_block.as_u32() as usize]
                 {
-                    self.fail(format_args!(
+                    return Err(self.error(format_args!(
                         "{} {} in reachable block {} is defined in block {}, which does not dominate the use",
                         role, value, use_block, def_block
-                    ));
+                    )));
                 }
             }
         }
+        Ok(())
     }
 
     fn for_each_inst_operand(
@@ -1207,47 +1245,28 @@ impl<'a> Verifier<'a> {
                 }
                 f(*value, "place-write value");
             }
-            CfgInstData::Call {
-                args_start,
-                args_len,
-                ..
-            } => {
-                for arg in self.cfg.get_call_args(*args_start, *args_len) {
+            CfgInstData::Call { args, .. } => {
+                for arg in self.cfg.call_args(args) {
                     f(arg.value, "call argument");
                 }
             }
-            CfgInstData::Intrinsic {
-                args_start,
-                args_len,
-                ..
-            } => {
-                for &operand in self.cfg.get_extra(*args_start, *args_len) {
+            CfgInstData::Intrinsic { args, .. } => {
+                for &operand in self.cfg.intrinsic_args(args) {
                     f(operand, "intrinsic argument");
                 }
             }
-            CfgInstData::StructInit {
-                fields_start,
-                fields_len,
-                ..
-            } => {
-                for &operand in self.cfg.get_extra(*fields_start, *fields_len) {
+            CfgInstData::StructInit { fields, .. } => {
+                for &operand in self.cfg.struct_fields(fields) {
                     f(operand, "struct field");
                 }
             }
-            CfgInstData::ArrayInit {
-                elements_start,
-                elements_len,
-            } => {
-                for &operand in self.cfg.get_extra(*elements_start, *elements_len) {
+            CfgInstData::ArrayInit { elements } => {
+                for &operand in self.cfg.array_elements(elements) {
                     f(operand, "array element");
                 }
             }
-            CfgInstData::EnumVariant {
-                payload_start,
-                payload_len,
-                ..
-            } => {
-                for &operand in self.cfg.get_extra(*payload_start, *payload_len) {
+            CfgInstData::EnumVariant { payload, .. } => {
+                for &operand in self.cfg.enum_payload(payload) {
                     f(operand, "enum payload");
                 }
             }
@@ -1262,9 +1281,9 @@ impl<'a> Verifier<'a> {
 #[cfg(test)]
 mod tests {
     use crate::inst::{
-        BlockId, Cfg, CfgInst, CfgInstData, Place, PlaceBase, Projection, Terminator,
+        BlockId, Cfg, CfgInst, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator,
     };
-    use crate::{OptLevel, opt};
+    use crate::{CfgVerificationLocation, OptLevel, opt};
     use lasso::ThreadedRodeo;
     use rue_air::{FrozenTypeInternPool, StructDef, StructField, StructId, Type, TypeInternPool};
     use rue_span::Span;
@@ -1316,21 +1335,23 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Return { value: Some(v) });
-        cfg.verify(); // must not panic
+        cfg.verify().unwrap(); // must not panic
     }
 
     fn cfg_with_field_place(base_type: Type, struct_id: StructId) -> Cfg {
         let mut cfg = Cfg::new(Type::I32, 1, 0, "field_place".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let place = cfg.make_place(
-            PlaceBase::Local(0),
-            base_type,
-            [Projection::Field {
-                struct_id,
-                field_index: 0,
-            }],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Local(0),
+                base_type,
+                [Projection::Field {
+                    struct_id,
+                    field_index: 0,
+                }],
+            )
+            .unwrap();
         let read = cfg.add_inst_to_block(
             entry,
             CfgInst {
@@ -1348,7 +1369,9 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let struct_id = register_struct(&pool, &interner, "FieldBase", &[Type::I32]);
-        cfg_with_field_place(Type::new_struct(struct_id), struct_id).verify();
+        cfg_with_field_place(Type::new_struct(struct_id), struct_id)
+            .verify()
+            .unwrap();
     }
 
     #[test]
@@ -1357,7 +1380,7 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let struct_id = register_struct(&pool, &interner, "WrongBase", &[Type::I32]);
-        cfg_with_field_place(Type::I32, struct_id).verify();
+        cfg_with_field_place(Type::I32, struct_id).verify().unwrap();
     }
 
     #[test]
@@ -1385,11 +1408,13 @@ mod tests {
         let array_type = TypeInternPool::new()
             .try_intern_array(Type::I32, 1)
             .unwrap();
-        let place = cfg.make_place(
-            PlaceBase::Local(0),
-            Type::I32,
-            [Projection::Index { array_type, index }],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Local(0),
+                Type::I32,
+                [Projection::Index { array_type, index }],
+            )
+            .unwrap();
         cfg.add_inst_to_block(
             entry,
             CfgInst {
@@ -1400,7 +1425,7 @@ mod tests {
         );
         cfg.set_terminator(entry, Terminator::Return { value: None });
 
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1417,14 +1442,16 @@ mod tests {
                 span: Span::new(0, 1),
             },
         );
-        let place = cfg.make_place(
-            PlaceBase::Local(0),
-            Type::I32,
-            [Projection::Index {
-                array_type: Type::I32,
-                index,
-            }],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Local(0),
+                Type::I32,
+                [Projection::Index {
+                    array_type: Type::I32,
+                    index,
+                }],
+            )
+            .unwrap();
         let read = cfg.add_inst_to_block(
             entry,
             CfgInst {
@@ -1435,7 +1462,7 @@ mod tests {
         );
         cfg.set_terminator(entry, Terminator::Return { value: Some(read) });
 
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1453,7 +1480,7 @@ mod tests {
             },
         );
         // Deliberately leave the reachable entry block with Terminator::None.
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1472,7 +1499,7 @@ mod tests {
         cfg.set_terminator(entry, Terminator::Return { value: Some(value) });
         // An orphan block, never wired in, with no terminator: must be skipped.
         let _orphan = cfg.new_block();
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1490,11 +1517,10 @@ mod tests {
             entry,
             Terminator::Goto {
                 target,
-                args_start: 0,
-                args_len: 0,
+                args: crate::payload::CfgGotoArgs::EMPTY,
             },
         );
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     /// Build `entry --goto(one arg of `arg_ty`)--> target(param: i32)`.
@@ -1513,28 +1539,21 @@ mod tests {
                 span: Span::new(0, 1),
             },
         );
-        let (args_start, args_len) = cfg.push_extra(vec![arg]);
-        cfg.set_terminator(
-            entry,
-            Terminator::Goto {
-                target,
-                args_start,
-                args_len,
-            },
-        );
+        let args = cfg.push_goto_args(vec![arg]).unwrap();
+        cfg.set_terminator(entry, Terminator::Goto { target, args });
         cfg
     }
 
     #[test]
     fn verify_accepts_well_typed_edge() {
-        cfg_with_typed_edge(Type::I32).verify(); // must not panic
+        cfg_with_typed_edge(Type::I32).verify().unwrap(); // must not panic
     }
 
     #[test]
     #[should_panic(expected = "ill-typed edge")]
     fn verify_catches_edge_type_mismatch() {
         // The RUE-347 shape: a unit value passed into an i32 block parameter.
-        cfg_with_typed_edge(Type::UNIT).verify();
+        cfg_with_typed_edge(Type::UNIT).verify().unwrap();
     }
 
     #[test]
@@ -1572,16 +1591,15 @@ mod tests {
                 span: Span::new(0, 1),
             },
         );
-        let (args_start, args_len) = cfg.push_extra(vec![arg]);
+        let args = cfg.push_goto_args(vec![arg]).unwrap();
         cfg.set_terminator(
             orphan_from,
             Terminator::Goto {
                 target: orphan_to,
-                args_start,
-                args_len,
+                args,
             },
         );
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1596,7 +1614,7 @@ mod tests {
             span: Span::new(0, 0),
         });
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1615,7 +1633,7 @@ mod tests {
         );
         cfg.get_block_mut(entry).insts.push(value);
         cfg.set_terminator(entry, Terminator::Return { value: Some(value) });
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1627,7 +1645,7 @@ mod tests {
         let param = cfg.add_block_param(entry, Type::I32);
         cfg.get_inst_mut(param).data = CfgInstData::BlockParam { index: 1 };
         cfg.set_terminator(entry, Terminator::Return { value: Some(param) });
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1639,7 +1657,7 @@ mod tests {
         let param = cfg.add_block_param(entry, Type::I32);
         cfg.get_inst_mut(param).data = CfgInstData::Const(0);
         cfg.set_terminator(entry, Terminator::Return { value: Some(param) });
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1651,7 +1669,7 @@ mod tests {
         let param = cfg.add_block_param(entry, Type::I32);
         cfg.get_block_mut(entry).params[0].1 = Type::U64;
         cfg.set_terminator(entry, Terminator::Return { value: Some(param) });
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1683,7 +1701,7 @@ mod tests {
                 value: Some(earlier),
             },
         );
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1707,11 +1725,9 @@ mod tests {
             Terminator::Branch {
                 cond,
                 then_block: left,
-                then_args_start: 0,
-                then_args_len: 0,
+                then_args: crate::payload::CfgThenArgs::EMPTY,
                 else_block: right,
-                else_args_start: 0,
-                else_args_len: 0,
+                else_args: crate::payload::CfgElseArgs::EMPTY,
             },
         );
         let value = cfg.add_inst_to_block(
@@ -1724,7 +1740,7 @@ mod tests {
         );
         cfg.set_terminator(left, Terminator::Return { value: Some(value) });
         cfg.set_terminator(right, Terminator::Return { value: Some(value) });
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1747,15 +1763,13 @@ mod tests {
             Terminator::Branch {
                 cond,
                 then_block: target,
-                then_args_start: 0,
-                then_args_len: 0,
+                then_args: crate::payload::CfgThenArgs::EMPTY,
                 else_block: target,
-                else_args_start: 0,
-                else_args_len: 0,
+                else_args: crate::payload::CfgElseArgs::EMPTY,
             },
         );
         cfg.set_terminator(target, Terminator::Unreachable);
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1765,7 +1779,7 @@ mod tests {
         let entry = cfg.new_block();
         cfg.entry = entry;
         cfg.set_terminator(entry, Terminator::Return { value: None });
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1783,7 +1797,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Return { value: Some(value) });
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1792,7 +1806,7 @@ mod tests {
         let mut cfg = unit_cfg();
         cfg.new_block();
         cfg.entry = BlockId::from_raw(7);
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1805,11 +1819,10 @@ mod tests {
             entry,
             Terminator::Goto {
                 target: BlockId::from_raw(9),
-                args_start: 0,
-                args_len: 0,
+                args: crate::payload::CfgGotoArgs::EMPTY,
             },
         );
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1836,7 +1849,8 @@ mod tests {
                 span: Span::new(0, 0),
             },
         );
-        cfg.verify_with_type_pool(&FrozenTypeInternPool::new());
+        cfg.verify_with_type_pool(&FrozenTypeInternPool::new())
+            .unwrap();
     }
 
     #[test]
@@ -1854,7 +1868,8 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify_with_type_pool(&FrozenTypeInternPool::new());
+        cfg.verify_with_type_pool(&FrozenTypeInternPool::new())
+            .unwrap();
     }
 
     #[test]
@@ -1876,7 +1891,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify_with_type_pool(&pool);
+        cfg.verify_with_type_pool(&pool).unwrap();
     }
 
     #[test]
@@ -1889,14 +1904,16 @@ mod tests {
         let mut cfg = Cfg::new(Type::UNIT, 0, 1, "borrowed_pair".to_string(), vec![true]);
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let place = cfg.make_place(
-            PlaceBase::Param(0),
-            pair_ty,
-            [Projection::Field {
-                struct_id: pair,
-                field_index: 1,
-            }],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Param(0),
+                pair_ty,
+                [Projection::Field {
+                    struct_id: pair,
+                    field_index: 1,
+                }],
+            )
+            .unwrap();
         cfg.add_inst_to_block(
             entry,
             CfgInst {
@@ -1906,7 +1923,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Return { value: None });
-        cfg.verify_with_type_pool(&pool);
+        cfg.verify_with_type_pool(&pool).unwrap();
     }
 
     #[test]
@@ -1919,14 +1936,16 @@ mod tests {
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "invalid_struct".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let place = cfg.make_place(
-            PlaceBase::Local(0),
-            Type::I32,
-            [Projection::Field {
-                struct_id: foreign_struct,
-                field_index: 0,
-            }],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Local(0),
+                Type::I32,
+                [Projection::Field {
+                    struct_id: foreign_struct,
+                    field_index: 0,
+                }],
+            )
+            .unwrap();
         cfg.add_inst_to_block(
             entry,
             CfgInst {
@@ -1936,7 +1955,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify_with_type_pool(&pool);
+        cfg.verify_with_type_pool(&pool).unwrap();
     }
 
     #[test]
@@ -1957,11 +1976,13 @@ mod tests {
                 span: Span::new(0, 0),
             },
         );
-        let place = cfg.make_place(
-            PlaceBase::Local(0),
-            Type::I32,
-            [Projection::Index { array_type, index }],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Local(0),
+                Type::I32,
+                [Projection::Index { array_type, index }],
+            )
+            .unwrap();
         cfg.add_inst_to_block(
             entry,
             CfgInst {
@@ -1971,7 +1992,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify_with_type_pool(&pool);
+        cfg.verify_with_type_pool(&pool).unwrap();
     }
 
     #[test]
@@ -1985,14 +2006,16 @@ mod tests {
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "bad_field".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let place = cfg.make_place(
-            PlaceBase::Local(0),
-            record_ty,
-            [Projection::Field {
-                struct_id: record,
-                field_index: 1,
-            }],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Local(0),
+                record_ty,
+                [Projection::Field {
+                    struct_id: record,
+                    field_index: 1,
+                }],
+            )
+            .unwrap();
         cfg.add_inst_to_block(
             entry,
             CfgInst {
@@ -2002,7 +2025,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify_with_type_pool(&pool);
+        cfg.verify_with_type_pool(&pool).unwrap();
     }
 
     #[test]
@@ -2017,20 +2040,22 @@ mod tests {
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "broken_chain".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let place = cfg.make_place(
-            PlaceBase::Local(0),
-            Type::new_struct(outer),
-            [
-                Projection::Field {
-                    struct_id: outer,
-                    field_index: 0,
-                },
-                Projection::Field {
-                    struct_id: wrong,
-                    field_index: 0,
-                },
-            ],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Local(0),
+                Type::new_struct(outer),
+                [
+                    Projection::Field {
+                        struct_id: outer,
+                        field_index: 0,
+                    },
+                    Projection::Field {
+                        struct_id: wrong,
+                        field_index: 0,
+                    },
+                ],
+            )
+            .unwrap();
         cfg.add_inst_to_block(
             entry,
             CfgInst {
@@ -2040,7 +2065,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify_with_type_pool(&pool);
+        cfg.verify_with_type_pool(&pool).unwrap();
     }
 
     #[test]
@@ -2053,14 +2078,16 @@ mod tests {
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "bad_result".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let place = cfg.make_place(
-            PlaceBase::Local(0),
-            Type::new_struct(record),
-            [Projection::Field {
-                struct_id: record,
-                field_index: 0,
-            }],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Local(0),
+                Type::new_struct(record),
+                [Projection::Field {
+                    struct_id: record,
+                    field_index: 0,
+                }],
+            )
+            .unwrap();
         cfg.add_inst_to_block(
             entry,
             CfgInst {
@@ -2070,11 +2097,10 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify_with_type_pool(&pool);
+        cfg.verify_with_type_pool(&pool).unwrap();
     }
 
     #[test]
-    #[should_panic(expected = "array elements slice")]
     fn verify_rejects_invalid_extra_slice_before_slicing() {
         let mut cfg = unit_cfg();
         let entry = cfg.new_block();
@@ -2083,19 +2109,25 @@ mod tests {
             entry,
             CfgInst {
                 data: CfgInstData::ArrayInit {
-                    elements_start: u32::MAX,
-                    elements_len: 2,
+                    elements: crate::payload::CfgArrayElements::malformed(u32::MAX, 2),
                 },
                 ty: Type::I32,
                 span: Span::new(0, 0),
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify();
+        let error = cfg.verify().unwrap_err();
+        assert_eq!(error.payload().unwrap().family(), "array elements");
+        assert_eq!(
+            error.location(),
+            CfgVerificationLocation::Instruction {
+                block: entry,
+                value: CfgValue::from_raw(0),
+            }
+        );
     }
 
     #[test]
-    #[should_panic(expected = "call-argument slice")]
     fn verify_rejects_invalid_call_argument_slice_before_slicing() {
         let mut cfg = unit_cfg();
         let entry = cfg.new_block();
@@ -2106,19 +2138,25 @@ mod tests {
                 data: CfgInstData::Call {
                     runtime: None,
                     name: lasso::Spur::default(),
-                    args_start: 1,
-                    args_len: 1,
+                    args: crate::payload::CfgCallArgs::malformed(1, 1),
                 },
                 ty: Type::I32,
                 span: Span::new(0, 0),
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify();
+        let error = cfg.verify().unwrap_err();
+        assert_eq!(error.payload().unwrap().family(), "call arguments");
+        assert_eq!(
+            error.location(),
+            CfgVerificationLocation::Instruction {
+                block: entry,
+                value: CfgValue::from_raw(0),
+            }
+        );
     }
 
     #[test]
-    #[should_panic(expected = "switch-case slice")]
     fn verify_rejects_invalid_switch_case_slice_before_slicing() {
         let mut cfg = unit_cfg();
         let entry = cfg.new_block();
@@ -2135,16 +2173,19 @@ mod tests {
             entry,
             Terminator::Switch {
                 scrutinee: value,
-                cases_start: 1,
-                cases_len: 1,
+                cases: crate::payload::CfgSwitchCases::malformed(1, 1),
                 default: entry,
             },
         );
-        cfg.verify();
+        let error = cfg.verify().unwrap_err();
+        assert_eq!(error.payload().unwrap().family(), "switch cases");
+        assert_eq!(
+            error.location(),
+            CfgVerificationLocation::Terminator { block: entry }
+        );
     }
 
     #[test]
-    #[should_panic(expected = "projection slice")]
     fn verify_rejects_invalid_projection_slice_before_slicing() {
         let mut cfg = Cfg::new(Type::I32, 1, 0, "projection_slice".to_string(), vec![]);
         let entry = cfg.new_block();
@@ -2156,8 +2197,7 @@ mod tests {
                     place: Place {
                         base: PlaceBase::Local(0),
                         base_type: Type::I32,
-                        proj_start: 1,
-                        proj_len: 1,
+                        projections: crate::payload::CfgProjections::malformed(1, 1),
                     },
                 },
                 ty: Type::I32,
@@ -2165,7 +2205,15 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify();
+        let error = cfg.verify().unwrap_err();
+        assert_eq!(error.payload().unwrap().family(), "projections");
+        assert_eq!(
+            error.location(),
+            CfgVerificationLocation::Instruction {
+                block: entry,
+                value: CfgValue::from_raw(0),
+            }
+        );
     }
 
     #[test]
@@ -2185,11 +2233,13 @@ mod tests {
         let array_type = TypeInternPool::new()
             .try_intern_array(Type::I32, 1)
             .unwrap();
-        let place = cfg.make_place(
-            PlaceBase::Local(0),
-            array_type,
-            [Projection::Index { array_type, index }],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Local(0),
+                array_type,
+                [Projection::Index { array_type, index }],
+            )
+            .unwrap();
         cfg.add_inst_to_block(
             entry,
             CfgInst {
@@ -2199,7 +2249,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -2230,12 +2280,13 @@ mod tests {
                     value: Some(result),
                 },
             );
-            opt::optimize(&mut cfg, level, &FrozenTypeInternPool::new());
+            let pool = FrozenTypeInternPool::new();
+            let cfg = cfg.finish(&pool).unwrap();
+            opt::optimize(cfg, level, &pool).unwrap();
         }
     }
 
     #[test]
-    #[should_panic(expected = "is unattached")]
     fn o1_cannot_hide_unattached_value_with_dce() {
         let mut cfg = unit_cfg();
         let entry = cfg.new_block();
@@ -2259,6 +2310,7 @@ mod tests {
                 value: Some(result),
             },
         );
-        opt::optimize(&mut cfg, OptLevel::O1, &FrozenTypeInternPool::new());
+        let error = cfg.finish(&FrozenTypeInternPool::new()).unwrap_err();
+        assert!(error.to_string().contains("is unattached"));
     }
 }

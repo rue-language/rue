@@ -20,16 +20,20 @@ mod build;
 mod dominators;
 mod inst;
 pub mod opt;
+mod payload;
 mod verify;
 
 use rue_error::{CompileError, CompileWarning};
 
 pub use build::CfgBuilder;
 pub use inst::{
-    BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgDisplay, CfgInst, CfgInstData, CfgValue,
-    Place, PlaceBase, Projection, Terminator,
+    BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgDisplay, CfgEditError,
+    CfgEditTransactionError, CfgEditor, CfgInst, CfgInstData, CfgRemapError, CfgValue, Place,
+    PlaceBase, Projection, Terminator, ValidatedCfg,
 };
 pub use opt::OptLevel;
+pub use payload::PayloadError;
+pub use verify::{CfgVerificationError, CfgVerificationLocation};
 
 // Re-export types from rue-air that we use
 pub use rue_air::{StructDef, StructId, Type, TypeKind};
@@ -40,7 +44,7 @@ pub use rue_air::{StructDef, StructId, Type, TypeKind};
 /// construction (e.g., unreachable code).
 pub struct CfgOutput {
     /// The constructed control flow graph.
-    pub cfg: Cfg,
+    pub cfg: Option<ValidatedCfg>,
     /// Warnings detected during CFG construction.
     pub warnings: Vec<CompileWarning>,
     /// Internal-compiler-error diagnostics detected during CFG construction
@@ -54,4 +58,44 @@ pub struct CfgOutput {
     /// Whether an implicit destructor target was anonymous and therefore has
     /// no stable definition endpoint.
     pub anonymous_destructor_dependency_incomplete: bool,
+}
+
+#[cfg(test)]
+pub(crate) mod allocation_test_support {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static ACTIVE: Cell<bool> = const { Cell::new(false) };
+        static COUNT: Cell<usize> = const { Cell::new(0) };
+    }
+
+    struct CountingAllocator;
+
+    unsafe impl GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            ACTIVE.with(|active| {
+                if active.get() {
+                    COUNT.with(|count| count.set(count.get() + 1));
+                }
+            });
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+    pub(crate) fn allocations_during<R>(f: impl FnOnce() -> R) -> (R, usize) {
+        COUNT.with(|count| count.set(0));
+        ACTIVE.with(|active| active.set(true));
+        let result = f();
+        ACTIVE.with(|active| active.set(false));
+        let count = COUNT.with(Cell::get);
+        (result, count)
+    }
 }

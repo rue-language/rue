@@ -272,12 +272,8 @@ pub fn collect_array_scalar_vregs(
 ) -> Vec<VReg> {
     let inst = cfg.get_inst(value);
     match &inst.data {
-        CfgInstData::ArrayInit {
-            elements_start,
-            elements_len,
-            ..
-        } => {
-            let elements = cfg.get_extra(*elements_start, *elements_len);
+        CfgInstData::ArrayInit { .. } => {
+            let elements = cfg.get_array_elements(&inst.data);
             let mut result = Vec::new();
             // Collect elements in logical order (element 0 first), matching
             // The slot cache is uniform ascending order and
@@ -389,12 +385,8 @@ pub fn collect_struct_scalar_vregs(
 ) -> Vec<VReg> {
     let inst = cfg.get_inst(value);
     match &inst.data {
-        CfgInstData::StructInit {
-            fields_start,
-            fields_len,
-            ..
-        } => {
-            let fields = cfg.get_extra(*fields_start, *fields_len);
+        CfgInstData::StructInit { .. } => {
+            let fields = cfg.get_struct_fields(&inst.data);
             let mut result = Vec::new();
             for field in fields {
                 let field_inst = cfg.get_inst(*field);

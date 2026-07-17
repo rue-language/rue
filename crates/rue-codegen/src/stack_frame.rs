@@ -599,7 +599,7 @@ mod tests {
     use rue_cfg::CfgBuilder;
     use rue_span::Span;
 
-    fn create_simple_cfg() -> (rue_cfg::Cfg, FrozenTypeInternPool, ThreadedRodeo) {
+    fn create_simple_cfg() -> (rue_cfg::ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
         let mut air = Air::new(Type::I32);
 
         let const_ref = air.add_inst(AirInst {
@@ -618,7 +618,7 @@ mod tests {
         let type_pool = FrozenTypeInternPool::new();
         let cfg_output =
             CfgBuilder::build(&air, 0, 0, "test", &type_pool, vec![], &interner, false);
-        (cfg_output.cfg, type_pool, interner)
+        (cfg_output.cfg.unwrap(), type_pool, interner)
     }
 
     #[test]

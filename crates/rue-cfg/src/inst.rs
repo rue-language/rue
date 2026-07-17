@@ -28,6 +28,11 @@ use lasso::{Key, Spur, ThreadedRodeo};
 use rue_air::{EnumId, ParamSlotModes, StructId, Type};
 use rue_span::Span;
 
+use crate::payload::{
+    self, CfgArrayElements, CfgCallArgs, CfgElseArgs, CfgEnumPayload, CfgGotoArgs,
+    CfgIntrinsicArgs, CfgProjections, CfgStructFields, CfgSwitchCases, CfgThenArgs,
+};
+
 // ============================================================================
 // Place Expressions
 // ============================================================================
@@ -44,7 +49,7 @@ use rue_span::Span;
 /// - `arr[i]` → `Place { base: Local(0), base_type: Array, ... }` with `Index` projection
 /// - `point.x` → `Place { base: Local(0), base_type: Point, ... }` with `Field` projection
 /// - `arr[i].x` → the same `Array` base type with `Index` then `Field`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Place {
     /// The base of the place - either a local slot or parameter slot
     pub base: PlaceBase,
@@ -56,20 +61,25 @@ pub struct Place {
     /// projection instead of trusting its self-described container.
     pub base_type: Type,
     /// Start index into Cfg's projections array
-    pub proj_start: u32,
-    /// Number of projections
-    pub proj_len: u32,
+    pub(crate) projections: CfgProjections,
 }
 
 impl Place {
+    pub(crate) fn duplicate_with_owner(&self) -> Self {
+        Self {
+            base: self.base,
+            base_type: self.base_type,
+            projections: self.projections.duplicate(),
+        }
+    }
+
     /// Create a place for a local variable with no projections.
     #[inline]
     pub const fn local(slot: u32, base_type: Type) -> Self {
         Self {
             base: PlaceBase::Local(slot),
             base_type,
-            proj_start: 0,
-            proj_len: 0,
+            projections: CfgProjections::EMPTY,
         }
     }
 
@@ -79,15 +89,28 @@ impl Place {
         Self {
             base: PlaceBase::Param(slot),
             base_type,
-            proj_start: 0,
-            proj_len: 0,
+            projections: CfgProjections::EMPTY,
         }
+    }
+
+    /// Return this place with a different base, preserving its opaque
+    /// projection payload.
+    #[inline]
+    pub const fn with_base(self, base: PlaceBase) -> Self {
+        Self { base, ..self }
+    }
+
+    /// Return this place with a different root type, preserving its opaque
+    /// projection payload.
+    #[inline]
+    pub const fn with_base_type(self, base_type: Type) -> Self {
+        Self { base_type, ..self }
     }
 
     /// Returns the local slot if this is a simple local place with no projections.
     #[inline]
     pub const fn as_local(&self) -> Option<u32> {
-        if self.proj_len == 0 {
+        if self.projections.is_empty() {
             match self.base {
                 PlaceBase::Local(slot) => Some(slot),
                 PlaceBase::Param(_) => None,
@@ -100,7 +123,7 @@ impl Place {
     /// Returns the param slot if this is a simple param place with no projections.
     #[inline]
     pub const fn as_param(&self) -> Option<u32> {
-        if self.proj_len == 0 {
+        if self.projections.is_empty() {
             match self.base {
                 PlaceBase::Param(slot) => Some(slot),
                 PlaceBase::Local(_) => None,
@@ -111,19 +134,126 @@ impl Place {
     }
 }
 
+impl CfgInstData {
+    pub(crate) fn duplicate_with_owner(&self) -> Self {
+        match self {
+            Self::Const(v) => Self::Const(*v),
+            Self::BoolConst(v) => Self::BoolConst(*v),
+            Self::StringConst(v) => Self::StringConst(*v),
+            Self::Param { index } => Self::Param { index: *index },
+            Self::BlockParam { index } => Self::BlockParam { index: *index },
+            Self::Add(a, b) => Self::Add(*a, *b),
+            Self::Sub(a, b) => Self::Sub(*a, *b),
+            Self::Mul(a, b) => Self::Mul(*a, *b),
+            Self::WrappingAdd(a, b) => Self::WrappingAdd(*a, *b),
+            Self::WrappingSub(a, b) => Self::WrappingSub(*a, *b),
+            Self::WrappingMul(a, b) => Self::WrappingMul(*a, *b),
+            Self::Div(a, b) => Self::Div(*a, *b),
+            Self::Mod(a, b) => Self::Mod(*a, *b),
+            Self::Eq(a, b) => Self::Eq(*a, *b),
+            Self::Ne(a, b) => Self::Ne(*a, *b),
+            Self::Lt(a, b) => Self::Lt(*a, *b),
+            Self::Gt(a, b) => Self::Gt(*a, *b),
+            Self::Le(a, b) => Self::Le(*a, *b),
+            Self::Ge(a, b) => Self::Ge(*a, *b),
+            Self::BitAnd(a, b) => Self::BitAnd(*a, *b),
+            Self::BitOr(a, b) => Self::BitOr(*a, *b),
+            Self::BitXor(a, b) => Self::BitXor(*a, *b),
+            Self::Shl(a, b) => Self::Shl(*a, *b),
+            Self::Shr(a, b) => Self::Shr(*a, *b),
+            Self::Neg(v) => Self::Neg(*v),
+            Self::Not(v) => Self::Not(*v),
+            Self::BitNot(v) => Self::BitNot(*v),
+            Self::Alloc { slot, init } => Self::Alloc {
+                slot: *slot,
+                init: *init,
+            },
+            Self::Load { slot } => Self::Load { slot: *slot },
+            Self::Store { slot, value } => Self::Store {
+                slot: *slot,
+                value: *value,
+            },
+            Self::ParamStore { param_slot, value } => Self::ParamStore {
+                param_slot: *param_slot,
+                value: *value,
+            },
+            Self::PlaceRead { place } => Self::PlaceRead {
+                place: place.duplicate_with_owner(),
+            },
+            Self::PlaceWrite { place, value } => Self::PlaceWrite {
+                place: place.duplicate_with_owner(),
+                value: *value,
+            },
+            Self::Call {
+                runtime,
+                name,
+                args,
+            } => Self::Call {
+                runtime: *runtime,
+                name: *name,
+                args: args.duplicate(),
+            },
+            Self::Intrinsic {
+                runtime,
+                name,
+                args,
+            } => Self::Intrinsic {
+                runtime: *runtime,
+                name: *name,
+                args: args.duplicate(),
+            },
+            Self::StructInit { struct_id, fields } => Self::StructInit {
+                struct_id: *struct_id,
+                fields: fields.duplicate(),
+            },
+            Self::ArrayInit { elements } => Self::ArrayInit {
+                elements: elements.duplicate(),
+            },
+            Self::EnumVariant {
+                enum_id,
+                variant_index,
+                payload,
+            } => Self::EnumVariant {
+                enum_id: *enum_id,
+                variant_index: *variant_index,
+                payload: payload.duplicate(),
+            },
+            Self::EnumPayloadGet {
+                base,
+                enum_id,
+                variant_index,
+                field_index,
+            } => Self::EnumPayloadGet {
+                base: *base,
+                enum_id: *enum_id,
+                variant_index: *variant_index,
+                field_index: *field_index,
+            },
+            Self::IntCast { value, from_ty } => Self::IntCast {
+                value: *value,
+                from_ty: *from_ty,
+            },
+            Self::Drop { value } => Self::Drop { value: *value },
+            Self::StorageLive { slot, local_ty } => Self::StorageLive {
+                slot: *slot,
+                local_ty: *local_ty,
+            },
+            Self::StorageDead { slot, local_ty } => Self::StorageDead {
+                slot: *slot,
+                local_ty: *local_ty,
+            },
+        }
+    }
+}
+
 impl fmt::Display for Place {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.base {
             PlaceBase::Local(slot) => write!(f, "${}", slot)?,
             PlaceBase::Param(slot) => write!(f, "%{}", slot)?,
         }
-        if self.proj_len > 0 {
-            write!(
-                f,
-                "[{}..{}]",
-                self.proj_start,
-                self.proj_start + self.proj_len
-            )?;
+        if !self.projections.is_empty() {
+            write!(f, "[{} projections]", self.projections.extent())?;
         }
         Ok(())
     }
@@ -140,8 +270,8 @@ pub enum PlaceBase {
 
 /// A projection applied to a place to reach a nested location.
 ///
-/// Projections are stored in `Cfg::projections` and referenced by
-/// `Place::proj_start` and `Place::proj_len`.
+/// Projections are stored in CFG's typed projection store and referenced by
+/// the owning place's opaque projection range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Projection {
     /// Field access: `.field_name`
@@ -208,7 +338,7 @@ impl fmt::Display for CfgValue {
 }
 
 /// A single CFG instruction with its metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CfgInst {
     pub data: CfgInstData,
     pub ty: Type,
@@ -257,7 +387,8 @@ impl CfgCallArg {
 ///
 /// Unlike AIR, there are NO control flow instructions here.
 /// Control flow is handled entirely by terminators.
-#[derive(Debug, Clone)]
+#[allow(private_interfaces)]
+#[derive(Debug)]
 pub enum CfgInstData {
     /// Integer constant (typed)
     Const(u64),
@@ -350,64 +481,50 @@ pub enum CfgInstData {
     },
 
     // Function calls
-    /// Function call. Arguments are stored in the Cfg's call_args array.
-    /// Use `Cfg::get_call_args(args_start, args_len)` to retrieve them.
+    /// Function call. Arguments are stored in CFG's typed call-argument store.
     Call {
         /// Typed runtime identity, absent for source-language calls.
         runtime: Option<rue_air::RuntimeCallKind>,
         /// Function name (interned symbol)
         name: Spur,
         /// Start index into Cfg's call_args array
-        args_start: u32,
-        /// Number of arguments
-        args_len: u32,
+        args: CfgCallArgs,
     },
 
-    /// Intrinsic call (e.g., @dbg). Arguments are stored in the Cfg's extra array.
-    /// Use `Cfg::get_extra(args_start, args_len)` to retrieve them.
+    /// Intrinsic call (e.g., @dbg). Arguments use the intrinsic-value family.
     Intrinsic {
         /// Runtime helper/adaptation selected by semantic analysis.
         runtime: Option<rue_air::RuntimeCallKind>,
         /// Intrinsic name (interned symbol)
         name: Spur,
         /// Start index into Cfg's extra array
-        args_start: u32,
-        /// Number of arguments
-        args_len: u32,
+        args: CfgIntrinsicArgs,
     },
 
     // Struct operations
-    /// Struct initialization. Field values are stored in the Cfg's extra array.
-    /// Use `Cfg::get_extra(fields_start, fields_len)` to retrieve them.
+    /// Struct initialization. Field values use the struct-field family.
     StructInit {
         struct_id: StructId,
         /// Start index into Cfg's extra array
-        fields_start: u32,
-        /// Number of fields
-        fields_len: u32,
+        fields: CfgStructFields,
     },
     // Array operations
-    /// Array initialization. Element values are stored in the Cfg's extra array.
-    /// Use `Cfg::get_extra(elements_start, elements_len)` to retrieve them.
+    /// Array initialization. Element values use the array-element family.
     /// The array type is stored in `CfgInst.ty`.
     ArrayInit {
         /// Start index into Cfg's extra array
-        elements_start: u32,
-        /// Number of elements
-        elements_len: u32,
+        elements: CfgArrayElements,
     },
     // Enum operations
     /// Create an enum variant value: the discriminant plus (for tuple
     /// variants, RUE-221) the payload operands, stored in the Cfg's extra
-    /// array. Use `Cfg::get_extra(payload_start, payload_len)` to retrieve the
-    /// payload values (empty for a discriminant-only variant).
+    /// array. Payload operands use the enum-payload family (empty for a
+    /// discriminant-only variant).
     EnumVariant {
         enum_id: EnumId,
         variant_index: u32,
         /// Start index into the Cfg's extra array for payload values.
-        payload_start: u32,
-        /// Number of payload values.
-        payload_len: u32,
+        payload: CfgEnumPayload,
     },
     /// Read payload field `field_index` of a tuple variant from an enum value
     /// (RUE-221). The result is the payload field, read from the tagged-union
@@ -461,16 +578,15 @@ pub enum CfgInstData {
 /// Block arguments are stored in the CFG's `extra` array for efficiency.
 /// Use `Cfg::get_goto_args()`, `Cfg::get_branch_then_args()`, and
 /// `Cfg::get_branch_else_args()` to retrieve the arguments.
-#[derive(Debug, Clone, Copy)]
+#[allow(private_interfaces)]
+#[derive(Debug)]
 pub enum Terminator {
     /// Unconditional jump to another block.
     /// Arguments are stored in Cfg's extra array.
     Goto {
         target: BlockId,
         /// Start index into Cfg's extra array
-        args_start: u32,
-        /// Number of arguments
-        args_len: u32,
+        args: CfgGotoArgs,
     },
 
     /// Conditional branch.
@@ -479,14 +595,10 @@ pub enum Terminator {
         cond: CfgValue,
         then_block: BlockId,
         /// Start index into Cfg's extra array for then branch args
-        then_args_start: u32,
-        /// Number of arguments for then branch
-        then_args_len: u32,
+        then_args: CfgThenArgs,
         else_block: BlockId,
         /// Start index into Cfg's extra array for else branch args
-        else_args_start: u32,
-        /// Number of arguments for else branch
-        else_args_len: u32,
+        else_args: CfgElseArgs,
     },
 
     /// Multi-way branch (switch/match).
@@ -495,9 +607,7 @@ pub enum Terminator {
         /// The value to switch on
         scrutinee: CfgValue,
         /// Start index into Cfg's switch_cases array
-        cases_start: u32,
-        /// Number of cases
-        cases_len: u32,
+        cases: CfgSwitchCases,
         /// Default block (for wildcard pattern)
         default: BlockId,
     },
@@ -514,8 +624,44 @@ pub enum Terminator {
     None,
 }
 
+impl Terminator {
+    fn duplicate_with_owner(&self) -> Self {
+        match self {
+            Self::Goto { target, args } => Self::Goto {
+                target: *target,
+                args: args.duplicate(),
+            },
+            Self::Branch {
+                cond,
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+            } => Self::Branch {
+                cond: *cond,
+                then_block: *then_block,
+                then_args: then_args.duplicate(),
+                else_block: *else_block,
+                else_args: else_args.duplicate(),
+            },
+            Self::Switch {
+                scrutinee,
+                cases,
+                default,
+            } => Self::Switch {
+                scrutinee: *scrutinee,
+                cases: cases.duplicate(),
+                default: *default,
+            },
+            Self::Return { value } => Self::Return { value: *value },
+            Self::Unreachable => Self::Unreachable,
+            Self::None => Self::None,
+        }
+    }
+}
+
 /// A basic block in the CFG.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BasicBlock {
     /// Block identifier
     pub id: BlockId,
@@ -540,7 +686,7 @@ impl BasicBlock {
 }
 
 /// The complete CFG for a function.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Cfg {
     /// All basic blocks
     blocks: Vec<BasicBlock>,
@@ -552,16 +698,16 @@ pub struct Cfg {
     values: Vec<CfgInst>,
     /// Extra storage for variable-length CfgValue data (struct fields, array elements, intrinsic args,
     /// and terminator block arguments). Instructions and terminators store (start, len) indices into this array.
-    extra: Vec<CfgValue>,
+    extra: payload::Values,
     /// Extra storage for call arguments (CfgCallArg).
     /// Call instructions store (start, len) indices into this array.
-    call_args: Vec<CfgCallArg>,
+    call_args: payload::CallArgs,
     /// Extra storage for switch cases (value, target block pairs).
     /// Switch terminators store (start, len) indices into this array.
-    switch_cases: Vec<(i64, BlockId)>,
+    switch_cases: payload::SwitchCases,
     /// Extra storage for place projections.
     /// Place instructions store (start, len) indices into this array.
-    projections: Vec<Projection>,
+    projections: payload::Projections,
     /// Number of local variable slots
     num_locals: u32,
     /// Number of parameter slots
@@ -593,6 +739,149 @@ pub struct Cfg {
     address_taken_params: std::collections::HashSet<u32>,
 }
 
+/// Mutable CFG construction and transformation state.
+///
+/// Only an editor can mutate owner-bound payload stores. Consumers receive a
+/// [`ValidatedCfg`] after verification has consumed the editor.
+pub type CfgEditor = Cfg;
+
+/// Recoverable failure from an owner-level CFG edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CfgEditError {
+    /// A block, value, target, or instruction kind was invalid before mutation.
+    InvalidBuilderInput {
+        operation: &'static str,
+        detail: &'static str,
+    },
+    /// A payload cannot be represented by the compact `u32` range format.
+    ResourceLimitExceeded { family: &'static str },
+    /// Reserving storage failed without changing the CFG.
+    CapacityFailure { family: &'static str },
+}
+
+/// Failure from a validated owner-level edit transaction.
+#[derive(Debug)]
+pub enum CfgEditTransactionError {
+    /// The requested edit was rejected before publication.
+    Edit(CfgEditError),
+    /// The edited owner did not pass complete structural and type validation.
+    Verification(crate::CfgVerificationError),
+}
+
+/// Failure while remapping an entire CFG owner into new request-local domains.
+#[derive(Debug)]
+pub enum CfgRemapError<E> {
+    /// A caller-supplied domain mapping rejected a value.
+    Domain(E),
+    /// Rebuilding an owner-bound payload failed without publishing a CFG.
+    Edit(CfgEditError),
+}
+
+impl fmt::Display for CfgEditTransactionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Edit(error) => write!(f, "CFG edit was rejected: {error:?}"),
+            Self::Verification(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for CfgEditTransactionError {}
+
+impl From<payload::PayloadBuildError> for CfgEditError {
+    fn from(error: payload::PayloadBuildError) -> Self {
+        match error {
+            payload::PayloadBuildError::ResourceLimitExceeded { family } => {
+                Self::ResourceLimitExceeded { family }
+            }
+            payload::PayloadBuildError::CapacityFailure { family } => {
+                Self::CapacityFailure { family }
+            }
+        }
+    }
+}
+
+/// An immutable CFG whose complete owner and payload stores passed structural
+/// verification together.
+#[derive(Debug)]
+pub struct ValidatedCfg(pub(crate) Cfg);
+
+impl std::ops::Deref for ValidatedCfg {
+    type Target = Cfg;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Clone for ValidatedCfg {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl ValidatedCfg {
+    pub(crate) fn into_editor(self) -> CfgEditor {
+        self.0
+    }
+
+    /// Apply a mutation transaction to a private editor and publish it only if
+    /// structural verification still succeeds.
+    pub fn try_edit<R>(
+        &mut self,
+        type_pool: &rue_air::FrozenTypeInternPool,
+        edit: impl FnOnce(&mut CfgEditor) -> Result<R, CfgEditError>,
+    ) -> Result<R, CfgEditTransactionError> {
+        let mut editor = self.0.clone();
+        let result = edit(&mut editor).map_err(CfgEditTransactionError::Edit)?;
+        editor
+            .verify_with_type_pool(type_pool)
+            .map_err(CfgEditTransactionError::Verification)?;
+        self.0 = editor;
+        Ok(result)
+    }
+}
+
+impl Clone for Cfg {
+    /// Clone the complete owner so every opaque payload range remains paired
+    /// with the physical store whose positions it addresses.
+    fn clone(&self) -> Self {
+        Self {
+            blocks: self
+                .blocks
+                .iter()
+                .map(|block| BasicBlock {
+                    id: block.id,
+                    params: block.params.clone(),
+                    insts: block.insts.clone(),
+                    terminator: block.terminator.duplicate_with_owner(),
+                })
+                .collect(),
+            entry: self.entry,
+            return_type: self.return_type,
+            values: self
+                .values
+                .iter()
+                .map(|inst| CfgInst {
+                    data: inst.data.duplicate_with_owner(),
+                    ty: inst.ty,
+                    span: inst.span,
+                })
+                .collect(),
+            extra: self.extra.clone(),
+            call_args: self.call_args.clone(),
+            switch_cases: self.switch_cases.clone(),
+            projections: self.projections.clone(),
+            num_locals: self.num_locals,
+            num_params: self.num_params,
+            fn_name: self.fn_name.clone(),
+            param_modes: self.param_modes.clone(),
+            address_taken_slots: self.address_taken_slots.clone(),
+            address_taken_params: self.address_taken_params.clone(),
+        }
+    }
+}
+
 impl Cfg {
     /// Clone and atomically remap every request-local payload domain embedded
     /// in this CFG. Block and value numbers are structural within the graph;
@@ -606,41 +895,250 @@ impl Cfg {
         mut symbol: impl FnMut(Spur) -> Result<Spur, E>,
         mut string: impl FnMut(u32) -> Result<u32, E>,
         mut span: impl FnMut(Span) -> Result<Span, E>,
-    ) -> Result<Self, E> {
-        let mut cfg = self.clone();
-        cfg.return_type = ty(cfg.return_type)?;
-        for block in &mut cfg.blocks {
-            for (_, value_ty) in &mut block.params {
-                *value_ty = ty(*value_ty)?;
-            }
+    ) -> Result<Self, CfgRemapError<E>> {
+        use CfgInstData::*;
+        let mut cfg = Self::new(
+            ty(self.return_type).map_err(CfgRemapError::Domain)?,
+            self.num_locals,
+            self.num_params,
+            self.fn_name.clone(),
+            self.param_modes.clone(),
+        );
+        cfg.entry = self.entry;
+        cfg.address_taken_slots = self.address_taken_slots.clone();
+        cfg.address_taken_params = self.address_taken_params.clone();
+
+        macro_rules! binary {
+            ($variant:ident, $a:expr, $b:expr) => {
+                $variant(*$a, *$b)
+            };
         }
-        for projection in &mut cfg.projections {
-            match projection {
-                Projection::Field { struct_id, .. } => *struct_id = strukt(*struct_id)?,
-                Projection::Index { array_type, .. } => *array_type = ty(*array_type)?,
-            }
+        macro_rules! domain {
+            ($value:expr) => {
+                $value.map_err(CfgRemapError::Domain)?
+            };
         }
-        for inst in &mut cfg.values {
-            inst.ty = ty(inst.ty)?;
-            inst.span = span(inst.span)?;
-            match &mut inst.data {
-                CfgInstData::StringConst(index) => *index = string(*index)?,
-                CfgInstData::Call { name, .. } | CfgInstData::Intrinsic { name, .. } => {
-                    *name = symbol(*name)?
-                }
-                CfgInstData::StructInit { struct_id, .. } => *struct_id = strukt(*struct_id)?,
-                CfgInstData::EnumVariant { enum_id, .. }
-                | CfgInstData::EnumPayloadGet { enum_id, .. } => *enum_id = enm(*enum_id)?,
-                CfgInstData::IntCast { from_ty, .. } => *from_ty = ty(*from_ty)?,
-                CfgInstData::StorageLive { local_ty, .. }
-                | CfgInstData::StorageDead { local_ty, .. } => *local_ty = ty(*local_ty)?,
-                _ => {}
-            }
-            if let CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } =
-                &mut inst.data
-            {
-                place.base_type = ty(place.base_type)?;
-            }
+        for source in &self.values {
+            let data = match &source.data {
+                Const(value) => Const(*value),
+                BoolConst(value) => BoolConst(*value),
+                StringConst(index) => StringConst(domain!(string(*index))),
+                Param { index } => Param { index: *index },
+                BlockParam { index } => BlockParam { index: *index },
+                Add(a, b) => binary!(Add, a, b),
+                Sub(a, b) => binary!(Sub, a, b),
+                Mul(a, b) => binary!(Mul, a, b),
+                WrappingAdd(a, b) => binary!(WrappingAdd, a, b),
+                WrappingSub(a, b) => binary!(WrappingSub, a, b),
+                WrappingMul(a, b) => binary!(WrappingMul, a, b),
+                Div(a, b) => binary!(Div, a, b),
+                Mod(a, b) => binary!(Mod, a, b),
+                Eq(a, b) => binary!(Eq, a, b),
+                Ne(a, b) => binary!(Ne, a, b),
+                Lt(a, b) => binary!(Lt, a, b),
+                Gt(a, b) => binary!(Gt, a, b),
+                Le(a, b) => binary!(Le, a, b),
+                Ge(a, b) => binary!(Ge, a, b),
+                BitAnd(a, b) => binary!(BitAnd, a, b),
+                BitOr(a, b) => binary!(BitOr, a, b),
+                BitXor(a, b) => binary!(BitXor, a, b),
+                Shl(a, b) => binary!(Shl, a, b),
+                Shr(a, b) => binary!(Shr, a, b),
+                Neg(value) => Neg(*value),
+                Not(value) => Not(*value),
+                BitNot(value) => BitNot(*value),
+                Alloc { slot, init } => Alloc {
+                    slot: *slot,
+                    init: *init,
+                },
+                Load { slot } => Load { slot: *slot },
+                Store { slot, value } => Store {
+                    slot: *slot,
+                    value: *value,
+                },
+                ParamStore { param_slot, value } => ParamStore {
+                    param_slot: *param_slot,
+                    value: *value,
+                },
+                PlaceRead { place } => PlaceRead {
+                    place: cfg
+                        .make_place(
+                            place.base,
+                            domain!(ty(place.base_type)),
+                            self.get_place_projections(place)
+                                .iter()
+                                .map(|projection| match projection {
+                                    Projection::Field {
+                                        struct_id,
+                                        field_index,
+                                    } => Ok(Projection::Field {
+                                        struct_id: domain!(strukt(*struct_id)),
+                                        field_index: *field_index,
+                                    }),
+                                    Projection::Index { array_type, index } => {
+                                        Ok(Projection::Index {
+                                            array_type: domain!(ty(*array_type)),
+                                            index: *index,
+                                        })
+                                    }
+                                })
+                                .collect::<Result<Vec<_>, CfgRemapError<E>>>()?,
+                        )
+                        .map_err(CfgRemapError::Edit)?,
+                },
+                PlaceWrite { place, value } => PlaceWrite {
+                    place: cfg
+                        .make_place(
+                            place.base,
+                            domain!(ty(place.base_type)),
+                            self.get_place_projections(place)
+                                .iter()
+                                .map(|projection| match projection {
+                                    Projection::Field {
+                                        struct_id,
+                                        field_index,
+                                    } => Ok(Projection::Field {
+                                        struct_id: domain!(strukt(*struct_id)),
+                                        field_index: *field_index,
+                                    }),
+                                    Projection::Index { array_type, index } => {
+                                        Ok(Projection::Index {
+                                            array_type: domain!(ty(*array_type)),
+                                            index: *index,
+                                        })
+                                    }
+                                })
+                                .collect::<Result<Vec<_>, CfgRemapError<E>>>()?,
+                        )
+                        .map_err(CfgRemapError::Edit)?,
+                    value: *value,
+                },
+                Call {
+                    runtime,
+                    name,
+                    args,
+                } => Call {
+                    runtime: *runtime,
+                    name: domain!(symbol(*name)),
+                    args: cfg
+                        .push_call_args(self.call_args(args).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                },
+                Intrinsic {
+                    runtime,
+                    name,
+                    args,
+                } => Intrinsic {
+                    runtime: *runtime,
+                    name: domain!(symbol(*name)),
+                    args: cfg
+                        .push_intrinsic_args(self.intrinsic_args(args).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                },
+                StructInit { struct_id, fields } => StructInit {
+                    struct_id: domain!(strukt(*struct_id)),
+                    fields: cfg
+                        .push_struct_fields(self.struct_fields(fields).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                },
+                ArrayInit { elements } => ArrayInit {
+                    elements: cfg
+                        .push_array_elements(self.array_elements(elements).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                },
+                EnumVariant {
+                    enum_id,
+                    variant_index,
+                    payload,
+                } => EnumVariant {
+                    enum_id: domain!(enm(*enum_id)),
+                    variant_index: *variant_index,
+                    payload: cfg
+                        .push_enum_payload(self.enum_payload(payload).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                },
+                EnumPayloadGet {
+                    base,
+                    enum_id,
+                    variant_index,
+                    field_index,
+                } => EnumPayloadGet {
+                    base: *base,
+                    enum_id: domain!(enm(*enum_id)),
+                    variant_index: *variant_index,
+                    field_index: *field_index,
+                },
+                IntCast { value, from_ty } => IntCast {
+                    value: *value,
+                    from_ty: domain!(ty(*from_ty)),
+                },
+                Drop { value } => Drop { value: *value },
+                StorageLive { slot, local_ty } => StorageLive {
+                    slot: *slot,
+                    local_ty: domain!(ty(*local_ty)),
+                },
+                StorageDead { slot, local_ty } => StorageDead {
+                    slot: *slot,
+                    local_ty: domain!(ty(*local_ty)),
+                },
+            };
+            cfg.add_inst(CfgInst {
+                data,
+                ty: domain!(ty(source.ty)),
+                span: domain!(span(source.span)),
+            });
+        }
+
+        for source in &self.blocks {
+            let terminator = match &source.terminator {
+                Terminator::Goto { target, args } => Terminator::Goto {
+                    target: *target,
+                    args: cfg
+                        .push_goto_args(self.goto_args(args).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                },
+                Terminator::Branch {
+                    cond,
+                    then_block,
+                    then_args,
+                    else_block,
+                    else_args,
+                } => Terminator::Branch {
+                    cond: *cond,
+                    then_block: *then_block,
+                    then_args: cfg
+                        .push_then_args(self.then_args(then_args).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                    else_block: *else_block,
+                    else_args: cfg
+                        .push_else_args(self.else_args(else_args).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                },
+                Terminator::Switch {
+                    scrutinee,
+                    cases,
+                    default,
+                } => Terminator::Switch {
+                    scrutinee: *scrutinee,
+                    cases: cfg
+                        .push_switch_cases(self.switch_cases(cases).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                    default: *default,
+                },
+                Terminator::Return { value } => Terminator::Return { value: *value },
+                Terminator::Unreachable => Terminator::Unreachable,
+                Terminator::None => Terminator::None,
+            };
+            cfg.blocks.push(BasicBlock {
+                id: source.id,
+                params: source
+                    .params
+                    .iter()
+                    .map(|(value, value_ty)| Ok((*value, domain!(ty(*value_ty)))))
+                    .collect::<Result<Vec<_>, CfgRemapError<E>>>()?,
+                insts: source.insts.clone(),
+                terminator,
+            });
         }
         Ok(cfg)
     }
@@ -658,10 +1156,10 @@ impl Cfg {
             entry: BlockId(0),
             return_type,
             values: Vec::new(),
-            extra: Vec::new(),
-            call_args: Vec::new(),
-            switch_cases: Vec::new(),
-            projections: Vec::new(),
+            extra: payload::Values::new(),
+            call_args: payload::CallArgs::new(),
+            switch_cases: payload::SwitchCases::new(),
+            projections: payload::Projections::new(),
             num_locals,
             num_params,
             fn_name,
@@ -803,12 +1301,12 @@ impl Cfg {
 
     /// Get a block mutably by ID.
     #[inline]
-    pub fn get_block_mut(&mut self, id: BlockId) -> &mut BasicBlock {
+    pub(crate) fn get_block_mut(&mut self, id: BlockId) -> &mut BasicBlock {
         &mut self.blocks[id.0 as usize]
     }
 
     /// Add an instruction and return its value reference.
-    pub fn add_inst(&mut self, inst: CfgInst) -> CfgValue {
+    pub(crate) fn add_inst(&mut self, inst: CfgInst) -> CfgValue {
         let value = CfgValue::from_raw(self.values.len() as u32);
         self.values.push(inst);
         value
@@ -822,7 +1320,7 @@ impl Cfg {
 
     /// Get a mutable instruction by value reference.
     #[inline]
-    pub fn get_inst_mut(&mut self, value: CfgValue) -> &mut CfgInst {
+    pub(crate) fn get_inst_mut(&mut self, value: CfgValue) -> &mut CfgInst {
         &mut self.values[value.0 as usize]
     }
 
@@ -832,116 +1330,475 @@ impl Cfg {
         self.values.len()
     }
 
-    #[inline]
-    pub(crate) fn extra_len(&self) -> usize {
-        self.extra.len()
+    pub(crate) fn push_intrinsic_args(
+        &mut self,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<CfgIntrinsicArgs, CfgEditError> {
+        payload::push_intrinsic_args(&mut self.extra, values).map_err(Into::into)
+    }
+    pub(crate) fn intrinsic_args(&self, range: &CfgIntrinsicArgs) -> &[CfgValue] {
+        payload::intrinsic_args(&self.extra, range)
+    }
+    pub(crate) fn checked_intrinsic_args(
+        &self,
+        range: &CfgIntrinsicArgs,
+    ) -> Result<&[CfgValue], payload::PayloadError> {
+        payload::checked_intrinsic_args(&self.extra, range)
+    }
+    pub(crate) fn push_struct_fields(
+        &mut self,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<CfgStructFields, CfgEditError> {
+        payload::push_struct_fields(&mut self.extra, values).map_err(Into::into)
+    }
+    pub(crate) fn struct_fields(&self, range: &CfgStructFields) -> &[CfgValue] {
+        payload::struct_fields(&self.extra, range)
+    }
+    pub(crate) fn checked_struct_fields(
+        &self,
+        range: &CfgStructFields,
+    ) -> Result<&[CfgValue], payload::PayloadError> {
+        payload::checked_struct_fields(&self.extra, range)
+    }
+    pub(crate) fn push_array_elements(
+        &mut self,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<CfgArrayElements, CfgEditError> {
+        payload::push_array_elements(&mut self.extra, values).map_err(Into::into)
+    }
+    pub(crate) fn array_elements(&self, range: &CfgArrayElements) -> &[CfgValue] {
+        payload::array_elements(&self.extra, range)
+    }
+    pub(crate) fn checked_array_elements(
+        &self,
+        range: &CfgArrayElements,
+    ) -> Result<&[CfgValue], payload::PayloadError> {
+        payload::checked_array_elements(&self.extra, range)
+    }
+    pub(crate) fn push_enum_payload(
+        &mut self,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<CfgEnumPayload, CfgEditError> {
+        payload::push_enum_payload(&mut self.extra, values).map_err(Into::into)
+    }
+    pub(crate) fn enum_payload(&self, range: &CfgEnumPayload) -> &[CfgValue] {
+        payload::enum_payload(&self.extra, range)
+    }
+    pub(crate) fn checked_enum_payload(
+        &self,
+        range: &CfgEnumPayload,
+    ) -> Result<&[CfgValue], payload::PayloadError> {
+        payload::checked_enum_payload(&self.extra, range)
+    }
+    pub(crate) fn push_goto_args(
+        &mut self,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<CfgGotoArgs, CfgEditError> {
+        payload::push_goto_args(&mut self.extra, values).map_err(Into::into)
+    }
+    pub(crate) fn goto_args(&self, range: &CfgGotoArgs) -> &[CfgValue] {
+        payload::goto_args(&self.extra, range)
+    }
+    pub(crate) fn checked_goto_args(
+        &self,
+        range: &CfgGotoArgs,
+    ) -> Result<&[CfgValue], payload::PayloadError> {
+        payload::checked_goto_args(&self.extra, range)
+    }
+    pub(crate) fn then_args(&self, range: &CfgThenArgs) -> &[CfgValue] {
+        payload::then_args(&self.extra, range)
+    }
+    pub(crate) fn checked_then_args(
+        &self,
+        range: &CfgThenArgs,
+    ) -> Result<&[CfgValue], payload::PayloadError> {
+        payload::checked_then_args(&self.extra, range)
+    }
+    pub(crate) fn else_args(&self, range: &CfgElseArgs) -> &[CfgValue] {
+        payload::else_args(&self.extra, range)
+    }
+    pub(crate) fn checked_else_args(
+        &self,
+        range: &CfgElseArgs,
+    ) -> Result<&[CfgValue], payload::PayloadError> {
+        payload::checked_else_args(&self.extra, range)
+    }
+    pub(crate) fn push_then_args(
+        &mut self,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<CfgThenArgs, CfgEditError> {
+        payload::push_then_args(&mut self.extra, values).map_err(Into::into)
+    }
+    pub(crate) fn push_else_args(
+        &mut self,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<CfgElseArgs, CfgEditError> {
+        payload::push_else_args(&mut self.extra, values).map_err(Into::into)
+    }
+    pub(crate) fn push_call_args(
+        &mut self,
+        args: impl IntoIterator<Item = CfgCallArg>,
+    ) -> Result<CfgCallArgs, CfgEditError> {
+        payload::push_call_args(&mut self.call_args, args).map_err(Into::into)
+    }
+    pub(crate) fn call_args(&self, range: &CfgCallArgs) -> &[CfgCallArg] {
+        payload::call_args(&self.call_args, range)
+    }
+    pub(crate) fn checked_call_args(
+        &self,
+        range: &CfgCallArgs,
+    ) -> Result<&[CfgCallArg], payload::PayloadError> {
+        payload::checked_call_args(&self.call_args, range)
     }
 
-    #[inline]
-    pub(crate) fn call_args_len(&self) -> usize {
-        self.call_args.len()
+    /// Borrow call arguments from an instruction without exposing its opaque
+    /// owner-bound payload range.
+    pub fn get_call_args<'a>(&'a self, data: &CfgInstData) -> &'a [CfgCallArg] {
+        match data {
+            CfgInstData::Call { args, .. } => self.call_args(args),
+            _ => panic!("get_call_args called on non-Call instruction"),
+        }
     }
 
-    #[inline]
-    pub(crate) fn switch_cases_len(&self) -> usize {
-        self.switch_cases.len()
+    pub fn get_intrinsic_args<'a>(&'a self, data: &CfgInstData) -> &'a [CfgValue] {
+        match data {
+            CfgInstData::Intrinsic { args, .. } => self.intrinsic_args(args),
+            _ => panic!("get_intrinsic_args called on non-Intrinsic instruction"),
+        }
     }
 
-    #[inline]
-    pub(crate) fn projections_len(&self) -> usize {
-        self.projections.len()
+    pub fn get_struct_fields<'a>(&'a self, data: &CfgInstData) -> &'a [CfgValue] {
+        match data {
+            CfgInstData::StructInit { fields, .. } => self.struct_fields(fields),
+            _ => panic!("get_struct_fields called on non-StructInit instruction"),
+        }
     }
 
-    /// Add values to the extra array and return (start, len).
+    pub fn get_array_elements<'a>(&'a self, data: &CfgInstData) -> &'a [CfgValue] {
+        match data {
+            CfgInstData::ArrayInit { elements } => self.array_elements(elements),
+            _ => panic!("get_array_elements called on non-ArrayInit instruction"),
+        }
+    }
+
+    pub fn get_enum_payload<'a>(&'a self, data: &CfgInstData) -> &'a [CfgValue] {
+        match data {
+            CfgInstData::EnumVariant { payload, .. } => self.enum_payload(payload),
+            _ => panic!("get_enum_payload called on non-EnumVariant instruction"),
+        }
+    }
+    pub fn replace_call_args(
+        &mut self,
+        value: CfgValue,
+        values: impl IntoIterator<Item = CfgCallArg>,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "call arguments";
+        if !matches!(
+            self.values.get(value.0 as usize).map(|inst| &inst.data),
+            Some(CfgInstData::Call { .. })
+        ) {
+            return Err(Self::invalid_edit(OP, "target is not a Call instruction"));
+        }
+        let staged = Self::stage_edit(OP, values)?;
+        self.validate_value_refs(OP, staged.iter(), |arg| arg.value)?;
+        let args = payload::push_call_args(&mut self.call_args, staged)?;
+        let CfgInstData::Call { args: stored, .. } = &mut self.values[value.0 as usize].data else {
+            return Err(Self::invalid_edit(OP, "target changed during replacement"));
+        };
+        *stored = args;
+        Ok(())
+    }
+    pub fn replace_intrinsic_args(
+        &mut self,
+        value: CfgValue,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "intrinsic arguments";
+        if !matches!(
+            self.values.get(value.0 as usize).map(|inst| &inst.data),
+            Some(CfgInstData::Intrinsic { .. })
+        ) {
+            return Err(Self::invalid_edit(
+                OP,
+                "target is not an Intrinsic instruction",
+            ));
+        }
+        let staged = Self::stage_edit(OP, values)?;
+        self.validate_value_refs(OP, staged.iter(), |value| *value)?;
+        let args = payload::push_intrinsic_args(&mut self.extra, staged)?;
+        let CfgInstData::Intrinsic { args: stored, .. } = &mut self.values[value.0 as usize].data
+        else {
+            return Err(Self::invalid_edit(OP, "target changed during replacement"));
+        };
+        *stored = args;
+        Ok(())
+    }
+
+    /// Replace the static result type of an instruction.
     ///
-    /// Used for StructInit fields, ArrayInit elements, and Intrinsic args.
-    pub fn push_extra(&mut self, values: impl IntoIterator<Item = CfgValue>) -> (u32, u32) {
-        let start = self.extra.len() as u32;
-        self.extra.extend(values);
-        let len = self.extra.len() as u32 - start;
-        (start, len)
+    /// This is primarily useful to construct verifier and oracle probes while
+    /// keeping the instruction arena encapsulated.
+    pub fn replace_inst_type(&mut self, value: CfgValue, ty: Type) -> Result<(), CfgEditError> {
+        let Some(inst) = self.values.get_mut(value.0 as usize) else {
+            return Err(Self::invalid_edit(
+                "instruction type",
+                "target instruction is undefined",
+            ));
+        };
+        inst.ty = ty;
+        Ok(())
     }
 
-    /// Get a slice from the extra array.
-    #[inline]
-    pub fn get_extra(&self, start: u32, len: u32) -> &[CfgValue] {
-        &self.extra[start as usize..(start + len) as usize]
+    /// Replace an integer cast without exposing mutable instruction storage.
+    pub fn replace_int_cast(
+        &mut self,
+        value: CfgValue,
+        operand: CfgValue,
+        from_ty: Type,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "integer cast";
+        if operand.0 as usize >= self.values.len() {
+            return Err(Self::invalid_edit(OP, "operand is undefined"));
+        }
+        let Some(data) = self
+            .values
+            .get_mut(value.0 as usize)
+            .map(|inst| &mut inst.data)
+        else {
+            return Err(Self::invalid_edit(OP, "target instruction is undefined"));
+        };
+        if !matches!(data, CfgInstData::IntCast { .. }) {
+            return Err(Self::invalid_edit(
+                OP,
+                "target is not an IntCast instruction",
+            ));
+        }
+        *data = CfgInstData::IntCast {
+            value: operand,
+            from_ty,
+        };
+        Ok(())
     }
 
-    /// Add call arguments to the call_args array and return (start, len).
-    ///
-    /// Used for Call instruction arguments.
-    pub fn push_call_args(&mut self, args: impl IntoIterator<Item = CfgCallArg>) -> (u32, u32) {
-        let start = self.call_args.len() as u32;
-        self.call_args.extend(args);
-        let len = self.call_args.len() as u32 - start;
-        (start, len)
+    /// Replace a struct initializer's fields in this CFG's payload store.
+    pub fn replace_struct_fields(
+        &mut self,
+        value: CfgValue,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "struct fields";
+        if !matches!(
+            self.values.get(value.0 as usize).map(|inst| &inst.data),
+            Some(CfgInstData::StructInit { .. })
+        ) {
+            return Err(Self::invalid_edit(
+                OP,
+                "target is not a StructInit instruction",
+            ));
+        }
+        let staged = Self::stage_edit(OP, values)?;
+        self.validate_value_refs(OP, staged.iter(), |value| *value)?;
+        let fields = payload::push_struct_fields(&mut self.extra, staged)?;
+        let CfgInstData::StructInit { fields: stored, .. } =
+            &mut self.values[value.0 as usize].data
+        else {
+            return Err(Self::invalid_edit(OP, "target changed during replacement"));
+        };
+        *stored = fields;
+        Ok(())
     }
 
-    /// Get a slice from the call_args array.
-    #[inline]
-    pub fn get_call_args(&self, start: u32, len: u32) -> &[CfgCallArg] {
-        &self.call_args[start as usize..(start + len) as usize]
+    /// Replace an array initializer's elements atomically.
+    pub fn replace_array_elements(
+        &mut self,
+        value: CfgValue,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "array elements";
+        if !matches!(
+            self.values.get(value.0 as usize).map(|inst| &inst.data),
+            Some(CfgInstData::ArrayInit { .. })
+        ) {
+            return Err(Self::invalid_edit(
+                OP,
+                "target is not an ArrayInit instruction",
+            ));
+        }
+        let staged = Self::stage_edit(OP, values)?;
+        self.validate_value_refs(OP, staged.iter(), |value| *value)?;
+        let elements = payload::push_array_elements(&mut self.extra, staged)?;
+        let CfgInstData::ArrayInit { elements: stored } = &mut self.values[value.0 as usize].data
+        else {
+            return Err(Self::invalid_edit(OP, "target changed during replacement"));
+        };
+        *stored = elements;
+        Ok(())
     }
 
-    /// Add switch cases to the switch_cases array and return (start, len).
-    ///
-    /// Used for Switch terminator cases.
-    pub fn push_switch_cases(
+    /// Replace an enum constructor's payload atomically after validating its
+    /// nominal target and variant against the canonical type context.
+    pub fn replace_enum_payload(
+        &mut self,
+        type_pool: &rue_air::FrozenTypeInternPool,
+        value: CfgValue,
+        values: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "enum payload";
+        let Some(CfgInstData::EnumVariant {
+            enum_id,
+            variant_index,
+            ..
+        }) = self.values.get(value.0 as usize).map(|inst| &inst.data)
+        else {
+            return Err(Self::invalid_edit(
+                OP,
+                "target is not an EnumVariant instruction",
+            ));
+        };
+        let Some(def) = type_pool.try_enum_def(*enum_id) else {
+            return Err(Self::invalid_edit(OP, "enum target is undefined"));
+        };
+        if *variant_index as usize >= def.variant_count() {
+            return Err(Self::invalid_edit(OP, "enum variant is out of bounds"));
+        }
+        let staged = Self::stage_edit(OP, values)?;
+        self.validate_value_refs(OP, staged.iter(), |value| *value)?;
+        let payload = payload::push_enum_payload(&mut self.extra, staged)?;
+        let CfgInstData::EnumVariant {
+            payload: stored, ..
+        } = &mut self.values[value.0 as usize].data
+        else {
+            return Err(Self::invalid_edit(OP, "target changed during replacement"));
+        };
+        *stored = payload;
+        Ok(())
+    }
+
+    /// Replace a place read, storing its projections in this CFG owner.
+    pub fn replace_place_read(
+        &mut self,
+        value: CfgValue,
+        base: PlaceBase,
+        base_type: Type,
+        projections: impl IntoIterator<Item = Projection>,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "projections";
+        if !matches!(
+            self.values.get(value.0 as usize).map(|inst| &inst.data),
+            Some(CfgInstData::PlaceRead { .. })
+        ) {
+            return Err(Self::invalid_edit(
+                OP,
+                "target is not a PlaceRead instruction",
+            ));
+        }
+        let staged = Self::stage_edit(OP, projections)?;
+        self.validate_place_input(OP, base, &staged)?;
+        let projections = payload::push_projections(&mut self.projections, staged)?;
+        self.values[value.0 as usize].data = CfgInstData::PlaceRead {
+            place: Place {
+                base,
+                base_type,
+                projections,
+            },
+        };
+        Ok(())
+    }
+
+    /// Replace a place write, storing its projections in this CFG owner.
+    pub fn replace_place_write(
+        &mut self,
+        instruction: CfgValue,
+        base: PlaceBase,
+        base_type: Type,
+        projections: impl IntoIterator<Item = Projection>,
+        value: CfgValue,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "projections";
+        if !matches!(
+            self.values
+                .get(instruction.0 as usize)
+                .map(|inst| &inst.data),
+            Some(CfgInstData::PlaceWrite { .. })
+        ) {
+            return Err(Self::invalid_edit(
+                OP,
+                "target is not a PlaceWrite instruction",
+            ));
+        }
+        if value.0 as usize >= self.values.len() {
+            return Err(Self::invalid_edit(OP, "written value is undefined"));
+        }
+        let staged = Self::stage_edit(OP, projections)?;
+        self.validate_place_input(OP, base, &staged)?;
+        let projections = payload::push_projections(&mut self.projections, staged)?;
+        self.values[instruction.0 as usize].data = CfgInstData::PlaceWrite {
+            place: Place {
+                base,
+                base_type,
+                projections,
+            },
+            value,
+        };
+        Ok(())
+    }
+    pub(crate) fn push_switch_cases(
         &mut self,
         cases: impl IntoIterator<Item = (i64, BlockId)>,
-    ) -> (u32, u32) {
-        let start = self.switch_cases.len() as u32;
-        self.switch_cases.extend(cases);
-        let len = self.switch_cases.len() as u32 - start;
-        (start, len)
+    ) -> Result<CfgSwitchCases, CfgEditError> {
+        payload::push_switch_cases(&mut self.switch_cases, cases).map_err(Into::into)
+    }
+    pub(crate) fn switch_cases(&self, range: &CfgSwitchCases) -> &[(i64, BlockId)] {
+        payload::switch_cases(&self.switch_cases, range)
+    }
+    pub(crate) fn checked_switch_cases(
+        &self,
+        range: &CfgSwitchCases,
+    ) -> Result<&[(i64, BlockId)], payload::PayloadError> {
+        payload::checked_switch_cases(&self.switch_cases, range)
     }
 
-    /// Get a slice from the switch_cases array.
-    #[inline]
-    pub fn get_switch_cases(&self, start: u32, len: u32) -> &[(i64, BlockId)] {
-        &self.switch_cases[start as usize..(start + len) as usize]
+    pub fn get_switch_cases<'a>(&'a self, term: &Terminator) -> &'a [(i64, BlockId)] {
+        match term {
+            Terminator::Switch { cases, .. } => self.switch_cases(cases),
+            _ => panic!("get_switch_cases called on non-Switch terminator"),
+        }
     }
-
-    /// Add projections to the projections array and return (start, len).
-    ///
-    /// Used for `PlaceRead` and `PlaceWrite` instructions.
-    pub fn push_projections(&mut self, projs: impl IntoIterator<Item = Projection>) -> (u32, u32) {
-        let start = self.projections.len() as u32;
-        self.projections.extend(projs);
-        let len = self.projections.len() as u32 - start;
-        (start, len)
-    }
-
-    /// Get a slice from the projections array.
-    #[inline]
-    pub fn get_projections(&self, start: u32, len: u32) -> &[Projection] {
-        &self.projections[start as usize..(start + len) as usize]
+    pub(crate) fn push_projections(
+        &mut self,
+        projs: impl IntoIterator<Item = Projection>,
+    ) -> Result<CfgProjections, CfgEditError> {
+        payload::push_projections(&mut self.projections, projs).map_err(Into::into)
     }
 
     /// Get projections for a place.
     #[inline]
     pub fn get_place_projections(&self, place: &Place) -> &[Projection] {
-        self.get_projections(place.proj_start, place.proj_len)
+        payload::projections(&self.projections, &place.projections)
+    }
+    pub(crate) fn checked_place_projections(
+        &self,
+        place: &Place,
+    ) -> Result<&[Projection], payload::PayloadError> {
+        payload::checked_projections(&self.projections, &place.projections)
     }
 
     /// Create a place with the given base and projections.
     ///
     /// This adds the projections to the projections array and returns a Place
     /// that references them.
-    pub fn make_place(
+    pub(crate) fn make_place(
         &mut self,
         base: PlaceBase,
         base_type: Type,
         projs: impl IntoIterator<Item = Projection>,
-    ) -> Place {
-        let (proj_start, proj_len) = self.push_projections(projs);
-        Place {
+    ) -> Result<Place, CfgEditError> {
+        let projections = self.push_projections(projs)?;
+        Ok(Place {
             base,
             base_type,
-            proj_start,
-            proj_len,
-        }
+            projections,
+        })
     }
 
     /// Get the block arguments from a Goto terminator.
@@ -952,11 +1809,7 @@ impl Cfg {
     #[inline]
     pub fn get_goto_args(&self, term: &Terminator) -> &[CfgValue] {
         match term {
-            Terminator::Goto {
-                args_start,
-                args_len,
-                ..
-            } => self.get_extra(*args_start, *args_len),
+            Terminator::Goto { args, .. } => payload::goto_args(&self.extra, args),
             _ => panic!("get_goto_args called on non-Goto terminator"),
         }
     }
@@ -969,11 +1822,7 @@ impl Cfg {
     #[inline]
     pub fn get_branch_then_args(&self, term: &Terminator) -> &[CfgValue] {
         match term {
-            Terminator::Branch {
-                then_args_start,
-                then_args_len,
-                ..
-            } => self.get_extra(*then_args_start, *then_args_len),
+            Terminator::Branch { then_args, .. } => payload::then_args(&self.extra, then_args),
             _ => panic!("get_branch_then_args called on non-Branch terminator"),
         }
     }
@@ -986,20 +1835,319 @@ impl Cfg {
     #[inline]
     pub fn get_branch_else_args(&self, term: &Terminator) -> &[CfgValue] {
         match term {
-            Terminator::Branch {
-                else_args_start,
-                else_args_len,
-                ..
-            } => self.get_extra(*else_args_start, *else_args_len),
+            Terminator::Branch { else_args, .. } => payload::else_args(&self.extra, else_args),
             _ => panic!("get_branch_else_args called on non-Branch terminator"),
         }
     }
 
     /// Add an instruction to a block.
-    pub fn add_inst_to_block(&mut self, block: BlockId, inst: CfgInst) -> CfgValue {
+    pub(crate) fn add_inst_to_block(&mut self, block: BlockId, inst: CfgInst) -> CfgValue {
         let value = self.add_inst(inst);
         self.blocks[block.0 as usize].insts.push(value);
         value
+    }
+
+    fn invalid_edit(operation: &'static str, detail: &'static str) -> CfgEditError {
+        CfgEditError::InvalidBuilderInput { operation, detail }
+    }
+
+    fn stage_edit<E>(
+        operation: &'static str,
+        values: impl IntoIterator<Item = E>,
+    ) -> Result<Vec<E>, CfgEditError> {
+        let values = values.into_iter();
+        let (lower, _) = values.size_hint();
+        if lower > u32::MAX as usize {
+            return Err(CfgEditError::ResourceLimitExceeded { family: operation });
+        }
+        let mut staged = Vec::new();
+        staged
+            .try_reserve(lower)
+            .map_err(|_| CfgEditError::CapacityFailure { family: operation })?;
+        for value in values {
+            if staged.len() == u32::MAX as usize {
+                return Err(CfgEditError::ResourceLimitExceeded { family: operation });
+            }
+            staged
+                .try_reserve(1)
+                .map_err(|_| CfgEditError::CapacityFailure { family: operation })?;
+            staged.push(value);
+        }
+        Ok(staged)
+    }
+
+    fn preflight_append(
+        &mut self,
+        operation: &'static str,
+        block: BlockId,
+    ) -> Result<(), CfgEditError> {
+        let block = self
+            .blocks
+            .get_mut(block.0 as usize)
+            .ok_or_else(|| Self::invalid_edit(operation, "block is out of bounds"))?;
+        self.values
+            .try_reserve(1)
+            .map_err(|_| CfgEditError::CapacityFailure { family: "values" })?;
+        block
+            .insts
+            .try_reserve(1)
+            .map_err(|_| CfgEditError::CapacityFailure {
+                family: "block instructions",
+            })
+    }
+
+    fn validate_value_refs<E>(
+        &self,
+        operation: &'static str,
+        values: impl IntoIterator<Item = E>,
+        value: impl Fn(E) -> CfgValue,
+    ) -> Result<(), CfgEditError> {
+        if values
+            .into_iter()
+            .any(|item| value(item).0 as usize >= self.values.len())
+        {
+            return Err(Self::invalid_edit(operation, "payload value is undefined"));
+        }
+        Ok(())
+    }
+
+    fn validate_place_input(
+        &self,
+        operation: &'static str,
+        base: PlaceBase,
+        projections: &[Projection],
+    ) -> Result<(), CfgEditError> {
+        let base_valid = match base {
+            PlaceBase::Local(slot) => slot < self.num_locals,
+            PlaceBase::Param(slot) => slot < self.num_params,
+        };
+        if !base_valid {
+            return Err(Self::invalid_edit(operation, "place base is out of bounds"));
+        }
+        if projections.iter().any(|projection| {
+            matches!(projection, Projection::Index { index, .. } if index.0 as usize >= self.values.len())
+        }) {
+            return Err(Self::invalid_edit(
+                operation,
+                "projection index value is undefined",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Append an instruction whose data has no owner-bound payload.
+    ///
+    /// Payload-bearing instructions cannot be constructed outside this crate;
+    /// use the corresponding `append_*` method so the payload and its opaque
+    /// range are created by the same CFG owner.
+    pub fn append_inst(&mut self, block: BlockId, inst: CfgInst) -> CfgValue {
+        self.add_inst_to_block(block, inst)
+    }
+
+    /// Append a call and store its arguments in this CFG's call-argument store.
+    pub fn append_call(
+        &mut self,
+        block: BlockId,
+        runtime: Option<rue_air::RuntimeCallKind>,
+        name: Spur,
+        args: impl IntoIterator<Item = CfgCallArg>,
+        ty: Type,
+        span: Span,
+    ) -> Result<CfgValue, CfgEditError> {
+        const OP: &str = "call arguments";
+        let staged = Self::stage_edit(OP, args)?;
+        self.validate_value_refs(OP, staged.iter(), |arg| arg.value)?;
+        self.preflight_append(OP, block)?;
+        let args = payload::push_call_args(&mut self.call_args, staged)?;
+        Ok(self.add_inst_to_block(
+            block,
+            CfgInst {
+                data: CfgInstData::Call {
+                    runtime,
+                    name,
+                    args,
+                },
+                ty,
+                span,
+            },
+        ))
+    }
+
+    /// Append an intrinsic and store its operands in this CFG's value store.
+    pub fn append_intrinsic(
+        &mut self,
+        block: BlockId,
+        runtime: Option<rue_air::RuntimeCallKind>,
+        name: Spur,
+        args: impl IntoIterator<Item = CfgValue>,
+        ty: Type,
+        span: Span,
+    ) -> Result<CfgValue, CfgEditError> {
+        const OP: &str = "intrinsic arguments";
+        let staged = Self::stage_edit(OP, args)?;
+        self.validate_value_refs(OP, staged.iter(), |value| *value)?;
+        self.preflight_append(OP, block)?;
+        let args = payload::push_intrinsic_args(&mut self.extra, staged)?;
+        Ok(self.add_inst_to_block(
+            block,
+            CfgInst {
+                data: CfgInstData::Intrinsic {
+                    runtime,
+                    name,
+                    args,
+                },
+                ty,
+                span,
+            },
+        ))
+    }
+
+    /// Append a struct initializer owned by this CFG.
+    pub fn append_struct_init(
+        &mut self,
+        block: BlockId,
+        struct_id: StructId,
+        fields: impl IntoIterator<Item = CfgValue>,
+        ty: Type,
+        span: Span,
+    ) -> Result<CfgValue, CfgEditError> {
+        const OP: &str = "struct fields";
+        let staged = Self::stage_edit(OP, fields)?;
+        self.validate_value_refs(OP, staged.iter(), |value| *value)?;
+        self.preflight_append(OP, block)?;
+        let fields = payload::push_struct_fields(&mut self.extra, staged)?;
+        Ok(self.add_inst_to_block(
+            block,
+            CfgInst {
+                data: CfgInstData::StructInit { struct_id, fields },
+                ty,
+                span,
+            },
+        ))
+    }
+
+    /// Append an array initializer owned by this CFG.
+    pub fn append_array_init(
+        &mut self,
+        block: BlockId,
+        elements: impl IntoIterator<Item = CfgValue>,
+        ty: Type,
+        span: Span,
+    ) -> Result<CfgValue, CfgEditError> {
+        const OP: &str = "array elements";
+        let staged = Self::stage_edit(OP, elements)?;
+        self.validate_value_refs(OP, staged.iter(), |value| *value)?;
+        self.preflight_append(OP, block)?;
+        let elements = payload::push_array_elements(&mut self.extra, staged)?;
+        Ok(self.add_inst_to_block(
+            block,
+            CfgInst {
+                data: CfgInstData::ArrayInit { elements },
+                ty,
+                span,
+            },
+        ))
+    }
+
+    /// Append an enum variant owned by this CFG.
+    pub fn append_enum_variant(
+        &mut self,
+        type_pool: &rue_air::FrozenTypeInternPool,
+        block: BlockId,
+        enum_id: EnumId,
+        variant_index: u32,
+        payload: impl IntoIterator<Item = CfgValue>,
+        ty: Type,
+        span: Span,
+    ) -> Result<CfgValue, CfgEditError> {
+        const OP: &str = "enum payload";
+        let Some(def) = type_pool.try_enum_def(enum_id) else {
+            return Err(Self::invalid_edit(OP, "enum target is undefined"));
+        };
+        if variant_index as usize >= def.variant_count() {
+            return Err(Self::invalid_edit(OP, "enum variant is out of bounds"));
+        }
+        let staged = Self::stage_edit(OP, payload)?;
+        self.validate_value_refs(OP, staged.iter(), |value| *value)?;
+        self.preflight_append(OP, block)?;
+        let payload = payload::push_enum_payload(&mut self.extra, staged)?;
+        Ok(self.add_inst_to_block(
+            block,
+            CfgInst {
+                data: CfgInstData::EnumVariant {
+                    enum_id,
+                    variant_index,
+                    payload,
+                },
+                ty,
+                span,
+            },
+        ))
+    }
+
+    /// Append a place read whose projections are owned by this CFG.
+    pub fn append_place_read(
+        &mut self,
+        block: BlockId,
+        base: PlaceBase,
+        base_type: Type,
+        projections: impl IntoIterator<Item = Projection>,
+        ty: Type,
+        span: Span,
+    ) -> Result<CfgValue, CfgEditError> {
+        const OP: &str = "projections";
+        let staged = Self::stage_edit(OP, projections)?;
+        self.validate_place_input(OP, base, &staged)?;
+        self.preflight_append(OP, block)?;
+        let projections = payload::push_projections(&mut self.projections, staged)?;
+        let place = Place {
+            base,
+            base_type,
+            projections,
+        };
+        Ok(self.add_inst_to_block(
+            block,
+            CfgInst {
+                data: CfgInstData::PlaceRead { place },
+                ty,
+                span,
+            },
+        ))
+    }
+
+    /// Append a place write whose projections are owned by this CFG.
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_place_write(
+        &mut self,
+        block: BlockId,
+        base: PlaceBase,
+        base_type: Type,
+        projections: impl IntoIterator<Item = Projection>,
+        value: CfgValue,
+        ty: Type,
+        span: Span,
+    ) -> Result<CfgValue, CfgEditError> {
+        const OP: &str = "projections";
+        if value.0 as usize >= self.values.len() {
+            return Err(Self::invalid_edit(OP, "written value is undefined"));
+        }
+        let staged = Self::stage_edit(OP, projections)?;
+        self.validate_place_input(OP, base, &staged)?;
+        self.preflight_append(OP, block)?;
+        let projections = payload::push_projections(&mut self.projections, staged)?;
+        let place = Place {
+            base,
+            base_type,
+            projections,
+        };
+        Ok(self.add_inst_to_block(
+            block,
+            CfgInst {
+                data: CfgInstData::PlaceWrite { place, value },
+                ty,
+                span,
+            },
+        ))
     }
 
     /// Add a block parameter and return its value.
@@ -1022,7 +2170,7 @@ impl Cfg {
     /// how divergence bugs hide — e.g. a diverging let-initializer's `Return`
     /// being clobbered by the code after the `let` (RUE-128) — so that is a
     /// loud assertion that runs in release too (correctness guard, RUE-45).
-    pub fn set_terminator(&mut self, block: BlockId, term: Terminator) {
+    pub(crate) fn set_terminator(&mut self, block: BlockId, term: Terminator) {
         assert!(
             matches!(
                 self.blocks[block.0 as usize].terminator,
@@ -1034,6 +2182,164 @@ impl Cfg {
             term
         );
         self.blocks[block.0 as usize].terminator = term;
+    }
+
+    /// Terminate a block with an unconditional edge owned by this CFG.
+    pub fn set_goto(
+        &mut self,
+        block: BlockId,
+        target: BlockId,
+        args: impl IntoIterator<Item = CfgValue>,
+    ) {
+        self.try_set_goto(block, target, args)
+            .expect("valid CFG goto edit");
+    }
+
+    pub fn try_set_goto(
+        &mut self,
+        block: BlockId,
+        target: BlockId,
+        args: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "goto arguments";
+        if block.0 as usize >= self.blocks.len() || target.0 as usize >= self.blocks.len() {
+            return Err(Self::invalid_edit(OP, "block target is out of bounds"));
+        }
+        if !matches!(
+            self.blocks[block.0 as usize].terminator,
+            Terminator::None | Terminator::Unreachable
+        ) {
+            return Err(Self::invalid_edit(OP, "block already has a terminator"));
+        }
+        let staged = Self::stage_edit(OP, args)?;
+        self.validate_value_refs(OP, staged.iter(), |value| *value)?;
+        let args = payload::push_goto_args(&mut self.extra, staged)?;
+        self.set_terminator(block, Terminator::Goto { target, args });
+        Ok(())
+    }
+
+    /// Terminate a block with a conditional edge owned by this CFG.
+    pub fn set_branch(
+        &mut self,
+        block: BlockId,
+        cond: CfgValue,
+        then_block: BlockId,
+        then_args: impl IntoIterator<Item = CfgValue>,
+        else_block: BlockId,
+        else_args: impl IntoIterator<Item = CfgValue>,
+    ) {
+        self.try_set_branch(block, cond, then_block, then_args, else_block, else_args)
+            .expect("valid CFG branch edit");
+    }
+
+    pub fn try_set_branch(
+        &mut self,
+        block: BlockId,
+        cond: CfgValue,
+        then_block: BlockId,
+        then_args: impl IntoIterator<Item = CfgValue>,
+        else_block: BlockId,
+        else_args: impl IntoIterator<Item = CfgValue>,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "branch arguments";
+        if block.0 as usize >= self.blocks.len()
+            || then_block.0 as usize >= self.blocks.len()
+            || else_block.0 as usize >= self.blocks.len()
+        {
+            return Err(Self::invalid_edit(OP, "block target is out of bounds"));
+        }
+        if cond.0 as usize >= self.values.len() {
+            return Err(Self::invalid_edit(OP, "condition value is undefined"));
+        }
+        if !matches!(
+            self.blocks[block.0 as usize].terminator,
+            Terminator::None | Terminator::Unreachable
+        ) {
+            return Err(Self::invalid_edit(OP, "block already has a terminator"));
+        }
+        let then_staged = Self::stage_edit(OP, then_args)?;
+        let else_staged = Self::stage_edit(OP, else_args)?;
+        self.validate_value_refs(OP, then_staged.iter(), |value| *value)?;
+        self.validate_value_refs(OP, else_staged.iter(), |value| *value)?;
+        let additional = then_staged
+            .len()
+            .checked_add(else_staged.len())
+            .ok_or(CfgEditError::ResourceLimitExceeded { family: OP })?;
+        payload::reserve_values(&mut self.extra, additional)?;
+        let then_args = payload::push_then_args(&mut self.extra, then_staged)?;
+        let else_args = payload::push_else_args(&mut self.extra, else_staged)?;
+        self.set_terminator(
+            block,
+            Terminator::Branch {
+                cond,
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+            },
+        );
+        Ok(())
+    }
+
+    /// Terminate a block with a switch owned by this CFG.
+    pub fn set_switch(
+        &mut self,
+        block: BlockId,
+        scrutinee: CfgValue,
+        cases: impl IntoIterator<Item = (i64, BlockId)>,
+        default: BlockId,
+    ) {
+        self.try_set_switch(block, scrutinee, cases, default)
+            .expect("valid CFG switch edit");
+    }
+
+    pub fn try_set_switch(
+        &mut self,
+        block: BlockId,
+        scrutinee: CfgValue,
+        cases: impl IntoIterator<Item = (i64, BlockId)>,
+        default: BlockId,
+    ) -> Result<(), CfgEditError> {
+        const OP: &str = "switch cases";
+        if block.0 as usize >= self.blocks.len() || default.0 as usize >= self.blocks.len() {
+            return Err(Self::invalid_edit(OP, "block target is out of bounds"));
+        }
+        if scrutinee.0 as usize >= self.values.len() {
+            return Err(Self::invalid_edit(OP, "scrutinee value is undefined"));
+        }
+        if !matches!(
+            self.blocks[block.0 as usize].terminator,
+            Terminator::None | Terminator::Unreachable
+        ) {
+            return Err(Self::invalid_edit(OP, "block already has a terminator"));
+        }
+        let staged = Self::stage_edit(OP, cases)?;
+        if staged
+            .iter()
+            .any(|(_, target)| target.0 as usize >= self.blocks.len())
+        {
+            return Err(Self::invalid_edit(OP, "case target is out of bounds"));
+        }
+        let cases = payload::push_switch_cases(&mut self.switch_cases, staged)?;
+        self.set_terminator(
+            block,
+            Terminator::Switch {
+                scrutinee,
+                cases,
+                default,
+            },
+        );
+        Ok(())
+    }
+
+    /// Terminate a block by returning a value, or unit when `None`.
+    pub fn set_return(&mut self, block: BlockId, value: Option<CfgValue>) {
+        self.set_terminator(block, Terminator::Return { value });
+    }
+
+    /// Mark a block as unreachable.
+    pub fn set_unreachable(&mut self, block: BlockId) {
+        self.set_terminator(block, Terminator::Unreachable);
     }
 
     /// Get all blocks.
@@ -1066,8 +2372,24 @@ impl Cfg {
     /// This is the canonical use-rewrite for optimization passes that
     /// substitute one value for another (e.g. block-merge parameter
     /// substitution, RUE-911). One call visits every use site exactly once.
-    pub fn rewrite_value_uses(&mut self, map: impl Fn(CfgValue) -> CfgValue) {
+    pub(crate) fn rewrite_value_uses(
+        &mut self,
+        map: impl Fn(CfgValue) -> CfgValue,
+    ) -> Result<(), CfgEditError> {
+        let mut rewritten = self.clone();
+        rewritten.rewrite_value_uses_in_place(map)?;
+        *self = rewritten;
+        Ok(())
+    }
+
+    fn rewrite_value_uses_in_place(
+        &mut self,
+        map: impl Fn(CfgValue) -> CfgValue,
+    ) -> Result<(), CfgEditError> {
         use CfgInstData::*;
+        let old_extra = std::mem::replace(&mut self.extra, payload::Values::new());
+        let old_call_args = std::mem::replace(&mut self.call_args, payload::CallArgs::new());
+        let old_projections = std::mem::replace(&mut self.projections, payload::Projections::new());
         for inst in &mut self.values {
             match &mut inst.data {
                 Add(a, b)
@@ -1096,48 +2418,147 @@ impl Cfg {
                 Alloc { init: v, .. }
                 | Store { value: v, .. }
                 | ParamStore { value: v, .. }
-                | PlaceWrite { value: v, .. }
                 | EnumPayloadGet { base: v, .. }
                 | IntCast { value: v, .. }
                 | Drop { value: v } => *v = map(*v),
+                PlaceRead { place } => {
+                    place.projections = payload::push_projections(
+                        &mut self.projections,
+                        payload::projections(&old_projections, &place.projections)
+                            .iter()
+                            .map(|projection| match projection {
+                                Projection::Field {
+                                    struct_id,
+                                    field_index,
+                                } => Projection::Field {
+                                    struct_id: *struct_id,
+                                    field_index: *field_index,
+                                },
+                                Projection::Index { array_type, index } => Projection::Index {
+                                    array_type: *array_type,
+                                    index: map(*index),
+                                },
+                            }),
+                    )?;
+                }
+                PlaceWrite { place, value } => {
+                    *value = map(*value);
+                    place.projections = payload::push_projections(
+                        &mut self.projections,
+                        payload::projections(&old_projections, &place.projections)
+                            .iter()
+                            .map(|projection| match projection {
+                                Projection::Field {
+                                    struct_id,
+                                    field_index,
+                                } => Projection::Field {
+                                    struct_id: *struct_id,
+                                    field_index: *field_index,
+                                },
+                                Projection::Index { array_type, index } => Projection::Index {
+                                    array_type: *array_type,
+                                    index: map(*index),
+                                },
+                            }),
+                    )?;
+                }
+                Call { args, .. } => {
+                    *args = payload::push_call_args(
+                        &mut self.call_args,
+                        payload::call_args(&old_call_args, args)
+                            .iter()
+                            .map(|arg| CfgCallArg {
+                                value: map(arg.value),
+                                mode: arg.mode,
+                            }),
+                    )?;
+                }
+                Intrinsic { args, .. } => {
+                    *args = payload::push_intrinsic_args(
+                        &mut self.extra,
+                        payload::intrinsic_args(&old_extra, args)
+                            .iter()
+                            .copied()
+                            .map(&map),
+                    )?;
+                }
+                StructInit { fields, .. } => {
+                    *fields = payload::push_struct_fields(
+                        &mut self.extra,
+                        payload::struct_fields(&old_extra, fields)
+                            .iter()
+                            .copied()
+                            .map(&map),
+                    )?;
+                }
+                ArrayInit { elements } => {
+                    *elements = payload::push_array_elements(
+                        &mut self.extra,
+                        payload::array_elements(&old_extra, elements)
+                            .iter()
+                            .copied()
+                            .map(&map),
+                    )?;
+                }
+                EnumVariant { payload: range, .. } => {
+                    *range = payload::push_enum_payload(
+                        &mut self.extra,
+                        payload::enum_payload(&old_extra, range)
+                            .iter()
+                            .copied()
+                            .map(&map),
+                    )?;
+                }
                 Const(_)
                 | BoolConst(_)
                 | StringConst(_)
                 | Param { .. }
                 | BlockParam { .. }
                 | Load { .. }
-                | PlaceRead { .. }
-                | Call { .. }
-                | Intrinsic { .. }
-                | StructInit { .. }
-                | ArrayInit { .. }
-                | EnumVariant { .. }
                 | StorageLive { .. }
                 | StorageDead { .. } => {}
             }
         }
-        for value in &mut self.extra {
-            *value = map(*value);
-        }
-        for arg in &mut self.call_args {
-            arg.value = map(arg.value);
-        }
-        for proj in &mut self.projections {
-            if let Projection::Index { index, .. } = proj {
-                *index = map(*index);
-            }
-        }
         for block in &mut self.blocks {
             match &mut block.terminator {
-                Terminator::Branch { cond, .. } => *cond = map(*cond),
+                Terminator::Goto { args, .. } => {
+                    *args = payload::push_goto_args(
+                        &mut self.extra,
+                        payload::goto_args(&old_extra, args)
+                            .iter()
+                            .copied()
+                            .map(&map),
+                    )?;
+                }
+                Terminator::Branch {
+                    cond,
+                    then_args,
+                    else_args,
+                    ..
+                } => {
+                    *cond = map(*cond);
+                    *then_args = payload::push_then_args(
+                        &mut self.extra,
+                        payload::then_args(&old_extra, then_args)
+                            .iter()
+                            .copied()
+                            .map(&map),
+                    )?;
+                    *else_args = payload::push_else_args(
+                        &mut self.extra,
+                        payload::else_args(&old_extra, else_args)
+                            .iter()
+                            .copied()
+                            .map(&map),
+                    )?;
+                }
                 Terminator::Switch { scrutinee, .. } => *scrutinee = map(*scrutinee),
                 Terminator::Return { value: Some(value) } => *value = map(*value),
-                Terminator::Goto { .. }
-                | Terminator::Return { value: None }
-                | Terminator::Unreachable
-                | Terminator::None => {}
+                Terminator::Return { value: None } | Terminator::Unreachable | Terminator::None => {
+                }
             }
         }
+        Ok(())
     }
 
     /// Compute predecessor lists for all blocks, indexed by block id.
@@ -1161,13 +2582,8 @@ impl Cfg {
                     preds[then_block.0 as usize].push(block.id);
                     preds[else_block.0 as usize].push(block.id);
                 }
-                Terminator::Switch {
-                    cases_start,
-                    cases_len,
-                    default,
-                    ..
-                } => {
-                    for (_, target) in self.get_switch_cases(*cases_start, *cases_len) {
+                Terminator::Switch { cases, default, .. } => {
+                    for (_, target) in self.switch_cases(cases) {
                         preds[target.0 as usize].push(block.id);
                     }
                     preds[default.0 as usize].push(block.id);
@@ -1245,16 +2661,12 @@ impl Cfg {
             // Print terminator
             write!(f, "    ")?;
             match &block.terminator {
-                Terminator::Goto {
-                    target,
-                    args_start,
-                    args_len,
-                } => {
+                Terminator::Goto { target, args: _ } => {
                     write!(f, "goto {}", target)?;
-                    let args = self.get_extra(*args_start, *args_len);
-                    if !args.is_empty() {
+                    let values = self.get_goto_args(&block.terminator);
+                    if !values.is_empty() {
                         write!(f, "(")?;
-                        for (i, arg) in args.iter().enumerate() {
+                        for (i, arg) in values.iter().enumerate() {
                             if i > 0 {
                                 write!(f, ", ")?;
                             }
@@ -1266,14 +2678,12 @@ impl Cfg {
                 Terminator::Branch {
                     cond,
                     then_block,
-                    then_args_start,
-                    then_args_len,
+                    then_args: _,
                     else_block,
-                    else_args_start,
-                    else_args_len,
+                    else_args: _,
                 } => {
                     write!(f, "branch {}, {}", cond, then_block)?;
-                    let then_args = self.get_extra(*then_args_start, *then_args_len);
+                    let then_args = self.get_branch_then_args(&block.terminator);
                     if !then_args.is_empty() {
                         write!(f, "(")?;
                         for (i, arg) in then_args.iter().enumerate() {
@@ -1285,7 +2695,7 @@ impl Cfg {
                         write!(f, ")")?;
                     }
                     write!(f, ", {}", else_block)?;
-                    let else_args = self.get_extra(*else_args_start, *else_args_len);
+                    let else_args = self.get_branch_else_args(&block.terminator);
                     if !else_args.is_empty() {
                         write!(f, "(")?;
                         for (i, arg) in else_args.iter().enumerate() {
@@ -1299,13 +2709,12 @@ impl Cfg {
                 }
                 Terminator::Switch {
                     scrutinee,
-                    cases_start,
-                    cases_len,
+                    cases,
                     default,
                 } => {
                     write!(f, "switch {} [", scrutinee)?;
-                    let cases = self.get_switch_cases(*cases_start, *cases_len);
-                    for (i, (val, target)) in cases.iter().enumerate() {
+                    let cases_view = self.switch_cases(cases);
+                    for (i, (val, target)) in cases_view.iter().enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -1399,8 +2808,7 @@ impl Cfg {
             CfgInstData::Call {
                 runtime,
                 name,
-                args_start,
-                args_len,
+                args,
             } => {
                 if let Some(runtime) = runtime {
                     write!(f, "runtime.{runtime:?} ")?;
@@ -1409,8 +2817,7 @@ impl Cfg {
                     Some(interner) => write!(f, "call @{}(", interner.resolve(name))?,
                     None => write!(f, "call @{}(", name.into_usize())?,
                 }
-                let args = self.get_call_args(*args_start, *args_len);
-                for (i, arg) in args.iter().enumerate() {
+                for (i, arg) in self.call_args(args).iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -1425,8 +2832,7 @@ impl Cfg {
             CfgInstData::Intrinsic {
                 runtime,
                 name,
-                args_start,
-                args_len,
+                args,
             } => {
                 if let Some(runtime) = runtime {
                     write!(f, "runtime.{runtime:?} ")?;
@@ -1435,8 +2841,7 @@ impl Cfg {
                     Some(interner) => write!(f, "intrinsic @{}(", interner.resolve(name))?,
                     None => write!(f, "intrinsic @{}(", name.into_usize())?,
                 }
-                let args = self.get_extra(*args_start, *args_len);
-                for (i, arg) in args.iter().enumerate() {
+                for (i, arg) in self.intrinsic_args(args).iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -1444,14 +2849,9 @@ impl Cfg {
                 }
                 write!(f, ")")
             }
-            CfgInstData::StructInit {
-                struct_id,
-                fields_start,
-                fields_len,
-            } => {
+            CfgInstData::StructInit { struct_id, fields } => {
                 write!(f, "struct_init #{struct_id:?} {{")?;
-                let fields = self.get_extra(*fields_start, *fields_len);
-                for (i, field) in fields.iter().enumerate() {
+                for (i, field) in self.struct_fields(fields).iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -1459,13 +2859,9 @@ impl Cfg {
                 }
                 write!(f, "}}")
             }
-            CfgInstData::ArrayInit {
-                elements_start,
-                elements_len,
-            } => {
+            CfgInstData::ArrayInit { elements } => {
                 write!(f, "array_init [")?;
-                let elements = self.get_extra(*elements_start, *elements_len);
-                for (i, elem) in elements.iter().enumerate() {
+                for (i, elem) in self.array_elements(elements).iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -1476,18 +2872,16 @@ impl Cfg {
             CfgInstData::EnumVariant {
                 enum_id,
                 variant_index,
-                payload_start,
-                payload_len,
+                payload,
             } => {
-                if *payload_len == 0 {
+                if payload.is_empty() {
                     write!(f, "enum_variant #{enum_id:?}::{variant_index}")
                 } else {
                     // Print the actual payload operands (like StructInit and
                     // ArrayInit do) so the variant's dataflow inputs are
                     // readable in the dump, not just their count.
                     write!(f, "enum_variant #{enum_id:?}::{variant_index}(")?;
-                    let payload = self.get_extra(*payload_start, *payload_len);
-                    for (i, value) in payload.iter().enumerate() {
+                    for (i, value) in self.enum_payload(payload).iter().enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -1645,8 +3039,7 @@ mod tests {
                 data: CfgInstData::Call {
                     runtime: None,
                     name: call,
-                    args_start: 0,
-                    args_len: 0,
+                    args: crate::payload::CfgCallArgs::EMPTY,
                 },
                 ty: Type::UNIT,
                 span: Span::new(0, 0),
@@ -1658,8 +3051,7 @@ mod tests {
                 data: CfgInstData::Intrinsic {
                     runtime: None,
                     name: intrinsic,
-                    args_start: 0,
-                    args_len: 0,
+                    args: crate::payload::CfgIntrinsicArgs::EMPTY,
                 },
                 ty: Type::UNIT,
                 span: Span::new(0, 0),
@@ -1675,5 +3067,318 @@ mod tests {
         let raw = cfg.to_string();
         assert!(raw.contains(&format!("call @{}()", call.into_usize())));
         assert!(raw.contains(&format!("intrinsic @{}()", intrinsic.into_usize())));
+    }
+
+    #[test]
+    fn fallible_owner_edits_reject_invalid_input_atomically() {
+        struct ImpossiblePayload;
+        impl Iterator for ImpossiblePayload {
+            type Item = CfgCallArg;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                None
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                (u32::MAX as usize + 1, None)
+            }
+        }
+
+        let mut cfg = Cfg::new(Type::UNIT, 0, 0, "atomic".into(), vec![]);
+        let entry = cfg.new_block();
+        let target = cfg.new_block();
+        cfg.entry = entry;
+        let before = cfg.to_string();
+        let before_values = cfg.value_count();
+
+        let call_error = cfg
+            .append_call(
+                entry,
+                None,
+                Spur::default(),
+                [CfgCallArg {
+                    value: CfgValue::from_raw(99),
+                    mode: CfgArgMode::Normal,
+                }],
+                Type::UNIT,
+                Span::default(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            call_error,
+            CfgEditError::InvalidBuilderInput { .. }
+        ));
+        assert_eq!(cfg.value_count(), before_values);
+        assert_eq!(cfg.to_string(), before);
+
+        let resource_error = cfg.push_call_args(ImpossiblePayload).unwrap_err();
+        assert!(matches!(
+            resource_error,
+            CfgEditError::ResourceLimitExceeded { .. }
+        ));
+        assert_eq!(cfg.to_string(), before);
+
+        let branch_error = cfg
+            .try_set_branch(entry, CfgValue::from_raw(99), target, [], target, [])
+            .unwrap_err();
+        assert!(matches!(
+            branch_error,
+            CfgEditError::InvalidBuilderInput { .. }
+        ));
+        assert_eq!(cfg.to_string(), before);
+    }
+
+    #[test]
+    fn whole_owner_clone_remap_rewrite_and_print_preserve_typed_payloads() {
+        use rue_air::{EnumDef, FrozenTypeInternPool, StructDef, StructField, TypeInternPool};
+        use rue_span::FileId;
+
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let (struct_id, _) = pool.register_struct(
+            interner.get_or_intern("Pair"),
+            StructDef {
+                name: "Pair".into(),
+                fields: vec![
+                    StructField {
+                        name: "a".into(),
+                        ty: Type::I32,
+                    },
+                    StructField {
+                        name: "b".into(),
+                        ty: Type::I32,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let (enum_id, _) = pool.register_enum(
+            interner.get_or_intern("Maybe"),
+            EnumDef {
+                name: "Maybe".into(),
+                variants: vec!["None".into(), "Some".into()],
+                variant_payloads: vec![vec![], vec![Type::I32]],
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let array_id = pool.intern_array_from_type(Type::I32, 2);
+        let pool: FrozenTypeInternPool = pool.freeze();
+        let array_ty = Type::new_array(array_id);
+        let mut cfg = Cfg::new(Type::I32, 2, 0, "payloads".into(), vec![]);
+        let entry = cfg.new_block();
+        let then_block = cfg.new_block();
+        let else_block = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.entry = entry;
+        let old = cfg.append_inst(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(1),
+                ty: Type::I32,
+                span: Span::new(3, 4),
+            },
+        );
+        let replacement = cfg.append_inst(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(2),
+                ty: Type::I32,
+                span: Span::new(5, 6),
+            },
+        );
+        let call = cfg
+            .append_call(
+                entry,
+                None,
+                interner.get_or_intern("callee"),
+                [CfgCallArg {
+                    value: old,
+                    mode: CfgArgMode::Borrow,
+                }],
+                Type::I32,
+                Span::new(7, 8),
+            )
+            .unwrap();
+        let intrinsic = cfg
+            .append_intrinsic(
+                entry,
+                None,
+                interner.get_or_intern("intrinsic"),
+                [old],
+                Type::I32,
+                Span::new(9, 10),
+            )
+            .unwrap();
+        let strukt = cfg
+            .append_struct_init(
+                entry,
+                struct_id,
+                [old, replacement],
+                Type::new_struct(struct_id),
+                Span::new(11, 12),
+            )
+            .unwrap();
+        let array = cfg
+            .append_array_init(entry, [old, replacement], array_ty, Span::new(13, 14))
+            .unwrap();
+        let enm = cfg
+            .append_enum_variant(
+                &pool,
+                entry,
+                enum_id,
+                1,
+                [old],
+                Type::new_enum(enum_id),
+                Span::new(15, 16),
+            )
+            .unwrap();
+        let place = cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(0),
+                array_ty,
+                [Projection::Index {
+                    array_type: array_ty,
+                    index: old,
+                }],
+                Type::I32,
+                Span::new(17, 18),
+            )
+            .unwrap();
+        cfg.set_branch(entry, old, then_block, [old], else_block, [replacement]);
+        cfg.set_goto(then_block, exit, [old]);
+        cfg.set_switch(else_block, old, [(1, exit)], exit);
+        cfg.set_return(exit, Some(replacement));
+
+        let printed = cfg.display_with_interner(&interner).to_string();
+        for needle in [
+            "call @callee",
+            "intrinsic @intrinsic",
+            "struct_init",
+            "array_init",
+            "enum_variant",
+            "place_read",
+            "branch",
+            "goto",
+            "switch",
+        ] {
+            assert!(printed.contains(needle), "missing {needle} in {printed}");
+        }
+
+        let cloned = cfg.clone();
+        assert_eq!(cloned.to_string(), cfg.to_string());
+        assert_eq!(
+            cloned.get_call_args(&cloned.get_inst(call).data)[0].mode,
+            CfgArgMode::Borrow
+        );
+        assert_eq!(
+            cloned.get_struct_fields(&cloned.get_inst(strukt).data),
+            [old, replacement]
+        );
+
+        let remapped = cfg
+            .try_remap_domains::<()>(Ok, Ok, Ok, Ok, Ok, |span| {
+                Ok(Span::new(span.start + 100, span.end + 100))
+            })
+            .unwrap();
+        assert_eq!(remapped.to_string(), cfg.to_string());
+        assert_eq!(remapped.get_inst(call).span, Span::new(107, 108));
+        assert_eq!(
+            remapped.get_array_elements(&remapped.get_inst(array).data),
+            [old, replacement]
+        );
+        assert_eq!(
+            remapped.get_enum_payload(&remapped.get_inst(enm).data),
+            [old]
+        );
+
+        let mut rewritten = remapped;
+        rewritten
+            .rewrite_value_uses(|value| if value == old { replacement } else { value })
+            .unwrap();
+        assert_eq!(
+            rewritten.get_call_args(&rewritten.get_inst(call).data)[0].value,
+            replacement
+        );
+        assert_eq!(
+            rewritten.get_call_args(&rewritten.get_inst(call).data)[0].mode,
+            CfgArgMode::Borrow
+        );
+        assert_eq!(
+            rewritten.get_intrinsic_args(&rewritten.get_inst(intrinsic).data),
+            [replacement]
+        );
+        assert_eq!(
+            rewritten.get_struct_fields(&rewritten.get_inst(strukt).data),
+            [replacement, replacement]
+        );
+        assert_eq!(
+            rewritten.get_array_elements(&rewritten.get_inst(array).data),
+            [replacement, replacement]
+        );
+        assert_eq!(
+            rewritten.get_enum_payload(&rewritten.get_inst(enm).data),
+            [replacement]
+        );
+        let CfgInstData::PlaceRead {
+            place: rewritten_place,
+        } = &rewritten.get_inst(place).data
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            rewritten.get_place_projections(rewritten_place),
+            [Projection::Index { index, .. }] if *index == replacement
+        ));
+        assert!(rewritten.to_string().contains("branch v1"));
+
+        let before_rejections = rewritten.to_string();
+        for error in [
+            rewritten
+                .replace_struct_fields(old, [replacement])
+                .unwrap_err(),
+            rewritten
+                .replace_array_elements(old, [replacement])
+                .unwrap_err(),
+            rewritten
+                .replace_enum_payload(&pool, old, [replacement])
+                .unwrap_err(),
+            rewritten
+                .replace_place_read(old, PlaceBase::Local(0), array_ty, [])
+                .unwrap_err(),
+            rewritten
+                .replace_place_write(old, PlaceBase::Local(0), array_ty, [], replacement)
+                .unwrap_err(),
+        ] {
+            assert!(matches!(error, CfgEditError::InvalidBuilderInput { .. }));
+            assert_eq!(rewritten.to_string(), before_rejections);
+        }
+
+        rewritten
+            .replace_struct_fields(strukt, [replacement, replacement])
+            .unwrap();
+        rewritten
+            .replace_array_elements(array, [replacement, replacement])
+            .unwrap();
+        rewritten
+            .replace_enum_payload(&pool, enm, [replacement])
+            .unwrap();
+        rewritten
+            .replace_place_read(
+                place,
+                PlaceBase::Local(0),
+                array_ty,
+                [Projection::Index {
+                    array_type: array_ty,
+                    index: replacement,
+                }],
+            )
+            .unwrap();
     }
 }

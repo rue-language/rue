@@ -53,11 +53,11 @@ pub struct Stats {
 /// Run peephole simplification. Call after the sparse constant driver so
 /// propagated constants are visible, and before DCE so placeholders and
 /// newly dead operands are swept.
-pub fn run(cfg: &mut Cfg) -> Stats {
+pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     let mut stats = Stats::default();
     reduce_unsigned_div_mod(cfg, &mut stats);
-    rewire_identities(cfg, &mut stats);
-    stats
+    rewire_identities(cfg, &mut stats)?;
+    Ok(stats)
 }
 
 /// Is this one of the unsigned integer types? (Deliberately not
@@ -179,7 +179,7 @@ fn identity_target(cfg: &Cfg, value: CfgValue) -> Option<CfgValue> {
 
 /// Re-point every use of an identity operation at its operand, then replace
 /// the identity instruction with a dead placeholder constant for DCE.
-fn rewire_identities(cfg: &mut Cfg, stats: &mut Stats) {
+fn rewire_identities(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgEditError> {
     let value_count = cfg.value_count();
 
     // Collect aliases against pristine data before mutating anything.
@@ -193,7 +193,7 @@ fn rewire_identities(cfg: &mut Cfg, stats: &mut Stats) {
         }
     }
     if !any {
-        return;
+        return Ok(());
     }
 
     // Dummy the identity instructions out. Their shapes were selected to be
@@ -214,7 +214,7 @@ fn rewire_identities(cfg: &mut Cfg, stats: &mut Stats) {
         }
         v
     };
-    cfg.rewrite_value_uses(|v| resolve(v));
+    cfg.rewrite_value_uses(resolve)
 }
 
 #[cfg(test)]
@@ -250,7 +250,7 @@ mod tests {
         let add = push(&mut cfg, CfgInstData::Add(x, zero), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(add) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.identities_rewired, 1);
         // The return now reads x directly; the add is a dead placeholder.
         assert!(matches!(
@@ -272,7 +272,7 @@ mod tests {
         let shl = push(&mut cfg, CfgInstData::Shl(or, zero), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(shl) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.identities_rewired, 3);
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
@@ -288,7 +288,7 @@ mod tests {
         let not2 = push(&mut cfg, CfgInstData::Not(not1), Type::BOOL);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(not2) });
 
-        run(&mut cfg);
+        run(&mut cfg).unwrap();
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
             Terminator::Return { value: Some(v) } if v == b
@@ -306,7 +306,7 @@ mod tests {
         let or = push(&mut cfg, CfgInstData::BitOr(and, and), Type::U32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(or) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.identities_rewired, 2);
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
@@ -323,7 +323,7 @@ mod tests {
         let add = push(&mut cfg, CfgInstData::Add(x, one), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(add) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.identities_rewired, 0);
         assert!(matches!(cfg.get_inst(add).data, CfgInstData::Add(..)));
     }
@@ -336,7 +336,7 @@ mod tests {
         let div = push(&mut cfg, CfgInstData::Div(x, eight), Type::U32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(div) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.divmods_reduced, 1);
         let CfgInstData::Shr(num, amount) = cfg.get_inst(div).data else {
             panic!("expected Shr, got {:?}", cfg.get_inst(div).data);
@@ -362,7 +362,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.divmods_reduced, 1);
         let CfgInstData::BitAnd(num, mask) = cfg.get_inst(modulo).data else {
             panic!("expected BitAnd, got {:?}", cfg.get_inst(modulo).data);
@@ -381,7 +381,7 @@ mod tests {
         let div = push(&mut cfg, CfgInstData::Div(x, two), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(div) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.divmods_reduced, 0);
         assert!(matches!(cfg.get_inst(div).data, CfgInstData::Div(..)));
     }
@@ -394,7 +394,7 @@ mod tests {
         let div = push(&mut cfg, CfgInstData::Div(x, six), Type::U32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(div) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.divmods_reduced, 0);
         assert!(matches!(cfg.get_inst(div).data, CfgInstData::Div(..)));
     }
@@ -409,7 +409,7 @@ mod tests {
         let mul = push(&mut cfg, CfgInstData::Mul(x, eight), Type::U32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(mul) });
 
-        run(&mut cfg);
+        run(&mut cfg).unwrap();
         assert!(matches!(cfg.get_inst(mul).data, CfgInstData::Mul(..)));
     }
 }
