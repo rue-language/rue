@@ -1202,9 +1202,20 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             // (with privacy checks) before evaluation — see the
             // `const_module_members` field — since the engine has no file or
             // constant-collector context to resolve it here. A member absent
-            // from the map (a non-module base, or a re-export used as a value)
-            // is not evaluable, so the caller reports it (RUE-267).
-            InstData::FieldGet { .. } => Ok(env.const_module_members.get(&inst_ref).copied()),
+            // from the map may still be a member-access *type* path used as a
+            // comptime type-constructor argument (`std.strbuf.StrBuf` in
+            // `Result(std.strbuf.StrBuf, i32)`, RUE-948): resolve that chain to
+            // its nominal type through the same walker the qualified
+            // type-annotation position uses. A base that is neither a
+            // pre-resolved member value nor a module type path (a runtime
+            // value's field) stays non-evaluable, so the caller reports it
+            // (RUE-267).
+            InstData::FieldGet { .. } => {
+                if let Some(&value) = env.const_module_members.get(&inst_ref) {
+                    return Ok(Some(value));
+                }
+                self.eval_field_get_type_path(inst_ref, span, env)
+            }
 
             // Type intrinsic in comptime position. `@require_droppable(T)` is the
             // owning-container well-formedness gate (RUE-388/RUE-646): std's
@@ -1384,6 +1395,154 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // environment so `T` (an enclosing comptime parameter) still resolves.
         self.eval_comptime_type_call(function_key, args, env, true)
             .map_err(|e| Self::label_ctor_instantiation_site(e, span))
+    }
+
+    /// Reduce a member-access chain (`std.strbuf.StrBuf`) that appears in
+    /// *value position* — a comptime type-constructor argument — to its nominal
+    /// type value (RUE-948). The `FieldGet` arm of [`eval_const_expr`] reaches
+    /// here only after the chain was not found among the pre-resolved
+    /// `const_module_members`, so this is the type-path case: `spec 4.14:26`
+    /// treats a chain of const/import member accesses as comptime-evaluable, and
+    /// the qualified type-annotation position already resolves the identical
+    /// spelling. Route the value-position case through the same walker so
+    /// `Result(std.strbuf.StrBuf, i32)` behaves like the accepted return-type
+    /// form `-> Result(std.strbuf.StrBuf, i32)` and the alias workaround
+    /// (`let S = std.strbuf.StrBuf; Result(S, i32)`).
+    ///
+    /// Returns `Ok(None)` (non-evaluable) when the chain is not a module type
+    /// path — a shadowed root, no file context, a runtime value's field, or a
+    /// member that is not a type — leaving the caller to report it. A privacy
+    /// violation on an otherwise-valid path surfaces as its real diagnostic.
+    fn eval_field_get_type_path(
+        &mut self,
+        inst_ref: InstRef,
+        span: Span,
+        env: &ComptimeEnv,
+    ) -> CompileResult<Option<ConstValue>> {
+        // Collect the dotted spine down to its root name, exactly as the
+        // module-qualified call walk does. Any non-`FieldGet`/`VarRef` link
+        // (a runtime value's field) is not a type path.
+        let mut chain_rev: Vec<Spur> = Vec::new();
+        let mut cursor = inst_ref;
+        let root_name = loop {
+            match self.rir.get(cursor).data {
+                InstData::VarRef { name } => break name,
+                InstData::FieldGet { base, field } => {
+                    chain_rev.push(field);
+                    cursor = base;
+                }
+                _ => return Ok(None),
+            }
+        };
+        // A `let`-binding, runtime local, runtime parameter, or comptime
+        // parameter of the same name shadows the module import (spec 4.14:6);
+        // the chain is then a field access on that binding, not a type path.
+        if env.locals.contains_key(&root_name) {
+            return Ok(None);
+        }
+        if let Some(locals) = env.runtime_locals
+            && locals.contains_key(&root_name)
+        {
+            return Ok(None);
+        }
+        if let Some(names) = env.runtime_binding_names
+            && names.contains(&root_name)
+        {
+            return Ok(None);
+        }
+        if let Some(params) = env.runtime_params
+            && params.iter().any(|param| param.name == root_name)
+        {
+            return Ok(None);
+        }
+        if env.type_subst.contains_key(&root_name) || env.value_subst.contains_key(&root_name) {
+            return Ok(None);
+        }
+        // The root names an import of the file whose body is being reduced; the
+        // remaining segments walk re-export bindings and the final member the
+        // same way qualified type annotations do.
+        let Some(root_file) = env.defining_file else {
+            return Ok(None);
+        };
+        let mut segments: Vec<&str> = vec![self.interner.resolve(&root_name)];
+        segments.extend(chain_rev.iter().rev().map(|s| self.interner.resolve(s)));
+        match self.resolve_qualified_type_name_in_file(root_file, &segments, span) {
+            Ok(ty) => Ok(Some(ConstValue::Type(ty))),
+            // An unknown member / non-module base is simply not a type path
+            // here; defer to the caller (a genuine runtime field access, or the
+            // comptime-arg check's E1201). Other errors — a privacy violation
+            // on a real member — are hard diagnostics that must surface.
+            Err(error)
+                if matches!(
+                    error.kind,
+                    ErrorKind::UnknownType(_) | ErrorKind::UnknownModuleMember { .. }
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Tailored E1201 help for the member-access paths that remain
+    /// non-evaluable in comptime-argument position after RUE-948's type-path
+    /// fix: a module-qualified path (`lib.nums.K`) that names a compile-time
+    /// *value* — a re-exported `const` — rather than a type. Such a value is
+    /// genuinely compile-time known, so the generic "requires a compile-time
+    /// known value" wording is wrong-headed; the real limitation is that this
+    /// version does not yet fold a module-member value directly in argument
+    /// position (a `let`-local of it is a runtime binding and does not help,
+    /// but a file-level `const` alias does).
+    ///
+    /// Returns `None` for any other argument shape — a runtime `let`/parameter
+    /// reference, an overflowed literal, an aggregate value — so those keep the
+    /// generic help. Only a `FieldGet` chain rooted at an *unshadowed* module
+    /// import of the current file qualifies.
+    pub(crate) fn comptime_arg_member_access_help(
+        &self,
+        arg: InstRef,
+        ctx: &AnalysisContext,
+    ) -> Option<String> {
+        // Walk the FieldGet chain to its root, collecting the dotted spine.
+        let mut fields_rev: Vec<Spur> = Vec::new();
+        let mut cursor = arg;
+        let root_name = loop {
+            match self.rir.get(cursor).data {
+                InstData::VarRef { name } => break name,
+                InstData::FieldGet { base, field } => {
+                    fields_rev.push(field);
+                    cursor = base;
+                }
+                _ => return None,
+            }
+        };
+        // A bare `VarRef` (no field) is a plain runtime binding, not a path.
+        if fields_rev.is_empty() {
+            return None;
+        }
+        // A runtime local or parameter of the same name shadows the import, so
+        // this is an ordinary field access on a value — the generic help is
+        // correct there.
+        if ctx.locals.contains_key(&root_name)
+            || ctx.params.iter().any(|param| param.name == root_name)
+        {
+            return None;
+        }
+        // The root must name a module import of the current file for this to be
+        // a module-qualified member-access path at all.
+        let binding = self
+            .module_bindings
+            .get(&(ctx.current_file_id, root_name))?;
+        binding.ty.as_module()?;
+        let mut segments: Vec<&str> = vec![self.interner.resolve(&root_name)];
+        segments.extend(fields_rev.iter().rev().map(|s| self.interner.resolve(s)));
+        let path = segments.join(".");
+        Some(format!(
+            "the module-qualified path `{path}` names a compile-time value that \
+             this version does not yet evaluate directly in a comptime-argument \
+             position; bind it to a file-level `const` and pass that \
+             (`const X = {path};` then use `X`)"
+        ))
     }
 
     /// The `@require_droppable(T)` well-formedness gate for owning growable

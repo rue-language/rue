@@ -295,3 +295,69 @@ pub enum Pick {
 """ },
 ]
 exit_code = 42
+
+[[case]]
+name = "member_access_path_ctor_args_value_and_pattern_position"
+description = "A member-access type path (`std.fs.FileError`) as a comptime type-constructor argument now works in value/construction AND pattern position, not only return-type position — the last alias tax removed (RUE-948). Runs end-to-end: Ok(42) selects the first arm."
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn classify(n: i32) -> std.result.Result(i32, std.fs.FileError) {
+    std.result.Result(i32, std.fs.FileError).Ok(n)
+}
+
+fn main() -> i32 {
+    let r = classify(42);
+    match r {
+        std.result.Result(i32, std.fs.FileError).Ok(v) => v,
+        std.result.Result(i32, std.fs.FileError).Err(e) => { let _ = e; 1 },
+    }
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "member_access_value_path_comptime_arg_names_limitation"
+description = "RUE-948 fix 2: a module-qualified member-access path naming a compile-time VALUE const (not a type) is still not folded in comptime-argument position, but E1201 now names the real limitation and the file-level `const` workaround instead of claiming the value is not compile-time known."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 {
+    dbl(lib.nums.K)
+}
+""" },
+    { path = "lib.rue", source = """
+pub const nums = @import("kmod.rue");
+""" },
+    { path = "kmod.rue", source = """
+pub const K: i32 = 5;
+""" },
+]
+compile_fail = true
+error_contains = ["E1201", "module-qualified path `lib.nums.K`", "file-level `const`"]
+
+[[case]]
+name = "member_access_value_path_file_const_workaround_runs"
+description = "RUE-948 fix 2: the suggested file-level `const` alias makes the member-access value usable in comptime-argument position (5 * 2 = 10)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const K: i32 = lib.nums.K;
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 {
+    dbl(K)
+}
+""" },
+    { path = "lib.rue", source = """
+pub const nums = @import("kmod.rue");
+""" },
+    { path = "kmod.rue", source = """
+pub const K: i32 = 5;
+""" },
+]
+exit_code = 10
