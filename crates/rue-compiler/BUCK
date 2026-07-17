@@ -70,3 +70,20 @@ rust_test(
         "//third-party:sha2",
     ],
 )
+
+# Cross-phase payload-schema verification. This intentionally compiles as an
+# external consumer so it can exercise only production publication/query APIs.
+rust_test(
+    name = "rue-compiler-payload-schema-test",
+    srcs = ["tests/payload_schemas.rs"],
+    crate_root = "tests/payload_schemas.rs",
+    deps = [
+        ":rue-compiler",
+        "//crates/rue-air:rue-air",
+        "//crates/rue-air:rue-air-fuzz-support",
+        "//crates/rue-cfg:rue-cfg",
+        "//crates/rue-cfg:rue-cfg-fuzz-support",
+        "//crates/rue-rir:rue-rir",
+        "//crates/rue-rir:rue-rir-fuzz-support",
+    ],
+)

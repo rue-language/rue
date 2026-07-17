@@ -28,11 +28,14 @@ use rue_error::{CompileError, CompileWarning};
 pub use build::CfgBuilder;
 pub use inst::{
     BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgDisplay, CfgEditError,
-    CfgEditTransactionError, CfgEditor, CfgInst, CfgInstData, CfgRemapError, CfgValue, Place,
-    PlaceBase, Projection, Terminator, ValidatedCfg,
+    CfgEditTransactionError, CfgEditor, CfgInst, CfgInstData, CfgPayloadStorageStats,
+    CfgRemapError, CfgValue, Place, PlaceBase, Projection, Terminator, ValidatedCfg,
 };
 pub use opt::OptLevel;
-pub use payload::PayloadError;
+#[doc(hidden)]
+#[cfg(any(test, feature = "fuzz-support"))]
+pub use payload::fuzz_payload_corruption;
+pub use payload::{CFG_PAYLOAD_FAMILY_NAMES, PayloadError};
 pub use verify::{CfgVerificationError, CfgVerificationLocation};
 
 // Re-export types from rue-air that we use
@@ -68,6 +71,7 @@ pub(crate) mod allocation_test_support {
     thread_local! {
         static ACTIVE: Cell<bool> = const { Cell::new(false) };
         static COUNT: Cell<usize> = const { Cell::new(0) };
+        static BYTES: Cell<usize> = const { Cell::new(0) };
     }
 
     struct CountingAllocator;
@@ -77,6 +81,7 @@ pub(crate) mod allocation_test_support {
             ACTIVE.with(|active| {
                 if active.get() {
                     COUNT.with(|count| count.set(count.get() + 1));
+                    BYTES.with(|bytes| bytes.set(bytes.get() + layout.size()));
                 }
             });
             unsafe { System.alloc(layout) }
@@ -91,11 +96,18 @@ pub(crate) mod allocation_test_support {
     static ALLOCATOR: CountingAllocator = CountingAllocator;
 
     pub(crate) fn allocations_during<R>(f: impl FnOnce() -> R) -> (R, usize) {
+        let (result, count, _) = allocation_evidence(f);
+        (result, count)
+    }
+
+    pub(crate) fn allocation_evidence<R>(f: impl FnOnce() -> R) -> (R, usize, usize) {
         COUNT.with(|count| count.set(0));
+        BYTES.with(|bytes| bytes.set(0));
         ACTIVE.with(|active| active.set(true));
         let result = f();
         ACTIVE.with(|active| active.set(false));
         let count = COUNT.with(Cell::get);
-        (result, count)
+        let bytes = BYTES.with(Cell::get);
+        (result, count, bytes)
     }
 }

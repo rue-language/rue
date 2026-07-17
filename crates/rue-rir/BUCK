@@ -9,3 +9,17 @@ rue_crate(
         "//third-party:lasso",
     ],
 )
+
+native.rust_library(
+    name = "rue-rir-fuzz-support",
+    crate = "rue_rir_fuzz_support",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-parser:rue-parser",
+        "//crates/rue-span:rue-span",
+        "//third-party:lasso",
+    ],
+    rustc_flags = ["--cfg", "feature=\"fuzz-support\""],
+    visibility = ["//crates/rue-compiler:", "//crates/rue-fuzz:"],
+)

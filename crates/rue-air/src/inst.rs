@@ -29,6 +29,9 @@ use crate::{FrozenTypeInternPool, TypeInternPool};
 use lasso::{Key, Spur, ThreadedRodeo};
 use rue_span::Span;
 
+#[cfg(any(test, feature = "fuzz-support"))]
+mod payload_support;
+
 /// Structured failure returned by checked AIR payload decoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AirPayloadError {
@@ -37,6 +40,8 @@ pub struct AirPayloadError {
     pub range_start: u32,
     pub range_extent: u32,
     pub record: usize,
+    pub expected_width: usize,
+    pub actual_width: usize,
     pub reason: &'static str,
 }
 
@@ -46,6 +51,8 @@ impl AirPayloadError {
         range_start: u32,
         range_extent: u32,
         record: usize,
+        expected_width: usize,
+        actual_width: usize,
         reason: &'static str,
     ) -> Self {
         Self {
@@ -54,8 +61,35 @@ impl AirPayloadError {
             range_start,
             range_extent,
             record,
+            expected_width,
+            actual_width,
             reason,
         }
+    }
+
+    pub fn expected_width(&self) -> usize {
+        self.expected_width
+    }
+
+    pub fn actual_width(&self) -> usize {
+        self.actual_width
+    }
+}
+
+impl fmt::Display for AirPayloadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: corrupt {} range start={} extent={} at record {}: expected width={}, actual width={}: {}",
+            self.phase,
+            self.family,
+            self.range_start,
+            self.range_extent,
+            self.record,
+            self.expected_width(),
+            self.actual_width(),
+            self.reason
+        )
     }
 }
 
@@ -252,16 +286,6 @@ impl AirValidationContext<'_> {
         } else {
             Ok(())
         }
-    }
-}
-
-impl fmt::Display for AirPayloadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}: corrupt {} range start={} extent={} at record {}: {}",
-            self.phase, self.family, self.range_start, self.range_extent, self.record, self.reason
-        )
     }
 }
 
@@ -554,6 +578,8 @@ impl CallArgSchema {
                     range.start,
                     range.extent,
                     record,
+                    Self::WIDTH,
+                    Self::WIDTH,
                     "invalid argument mode",
                 ));
             }
@@ -2425,9 +2451,10 @@ impl Air {
             .map(|(i, inst)| (AirRef::from_raw(i as u32), inst))
     }
 
-    /// Account for retained payload storage without allocating.
-    pub fn payload_storage_stats(&self) -> AirPayloadStorageStats {
-        let mut stats = AirPayloadStorageStats {
+    /// Account for the physical payload stores without exposing offsets.
+    #[doc(hidden)]
+    pub fn payload_store_stats(&self) -> AirPayloadStorageStats {
+        AirPayloadStorageStats {
             word_store_logical_bytes: self.extra.len() * std::mem::size_of::<u32>(),
             word_store_capacity_bytes: self.extra.capacity() * std::mem::size_of::<u32>(),
             projection_store_logical_bytes: self.projections.len()
@@ -2437,56 +2464,7 @@ impl Air {
             place_store_logical_bytes: self.places.len() * std::mem::size_of::<AirPlace>(),
             place_store_capacity_bytes: self.places.capacity() * std::mem::size_of::<AirPlace>(),
             ..AirPayloadStorageStats::default()
-        };
-        let mut account = |family: usize, extent: u32| {
-            let bytes = extent as usize * std::mem::size_of::<u32>();
-            stats.family_logical_bytes[family] += bytes;
-        };
-        for inst in &self.instructions {
-            match &inst.data {
-                AirInstData::Match { arms, .. } => {
-                    account(0, arms.extent);
-                    stats.nonempty_match_envelopes += usize::from(!arms.is_empty());
-                }
-                AirInstData::Call { args, .. } => account(1, args.extent),
-                AirInstData::CallGeneric {
-                    type_args,
-                    value_args,
-                    args,
-                    ..
-                } => {
-                    account(2, type_args.extent);
-                    account(3, value_args.extent);
-                    stats.peak_staging_bytes = stats
-                        .peak_staging_bytes
-                        .max(value_args.extent as usize * std::mem::size_of::<u32>());
-                    account(1, args.extent);
-                }
-                AirInstData::Intrinsic { args, .. } => account(4, args.extent),
-                AirInstData::Block { statements, .. } => account(5, statements.extent),
-                AirInstData::StructInit {
-                    fields,
-                    source_order,
-                    ..
-                } => {
-                    account(6, fields.extent);
-                    account(7, source_order.extent);
-                }
-                AirInstData::ArrayInit { elements } => account(8, elements.extent),
-                AirInstData::EnumVariant { payload, .. } => account(9, payload.extent),
-                _ => {}
-            }
         }
-        stats.peak_staging_bytes = stats.peak_staging_bytes.max(
-            self.places
-                .iter()
-                .map(|place| {
-                    place.projections.extent as usize * std::mem::size_of::<AirProjection>()
-                })
-                .max()
-                .unwrap_or(0),
-        );
-        stats
     }
 
     fn try_get_words(
@@ -2504,17 +2482,78 @@ impl Air {
                 start,
                 extent,
                 0,
+                0,
+                0,
                 "non-canonical empty range",
             ));
         }
         let raw_start = start;
         let start = start as usize;
         let end = start.checked_add(extent as usize).ok_or_else(|| {
-            AirPayloadError::decode(family, raw_start, extent, 0, "range end overflow")
+            AirPayloadError::decode(
+                family,
+                raw_start,
+                extent,
+                0,
+                extent as usize,
+                0,
+                "range end overflow",
+            )
         })?;
         self.extra.get(start..end).ok_or_else(|| {
-            AirPayloadError::decode(family, raw_start, extent, 0, "range outside word store")
+            AirPayloadError::decode(
+                family,
+                raw_start,
+                extent,
+                0,
+                extent as usize,
+                self.extra.len().saturating_sub(start).min(extent as usize),
+                "range outside word store",
+            )
         })
+    }
+
+    #[cfg(any(test, feature = "fuzz-support"))]
+    fn try_get_refs(
+        &self,
+        start: u32,
+        extent: u32,
+        family: &'static str,
+    ) -> Result<&[u32], AirPayloadError> {
+        let words = self.try_get_words(start, extent, family)?;
+        for (record, word) in words.iter().copied().enumerate() {
+            if word as usize >= self.instructions.len() {
+                return Err(AirPayloadError::decode(
+                    family,
+                    start,
+                    extent,
+                    record,
+                    1,
+                    1,
+                    "instruction reference is outside the owner",
+                ));
+            }
+        }
+        Ok(words)
+    }
+
+    #[cfg(any(test, feature = "fuzz-support"))]
+    fn try_get_types(&self, range: &AirTypeArgs) -> Result<&[u32], AirPayloadError> {
+        let words = self.try_get_words(range.start, range.extent, "type arguments")?;
+        for (record, word) in words.iter().copied().enumerate() {
+            if Type::try_from_u32(word).is_none() {
+                return Err(AirPayloadError::decode(
+                    "type arguments",
+                    range.start,
+                    range.extent,
+                    record,
+                    1,
+                    1,
+                    "invalid type encoding",
+                ));
+            }
+        }
+        Ok(words)
     }
 
     /// Get call arguments from extra array.
@@ -2639,15 +2678,20 @@ impl Air {
                     range.start,
                     range.extent,
                     count,
+                    1,
+                    1,
                     "invalid constant tag",
                 )
             })?;
-            let payload = rest.get(..tag.payload_width()).ok_or_else(|| {
+            let payload_width = tag.payload_width();
+            let payload = rest.get(..payload_width).ok_or_else(|| {
                 AirPayloadError::decode(
                     "constant value arguments",
                     range.start,
                     range.extent,
                     count,
+                    1 + payload_width,
+                    1 + rest.len().min(payload_width),
                     "truncated constant payload",
                 )
             })?;
@@ -2658,6 +2702,8 @@ impl Air {
                         range.start,
                         range.extent,
                         count,
+                        1 + payload_width,
+                        1 + payload_width,
                         "invalid boolean",
                     ));
                 }
@@ -2667,6 +2713,8 @@ impl Air {
                         range.start,
                         range.extent,
                         count,
+                        1 + payload_width,
+                        1 + payload_width,
                         "invalid type encoding",
                     ));
                 }
@@ -2676,6 +2724,8 @@ impl Air {
                         range.start,
                         range.extent,
                         count,
+                        1 + payload_width,
+                        1 + payload_width,
                         "invalid function symbol encoding",
                     ));
                 }
@@ -2697,6 +2747,8 @@ impl Air {
                 range.start,
                 range.extent,
                 range.extent as usize / CallArgSchema::WIDTH,
+                CallArgSchema::WIDTH,
+                range.extent as usize % CallArgSchema::WIDTH,
                 "partial fixed-width record",
             ));
         }
@@ -2721,6 +2773,8 @@ impl Air {
                 range.start,
                 range.extent,
                 0,
+                1,
+                0,
                 "missing envelope",
             )
         })?;
@@ -2730,6 +2784,8 @@ impl Air {
                 range.start,
                 range.extent,
                 0,
+                1,
+                1,
                 "record count exceeds addressable memory",
             )
         })?;
@@ -2747,6 +2803,8 @@ impl Air {
                         range.start,
                         range.extent,
                         record,
+                        1,
+                        0,
                         "truncated record",
                     ));
                 }
@@ -2756,6 +2814,8 @@ impl Air {
                         range.start,
                         range.extent,
                         record,
+                        1,
+                        1,
                         "invalid pattern tag",
                     ));
                 }
@@ -2767,6 +2827,8 @@ impl Air {
                     range.start,
                     range.extent,
                     record,
+                    layout.width,
+                    cursor.len().min(layout.width),
                     "truncated record",
                 )
             })?;
@@ -2777,6 +2839,8 @@ impl Air {
                         range.start,
                         range.extent,
                         record,
+                        layout.width,
+                        layout.width,
                         "invalid boolean",
                     ));
                 }
@@ -2789,6 +2853,8 @@ impl Air {
                 range.start,
                 range.extent,
                 count,
+                0,
+                cursor.len(),
                 "trailing words",
             ));
         }
@@ -3836,6 +3902,72 @@ mod tests {
     }
 
     #[test]
+    fn every_payload_family_round_trips() {
+        use crate::sema::ConstValue;
+
+        let mut air = Air::new(Type::UNIT);
+        let value = air.add_inst(AirInst {
+            data: AirInstData::Const(7),
+            ty: Type::I32,
+            span: Span::new(0, 0),
+        });
+        let match_arms = air
+            .add_match_arms(&[(AirPattern::Int(7), value)], 1)
+            .unwrap();
+        let call_args = air
+            .add_call_args(&[AirCallArg {
+                value,
+                mode: AirArgMode::Borrow,
+            }])
+            .unwrap();
+        let type_args = air.add_type_args(&[Type::I32]).unwrap();
+        let const_values = air.add_const_values(&[ConstValue::Integer(7)]).unwrap();
+        let intrinsic_args = air.add_intrinsic_args(&[value]).unwrap();
+        let block_statements = air.add_block_statements(&[value]).unwrap();
+        let struct_fields = air.add_struct_fields(&[value]).unwrap();
+        let source_order = air.add_source_order(&[0]).unwrap();
+        let array_elements = air.add_array_elements(&[value]).unwrap();
+        let enum_payload = air.add_enum_payload(&[value]).unwrap();
+
+        assert_eq!(air.get_match_arms(&match_arms).count(), 1);
+        assert_eq!(
+            air.get_call_args(&call_args).collect::<Vec<_>>()[0].value,
+            value
+        );
+        assert_eq!(
+            air.get_type_args(&type_args).collect::<Vec<_>>(),
+            [Type::I32]
+        );
+        assert_eq!(
+            air.get_const_values(&const_values).collect::<Vec<_>>(),
+            [ConstValue::Integer(7)]
+        );
+        assert_eq!(
+            air.get_intrinsic_args(&intrinsic_args).collect::<Vec<_>>(),
+            [value]
+        );
+        assert_eq!(
+            air.get_block_statements(&block_statements)
+                .collect::<Vec<_>>(),
+            [value]
+        );
+        assert_eq!(
+            air.get_struct_fields(&struct_fields).collect::<Vec<_>>(),
+            [value]
+        );
+        assert_eq!(air.get_source_order(&source_order).collect::<Vec<_>>(), [0]);
+        assert_eq!(
+            air.get_array_elements(&array_elements).collect::<Vec<_>>(),
+            [value]
+        );
+        assert_eq!(
+            air.get_enum_payload(&enum_payload).collect::<Vec<_>>(),
+            [value]
+        );
+        assert_eq!(AIR_PAYLOAD_FAMILY_NAMES.len(), 10);
+    }
+
+    #[test]
     fn checked_call_arg_decoder_rejects_truncation_and_invalid_modes() {
         let mut truncated = Air::new(Type::UNIT);
         truncated.extra.push(4);
@@ -3843,13 +3975,9 @@ mod tests {
             start: 0,
             extent: 2,
         };
-        assert_eq!(
-            truncated
-                .validate_call_args(&truncated_range)
-                .unwrap_err()
-                .reason,
-            "range outside word store"
-        );
+        let error = truncated.validate_call_args(&truncated_range).unwrap_err();
+        assert_eq!(error.reason, "range outside word store");
+        assert_eq!((error.expected_width(), error.actual_width()), (2, 1));
 
         let mut invalid = Air::new(Type::UNIT);
         invalid.extra.extend([4, 99]);
@@ -3869,55 +3997,73 @@ mod tests {
             start: 0,
             extent: 1,
         };
-        assert_eq!(
-            invalid
-                .validate_call_args(&partial_range)
-                .unwrap_err()
-                .reason,
-            "partial fixed-width record"
-        );
+        let error = invalid.validate_call_args(&partial_range).unwrap_err();
+        assert_eq!(error.reason, "partial fixed-width record");
+        assert_eq!((error.expected_width(), error.actual_width()), (2, 1));
     }
 
     #[test]
     fn checked_match_arm_decoder_rejects_malformed_envelopes() {
-        fn reason(words: &[u32]) -> &'static str {
+        fn error(words: &[u32]) -> AirPayloadError {
             let mut air = Air::new(Type::UNIT);
             let (start, extent) = air.append_words("test", words).unwrap();
             let range = AirMatchArms { start, extent };
-            air.validate_match_arms(&range).unwrap_err().reason
+            air.validate_match_arms(&range).unwrap_err()
         }
 
-        assert_eq!(reason(&[1, 99, 0]), "invalid pattern tag");
-        assert_eq!(reason(&[1, PatternTag::Int.word(), 0]), "truncated record");
+        assert_eq!(error(&[1, 99, 0]).reason, "invalid pattern tag");
+        let truncated = error(&[1, PatternTag::Int.word(), 0]);
+        assert_eq!(truncated.reason, "truncated record");
+        assert_eq!(truncated.expected_width(), PatternTag::Int.layout().width);
+        assert_eq!(truncated.actual_width(), 2);
         assert_eq!(
-            reason(&[1, PatternTag::Bool.word(), 0, 2]),
+            error(&[1, PatternTag::Bool.word(), 0, 2]).reason,
             "invalid boolean"
         );
         assert_eq!(
-            reason(&[1, PatternTag::Wildcard.word(), 0, 123]),
+            error(&[1, PatternTag::Wildcard.word(), 0, 123]).reason,
             "trailing words"
         );
     }
 
     #[test]
     fn checked_const_decoder_rejects_every_malformed_record_shape() {
-        fn reason(words: &[u32]) -> &'static str {
+        fn error(words: &[u32]) -> AirPayloadError {
             let mut air = Air::new(Type::UNIT);
             let (start, extent) = air.append_words("test", words).unwrap();
             let range = AirConstValueWords { start, extent };
-            air.try_get_const_values(&range).unwrap_err().reason
+            air.try_get_const_values(&range).unwrap_err()
         }
 
-        assert_eq!(reason(&[99]), "invalid constant tag");
+        assert_eq!(error(&[99]).reason, "invalid constant tag");
+        let truncated = error(&[ConstValueTag::Integer.word(), 1, 2, 3]);
+        assert_eq!(truncated.reason, "truncated constant payload");
+        assert_eq!(truncated.expected_width(), 5);
+        assert_eq!(truncated.actual_width(), 4);
         assert_eq!(
-            reason(&[ConstValueTag::Integer.word(), 1, 2, 3]),
-            "truncated constant payload"
+            error(&[ConstValueTag::Bool.word(), 2]).reason,
+            "invalid boolean"
         );
-        assert_eq!(reason(&[ConstValueTag::Bool.word(), 2]), "invalid boolean");
         assert_eq!(
-            reason(&[ConstValueTag::Type.word(), u32::MAX]),
+            error(&[ConstValueTag::Type.word(), u32::MAX]).reason,
             "invalid type encoding"
         );
+    }
+
+    #[test]
+    fn every_payload_family_reports_boundary_widths_without_panicking() {
+        let air = Air::new(Type::UNIT);
+        for &family in &AIR_PAYLOAD_FAMILY_NAMES {
+            let error = air.try_get_words(0, 1, family).unwrap_err();
+            assert_eq!(error.phase, "AIR payload decode");
+            assert_eq!(error.family, family);
+            assert_eq!(error.range_start, 0);
+            assert_eq!(error.record, 0);
+            assert_eq!(error.actual_width(), 0);
+            assert_eq!(error.expected_width(), 1);
+            assert!(error.to_string().contains("expected width="));
+            assert!(error.to_string().contains("actual width=0"));
+        }
     }
 
     #[test]

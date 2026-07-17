@@ -33,6 +33,8 @@ use crate::payload::{
     CfgIntrinsicArgs, CfgProjections, CfgStructFields, CfgSwitchCases, CfgThenArgs,
 };
 
+mod payload_metrics;
+
 // ============================================================================
 // Place Expressions
 // ============================================================================
@@ -739,6 +741,21 @@ pub struct Cfg {
     address_taken_params: std::collections::HashSet<u32>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CfgPayloadStorageStats {
+    pub family_logical_bytes: [usize; 10],
+    pub value_store_logical_bytes: usize,
+    pub value_store_capacity_bytes: usize,
+    pub call_store_logical_bytes: usize,
+    pub call_store_capacity_bytes: usize,
+    pub switch_store_logical_bytes: usize,
+    pub switch_store_capacity_bytes: usize,
+    pub projection_store_logical_bytes: usize,
+    pub projection_store_capacity_bytes: usize,
+    pub nonempty_variable_envelopes: usize,
+    pub peak_staging_bytes: usize,
+}
+
 /// Mutable CFG construction and transformation state.
 ///
 /// Only an editor can mutate owner-bound payload stores. Consumers receive a
@@ -1330,10 +1347,14 @@ impl Cfg {
         self.values.len()
     }
 
-    pub(crate) fn push_intrinsic_args(
+    pub(crate) fn push_intrinsic_args<I>(
         &mut self,
-        values: impl IntoIterator<Item = CfgValue>,
-    ) -> Result<CfgIntrinsicArgs, CfgEditError> {
+        values: I,
+    ) -> Result<CfgIntrinsicArgs, CfgEditError>
+    where
+        I: IntoIterator<Item = CfgValue>,
+        I::IntoIter: ExactSizeIterator,
+    {
         payload::push_intrinsic_args(&mut self.extra, values).map_err(Into::into)
     }
     pub(crate) fn intrinsic_args(&self, range: &CfgIntrinsicArgs) -> &[CfgValue] {
@@ -1345,10 +1366,14 @@ impl Cfg {
     ) -> Result<&[CfgValue], payload::PayloadError> {
         payload::checked_intrinsic_args(&self.extra, range)
     }
-    pub(crate) fn push_struct_fields(
+    pub(crate) fn push_struct_fields<I>(
         &mut self,
-        values: impl IntoIterator<Item = CfgValue>,
-    ) -> Result<CfgStructFields, CfgEditError> {
+        values: I,
+    ) -> Result<CfgStructFields, CfgEditError>
+    where
+        I: IntoIterator<Item = CfgValue>,
+        I::IntoIter: ExactSizeIterator,
+    {
         payload::push_struct_fields(&mut self.extra, values).map_err(Into::into)
     }
     pub(crate) fn struct_fields(&self, range: &CfgStructFields) -> &[CfgValue] {
@@ -1360,10 +1385,14 @@ impl Cfg {
     ) -> Result<&[CfgValue], payload::PayloadError> {
         payload::checked_struct_fields(&self.extra, range)
     }
-    pub(crate) fn push_array_elements(
+    pub(crate) fn push_array_elements<I>(
         &mut self,
-        values: impl IntoIterator<Item = CfgValue>,
-    ) -> Result<CfgArrayElements, CfgEditError> {
+        values: I,
+    ) -> Result<CfgArrayElements, CfgEditError>
+    where
+        I: IntoIterator<Item = CfgValue>,
+        I::IntoIter: ExactSizeIterator,
+    {
         payload::push_array_elements(&mut self.extra, values).map_err(Into::into)
     }
     pub(crate) fn array_elements(&self, range: &CfgArrayElements) -> &[CfgValue] {
@@ -1375,10 +1404,11 @@ impl Cfg {
     ) -> Result<&[CfgValue], payload::PayloadError> {
         payload::checked_array_elements(&self.extra, range)
     }
-    pub(crate) fn push_enum_payload(
-        &mut self,
-        values: impl IntoIterator<Item = CfgValue>,
-    ) -> Result<CfgEnumPayload, CfgEditError> {
+    pub(crate) fn push_enum_payload<I>(&mut self, values: I) -> Result<CfgEnumPayload, CfgEditError>
+    where
+        I: IntoIterator<Item = CfgValue>,
+        I::IntoIter: ExactSizeIterator,
+    {
         payload::push_enum_payload(&mut self.extra, values).map_err(Into::into)
     }
     pub(crate) fn enum_payload(&self, range: &CfgEnumPayload) -> &[CfgValue] {
@@ -1390,10 +1420,11 @@ impl Cfg {
     ) -> Result<&[CfgValue], payload::PayloadError> {
         payload::checked_enum_payload(&self.extra, range)
     }
-    pub(crate) fn push_goto_args(
-        &mut self,
-        values: impl IntoIterator<Item = CfgValue>,
-    ) -> Result<CfgGotoArgs, CfgEditError> {
+    pub(crate) fn push_goto_args<I>(&mut self, values: I) -> Result<CfgGotoArgs, CfgEditError>
+    where
+        I: IntoIterator<Item = CfgValue>,
+        I::IntoIter: ExactSizeIterator,
+    {
         payload::push_goto_args(&mut self.extra, values).map_err(Into::into)
     }
     pub(crate) fn goto_args(&self, range: &CfgGotoArgs) -> &[CfgValue] {
@@ -1423,22 +1454,25 @@ impl Cfg {
     ) -> Result<&[CfgValue], payload::PayloadError> {
         payload::checked_else_args(&self.extra, range)
     }
-    pub(crate) fn push_then_args(
-        &mut self,
-        values: impl IntoIterator<Item = CfgValue>,
-    ) -> Result<CfgThenArgs, CfgEditError> {
+    pub(crate) fn push_then_args<I>(&mut self, values: I) -> Result<CfgThenArgs, CfgEditError>
+    where
+        I: IntoIterator<Item = CfgValue>,
+        I::IntoIter: ExactSizeIterator,
+    {
         payload::push_then_args(&mut self.extra, values).map_err(Into::into)
     }
-    pub(crate) fn push_else_args(
-        &mut self,
-        values: impl IntoIterator<Item = CfgValue>,
-    ) -> Result<CfgElseArgs, CfgEditError> {
+    pub(crate) fn push_else_args<I>(&mut self, values: I) -> Result<CfgElseArgs, CfgEditError>
+    where
+        I: IntoIterator<Item = CfgValue>,
+        I::IntoIter: ExactSizeIterator,
+    {
         payload::push_else_args(&mut self.extra, values).map_err(Into::into)
     }
-    pub(crate) fn push_call_args(
-        &mut self,
-        args: impl IntoIterator<Item = CfgCallArg>,
-    ) -> Result<CfgCallArgs, CfgEditError> {
+    pub(crate) fn push_call_args<I>(&mut self, args: I) -> Result<CfgCallArgs, CfgEditError>
+    where
+        I: IntoIterator<Item = CfgCallArg>,
+        I::IntoIter: ExactSizeIterator,
+    {
         payload::push_call_args(&mut self.call_args, args).map_err(Into::into)
     }
     pub(crate) fn call_args(&self, range: &CfgCallArgs) -> &[CfgCallArg] {
@@ -1742,10 +1776,11 @@ impl Cfg {
         };
         Ok(())
     }
-    pub(crate) fn push_switch_cases(
-        &mut self,
-        cases: impl IntoIterator<Item = (i64, BlockId)>,
-    ) -> Result<CfgSwitchCases, CfgEditError> {
+    pub(crate) fn push_switch_cases<I>(&mut self, cases: I) -> Result<CfgSwitchCases, CfgEditError>
+    where
+        I: IntoIterator<Item = (i64, BlockId)>,
+        I::IntoIter: ExactSizeIterator,
+    {
         payload::push_switch_cases(&mut self.switch_cases, cases).map_err(Into::into)
     }
     pub(crate) fn switch_cases(&self, range: &CfgSwitchCases) -> &[(i64, BlockId)] {
@@ -1764,10 +1799,11 @@ impl Cfg {
             _ => panic!("get_switch_cases called on non-Switch terminator"),
         }
     }
-    pub(crate) fn push_projections(
-        &mut self,
-        projs: impl IntoIterator<Item = Projection>,
-    ) -> Result<CfgProjections, CfgEditError> {
+    pub(crate) fn push_projections<I>(&mut self, projs: I) -> Result<CfgProjections, CfgEditError>
+    where
+        I: IntoIterator<Item = Projection>,
+        I::IntoIter: ExactSizeIterator,
+    {
         payload::push_projections(&mut self.projections, projs).map_err(Into::into)
     }
 
@@ -1787,12 +1823,16 @@ impl Cfg {
     ///
     /// This adds the projections to the projections array and returns a Place
     /// that references them.
-    pub(crate) fn make_place(
+    pub(crate) fn make_place<I>(
         &mut self,
         base: PlaceBase,
         base_type: Type,
-        projs: impl IntoIterator<Item = Projection>,
-    ) -> Result<Place, CfgEditError> {
+        projs: I,
+    ) -> Result<Place, CfgEditError>
+    where
+        I: IntoIterator<Item = Projection>,
+        I::IntoIter: ExactSizeIterator,
+    {
         let projections = self.push_projections(projs)?;
         Ok(Place {
             base,
@@ -3080,7 +3120,13 @@ mod tests {
             }
 
             fn size_hint(&self) -> (usize, Option<usize>) {
-                (u32::MAX as usize + 1, None)
+                let len = u32::MAX as usize + 1;
+                (len, Some(len))
+            }
+        }
+        impl ExactSizeIterator for ImpossiblePayload {
+            fn len(&self) -> usize {
+                u32::MAX as usize + 1
             }
         }
 

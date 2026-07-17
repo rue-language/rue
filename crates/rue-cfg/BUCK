@@ -26,3 +26,17 @@ rue_crate(
         "//crates/rue-rir:rue-rir",
     ],
 )
+
+native.rust_library(
+    name = "rue-cfg-fuzz-support",
+    crate = "rue_cfg_fuzz_support",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        "//crates/rue-air:rue-air",
+        "//crates/rue-error:rue-error",
+        "//crates/rue-span:rue-span",
+        "//third-party:lasso",
+    ],
+    rustc_flags = ["--cfg", "feature=\"fuzz-support\""],
+    visibility = ["//crates/rue-compiler:", "//crates/rue-fuzz:"],
+)

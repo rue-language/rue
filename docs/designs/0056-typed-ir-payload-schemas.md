@@ -24,6 +24,11 @@ internal compiler architecture decision. It does not change Rue language
 semantics, the specification, or a preview feature. Production M6 migrations
 remain gated on RUE-838.
 
+The maintainer approved one measured performance-gate amendment on 2026-07-17
+under RUE-843. An AIR owner-local incremental rebuild may regress by at most 4%
+when its rebuilt action count is exactly unchanged and its peak RSS satisfies
+the ordinary noisy-metric gate. All other performance gates remain unchanged.
+
 ## Summary
 
 RIR, AIR, and CFG each own phase-local typed schemas for their variable-length
@@ -637,6 +642,13 @@ by more than the larger of 2% of the baseline median or three times the larger
 of the baseline and candidate MADs. A threshold crossing is rerun once as a
 complete alternating series; a second crossing blocks the issue or requires
 explicit measured justification in an ADR amendment.
+As the sole amended exception, an AIR owner-local incremental rebuild may use
+a 4% wall-time limit when its rebuilt action count is exactly unchanged and
+its peak RSS passes the preceding ordinary gate. RUE-843 measured 5.99 seconds
+to 6.22 seconds (+3.84%) with 12 actions on both revisions and effectively
+unchanged RSS. This exception does not apply to clean builds, RIR or CFG
+incremental builds, runtime workloads, semantic-query timings, allocation
+counts, or any correctness requirement.
 Whole-workload allocation counts may decrease or remain equal and must not
 increase; focused payload traversals must remain exactly zero. Correctness is
 never traded for passing a performance threshold.
