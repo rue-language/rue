@@ -176,6 +176,26 @@ impl Cfg {
         Verifier::new(self, Some(type_pool), false).verify()
     }
 
+    /// Verify a CFG edit whose only intended effect is on blocks reachable from
+    /// the entry, tolerating the pre-DCE husks that an in-progress optimization
+    /// pipeline leaves in unreachable blocks.
+    ///
+    /// Like [`Self::verify_after_optimization_with_type_pool`] this tolerates the
+    /// detached-but-in-arena dead values that `forward`/`cse` leave for DCE, and
+    /// it additionally skips unreachable blocks entirely so a stale husk edge
+    /// (an unreachable `goto`/`branch` whose argument arity no longer matches its
+    /// target after `simplify` folded a merge parameter away) is not mistaken for
+    /// a bug in the edit under test. The newly materialized blocks — an LICM
+    /// preheader and the loop it feeds — are reachable, so real materialization
+    /// defects (bad arity, ill-typed or dominance-violating edges, a missing
+    /// terminator) are still caught.
+    pub(crate) fn verify_materialization_with_type_pool(
+        &self,
+        type_pool: &FrozenTypeInternPool,
+    ) -> Result<(), CfgVerificationError> {
+        Verifier::materialization(self, Some(type_pool)).verify()
+    }
+
     /// Collect every `CfgValue` operand referenced by an instruction into
     /// `out`. This mirrors the `CfgInstData` variants; a new variant with value
     /// operands must be added here so the verifier keeps seeing all references.
@@ -272,6 +292,7 @@ struct Verifier<'a> {
     cfg: &'a Cfg,
     type_pool: Option<&'a FrozenTypeInternPool>,
     require_complete_attachments: bool,
+    skip_unreachable_blocks: bool,
     attachments: Vec<Option<Attachment>>,
     reachable: Vec<bool>,
     dominators: Vec<Vec<bool>>,
@@ -287,9 +308,28 @@ impl<'a> Verifier<'a> {
             cfg,
             type_pool,
             require_complete_attachments,
+            skip_unreachable_blocks: false,
             attachments: vec![None; cfg.value_count()],
             reachable: vec![false; cfg.block_count()],
             dominators: Vec::new(),
+        }
+    }
+
+    /// A verifier that ignores blocks unreachable from `cfg.entry`.
+    ///
+    /// Structural, dominance, and type checks still run against every block
+    /// reachable from the entry, so a genuinely malformed graph among the live
+    /// blocks is still rejected. This is *only* for mid-pipeline materialization
+    /// checks (RUE-927 LICM preheaders): between `simplify` and the pipeline's
+    /// final DCE the CFG legitimately carries husk blocks — unreachable blocks
+    /// left with stale terminators and edge arguments (for example a folded
+    /// `if`'s dead `else` still holding a `goto merge([arg])` after the merge
+    /// block's parameter was substituted away). The final `finish_after_optimization`
+    /// still sweeps those husks under strict verification once DCE has run.
+    fn materialization(cfg: &'a Cfg, type_pool: Option<&'a FrozenTypeInternPool>) -> Self {
+        Self {
+            skip_unreachable_blocks: true,
+            ..Self::new(cfg, type_pool, false)
         }
     }
 
@@ -323,6 +363,12 @@ impl<'a> Verifier<'a> {
 
         for block in self.cfg.blocks() {
             let block_index = block.id.as_u32() as usize;
+            // Mid-pipeline materialization checks only reason about the live
+            // graph: unreachable blocks may legitimately be pre-DCE husks with
+            // stale terminators/edge arguments. Every other caller checks them.
+            if self.skip_unreachable_blocks && !self.reachable[block_index] {
+                continue;
+            }
             if self.reachable[block_index] && matches!(block.terminator, Terminator::None) {
                 return Err(self.error(format_args!(
                     "reachable block {} has no terminator",
@@ -1850,6 +1896,92 @@ mod tests {
             },
         );
         cfg.verify_with_type_pool(&FrozenTypeInternPool::new())
+            .unwrap();
+    }
+
+    /// Build `entry: Return` plus an *unreachable* husk `orphan_from --goto(one
+    /// arg)--> orphan_to` where `orphan_to` declares zero parameters. This is the
+    /// pre-DCE shape LICM's preheader materialization trips over (RUE-927): a
+    /// folded `if`'s dead predecessor still passing an argument to a merge block
+    /// whose parameter `simplify` substituted away.
+    fn cfg_with_unreachable_husk_edge() -> Cfg {
+        let mut cfg = unit_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let entry_value = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::I32,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(
+            entry,
+            Terminator::Return {
+                value: Some(entry_value),
+            },
+        );
+        let orphan_from = cfg.new_block();
+        let orphan_to = cfg.new_block();
+        // orphan_to has zero parameters, but the husk edge passes one argument.
+        cfg.set_terminator(orphan_to, Terminator::Return { value: None });
+        let arg = cfg.add_inst_to_block(
+            orphan_from,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::I32,
+                span: Span::new(0, 1),
+            },
+        );
+        let args = cfg.push_goto_args(vec![arg]).unwrap();
+        cfg.set_terminator(
+            orphan_from,
+            Terminator::Goto {
+                target: orphan_to,
+                args,
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    #[should_panic(expected = "block arguments")]
+    fn strict_verify_rejects_unreachable_husk_edge() {
+        // The strict verifier every real pipeline boundary uses still checks
+        // unreachable blocks, so the husk's stale arity is caught.
+        cfg_with_unreachable_husk_edge().verify().unwrap();
+    }
+
+    #[test]
+    fn materialization_verify_tolerates_unreachable_husk_edge() {
+        // The mid-pipeline materialization verifier skips unreachable blocks, so
+        // the transient pre-DCE husk does not masquerade as a materialization bug.
+        cfg_with_unreachable_husk_edge()
+            .verify_materialization_with_type_pool(&FrozenTypeInternPool::new())
+            .unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "block arguments")]
+    fn materialization_verify_still_catches_reachable_arity_mismatch() {
+        // A malformed edge among the *reachable* blocks — exactly what a botched
+        // preheader materialization would produce — is still rejected.
+        let mut cfg = unit_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let target = cfg.new_block();
+        let param = cfg.add_block_param(target, Type::I32);
+        cfg.set_terminator(target, Terminator::Return { value: Some(param) });
+        // Reachable edge passes zero arguments to a one-parameter block.
+        cfg.set_terminator(
+            entry,
+            Terminator::Goto {
+                target,
+                args: crate::payload::CfgGotoArgs::EMPTY,
+            },
+        );
+        cfg.verify_materialization_with_type_pool(&FrozenTypeInternPool::new())
             .unwrap();
     }
 
