@@ -2440,6 +2440,40 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "module_qualified_inline_type_ctor_struct_literal_head_wide_field_literal"
+spec = ["4.14:23"]
+real_std = true
+description = "A module-qualified inline type-constructor struct-literal head types a wide i64 field literal at the declared field type: std.tuple.Pair(i64, i32) { ... } (RUE-951)"
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let p = std.tuple.Pair(i64, i32) { first: 5000000000, second: 2 };
+    if p.first == 5000000000 { p.second + 40 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inline_type_ctor_struct_literal_head_local_and_module_qualified"
+spec = ["4.14:23"]
+real_std = true
+description = "The local and module-qualified inline type-constructor struct-literal heads appear together in one program and both reduce and construct (RUE-951)"
+source = """
+const std = @import("std");
+fn Pair(comptime A: type, comptime B: type) -> type { struct { first: A, second: B } }
+fn main() -> i32 {
+    let local = Pair(i64, i32) { first: 40, second: 2 };
+    let qualified = std.tuple.Pair(i64, i32) { first: 5000000000, second: 2 };
+    if qualified.first == 5000000000 {
+        @intCast(local.first) + local.second
+    } else {
+        1
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "type_param_scopes_into_method_body"
 spec = ["4.14:24"]
 description = "The enclosing type parameter T names types in a method body and nests into another constructor Option(T) (RUE-289, RUE-313)"

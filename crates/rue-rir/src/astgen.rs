@@ -751,13 +751,22 @@ impl<'a> AstGen<'a> {
 
                 // Inline type-constructor struct-literal head `F(args) { ... }`
                 // (RUE-596): generate the constructor call `F(args)` as its own
-                // instruction; sema reduces it to the struct type at comptime.
+                // instruction; sema reduces it to the struct type at comptime. When
+                // the head is module-qualified (`std.tuple.Pair(i64, i32) { ... }`,
+                // RUE-951) the constructor is reached through the module base, so
+                // emit a method call on it exactly as the pattern ctor head does
+                // (RUE-947); a bare call would fail to resolve `Pair` locally.
                 let ctor_head = struct_lit.ctor_args.as_ref().map(|args| {
                     let arg_refs: Vec<_> = args.iter().map(|a| self.convert_call_arg(a)).collect();
                     let name = self.symbol(struct_lit.name.name);
-                    self.rir
-                        .add_call(name, &arg_refs, struct_lit.span)
-                        .record_failure(&mut self.payload_error)
+                    match module {
+                        Some(base) => {
+                            self.rir
+                                .add_method_call(base, name, &arg_refs, struct_lit.span)
+                        }
+                        None => self.rir.add_call(name, &arg_refs, struct_lit.span),
+                    }
+                    .record_failure(&mut self.payload_error)
                 });
 
                 let fields: Vec<_> = struct_lit
