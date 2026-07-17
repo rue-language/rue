@@ -11,6 +11,7 @@
 // - std.fmt: scalar-to-string formatting (int/bool, hex/binary)
 // - std.option.Option: Optional values
 // - std.result.Result: Fallible values (Ok/Err), propagated with `?`
+// - std.intmap.IntMap / std.strmap.StrMap: open-addressing hash maps
 // - std.strbuf.StrBuf: Source-defined growable string buffer header
 // - std.arraybuf.ArrayBuf: Growable heap-backed collections
 // - std.fs.File: File IO v0 (open/create/append/read/write/close over @syscall)
@@ -36,6 +37,7 @@ pub const deque = @import("deque.rue");
 pub const grid = @import("grid.rue");
 pub const binary_heap = @import("binary_heap.rue");
 pub const intmap = @import("intmap.rue");
+pub const strmap = @import("strmap.rue");
 pub const bitset = @import("bitset.rue");
 
 // Algorithms & text (Standard library v1, M3).

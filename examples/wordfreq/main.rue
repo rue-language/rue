@@ -1,0 +1,170 @@
+// wordfreq — a word-frequency counter, exercising std.strmap (RUE-939).
+//
+// Reads a text file named on the command line, tokenizes it into words (a word
+// is a maximal run of ASCII letters, folded to lowercase), counts occurrences in
+// a `std.strmap.StrMap(u64)`, and prints a deterministic summary:
+//
+//     words=<total number of word occurrences>
+//     distinct=<number of distinct words>
+//     top=<most frequent word> count=<its count>
+//
+// The `top` line names the single most frequent word. Ties are broken by first
+// appearance in the input — the earliest-seen word wins — so map probe order
+// never leaks into the output. First-seen order is tracked separately in a
+// `FirstSeen` list (firstseen.rue). An empty input prints the two count lines
+// (both zero) and no `top` line.
+//
+// Usage:  wordfreq <file>
+//
+// Reading uses std.fs (open + chunked read loop); the path comes from std.env;
+// numbers are formatted with `@to_string` and output goes to stdout via the
+// `print`/`println` builtins (word bytes are emitted verbatim). On a missing
+// argument or a failed open the program prints a short message and exits 1.
+
+const std = @import("std");
+const firstseen = @import("firstseen.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const OptStr = std.option.Option(StrBuf);
+const OptU64 = std.option.Option(u64);
+const OptBytes = std.option.Option(Bytes);
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+
+// Whether `b` is an ASCII letter (A-Z or a-z).
+fn is_letter(b: u8) -> bool {
+    (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+}
+
+// Lowercase an ASCII letter byte; other bytes pass through unchanged.
+fn to_lower(b: u8) -> u8 {
+    if b >= 65 && b <= 90 {
+        b + 32
+    } else {
+        b
+    }
+}
+
+// Read the whole file at `path` into a byte buffer. Returns `None` when the file
+// cannot be opened, so the caller can report the error and exit nonzero.
+fn read_file(borrow path: StrBuf) -> OptBytes {
+    let O = OptBytes;
+    let mut data = Bytes.new();
+    let mut f = match std.fs.File.open(borrow path) {
+        FileRes.Ok(file) => file,
+        FileRes.Err(e) => {
+            return O.None;
+        },
+    };
+    let chunk: u64 = 65536;
+    loop {
+        data.reserve(chunk);
+        let n = match f.read(inout data) {
+            ReadRes.Ok(k) => k,
+            ReadRes.Err(e) => 0,
+        };
+        if n == 0 {
+            break;
+        }
+    }
+    let _ = f.close();
+    O.Some(data)
+}
+
+// Count one completed word: bump its tally, recording it in `order` the first
+// time it is seen.
+fn count_word(
+    borrow word: StrBuf,
+    inout counts: std.strmap.StrMap(u64),
+    inout order: firstseen.FirstSeen,
+) {
+    match counts.get(borrow word) {
+        OptU64.Some(c) => {
+            counts.insert(borrow word, c + 1);
+        },
+        OptU64.None => {
+            counts.insert(borrow word, 1);
+            order.add(borrow word);
+        },
+    }
+}
+
+fn main() -> i32 {
+    let path = match std.env.arg(1) {
+        OptStr.Some(p) => p,
+        OptStr.None => {
+            println("usage: wordfreq <file>");
+            return 1;
+        },
+    };
+
+    let data = match read_file(borrow path) {
+        OptBytes.Some(d) => d,
+        OptBytes.None => {
+            println("error: cannot open input file");
+            return 1;
+        },
+    };
+
+    let M = std.strmap.StrMap(u64);
+    let mut counts = M.new(0);
+    let mut order = firstseen.FirstSeen.new();
+    let mut words_total: u64 = 0;
+
+    // Tokenize: accumulate letters (lowercased) into `word`; a non-letter byte
+    // ends the current word.
+    let mut word = StrBuf.new();
+    let n = data.len();
+    let mut i: u64 = 0;
+    while i < n {
+        let b = data.get_or(i, 0);
+        if is_letter(b) {
+            word.push(to_lower(b));
+        } else if word.len() > 0 {
+            count_word(borrow word, inout counts, inout order);
+            words_total = words_total + 1;
+            word.clear();
+        }
+        i = i + 1;
+    }
+    // Flush a trailing word not terminated by a separator.
+    if word.len() > 0 {
+        count_word(borrow word, inout counts, inout order);
+        words_total = words_total + 1;
+    }
+
+    let distinct = order.len();
+
+    println("words=" + @to_string(words_total));
+    println("distinct=" + @to_string(distinct));
+
+    // Most frequent word, breaking ties toward the earliest first appearance.
+    // Scanning `order` in first-seen sequence and updating only on a strictly
+    // greater count means the earliest word at the winning count is kept.
+    if distinct > 0 {
+        let mut best_idx: u64 = 0;
+        let mut best_count: u64 = 0;
+        let mut k: u64 = 0;
+        while k < distinct {
+            let mut w = StrBuf.new();
+            order.append_word(k, inout w);
+            let c = match counts.get(borrow w) {
+                OptU64.Some(v) => v,
+                OptU64.None => 0,
+            };
+            if c > best_count {
+                best_count = c;
+                best_idx = k;
+            }
+            k = k + 1;
+        }
+        let mut line = StrBuf.new();
+        line.push_str("top=");
+        order.append_word(best_idx, inout line);
+        line.push_str(" count=");
+        line.push_str(@to_string(best_count));
+        println(line);
+    }
+
+    0
+}

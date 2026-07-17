@@ -992,6 +992,12 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "cli.std_strmap",
+        "std_strmap_smoke",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
         "cli.str_fixed_type",
         "str_fixed_exact_borrow_is_by_reference",
         semantic(SemanticGapKind::TextProjectionRead),
