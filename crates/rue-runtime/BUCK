@@ -1,4 +1,10 @@
 load("//crates:defs.bzl", "rue_crate")
+load(
+    ":runtime.bzl",
+    "RUNTIME_AARCH64_RUSTC_FLAGS",
+    "RUNTIME_COMMON_RUSTC_FLAGS",
+    "runtime_staticlib",
+)
 
 # tests = False: the staticlib build below uses no_std-oriented flags
 # (-Cpanic=abort, -Copt-level=z, LTO, static relocation model) that are
@@ -13,19 +19,47 @@ rue_crate(
     ],
     # Force static linkage to ensure the [staticlib] subtarget is available
     preferred_linkage = "static",
-    # Minimize output size and ensure no_std compatibility
-    rustc_flags = [
-        "-Cpanic=abort",
-        "-Copt-level=z",
-        "-Clto=true",
-        # Use static relocation model to avoid GOT-relative relocations
-        # that our simple linker doesn't support
-        "-Crelocation-model=static",
-        # Disable LSE atomics on aarch64 to avoid __aarch64_have_lse_atomics
-        # runtime detection symbol from compiler-rt that we don't have.
-        # We need both -lse (the feature) and -lse2 (newer extension).
-        "-Ctarget-feature=-lse,-lse2,-outline-atomics",
-    ],
+    # Minimize output size and ensure no_std compatibility. AArch64 needs
+    # additional atomics flags that are invalid on x86-64.
+    rustc_flags = RUNTIME_COMMON_RUSTC_FLAGS + select({
+        "prelude//cpu:arm64": RUNTIME_AARCH64_RUSTC_FLAGS,
+        "DEFAULT": [],
+    }),
+)
+
+# These targets deliberately stay in the host configuration. Each invokes the
+# selected hermetic host rustc directly with the pinned std component for its
+# fixed target, avoiding a platform transition for this dependency-free no_std
+# crate while producing the same archive on every supported host.
+runtime_staticlib(
+    name = "rue-runtime-x86_64-unknown-linux-gnu",
+    target_triple = "x86_64-unknown-linux-gnu",
+    target_std = "toolchains//rust:rust-std-x86_64-unknown-linux-gnu",
+    visibility = ["PUBLIC"],
+)
+
+runtime_staticlib(
+    name = "rue-runtime-aarch64-unknown-linux-gnu",
+    target_triple = "aarch64-unknown-linux-gnu",
+    target_std = "toolchains//rust:rust-std-aarch64-unknown-linux-gnu",
+    visibility = ["PUBLIC"],
+)
+
+runtime_staticlib(
+    name = "rue-runtime-aarch64-apple-darwin",
+    target_triple = "aarch64-apple-darwin",
+    target_std = "toolchains//rust:rust-std-aarch64-apple-darwin",
+    visibility = ["PUBLIC"],
+)
+
+sh_test(
+    name = "runtime-archives-test",
+    test = "tests/validate_runtime_archives.py",
+    env = {
+        "RUNTIME_X86_64_LINUX": "$(location :rue-runtime-x86_64-unknown-linux-gnu)",
+        "RUNTIME_AARCH64_LINUX": "$(location :rue-runtime-aarch64-unknown-linux-gnu)",
+        "RUNTIME_AARCH64_MACOS": "$(location :rue-runtime-aarch64-apple-darwin)",
+    },
 )
 
 # Unit tests for the runtime, compiled natively for the host WITHOUT the

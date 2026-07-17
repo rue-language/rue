@@ -33,6 +33,24 @@ RUST_RELEASES = {
     ),
 }
 
+# Standard-library-only components used to cross-compile the no_std Rue
+# runtime. Keep these pins next to the compiler distribution pins so a Rust
+# version update cannot silently mix toolchain releases.
+RUST_STD_RELEASES = {
+    "x86_64-unknown-linux-gnu": struct(
+        url = "https://static.rust-lang.org/dist/rust-std-1.92.0-x86_64-unknown-linux-gnu.tar.xz",
+        sha256 = "5f106805ed86ebf8df287039e53a45cf974391ef4d088c2760776b05b8e48b5d",
+    ),
+    "aarch64-unknown-linux-gnu": struct(
+        url = "https://static.rust-lang.org/dist/rust-std-1.92.0-aarch64-unknown-linux-gnu.tar.xz",
+        sha256 = "ce2ab42c09d633b0a8b4b65a297c700ae0fad47aae890f75894782f95be7e36d",
+    ),
+    "aarch64-apple-darwin": struct(
+        url = "https://static.rust-lang.org/dist/rust-std-1.92.0-aarch64-apple-darwin.tar.xz",
+        sha256 = "ea619984fcb8e24b05dbd568d599b8e10d904435ab458dfba6469e03e0fd69aa",
+    ),
+}
+
 # Paths within the extracted Rust distribution
 # After http_archive extracts and strips the prefix, we have:
 #   rustc/bin/rustc, rustc/bin/rustdoc

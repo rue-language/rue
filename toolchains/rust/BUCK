@@ -3,7 +3,7 @@
 # Downloads prebuilt Rust toolchains for reproducible builds.
 # The toolchain includes rustc, cargo, rust-lld, and the standard library.
 
-load(":defs.bzl", "RUST_VERSION", "RUST_RELEASES", "hermetic_rust_toolchain", "rustfmt", "host_rustfmt")
+load(":defs.bzl", "RUST_VERSION", "RUST_RELEASES", "RUST_STD_RELEASES", "hermetic_rust_toolchain", "rustfmt", "host_rustfmt")
 
 # Download Rust for Linux x86_64
 http_archive(
@@ -43,6 +43,36 @@ http_archive(
     strip_prefix = "rust-{}-x86_64-apple-darwin".format(RUST_VERSION),
     type = "tar.xz",
     visibility = [],
+)
+
+# Target standard-library components used by the fixed-target Rue runtime
+# rules. Unlike the full distributions above, these are compiler-host agnostic:
+# whichever hermetic rustc runs consumes the same pinned target sysroot.
+http_archive(
+    name = "rust-std-x86_64-unknown-linux-gnu",
+    urls = [RUST_STD_RELEASES["x86_64-unknown-linux-gnu"].url],
+    sha256 = RUST_STD_RELEASES["x86_64-unknown-linux-gnu"].sha256,
+    strip_prefix = "rust-std-{}-x86_64-unknown-linux-gnu".format(RUST_VERSION),
+    type = "tar.xz",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "rust-std-aarch64-unknown-linux-gnu",
+    urls = [RUST_STD_RELEASES["aarch64-unknown-linux-gnu"].url],
+    sha256 = RUST_STD_RELEASES["aarch64-unknown-linux-gnu"].sha256,
+    strip_prefix = "rust-std-{}-aarch64-unknown-linux-gnu".format(RUST_VERSION),
+    type = "tar.xz",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "rust-std-aarch64-apple-darwin",
+    urls = [RUST_STD_RELEASES["aarch64-apple-darwin"].url],
+    sha256 = RUST_STD_RELEASES["aarch64-apple-darwin"].sha256,
+    strip_prefix = "rust-std-{}-aarch64-apple-darwin".format(RUST_VERSION),
+    type = "tar.xz",
+    visibility = ["PUBLIC"],
 )
 
 # Optimization flags based on build mode (RUE-277).
