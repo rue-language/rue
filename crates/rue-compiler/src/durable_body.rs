@@ -4,14 +4,11 @@
 //! request-independent body algebra stored inside it. Compact live AIR remains
 //! separate and is relocated only at export and import boundaries.
 
-use std::{
-    collections::{BTreeSet, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 use rue_air::{
-    SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind, SemanticBodyInstData,
-    SemanticBodyPattern, SemanticBodyProjection, SemanticImportConstValue, SemanticImportType,
+    SemanticBodyInstData, SemanticBodyPattern, SemanticBodyProjection, SemanticDefinitionToken,
+    SemanticImportConstValue, SemanticImportType, SemanticModuleToken,
 };
 
 use crate::{
@@ -259,112 +256,41 @@ pub enum DurableBodyConversionFailure {
     FingerprintUnavailable,
 }
 
-fn semantic_kind(kind: StableDefinitionKind) -> StableDefinitionKind {
-    kind
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct DefinitionJoinIdentity<'a> {
-    file_id: u32,
-    name: &'a str,
-    kind: StableDefinitionKind,
-    owner: Option<&'a str>,
-}
-
-impl<'a> From<&'a SemanticBodyDefinitionIdentity> for DefinitionJoinIdentity<'a> {
-    fn from(identity: &'a SemanticBodyDefinitionIdentity) -> Self {
-        Self {
-            file_id: identity.file_id,
-            name: &identity.name,
-            kind: identity.kind,
-            owner: identity.owner.as_deref(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum IndexedDefinition<'a> {
-    Unique(&'a StableDefinitionKey),
-    Ambiguous,
-}
-
 struct DefinitionJoinIndex<'a> {
-    definitions: HashMap<DefinitionJoinIdentity<'a>, IndexedDefinition<'a>>,
+    definitions: &'a BoundDefinitionSet,
 }
 
 impl<'a> DefinitionJoinIndex<'a> {
-    fn new(merged: &'a CanonicalMergedProgram, definitions: &'a BoundDefinitionSet) -> Self {
-        let module_files = merged
-            .ast()
-            .modules()
-            .iter()
-            .map(|module| (module.module_id().clone(), module.file_id().index()))
-            .collect::<HashMap<_, _>>();
-        let entries = definitions.definitions().iter().filter_map(|record| {
-            let key = record.stable_key();
-            Some((
-                DefinitionJoinIdentity {
-                    file_id: *module_files.get(key.module())?,
-                    name: key.name(),
-                    kind: semantic_kind(key.kind()),
-                    owner: key.owner().map(|owner| owner.name()),
-                },
-                key,
-            ))
-        });
-        Self::from_entries(entries)
-    }
-
-    fn from_entries(
-        entries: impl IntoIterator<Item = (DefinitionJoinIdentity<'a>, &'a StableDefinitionKey)>,
-    ) -> Self {
-        let mut definitions = HashMap::new();
-        for (identity, key) in entries {
-            definitions
-                .entry(identity)
-                .and_modify(|entry| *entry = IndexedDefinition::Ambiguous)
-                .or_insert(IndexedDefinition::Unique(key));
-        }
+    fn new(_merged: &'a CanonicalMergedProgram, definitions: &'a BoundDefinitionSet) -> Self {
         Self { definitions }
     }
 
     fn join(
         &self,
-        identity: &SemanticBodyDefinitionIdentity,
+        identity: &SemanticDefinitionToken,
         work: &mut DurableBodyWork,
     ) -> Result<&'a StableDefinitionKey, DurableBodyConversionFailure> {
         work.stable_key_joins += 1;
-        match self
-            .definitions
-            .get(&DefinitionJoinIdentity::from(identity))
-        {
-            Some(IndexedDefinition::Unique(key)) => Ok(key),
-            Some(IndexedDefinition::Ambiguous) => {
+        match self.definitions.key_for_semantic_token(*identity) {
+            Ok(key) => Ok(key),
+            Err(rue_air::SemanticStableResolutionFailure::Missing) => {
+                Err(DurableBodyConversionFailure::MissingStableDefinition)
+            }
+            Err(rue_air::SemanticStableResolutionFailure::Ambiguous) => {
                 Err(DurableBodyConversionFailure::AmbiguousStableDefinition)
             }
-            None => Err(DurableBodyConversionFailure::MissingStableDefinition),
-        }
-    }
-
-    fn join_readonly(
-        &self,
-        identity: &SemanticBodyDefinitionIdentity,
-    ) -> Result<&'a StableDefinitionKey, DurableBodyConversionFailure> {
-        match self
-            .definitions
-            .get(&DefinitionJoinIdentity::from(identity))
-        {
-            Some(IndexedDefinition::Unique(key)) => Ok(key),
-            Some(IndexedDefinition::Ambiguous) => {
-                Err(DurableBodyConversionFailure::AmbiguousStableDefinition)
+            Err(rue_air::SemanticStableResolutionFailure::WrongKind) => {
+                Err(DurableBodyConversionFailure::WrongDefinitionKind)
             }
-            None => Err(DurableBodyConversionFailure::MissingStableDefinition),
+            Err(rue_air::SemanticStableResolutionFailure::ForeignIssuer) => {
+                Err(DurableBodyConversionFailure::ForeignOwnerToken)
+            }
         }
     }
 }
 
 fn join_definition<'a>(
-    identity: &SemanticBodyDefinitionIdentity,
+    identity: &SemanticDefinitionToken,
     index: &DefinitionJoinIndex<'a>,
     work: &mut DurableBodyWork,
 ) -> Result<&'a StableDefinitionKey, DurableBodyConversionFailure> {
@@ -372,7 +298,7 @@ fn join_definition<'a>(
 }
 
 fn canonical_type(
-    ty: &SemanticImportType<SemanticBodyDefinitionIdentity, Arc<str>>,
+    ty: &SemanticImportType<SemanticDefinitionToken, SemanticModuleToken>,
     merged: &CanonicalMergedProgram,
     index: &DefinitionJoinIndex<'_>,
     work: &mut DurableBodyWork,
@@ -414,14 +340,17 @@ fn canonical_type(
         SemanticImportType::PtrMut(value) => {
             SemanticImportType::PtrMut(Box::new(canonical_type(value, merged, index, work)?))
         }
-        SemanticImportType::Module(path) => SemanticImportType::Module(
-            merged
-                .ast()
-                .modules()
-                .iter()
-                .find(|module| module.module_id().as_str() == path.as_ref())
-                .map(|module| module.module_id().clone())
-                .ok_or(DurableBodyConversionFailure::UnresolvedModule)?,
+        SemanticImportType::Module(token) => SemanticImportType::Module(
+            index
+                .definitions
+                .module_for_semantic_token(merged, *token)
+                .map_err(|failure| match failure {
+                    rue_air::SemanticStableResolutionFailure::ForeignIssuer => {
+                        DurableBodyConversionFailure::ForeignOwnerToken
+                    }
+                    _ => DurableBodyConversionFailure::UnresolvedModule,
+                })?
+                .clone(),
         ),
         SemanticImportType::GenericParameter(index) => SemanticImportType::GenericParameter(*index),
     })
@@ -442,7 +371,7 @@ fn canonical_builtin_nominal(
 }
 
 fn canonical_const_value(
-    value: &SemanticImportConstValue<SemanticBodyDefinitionIdentity, Arc<str>>,
+    value: &SemanticImportConstValue<SemanticDefinitionToken, SemanticModuleToken>,
     merged: &CanonicalMergedProgram,
     index: &DefinitionJoinIndex<'_>,
     work: &mut DurableBodyWork,
@@ -473,7 +402,10 @@ fn canonical_const_value(
 }
 
 fn durable_specialization_identity(
-    identity: &rue_air::SemanticSpecializationIdentity<SemanticBodyDefinitionIdentity, Arc<str>>,
+    identity: &rue_air::SemanticSpecializationIdentity<
+        SemanticDefinitionToken,
+        SemanticModuleToken,
+    >,
     merged: &CanonicalMergedProgram,
     index: &DefinitionJoinIndex<'_>,
     work: &mut DurableBodyWork,
@@ -503,7 +435,10 @@ fn durable_specialization_identity(
 }
 
 pub(crate) fn convert_specialization_identity(
-    identity: &rue_air::SemanticSpecializationIdentity<SemanticBodyDefinitionIdentity, Arc<str>>,
+    identity: &rue_air::SemanticSpecializationIdentity<
+        SemanticDefinitionToken,
+        SemanticModuleToken,
+    >,
     merged: &CanonicalMergedProgram,
     definitions: &BoundDefinitionSet,
     work: &mut DurableBodyWork,
@@ -650,13 +585,19 @@ pub fn attach_specialized_implicit_drop_dependencies(
             // payload to enrich.
             continue;
         };
-        let destructor = rue_air::SemanticBodyDefinitionIdentity {
-            file_id: event.target_file,
-            name: Arc::from(event.target_owner_name.as_str()),
-            kind: rue_air::StableDefinitionKind::Destructor,
-            owner: Some(Arc::from(event.target_owner_name.as_str())),
-        };
-        let destructor = join_definition(&destructor, &index, work)?.clone();
+        work.stable_key_joins += 1;
+        let destructor = definitions
+            .definitions()
+            .iter()
+            .find(|record| {
+                let key = record.stable_key();
+                key.kind() == rue_air::StableDefinitionKind::Destructor
+                    && key.owner().map(|owner| owner.name())
+                        == Some(event.target_owner_name.as_str())
+                    && record.declaration_span().file_id.index() == event.target_file
+            })
+            .map(|record| record.stable_key().clone())
+            .ok_or(DurableBodyConversionFailure::MissingStableDefinition)?;
         let mut dependencies = payload
             .dependencies
             .iter()
@@ -720,16 +661,36 @@ pub fn convert_semantic_body_exports(
                 let body = export.body.try_map_keys(
                     &|identity| {
                         stable_key_joins.set(stable_key_joins.get() + 1);
-                        join_index.join_readonly(identity).cloned()
+                        join_index
+                            .definitions
+                            .key_for_semantic_token(*identity)
+                            .cloned()
+                            .map_err(|failure| match failure {
+                                rue_air::SemanticStableResolutionFailure::Missing => {
+                                    DurableBodyConversionFailure::MissingStableDefinition
+                                }
+                                rue_air::SemanticStableResolutionFailure::Ambiguous => {
+                                    DurableBodyConversionFailure::AmbiguousStableDefinition
+                                }
+                                rue_air::SemanticStableResolutionFailure::WrongKind => {
+                                    DurableBodyConversionFailure::WrongDefinitionKind
+                                }
+                                rue_air::SemanticStableResolutionFailure::ForeignIssuer => {
+                                    DurableBodyConversionFailure::ForeignOwnerToken
+                                }
+                            })
                     },
-                    &|path| {
-                        merged
-                            .ast()
-                            .modules()
-                            .iter()
-                            .find(|module| module.module_id().as_str() == path.as_ref())
-                            .map(|module| module.module_id().clone())
-                            .ok_or(DurableBodyConversionFailure::UnresolvedModule)
+                    &|token| {
+                        join_index
+                            .definitions
+                            .module_for_semantic_token(merged, *token)
+                            .cloned()
+                            .map_err(|failure| match failure {
+                                rue_air::SemanticStableResolutionFailure::ForeignIssuer => {
+                                    DurableBodyConversionFailure::ForeignOwnerToken
+                                }
+                                _ => DurableBodyConversionFailure::UnresolvedModule,
+                            })
                     },
                 );
                 work.stable_key_joins += stable_key_joins.get();
@@ -1355,87 +1316,5 @@ mod tests {
             canonical_builtin_nominal(&Arc::from("str"), Enum),
             Err(DurableBodyConversionFailure::WrongDefinitionKind)
         );
-    }
-
-    fn join_identity<'a>(
-        file_id: u32,
-        name: &'a str,
-        kind: StableDefinitionKind,
-    ) -> DefinitionJoinIdentity<'a> {
-        DefinitionJoinIdentity {
-            file_id,
-            name,
-            kind,
-            owner: None,
-        }
-    }
-
-    fn semantic_identity(
-        file_id: u32,
-        name: &str,
-        kind: StableDefinitionKind,
-    ) -> SemanticBodyDefinitionIdentity {
-        SemanticBodyDefinitionIdentity {
-            file_id,
-            name: Arc::from(name),
-            kind,
-            owner: None,
-        }
-    }
-
-    #[test]
-    fn definition_join_index_returns_unique_definition_without_scanning() {
-        let key = StableDefinitionKey::for_test(
-            ModuleId::from_logical_path("main.rue").unwrap(),
-            StableDefinitionNamespace::Type,
-            StableDefinitionKind::Struct,
-            "Large",
-            None,
-        );
-        let index = DefinitionJoinIndex::from_entries([(
-            join_identity(7, "Large", StableDefinitionKind::Struct),
-            &key,
-        )]);
-        let mut work = DurableBodyWork::default();
-
-        assert_eq!(
-            index.join(
-                &semantic_identity(7, "Large", StableDefinitionKind::Struct),
-                &mut work,
-            ),
-            Ok(&key),
-        );
-        assert_eq!(work.stable_key_joins, 1);
-    }
-
-    #[test]
-    fn definition_join_index_preserves_ambiguous_and_missing_failures() {
-        let first = StableDefinitionKey::for_test(
-            ModuleId::from_logical_path("main.rue").unwrap(),
-            StableDefinitionNamespace::Type,
-            StableDefinitionKind::Struct,
-            "Duplicate",
-            None,
-        );
-        let second = first.clone();
-        let identity = join_identity(3, "Duplicate", StableDefinitionKind::Struct);
-        let index = DefinitionJoinIndex::from_entries([(identity, &first), (identity, &second)]);
-        let mut work = DurableBodyWork::default();
-
-        assert_eq!(
-            index.join(
-                &semantic_identity(3, "Duplicate", StableDefinitionKind::Struct),
-                &mut work,
-            ),
-            Err(DurableBodyConversionFailure::AmbiguousStableDefinition),
-        );
-        assert_eq!(
-            index.join(
-                &semantic_identity(3, "Missing", StableDefinitionKind::Struct),
-                &mut work,
-            ),
-            Err(DurableBodyConversionFailure::MissingStableDefinition),
-        );
-        assert_eq!(work.stable_key_joins, 2);
     }
 }

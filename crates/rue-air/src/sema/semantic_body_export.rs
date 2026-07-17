@@ -7,9 +7,9 @@ use rue_span::Span;
 use super::{AnalyzedFunction, BodyOwnerToken, BodySema};
 use crate::{
     AirInstData, AirPattern, AirProjection, SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg,
-    SemanticBodyDefinitionIdentity, SemanticBodyExport, SemanticBodyExportFailure as F,
-    SemanticBodyInst, SemanticBodyInstData, SemanticBodyMatchArm, SemanticBodyPattern,
-    SemanticBodyPlace, SemanticBodyProjection, SemanticImportConstValue, SemanticImportType,
+    SemanticBodyExport, SemanticBodyExportFailure as F, SemanticBodyInst, SemanticBodyInstData,
+    SemanticBodyMatchArm, SemanticBodyPattern, SemanticBodyPlace, SemanticBodyProjection,
+    SemanticDefinitionToken, SemanticImportConstValue, SemanticImportType, SemanticModuleToken,
     SemanticSpecializationIdentity, SemanticSpecializedBodyExport, StableDefinitionKind, Type,
     TypeKind,
 };
@@ -26,9 +26,9 @@ impl BodySema<'_> {
         warnings: &[CompileWarning],
         specialized_calls: &HashMap<
             Spur,
-            SemanticSpecializationIdentity<SemanticBodyDefinitionIdentity, Arc<str>>,
+            SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
         >,
-        dependencies: &[SemanticBodyDefinitionIdentity],
+        dependencies: &[SemanticDefinitionToken],
         dependency_boundary_complete: bool,
     ) -> Result<SemanticSpecializedBodyExport, F> {
         let source_name = self.source_function_name(base_name);
@@ -102,7 +102,7 @@ impl BodySema<'_> {
         specialized_calls: Option<
             &HashMap<
                 Spur,
-                SemanticSpecializationIdentity<SemanticBodyDefinitionIdentity, Arc<str>>,
+                SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
             >,
         >,
     ) -> Result<SemanticBodyExport, F> {
@@ -515,17 +515,14 @@ impl BodySema<'_> {
         })
     }
 
-    pub(crate) fn function_identity(
-        &self,
-        symbol: Spur,
-    ) -> Result<SemanticBodyDefinitionIdentity, F> {
+    pub(crate) fn function_identity(&self, symbol: Spur) -> Result<SemanticDefinitionToken, F> {
         if let Some(info) = self.functions.get(&symbol) {
-            return Ok(SemanticBodyDefinitionIdentity {
-                file_id: info.file_id.index(),
-                name: Arc::from(self.interner.resolve(&self.source_function_name(symbol))),
-                kind: StableDefinitionKind::Function,
-                owner: None,
-            });
+            return self.stable_definition_token(
+                info.file_id.index(),
+                self.interner.resolve(&self.source_function_name(symbol)),
+                None,
+                StableDefinitionKind::Function,
+            );
         }
         let resolved = self.interner.resolve(&symbol);
         for (&(struct_id, method_name), info) in &self.methods {
@@ -537,52 +534,97 @@ impl BodySema<'_> {
             if owner.name.starts_with("__anon_struct_") {
                 return Err(F::AnonymousNominal);
             }
-            return Ok(SemanticBodyDefinitionIdentity {
-                file_id: info.span.file_id.index(),
-                name: Arc::from(method),
-                kind: if method == "__drop" {
+            return self.stable_definition_token(
+                info.span.file_id.index(),
+                method,
+                Some(owner.name.as_str()),
+                if method == "__drop" {
                     StableDefinitionKind::Destructor
                 } else if info.has_self {
                     StableDefinitionKind::Method
                 } else {
                     StableDefinitionKind::AssociatedFunction
                 },
-                owner: Some(Arc::from(owner.name.as_str())),
-            });
+            );
         }
         Err(F::UnmappedFunction)
     }
 
-    fn struct_identity(&self, id: crate::StructId) -> Result<SemanticBodyDefinitionIdentity, F> {
+    pub(crate) fn struct_identity(
+        &self,
+        id: crate::StructId,
+    ) -> Result<SemanticDefinitionToken, F> {
         let def = self.type_pool.struct_def(id);
         if def.name.starts_with("__anon_struct_") {
             return Err(F::AnonymousNominal);
         }
-        Ok(SemanticBodyDefinitionIdentity {
-            file_id: def.file_id.index(),
-            name: Arc::from(def.name.as_str()),
-            kind: StableDefinitionKind::Struct,
-            owner: None,
-        })
+        self.stable_definition_token(
+            def.file_id.index(),
+            def.name.as_str(),
+            None,
+            StableDefinitionKind::Struct,
+        )
     }
 
-    fn enum_identity(&self, id: crate::EnumId) -> Result<SemanticBodyDefinitionIdentity, F> {
+    pub(crate) fn enum_identity(&self, id: crate::EnumId) -> Result<SemanticDefinitionToken, F> {
         let def = self.type_pool.enum_def(id);
         if def.name.starts_with("__anon_enum_") {
             return Err(F::AnonymousNominal);
         }
-        Ok(SemanticBodyDefinitionIdentity {
-            file_id: def.file_id.index(),
-            name: Arc::from(def.name.as_str()),
-            kind: StableDefinitionKind::Enum,
-            owner: None,
-        })
+        self.stable_definition_token(
+            def.file_id.index(),
+            def.name.as_str(),
+            None,
+            StableDefinitionKind::Enum,
+        )
+    }
+
+    pub(crate) fn stable_definition_token(
+        &self,
+        file: u32,
+        name: &str,
+        owner: Option<&str>,
+        kind: StableDefinitionKind,
+    ) -> Result<SemanticDefinitionToken, F> {
+        let owner = owner.map(str::to_owned);
+        let key = (file, name.to_owned(), owner.clone(), kind);
+        if let Some(token) = self.stable_definition_tokens.get(&key) {
+            return Ok(*token);
+        }
+        if self.stable_definition_tokens.is_empty() {
+            // The synthetic test constructor has no compiler-issued stable
+            // universe. Keep that explicitly non-authoritative seam usable
+            // without reintroducing textual identities into exported bodies.
+            let mut slot = 2_166_136_261_u32;
+            for byte in file
+                .to_le_bytes()
+                .into_iter()
+                .chain(name.bytes())
+                .chain(owner.as_deref().unwrap_or("").bytes())
+                .chain([kind as u8])
+            {
+                slot = (slot ^ u32::from(byte)).wrapping_mul(16_777_619);
+            }
+            return Ok(SemanticDefinitionToken::new(0, slot));
+        }
+        let mut candidates = self.stable_definition_tokens.keys().filter(
+            |(candidate_file, candidate_name, candidate_owner, _)| {
+                *candidate_file == file && candidate_name == name && candidate_owner == &owner
+            },
+        );
+        let Some(_) = candidates.next() else {
+            return Err(F::MissingStableIdentity);
+        };
+        if candidates.next().is_some() {
+            return Err(F::AmbiguousStableIdentity);
+        }
+        Err(F::WrongStableIdentityKind)
     }
 
     pub(crate) fn export_body_type(
         &self,
         ty: Type,
-    ) -> Result<SemanticImportType<SemanticBodyDefinitionIdentity, Arc<str>>, F> {
+    ) -> Result<SemanticImportType<SemanticDefinitionToken, SemanticModuleToken>, F> {
         self.type_pool
             .validate_complete_type(ty)
             .map_err(|_| F::UnsupportedType)?;
@@ -637,9 +679,20 @@ impl BodySema<'_> {
             TypeKind::PtrMut(id) => SemanticImportType::PtrMut(Box::new(
                 self.export_body_type(self.type_pool.ptr_mut_def(id))?,
             )),
-            TypeKind::Module(id) => SemanticImportType::Module(Arc::from(
-                self.module_registry.get_def(id).durable_id.as_str(),
-            )),
+            TypeKind::Module(id) => {
+                let file = self.module_registry.get_def(id).file_id;
+                SemanticImportType::Module(
+                    self.stable_module_tokens
+                        .get(&file)
+                        .copied()
+                        .or_else(|| {
+                            self.stable_module_tokens
+                                .is_empty()
+                                .then(|| SemanticModuleToken::new(0, file.index()))
+                        })
+                        .ok_or(F::MissingStableIdentity)?,
+                )
+            }
             TypeKind::Error => return Err(F::UnsupportedType),
         })
     }

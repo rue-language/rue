@@ -56,10 +56,7 @@ pub(crate) fn analyze_all_function_bodies_with_work(
 
 pub(crate) fn import_staged_body(
     sema: &mut BodySema<'_>,
-    body: &crate::SemanticBody<
-        crate::SemanticBodyDefinitionIdentity,
-        crate::SemanticBodyModuleIdentity,
-    >,
+    body: &crate::SemanticBody<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
     body_span: Span,
 ) -> Result<crate::SemanticImportedBody, crate::SemanticBodyImportFailure> {
     use crate::{SemanticBodyImportFailure as BF, StableDefinitionKind as DK};
@@ -67,11 +64,49 @@ pub(crate) fn import_staged_body(
         SemanticImportFailure as F, SemanticImportNominalKind as NK, SemanticImportType as T,
     };
 
+    fn definition_endpoint<'a>(
+        sema: &'a BodySema<'_>,
+        token: &crate::SemanticDefinitionToken,
+    ) -> Result<&'a crate::SemanticDefinitionEndpoint, BF> {
+        if let Some(endpoint) = sema.stable_definition_endpoints.get(token) {
+            return Ok(endpoint);
+        }
+        let failure = if sema
+            .stable_definition_endpoints
+            .keys()
+            .any(|candidate| candidate.issuer() == token.issuer())
+        {
+            crate::SemanticStableResolutionFailure::Missing
+        } else {
+            crate::SemanticStableResolutionFailure::ForeignIssuer
+        };
+        Err(BF::StableResolution(failure))
+    }
+
+    fn module_endpoint<'a>(
+        sema: &'a BodySema<'_>,
+        token: &crate::SemanticModuleToken,
+    ) -> Result<&'a crate::SemanticModuleEndpoint, BF> {
+        if let Some(endpoint) = sema.stable_module_endpoints.get(token) {
+            return Ok(endpoint);
+        }
+        let failure = if sema
+            .stable_module_endpoints
+            .keys()
+            .any(|candidate| candidate.issuer() == token.issuer())
+        {
+            crate::SemanticStableResolutionFailure::Missing
+        } else {
+            crate::SemanticStableResolutionFailure::ForeignIssuer
+        };
+        Err(BF::StableResolution(failure))
+    }
+
     fn import_type(
         sema: &BodySema<'_>,
         pool: &crate::TypeInternPool,
-        value: &T<crate::SemanticBodyDefinitionIdentity, crate::SemanticBodyModuleIdentity>,
-    ) -> Result<Type, F> {
+        value: &T<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+    ) -> Result<Type, BF> {
         Ok(match value {
             T::I8 => Type::I8,
             T::I16 => Type::I16,
@@ -111,6 +146,7 @@ pub(crate) fn import_staged_body(
                 }
             }
             T::Nominal(identity) => {
+                let identity = definition_endpoint(sema, identity)?;
                 let symbol = sema
                     .interner
                     .get(identity.name.as_ref())
@@ -119,16 +155,20 @@ pub(crate) fn import_staged_body(
                     DK::Struct => Type::new_struct(
                         *sema
                             .structs_by_file_name
-                            .get(&(FileId::new(identity.file_id), symbol))
+                            .get(&(FileId::new(identity.file), symbol))
                             .ok_or(F::MissingNominal)?,
                     ),
                     DK::Enum => Type::new_enum(
                         *sema
                             .enums_by_file_name
-                            .get(&(FileId::new(identity.file_id), symbol))
+                            .get(&(FileId::new(identity.file), symbol))
                             .ok_or(F::MissingNominal)?,
                     ),
-                    _ => return Err(F::NominalKindMismatch),
+                    _ => {
+                        return Err(BF::StableResolution(
+                            crate::SemanticStableResolutionFailure::WrongKind,
+                        ));
+                    }
                 }
             }
             T::Array { element, len } => pool
@@ -141,22 +181,26 @@ pub(crate) fn import_staged_body(
                 .try_intern_ptr_mut(import_type(sema, pool, value)?)
                 .map_err(|_| F::InvalidStructuralType)?,
             T::Module(module) => {
+                let module = module_endpoint(sema, module)?;
                 let id = (0..sema.module_registry.len())
                     .map(|i| ModuleId::new(i as u32))
                     .find(|id| {
-                        sema.module_registry.get_def(*id).file_id == FileId::new(module.file_id)
+                        sema.module_registry.get_def(*id).file_id == FileId::new(module.file)
                     })
-                    .ok_or(F::MissingModule)?;
+                    .ok_or(BF::Semantic(F::MissingModule))?;
                 Type::new_module(id)
             }
-            T::GenericParameter(_) => return Err(F::GenericParameterNeedsDeclarationContext),
+            T::GenericParameter(_) => {
+                return Err(BF::Semantic(F::GenericParameterNeedsDeclarationContext));
+            }
         })
     }
 
     fn resolve_body_function(
         sema: &BodySema<'_>,
-        identity: &crate::SemanticBodyDefinitionIdentity,
+        token: &crate::SemanticDefinitionToken,
     ) -> Result<Spur, BF> {
+        let identity = definition_endpoint(sema, token)?;
         let name = sema
             .interner
             .get(identity.name.as_ref())
@@ -164,7 +208,7 @@ pub(crate) fn import_staged_body(
         if identity.kind == DK::Function {
             return sema
                 .functions_by_file_name
-                .get(&(FileId::new(identity.file_id), name))
+                .get(&(FileId::new(identity.file), name))
                 .copied()
                 .ok_or(BF::Semantic(F::MissingFunction));
         }
@@ -175,7 +219,7 @@ pub(crate) fn import_staged_body(
             .ok_or(BF::Semantic(F::MissingFunction))?;
         let struct_id = sema
             .structs_by_file_name
-            .get(&(FileId::new(identity.file_id), owner))
+            .get(&(FileId::new(identity.file), owner))
             .copied()
             .ok_or(BF::Semantic(F::MissingFunction))?;
         let info = sema
@@ -185,7 +229,11 @@ pub(crate) fn import_staged_body(
             DK::Method => info.has_self && identity.name.as_ref() != "__drop",
             DK::AssociatedFunction => !info.has_self,
             DK::Destructor => info.has_self && identity.name.as_ref() == "__drop",
-            _ => false,
+            _ => {
+                return Err(BF::StableResolution(
+                    crate::SemanticStableResolutionFailure::WrongKind,
+                ));
+            }
         };
         if !expected {
             return Err(BF::Semantic(F::MissingFunction));
@@ -209,29 +257,35 @@ pub(crate) fn import_staged_body(
         body_span,
         &scratch,
         |value| import_type(sema, &scratch, value),
-        |identity| {
+        |token| {
+            let identity = definition_endpoint(sema, token)?;
             if identity.kind != DK::Struct {
-                return Err(BF::WrongNominalKind);
+                return Err(BF::StableResolution(
+                    crate::SemanticStableResolutionFailure::WrongKind,
+                ));
             }
             let name = sema
                 .interner
                 .get(identity.name.as_ref())
                 .ok_or(BF::Semantic(F::MissingNominal))?;
             sema.structs_by_file_name
-                .get(&(FileId::new(identity.file_id), name))
+                .get(&(FileId::new(identity.file), name))
                 .copied()
                 .ok_or(BF::Semantic(F::MissingNominal))
         },
-        |identity| {
+        |token| {
+            let identity = definition_endpoint(sema, token)?;
             if identity.kind != DK::Enum {
-                return Err(BF::WrongNominalKind);
+                return Err(BF::StableResolution(
+                    crate::SemanticStableResolutionFailure::WrongKind,
+                ));
             }
             let name = sema
                 .interner
                 .get(identity.name.as_ref())
                 .ok_or(BF::Semantic(F::MissingNominal))?;
             sema.enums_by_file_name
-                .get(&(FileId::new(identity.file_id), name))
+                .get(&(FileId::new(identity.file), name))
                 .copied()
                 .ok_or(BF::Semantic(F::MissingNominal))
         },

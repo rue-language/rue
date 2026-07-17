@@ -335,11 +335,13 @@ fn assert_structure(scenarios: &[Value]) {
         // producer, so module reuse is represented by the query reuse below
         // rather than synthetic per-module work.
         ("no_change_query", [0, 0, 0, 0, 0, 0, 0, 1]),
-        ("leaf_edit", [1, 6, 6, 0, 6, 0, 1, 0]),
-        ("widely_depended_definition_edit", [1, 6, 6, 0, 6, 0, 1, 0]),
-        ("import_change", [2, 5, 6, 0, 6, 0, 1, 0]),
+        // Opaque bound tokens remove the old textual conversion discard, so
+        // the two semantically unchanged CFGs remain reusable.
+        ("leaf_edit", [1, 6, 6, 0, 4, 2, 1, 0]),
+        ("widely_depended_definition_edit", [1, 6, 6, 0, 4, 2, 1, 0]),
+        ("import_change", [2, 5, 6, 0, 4, 2, 1, 0]),
         ("diagnostic_error_edit", [1, 6, 5, 0, 0, 0, 1, 0]),
-        ("diagnostic_recovery", [2, 5, 6, 0, 6, 0, 1, 0]),
+        ("diagnostic_recovery", [2, 5, 6, 0, 4, 2, 1, 0]),
     ];
     for (name, counts) in expected {
         let work = &get(name)["required_vs_reused_work"];
@@ -362,19 +364,22 @@ fn assert_structure(scenarios: &[Value]) {
         "diagnostic_recovery",
     ] {
         let scenario = get(name);
+        // Stable-definition tokens resolve directly through the issuing bound
+        // definition set. Ordinary source edits therefore rebuild bodies
+        // without the former textual-join conversion discard.
         assert_eq!(
             count(
                 scenario,
                 &["semantic_work", "durable_bodies", "conversion_failures"]
             ),
-            1
+            0
         );
         assert_eq!(
             count(
                 scenario,
                 &["semantic_work", "durable_bodies", "atomic_discards"]
             ),
-            1
+            0
         );
     }
     assert_eq!(

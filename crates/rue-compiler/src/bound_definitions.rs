@@ -374,6 +374,99 @@ impl BoundDefinitionSet {
             .collect()
     }
 
+    pub(crate) fn semantic_definition_endpoints(&self) -> Vec<rue_air::SemanticDefinitionEndpoint> {
+        self.definitions
+            .iter()
+            .enumerate()
+            .map(|(slot, record)| {
+                let key = record.stable_key();
+                rue_air::SemanticDefinitionEndpoint {
+                    token: rue_air::SemanticDefinitionToken::new(self.issuer.id, slot as u32),
+                    file: record.declaration_span.file_id.index(),
+                    name: Arc::from(key.name()),
+                    kind: key.kind(),
+                    owner: key.owner().map(|owner| Arc::from(owner.name())),
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn semantic_module_endpoints(
+        &self,
+        merged: &CanonicalMergedProgram,
+    ) -> Vec<rue_air::SemanticModuleEndpoint> {
+        merged
+            .ast()
+            .modules()
+            .iter()
+            .enumerate()
+            .map(|(slot, module)| rue_air::SemanticModuleEndpoint {
+                token: rue_air::SemanticModuleToken::new(self.issuer.id, slot as u32),
+                file: module.file_id().index(),
+            })
+            .collect()
+    }
+
+    pub(crate) fn semantic_token_for_key(
+        &self,
+        key: &StableDefinitionKey,
+    ) -> Result<rue_air::SemanticDefinitionToken, rue_air::SemanticStableResolutionFailure> {
+        let slot = self
+            .definitions
+            .binary_search_by(|record| record.stable_key().cmp(key))
+            .map_err(|_| rue_air::SemanticStableResolutionFailure::Missing)?;
+        Ok(rue_air::SemanticDefinitionToken::new(
+            self.issuer.id,
+            slot as u32,
+        ))
+    }
+
+    pub(crate) fn key_for_semantic_token(
+        &self,
+        token: rue_air::SemanticDefinitionToken,
+    ) -> Result<&StableDefinitionKey, rue_air::SemanticStableResolutionFailure> {
+        if token.issuer() != self.issuer.id {
+            return Err(rue_air::SemanticStableResolutionFailure::ForeignIssuer);
+        }
+        self.definitions
+            .get(token.slot() as usize)
+            .map(BoundDefinitionRecord::stable_key)
+            .ok_or(rue_air::SemanticStableResolutionFailure::Missing)
+    }
+
+    pub(crate) fn module_token_for(
+        &self,
+        merged: &CanonicalMergedProgram,
+        module: &ModuleId,
+    ) -> Result<rue_air::SemanticModuleToken, rue_air::SemanticStableResolutionFailure> {
+        let slot = merged
+            .ast()
+            .modules()
+            .iter()
+            .position(|candidate| candidate.module_id() == module)
+            .ok_or(rue_air::SemanticStableResolutionFailure::Missing)?;
+        Ok(rue_air::SemanticModuleToken::new(
+            self.issuer.id,
+            slot as u32,
+        ))
+    }
+
+    pub(crate) fn module_for_semantic_token<'a>(
+        &self,
+        merged: &'a CanonicalMergedProgram,
+        token: rue_air::SemanticModuleToken,
+    ) -> Result<&'a ModuleId, rue_air::SemanticStableResolutionFailure> {
+        if token.issuer() != self.issuer.id {
+            return Err(rue_air::SemanticStableResolutionFailure::ForeignIssuer);
+        }
+        merged
+            .ast()
+            .modules()
+            .get(token.slot() as usize)
+            .map(|module| module.module_id())
+            .ok_or(rue_air::SemanticStableResolutionFailure::Missing)
+    }
+
     pub(crate) fn key_for_body_token(
         &self,
         token: rue_air::BodyOwnerToken,

@@ -346,23 +346,20 @@ mod tests {
             0
         );
 
-        let main = output
-            .ordinary_body_exports
-            .iter()
-            .find(|export| {
-                output
-                    .analyzed_body_owners
-                    .iter()
-                    .any(|owner| owner.token() == Some(export.owner))
-                    && export.body.instructions.iter().any(|inst| {
-                        matches!(
-                            &inst.data,
-                            crate::SemanticBodyInstData::Call { function, .. }
-                                if function.name.as_ref() == "leaf"
-                        )
-                    })
-            })
-            .expect("main durable body");
+        let main =
+            output
+                .ordinary_body_exports
+                .iter()
+                .find(|export| {
+                    output
+                        .analyzed_body_owners
+                        .iter()
+                        .any(|owner| owner.token() == Some(export.owner))
+                        && export.body.instructions.iter().any(|inst| {
+                            matches!(&inst.data, crate::SemanticBodyInstData::Call { .. })
+                        })
+                })
+                .expect("main durable body");
         assert!(main.body.strings.is_empty());
         assert!(
             main.body
@@ -484,8 +481,8 @@ mod tests {
             })
             .expect("warning-free main export");
         let epoch = crate::SemanticImportEpoch::<
-            crate::SemanticBodyDefinitionIdentity,
-            std::sync::Arc<str>,
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
         >::new(vec![], vec![], vec![])
         .unwrap();
         let imported = epoch.import_body(&export.body, body_span).unwrap();
@@ -560,8 +557,8 @@ mod tests {
         );
 
         let epoch = crate::SemanticImportEpoch::<
-            crate::SemanticBodyDefinitionIdentity,
-            std::sync::Arc<str>,
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
         >::new(vec![], vec![], vec![])
         .unwrap();
         let imported = epoch
@@ -637,7 +634,7 @@ mod tests {
         let [export] = output.specialized_body_exports.as_slice() else {
             panic!("one deduplicated specialization export expected");
         };
-        assert_eq!(export.identity.base.name.as_ref(), "id");
+        assert_eq!(export.identity.base.issuer(), 0);
         assert_eq!(export.identity.type_arguments.len(), 1);
         assert!(export.identity.value_arguments.is_empty());
         assert_eq!(
