@@ -91,7 +91,7 @@ struct CompletedExport {
     base_info: FunctionInfo,
     function_index: usize,
     warning_free: bool,
-    dependencies: Vec<crate::SemanticBodyDefinitionIdentity>,
+    dependencies: Vec<crate::SemanticDefinitionToken>,
     dependency_boundary_complete: bool,
 }
 
@@ -101,7 +101,7 @@ struct SpecializedBody {
     local_strings: Vec<String>,
     referenced_functions: HashSet<Spur>,
     referenced_methods: HashSet<(StructId, Spur)>,
-    dependencies: Vec<crate::SemanticBodyDefinitionIdentity>,
+    dependencies: Vec<crate::SemanticDefinitionToken>,
     dependency_boundary_complete: bool,
 }
 
@@ -128,8 +128,8 @@ impl Specializer {
         sema: &crate::sema::BodySema<'_>,
     ) -> Result<
         crate::SemanticSpecializationIdentity<
-            crate::SemanticBodyDefinitionIdentity,
-            std::sync::Arc<str>,
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
         >,
         crate::SemanticBodyExportFailure,
     > {
@@ -169,9 +169,8 @@ impl Specializer {
         sema: &mut crate::sema::BodySema<'_>,
     ) -> Option<
         crate::SemanticSpecializedBodyCandidate<
-            crate::SemanticBodyDefinitionIdentity,
-            std::sync::Arc<str>,
-            crate::SemanticBodyModuleIdentity,
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
         >,
     > {
         let identity = Self::stable_identity(key, sema).ok()?;
@@ -817,6 +816,7 @@ fn create_specialized_function(
     ) = analysis?;
 
     let mut dependencies = Vec::new();
+    let mut stable_dependency_resolution_complete = true;
     for event in &sema.body_named_dependencies[body_dependency_start..] {
         let (file_id, name, kind) = match &event.target {
             crate::sema::NamedConstDependencyTargetEvent::ValueConst { file, name } => (
@@ -848,50 +848,55 @@ fn create_specialized_function(
                 crate::StableDefinitionKind::ModuleBinding,
             ),
         };
-        dependencies.push(crate::SemanticBodyDefinitionIdentity {
-            file_id,
-            name: std::sync::Arc::from(name),
-            kind,
-            owner: None,
-        });
+        if let Ok(token) = sema.stable_definition_token(file_id, name, None, kind) {
+            dependencies.push(token);
+        } else {
+            stable_dependency_resolution_complete = false;
+        }
     }
     for event in &sema.declaration_type_dependencies[type_dependency_start..] {
-        dependencies.push(crate::SemanticBodyDefinitionIdentity {
-            file_id: event.target_file,
-            name: std::sync::Arc::from(event.target_name.as_str()),
-            kind: match event.target_kind {
-                crate::sema::DeclarationTypeDependencyTargetKind::Struct => {
-                    crate::StableDefinitionKind::Struct
-                }
-                crate::sema::DeclarationTypeDependencyTargetKind::Enum => {
-                    crate::StableDefinitionKind::Enum
-                }
-                crate::sema::DeclarationTypeDependencyTargetKind::ValueConst => {
-                    crate::StableDefinitionKind::ValueConst
-                }
-            },
-            owner: None,
-        });
+        let kind = match event.target_kind {
+            crate::sema::DeclarationTypeDependencyTargetKind::Struct => {
+                crate::StableDefinitionKind::Struct
+            }
+            crate::sema::DeclarationTypeDependencyTargetKind::Enum => {
+                crate::StableDefinitionKind::Enum
+            }
+            crate::sema::DeclarationTypeDependencyTargetKind::ValueConst => {
+                crate::StableDefinitionKind::ValueConst
+            }
+        };
+        if let Ok(token) =
+            sema.stable_definition_token(event.target_file, event.target_name.as_str(), None, kind)
+        {
+            dependencies.push(token);
+        } else {
+            stable_dependency_resolution_complete = false;
+        }
     }
     for event in &sema.declaration_type_call_head_dependencies[type_call_head_start..] {
-        dependencies.push(crate::SemanticBodyDefinitionIdentity {
-            file_id: event.callable_file,
-            name: std::sync::Arc::from(event.callable_name.as_str()),
-            kind: crate::StableDefinitionKind::Function,
-            owner: None,
-        });
+        if let Ok(token) = sema.stable_definition_token(
+            event.callable_file,
+            event.callable_name.as_str(),
+            None,
+            crate::StableDefinitionKind::Function,
+        ) {
+            dependencies.push(token);
+        } else {
+            stable_dependency_resolution_complete = false;
+        }
     }
     // Builtin type call heads are compiler-schema inputs rather than source
     // definitions; their meaning is covered by the durable schema version.
-    let dependency_boundary_complete = sema.declaration_builtin_type_call_head_dependencies
-        [builtin_call_head_start..]
-        .iter()
-        .all(|event| {
-            matches!(
-                event.builtin,
-                crate::sema::BuiltinTypeCallHead::FixedCapacityString
-            )
-        });
+    let dependency_boundary_complete = stable_dependency_resolution_complete
+        && sema.declaration_builtin_type_call_head_dependencies[builtin_call_head_start..]
+            .iter()
+            .all(|event| {
+                matches!(
+                    event.builtin,
+                    crate::sema::BuiltinTypeCallHead::FixedCapacityString
+                )
+            });
     dependencies.sort();
     dependencies.dedup();
 

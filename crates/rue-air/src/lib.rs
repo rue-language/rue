@@ -79,13 +79,15 @@ pub use sema::{
 };
 pub use semantic_body::{
     SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg, SemanticBodyCandidate,
-    SemanticBodyCandidateInstallWork, SemanticBodyDefinitionIdentity,
+    SemanticBodyCandidateInstallWork,
     SemanticBodyExport, SemanticBodyExportFailure, SemanticBodyImportFailure,
     SemanticBodyImportFailureKind, SemanticBodyInst, SemanticBodyInstData, SemanticBodyMatchArm,
-    SemanticBodyModuleIdentity, SemanticBodyPattern, SemanticBodyPlace, SemanticBodyPlaceRef,
-    SemanticBodyProjection, SemanticBodyRef, SemanticBodyWarning, SemanticImportedBody,
+    SemanticBodyPattern, SemanticBodyPlace, SemanticBodyPlaceRef, SemanticBodyProjection,
+    SemanticBodyRef, SemanticBodyWarning, SemanticDefinitionEndpoint, SemanticDefinitionToken,
+    SemanticImportedBody, SemanticModuleEndpoint, SemanticModuleToken,
     SemanticSpecializationIdentity, SemanticSpecializedBodyCandidate,
     SemanticSpecializedBodyExport, SemanticSpecializedCandidateInstallWork,
+    SemanticStableResolutionFailure,
 };
 pub use semantic_identity::{StableDefinitionKind, StableDefinitionNamespace};
 pub use semantic_import::{

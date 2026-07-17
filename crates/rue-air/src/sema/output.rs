@@ -247,8 +247,8 @@ pub enum ImplicitDropDependencySourceEvent {
     Anonymous,
     Specialization {
         identity: crate::SemanticSpecializationIdentity<
-            crate::SemanticBodyDefinitionIdentity,
-            std::sync::Arc<str>,
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
         >,
     },
     FreeFunction {

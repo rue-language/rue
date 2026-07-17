@@ -236,18 +236,23 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) specialized_body_exports: Vec<crate::SemanticSpecializedBodyExport>,
     pub(crate) reusable_ordinary_bodies: HashMap<
         BodyOwnerToken,
-        crate::SemanticBodyCandidate<
-            crate::SemanticBodyDefinitionIdentity,
-            crate::SemanticBodyModuleIdentity,
-        >,
+        crate::SemanticBodyCandidate<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
     >,
     pub(crate) reusable_specialized_bodies: Vec<
         crate::SemanticSpecializedBodyCandidate<
-            crate::SemanticBodyDefinitionIdentity,
-            std::sync::Arc<str>,
-            crate::SemanticBodyModuleIdentity,
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
         >,
     >,
+    pub(crate) stable_definition_tokens: HashMap<
+        (u32, String, Option<String>, crate::StableDefinitionKind),
+        crate::SemanticDefinitionToken,
+    >,
+    pub(crate) stable_definition_endpoints:
+        HashMap<crate::SemanticDefinitionToken, crate::SemanticDefinitionEndpoint>,
+    pub(crate) stable_module_tokens: HashMap<FileId, crate::SemanticModuleToken>,
+    pub(crate) stable_module_endpoints:
+        HashMap<crate::SemanticModuleToken, crate::SemanticModuleEndpoint>,
     pub(crate) body_dependency_observer: Option<AnalyzedBodyOwnerEvent>,
     pub(crate) body_owner_tokens:
         HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>,
@@ -390,6 +395,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             specialized_body_exports,
             reusable_ordinary_bodies,
             reusable_specialized_bodies,
+            stable_definition_tokens,
+            stable_definition_endpoints,
+            stable_module_tokens,
+            stable_module_endpoints,
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
@@ -444,6 +453,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             specialized_body_exports,
             reusable_ordinary_bodies,
             reusable_specialized_bodies,
+            stable_definition_tokens,
+            stable_definition_endpoints,
+            stable_module_tokens,
+            stable_module_endpoints,
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
@@ -785,6 +798,10 @@ impl<'a> Sema<'a> {
             specialized_body_exports: Vec::new(),
             reusable_ordinary_bodies: HashMap::new(),
             reusable_specialized_bodies: Vec::new(),
+            stable_definition_tokens: HashMap::new(),
+            stable_definition_endpoints: HashMap::new(),
+            stable_module_tokens: HashMap::new(),
+            stable_module_endpoints: HashMap::new(),
             body_dependency_observer: None,
             body_owner_tokens: HashMap::new(),
             body_named_dependencies: Vec::new(),

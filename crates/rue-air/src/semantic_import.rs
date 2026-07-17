@@ -275,7 +275,7 @@ pub struct SemanticImportEpoch<K: Ord, M: Ord> {
 impl<K, M> SemanticImportEpoch<K, M>
 where
     K: Clone + Ord,
-    M: Clone + Ord + AsRef<str>,
+    M: Clone + Ord,
 {
     /// Reconstruct a structured durable body without publishing partial state.
     ///
@@ -311,7 +311,10 @@ where
             body,
             body_span,
             type_pool,
-            |ty| self.import_type_local_with(ty, type_pool, None),
+            |ty| {
+                self.import_type_local_with(ty, type_pool, None)
+                    .map_err(Into::into)
+            },
             |key| match self.nominals.get(key) {
                 Some(LocalNominal::Struct(id)) => Ok(*id),
                 Some(LocalNominal::Enum(_)) => Err(SemanticBodyImportFailure::WrongNominalKind),
@@ -343,7 +346,7 @@ where
         body: &SemanticBody<K, M>,
         body_span: Span,
         type_pool: &TypeInternPool,
-        import_type: impl Fn(&SemanticImportType<K, M>) -> Result<Type, SemanticImportFailure>,
+        import_type: impl Fn(&SemanticImportType<K, M>) -> Result<Type, SemanticBodyImportFailure>,
         struct_id: impl Fn(&K) -> Result<StructId, SemanticBodyImportFailure>,
         enum_id: impl Fn(&K) -> Result<EnumId, SemanticBodyImportFailure>,
         resolve_function: impl Fn(&K) -> Result<Spur, SemanticBodyImportFailure>,
@@ -401,7 +404,7 @@ where
         {
             return Err(F::InvalidBorrowSlot);
         }
-        let return_type = import_type(&body.return_type).map_err(F::Semantic)?;
+        let return_type = import_type(&body.return_type)?;
         let mut air = Air::new(return_type);
         let inst_len = body.instructions.len();
         let place_len = body.places.len();
@@ -434,7 +437,7 @@ where
         };
         for (current, inst) in body.instructions.iter().enumerate() {
             let span = current_anchor(inst.anchor)?;
-            let ty = import_type(&inst.ty).map_err(F::Semantic)?;
+            let ty = import_type(&inst.ty)?;
             let r = |value| check_ref(value, current);
             let binary =
                 |a, b, ctor: fn(AirRef, AirRef) -> AirInstData| Ok::<_, F>(ctor(r(a)?, r(b)?));
@@ -448,9 +451,7 @@ where
                     AirInstData::StringConst(*v)
                 }
                 SemanticBodyInstData::UnitConst => AirInstData::UnitConst,
-                SemanticBodyInstData::TypeConst(v) => {
-                    AirInstData::TypeConst(import_type(v).map_err(F::Semantic)?)
-                }
+                SemanticBodyInstData::TypeConst(v) => AirInstData::TypeConst(import_type(v)?),
                 SemanticBodyInstData::Add(a, b) => binary(*a, *b, AirInstData::Add)?,
                 SemanticBodyInstData::Sub(a, b) => binary(*a, *b, AirInstData::Sub)?,
                 SemanticBodyInstData::Mul(a, b) => binary(*a, *b, AirInstData::Mul)?,
@@ -639,7 +640,7 @@ where
                 },
                 SemanticBodyInstData::IntCast { value, from_ty } => AirInstData::IntCast {
                     value: r(*value)?,
-                    from_ty: import_type(from_ty).map_err(F::Semantic)?,
+                    from_ty: import_type(from_ty)?,
                 },
                 SemanticBodyInstData::Drop { value } => AirInstData::Drop { value: r(*value)? },
                 SemanticBodyInstData::StorageLive { slot } => {
@@ -671,7 +672,7 @@ where
         // instructions. Publish the instruction stream first, then construct
         // places atomically once every index reference has an owner.
         for place in body.places.iter() {
-            let base_type = import_type(&place.base_type).map_err(F::Semantic)?;
+            let base_type = import_type(&place.base_type)?;
             let mut projections = Vec::with_capacity(place.projections.len());
             for projection in place.projections.iter() {
                 projections.push(match projection {
@@ -687,7 +688,7 @@ where
                             return Err(F::InvalidInstructionReference);
                         }
                         AirProjection::Index {
-                            array_type: import_type(array_type).map_err(F::Semantic)?,
+                            array_type: import_type(array_type)?,
                             index: AirRef::from_raw(*index),
                         }
                     }
@@ -697,7 +698,7 @@ where
         }
         let mut drops = Vec::with_capacity(body.param_drops.len());
         for (slot, ty) in body.param_drops.iter() {
-            drops.push((*slot, import_type(ty).map_err(F::Semantic)?));
+            drops.push((*slot, import_type(ty)?));
         }
         air.set_param_drops(drops);
         for slot in body.borrow_slots.iter() {
@@ -763,8 +764,8 @@ where
             );
         }
         let mut modules = BTreeMap::new();
-        for key in module_keys {
-            let path = key.as_ref().to_owned();
+        for (index, key) in module_keys.into_iter().enumerate() {
+            let path = format!("semantic-module-{index}");
             let id = module_registry.push_canonical(crate::ModuleDef::new(
                 path.clone(),
                 path.clone(),

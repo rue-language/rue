@@ -1034,6 +1034,29 @@ fn finish_canonical_analysis(
             ),
         )
     })?;
+    let bound = bound
+        .install_stable_identity_endpoints(
+            &authoritative_definitions.semantic_definition_endpoints(),
+            &authoritative_definitions.semantic_module_endpoints(merged),
+        )
+        .map_err(|failure| {
+            CanonicalSemanticFailure::declaration(
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    rue_error::ErrorKind::InternalError(format!(
+                        "failed to install authoritative stable identity endpoints: {failure:?}"
+                    )),
+                )),
+                declaration_stage_work(
+                    declaration_index,
+                    binding,
+                    manifest_work,
+                    body_owner_tokens,
+                    BodyAnalysisWork::default(),
+                    request_stable_ids,
+                    declaration_reuse,
+                ),
+            )
+        })?;
     let token_by_key = authoritative_definitions
         .body_owner_endpoints()
         .into_iter()
@@ -1051,32 +1074,18 @@ fn finish_canonical_analysis(
             })
         })
         .collect();
-    let modules = merged
-        .ast()
-        .modules()
-        .iter()
-        .map(|module| (module.module_id().as_str().to_owned(), module.file_id()))
-        .collect::<std::collections::BTreeMap<_, _>>();
     let bound = bound.install_ordinary_body_candidates(
         air_candidates,
-        |key: &crate::StableDefinitionKey| {
-            let record = authoritative_definitions.definition_by_key(key)?;
-            let kind = key.kind();
-            if matches!(
-                kind,
-                crate::StableDefinitionKind::ValueConst
-                    | crate::StableDefinitionKind::ModuleBinding
-            ) {
-                return None;
-            }
-            Some(rue_air::SemanticBodyDefinitionIdentity {
-                file_id: record.declaration_span().file_id.index(),
-                name: std::sync::Arc::from(key.name()),
-                kind,
-                owner: key.owner().map(|owner| std::sync::Arc::from(owner.name())),
-            })
+        |key: &crate::StableDefinitionKey| authoritative_definitions.semantic_token_for_key(key),
+        |path: &Arc<str>| {
+            let module = merged
+                .ast()
+                .modules()
+                .iter()
+                .find(|module| module.module_id().as_str() == path.as_ref())
+                .ok_or(rue_air::SemanticStableResolutionFailure::Missing)?;
+            authoritative_definitions.module_token_for(merged, module.module_id())
         },
-        |module: &std::sync::Arc<str>| modules.get(module.as_ref()).copied(),
     );
     let specialized_air_candidates = durable_specialized_body_candidates
         .into_iter()
@@ -1090,17 +1099,16 @@ fn finish_canonical_analysis(
         .collect();
     let (bound, specialized_install_work) = bound.install_specialized_body_candidates(
         specialized_air_candidates,
-        |key: &crate::StableDefinitionKey| {
-            let record = authoritative_definitions.definition_by_key(key)?;
-            let kind = key.kind();
-            Some(rue_air::SemanticBodyDefinitionIdentity {
-                file_id: record.declaration_span().file_id.index(),
-                name: Arc::from(key.name()),
-                kind,
-                owner: key.owner().map(|owner| Arc::from(owner.name())),
-            })
+        |key: &crate::StableDefinitionKey| authoritative_definitions.semantic_token_for_key(key),
+        |path: &Arc<str>| {
+            let module = merged
+                .ast()
+                .modules()
+                .iter()
+                .find(|module| module.module_id().as_str() == path.as_ref())
+                .ok_or(rue_air::SemanticStableResolutionFailure::Missing)?;
+            authoritative_definitions.module_token_for(merged, module.module_id())
         },
-        |module: &Arc<str>| modules.get(module.as_ref()).copied(),
     );
     durable_body_reuse_work.specialized_mapping_attempts += specialized_install_work.attempts;
     durable_body_reuse_work.specialized_mapping_successes += specialized_install_work.successes;

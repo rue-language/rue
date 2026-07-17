@@ -8,35 +8,92 @@ use std::sync::Arc;
 use crate::ParamSlotModes;
 use crate::{
     AirArgMode, AirPlaceBase, BodyOwnerToken, SemanticImportConstValue, SemanticImportFailure,
-    SemanticImportType, StableDefinitionKind,
+    SemanticImportType,
 };
 
-/// Request-independent textual identity used only until the compiler joins it
-/// to its authoritative stable-definition universe.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SemanticBodyDefinitionIdentity {
-    pub file_id: u32,
+/// Issuer-scoped snapshot authorization for one stable definition.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticDefinitionToken {
+    issuer: u64,
+    slot: u32,
+}
+
+impl std::fmt::Debug for SemanticDefinitionToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("SemanticDefinitionToken")
+            .field(&self.slot)
+            .finish()
+    }
+}
+
+impl SemanticDefinitionToken {
+    pub fn new(issuer: u64, slot: u32) -> Self {
+        Self { issuer, slot }
+    }
+    pub fn issuer(self) -> u64 {
+        self.issuer
+    }
+    pub fn slot(self) -> u32 {
+        self.slot
+    }
+}
+
+/// Issuer-scoped snapshot authorization for one logical module.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticModuleToken {
+    issuer: u64,
+    slot: u32,
+}
+
+impl std::fmt::Debug for SemanticModuleToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("SemanticModuleToken")
+            .field(&self.slot)
+            .finish()
+    }
+}
+
+impl SemanticModuleToken {
+    pub fn new(issuer: u64, slot: u32) -> Self {
+        Self { issuer, slot }
+    }
+    pub fn issuer(self) -> u64 {
+        self.issuer
+    }
+    pub fn slot(self) -> u32 {
+        self.slot
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticDefinitionEndpoint {
+    pub token: SemanticDefinitionToken,
+    pub file: u32,
     pub name: Arc<str>,
-    pub kind: StableDefinitionKind,
+    pub kind: crate::StableDefinitionKind,
     pub owner: Option<Arc<str>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SemanticBodyModuleIdentity {
-    pub file_id: u32,
-    pub path: Arc<str>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemanticModuleEndpoint {
+    pub token: SemanticModuleToken,
+    pub file: u32,
 }
 
-impl AsRef<str> for SemanticBodyModuleIdentity {
-    fn as_ref(&self) -> &str {
-        &self.path
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SemanticStableResolutionFailure {
+    Missing,
+    Ambiguous,
+    WrongKind,
+    ForeignIssuer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticBodyExport {
     pub owner: BodyOwnerToken,
-    pub body: SemanticBody<SemanticBodyDefinitionIdentity, Arc<str>>,
+    pub body: SemanticBody<SemanticDefinitionToken, SemanticModuleToken>,
 }
 
 /// Request-independent identity of one completed generic specialization.
@@ -52,9 +109,9 @@ pub struct SemanticSpecializationIdentity<K, M> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticSpecializedBodyExport {
-    pub identity: SemanticSpecializationIdentity<SemanticBodyDefinitionIdentity, Arc<str>>,
-    pub body: SemanticBody<SemanticBodyDefinitionIdentity, Arc<str>>,
-    pub dependencies: Arc<[SemanticBodyDefinitionIdentity]>,
+    pub identity: SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
+    pub body: SemanticBody<SemanticDefinitionToken, SemanticModuleToken>,
+    pub dependencies: Arc<[SemanticDefinitionToken]>,
     pub dependency_boundary_complete: bool,
 }
 
@@ -112,6 +169,10 @@ pub enum SemanticBodyExportFailure {
     ForeignSpan,
     UnsupportedWarningMetadata,
     SizeOverflow,
+    MissingStableIdentity,
+    AmbiguousStableIdentity,
+    WrongStableIdentityKind,
+    ForeignStableIdentityIssuer,
 }
 
 pub type SemanticBodyRef = u32;
@@ -615,6 +676,7 @@ pub struct SemanticBodyCandidateInstallWork {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticBodyImportFailure {
     Semantic(super::SemanticImportFailure),
+    StableResolution(SemanticStableResolutionFailure),
     UnsupportedGenericCall,
     InvalidInstructionReference,
     ForwardInstructionReference,
