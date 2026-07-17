@@ -1,11 +1,11 @@
 ---
 id: 0046
 title: "Delete flat multi-file mode (all cross-file references go through @import)"
-status: accepted
+status: implemented
 tags: [modules, semantics, cli, language-shape, ergonomics]
 created: 2026-07-03
 accepted: 2026-07-03
-implemented:
+implemented: 2026-07-16
 spec-sections: ["10.3 (visibility)", "10.5 (program composition)"]
 supersedes:
 relates: ["ADR-0023", "ADR-0026", "RUE-180", "RUE-181", "RUE-116"]
@@ -15,9 +15,16 @@ relates: ["ADR-0023", "ADR-0026", "RUE-180", "RUE-181", "RUE-116"]
 
 ## Status
 
-Accepted — Steve, 2026-07-02 ("i want to delete flat mode entirely"), tracked by
-RUE-181. This ADR designs **how** the deletion happens; it does not implement it.
-Implementation is broken into tracked tasks after this ADR lands.
+Implemented — 2026-07-16 (RUE-767). Accepted by Steve, 2026-07-02 ("i want to
+delete flat mode entirely"), tracked by RUE-181. Flat mode's name-resolution
+fallback was already gone by the time implementation began: RUE-180 (privacy
+everywhere), RUE-140 (per-file module membership), and RUE-572 (module-scoped
+top-level names) had each removed a piece, so unqualified cross-file references
+were already unresolved-name errors. The one surviving surface was the CLI
+**input** form — extra positional source files listed on the command line —
+which RUE-767 removed: the driver now accepts exactly one root source and
+refuses additional positional sources. Per Open Question 1, the warn phase was
+collapsed into the single-step deletion (the corpus migrated directly).
 
 ## Summary
 
@@ -224,24 +231,29 @@ or silently-OK (pub) depending on visibility.
 
 ## Implementation Phases
 
-Implementation is deferred; these phases are the task breakdown for RUE-181's
-follow-up issues (filed after this ADR lands, not before).
+These phases were the task breakdown for RUE-181's follow-up issues. In the end
+the warn phase was skipped (Open Question 1) and the resolution fallback was
+already gone through earlier work, so the remaining implementation was the CLI
+input-surface removal, spec update, and corpus/docs migration under RUE-767.
 
-- [ ] **Phase A: Deprecation warning** — add `WarningKind::FlatNamespaceReference`
-      (name + suggestion), emit it at the resolver site where a bare name resolves
-      to another file, on by default; UI test cases pinning the message. — RUE-181
-      follow-up
-- [ ] **Phase B: Delete resolution fallback** — remove the cross-file scan from
-      name resolution; allocate the new unresolved-cross-file diagnostic code;
-      narrow E0436 to intra-module. — RUE-181 follow-up
-- [ ] **Phase C: Spec update** — strike 10.3:8 and 10.5:2; rewrite 10.5:1 to
-      intra-module collision; adjust 10.3:7/10.5:4 wording; keep traceability 100%
-      (retarget or replace the flat-namespace example cases). — RUE-181 follow-up
-- [ ] **Phase D: Test-corpus migration** — add `@import` to the flat-mode cases in
-      the harnesses (see blast radius). — RUE-181 follow-up
-- [ ] **Phase E: Docs** — update CLAUDE.md "Multi-File Compilation" section and
-      ADR-0023/0026 cross-references to describe the file list as a module-graph
-      seed, not a shared namespace. — RUE-181 follow-up
+- [x] **Phase A: Deprecation warning** — skipped. Because the name-resolution
+      fallback was already removed by RUE-180/RUE-140/RUE-572, there was no
+      bare-cross-file-reference site left to warn at; the deletion was a
+      single-step CLI-surface removal, not a warn→error migration.
+- [x] **Phase B: Delete resolution fallback** — completed ahead of RUE-767 by
+      RUE-180 (privacy everywhere), RUE-140 (per-file module membership), and
+      RUE-572 (module-scoped top-level names); unqualified cross-file references
+      are ordinary unresolved-name errors (E0201/E0202/E0204) and E0436 is
+      per-file (spec 10.5:1).
+- [x] **Phase C: Spec update** — 10.5:1/10.5:2 already state per-file
+      (module-scoped) collision and resolution; RUE-767 rewrote the
+      program-composition prose to describe the single-root driver contract and
+      the refusal of extra positional sources. Traceability stays 100%.
+- [x] **Phase D: Test-corpus migration** — the flat-mode cases across the CLI,
+      spec, and UI harnesses were migrated to `@import` (or converted to assert
+      the new extra-source refusal) under PR #1705, RUE-920, and RUE-767.
+- [x] **Phase E: Docs** — AGENTS.md and the docs/scripts multi-positional
+      examples were updated to the single-root workflow under RUE-767.
 
 ## Blast Radius (measured on trunk @ this ADR)
 

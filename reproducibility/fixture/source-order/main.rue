@@ -1,3 +1,9 @@
+// The noise siblings enter the compilation through the root's import graph
+// (flat positional listing was removed with flat mode, ADR-0046 / RUE-767).
+// They are intentionally unused: their only job is to perturb the interner.
+const _amber = @import("noise-a.rue");
+const _violet = @import("noise-b.rue");
+
 fn rotate(value: i32) -> i32 {
     value * 3 + 1
 }

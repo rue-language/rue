@@ -127,9 +127,11 @@ Important design properties:
 - Built-in types are synthetic structs that follow ordinary semantic paths.
   `StrBuf` is the canonical growable-string source type; its algorithms and
   destructor are source-defined rather than runtime ABI exports.
-- A program is compiled from its root module's transitive `@import` graph.
-  Do not add new tests or examples that rely on legacy positional flat-file
-  lookup.
+- A program is compiled from its root module's transitive `@import` graph. The
+  driver accepts exactly one positional root source (ADR-0046 / RUE-767);
+  additional positional `.rue` arguments are refused. Reach helper modules with
+  `@import`, and bound build-system reads with `--source-manifest` — never a
+  second positional source.
 
 Crate ownership, when locating changes:
 

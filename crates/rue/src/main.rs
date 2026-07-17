@@ -357,10 +357,12 @@ impl ErrorFormat {
 }
 
 struct Options {
-    /// Source files named positionally on the command line. The first path is
-    /// the root source; additional paths are legacy flat-mode inputs and must
-    /// not also be reachable through `@import`.
-    source_paths: Vec<String>,
+    /// The single root source file named positionally on the command line. The
+    /// compiler builds exactly one root module; every other file is reached
+    /// through its `@import` graph. The legacy flat-mode surface, where extra
+    /// positional paths seeded a shared namespace, was removed (ADR-0046 /
+    /// RUE-767) — the driver now refuses additional positional sources.
+    source_path: String,
     /// Optional build-system-facing manifest of source files the compiler may
     /// read while resolving the root module's import graph.
     source_manifest_path: Option<String>,
@@ -402,8 +404,11 @@ fn print_version() {
 fn usage_text() -> String {
     format!(
         "\
-Usage: rue [options] <source.rue> [output]
+Usage: rue [options] <root.rue> [output]
        rue [options] <root.rue> -o <output>
+
+The compiler takes exactly one root source file and discovers every other
+file through its @import graph; pass build-system inputs with --source-manifest.
 
 Options:
   -o, --output <path>  Set output path
@@ -563,6 +568,40 @@ fn parse_jobs_value(jobs_str: &str) -> Option<usize> {
     }
 
     Some(jobs)
+}
+
+/// The sole accepted positional source: the root module. Returns `None` when
+/// the caller passed additional positional source files — the removed flat-mode
+/// input surface (ADR-0046 / RUE-767) — so the caller can emit the migration
+/// diagnostic. `positional` is never empty at the call sites (checked earlier).
+fn single_root_source(positional: &[String]) -> Option<String> {
+    match positional {
+        [root] => Some(root.clone()),
+        _ => None,
+    }
+}
+
+/// The migration diagnostic for the removed flat-mode positional input surface.
+/// The compiler builds exactly one root module and reaches every other file
+/// through its `@import` graph; a build system that needs to bound the readable
+/// file set passes `--source-manifest` (ADR-0046 / RUE-767). Names the first
+/// offending extra argument and points at the single-root invocation. Kept pure
+/// (returns the text) so its exact wording can be pinned by a unit test.
+fn extra_positional_sources_diagnostic(root: &str, extra: &str) -> String {
+    format!(
+        "Error: unexpected extra source file '{extra}': the compiler builds one root module and its @import graph\n\
+         Compile the root source only; reach helper modules with @import, or list build inputs with --source-manifest:\n\
+         \x20      rue {root} -o <output>"
+    )
+}
+
+/// Emit the removed-flat-mode migration diagnostic for `positional`, whose first
+/// element is the root source and whose second is the first offending extra.
+fn refuse_extra_positional_sources(positional: &[String]) {
+    eprintln!(
+        "{}",
+        extra_positional_sources_diagnostic(&positional[0], &positional[1])
+    );
 }
 
 /// Parse arguments from a slice of strings (for testing).
@@ -767,25 +806,41 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         return ParseResult::Error;
     }
 
-    // Determine source files and output path based on argument count and -o flag
+    // Determine the single root source and output path from the positional
+    // args and the -o flag. Every driver form accepts exactly one positional
+    // source: the compiler builds one root module and reaches the rest through
+    // @import (ADR-0046 / RUE-767). Additional positional .rue arguments are
+    // the removed flat-mode input surface and are refused.
     let explicit_output = output_path.is_some();
-    let (source_paths, final_output_path) = if let Some(out) = output_path {
-        // -o was specified: all positional args are source files
-        (positional, out)
+    let (source_path, final_output_path) = if let Some(out) = output_path {
+        // -o names the output explicitly, so every positional is a source.
+        match single_root_source(&positional) {
+            Some(root) => (root, out),
+            None => {
+                refuse_extra_positional_sources(&positional);
+                return ParseResult::Error;
+            }
+        }
     } else if !emit_stages.is_empty() {
         // --emit produces no executable, so there is no output positional:
-        // every positional arg is a source file, including the second path
-        // that legacy two-positional mode would otherwise treat as output
-        // (RUE-130).
-        (positional, "a.out".to_string())
+        // every positional is a source file.
+        match single_root_source(&positional) {
+            Some(root) => (root, "a.out".to_string()),
+            None => {
+                refuse_extra_positional_sources(&positional);
+                return ParseResult::Error;
+            }
+        }
     } else if positional.len() == 1 {
-        // Single source file, no -o: default output to a.out
-        (positional, "a.out".to_string())
+        // Single source file, no -o: default output to a.out.
+        (positional.into_iter().next().unwrap(), "a.out".to_string())
     } else if positional.len() == 2 {
-        // Two positional args, no -o: backwards compatible mode
-        // First is source, second is output — but NEVER treat a .rue file as
-        // the output. Refusing `rue a.rue b.rue` protects the second source
-        // from being overwritten by the compiled binary (RUE-130).
+        // Two positional args, no -o: the backwards-compatible
+        // `rue <source> <output>` form. First is source, second is output —
+        // but NEVER treat a .rue file as the output. Refusing `rue a.rue b.rue`
+        // protects the second source from being overwritten by the compiled
+        // binary (RUE-130); helper modules are reached through @import, never a
+        // second positional source (RUE-767).
         if positional[1].ends_with(".rue") {
             eprintln!(
                 "Error: refusing to use '{}' as the output path: it looks like a source file",
@@ -797,14 +852,11 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         }
         let mut pos = positional;
         let out = pos.pop().unwrap();
-        (pos, out)
+        (pos.pop().unwrap(), out)
     } else {
-        // Multiple source files without -o: error. The root-module workflow is
-        // `rue main.rue -o output`; helper modules are discovered through
-        // `@import`, not by listing them positionally.
-        eprintln!("Error: multiple source files require an explicit root-module compile");
-        eprintln!("Compile the root source and import helper modules with @import:");
-        eprintln!("       rue {} -o <output>", positional[0]);
+        // Three or more positional args without -o: the extra sources are the
+        // removed flat-mode input surface (RUE-767).
+        refuse_extra_positional_sources(&positional);
         return ParseResult::Error;
     };
 
@@ -834,7 +886,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     };
 
     ParseResult::Options(Options {
-        source_paths,
+        source_path,
         source_manifest_path,
         output_path: final_output_path,
         emit_stages,
@@ -1496,7 +1548,6 @@ fn validate_manifest_allows_source(
 
 #[derive(Debug)]
 struct ImportDiscoveryResult {
-    mixed_imports: Vec<PathBuf>,
     source_snapshot: SourceSnapshot,
     revision: Arc<ImportDiscoveryRevisionArtifact>,
     session: CompilerSession,
@@ -1509,43 +1560,30 @@ struct ImportDiscoveryResult {
 /// physical observation transactions; the compiler owns recognition,
 /// candidate order, identity assembly, closure, and canonical outcomes.
 ///
-/// Returns non-root positional sources that were also reached through an
-/// import. That mixed mode is rejected by the CLI after discovery (RUE-434),
-/// because the file should be part of the root import graph, not also an
-/// additional flat positional input.
+/// The CLI accepts exactly one root source (ADR-0046 / RUE-767); every other
+/// file enters the compilation only through the root's `@import` graph, which
+/// discovery loads below. There is therefore no set of "extra positional
+/// sources" to reconcile against the import graph — the flat-mode surface that
+/// once needed that reconciliation (RUE-434) was removed.
 fn discover_and_load_imports(
-    sources: &[(String, String)],
+    root_source: &str,
     source_manifest: Option<&SourceManifest>,
     std_root: Option<&Path>,
     error_format: ErrorFormat,
 ) -> Result<ImportDiscoveryResult, ()> {
-    use std::collections::HashSet;
-
-    // Preserve the compiler API boundary's positional-source validation before
-    // discovery aliases physical identities. In particular, `main.rue` and
-    // `./main.rue` are duplicate CLI inputs even though discovery would
-    // correctly recognize them as the same physical source.
-    let physical_paths: HashMap<_, _> = sources
-        .iter()
-        .enumerate()
-        .map(|(index, (path, _))| (FileId::new((index + 1) as u32), path.clone()))
-        .collect();
-    let logical_paths: HashMap<_, _> = sources
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            (
-                FileId::new((index + 1) as u32),
-                format!("positional-{}", index + 1),
-            )
-        })
-        .collect();
+    // Validate the root source's span representability before discovery aliases
+    // physical identities. With a single positional source there are no
+    // duplicate CLI inputs left to detect here; discovery still recognizes
+    // `main.rue` and `./main.rue` as the same physical source when one is
+    // reached through the other's import graph.
+    let physical_paths: HashMap<_, _> = HashMap::from([(FileId::new(1), root_source.to_string())]);
+    let logical_paths: HashMap<_, _> = HashMap::from([(FileId::new(1), "root".to_string())]);
     if let Err(error) = SourceMetadata::new(FileId::new(1), physical_paths, logical_paths) {
         DiagnosticOutput::new(error_format, Vec::new()).print_errors(&CompileErrors::from(error));
         return Err(());
     }
 
-    let root_path = normalize_lexical_path(Path::new(&sources[0].0));
+    let root_path = normalize_lexical_path(Path::new(root_source));
     let root_dir = root_path
         .parent()
         .unwrap_or_else(|| Path::new("/"))
@@ -1591,45 +1629,9 @@ fn discover_and_load_imports(
     .map_err(|error| {
         eprintln!("Error: {error}");
     })?;
-    let explicit_non_root: HashSet<PathBuf> = sources
-        .iter()
-        .skip(1)
-        .filter_map(|(path, _)| fs::canonicalize(path).ok())
-        .collect();
-    for (path, _) in sources.iter().skip(1) {
-        let canonical = fs::canonicalize(path).map_err(|error| {
-            eprintln!("Error reading {path}: {error}");
-        })?;
-        if source_manifest.is_some_and(|manifest| !manifest.allows_canonical(&canonical)) {
-            eprintln!(
-                "Error: positional source escapes the source manifest after canonicalization: {path}"
-            );
-            return Err(());
-        }
-        let read = stable_read_to_string(&canonical).map_err(|error| match error {
-            StableReadError::Io(error) => eprintln!("Error reading {path}: {error}"),
-            StableReadError::Changed => {
-                eprintln!("Error reading {path}: source changed during read")
-            }
-        })?;
-        let requested = normalize_lexical_path(Path::new(path));
-        assembler
-            .add_explicit(
-                requested.to_string_lossy().as_ref(),
-                canonical.to_string_lossy().as_ref(),
-                read.identity,
-                read.fingerprint,
-                Arc::new(read.source),
-            )
-            .map_err(|error| {
-                eprintln!("Error: {error}");
-            })?;
-    }
 
     let mut ledger = ImportObservationLedger::default();
     let mut staging = CompilerSession::new();
-    let mut mixed_imports = Vec::new();
-    let mut mixed_seen = HashSet::new();
     let final_plan;
     loop {
         let snapshot = assembler.snapshot().map_err(|error| {
@@ -1738,12 +1740,6 @@ fn discover_and_load_imports(
             final_plan = plan;
             break;
         }
-        for accepted in plan.accepted_sources(&ledger) {
-            let canonical = PathBuf::from(accepted.canonical_path());
-            if explicit_non_root.contains(&canonical) && mixed_seen.insert(canonical.clone()) {
-                mixed_imports.push(canonical);
-            }
-        }
         let added = assembler.add_plan_reads(&plan, &ledger).map_err(|error| {
             eprintln!("Error: {error}");
         })?;
@@ -1785,7 +1781,6 @@ fn discover_and_load_imports(
         }
     };
     Ok(ImportDiscoveryResult {
-        mixed_imports,
         source_snapshot: snapshot,
         revision: closed,
         session: staging,
@@ -1848,20 +1843,11 @@ fn main() {
         None => None,
     };
 
-    for (index, path) in options.source_paths.iter().enumerate() {
-        let role = if index == 0 { "root" } else { "positional" };
-        if validate_manifest_allows_source(source_manifest.as_ref(), path, role).is_err() {
-            std::process::exit(1);
-        }
+    if validate_manifest_allows_source(source_manifest.as_ref(), &options.source_path, "root")
+        .is_err()
+    {
+        std::process::exit(1);
     }
-
-    // Discovery performs the accepted stable-read transaction for every root
-    // and positional source; keep only the requested spellings here.
-    let sources: Vec<(String, String)> = options
-        .source_paths
-        .iter()
-        .map(|path| (path.clone(), String::new()))
-        .collect();
 
     // Discover and load @import-ed modules from disk, transitively. Sema
     // resolves imports only against already-loaded files, so without this
@@ -1879,7 +1865,7 @@ fn main() {
     let mut import_discovery = {
         let _compile = compile_span.enter();
         match discover_and_load_imports(
-            &sources,
+            &options.source_path,
             source_manifest.as_ref(),
             captured_std_root.as_deref(),
             options.error_format,
@@ -1888,23 +1874,6 @@ fn main() {
             Err(()) => std::process::exit(1),
         }
     };
-    if import_discovery.revision.status() == ImportDiscoveryRevisionStatus::ClosedValid
-        && !import_discovery.mixed_imports.is_empty()
-    {
-        eprintln!(
-            "Error: source files listed after the root must not also be loaded through @import"
-        );
-        for path in &import_discovery.mixed_imports {
-            eprintln!("  imported and explicitly listed: {}", path.display());
-        }
-        eprintln!("Compile the root source only and let @import discover helper modules:");
-        eprintln!(
-            "       rue {} -o {}",
-            options.source_paths[0], options.output_path
-        );
-        eprintln!("Build-system source manifests are tracked separately from positional inputs.");
-        std::process::exit(1);
-    }
     let source_snapshot = import_discovery.source_snapshot.clone();
 
     // Create multi-file diagnostic formatters from the snapshot's borrowed
@@ -2098,14 +2067,9 @@ fn main() {
                     LinkerMode::Internal => "internal".to_string(),
                     LinkerMode::System(cmd) => cmd.clone(),
                 };
-                let source_str = if options.source_paths.len() == 1 {
-                    options.source_paths[0].clone()
-                } else {
-                    format!("{} files", options.source_paths.len())
-                };
                 println!(
                     "Compiled {} -> {} (target: {}, linker: {})",
-                    source_str, options.output_path, options.target, linker_str
+                    options.source_path, options.output_path, options.target, linker_str
                 );
             }
 
@@ -2520,7 +2484,7 @@ mod tests {
             "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.value() }\n",
         );
         dir.write("helper.rue", "pub fn value() -> i32 { 0 }\n");
-        let sources = vec![(main.to_string_lossy().into_owned(), String::new())];
+        let root_source = main.to_string_lossy().into_owned();
         let data = timing::TimingData::new();
         let subscriber =
             tracing_subscriber::registry().with(timing::TimingLayer::new(data.clone()));
@@ -2529,7 +2493,7 @@ mod tests {
             let compile_span = tracing::info_span!("compile", target = "test");
             let mut discovery = {
                 let _compile = compile_span.enter();
-                discover_and_load_imports(&sources, None, None, ErrorFormat::Text).unwrap()
+                discover_and_load_imports(&root_source, None, None, ErrorFormat::Text).unwrap()
             };
             {
                 let _compile = compile_span.enter();
@@ -2729,14 +2693,14 @@ mod tests {
     #[test]
     fn parse_source_file_only() {
         let opts = unwrap_options(parse_args_from(&["source.rue"]));
-        assert_eq!(opts.source_paths, vec!["source.rue"]);
+        assert_eq!(opts.source_path, "source.rue");
         assert_eq!(opts.output_path, "a.out");
     }
 
     #[test]
     fn parse_source_and_output() {
         let opts = unwrap_options(parse_args_from(&["source.rue", "output"]));
-        assert_eq!(opts.source_paths, vec!["source.rue"]);
+        assert_eq!(opts.source_path, "source.rue");
         assert_eq!(opts.output_path, "output");
     }
 
@@ -2747,7 +2711,7 @@ mod tests {
             "sources.manifest",
             "source.rue",
         ]));
-        assert_eq!(opts.source_paths, vec!["source.rue"]);
+        assert_eq!(opts.source_path, "source.rue");
         assert_eq!(
             opts.source_manifest_path.as_deref(),
             Some("sources.manifest")
@@ -2767,26 +2731,44 @@ mod tests {
         assert!(is_error(&parse_args_from(&[])));
     }
 
-    // ========== Multi-file argument parsing tests ==========
+    // ========== Positional source acceptance tests ==========
+    //
+    // The flat-mode multi-positional input surface was removed (ADR-0046 /
+    // RUE-767): every driver form accepts exactly one root source and refuses
+    // additional positional .rue arguments.
 
     #[test]
-    fn parse_multi_file_with_output_flag() {
-        let opts = unwrap_options(parse_args_from(&["a.rue", "b.rue", "-o", "output"]));
-        assert_eq!(opts.source_paths, vec!["a.rue", "b.rue"]);
-        assert_eq!(opts.output_path, "output");
+    fn parse_extra_source_with_output_flag_refused() {
+        // -o names the output, so a second positional is an extra source and
+        // is refused (RUE-767); before, both were accepted as flat inputs.
+        assert!(is_error(&parse_args_from(&[
+            "a.rue", "b.rue", "-o", "output"
+        ])));
     }
 
     #[test]
-    fn parse_multi_file_with_output_long_flag() {
-        let opts = unwrap_options(parse_args_from(&["a.rue", "b.rue", "--output", "out"]));
-        assert_eq!(opts.source_paths, vec!["a.rue", "b.rue"]);
-        assert_eq!(opts.output_path, "out");
+    fn parse_extra_source_with_output_long_flag_refused() {
+        assert!(is_error(&parse_args_from(&[
+            "a.rue", "b.rue", "--output", "out",
+        ])));
     }
 
     #[test]
     fn parse_multi_file_without_output_flag_error() {
-        // Three positional args without -o should error
+        // Three positional args without -o should error (RUE-767).
         assert!(is_error(&parse_args_from(&["a.rue", "b.rue", "c.rue"])));
+    }
+
+    #[test]
+    fn extra_positional_sources_diagnostic_exact_wording() {
+        // Pin the exact migration diagnostic (RUE-767). The CLI/UI harnesses can
+        // only substring-match, so this golden lives here.
+        assert_eq!(
+            extra_positional_sources_diagnostic("main.rue", "helper.rue"),
+            "Error: unexpected extra source file 'helper.rue': the compiler builds one root module and its @import graph\n\
+             Compile the root source only; reach helper modules with @import, or list build inputs with --source-manifest:\n\
+             \x20      rue main.rue -o <output>"
+        );
     }
 
     #[test]
@@ -2812,37 +2794,37 @@ mod tests {
     fn parse_distinct_output_and_input_ok() {
         // A genuinely different output path must still be accepted.
         let opts = unwrap_options(parse_args_from(&["prog.rue", "-o", "prog"]));
-        assert_eq!(opts.source_paths, vec!["prog.rue"]);
+        assert_eq!(opts.source_path, "prog.rue");
         assert_eq!(opts.output_path, "prog");
     }
 
     #[test]
-    fn parse_multi_file_with_options() {
-        let opts = unwrap_options(parse_args_from(&[
+    fn parse_multi_file_with_options_refused() {
+        // Options interleaved with three positional sources still refuse the
+        // extras (RUE-767).
+        assert!(is_error(&parse_args_from(&[
             "-O2",
             "main.rue",
             "utils.rue",
             "lib.rue",
             "-o",
             "program",
-        ]));
-        assert_eq!(opts.source_paths, vec!["main.rue", "utils.rue", "lib.rue"]);
-        assert_eq!(opts.output_path, "program");
-        assert_eq!(opts.opt_level, OptLevel::O2);
+        ])));
     }
 
     #[test]
-    fn parse_output_flag_before_sources() {
-        let opts = unwrap_options(parse_args_from(&["-o", "output", "a.rue", "b.rue"]));
-        assert_eq!(opts.source_paths, vec!["a.rue", "b.rue"]);
-        assert_eq!(opts.output_path, "output");
+    fn parse_extra_source_before_output_flag_refused() {
+        // The extra positional is refused regardless of where -o appears.
+        assert!(is_error(&parse_args_from(&[
+            "-o", "output", "a.rue", "b.rue",
+        ])));
     }
 
     #[test]
     fn parse_single_file_with_output_flag() {
         // Even single file can use -o explicitly
         let opts = unwrap_options(parse_args_from(&["source.rue", "-o", "myprogram"]));
-        assert_eq!(opts.source_paths, vec!["source.rue"]);
+        assert_eq!(opts.source_path, "source.rue");
         assert_eq!(opts.output_path, "myprogram");
     }
 
@@ -3032,11 +3014,8 @@ mod tests {
         .unwrap();
         fs::write(dir.join("helper.rue"), [0xFFu8]).unwrap();
 
-        let sources = vec![(
-            main_path.to_string_lossy().into_owned(),
-            fs::read_to_string(&main_path).unwrap(),
-        )];
-        let result = discover_and_load_imports(&sources, None, None, ErrorFormat::Text);
+        let root_source = main_path.to_string_lossy().into_owned();
+        let result = discover_and_load_imports(&root_source, None, None, ErrorFormat::Text);
         assert!(
             result.is_err(),
             "unreadable existing candidate must error, not resolve or vanish"
@@ -3044,11 +3023,8 @@ mod tests {
 
         // Control: once the candidate is valid text, discovery loads it.
         fs::write(dir.join("helper.rue"), "pub fn h() -> i32 {{ 1 }}\n").unwrap();
-        let sources = vec![(
-            main_path.to_string_lossy().into_owned(),
-            fs::read_to_string(&main_path).unwrap(),
-        )];
-        let result = discover_and_load_imports(&sources, None, None, ErrorFormat::Text).unwrap();
+        let result =
+            discover_and_load_imports(&root_source, None, None, ErrorFormat::Text).unwrap();
         assert_eq!(
             result.source_snapshot.len(),
             2,
@@ -3443,10 +3419,9 @@ mod tests {
 
     #[test]
     fn parse_all_options_combined() {
-        // Under --emit no executable is produced, so there is no output
-        // positional: every positional is a source file (RUE-130). The old
-        // behavior claimed the second positional as a (dead) output path,
-        // which made multi-file --emit impossible.
+        // --emit produces no executable, so every positional is a source. Only
+        // the single root source is accepted; a second positional is refused
+        // (RUE-767).
         let opts = unwrap_options(parse_args_from(&[
             "--target",
             "x86_64-linux",
@@ -3456,9 +3431,8 @@ mod tests {
             "--emit",
             "air",
             "source.rue",
-            "other.rue",
         ]));
-        assert_eq!(opts.source_paths, vec!["source.rue", "other.rue"]);
+        assert_eq!(opts.source_path, "source.rue");
         assert_eq!(opts.target, Target::X86_64Linux);
         assert_eq!(opts.linker, LinkerMode::System("clang".to_string()));
         assert_eq!(opts.opt_level, OptLevel::O2);
@@ -3466,10 +3440,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_emit_with_extra_source_refused() {
+        // The dropped second positional above is refused on its own (RUE-767).
+        assert!(is_error(&parse_args_from(&[
+            "--emit",
+            "air",
+            "source.rue",
+            "other.rue",
+        ])));
+    }
+
+    #[test]
     fn parse_options_after_source() {
         // Options can appear after the source file
         let opts = unwrap_options(parse_args_from(&["source.rue", "-O1"]));
-        assert_eq!(opts.source_paths, vec!["source.rue"]);
+        assert_eq!(opts.source_path, "source.rue");
         assert_eq!(opts.opt_level, OptLevel::O1);
     }
 
@@ -3482,7 +3467,7 @@ mod tests {
             "x86_64-linux",
             "output",
         ]));
-        assert_eq!(opts.source_paths, vec!["source.rue"]);
+        assert_eq!(opts.source_path, "source.rue");
         assert_eq!(opts.output_path, "output");
         assert_eq!(opts.opt_level, OptLevel::O1);
         assert_eq!(opts.target, Target::X86_64Linux);

@@ -67,8 +67,8 @@ binding from another directory is error E0706 (10.4:18) — this is the
 diagnostic for privacy violations, since cross-module references are
 spelled through module bindings. Where an implementation still accepts an
 unqualified reference that names a cross-directory item directly (legacy
-forms scheduled for removal with flat mode, ADR-0046), referencing a
-private item that way is error E0460.
+forms removed with flat mode, ADR-0046), referencing a private item that
+way is error E0460.
 
 {{ rule(id="10.3:8", cat="normative") }}
 

@@ -1,0 +1,87 @@
+# The legacy flat-mode positional input surface was removed (ADR-0046 / RUE-767).
+#
+# Every driver form accepts exactly one root source file; the compiler builds
+# one root module and discovers every other file through its @import graph.
+# Additional positional .rue arguments are refused with a migration diagnostic
+# that names the offending argument and points at @import and --source-manifest.
+# These cases pin that refusal for each driver form.
+
+[section]
+id = "cli.flat_input_removed"
+name = "Removed flat-mode positional input surface"
+description = "Extra positional source files are refused with the RUE-767 migration diagnostic."
+
+[[case]]
+name = "two_sources_with_output_flag_refused"
+description = "RUE-767: a second positional .rue with -o is refused, naming the offending file."
+files = [
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "helper.rue", source = "pub fn value() -> i32 { 1 }\n" },
+]
+args = ["main.rue", "helper.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "unexpected extra source file",
+    "helper.rue",
+    "one root module and its @import graph",
+    "--source-manifest",
+    "rue main.rue -o <output>",
+]
+
+[[case]]
+name = "three_sources_with_output_flag_refused"
+description = "RUE-767: the first extra positional is named even when several are passed."
+files = [
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "a.rue", source = "pub fn a() -> i32 { 1 }\n" },
+    { path = "b.rue", source = "pub fn b() -> i32 { 2 }\n" },
+]
+args = ["main.rue", "a.rue", "b.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["unexpected extra source file", "a.rue", "@import"]
+
+[[case]]
+name = "three_sources_without_output_flag_refused"
+description = "RUE-767: three positional sources without -o are refused (no output-form ambiguity)."
+files = [
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "a.rue", source = "pub fn a() -> i32 { 1 }\n" },
+    { path = "b.rue", source = "pub fn b() -> i32 { 2 }\n" },
+]
+args = ["main.rue", "a.rue", "b.rue"]
+compile_fail = true
+error_contains = ["unexpected extra source file", "a.rue", "@import"]
+
+[[case]]
+name = "emit_with_two_sources_refused"
+description = "RUE-767: --emit also accepts exactly one root source; a second positional is refused."
+files = [
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "helper.rue", source = "pub fn value() -> i32 { 1 }\n" },
+]
+args = ["--emit", "tokens", "main.rue", "helper.rue"]
+compile_fail = true
+error_contains = ["unexpected extra source file", "helper.rue", "@import"]
+compile_stdout_not_contains = ["=== Tokens"]
+
+# Positive control: the single-root workflow the diagnostic points at compiles
+# and runs, reaching the helper through @import.
+[[case]]
+name = "single_root_with_import_still_compiles"
+description = "RUE-767 control: one root source that @imports its helper compiles and runs."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+
+fn main() -> i32 {
+    helper.value()
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn value() -> i32 {
+    42
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
