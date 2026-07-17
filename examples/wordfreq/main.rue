@@ -45,8 +45,9 @@ fn to_lower(b: u8) -> u8 {
     }
 }
 
-// Read the whole file at `path` into a byte buffer. Returns `None` when the file
-// cannot be opened, so the caller can report the error and exit nonzero.
+// Read the whole file at `path` into a byte buffer. Returns `None` when the
+// file cannot be opened or a read fails, so the caller can report the error and
+// exit nonzero; a partial read is never returned as if it were the whole file.
 fn read_file(borrow path: StrBuf) -> OptBytes {
     let O = OptBytes;
     let mut data = Bytes.new();
@@ -61,7 +62,9 @@ fn read_file(borrow path: StrBuf) -> OptBytes {
         data.reserve(chunk);
         let n = match f.read(inout data) {
             ReadRes.Ok(k) => k,
-            ReadRes.Err(e) => 0,
+            ReadRes.Err(e) => {
+                return O.None;
+            },
         };
         if n == 0 {
             break;
@@ -101,7 +104,7 @@ fn main() -> i32 {
     let data = match read_file(borrow path) {
         OptBytes.Some(d) => d,
         OptBytes.None => {
-            println("error: cannot open input file");
+            println("error: cannot read input file");
             return 1;
         },
     };
