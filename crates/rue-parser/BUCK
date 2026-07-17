@@ -2,7 +2,6 @@ load("//crates:defs.bzl", "rue_crate")
 
 rue_crate(
     name = "rue-parser",
-    resources = ["src/diagnostic_corpus.snapshot"],
     deps = [
         "//crates/rue-error:rue-error",
         "//crates/rue-lexer:rue-lexer",
@@ -10,9 +9,5 @@ rue_crate(
         "//third-party:lasso",
         "//third-party:smallvec",
         "//third-party:tracing",
-    ],
-    test_deps = [
-        "//third-party:sha2",
-        "//third-party:toml",
     ],
 )
