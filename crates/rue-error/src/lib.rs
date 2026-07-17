@@ -342,6 +342,10 @@ impl ErrorCode {
     pub const CANNOT_INFER_CAST_TARGET: Self = Self(709);
     pub const CANNOT_INFER_POINTEE_TYPE: Self = Self(710);
     pub const CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE: Self = Self(711);
+    /// A comptime-constant `align` argument to a byte-allocation intrinsic
+    /// (`@alloc_bytes`/`@realloc_bytes`/`@free_bytes`, ADR-0059 Phase 2) was
+    /// zero or not a power of two. Alignment must be a power of two.
+    pub const INTRINSIC_ALIGN_NOT_POWER_OF_TWO: Self = Self(712);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -1444,6 +1448,11 @@ pub enum ErrorKind {
          `ptr mut T` is expected"
     )]
     CannotInferPointeeType(String),
+    #[error(
+        "the `align` argument to '@{name}' must be a power of two, but a \
+         constant value of {value} was given"
+    )]
+    IntrinsicAlignNotPowerOfTwo { name: String, value: u64 },
 
     // Module errors
     #[error("@import requires a string literal argument")]
@@ -1723,6 +1732,9 @@ impl ErrorKind {
             ErrorKind::IntrinsicTypeMismatch(_) => ErrorCode::INTRINSIC_TYPE_MISMATCH,
             ErrorKind::CannotInferCastTarget(_) => ErrorCode::CANNOT_INFER_CAST_TARGET,
             ErrorKind::CannotInferPointeeType(_) => ErrorCode::CANNOT_INFER_POINTEE_TYPE,
+            ErrorKind::IntrinsicAlignNotPowerOfTwo { .. } => {
+                ErrorCode::INTRINSIC_ALIGN_NOT_POWER_OF_TWO
+            }
             ErrorKind::ContainerElementNotTriviallyDroppable { .. } => {
                 ErrorCode::CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE
             }

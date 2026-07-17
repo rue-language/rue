@@ -59,7 +59,7 @@ pub struct StrBuf {
             return Self.new();
         }
         let cap = Self.initial_capacity(requested);
-        let allocation: ptr mut u8 = checked { @alloc_bytes(cap) };
+        let allocation: ptr mut u8 = checked { @alloc_bytes(cap, 1) };
         if checked { @ptr_to_int(allocation) } == 0 {
             @panic("out of memory");
         }
@@ -111,14 +111,14 @@ pub struct StrBuf {
 
         let new_cap = Self.growth_capacity(self.cap, required);
         if self.cap == 0 {
-            let replacement: ptr mut u8 = checked { @alloc_bytes(new_cap) };
+            let replacement: ptr mut u8 = checked { @alloc_bytes(new_cap, 1) };
             if checked { @ptr_to_int(replacement) } == 0 {
                 @panic("out of memory");
             }
             copy_packed_bytes(self.buf, 0, replacement, 0, self.len);
             self.buf = replacement;
         } else {
-            let replacement = checked { @realloc_bytes(self.buf, self.cap, new_cap) };
+            let replacement = checked { @realloc_bytes(self.buf, self.cap, 1, new_cap) };
             if checked { @ptr_to_int(replacement) } == 0 {
                 @panic("out of memory");
             }
@@ -293,7 +293,7 @@ pub struct StrBuf {
     // Reset after freeing so the later destructor is a no-op.
     fn free(inout self) {
         if self.cap > 0 {
-            checked { @free_bytes(self.buf, self.cap); };
+            checked { @free_bytes(self.buf, self.cap, 1); };
         }
         let zero: u64 = 0;
         self.buf = checked { @int_to_ptr(zero) };
@@ -304,6 +304,6 @@ pub struct StrBuf {
 
 drop fn StrBuf(self) {
     if self.cap > 0 {
-        checked { @free_bytes(self.buf, self.cap); };
+        checked { @free_bytes(self.buf, self.cap, 1); };
     }
 }

@@ -3065,9 +3065,9 @@ mod tests {
         let mut preview = PreviewFeatures::new();
         preview.insert(PreviewFeature::RawBytes);
         let mir = lower_to_mir_with_preview(
-            "fn main() -> i32 { checked { let p = @alloc_bytes(3); \
-             @byte_write(p, 1, 255); let q = @realloc_bytes(p, 3, 5); \
-             let b = @byte_read(q, 1); @free_bytes(q, 5); \
+            "fn main() -> i32 { checked { let p = @alloc_bytes(3, 1); \
+             @byte_write(p, 1, 255); let q = @realloc_bytes(p, 3, 1, 5); \
+             let b = @byte_read(q, 1); @free_bytes(q, 5, 1); \
              @intCast(b) } }",
             preview,
         );

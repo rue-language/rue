@@ -731,6 +731,18 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "runtime.raw_bytes",
+        "alloc_bytes_align_one_round_trip",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
+        "runtime.raw_bytes",
+        "alloc_bytes_align_eight_round_trip",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
         "runtime.pointers",
         "field_ptr_first_field",
         intrinsic(UnsupportedIntrinsicKind::FieldPointer),

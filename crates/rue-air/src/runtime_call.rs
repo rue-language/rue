@@ -247,7 +247,12 @@ const ALLOC_BYTES: &[RuntimeOperandOrigin] = &[
         index: 0,
         ty: AbiType::U64,
     },
-    RuntimeOperandOrigin::ByteAlignment,
+    // Explicit alignment argument (ADR-0059 Phase 2, RUE-960): sourced from the
+    // intrinsic's `align` operand rather than a synthesized `ByteAlignment`.
+    RuntimeOperandOrigin::ValueArgument {
+        index: 1,
+        ty: AbiType::U64,
+    },
 ];
 // The indexed process-inventory accessors (`@arg_ptr`/`@arg_len`/`@env_ptr`/
 // `@env_len`, RUE-935) all pass a single `u64` index straight through to the
@@ -265,8 +270,16 @@ const FREE_BYTES: &[RuntimeOperandOrigin] = &[
         index: 1,
         ty: AbiType::U64,
     },
-    RuntimeOperandOrigin::ByteAlignment,
+    // Explicit alignment argument (ADR-0059 Phase 2, RUE-960).
+    RuntimeOperandOrigin::ValueArgument {
+        index: 2,
+        ty: AbiType::U64,
+    },
 ];
+// `@realloc_bytes(p, old_size, align, new_size)` maps onto the runtime helper
+// signature `__rue_realloc(ptr, old_size, new_size, align)`, so the alignment
+// operand (AIR argument 2) is passed last while `new_size` (AIR argument 3)
+// precedes it (ADR-0059 Phase 2, RUE-960).
 const REALLOC_BYTES: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::MutablePointerArgument {
         index: 0,
@@ -277,10 +290,13 @@ const REALLOC_BYTES: &[RuntimeOperandOrigin] = &[
         ty: AbiType::U64,
     },
     RuntimeOperandOrigin::ValueArgument {
+        index: 3,
+        ty: AbiType::U64,
+    },
+    RuntimeOperandOrigin::ValueArgument {
         index: 2,
         ty: AbiType::U64,
     },
-    RuntimeOperandOrigin::ByteAlignment,
 ];
 const BYTE_COPY: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::MutablePointerArgument {

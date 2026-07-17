@@ -546,6 +546,12 @@ impl<'a> BodySema<'a> {
     /// Analyze the preview raw-byte intrinsic family (RUE-879). Unlike typed
     /// pointer operations, byte counts and offsets here are physical bytes and
     /// access operations transfer exactly one byte.
+    ///
+    /// The byte allocators carry an explicit `align: u64` byte count that must
+    /// be a power of two (ADR-0059 Phase 2, RUE-960). A comptime-constant
+    /// `align` that is zero or not a power of two is rejected here; a
+    /// non-constant `align` is a documented checked-gate contract left to the
+    /// runtime (spec 9.2:14j).
     pub(super) fn analyze_alloc_bytes_intrinsic(
         &mut self,
         air: &mut Air,
@@ -556,11 +562,11 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         self.require_preview(PreviewFeature::RawBytes, "@alloc_bytes intrinsic", span)?;
-        if args.len() != 1 {
+        if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
                     name: "alloc_bytes".to_string(),
-                    expected: 1,
+                    expected: 2,
                     found: args.len(),
                 },
                 span,
@@ -568,6 +574,9 @@ impl<'a> BodySema<'a> {
         }
         let size = self.analyze_inst(air, args[0].value, ctx)?;
         self.require_intrinsic_type("alloc_bytes", size.ty, Type::U64, span)?;
+        let align = self.analyze_inst(air, args[1].value, ctx)?;
+        self.require_intrinsic_type("alloc_bytes", align.ty, Type::U64, span)?;
+        self.require_power_of_two_align("alloc_bytes", args[1].value, span, ctx)?;
         let result_ty = Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
         if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
             && expected != result_ty
@@ -579,7 +588,7 @@ impl<'a> BodySema<'a> {
         let air_ref = air.add_intrinsic(
             Some(crate::RuntimeCallKind::AllocBytes),
             name,
-            &[size.air_ref],
+            &[size.air_ref, align.air_ref],
             result_ty,
             span,
         )?;
@@ -595,11 +604,11 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         self.require_preview(PreviewFeature::RawBytes, "@realloc_bytes intrinsic", span)?;
-        if args.len() != 3 {
+        if args.len() != 4 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
                     name: "realloc_bytes".to_string(),
-                    expected: 3,
+                    expected: 4,
                     found: args.len(),
                 },
                 span,
@@ -608,13 +617,21 @@ impl<'a> BodySema<'a> {
         let ptr = self.analyze_inst(air, args[0].value, ctx)?;
         self.require_mut_u8_pointer("realloc_bytes", ptr.ty, span)?;
         let old_size = self.analyze_inst(air, args[1].value, ctx)?;
-        let new_size = self.analyze_inst(air, args[2].value, ctx)?;
+        let align = self.analyze_inst(air, args[2].value, ctx)?;
+        let new_size = self.analyze_inst(air, args[3].value, ctx)?;
         self.require_intrinsic_type("realloc_bytes", old_size.ty, Type::U64, span)?;
+        self.require_intrinsic_type("realloc_bytes", align.ty, Type::U64, span)?;
         self.require_intrinsic_type("realloc_bytes", new_size.ty, Type::U64, span)?;
+        self.require_power_of_two_align("realloc_bytes", args[2].value, span, ctx)?;
         let air_ref = air.add_intrinsic(
             Some(crate::RuntimeCallKind::ReallocBytes),
             name,
-            &[ptr.air_ref, old_size.air_ref, new_size.air_ref],
+            &[
+                ptr.air_ref,
+                old_size.air_ref,
+                align.air_ref,
+                new_size.air_ref,
+            ],
             ptr.ty,
             span,
         )?;
@@ -630,11 +647,11 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         self.require_preview(PreviewFeature::RawBytes, "@free_bytes intrinsic", span)?;
-        if args.len() != 2 {
+        if args.len() != 3 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
                     name: "free_bytes".to_string(),
-                    expected: 2,
+                    expected: 3,
                     found: args.len(),
                 },
                 span,
@@ -643,15 +660,45 @@ impl<'a> BodySema<'a> {
         let ptr = self.analyze_inst(air, args[0].value, ctx)?;
         self.require_mut_u8_pointer("free_bytes", ptr.ty, span)?;
         let size = self.analyze_inst(air, args[1].value, ctx)?;
+        let align = self.analyze_inst(air, args[2].value, ctx)?;
         self.require_intrinsic_type("free_bytes", size.ty, Type::U64, span)?;
+        self.require_intrinsic_type("free_bytes", align.ty, Type::U64, span)?;
+        self.require_power_of_two_align("free_bytes", args[2].value, span, ctx)?;
         let air_ref = air.add_intrinsic(
             Some(crate::RuntimeCallKind::FreeBytes),
             name,
-            &[ptr.air_ref, size.air_ref],
+            &[ptr.air_ref, size.air_ref, align.air_ref],
             Type::UNIT,
             span,
         )?;
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// Reject a comptime-constant byte-allocator `align` argument that is zero
+    /// or not a power of two (ADR-0059 Phase 2, RUE-960). A non-constant
+    /// `align` evaluates to `None` here and is permitted: the power-of-two
+    /// contract for runtime values is documented checked-gate territory
+    /// (spec 9.2:14j), enforced by the allocator rather than the compiler.
+    fn require_power_of_two_align(
+        &mut self,
+        name: &str,
+        align_ref: InstRef,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        if let Some(ConstValue::Integer(value)) = self.try_evaluate_const_in_fn(align_ref, ctx) {
+            let bits = value as u64;
+            if bits == 0 || !bits.is_power_of_two() {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicAlignNotPowerOfTwo {
+                        name: name.to_string(),
+                        value: bits,
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn analyze_byte_read_intrinsic(

@@ -1516,7 +1516,8 @@ impl<'a> ConstraintGenerator<'a> {
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
                 } else if intrinsic_name == "alloc_bytes" {
-                    // @alloc_bytes(size: u64) -> ptr mut u8.
+                    // @alloc_bytes(size: u64, align: u64) -> ptr mut u8. Both
+                    // operands are u64 (ADR-0059 Phase 2, RUE-960).
                     for arg_ref in args.iter() {
                         let info = self.generate(*arg_ref, ctx);
                         self.add_constraint(Constraint::equal(
@@ -1553,7 +1554,8 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     result_ty
                 } else if intrinsic_name == "realloc_bytes" {
-                    // @realloc_bytes(ptr mut u8, u64, u64) -> ptr mut u8.
+                    // @realloc_bytes(ptr mut u8, u64, u64, u64) -> ptr mut u8:
+                    // (p, old_size, align, new_size) (ADR-0059 Phase 2).
                     let ptr_ty =
                         Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
                     for (i, arg_ref) in args.iter().enumerate() {

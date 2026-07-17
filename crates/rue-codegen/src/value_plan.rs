@@ -1743,7 +1743,8 @@ fn intrinsic_runtime_call(
             RuntimeHelperId::Alloc,
             vec![
                 RuntimeCallArg::value(args[0].primary, AbiType::U64),
-                RuntimeCallArg::immediate(1, AbiType::U64),
+                // Explicit alignment argument (ADR-0059 Phase 2, RUE-960).
+                RuntimeCallArg::value(args[1].primary, AbiType::U64),
             ],
         ),
         IntrinsicOperation::Free { element_size } => (
@@ -1759,7 +1760,8 @@ fn intrinsic_runtime_call(
             vec![
                 RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
                 RuntimeCallArg::value(args[1].primary, AbiType::U64),
-                RuntimeCallArg::immediate(1, AbiType::U64),
+                // Explicit alignment argument (ADR-0059 Phase 2, RUE-960).
+                RuntimeCallArg::value(args[2].primary, AbiType::U64),
             ],
         ),
         IntrinsicOperation::ByteCopy => (
@@ -1779,20 +1781,29 @@ fn intrinsic_runtime_call(
             ],
         ),
         IntrinsicOperation::Realloc { .. } | IntrinsicOperation::ReallocBytes => {
-            let element_size = match operation {
-                IntrinsicOperation::Realloc { element_size } => *element_size,
-                IntrinsicOperation::ReallocBytes => 1,
-                _ => unreachable!(),
-            };
-            let old = if matches!(operation, IntrinsicOperation::Realloc { .. }) {
+            // `@realloc(p, old_count, new_count)` scales element counts and
+            // passes `align = @align_of(T)` as an immediate; `@realloc_bytes(p,
+            // old_size, align, new_size)` passes byte sizes straight through
+            // with an explicit `align` value operand (ADR-0059 Phase 2).
+            let is_typed = matches!(operation, IntrinsicOperation::Realloc { .. });
+            let old = if is_typed {
                 RuntimeCallArg::scaled(args[1].primary, scale?, AbiType::U64)
             } else {
                 RuntimeCallArg::value(args[1].primary, AbiType::U64)
             };
-            let new = if matches!(operation, IntrinsicOperation::Realloc { .. }) {
+            let new = if is_typed {
                 RuntimeCallArg::scaled(args[2].primary, scale?, AbiType::U64)
             } else {
-                RuntimeCallArg::value(args[2].primary, AbiType::U64)
+                RuntimeCallArg::value(args[3].primary, AbiType::U64)
+            };
+            let align = match operation {
+                IntrinsicOperation::Realloc { element_size } => {
+                    RuntimeCallArg::immediate(*element_size, AbiType::U64)
+                }
+                IntrinsicOperation::ReallocBytes => {
+                    RuntimeCallArg::value(args[2].primary, AbiType::U64)
+                }
+                _ => unreachable!(),
             };
             (
                 RuntimeHelperId::Realloc,
@@ -1800,7 +1811,7 @@ fn intrinsic_runtime_call(
                     RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
                     old,
                     new,
-                    RuntimeCallArg::immediate(element_size, AbiType::U64),
+                    align,
                 ],
             )
         }
