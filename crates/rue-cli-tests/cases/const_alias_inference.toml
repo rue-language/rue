@@ -203,7 +203,7 @@ exit_code = 42
 
 [[case]]
 name = "bare_alias_head_needs_no_preview"
-description = "m.Alias.new() is ordinary member access, not an inline type-ctor CALL head — must compile without --preview inline_type_ctor_paths (RUE-631)"
+description = "m.Alias.new() is ordinary member access, not an inline type-ctor CALL head, and compiles on its own (RUE-631)"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
     { path = "main.rue", source = """
@@ -223,20 +223,21 @@ pub const Ints = std.arraybuf.ArrayBuf(i64);
 exit_code = 42
 
 [[case]]
-name = "real_inline_ctor_head_still_gated"
-description = "The genuine RUE-596 shape (a CALL as path head) remains preview-gated after the RUE-631 narrowing"
+name = "real_inline_ctor_head_runs"
+description = "The genuine RUE-596 shape (a CALL as path head) compiles with no preview flag, unlike the bare-alias member access above (RUE-631, stabilized RUE-598)"
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
-compile_fail = true
-error_contains = ["E1100", "inline_type_ctor_paths"]
 files = [
     { path = "main.rue", source = """
 const std = @import("std");
 fn main() -> i32 {
-    let r = std.result.Result(i64, i32).Ok(41);
+    let r = std.result.Result(i32, i32).Ok(41);
+    let _ = r;
     0
 }
 """ },
 ]
+exit_code = 0
 
 [[case]]
 name = "generic_instantiated_with_qualified_type_arg_in_const"

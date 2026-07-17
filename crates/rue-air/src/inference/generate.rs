@@ -257,7 +257,7 @@ pub struct ConstraintGenerator<'a> {
     /// (the RUE-522 pattern).
     alias_scope_stack: Vec<Vec<(Spur, Option<Type>)>>,
     /// Inline type-constructor heads (`F(args).Variant(..)`, `F(args) { .. }`;
-    /// RUE-596, preview `inline_type_ctor_paths`) pre-reduced by sema to their
+    /// RUE-596, spec 4.14:23) pre-reduced by sema to their
     /// concrete struct/enum types, keyed by the head's own `InstRef` — the
     /// per-instruction analogue of `comptime_local_types` for heads that have
     /// no `let`-bound name. Consulted so construction arguments get their

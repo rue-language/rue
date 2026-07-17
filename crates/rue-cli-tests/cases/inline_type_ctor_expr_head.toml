@@ -1,20 +1,19 @@
-# Inline type-constructor call as an EXPRESSION head (RUE-596, preview
-# `inline_type_ctor_paths`, relaxing spec 4.14:23): `F(args).NAME(..)` where
-# `F(args)` reduces to a concrete type at comptime, used directly as an
-# enum-variant construction (`Result(i32,i32).Ok(42)`) or an associated-function
-# call (`Counter(i32).zero()`) without binding the specialization to a name
-# first. Gated: absent `--preview` it is E1100. This is the expression-head
-# slice of the feature; the struct-literal head and pattern head land separately.
+# Inline type-constructor call as an EXPRESSION head (RUE-596, spec 4.14:23):
+# `F(args).NAME(..)` where `F(args)` reduces to a concrete type at comptime, used
+# directly as an enum-variant construction (`Result(i32,i32).Ok(42)`) or an
+# associated-function call (`Counter(i32).zero()`) without binding the
+# specialization to a name first. Accepted with no preview flag (stabilized
+# RUE-598); the struct-literal head and pattern head are exercised alongside it.
 
 [section]
 id = "cli.inline_type_ctor_expr_head"
 name = "Inline type-constructor expression head"
-description = "`F(args).Variant(..)` / `F(args).assoc(..)` as an expression head, preview-gated (RUE-596)."
+description = "`F(args).Variant(..)` / `F(args).assoc(..)` as an expression head (RUE-596)."
 
 [[case]]
 name = "enum_variant_head_runs"
 description = "`Result(i32,i32).Ok(42)` constructs an enum variant inline; `?`-free round-trip through a match."
-args = ["main.rue", "--preview", "inline_type_ctor_paths", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn main() -> i32 {
@@ -28,7 +27,7 @@ exit_code = 42
 [[case]]
 name = "struct_assoc_fn_head_runs"
 description = "`Counter(i32).zero()` calls an associated function on an inline type-constructor head."
-args = ["main.rue", "--preview", "inline_type_ctor_paths", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn Counter(comptime T: type) -> type {
     struct {
@@ -46,8 +45,9 @@ fn main() -> i32 {
 exit_code = 2
 
 [[case]]
-name = "gated_without_preview"
-description = "Without --preview the inline head is rejected with the E1100 preview-required diagnostic."
+name = "inline_head_accepted_without_flag"
+description = "The inline enum-variant head compiles with no preview flag (stabilized RUE-598)."
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn main() -> i32 {
@@ -55,12 +55,12 @@ fn main() -> i32 {
     0
 }
 """ }]
-compile_fail = true
-error_contains = ["E1100", "inline_type_ctor_paths"]
+exit_code = 0
 
 [[case]]
-name = "bound_name_form_needs_no_preview"
-description = "The bind-first form stays legal without the flag — the gate is scoped to the inline head only."
+name = "bound_name_form_still_runs"
+description = "The equivalent bind-first form (`let R = F(args); R.Ok(..)`) runs identically."
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn main() -> i32 {
@@ -74,7 +74,7 @@ exit_code = 42
 [[case]]
 name = "all_three_heads_one_program"
 description = "Struct-literal head, enum-variant head, and pattern head together, driven through the real binary (RUE-596)."
-args = ["main.rue", "--preview", "inline_type_ctor_paths", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }

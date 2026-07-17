@@ -8081,19 +8081,26 @@ mod tests {
 
     /// Generate `QUERY_TERMINAL_RETENTION_LIMIT + 1` distinct `CompileOptions`
     /// for terminal retention/eviction tests (one more key than the store can
-    /// hold, forcing exactly one eviction). Preview-feature subsets supply the
-    /// low bits; because there are now fewer preview features than the
-    /// `ceil(log2(LIMIT + 1))` bits the mask spans, the first bit above the
-    /// feature range toggles the compile target so every mask stays a distinct
-    /// cache key. Both `target` and the preview-feature set are part of the
-    /// semantic, definition, and dependency-manifest query keys.
+    /// hold, forcing exactly one eviction). The low `feature_bits` bits of each
+    /// mask pick a preview-feature subset; the remaining high bits index the
+    /// compile target, so every mask is a distinct `(preview_features, target)`
+    /// pair. Both dimensions are part of the semantic, definition, and
+    /// dependency-manifest query keys — unlike `opt_level`, which keys only the
+    /// semantic store — so the variants force one eviction in every terminal
+    /// family under test.
+    ///
+    /// With fewer preview features than the bits the mask spans, one target is
+    /// not enough distinct keys (`2^feature_bits < LIMIT + 1`), so the target
+    /// list carries the overflow. Each `feature_bits`-wide block of masks maps
+    /// to one target, and the assertion holds that the mask range spans no more
+    /// blocks than there are targets.
     fn retention_variants() -> Vec<CompileOptions> {
         let feature_bits = PreviewFeature::all().len();
-        let default_target = CompileOptions::default().target;
-        let alt_target = *Target::all()
-            .iter()
-            .find(|&&target| target != default_target)
-            .expect("multiple compiler targets");
+        let targets = Target::all();
+        assert!(
+            (QUERY_TERMINAL_RETENTION_LIMIT >> feature_bits) < targets.len(),
+            "retention variants need a distinct (preview_features, target) key per mask"
+        );
         (0..=QUERY_TERMINAL_RETENTION_LIMIT)
             .map(|mask| CompileOptions {
                 preview_features: PreviewFeature::all()
@@ -8102,11 +8109,7 @@ mod tests {
                     .filter(|(bit, _)| mask & (1 << bit) != 0)
                     .map(|(_, feature)| *feature)
                     .collect(),
-                target: if mask & (1 << feature_bits) != 0 {
-                    alt_target
-                } else {
-                    default_target
-                },
+                target: targets[mask >> feature_bits],
                 ..CompileOptions::default()
             })
             .collect()

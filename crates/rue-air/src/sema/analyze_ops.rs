@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use lasso::Spur;
 use rue_error::{
     CompileError, CompileResult, CompileWarning, ErrorKind, MissingFieldsError, OptionExt,
-    PreviewFeature, WarningKind,
+    WarningKind,
 };
 use rue_rir::{InstData, InstRef, RirParamMode, RirPatternView as RirPattern};
 
@@ -3477,14 +3477,9 @@ impl<'a> BodySema<'a> {
         let type_name_str = self.interner.resolve(&type_name);
         let struct_id = if let Some(head_ref) = ctor_head {
             // Inline type-constructor struct-literal head `F(args) { ... }`
-            // (RUE-596, preview `inline_type_ctor_paths`, relaxing spec 4.14:23):
-            // the head call reduces to a concrete type at comptime; construct as
-            // if the type had been bound to a name first (`let P = F(args); P { .. }`).
-            self.require_preview(
-                PreviewFeature::InlineTypeCtorPath,
-                "an inline type-constructor call as a struct-literal head",
-                span,
-            )?;
+            // (RUE-596, spec 4.14:23): the head call reduces to a concrete type
+            // at comptime; construct as if the type had been bound to a name
+            // first (`let P = F(args); P { .. }`).
             let head_result = self.analyze_inst(air, head_ref, ctx)?;
             let AirInstData::TypeConst(reduced_ty) = air.get(head_result.air_ref).data else {
                 return Err(CompileError::new(
@@ -6416,16 +6411,11 @@ impl<'a> BodySema<'a> {
         span: Span,
     ) -> CompileResult<Option<(crate::types::EnumId, bool)>> {
         // Inline type-constructor pattern head `F(args).Variant(..)` (RUE-596,
-        // preview `inline_type_ctor_paths`): comptime-evaluate the constructor
-        // call to a concrete type (no AIR emitted) and take its enum. The head
-        // arrived through a call, not by naming the enum, so it is privacy-exempt
-        // — reported as `privacy_handled = true`, exactly like a comptime binding.
+        // spec 4.14:23): comptime-evaluate the constructor call to a concrete
+        // type (no AIR emitted) and take its enum. The head arrived through a
+        // call, not by naming the enum, so it is privacy-exempt — reported as
+        // `privacy_handled = true`, exactly like a comptime binding.
         if let Some(head_ref) = ctor_head {
-            self.require_preview(
-                PreviewFeature::InlineTypeCtorPath,
-                "an inline type-constructor call as a pattern head",
-                span,
-            )?;
             // Unlike the inference prepass, this is the authoritative pattern
             // resolver. Preserve hard source diagnostics from comptime call
             // reduction (including exact argument-mode errors) instead of
