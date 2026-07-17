@@ -29,6 +29,17 @@ set -euo pipefail
 # When you pipe or capture this script's output, grep for that line instead of
 # trusting `$?`. (The tally text alone is not a verdict: a partial run can print
 # a green-looking count and still have failed a later gate.)
+#
+# CORPUS-OMISSION AUDIT (RUE-924). A green `buck2 test //...` summary is only
+# trustworthy if the compiler-consuming corpus harnesses (cli/spec/ui/oracle/
+# reproducibility/tutorial) actually EXECUTED. A suite that never ran cannot
+# fail, so the exit code alone cannot catch its disappearance — a served
+# test-result cache entry, an accidental target-pattern narrowing, or a
+# platform gate can all silently drop a suite, and one such omission once let a
+# Pass tally hide five real CLI-case failures that CI caught. The unfiltered
+# path therefore captures the run, streams it live, and asserts each required
+# corpus harness produced a Pass/Fail result line; a missing one is a HARD
+# failure even when buck2 exited 0.
 
 cd "$(dirname "$0")"
 repo_root="$PWD"
@@ -67,6 +78,20 @@ REPOSITORY_QUALITY_GATES=(
     //:adr-registry-validation
 )
 
+# The compiler-consuming corpus harnesses that an unfiltered run MUST actually
+# execute (RUE-924). Each compiles and/or runs real programs through the rue
+# binary, so a silent omission (cache, pattern narrowing, platform gate) is
+# exactly the failure that hides miscompilations behind a green tally. The
+# unfiltered path audits that every one of these produced a result line.
+REQUIRED_CORPUS_HARNESSES=(
+    //:cli-tests
+    //:spec-tests
+    //:ui-tests
+    //:oracle-diff-generated-smoke
+    //:reproducible-programs
+    //:tutorial-snippet-tests
+)
+
 if [[ $# -eq 0 ]]; then
     # Keep discovery broad so new crate and repository tests cannot disappear
     # behind a hand-maintained list. Heavy opaque harnesses are labeled in BUCK:
@@ -82,12 +107,48 @@ if [[ $# -eq 0 ]]; then
         exit 1
     fi
 
+    # Stream every invocation live AND capture it into one log, so we can audit
+    # afterward that no corpus harness was silently omitted (RUE-924).
+    # PIPESTATUS[0] is buck2's real exit code (tee always exits 0), preserving
+    # the RUE-579 "exit code is authoritative" contract; the worst status across
+    # the broad pass and every heavy suite is what this script reports.
+    run_log="$(mktemp)"
+    overall_status=0
+    set +e
     echo "Running unit tests and lightweight repository checks..."
-    ./buck2 test //... --exclude rue_heavy_suite --always-exclude
+    ./buck2 test //... --exclude rue_heavy_suite --always-exclude 2>&1 | tee "$run_log"
+    step_status=${PIPESTATUS[0]}
+    [[ "$step_status" -ne 0 && "$overall_status" -eq 0 ]] && overall_status=$step_status
     for suite in "${HEAVY_SUITES[@]}"; do
         echo "Running heavy suite $suite..."
-        ./buck2 test "$suite"
+        ./buck2 test "$suite" 2>&1 | tee -a "$run_log"
+        step_status=${PIPESTATUS[0]}
+        [[ "$step_status" -ne 0 && "$overall_status" -eq 0 ]] && overall_status=$step_status
     done
+    set -e
+
+    # buck2 prints exactly one "<Status>: root<target> (<time>)" summary line
+    # per executed test (Pass/Fail/Skip/Timeout/...), including cache hits. No
+    # such line for a required harness means it never ran under this invocation
+    # — neither in the broad pass nor as a heavy suite.
+    missing_corpus=()
+    for target in "${REQUIRED_CORPUS_HARNESSES[@]}"; do
+        if ! grep -qE "(Pass|Fail|Skip|Timeout|Fatal|Omit|Flaky): root${target} " "$run_log"; then
+            missing_corpus+=("$target")
+        fi
+    done
+    rm -f "${run_log:?}"
+
+    if [[ ${#missing_corpus[@]} -gt 0 ]]; then
+        echo "=== CORPUS OMITTED (RUE-924): ${missing_corpus[*]} ===" >&2
+        echo "test.sh: the corpus harness(es) above produced no Pass/Fail result in" >&2
+        echo "test.sh: this unfiltered run; refusing to report success on a partial" >&2
+        echo "test.sh: run. If a stale test-result cache is serving them, re-run with" >&2
+        echo "test.sh: a busted cache, e.g. './buck2 test //... --no-remote-cache'." >&2
+        exit 1
+    fi
+
+    exit "$overall_status"
 else
     # Unit tests live under //crates/...; the suite sh_tests are at the repo
     # root, so this scope keeps them out of the unfiltered step below.

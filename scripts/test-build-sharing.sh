@@ -237,6 +237,16 @@ if [[ "${1:-}" == "uquery" ]]; then
         root//:reproducible-programs \
         root//:spec-tests \
         root//:ui-tests
+elif [[ "${1:-}" == "test" ]]; then
+    # Emit buck2's per-test result line so the RUE-924 corpus-omission audit
+    # in test.sh sees each required harness actually ran. The heavy-labeled
+    # corpus suites arrive one at a time as "test root//:<suite>"; the
+    # non-heavy tutorial-snippet-tests runs inside the broad "test //..." pass.
+    if [[ "${2:-}" == "//..." ]]; then
+        printf 'Pass: root//:tutorial-snippet-tests (0.0s)\n'
+    else
+        printf 'Pass: %s (0.0s)\n' "${2:-}"
+    fi
 fi
 EOF
     chmod +x "$sb/buck2"
