@@ -734,7 +734,7 @@ drop fn StrBuf(self) { }
         }
 
         let options = CompileOptions::default();
-        let runtime_bytes = crate::linking::runtime_for_target(options.target).unwrap();
+        let runtime_bytes = crate::linking::runtime_for_target(options.target);
         let runtime = crate::linking::parse_runtime_archive(runtime_bytes).unwrap();
         let obsolete_exports: Vec<_> = runtime
             .objects

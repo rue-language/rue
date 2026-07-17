@@ -6,11 +6,14 @@ filegroup(
     visibility = ["PUBLIC"],
 )
 
-# The runtime staticlib is mapped into src/ so it can be embedded with include_bytes!
+# Per-target runtime staticlibs are mapped into src/ so the compiler can embed
+# all supported runtimes and select the matching archive at link time.
 rue_crate(
     name = "rue-compiler",
     mapped_srcs = {
-        "//crates/rue-runtime:rue-runtime[staticlib]": "src/librue_runtime.a",
+        "//crates/rue-runtime:rue-runtime-aarch64-apple-darwin": "src/librue_runtime-aarch64-apple-darwin.a",
+        "//crates/rue-runtime:rue-runtime-aarch64-unknown-linux-gnu": "src/librue_runtime-aarch64-unknown-linux-gnu.a",
+        "//crates/rue-runtime:rue-runtime-x86_64-unknown-linux-gnu": "src/librue_runtime-x86_64-unknown-linux-gnu.a",
     },
     deps = [
         "//crates/rue-air:rue-air",
