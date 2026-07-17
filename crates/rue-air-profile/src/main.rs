@@ -69,7 +69,7 @@ fn air_payload_storage_stats(air: &Air) -> AirPayloadStorageStats {
         air.places()
             .iter()
             .map(|place| {
-                air.get_place_projections(place).len() * std::mem::size_of::<AirProjection>()
+                std::mem::size_of_val(air.get_place_projections(place))
             })
             .max()
             .unwrap_or(0),

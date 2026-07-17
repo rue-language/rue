@@ -38,15 +38,21 @@ python3 scripts/air-payload-benchmark.py \
   /tmp/rue-843-workloads/generic-specialization.rue
 ```
 
-The publication delta after the measured source is evidence-only: this report
-and the three generated JSON records. Their SHA-256 fingerprints are
+The publication delta after the measured source consists of this report, the
+three generated JSON records, and one semantics-preserving Clippy rewrite in
+the profiler: `slice.len() * size_of::<T>()` became `size_of_val(slice)`. The
+profiler source SHA-256 changed from
+`62843da9d9b063042d3fbe4946b11b87272ecabd1db7681fcf11433f75b31a58` to
+`3f2621bcb8f255d3937f19f301b405b65e97b841d4a792da5beef7e02cdc20f2`;
+the rewrite produces the same value and does not alter the timed compiler
+query. The generated-record SHA-256 fingerprints are
 `2d3b6fb89192b90a4e348df6a2efe75b25fc9d995f3a437dddc5f41dda054061`
 (workloads),
 `79ac14ac1d136630d5b860f42c8660a8c4fdc109bdae3a5a18d3f000aa9b2aee`
 (family matrix), and
 `420ca2e7ebb5a7c3716e6e18e5807e23c070c1a5c5c6a2d1995073b4cbe368c3`
-(builds). No Rust, Buck, or benchmark-script source differs from measured
-commit `178c4f48`.
+(builds). No production compiler, Buck, or benchmark-script source differs
+from measured commit `178c4f48`.
 
 ## Shared verification pattern
 
