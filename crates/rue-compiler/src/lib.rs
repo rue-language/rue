@@ -151,7 +151,7 @@ pub use durable_semantics::{
     DURABLE_SEMANTIC_SCHEMA_VERSION, DurableConstValue, DurableDeclarationPayload,
     DurableDeclarationSemantic, DurableParameterMode, DurableSemanticExportFailure,
     DurableSemanticImportEpoch, DurableSemanticParameter, DurableSemanticProjectionFailure,
-    DurableSemanticProjectionWork, DurableType,
+    DurableSemanticProjectionWork, DurableSemanticSchemaVersion, DurableType,
 };
 
 // Backend presentation queries used by the command-line emit modes.

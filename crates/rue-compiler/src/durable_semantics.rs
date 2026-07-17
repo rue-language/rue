@@ -18,50 +18,6 @@ use rue_span::FileId;
 /// A fresh AIR epoch populated only from request-independent semantic values.
 pub type DurableSemanticImportEpoch = SemanticImportEpoch<StableDefinitionKey, Arc<str>>;
 
-impl DurableType {
-    pub(crate) fn import_dto(&self) -> SemanticImportType<StableDefinitionKey, Arc<str>> {
-        match self {
-            Self::I8 => SemanticImportType::I8,
-            Self::I16 => SemanticImportType::I16,
-            Self::I32 => SemanticImportType::I32,
-            Self::I64 => SemanticImportType::I64,
-            Self::U8 => SemanticImportType::U8,
-            Self::U16 => SemanticImportType::U16,
-            Self::U32 => SemanticImportType::U32,
-            Self::U64 => SemanticImportType::U64,
-            Self::Bool => SemanticImportType::Bool,
-            Self::Unit => SemanticImportType::Unit,
-            Self::Never => SemanticImportType::Never,
-            Self::ComptimeType => SemanticImportType::ComptimeType,
-            Self::BuiltinNominal { name, kind } => SemanticImportType::BuiltinNominal {
-                name: name.clone(),
-                kind: *kind,
-            },
-            Self::Nominal(key) => SemanticImportType::Nominal(key.clone()),
-            Self::Array { element, len } => SemanticImportType::Array {
-                element: Box::new(element.import_dto()),
-                len: *len,
-            },
-            Self::PtrConst(value) => SemanticImportType::PtrConst(Box::new(value.import_dto())),
-            Self::PtrMut(value) => SemanticImportType::PtrMut(Box::new(value.import_dto())),
-            Self::Module(module) => SemanticImportType::Module(Arc::from(module.as_str())),
-            Self::GenericParameter(index) => SemanticImportType::GenericParameter(*index),
-        }
-    }
-}
-
-impl DurableConstValue {
-    pub(crate) fn import_dto(&self) -> SemanticImportConstValue<StableDefinitionKey, Arc<str>> {
-        match self {
-            Self::Integer(value) => SemanticImportConstValue::Integer(*value),
-            Self::Bool(value) => SemanticImportConstValue::Bool(*value),
-            Self::Type(value) => SemanticImportConstValue::Type(value.import_dto()),
-            Self::Function(key) => SemanticImportConstValue::Function(key.clone()),
-            Self::Unit => SemanticImportConstValue::Unit,
-        }
-    }
-}
-
 /// Reconstruct the representable declaration universe in a new AIR epoch.
 ///
 /// Nominal shells are issued in stable-key order before any field or variant
@@ -219,7 +175,7 @@ pub fn import_durable_declaration_semantics(
                             name.clone(),
                             payload
                                 .iter()
-                                .map(DurableType::import_dto)
+                                .map(DurableTypeProjection::import_dto)
                                 .collect::<Vec<_>>()
                                 .into(),
                         )
@@ -250,8 +206,32 @@ use crate::{
     BoundDefinitionSet, CanonicalMergedProgram, ModuleId, StableDefinitionKey, StableDefinitionKind,
 };
 
-/// Version of the canonical durable type/value encoding.
-pub const DURABLE_SEMANTIC_SCHEMA_VERSION: u32 = 3;
+/// Version of the canonical durable type/value algebra and its in-process
+/// implementation namespace. Compatibility is explicit and fail closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DurableSemanticSchemaVersion {
+    pub major: u16,
+    pub minor: u16,
+    pub implementation_epoch: u32,
+}
+
+pub const DURABLE_SEMANTIC_SCHEMA_VERSION: DurableSemanticSchemaVersion =
+    DurableSemanticSchemaVersion {
+        major: 1,
+        minor: 0,
+        implementation_epoch: 1,
+    };
+
+const DURABLE_SEMANTIC_COMPATIBLE_MINORS: &[u16] = &[0];
+
+impl DurableSemanticSchemaVersion {
+    pub fn accepts(self, candidate: Self) -> bool {
+        self.major == candidate.major
+            && self.implementation_epoch == candidate.implementation_epoch
+            && candidate.minor <= self.minor
+            && DURABLE_SEMANTIC_COMPATIBLE_MINORS.contains(&candidate.minor)
+    }
+}
 
 pub(crate) fn builtin_nominal_kind(name: &str) -> Option<SemanticImportNominalKind> {
     if name == "str" {
@@ -263,50 +243,40 @@ pub(crate) fn builtin_nominal_kind(name: &str) -> Option<SemanticImportNominalKi
     }
 }
 
-/// An owned, request-independent Rue type.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DurableType {
-    I8,
-    I16,
-    I32,
-    I64,
-    U8,
-    U16,
-    U32,
-    U64,
-    Bool,
-    Unit,
-    Never,
-    ComptimeType,
-    /// A compiler-injected nominal, identified by the canonical builtin
-    /// registry rather than by a source definition key.
-    BuiltinNominal {
-        name: Arc<str>,
-        kind: SemanticImportNominalKind,
-    },
-    /// A named struct or enum in the exact stable definition universe.
-    Nominal(StableDefinitionKey),
-    Array {
-        element: Box<DurableType>,
-        len: u64,
-    },
-    PtrConst(Box<DurableType>),
-    PtrMut(Box<DurableType>),
-    /// A module value's resolved logical module identity.
-    Module(ModuleId),
-    /// A declaration-scoped generic parameter, indexed in source order.
-    GenericParameter(u32),
+/// The durable specialization of rue-air's canonical type algebra.
+pub type DurableType = SemanticImportType<StableDefinitionKey, ModuleId>;
+
+/// The durable specialization of rue-air's canonical constant algebra.
+pub type DurableConstValue = SemanticImportConstValue<StableDefinitionKey, ModuleId>;
+
+/// Relocation into the string-module body algebra is intentionally expressed
+/// through the canonical rue-air traversal, not a compiler-owned enum match.
+pub(crate) trait DurableTypeProjection {
+    fn import_dto(&self) -> SemanticImportType<StableDefinitionKey, Arc<str>>;
 }
 
-/// An owned, request-independent compile-time value.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DurableConstValue {
-    Integer(i128),
-    Bool(bool),
-    Type(DurableType),
-    /// Function aliases use declaration identity, never a mangled/interner name.
-    Function(StableDefinitionKey),
-    Unit,
+impl DurableTypeProjection for DurableType {
+    fn import_dto(&self) -> SemanticImportType<StableDefinitionKey, Arc<str>> {
+        self.try_map_identities(
+            &|key| Ok::<_, std::convert::Infallible>(key.clone()),
+            &|module| Ok(Arc::from(module.as_str())),
+        )
+        .expect("durable identity relocation is infallible")
+    }
+}
+
+pub(crate) trait DurableConstValueProjection {
+    fn import_dto(&self) -> SemanticImportConstValue<StableDefinitionKey, Arc<str>>;
+}
+
+impl DurableConstValueProjection for DurableConstValue {
+    fn import_dto(&self) -> SemanticImportConstValue<StableDefinitionKey, Arc<str>> {
+        self.try_map_identities(
+            &|key| Ok::<_, std::convert::Infallible>(key.clone()),
+            &|module| Ok(Arc::from(module.as_str())),
+        )
+        .expect("durable identity relocation is infallible")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -583,47 +553,39 @@ fn project_type(
     definitions: &BoundDefinitionSet,
     module_files: &std::collections::BTreeMap<ModuleId, FileId>,
 ) -> Result<SemanticExportType, DurableSemanticProjectionFailure> {
-    Ok(match value {
-        DurableType::I8 => SemanticExportType::I8,
-        DurableType::I16 => SemanticExportType::I16,
-        DurableType::I32 => SemanticExportType::I32,
-        DurableType::I64 => SemanticExportType::I64,
-        DurableType::U8 => SemanticExportType::U8,
-        DurableType::U16 => SemanticExportType::U16,
-        DurableType::U32 => SemanticExportType::U32,
-        DurableType::U64 => SemanticExportType::U64,
-        DurableType::Bool => SemanticExportType::Bool,
-        DurableType::Unit => SemanticExportType::Unit,
-        DurableType::Never => SemanticExportType::Never,
-        DurableType::ComptimeType => SemanticExportType::ComptimeType,
-        DurableType::BuiltinNominal { name, kind } => {
-            let kind = match kind {
-                SemanticImportNominalKind::Struct => SemanticBindingKind::Struct,
-                SemanticImportNominalKind::Enum => SemanticBindingKind::Enum,
-            };
-            SemanticExportType::Nominal(rue_air::SemanticNominalIdentity {
-                file_id: FileId::new(0),
+    use rue_air::SemanticImportTypeFold as F;
+    value.try_fold(&mut |node| {
+        Ok(match node {
+            F::I8 => SemanticExportType::I8,
+            F::I16 => SemanticExportType::I16,
+            F::I32 => SemanticExportType::I32,
+            F::I64 => SemanticExportType::I64,
+            F::U8 => SemanticExportType::U8,
+            F::U16 => SemanticExportType::U16,
+            F::U32 => SemanticExportType::U32,
+            F::U64 => SemanticExportType::U64,
+            F::Bool => SemanticExportType::Bool,
+            F::Unit => SemanticExportType::Unit,
+            F::Never => SemanticExportType::Never,
+            F::ComptimeType => SemanticExportType::ComptimeType,
+            F::BuiltinNominal { name, kind } => SemanticExportType::BuiltinNominal {
                 name: name.clone(),
                 kind,
-            })
-        }
-        DurableType::GenericParameter(index) => SemanticExportType::GenericParameter(*index),
-        DurableType::Nominal(key) => {
-            SemanticExportType::Nominal(current_nominal(key, definitions, module_files)?)
-        }
-        DurableType::Array { element, len } => SemanticExportType::Array {
-            element: Box::new(project_type(element, definitions, module_files)?),
-            len: *len,
-        },
-        DurableType::PtrConst(value) => {
-            SemanticExportType::PtrConst(Box::new(project_type(value, definitions, module_files)?))
-        }
-        DurableType::PtrMut(value) => {
-            SemanticExportType::PtrMut(Box::new(project_type(value, definitions, module_files)?))
-        }
-        DurableType::Module(_) => {
-            return Err(DurableSemanticProjectionFailure::UnsupportedType);
-        }
+            },
+            F::GenericParameter(index) => SemanticExportType::GenericParameter(index),
+            F::Nominal(key) => {
+                SemanticExportType::Nominal(current_nominal(key, definitions, module_files)?)
+            }
+            F::Array { element, len } => SemanticExportType::Array {
+                element: Box::new(element),
+                len,
+            },
+            F::PtrConst(value) => SemanticExportType::PtrConst(Box::new(value)),
+            F::PtrMut(value) => SemanticExportType::PtrMut(Box::new(value)),
+            F::Module(_) => {
+                return Err(DurableSemanticProjectionFailure::UnsupportedType);
+            }
+        })
     })
 }
 
@@ -737,6 +699,20 @@ pub enum DurableSemanticExportFailure {
     RecursiveStructuralType,
 }
 
+pub(crate) fn durable_module_type(
+    path: &str,
+    merged: &CanonicalMergedProgram,
+) -> Result<DurableType, DurableSemanticExportFailure> {
+    let module = merged
+        .ast()
+        .modules()
+        .iter()
+        .find(|module| module.module_id().as_str() == path)
+        .map(|module| module.module_id().clone())
+        .ok_or(DurableSemanticExportFailure::UnresolvedModule)?;
+    Ok(DurableType::Module(module))
+}
+
 pub(crate) fn convert_declaration_semantics(
     merged: &CanonicalMergedProgram,
     definitions: &BoundDefinitionSet,
@@ -797,22 +773,6 @@ pub(crate) fn convert_declaration_semantics(
         definitions: &BoundDefinitionSet,
     ) -> Result<DurableType, DurableSemanticExportFailure> {
         let nominal = |identity: &rue_air::SemanticNominalIdentity| {
-            if identity.file_id == FileId::new(0) {
-                let kind = match identity.kind {
-                    SemanticBindingKind::Struct => SemanticImportNominalKind::Struct,
-                    SemanticBindingKind::Enum => SemanticImportNominalKind::Enum,
-                    _ => {
-                        return Err(DurableSemanticExportFailure::MissingStableNominalDefinition);
-                    }
-                };
-                if builtin_nominal_kind(&identity.name) != Some(kind) {
-                    return Err(DurableSemanticExportFailure::MissingStableNominalDefinition);
-                }
-                return Ok(DurableType::BuiltinNominal {
-                    name: identity.name.clone(),
-                    kind,
-                });
-            }
             let module = merged
                 .ast()
                 .modules()
@@ -852,6 +812,15 @@ pub(crate) fn convert_declaration_semantics(
             SemanticExportType::Never => DurableType::Never,
             SemanticExportType::ComptimeType => DurableType::ComptimeType,
             SemanticExportType::GenericParameter(index) => DurableType::GenericParameter(*index),
+            SemanticExportType::BuiltinNominal { name, kind } => {
+                if builtin_nominal_kind(name) != Some(*kind) {
+                    return Err(DurableSemanticExportFailure::MissingStableNominalDefinition);
+                }
+                DurableType::BuiltinNominal {
+                    name: name.clone(),
+                    kind: *kind,
+                }
+            }
             SemanticExportType::Nominal(n) => nominal(n)?,
             SemanticExportType::Array { element, len } => DurableType::Array {
                 element: Box::new(ty(element, merged, definitions)?),
@@ -863,16 +832,7 @@ pub(crate) fn convert_declaration_semantics(
             SemanticExportType::PtrMut(v) => {
                 DurableType::PtrMut(Box::new(ty(v, merged, definitions)?))
             }
-            SemanticExportType::Module(path) => {
-                let module = merged
-                    .ast()
-                    .modules()
-                    .iter()
-                    .find(|m| m.physical_path() == path.as_ref())
-                    .map(|m| m.module_id().clone())
-                    .ok_or(DurableSemanticExportFailure::UnresolvedModule)?;
-                DurableType::Module(module)
-            }
+            SemanticExportType::Module(path) => durable_module_type(path, merged)?,
         })
     }
     let mut result = Vec::with_capacity(exports.len());
@@ -1007,6 +967,24 @@ mod tests {
         assert_query_value::<DurableSemanticExportFailure>();
     }
 
+    #[test]
+    fn canonical_schema_policy_rejects_unknown_major_minor_and_implementation_epochs() {
+        let current = DURABLE_SEMANTIC_SCHEMA_VERSION;
+        assert!(current.accepts(current));
+        assert!(!current.accepts(DurableSemanticSchemaVersion {
+            major: current.major + 1,
+            ..current
+        }));
+        assert!(!current.accepts(DurableSemanticSchemaVersion {
+            minor: current.minor + 1,
+            ..current
+        }));
+        assert!(!current.accepts(DurableSemanticSchemaVersion {
+            implementation_epoch: current.implementation_epoch + 1,
+            ..current
+        }));
+    }
+
     fn stable_hash<T: Hash>(value: &T) -> u64 {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
@@ -1014,37 +992,27 @@ mod tests {
     }
 
     #[test]
-    fn durable_type_schema_contains_only_stable_identity_carriers() {
+    fn durable_types_are_canonical_aliases_without_peer_enum_definitions() {
         let source = include_str!("durable_semantics.rs");
-        let schema = source
-            .split_once("pub enum DurableType {")
-            .unwrap()
-            .1
-            .split_once("/// An owned, request-independent compile-time value.")
-            .unwrap()
-            .0;
-
-        let peer_live_handle = ["Interned", "Type"].concat();
-        for forbidden in [
-            "rue_air::Type",
-            peer_live_handle.as_str(),
-            "StructId",
-            "EnumId",
-            "ArrayTypeId",
-            "PtrConstTypeId",
-            "PtrMutTypeId",
-            "FileId",
-            "Spur",
-            "raw_encoding",
-            "pool_index",
-        ] {
-            assert!(
-                !schema.contains(forbidden),
-                "durable type schema leaked request-local identity: {forbidden}"
-            );
-        }
-        assert!(schema.contains("Nominal(StableDefinitionKey)"));
-        assert!(schema.contains("Module(ModuleId)"));
+        assert!(
+            source.contains(
+                "pub type DurableType = SemanticImportType<StableDefinitionKey, ModuleId>;"
+            )
+        );
+        assert!(source.contains(
+            "pub type DurableConstValue = SemanticImportConstValue<StableDefinitionKey, ModuleId>;"
+        ));
+        let peer_type = ["pub enum Durable", "Type"].concat();
+        let peer_value = ["pub enum Durable", "ConstValue"].concat();
+        assert!(!source.contains(&peer_type));
+        assert!(!source.contains(&peer_value));
+        let ty: SemanticImportType<StableDefinitionKey, ModuleId> = DurableType::I32;
+        let value: SemanticImportConstValue<StableDefinitionKey, ModuleId> =
+            DurableConstValue::Type(ty);
+        assert_eq!(
+            value,
+            SemanticImportConstValue::Type(SemanticImportType::I32)
+        );
     }
 
     #[test]
@@ -1077,7 +1045,10 @@ mod tests {
                 key: structure.clone(),
                 is_public: true,
                 payload: DurableDeclarationPayload::Struct {
-                    fields: Arc::from([]),
+                    fields: Arc::from([(
+                        Arc::from("choice"),
+                        DurableType::PtrConst(Box::new(DurableType::Nominal(enumeration.clone()))),
+                    )]),
                     is_copy: false,
                     is_linear: false,
                 },
@@ -1086,7 +1057,21 @@ mod tests {
                 key: enumeration.clone(),
                 is_public: true,
                 payload: DurableDeclarationPayload::Enum {
-                    variants: Arc::from([(Arc::from("Only"), Arc::from([]))]),
+                    variants: Arc::from([(
+                        Arc::from("Only"),
+                        Arc::from([
+                            DurableType::Array {
+                                element: Box::new(DurableType::PtrMut(Box::new(
+                                    DurableType::Nominal(structure.clone()),
+                                ))),
+                                len: 2,
+                            },
+                            DurableType::PtrConst(Box::new(DurableType::BuiltinNominal {
+                                name: Arc::from("str"),
+                                kind: SemanticImportNominalKind::Struct,
+                            })),
+                        ]),
+                    )]),
                 },
             },
             DurableDeclarationSemantic {

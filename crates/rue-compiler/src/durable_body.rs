@@ -38,6 +38,7 @@ pub type DurableAirInstData = rue_air::SemanticBodyInstData<StableDefinitionKey,
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableOrdinaryBodyPayload {
     pub schema_version: u32,
+    pub semantic_schema_version: crate::DurableSemanticSchemaVersion,
     pub owner: StableDefinitionKey,
     /// Exact current-revision body/signature input captured with the live
     /// stable issuer. Finalization rejects a same-owner stale payload.
@@ -73,6 +74,7 @@ pub struct DurableOrdinaryBody {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableSpecializedBodyPayload {
     pub schema_version: u32,
+    pub semantic_schema_version: crate::DurableSemanticSchemaVersion,
     pub identity: rue_air::SemanticSpecializationIdentity<StableDefinitionKey, crate::ModuleId>,
     /// The completed body uses the same durable AIR algebra as ordinary bodies.
     pub body: DurableOrdinaryBodyPayload,
@@ -111,8 +113,7 @@ impl DurableSpecializedBody {
             || self.inputs.fingerprint() != &self.payload.body.expected_inputs
         {
             work.projection_attempts += 1;
-            work.projection_failures += 1;
-            return Err(DurableBodyProjectionFailure::InputFingerprintMismatch);
+            return work.reject_projection(DurableBodyProjectionFailure::InputFingerprintMismatch);
         }
         self.payload.project_semantic_candidate(body_span, work)
     }
@@ -128,11 +129,11 @@ impl DurableSpecializedBodyPayload {
         DurableBodyProjectionFailure,
     > {
         if self.schema_version != DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION
+            || !crate::DURABLE_SEMANTIC_SCHEMA_VERSION.accepts(self.semantic_schema_version)
             || self.body.owner != self.identity.base
         {
             work.projection_attempts += 1;
-            work.projection_failures += 1;
-            return Err(DurableBodyProjectionFailure::SchemaVersionMismatch);
+            return work.reject_projection(DurableBodyProjectionFailure::SchemaVersionMismatch);
         }
         let identity = self
             .identity
@@ -161,12 +162,14 @@ pub struct DurableBodyWork {
     pub export_attempts: usize,
     pub export_successes: usize,
     pub export_rejections: usize,
+    pub last_export_failure: Option<rue_air::SemanticBodyExportFailure>,
     pub instructions_exported: usize,
     pub places_exported: usize,
     pub strings_exported: usize,
     pub conversion_attempts: usize,
     pub conversion_completions: usize,
     pub conversion_failures: usize,
+    pub last_conversion_failure: Option<DurableBodyConversionFailure>,
     pub stable_key_joins: usize,
     pub finalization_attempts: usize,
     pub finalization_completions: usize,
@@ -174,18 +177,51 @@ pub struct DurableBodyWork {
     pub projection_attempts: usize,
     pub projection_completions: usize,
     pub projection_failures: usize,
+    pub last_projection_failure: Option<DurableBodyProjectionFailure>,
     pub instructions_projected: usize,
     pub places_projected: usize,
     pub strings_projected: usize,
     pub import_attempts: usize,
     pub import_successes: usize,
     pub import_failures: usize,
+    pub unsupported_import_fallbacks: usize,
+    pub structural_import_fallbacks: usize,
+    pub last_import_failure: Option<rue_air::SemanticBodyImportFailureKind>,
     pub installed_instructions: usize,
     pub installed_places: usize,
     pub installed_strings: usize,
     pub atomic_discards: usize,
     pub reused_bodies: usize,
     pub skipped_body_analyses: usize,
+}
+
+impl DurableBodyWork {
+    fn reject_projection<T>(
+        &mut self,
+        reason: DurableBodyProjectionFailure,
+    ) -> Result<T, DurableBodyProjectionFailure> {
+        self.projection_failures += 1;
+        self.last_projection_failure = Some(reason);
+        Err(reason)
+    }
+
+    pub(crate) fn record_import_failure(
+        &mut self,
+        reason: rue_air::SemanticBodyImportFailureKind,
+        count: usize,
+    ) {
+        self.import_failures += count;
+        match reason {
+            rue_air::SemanticBodyImportFailureKind::UnsupportedForm => {
+                self.unsupported_import_fallbacks += count;
+            }
+            rue_air::SemanticBodyImportFailureKind::Semantic(_)
+            | rue_air::SemanticBodyImportFailureKind::StructuralValidation => {
+                self.structural_import_fallbacks += count;
+            }
+        }
+        self.last_import_failure = Some(reason);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -533,6 +569,7 @@ fn record_specialized_conversion_failure(
 ) -> DurableBodyConversionFailure {
     work.conversion_attempts += 1;
     work.conversion_failures += 1;
+    work.last_conversion_failure = Some(failure);
     work.atomic_discards += 1;
     failure
 }
@@ -588,6 +625,7 @@ pub fn convert_semantic_specialized_body_exports(
         };
         converted.push(DurableSpecializedBodyPayload {
             schema_version: DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION,
+            semantic_schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
             identity,
             body: body.clone(),
             dependencies: dependencies.into_iter().collect::<Vec<_>>().into(),
@@ -709,6 +747,7 @@ pub fn convert_semantic_body_exports(
                 let body = body?;
                 Ok(DurableOrdinaryBodyPayload {
                     schema_version: DURABLE_ORDINARY_BODY_SCHEMA_VERSION,
+                    semantic_schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
                     owner,
                     expected_inputs,
                     body,
@@ -723,6 +762,7 @@ pub fn convert_semantic_body_exports(
             Err(error) => {
                 work.conversion_failures += 1;
                 work.atomic_discards += 1;
+                work.last_conversion_failure = Some(error);
                 return Err(error);
             }
         }
@@ -799,8 +839,7 @@ impl DurableOrdinaryBody {
             || self.inputs.fingerprint() != &self.payload.expected_inputs
         {
             work.projection_attempts += 1;
-            work.projection_failures += 1;
-            return Err(DurableBodyProjectionFailure::InputFingerprintMismatch);
+            return work.reject_projection(DurableBodyProjectionFailure::InputFingerprintMismatch);
         }
         self.payload.project_semantic_body(work)
     }
@@ -902,9 +941,10 @@ impl DurableOrdinaryBodyPayload {
     ) -> Result<rue_air::SemanticBody<StableDefinitionKey, Arc<str>>, DurableBodyProjectionFailure>
     {
         work.projection_attempts += 1;
-        if self.schema_version != DURABLE_ORDINARY_BODY_SCHEMA_VERSION {
-            work.projection_failures += 1;
-            return Err(DurableBodyProjectionFailure::SchemaVersionMismatch);
+        if self.schema_version != DURABLE_ORDINARY_BODY_SCHEMA_VERSION
+            || !crate::DURABLE_SEMANTIC_SCHEMA_VERSION.accepts(self.semantic_schema_version)
+        {
+            return work.reject_projection(DurableBodyProjectionFailure::SchemaVersionMismatch);
         }
         if self.body.param_by_ref.len() != self.body.num_param_slots as usize
             || self.body.param_writable.len() != self.body.num_param_slots as usize
@@ -915,8 +955,7 @@ impl DurableOrdinaryBodyPayload {
                 .zip(self.body.param_by_ref.iter())
                 .any(|(writable, by_ref)| *writable && !*by_ref)
         {
-            work.projection_failures += 1;
-            return Err(DurableBodyProjectionFailure::InvalidParameterModes);
+            return work.reject_projection(DurableBodyProjectionFailure::InvalidParameterModes);
         }
         if self
             .body
@@ -924,8 +963,7 @@ impl DurableOrdinaryBodyPayload {
             .iter()
             .any(|(slot, _)| *slot >= self.body.num_param_slots)
         {
-            work.projection_failures += 1;
-            return Err(DurableBodyProjectionFailure::InvalidParameterDrop);
+            return work.reject_projection(DurableBodyProjectionFailure::InvalidParameterDrop);
         }
         if self
             .body
@@ -933,8 +971,7 @@ impl DurableOrdinaryBodyPayload {
             .iter()
             .any(|slot| *slot >= self.body.num_locals)
         {
-            work.projection_failures += 1;
-            return Err(DurableBodyProjectionFailure::InvalidBorrowSlot);
+            return work.reject_projection(DurableBodyProjectionFailure::InvalidBorrowSlot);
         }
         let instruction_len = self.body.instructions.len();
         let place_len = self.body.places.len();
@@ -943,15 +980,15 @@ impl DurableOrdinaryBodyPayload {
                 if let SemanticBodyProjection::Index { index, .. } = projection
                     && *index as usize >= instruction_len
                 {
-                    work.projection_failures += 1;
-                    return Err(DurableBodyProjectionFailure::InvalidInstructionReference);
+                    return work.reject_projection(
+                        DurableBodyProjectionFailure::InvalidInstructionReference,
+                    );
                 }
             }
         }
         for (current, instruction) in self.body.instructions.iter().enumerate() {
             if instruction.anchor.start > instruction.anchor.end {
-                work.projection_failures += 1;
-                return Err(DurableBodyProjectionFailure::InvalidAnchor);
+                return work.reject_projection(DurableBodyProjectionFailure::InvalidAnchor);
             }
             let check = |value: rue_air::SemanticBodyRef| {
                 let index = value as usize;
@@ -1079,13 +1116,11 @@ impl DurableOrdinaryBodyPayload {
                 }
             };
             if let Err(error) = validated {
-                work.projection_failures += 1;
-                return Err(error);
+                return work.reject_projection(error);
             }
         }
         if !self.body.warnings.is_empty() {
-            work.projection_failures += 1;
-            return Err(DurableBodyProjectionFailure::WarningProducingBody);
+            return work.reject_projection(DurableBodyProjectionFailure::WarningProducingBody);
         }
         let body = self
             .body
@@ -1121,6 +1156,7 @@ mod tests {
         let key = owner();
         DurableOrdinaryBodyPayload {
             schema_version: DURABLE_ORDINARY_BODY_SCHEMA_VERSION,
+            semantic_schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
             owner: key.clone(),
             expected_inputs: crate::StableDefinitionInputFingerprint {
                 schema_version: 1,
@@ -1217,6 +1253,22 @@ mod tests {
         assert_eq!(work.projection_attempts, 1);
         assert_eq!(work.projection_completions, 0);
         assert_eq!(work.projection_failures, 1);
+    }
+
+    #[test]
+    fn body_projection_rejects_a_foreign_canonical_algebra_epoch() {
+        let mut candidate = payload(vec![instruction(DurableAirInstData::UnitConst)]);
+        candidate.semantic_schema_version.implementation_epoch += 1;
+        let mut work = DurableBodyWork::default();
+        assert_eq!(
+            candidate.project_semantic_body(&mut work),
+            Err(DurableBodyProjectionFailure::SchemaVersionMismatch)
+        );
+        assert_eq!(work.projection_failures, 1);
+        assert_eq!(
+            work.last_projection_failure,
+            Some(DurableBodyProjectionFailure::SchemaVersionMismatch)
+        );
     }
 
     #[test]

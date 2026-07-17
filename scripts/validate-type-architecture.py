@@ -84,6 +84,7 @@ PUBLIC_TYPE_DECLARATION_ALLOWLIST = {
     ("rue-air", "inference/types.rs", "TypeVarAllocator"): "inference-local allocator",
     ("rue-air", "runtime_call.rs", "RuntimeAirType"): "typed runtime ABI shape classification",
     ("rue-air", "semantic_import.rs", "SemanticImportType"): "stable semantic import schema",
+    ("rue-air", "semantic_import.rs", "SemanticImportTypeFold"): "exhaustive stable schema fold view",
     ("rue-air", "semantic_import.rs", "SemanticImportedType"): "validated imported-type result",
     ("rue-air", "sema/binding_manifest.rs", "SemanticExportType"): "stable semantic export schema",
     ("rue-air", "sema/output.rs", "DeclarationTypeDependencySourceKind"): "dependency metadata",

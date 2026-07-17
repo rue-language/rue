@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use crate::ParamSlotModes;
 use crate::{
-    AirArgMode, AirPlaceBase, BodyOwnerToken, SemanticImportConstValue, SemanticImportType,
+    AirArgMode, AirPlaceBase, BodyOwnerToken, SemanticImportConstValue, SemanticImportFailure,
+    SemanticImportType,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -91,71 +92,18 @@ impl<K, M> SemanticSpecializationIdentity<K, M> {
         key: &impl Fn(&K) -> Result<K2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
     ) -> Result<SemanticSpecializationIdentity<K2, M2>, E> {
-        fn ty<K, M, K2, M2, E>(
-            value: &SemanticImportType<K, M>,
-            key: &impl Fn(&K) -> Result<K2, E>,
-            module: &impl Fn(&M) -> Result<M2, E>,
-        ) -> Result<SemanticImportType<K2, M2>, E> {
-            use SemanticImportType as T;
-            Ok(match value {
-                T::I8 => T::I8,
-                T::I16 => T::I16,
-                T::I32 => T::I32,
-                T::I64 => T::I64,
-                T::U8 => T::U8,
-                T::U16 => T::U16,
-                T::U32 => T::U32,
-                T::U64 => T::U64,
-                T::Bool => T::Bool,
-                T::Unit => T::Unit,
-                T::Never => T::Never,
-                T::ComptimeType => T::ComptimeType,
-                T::BuiltinNominal { name, kind } => T::BuiltinNominal {
-                    name: name.clone(),
-                    kind: *kind,
-                },
-                T::Nominal(value) => T::Nominal(key(value)?),
-                T::Array { element, len } => T::Array {
-                    element: Box::new(ty(element, key, module)?),
-                    len: *len,
-                },
-                T::PtrConst(value) => T::PtrConst(Box::new(ty(value, key, module)?)),
-                T::PtrMut(value) => T::PtrMut(Box::new(ty(value, key, module)?)),
-                T::Module(value) => T::Module(module(value)?),
-                T::GenericParameter(index) => T::GenericParameter(*index),
-            })
-        }
-        fn value<K, M, K2, M2, E>(
-            value: &SemanticImportConstValue<K, M>,
-            key: &impl Fn(&K) -> Result<K2, E>,
-            module: &impl Fn(&M) -> Result<M2, E>,
-        ) -> Result<SemanticImportConstValue<K2, M2>, E> {
-            Ok(match value {
-                SemanticImportConstValue::Integer(value) => {
-                    SemanticImportConstValue::Integer(*value)
-                }
-                SemanticImportConstValue::Bool(value) => SemanticImportConstValue::Bool(*value),
-                SemanticImportConstValue::Type(value) => {
-                    SemanticImportConstValue::Type(ty(value, key, module)?)
-                }
-                SemanticImportConstValue::Function(value) => {
-                    SemanticImportConstValue::Function(key(value)?)
-                }
-                SemanticImportConstValue::Unit => SemanticImportConstValue::Unit,
-            })
-        }
         Ok(SemanticSpecializationIdentity {
             base: key(&self.base)?,
             type_arguments: self
                 .type_arguments
                 .iter()
-                .map(|value| ty(value, key, module))
+                .map(|value| value.try_map_identities(key, module))
                 .collect::<Result<Vec<_>, _>>()?
                 .into(),
             value_arguments: self
                 .value_arguments
                 .iter()
-                .map(|item| value(item, key, module))
+                .map(|item| item.try_map_identities(key, module))
                 .collect::<Result<Vec<_>, _>>()?
                 .into(),
         })
@@ -407,41 +355,6 @@ impl<K, M> SemanticBody<K, M> {
         key: &impl Fn(&K) -> Result<K2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
     ) -> Result<SemanticBody<K2, M2>, E> {
-        fn ty<K, M, K2, M2, E>(
-            value: &SemanticImportType<K, M>,
-            key: &impl Fn(&K) -> Result<K2, E>,
-            module: &impl Fn(&M) -> Result<M2, E>,
-        ) -> Result<SemanticImportType<K2, M2>, E> {
-            use SemanticImportType as T;
-            Ok(match value {
-                T::I8 => T::I8,
-                T::I16 => T::I16,
-                T::I32 => T::I32,
-                T::I64 => T::I64,
-                T::U8 => T::U8,
-                T::U16 => T::U16,
-                T::U32 => T::U32,
-                T::U64 => T::U64,
-                T::Bool => T::Bool,
-                T::Unit => T::Unit,
-                T::Never => T::Never,
-                T::ComptimeType => T::ComptimeType,
-                T::BuiltinNominal { name, kind } => T::BuiltinNominal {
-                    name: name.clone(),
-                    kind: *kind,
-                },
-                T::Nominal(value) => T::Nominal(key(value)?),
-                T::Array { element, len } => T::Array {
-                    element: Box::new(ty(element, key, module)?),
-                    len: *len,
-                },
-                T::PtrConst(value) => T::PtrConst(Box::new(ty(value, key, module)?)),
-                T::PtrMut(value) => T::PtrMut(Box::new(ty(value, key, module)?)),
-                T::Module(value) => T::Module(module(value)?),
-                T::GenericParameter(index) => T::GenericParameter(*index),
-            })
-        }
-
         fn pattern<K, K2, E>(
             value: &SemanticBodyPattern<K>,
             key: &impl Fn(&K) -> Result<K2, E>,
@@ -466,7 +379,7 @@ impl<K, M> SemanticBody<K, M> {
             .map(|place| {
                 Ok(SemanticBodyPlace {
                     base: place.base,
-                    base_type: ty(&place.base_type, key, module)?,
+                    base_type: place.base_type.try_map_identities(key, module)?,
                     projections: place
                         .projections
                         .iter()
@@ -481,7 +394,7 @@ impl<K, M> SemanticBody<K, M> {
                                 },
                                 SemanticBodyProjection::Index { array_type, index } => {
                                     SemanticBodyProjection::Index {
-                                        array_type: ty(array_type, key, module)?,
+                                        array_type: array_type.try_map_identities(key, module)?,
                                         index: *index,
                                     }
                                 }
@@ -503,7 +416,7 @@ impl<K, M> SemanticBody<K, M> {
                     D::BoolConst(v) => D::BoolConst(*v),
                     D::StringConst(v) => D::StringConst(*v),
                     D::UnitConst => D::UnitConst,
-                    D::TypeConst(v) => D::TypeConst(ty(v, key, module)?),
+                    D::TypeConst(v) => D::TypeConst(v.try_map_identities(key, module)?),
                     D::Add(a, b) => D::Add(*a, *b),
                     D::Sub(a, b) => D::Sub(*a, *b),
                     D::Mul(a, b) => D::Mul(*a, *b),
@@ -637,7 +550,7 @@ impl<K, M> SemanticBody<K, M> {
                     },
                     D::IntCast { value, from_ty } => D::IntCast {
                         value: *value,
-                        from_ty: ty(from_ty, key, module)?,
+                        from_ty: from_ty.try_map_identities(key, module)?,
                     },
                     D::Drop { value } => D::Drop { value: *value },
                     D::StorageLive { slot } => D::StorageLive { slot: *slot },
@@ -656,20 +569,20 @@ impl<K, M> SemanticBody<K, M> {
                 };
                 Ok(SemanticBodyInst {
                     data,
-                    ty: ty(&inst.ty, key, module)?,
+                    ty: inst.ty.try_map_identities(key, module)?,
                     anchor: inst.anchor,
                 })
             })
             .collect::<Result<Vec<_>, E>>()?;
         Ok(SemanticBody {
-            return_type: ty(&self.return_type, key, module)?,
+            return_type: self.return_type.try_map_identities(key, module)?,
             instructions: instructions.into(),
             places: places.into(),
             strings: self.strings.clone(),
             param_drops: self
                 .param_drops
                 .iter()
-                .map(|(slot, value)| Ok((*slot, ty(value, key, module)?)))
+                .map(|(slot, value)| Ok((*slot, value.try_map_identities(key, module)?)))
                 .collect::<Result<Vec<_>, E>>()?
                 .into(),
             borrow_slots: self.borrow_slots.clone(),
@@ -728,6 +641,23 @@ pub enum SemanticBodyImportFailure {
     SizeOverflow,
     AirBuild(crate::AirBuildError),
     AirValidation(crate::AirValidationError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticBodyImportFailureKind {
+    Semantic(SemanticImportFailure),
+    UnsupportedForm,
+    StructuralValidation,
+}
+
+impl SemanticBodyImportFailure {
+    pub fn kind(&self) -> SemanticBodyImportFailureKind {
+        match self {
+            Self::Semantic(reason) => SemanticBodyImportFailureKind::Semantic(*reason),
+            Self::UnsupportedGenericCall => SemanticBodyImportFailureKind::UnsupportedForm,
+            _ => SemanticBodyImportFailureKind::StructuralValidation,
+        }
+    }
 }
 
 impl From<super::SemanticImportFailure> for SemanticBodyImportFailure {

@@ -65,6 +65,37 @@ pub enum SemanticImportType<K, M> {
     GenericParameter(u32),
 }
 
+/// One post-order step in the canonical type algebra. Recursive children have
+/// already been folded to `T`, so projection, validation, and import share one
+/// exhaustive schema traversal.
+pub enum SemanticImportTypeFold<'a, K, M, T> {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    Bool,
+    Unit,
+    Never,
+    ComptimeType,
+    BuiltinNominal {
+        name: &'a Arc<str>,
+        kind: SemanticImportNominalKind,
+    },
+    Nominal(&'a K),
+    Array {
+        element: T,
+        len: u64,
+    },
+    PtrConst(T),
+    PtrMut(T),
+    Module(&'a M),
+    GenericParameter(u32),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticImportConstValue<K, M> {
     Integer(i128),
@@ -72,6 +103,102 @@ pub enum SemanticImportConstValue<K, M> {
     Type(SemanticImportType<K, M>),
     Function(K),
     Unit,
+}
+
+impl<K, M> SemanticImportType<K, M> {
+    /// Fold this value in post-order through the canonical schema visitor.
+    pub fn try_fold<T, E>(
+        &self,
+        fold: &mut impl FnMut(SemanticImportTypeFold<'_, K, M, T>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        use SemanticImportType as S;
+        use SemanticImportTypeFold as F;
+        let node = match self {
+            S::I8 => F::I8,
+            S::I16 => F::I16,
+            S::I32 => F::I32,
+            S::I64 => F::I64,
+            S::U8 => F::U8,
+            S::U16 => F::U16,
+            S::U32 => F::U32,
+            S::U64 => F::U64,
+            S::Bool => F::Bool,
+            S::Unit => F::Unit,
+            S::Never => F::Never,
+            S::ComptimeType => F::ComptimeType,
+            S::BuiltinNominal { name, kind } => F::BuiltinNominal { name, kind: *kind },
+            S::Nominal(key) => F::Nominal(key),
+            S::Array { element, len } => F::Array {
+                element: element.try_fold(fold)?,
+                len: *len,
+            },
+            S::PtrConst(value) => F::PtrConst(value.try_fold(fold)?),
+            S::PtrMut(value) => F::PtrMut(value.try_fold(fold)?),
+            S::Module(module) => F::Module(module),
+            S::GenericParameter(index) => F::GenericParameter(*index),
+        };
+        fold(node)
+    }
+
+    /// Relocate every identity in this canonical type without changing its
+    /// structural shape. This is the single traversal used by body,
+    /// specialization, and durable declaration adapters.
+    pub fn try_map_identities<K2, M2, E>(
+        &self,
+        key: &impl Fn(&K) -> Result<K2, E>,
+        module: &impl Fn(&M) -> Result<M2, E>,
+    ) -> Result<SemanticImportType<K2, M2>, E> {
+        use SemanticImportType as T;
+        use SemanticImportTypeFold as F;
+        self.try_fold(&mut |node| {
+            Ok(match node {
+                F::I8 => T::I8,
+                F::I16 => T::I16,
+                F::I32 => T::I32,
+                F::I64 => T::I64,
+                F::U8 => T::U8,
+                F::U16 => T::U16,
+                F::U32 => T::U32,
+                F::U64 => T::U64,
+                F::Bool => T::Bool,
+                F::Unit => T::Unit,
+                F::Never => T::Never,
+                F::ComptimeType => T::ComptimeType,
+                F::BuiltinNominal { name, kind } => T::BuiltinNominal {
+                    name: name.clone(),
+                    kind,
+                },
+                F::Nominal(value) => T::Nominal(key(value)?),
+                F::Array { element, len } => T::Array {
+                    element: Box::new(element),
+                    len,
+                },
+                F::PtrConst(value) => T::PtrConst(Box::new(value)),
+                F::PtrMut(value) => T::PtrMut(Box::new(value)),
+                F::Module(value) => T::Module(module(value)?),
+                F::GenericParameter(index) => T::GenericParameter(index),
+            })
+        })
+    }
+}
+
+impl<K, M> SemanticImportConstValue<K, M> {
+    /// Relocate identities using the canonical type traversal.
+    pub fn try_map_identities<K2, M2, E>(
+        &self,
+        key: &impl Fn(&K) -> Result<K2, E>,
+        module: &impl Fn(&M) -> Result<M2, E>,
+    ) -> Result<SemanticImportConstValue<K2, M2>, E> {
+        Ok(match self {
+            Self::Integer(value) => SemanticImportConstValue::Integer(*value),
+            Self::Bool(value) => SemanticImportConstValue::Bool(*value),
+            Self::Type(value) => {
+                SemanticImportConstValue::Type(value.try_map_identities(key, module)?)
+            }
+            Self::Function(value) => SemanticImportConstValue::Function(key(value)?),
+            Self::Unit => SemanticImportConstValue::Unit,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -792,71 +919,63 @@ where
         type_pool: &TypeInternPool,
         generic_parameters: Option<&[Type]>,
     ) -> Result<Type, SemanticImportFailure> {
-        Ok(match value {
-            SemanticImportType::I8 => Type::I8,
-            SemanticImportType::I16 => Type::I16,
-            SemanticImportType::I32 => Type::I32,
-            SemanticImportType::I64 => Type::I64,
-            SemanticImportType::U8 => Type::U8,
-            SemanticImportType::U16 => Type::U16,
-            SemanticImportType::U32 => Type::U32,
-            SemanticImportType::U64 => Type::U64,
-            SemanticImportType::Bool => Type::BOOL,
-            SemanticImportType::Unit => Type::UNIT,
-            SemanticImportType::Never => Type::NEVER,
-            SemanticImportType::ComptimeType => Type::COMPTIME_TYPE,
-            SemanticImportType::BuiltinNominal { name, kind } => {
-                let local = self
-                    .builtins
-                    .get(&(name.clone(), *kind))
-                    .copied()
-                    .ok_or_else(|| {
-                        if self.builtins.keys().any(|(known, _)| known == name) {
-                            SemanticImportFailure::BuiltinNominalKindMismatch
-                        } else {
-                            SemanticImportFailure::UnknownBuiltinNominal
-                        }
-                    })?;
-                match local {
-                    LocalNominal::Struct(id) => Type::new_struct(id),
-                    LocalNominal::Enum(id) => Type::new_enum(id),
+        use SemanticImportTypeFold as F;
+        value.try_fold(&mut |node| {
+            Ok(match node {
+                F::I8 => Type::I8,
+                F::I16 => Type::I16,
+                F::I32 => Type::I32,
+                F::I64 => Type::I64,
+                F::U8 => Type::U8,
+                F::U16 => Type::U16,
+                F::U32 => Type::U32,
+                F::U64 => Type::U64,
+                F::Bool => Type::BOOL,
+                F::Unit => Type::UNIT,
+                F::Never => Type::NEVER,
+                F::ComptimeType => Type::COMPTIME_TYPE,
+                F::BuiltinNominal { name, kind } => {
+                    let local = self
+                        .builtins
+                        .get(&(name.clone(), kind))
+                        .copied()
+                        .ok_or_else(|| {
+                            if self.builtins.keys().any(|(known, _)| known == name) {
+                                SemanticImportFailure::BuiltinNominalKindMismatch
+                            } else {
+                                SemanticImportFailure::UnknownBuiltinNominal
+                            }
+                        })?;
+                    match local {
+                        LocalNominal::Struct(id) => Type::new_struct(id),
+                        LocalNominal::Enum(id) => Type::new_enum(id),
+                    }
                 }
-            }
-            SemanticImportType::Nominal(key) => match self.nominals.get(key) {
-                Some(LocalNominal::Struct(id)) => Type::new_struct(*id),
-                Some(LocalNominal::Enum(id)) => Type::new_enum(*id),
-                None => return Err(SemanticImportFailure::MissingNominal),
-            },
-            SemanticImportType::Array { element, len } => type_pool
-                .try_intern_array(
-                    self.import_type_local_with(element, type_pool, generic_parameters)?,
-                    *len,
-                )
-                .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
-            SemanticImportType::PtrConst(value) => type_pool
-                .try_intern_ptr_const(self.import_type_local_with(
-                    value,
-                    type_pool,
-                    generic_parameters,
-                )?)
-                .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
-            SemanticImportType::PtrMut(value) => type_pool
-                .try_intern_ptr_mut(self.import_type_local_with(
-                    value,
-                    type_pool,
-                    generic_parameters,
-                )?)
-                .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
-            SemanticImportType::Module(key) => Type::new_module(
-                *self
-                    .modules
-                    .get(key)
-                    .ok_or(SemanticImportFailure::MissingModule)?,
-            ),
-            SemanticImportType::GenericParameter(index) => *generic_parameters
-                .ok_or(SemanticImportFailure::GenericParameterNeedsDeclarationContext)?
-                .get(*index as usize)
-                .ok_or(SemanticImportFailure::GenericParameterOutOfRange)?,
+                F::Nominal(key) => match self.nominals.get(key) {
+                    Some(LocalNominal::Struct(id)) => Type::new_struct(*id),
+                    Some(LocalNominal::Enum(id)) => Type::new_enum(*id),
+                    None => return Err(SemanticImportFailure::MissingNominal),
+                },
+                F::Array { element, len } => type_pool
+                    .try_intern_array(element, len)
+                    .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
+                F::PtrConst(value) => type_pool
+                    .try_intern_ptr_const(value)
+                    .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
+                F::PtrMut(value) => type_pool
+                    .try_intern_ptr_mut(value)
+                    .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
+                F::Module(key) => Type::new_module(
+                    *self
+                        .modules
+                        .get(key)
+                        .ok_or(SemanticImportFailure::MissingModule)?,
+                ),
+                F::GenericParameter(index) => *generic_parameters
+                    .ok_or(SemanticImportFailure::GenericParameterNeedsDeclarationContext)?
+                    .get(index as usize)
+                    .ok_or(SemanticImportFailure::GenericParameterOutOfRange)?,
+            })
         })
     }
 
@@ -1194,6 +1313,131 @@ mod tests {
                 format!("module {}", epoch.module_registry().get_def(id).file_path)
             }
             other => format!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonical_identity_visitor_relocates_every_type_and_const_variant() {
+        let types = vec![
+            ImportType::I8,
+            ImportType::I16,
+            ImportType::I32,
+            ImportType::I64,
+            ImportType::U8,
+            ImportType::U16,
+            ImportType::U32,
+            ImportType::U64,
+            ImportType::Bool,
+            ImportType::Unit,
+            ImportType::Never,
+            ImportType::ComptimeType,
+            ImportType::BuiltinNominal {
+                name: Arc::from("str"),
+                kind: SemanticImportNominalKind::Struct,
+            },
+            ImportType::Nominal("Record"),
+            ImportType::Array {
+                element: Box::new(ImportType::Nominal("Record")),
+                len: 7,
+            },
+            ImportType::PtrConst(Box::new(ImportType::Nominal("Record"))),
+            ImportType::PtrMut(Box::new(ImportType::Nominal("Record"))),
+            ImportType::Module("pkg/main.rue"),
+            ImportType::GenericParameter(3),
+        ];
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Tag {
+            I8,
+            I16,
+            I32,
+            I64,
+            U8,
+            U16,
+            U32,
+            U64,
+            Bool,
+            Unit,
+            Never,
+            Comptime,
+            Builtin,
+            Nominal,
+            Array,
+            PtrConst,
+            PtrMut,
+            Module,
+            Generic,
+        }
+        let expected = [
+            Tag::I8,
+            Tag::I16,
+            Tag::I32,
+            Tag::I64,
+            Tag::U8,
+            Tag::U16,
+            Tag::U32,
+            Tag::U64,
+            Tag::Bool,
+            Tag::Unit,
+            Tag::Never,
+            Tag::Comptime,
+            Tag::Builtin,
+            Tag::Nominal,
+            Tag::Array,
+            Tag::PtrConst,
+            Tag::PtrMut,
+            Tag::Module,
+            Tag::Generic,
+        ];
+        for (ty, expected) in types.into_iter().zip(expected) {
+            use SemanticImportTypeFold as F;
+            let tag = ty
+                .try_fold(&mut |node| {
+                    Ok::<_, ()>(match node {
+                        F::I8 => Tag::I8,
+                        F::I16 => Tag::I16,
+                        F::I32 => Tag::I32,
+                        F::I64 => Tag::I64,
+                        F::U8 => Tag::U8,
+                        F::U16 => Tag::U16,
+                        F::U32 => Tag::U32,
+                        F::U64 => Tag::U64,
+                        F::Bool => Tag::Bool,
+                        F::Unit => Tag::Unit,
+                        F::Never => Tag::Never,
+                        F::ComptimeType => Tag::Comptime,
+                        F::BuiltinNominal { .. } => Tag::Builtin,
+                        F::Nominal(_) => Tag::Nominal,
+                        F::Array { .. } => Tag::Array,
+                        F::PtrConst(_) => Tag::PtrConst,
+                        F::PtrMut(_) => Tag::PtrMut,
+                        F::Module(_) => Tag::Module,
+                        F::GenericParameter(_) => Tag::Generic,
+                    })
+                })
+                .unwrap();
+            assert_eq!(tag, expected);
+            let mapped = ty
+                .try_map_identities(&|key| Ok::<_, ()>(format!("key:{key}")), &|module| {
+                    Ok::<_, ()>(format!("module:{module}"))
+                })
+                .unwrap();
+            assert!(!format!("{mapped:?}").is_empty());
+        }
+
+        let values = [
+            SemanticImportConstValue::Integer(1),
+            SemanticImportConstValue::Bool(true),
+            SemanticImportConstValue::Type(ImportType::Module("pkg/main.rue")),
+            SemanticImportConstValue::Function("callable"),
+            SemanticImportConstValue::Unit,
+        ];
+        for value in values {
+            let mapped = value
+                .try_map_identities(&|key| Ok::<_, ()>(format!("key:{key}")), &|module| {
+                    Ok::<_, ()>(format!("module:{module}"))
+                })
+                .unwrap();
+            assert!(!format!("{mapped:?}").is_empty());
         }
     }
 

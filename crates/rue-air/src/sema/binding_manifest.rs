@@ -42,6 +42,12 @@ pub enum SemanticExportType {
     Never,
     ComptimeType,
     GenericParameter(u32),
+    /// A compiler-injected nominal whose identity is independent of source
+    /// file numbering. This must never be encoded as a synthetic `FileId`.
+    BuiltinNominal {
+        name: Arc<str>,
+        kind: crate::SemanticImportNominalKind,
+    },
     Nominal(SemanticNominalIdentity),
     Array {
         element: Box<Self>,
@@ -777,6 +783,19 @@ impl Sema<'_> {
             SemanticExportType::GenericParameter(index) => *generic_parameters
                 .and_then(|parameters| parameters.get(*index as usize))
                 .ok_or(DeclarationInstallFailure::UnsupportedType)?,
+            SemanticExportType::BuiltinNominal { name, kind } => {
+                let name = self.interner.get_or_intern(name.as_ref());
+                match kind {
+                    crate::SemanticImportNominalKind::Struct => Type::new_struct(
+                        self.resolve_builtin_struct_name(name)
+                            .ok_or(DeclarationInstallFailure::MissingNominal)?,
+                    ),
+                    crate::SemanticImportNominalKind::Enum => Type::new_enum(
+                        self.resolve_builtin_enum_name(name)
+                            .ok_or(DeclarationInstallFailure::MissingNominal)?,
+                    ),
+                }
+            }
             SemanticExportType::Nominal(nominal) => {
                 let name = self.interner.get_or_intern(nominal.name.as_ref());
                 match nominal.kind {
@@ -1301,25 +1320,37 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
             TypeKind::Struct(id) => {
                 let def = self.type_pool.struct_def(id);
                 if def.is_builtin {
-                    return Err(SemanticExportFailure::UnmappedNominalType);
+                    Ok(SemanticExportType::BuiltinNominal {
+                        name: Arc::from(def.name.as_str()),
+                        kind: crate::SemanticImportNominalKind::Struct,
+                    })
+                } else {
+                    let symbol = self.interner.get_or_intern(&def.name);
+                    if self.structs_by_file_name.get(&(def.file_id, symbol)) != Some(&id) {
+                        return Err(SemanticExportFailure::AnonymousNominalType);
+                    }
+                    Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
+                        file_id: def.file_id,
+                        name: Arc::from(def.name),
+                        kind: SemanticBindingKind::Struct,
+                    }))
                 }
-                let symbol = self.interner.get_or_intern(&def.name);
-                if self.structs_by_file_name.get(&(def.file_id, symbol)) != Some(&id) {
-                    return Err(SemanticExportFailure::AnonymousNominalType);
-                }
-                Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
-                    file_id: def.file_id,
-                    name: Arc::from(def.name),
-                    kind: SemanticBindingKind::Struct,
-                }))
             }
             TypeKind::Enum(id) => {
                 let def = self.type_pool.enum_def(id);
-                Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
-                    file_id: def.file_id,
-                    name: Arc::from(def.name),
-                    kind: SemanticBindingKind::Enum,
-                }))
+                let symbol = self.interner.get_or_intern(&def.name);
+                if self.builtin_enums.get(&symbol) == Some(&id) {
+                    Ok(SemanticExportType::BuiltinNominal {
+                        name: Arc::from(def.name.as_str()),
+                        kind: crate::SemanticImportNominalKind::Enum,
+                    })
+                } else {
+                    Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
+                        file_id: def.file_id,
+                        name: Arc::from(def.name),
+                        kind: SemanticBindingKind::Enum,
+                    }))
+                }
             }
             TypeKind::Array(id) => {
                 let (element, len) = self.type_pool.array_def(id);

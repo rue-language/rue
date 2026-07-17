@@ -1375,6 +1375,73 @@ mod tests {
     }
 
     #[test]
+    fn durable_export_keeps_a_real_root_file_zero_nominal_distinct_from_builtins() {
+        let source = snapshot(
+            &[(
+                0,
+                "/workspace/main.rue",
+                "main.rue",
+                "struct Root { value: i32 } fn make() -> Root { Root { value: 0 } }",
+            )],
+            0,
+        );
+        let (_, declarations, _) = export(&source);
+        let root = declarations
+            .iter()
+            .find(|declaration| declaration.key.name() == "Root")
+            .expect("root nominal must be durably exported")
+            .key
+            .clone();
+        let make = declarations
+            .iter()
+            .find(|declaration| declaration.key.name() == "make")
+            .expect("function returning the root nominal must be durably exported");
+        assert!(matches!(
+            &make.payload,
+            crate::DurableDeclarationPayload::Callable { result, .. }
+                if result == &crate::DurableType::Nominal(root)
+        ));
+    }
+
+    #[test]
+    fn durable_module_value_export_joins_logical_identity_after_physical_relocation() {
+        let source = snapshot(
+            &[
+                (
+                    0,
+                    "/relocated/project/main.rue",
+                    "main.rue",
+                    "const imported = @import(\"lib.rue\"); fn main() -> i32 { 0 }",
+                ),
+                (
+                    9,
+                    "/relocated/project/lib.rue",
+                    "lib.rue",
+                    "fn value() -> i32 { 1 }",
+                ),
+            ],
+            0,
+        );
+        let parsed = parse_source_snapshot_modules(&source).unwrap();
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let rue_air::SemanticExportType::Module(logical_identity) =
+            rue_air::SemanticExportType::Module(Arc::from("lib.rue"))
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            crate::durable_semantics::durable_module_type(&logical_identity, &merged),
+            Ok(crate::DurableType::Module(
+                crate::ModuleId::from_logical_path("lib.rue").unwrap(),
+            ))
+        );
+        assert_eq!(
+            crate::durable_semantics::durable_module_type("/relocated/project/lib.rue", &merged,),
+            Err(crate::DurableSemanticExportFailure::UnresolvedModule)
+        );
+    }
+
+    #[test]
     fn durable_member_export_joins_same_named_members_through_their_stable_owner() {
         const MEMBERS: &str = r#"
             struct Alpha {

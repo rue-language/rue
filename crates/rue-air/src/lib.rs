@@ -77,17 +77,17 @@ pub use sema::{
 pub use semantic_body::{
     SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg, SemanticBodyCandidate,
     SemanticBodyCandidateInstallWork, SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind,
-    SemanticBodyExport, SemanticBodyExportFailure, SemanticBodyImportFailure, SemanticBodyInst,
-    SemanticBodyInstData, SemanticBodyMatchArm, SemanticBodyModuleIdentity, SemanticBodyPattern,
-    SemanticBodyPlace, SemanticBodyPlaceRef, SemanticBodyProjection, SemanticBodyRef,
-    SemanticBodyWarning, SemanticImportedBody, SemanticSpecializationIdentity,
-    SemanticSpecializedBodyCandidate, SemanticSpecializedBodyExport,
-    SemanticSpecializedCandidateInstallWork,
+    SemanticBodyExport, SemanticBodyExportFailure, SemanticBodyImportFailure,
+    SemanticBodyImportFailureKind, SemanticBodyInst, SemanticBodyInstData, SemanticBodyMatchArm,
+    SemanticBodyModuleIdentity, SemanticBodyPattern, SemanticBodyPlace, SemanticBodyPlaceRef,
+    SemanticBodyProjection, SemanticBodyRef, SemanticBodyWarning, SemanticImportedBody,
+    SemanticSpecializationIdentity, SemanticSpecializedBodyCandidate,
+    SemanticSpecializedBodyExport, SemanticSpecializedCandidateInstallWork,
 };
 pub use semantic_import::{
     SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,
-    SemanticImportNominalKind, SemanticImportType, SemanticImportedConstValue,
-    SemanticImportedType,
+    SemanticImportNominalKind, SemanticImportType, SemanticImportTypeFold,
+    SemanticImportedConstValue, SemanticImportedType,
 };
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, LangItem, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId,

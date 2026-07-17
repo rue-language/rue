@@ -136,6 +136,7 @@ const DURABLE_CFG_SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, Clone)]
 pub(crate) struct DurableCfgArtifact {
     pub(crate) schema_version: u32,
+    pub(crate) semantic_schema_version: crate::DurableSemanticSchemaVersion,
     pub(crate) input: crate::durable_cfg::StableCfgInput,
     opt_level: OptLevel,
     target: Target,
@@ -218,7 +219,13 @@ pub(crate) fn build_functions_and_cfgs(
             if let Some(candidate) = candidate {
                 function_work.cfg_reuse_candidates = 1;
                 function_work.cfg_import_attempts = 1;
-                if candidate.schema_version == DURABLE_CFG_SCHEMA_VERSION
+                let schema_compatible = candidate.schema_version == DURABLE_CFG_SCHEMA_VERSION
+                    && crate::DURABLE_SEMANTIC_SCHEMA_VERSION
+                        .accepts(candidate.semantic_schema_version);
+                if !schema_compatible {
+                    function_work.cfg_schema_version_rejections = 1;
+                }
+                if schema_compatible
                     && candidate.opt_level == opt_level
                     && candidate.target == target
                     && stable_input.is_some_and(|input| {
@@ -368,6 +375,7 @@ pub(crate) fn build_functions_and_cfgs(
                     && domains.validate_cfg(&cfg, input.body_span).is_ok())
                 .then(|| DurableCfgArtifact {
                     schema_version: DURABLE_CFG_SCHEMA_VERSION,
+                    semantic_schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
                     input: input.clone(),
                     opt_level,
                     target,
@@ -423,6 +431,7 @@ pub(crate) fn build_functions_and_cfgs(
         work.cfg_import_attempts += function_work.cfg_import_attempts;
         work.cfg_import_successes += function_work.cfg_import_successes;
         work.cfg_import_failures += function_work.cfg_import_failures;
+        work.cfg_schema_version_rejections += function_work.cfg_schema_version_rejections;
         work.cfg_reuses += function_work.cfg_reuses;
         work.cfg_fallbacks += function_work.cfg_fallbacks;
         work.cfg_warnings_reused += function_work.cfg_warnings_reused;
