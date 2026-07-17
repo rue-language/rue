@@ -547,6 +547,27 @@ const ENTRIES: &[Entry] = &[
         external(ExternalDependencyKind::RandomU64),
         &[],
     ),
+    // std.env's process-argument/environment intrinsics read captured process
+    // state, an external dependency like `@random_*` (RUE-935). Each case's
+    // first such read (its `@arg_count`/`@env_count`) decides the kind.
+    Entry::new(
+        "expressions.intrinsics",
+        "arg_count_includes_argv0",
+        external(ExternalDependencyKind::ArgCount),
+        &[],
+    ),
+    Entry::new(
+        "expressions.intrinsics",
+        "arg_len_and_ptr_in_and_out_of_range",
+        external(ExternalDependencyKind::ArgCount),
+        &[],
+    ),
+    Entry::new(
+        "expressions.intrinsics",
+        "env_len_and_ptr_out_of_range",
+        external(ExternalDependencyKind::EnvCount),
+        &[],
+    ),
     Entry::new(
         "expressions.try",
         "try_parse_intrinsic_none_short_circuits",

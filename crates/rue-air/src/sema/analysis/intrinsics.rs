@@ -52,7 +52,9 @@ impl<'a> BodySema<'a> {
                 || name == known.realloc_bytes
                 || name == known.free_bytes
                 || name == known.byte_read
-                || name == known.byte_write)
+                || name == known.byte_write
+                || name == known.arg_ptr
+                || name == known.env_ptr)
         {
             let intrinsic_name_str = self.interner.resolve(&name);
             let kind = if name == known.alloc
@@ -111,6 +113,66 @@ impl<'a> BodySema<'a> {
             self.analyze_random_u32_intrinsic(air, name, &args, span)
         } else if name == known.random_u64 {
             self.analyze_random_u64_intrinsic(air, name, &args, span)
+        } else if name == known.arg_count {
+            self.analyze_process_count_intrinsic(
+                air,
+                name,
+                "arg_count",
+                crate::RuntimeCallKind::ArgCount,
+                &args,
+                span,
+            )
+        } else if name == known.env_count {
+            self.analyze_process_count_intrinsic(
+                air,
+                name,
+                "env_count",
+                crate::RuntimeCallKind::EnvCount,
+                &args,
+                span,
+            )
+        } else if name == known.arg_len {
+            self.analyze_process_len_intrinsic(
+                air,
+                name,
+                "arg_len",
+                crate::RuntimeCallKind::ArgLen,
+                &args,
+                span,
+                ctx,
+            )
+        } else if name == known.env_len {
+            self.analyze_process_len_intrinsic(
+                air,
+                name,
+                "env_len",
+                crate::RuntimeCallKind::EnvLen,
+                &args,
+                span,
+                ctx,
+            )
+        } else if name == known.arg_ptr {
+            self.analyze_process_ptr_intrinsic(
+                air,
+                name,
+                "arg_ptr",
+                crate::RuntimeCallKind::ArgPtr,
+                inst_ref,
+                &args,
+                span,
+                ctx,
+            )
+        } else if name == known.env_ptr {
+            self.analyze_process_ptr_intrinsic(
+                air,
+                name,
+                "env_ptr",
+                crate::RuntimeCallKind::EnvPtr,
+                inst_ref,
+                &args,
+                span,
+                ctx,
+            )
         } else if name == known.wrapping_add
             || name == known.wrapping_sub
             || name == known.wrapping_mul
@@ -1319,6 +1381,156 @@ impl<'a> BodySema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::U64))
+    }
+
+    /// Analyze the nullary process-inventory intrinsics `@arg_count` /
+    /// `@env_count` (RUE-935). Each takes no arguments and returns `u64`,
+    /// mirroring `@random_u64`; the runtime read of the captured argc/env count
+    /// imposes no caller obligation, so — like `@random_*` — these are not
+    /// `checked`-gated.
+    pub(super) fn analyze_process_count_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        display: &str,
+        runtime: crate::RuntimeCallKind,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        if !args.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: display.to_string(),
+                    expected: 0,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                runtime: Some(runtime),
+                name,
+                args_start: 0,
+                args_len: 0,
+            },
+            ty: Type::U64,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U64))
+    }
+
+    /// Analyze the indexed length intrinsics `@arg_len` / `@env_len`
+    /// (RUE-935). Each takes a single `u64` index and returns `u64`; the
+    /// runtime returns 0 for an out-of-range index, so no caller obligation is
+    /// imposed and no `checked` block is required (a safe scalar read like
+    /// `@str_byte_at`).
+    pub(super) fn analyze_process_len_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        display: &str,
+        runtime: crate::RuntimeCallKind,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: display.to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let index = self.analyze_inst(air, args[0].value, ctx)?;
+        self.require_process_index_type(display, index.ty, span)?;
+        let args_start = air.add_extra(&[index.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                runtime: Some(runtime),
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: Type::U64,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U64))
+    }
+
+    /// Analyze the indexed pointer intrinsics `@arg_ptr` / `@env_ptr`
+    /// (RUE-935). Each takes a single `u64` index and returns `ptr mut u8`.
+    /// The runtime returns a null pointer when the index is at or past the
+    /// corresponding count; following `@alloc`'s conventions (ADR-0028) these
+    /// pointer-producing intrinsics are only usable inside a `checked` block
+    /// (gated together with the other raw-pointer intrinsics above).
+    pub(super) fn analyze_process_ptr_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        display: &str,
+        runtime: crate::RuntimeCallKind,
+        inst_ref: InstRef,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: display.to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let index = self.analyze_inst(air, args[0].value, ctx)?;
+        self.require_process_index_type(display, index.ty, span)?;
+        let result_ty = Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
+        if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
+            && expected != result_ty
+            && !expected.is_error()
+            && !expected.is_never()
+        {
+            return Err(self.type_mismatch_error(expected, result_ty, span));
+        }
+        let args_start = air.add_extra(&[index.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                runtime: Some(runtime),
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: result_ty,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_ty))
+    }
+
+    /// Require the index operand of a process argument/environment intrinsic to
+    /// be `u64` (the runtime helpers take a single `u64` index).
+    fn require_process_index_type(
+        &self,
+        display: &str,
+        found: Type,
+        span: Span,
+    ) -> CompileResult<()> {
+        if found == Type::U64 || found.is_error() || found.is_never() {
+            return Ok(());
+        }
+        Err(CompileError::new(
+            ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                name: format!("@{display}"),
+                expected: "u64".to_string(),
+                found: found.safe_name_with_pool(Some(&self.type_pool)),
+            })),
+            span,
+        ))
     }
 
     /// Analyze `@wrapping_add` / `@wrapping_sub` / `@wrapping_mul` (RUE-647).

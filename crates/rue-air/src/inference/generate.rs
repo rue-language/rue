@@ -1406,6 +1406,36 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "random_u64" {
                     // @random_u64: no arguments, returns u64
                     InferType::Concrete(Type::U64)
+                } else if intrinsic_name == "arg_count" || intrinsic_name == "env_count" {
+                    // @arg_count / @env_count: no arguments, returns u64
+                    // (RUE-935).
+                    InferType::Concrete(Type::U64)
+                } else if intrinsic_name == "arg_len" || intrinsic_name == "env_len" {
+                    // @arg_len(i) / @env_len(i): a single u64 index, returns u64
+                    // (RUE-935).
+                    for arg_ref in args.iter() {
+                        let info = self.generate(*arg_ref, ctx);
+                        self.add_constraint(Constraint::equal(
+                            info.ty,
+                            InferType::Concrete(Type::U64),
+                            info.span,
+                        ));
+                    }
+                    InferType::Concrete(Type::U64)
+                } else if intrinsic_name == "arg_ptr" || intrinsic_name == "env_ptr" {
+                    // @arg_ptr(i) / @env_ptr(i): a single u64 index, returns
+                    // `ptr mut u8` (RUE-935).
+                    for arg_ref in args.iter() {
+                        let info = self.generate(*arg_ref, ctx);
+                        self.add_constraint(Constraint::equal(
+                            info.ty,
+                            InferType::Concrete(Type::U64),
+                            info.span,
+                        ));
+                    }
+                    InferType::Concrete(Type::new_ptr_mut(
+                        self.type_pool.intern_ptr_mut_from_type(Type::U8),
+                    ))
                 } else if intrinsic_name == "wrapping_add"
                     || intrinsic_name == "wrapping_sub"
                     || intrinsic_name == "wrapping_mul"

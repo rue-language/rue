@@ -73,6 +73,27 @@ pub struct KnownSymbols {
     pub random_u32: Spur,
     /// The `random_u64` intrinsic symbol.
     pub random_u64: Spur,
+    /// The `arg_count` intrinsic symbol — number of command-line arguments,
+    /// including `argv[0]` (RUE-935). Nullary, returns `u64`.
+    pub arg_count: Spur,
+    /// The `arg_ptr` intrinsic symbol — raw pointer to command-line argument
+    /// `i`'s bytes, or null when `i >= @arg_count()` (RUE-935). Returns
+    /// `ptr mut u8`; requires a `checked` block like the other raw-pointer
+    /// intrinsics.
+    pub arg_ptr: Spur,
+    /// The `arg_len` intrinsic symbol — byte length of command-line argument
+    /// `i`, or 0 when out of range (RUE-935). Takes `u64`, returns `u64`.
+    pub arg_len: Spur,
+    /// The `env_count` intrinsic symbol — number of environment entries
+    /// (RUE-935). Nullary, returns `u64`.
+    pub env_count: Spur,
+    /// The `env_ptr` intrinsic symbol — raw pointer to environment entry `i`'s
+    /// `KEY=VALUE` bytes, or null when out of range (RUE-935). Returns
+    /// `ptr mut u8`; requires a `checked` block.
+    pub env_ptr: Spur,
+    /// The `env_len` intrinsic symbol — byte length of environment entry `i`,
+    /// or 0 when out of range (RUE-935). Takes `u64`, returns `u64`.
+    pub env_len: Spur,
     /// The `wrapping_add` intrinsic symbol — two's-complement addition mod 2^N
     /// (RUE-647).
     pub wrapping_add: Spur,
@@ -154,6 +175,12 @@ impl KnownSymbols {
             import: interner.get_or_intern_static("import"),
             random_u32: interner.get_or_intern_static("random_u32"),
             random_u64: interner.get_or_intern_static("random_u64"),
+            arg_count: interner.get_or_intern_static("arg_count"),
+            arg_ptr: interner.get_or_intern_static("arg_ptr"),
+            arg_len: interner.get_or_intern_static("arg_len"),
+            env_count: interner.get_or_intern_static("env_count"),
+            env_ptr: interner.get_or_intern_static("env_ptr"),
+            env_len: interner.get_or_intern_static("env_len"),
             wrapping_add: interner.get_or_intern_static("wrapping_add"),
             wrapping_sub: interner.get_or_intern_static("wrapping_sub"),
             wrapping_mul: interner.get_or_intern_static("wrapping_mul"),
@@ -236,6 +263,12 @@ mod tests {
         assert_eq!(interner.resolve(&known.import), "import");
         assert_eq!(interner.resolve(&known.random_u32), "random_u32");
         assert_eq!(interner.resolve(&known.random_u64), "random_u64");
+        assert_eq!(interner.resolve(&known.arg_count), "arg_count");
+        assert_eq!(interner.resolve(&known.arg_ptr), "arg_ptr");
+        assert_eq!(interner.resolve(&known.arg_len), "arg_len");
+        assert_eq!(interner.resolve(&known.env_count), "env_count");
+        assert_eq!(interner.resolve(&known.env_ptr), "env_ptr");
+        assert_eq!(interner.resolve(&known.env_len), "env_len");
         assert_eq!(interner.resolve(&known.ptr_read), "ptr_read");
         assert_eq!(interner.resolve(&known.ptr_write), "ptr_write");
         assert_eq!(interner.resolve(&known.ptr_offset), "ptr_offset");

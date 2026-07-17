@@ -64,6 +64,10 @@ Expression intrinsics (usable in any expression position):
 | `@parse_u64` | Parse text to u64 | 1 expression (any text rung) | `Option(u64)` |
 | `@random_u32` | Generate random u32 | none | `u32` |
 | `@random_u64` | Generate random u64 | none | `u64` |
+| `@arg_count` | Number of command-line arguments (incl. `argv[0]`) | none | `u64` |
+| `@arg_len` | Byte length of argument `i` (0 out of range) | 1 expression (`u64` index) | `u64` |
+| `@env_count` | Number of environment entries | none | `u64` |
+| `@env_len` | Byte length of environment entry `i` (0 out of range) | 1 expression (`u64` index) | `u64` |
 | `@target_arch` | Get target architecture | none | `Arch` |
 | `@target_os` | Get target OS | none | `Os` |
 | `@import` | Import module | 1 expression (string literal) | module type |
@@ -90,6 +94,8 @@ full semantics):
 | `@realloc_bytes` | Resize physical bytes (preview `raw_bytes`) | 3 expressions (`ptr mut u8`, `u64`, `u64`) | `ptr mut u8` |
 | `@byte_read` | Read one physical byte (preview `raw_bytes`) | 2 expressions (`ptr const u8`/`ptr mut u8`, `u64`) | `u8` |
 | `@byte_write` | Write one physical byte (preview `raw_bytes`) | 3 expressions (`ptr mut u8`, `u64`, `u8`) | `()` |
+| `@arg_ptr` | Pointer to argument `i`'s bytes (null out of range) | 1 expression (`u64` index) | `ptr mut u8` |
+| `@env_ptr` | Pointer to environment entry `i`'s bytes (null out of range) | 1 expression (`u64` index) | `ptr mut u8` |
 
 {{ rule(id="4.13:5b", cat="informative") }}
 
@@ -637,6 +643,88 @@ The return type of `@random_u64` is `u64`.
 fn main() -> i32 {
     let large_random = @random_u64();
     @dbg(large_random);
+    0
+}
+```
+
+## `@arg_count`, `@arg_len`, `@arg_ptr`
+
+{{ rule(id="4.13:103", cat="normative") }}
+
+The `@arg_count`, `@arg_len`, and `@arg_ptr` intrinsics expose the command-line
+arguments the platform loader supplied to the process at entry. They are the
+low-level surface on which `std.env` builds its owned-`StrBuf` accessors; the
+argument vector is a fixed process input, so a program observes the same
+arguments for the whole of its execution.
+
+{{ rule(id="4.13:104", cat="normative") }}
+
+`@arg_count` accepts no arguments and returns a `u64`: the number of
+command-line arguments, including `argv[0]` (the program invocation path). A
+process is always launched with at least one argument, so the result is at
+least `1`.
+
+{{ rule(id="4.13:105", cat="normative") }}
+
+`@arg_len` accepts one `u64` index and returns a `u64`: the length in bytes of
+argument `i`, not counting any terminator. `@arg_ptr` accepts one `u64` index
+and returns `ptr mut u8`, a pointer to the first of that argument's bytes.
+Because `@arg_ptr` yields a raw pointer, it may appear only inside a `checked`
+block (§9.2), exactly like `@alloc`; `@arg_count` and `@arg_len` impose no such
+requirement.
+
+{{ rule(id="4.13:106", cat="dynamic-semantics") }}
+
+When the index passed to `@arg_len` or `@arg_ptr` is greater than or equal to
+`@arg_count()`, `@arg_len` returns `0` and `@arg_ptr` returns a null pointer.
+For an in-range index, the `@arg_ptr` pointer addresses exactly `@arg_len(i)`
+readable bytes. Argument bytes are not interpreted as UTF-8 (ADR-0035).
+
+{{ rule(id="4.13:107") }}
+
+```rue
+fn main() -> i32 {
+    // A program invoked with no extra arguments still sees argv[0].
+    @dbg(@arg_count() >= 1);            // true
+    0
+}
+```
+
+## `@env_count`, `@env_len`, `@env_ptr`
+
+{{ rule(id="4.13:108", cat="normative") }}
+
+The `@env_count`, `@env_len`, and `@env_ptr` intrinsics expose the process
+environment the platform loader supplied at entry, as a sequence of
+`KEY=VALUE` byte strings. They mirror the `@arg_*` intrinsics and back
+`std.env`'s environment lookups.
+
+{{ rule(id="4.13:109", cat="normative") }}
+
+`@env_count` accepts no arguments and returns a `u64`: the number of
+environment entries. `@env_len` accepts one `u64` index and returns a `u64`:
+the length in bytes of environment entry `i`. `@env_ptr` accepts one `u64`
+index and returns `ptr mut u8`, a pointer to the first of that entry's bytes;
+like `@arg_ptr`, it may appear only inside a `checked` block (§9.2), while
+`@env_count` and `@env_len` may appear in any expression position.
+
+{{ rule(id="4.13:110", cat="dynamic-semantics") }}
+
+When the index passed to `@env_len` or `@env_ptr` is greater than or equal to
+`@env_count()`, `@env_len` returns `0` and `@env_ptr` returns a null pointer.
+For an in-range index, the `@env_ptr` pointer addresses exactly `@env_len(i)`
+readable bytes, which encode one `KEY=VALUE` pair. Environment bytes are not
+interpreted as UTF-8 (ADR-0035).
+
+{{ rule(id="4.13:111") }}
+
+```rue
+fn main() -> i32 {
+    // The environment is captured once; entries can be scanned by index.
+    let mut i: u64 = 0;
+    while i < @env_count() {
+        i = i + 1;
+    }
     0
 }
 ```

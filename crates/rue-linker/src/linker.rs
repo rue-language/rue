@@ -461,6 +461,56 @@ fn apply_relocation(
             inst = (inst & 0xFFC003FF) | (imm << 10);
             buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
         }
+        RelocationType::Ldst8Lo12
+        | RelocationType::Ldst16Lo12
+        | RelocationType::Ldst32Lo12
+        | RelocationType::Ldst64Lo12
+        | RelocationType::Ldst128Lo12 => {
+            // R_AARCH64_LDST{8,16,32,64,128}_ABS_LO12_NC: the scaled low 12 bits
+            // of the effective address for a load/store instruction. Result is
+            // S + A; the low 12 bits, scaled DOWN by the access width, land in
+            // the imm12 field (instruction bits [21:10]). Unlike ADD_ABS_LO12_NC
+            // the width is fixed by the relocation type rather than inferred from
+            // the instruction, and the result must be aligned to the access width
+            // (the `_NC` variants have no overflow check, but a misaligned offset
+            // cannot be represented in the scaled imm12 and is a malformed input).
+            let (scale, rel_name): (u32, &str) = match rel_type {
+                RelocationType::Ldst8Lo12 => (0, "Ldst8Lo12"),
+                RelocationType::Ldst16Lo12 => (1, "Ldst16Lo12"),
+                RelocationType::Ldst32Lo12 => (2, "Ldst32Lo12"),
+                RelocationType::Ldst64Lo12 => (3, "Ldst64Lo12"),
+                RelocationType::Ldst128Lo12 => (4, "Ldst128Lo12"),
+                _ => unreachable!(),
+            };
+            let effective_addr = (target_addr as i64 + addend) as u64;
+            let lo12 = (effective_addr & 0xFFF) as u32;
+            if patch_offset + 4 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 4,
+                    section_size: buf.len(),
+                    rel_type: rel_name.to_string(),
+                });
+            }
+            // The result must be aligned to the access width; otherwise the low
+            // scale bits would be lost by the >> below and the reference would be
+            // silently corrupted.
+            if lo12 & ((1u32 << scale) - 1) != 0 {
+                return Err(LinkError::RelocationOverflow {
+                    symbol: sym_name.to_string(),
+                    rel_type: format!(
+                        "{rel_name} (offset 0x{lo12:x} misaligned for {}-byte access)",
+                        1u32 << scale
+                    ),
+                });
+            }
+            let imm = lo12 >> scale;
+            let mut inst =
+                u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
+            // Load/store imm12 is in bits 10-21, same field position as ADD.
+            inst = (inst & 0xFFC003FF) | (imm << 10);
+            buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
+        }
         RelocationType::Unknown(t) => {
             return Err(LinkError::UnsupportedRelocation(format!(
                 "unknown type {}",
@@ -2116,6 +2166,75 @@ mod tests {
             slot, main_vaddr,
             "Abs64 relocation in .data must be applied (was silently dropped)"
         );
+    }
+
+    /// R_AARCH64_LDST64_ABS_LO12_NC (type 286): the ADRP+LDR pair the aarch64
+    /// runtime emits against 64-bit statics. The scaled low 12 bits of S + A go
+    /// into the imm12 field (instruction bits [21:10]), scaled DOWN by 8.
+    #[test]
+    fn test_ldst64_lo12_relocation_scales_and_patches() {
+        // `LDR x0, [x0, #0]` (64-bit unsigned-offset load) = 0xF9400000.
+        // S = 0x2678, A = 0 -> effective low12 = 0x678 (8-byte aligned).
+        // imm12 = 0x678 >> 3 = 0xCF (207); placed at bits [21:10]:
+        //   0xCF << 10 = 0x0003_3C00, so the patched word = 0xF9433C00.
+        let mut buf = 0xF940_0000u32.to_le_bytes().to_vec();
+        apply_relocation(
+            &mut buf,
+            0,
+            0x1000,
+            0x2678,
+            0,
+            RelocationType::Ldst64Lo12,
+            "sym",
+        )
+        .unwrap();
+        let patched = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        assert_eq!(patched, 0xF943_3C00);
+        // imm12 field (bits [21:10]) reads back as 0x678 >> 3 = 0xCF.
+        assert_eq!((patched >> 10) & 0xFFF, 0xCF);
+    }
+
+    /// A 32-bit load (LDST32, type 285) must scale by 4, not 8: proves the
+    /// per-width scaling is keyed off the relocation type.
+    #[test]
+    fn test_ldst32_lo12_relocation_scales_by_four() {
+        // `LDR w0, [x0, #0]` (32-bit unsigned-offset load) = 0xB9400000.
+        // S = 0x2674 -> low12 = 0x674 (4-byte aligned); 0x674 >> 2 = 0x19D.
+        //   0x19D << 10 = 0x0006_7400, so the patched word = 0xB9467400.
+        let mut buf = 0xB940_0000u32.to_le_bytes().to_vec();
+        apply_relocation(
+            &mut buf,
+            0,
+            0x1000,
+            0x2674,
+            0,
+            RelocationType::Ldst32Lo12,
+            "sym",
+        )
+        .unwrap();
+        let patched = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        assert_eq!(patched, 0xB946_7400);
+        assert_eq!((patched >> 10) & 0xFFF, 0x19D);
+    }
+
+    /// A result that is not aligned to the access width cannot be represented in
+    /// the scaled imm12, so it must be reported as a link error rather than
+    /// silently truncated.
+    #[test]
+    fn test_ldst64_lo12_relocation_rejects_misaligned() {
+        // S = 0x2674 -> low12 = 0x674, not 8-byte aligned.
+        let mut buf = 0xF940_0000u32.to_le_bytes().to_vec();
+        let err = apply_relocation(
+            &mut buf,
+            0,
+            0x1000,
+            0x2674,
+            0,
+            RelocationType::Ldst64Lo12,
+            "sym",
+        )
+        .unwrap_err();
+        assert!(matches!(err, LinkError::RelocationOverflow { .. }));
     }
 
     /// RUE-131 item 9: among multiple WEAK definitions, the first wins; a

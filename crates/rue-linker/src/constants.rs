@@ -181,6 +181,16 @@ pub const R_AARCH64_ABS64: u32 = 257;
 pub const R_AARCH64_ADR_PREL_PG_HI21: u32 = 275;
 /// R_AARCH64_ADD_ABS_LO12_NC: ADD instruction page offset
 pub const R_AARCH64_ADD_ABS_LO12_NC: u32 = 277;
+/// R_AARCH64_LDST8_ABS_LO12_NC: 8-bit load/store page offset (imm12 << 0)
+pub const R_AARCH64_LDST8_ABS_LO12_NC: u32 = 278;
+/// R_AARCH64_LDST16_ABS_LO12_NC: 16-bit load/store page offset (imm12 << 1)
+pub const R_AARCH64_LDST16_ABS_LO12_NC: u32 = 284;
+/// R_AARCH64_LDST32_ABS_LO12_NC: 32-bit load/store page offset (imm12 << 2)
+pub const R_AARCH64_LDST32_ABS_LO12_NC: u32 = 285;
+/// R_AARCH64_LDST64_ABS_LO12_NC: 64-bit load/store page offset (imm12 << 3)
+pub const R_AARCH64_LDST64_ABS_LO12_NC: u32 = 286;
+/// R_AARCH64_LDST128_ABS_LO12_NC: 128-bit load/store page offset (imm12 << 4)
+pub const R_AARCH64_LDST128_ABS_LO12_NC: u32 = 299;
 /// R_AARCH64_JUMP26: Unconditional branch
 pub const R_AARCH64_JUMP26: u32 = 282;
 /// R_AARCH64_CALL26: Branch with link

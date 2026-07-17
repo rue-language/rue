@@ -763,6 +763,45 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::IntToPointer),
         &[],
     ),
+    // std.env (RUE-935): argv/envp are captured process state, so the oracle
+    // treats the `@arg_*`/`@env_*` reads as external dependencies (like
+    // `@random_*`). Each case's first such read decides its registered kind.
+    Entry::new(
+        "cli.std_env",
+        "arg_count_includes_argv0_and_passed_args",
+        external(ExternalDependencyKind::ArgCount),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_env",
+        "arg_out_of_range_is_none",
+        external(ExternalDependencyKind::ArgCount),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_env",
+        "args_are_echoed_in_order",
+        external(ExternalDependencyKind::ArgCount),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_env",
+        "argv0_is_present",
+        external(ExternalDependencyKind::ArgCount),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_env",
+        "var_absent_returns_none",
+        external(ExternalDependencyKind::EnvCount),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_env",
+        "var_present_returns_value",
+        external(ExternalDependencyKind::EnvCount),
+        &[],
+    ),
     Entry::new(
         "cli.std_exit",
         "std_exit_terminates_with_status",
