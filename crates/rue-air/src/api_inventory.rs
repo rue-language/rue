@@ -221,6 +221,31 @@ fn air_payload_ownership_and_validation_boundary_cannot_regress() {
 }
 
 #[test]
+fn semantic_schema_scaffolding_stays_exhaustive_and_reviewable() {
+    let body = include_str!("semantic_body.rs");
+    let import = include_str!("semantic_import.rs");
+
+    assert!(body.contains("macro_rules! semantic_body_inst_schema"));
+    assert!(body.contains("pub enum SemanticBodyInstKind"));
+    assert!(body.contains("pub fn try_map_keys<K2, M2, E>("));
+    assert!(body.contains("pub fn visit_dependencies("));
+    assert!(body.contains("pub struct SemanticBodyInstFailureContext<E>"));
+    assert!(body.contains("let data = inst.data.try_map_keys(key, module)?;"));
+    assert!(import.contains("macro_rules! semantic_import_type_schema"));
+    assert!(import.contains("macro_rules! semantic_import_const_schema"));
+    assert!(import.contains("pub enum SemanticImportTypeKind"));
+    assert!(import.contains("pub enum SemanticImportConstKind"));
+
+    let generated_kind = body
+        .split("pub const fn kind(&self) -> SemanticBodyInstKind")
+        .nth(1)
+        .and_then(|source| source.split("semantic_body_inst_schema!(").next())
+        .expect("generated semantic instruction kind implementation");
+    assert!(generated_kind.contains("match self"));
+    assert!(!generated_kind.contains("_ =>"));
+}
+
+#[test]
 fn semantic_definition_taxonomy_has_one_enum_declaration() {
     let canonical = include_str!("semantic_identity.rs");
     let bindings = include_str!("sema/binding_manifest.rs");

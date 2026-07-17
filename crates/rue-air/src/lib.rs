@@ -78,10 +78,11 @@ pub use sema::{
     SpecializedFreeFunctionOrigin,
 };
 pub use semantic_body::{
-    SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg, SemanticBodyCandidate,
-    SemanticBodyCandidateInstallWork,
-    SemanticBodyExport, SemanticBodyExportFailure, SemanticBodyImportFailure,
-    SemanticBodyImportFailureKind, SemanticBodyInst, SemanticBodyInstData, SemanticBodyMatchArm,
+    SEMANTIC_BODY_INST_KINDS, SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg,
+    SemanticBodyCandidate, SemanticBodyCandidateInstallWork, SemanticBodyExport,
+    SemanticBodyExportFailure, SemanticBodyImportFailure, SemanticBodyImportFailureKind,
+    SemanticBodyInst, SemanticBodyInstData, SemanticBodyInstDependency,
+    SemanticBodyInstFailureContext, SemanticBodyInstKind, SemanticBodyMatchArm,
     SemanticBodyPattern, SemanticBodyPlace, SemanticBodyPlaceRef, SemanticBodyProjection,
     SemanticBodyRef, SemanticBodyWarning, SemanticDefinitionEndpoint, SemanticDefinitionToken,
     SemanticImportedBody, SemanticModuleEndpoint, SemanticModuleToken,
@@ -91,8 +92,9 @@ pub use semantic_body::{
 };
 pub use semantic_identity::{StableDefinitionKind, StableDefinitionNamespace};
 pub use semantic_import::{
+    SEMANTIC_IMPORT_CONST_KINDS, SEMANTIC_IMPORT_TYPE_KINDS, SemanticImportConstKind,
     SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,
-    SemanticImportNominalKind, SemanticImportType, SemanticImportTypeFold,
+    SemanticImportNominalKind, SemanticImportType, SemanticImportTypeFold, SemanticImportTypeKind,
     SemanticImportedConstValue, SemanticImportedType,
 };
 pub use types::{
