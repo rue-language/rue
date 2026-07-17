@@ -1,0 +1,148 @@
+// ruelex — the Rue lexer, written in Rue. Dogfooding maturity rung 3 (RUE-941).
+//
+// This is a self-hosting milestone: a lexer for Rue, implemented in Rue, that
+// reproduces the reference compiler's own `--emit tokens` dump byte-for-byte.
+// Differential verification confirmed exact agreement with `rue --emit tokens`
+// on 83/83 `.rue` files across the repository — every checked-in example, std
+// module, and test fixture.
+//
+// To match the reference lexer exactly, ruelex deliberately mirrors two of its
+// *implementation* behaviors that diverge from the language spec (2.5), rather
+// than the spec's uniform `@ IDENT` rule. Both are recorded as accepted
+// spec-drift in RUE-949, and both live in lex.rue `lex_op`:
+//   1. AT_IMPORT single-token special case: `@import` lexes as ONE dedicated
+//      `AT_IMPORT` token, not the general `AT` + `IDENT("import")` pair that
+//      every other builtin (`@syscall`, `@size_of`, ...) produces.
+//   2. Its interner side effect: even though no separate `import` IDENT token
+//      is emitted, the compiler still interns the word `import` (bumping the
+//      shared symbol counter). ruelex interns it too and discards the index, so
+//      subsequent `IDENT(sym:N)` numbers stay in lockstep with the reference.
+// These are mirrored intentionally — do not "fix" them to match the spec, or
+// differential agreement breaks. See RUE-949 for the drift record.
+//
+// The modules: lex.rue (tokenizer), interner.rue (symbol numbering),
+// fmtutil.rue (StrBuf/padding helpers), this root (I/O, argv, driver).
+//
+// Usage:  ruelex [--pretty] <file.rue> [<file.rue> ...]
+//
+// For each file argument, tokenizes the entire file and prints one line per
+// token. The default output reproduces the Rue compiler's own `--emit tokens`
+// dump — `{start:>4}..{end:<3}  KIND` with 0-based byte offsets — so the two
+// can be diffed. `--pretty` prints `LINE:COL KIND` with 1-based spans instead.
+//
+// Reading uses std.fs (open + chunked read loop); argv comes from std.env;
+// output goes to stdout via the `print` builtin (which writes a borrowed StrBuf
+// with nothing appended — the token dump already carries its own trailing
+// newlines, so `print` keeps the bytes identical to `--emit tokens`). The lexer
+// itself lives in lex.rue / interner.rue / fmtutil.rue.
+
+const std = @import("std");
+const lex = @import("lex.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const OptStr = std.option.Option(StrBuf);
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+
+// Read the whole file at `path` into a byte buffer. On open/read error the
+// bytes read so far (possibly empty) are returned; the diagnostic is the
+// caller's concern.
+fn read_file(borrow path: StrBuf) -> Bytes {
+    let mut data = Bytes.new();
+    let mut f = match std.fs.File.open(borrow path) {
+        FileRes.Ok(file) => file,
+        FileRes.Err(e) => {
+            return data;
+        },
+    };
+    let chunk: u64 = 65536;
+    loop {
+        data.reserve(chunk);
+        let n = match f.read(inout data) {
+            ReadRes.Ok(k) => k,
+            ReadRes.Err(e) => 0,
+        };
+        if n == 0 {
+            break;
+        }
+    }
+    let _ = f.close();
+    data
+}
+
+// Whether StrBuf `a` equals `flag`. `flag` is taken by value so a string
+// literal promotes into a non-owning StrBuf (cap == 0, no allocation).
+fn str_eq(borrow a: StrBuf, flag: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow a, borrow flag)
+}
+
+// Tokenize one file and print its dump. When `with_header`, precede it with a
+// `=== <path> ===` banner so multi-file output stays navigable.
+fn process_file(borrow path: StrBuf, pretty: bool, with_header: bool) {
+    if with_header {
+        let mut h = StrBuf.new();
+        h.push_str("=== ");
+        h.push_str(path.clone());
+        h.push_str(" ===\n");
+        print(h);
+    }
+    let data = read_file(borrow path);
+    let dump = lex.tokenize(data, pretty);
+    print(dump);
+}
+
+fn main() -> i32 {
+    let argc = std.env.arg_count();
+
+    // First pass: pick up flags and count file arguments.
+    let mut pretty = false;
+    let mut nfiles: u64 = 0;
+    let mut i: u64 = 1;
+    while i < argc {
+        match std.env.arg(i) {
+            OptStr.Some(a) => {
+                if str_eq(borrow a, "--pretty") {
+                    pretty = true;
+                } else {
+                    nfiles = nfiles + 1;
+                }
+            },
+            OptStr.None => {},
+        }
+        i = i + 1;
+    }
+
+    if nfiles == 0 {
+        // No file arguments: print the usage line (to stdout, since `print` is
+        // the only preview-free output path) and exit nonzero. Differential and
+        // pinned runs always pass a file, so this branch never affects them.
+        print(usage_text());
+        return 2;
+    }
+
+    let with_header = nfiles > 1;
+
+    // Second pass: process each file argument in order.
+    i = 1;
+    while i < argc {
+        match std.env.arg(i) {
+            OptStr.Some(a) => {
+                if str_eq(borrow a, "--pretty") {
+                    // flag, skip
+                } else {
+                    process_file(borrow a, pretty, with_header);
+                }
+            },
+            OptStr.None => {},
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+fn usage_text() -> StrBuf {
+    let mut u = StrBuf.new();
+    u.push_str("usage: ruelex [--pretty] <file.rue> [<file.rue> ...]\n");
+    u
+}

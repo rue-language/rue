@@ -1,0 +1,57 @@
+// fmtutil — small StrBuf construction and numeric-padding helpers for ruelex.
+//
+// The lexer names every token kind as a StrBuf (e.g. "PLUS", "IDENT(sym:3)")
+// and the emitter pads byte offsets into fixed columns. Both live here so the
+// lexer proper stays about tokenizing.
+
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+// Decimal string of `n`.
+pub fn u(n: u64) -> StrBuf {
+    @to_string(n)
+}
+
+// `prefix` ++ decimal(val) ++ `suffix`, e.g. kn("IDENT(sym:", 3, ")"). The
+// prefix/suffix are taken by value so string literals promote into them (a
+// literal StrBuf is a cheap non-owning header, cap == 0, no allocation).
+pub fn kn(prefix: StrBuf, val: u64, suffix: StrBuf) -> StrBuf {
+    let mut b = prefix;
+    b.push_str(@to_string(val));
+    b.push_str(suffix);
+    b
+}
+
+// Decimal of `n`, right-justified (space-padded on the left) to at least
+// `width` columns. Matches Rust's `{:>width}`.
+pub fn pad_left(n: u64, width: u64) -> StrBuf {
+    let ds = @to_string(n);
+    let len = ds.len();
+    let mut b = StrBuf.new();
+    if len < width {
+        let mut i = len;
+        while i < width {
+            b.push(32);
+            i = i + 1;
+        }
+    }
+    b.push_str(ds);
+    b
+}
+
+// Decimal of `n`, left-justified (space-padded on the right) to at least
+// `width` columns. Matches Rust's `{:<width}`.
+pub fn pad_right(n: u64, width: u64) -> StrBuf {
+    let ds = @to_string(n);
+    let len = ds.len();
+    let mut b = StrBuf.new();
+    b.push_str(ds);
+    if len < width {
+        let mut i = len;
+        while i < width {
+            b.push(32);
+            i = i + 1;
+        }
+    }
+    b
+}

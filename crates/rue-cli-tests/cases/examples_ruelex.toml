@@ -1,0 +1,56 @@
+# The Rue lexer written in Rue (RUE-941; dogfooding maturity rung 3):
+# examples/ruelex/. This case compiles the checked-in example directly via
+# `source_path` (so the suite stays pinned to the program users actually see),
+# then runs it on a tiny fixture and asserts its exact `--emit tokens`-shaped
+# output.
+#
+# The whole point of ruelex is byte-for-byte agreement with the compiler's own
+# `rue --emit tokens`, so the pinned `stdout` below is exactly what that command
+# emits (token-lines section) for the same `sample.rue` — verified at authoring
+# time. The fixture is chosen to exercise the two implementation behaviors the
+# lexer deliberately mirrors (RUE-949): `@import` lexes as a single `AT_IMPORT`
+# token, and interning `import` as a side effect bumps the shared symbol counter
+# — which is why the emitted identifiers jump `sym:0` (`std`) straight to `sym:2`
+# (`add`): `sym:1` was spent on the never-emitted `import`.
+
+[section]
+id = "cli.examples_ruelex"
+name = "Rue lexer written in Rue (ruelex)"
+description = "compile examples/ruelex and tokenize a fixture, asserting the exact --emit tokens dump byte-for-byte"
+
+[[case]]
+name = "ruelex_tokenizes_fixture_matching_emit_tokens"
+description = "ruelex on a small fixture reproduces `rue --emit tokens` exactly, including the AT_IMPORT special case and its symbol-counter side effect (sym:0 -> sym:2)."
+source_path = "examples/ruelex/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "sample.rue", source = """
+const std = @import("std");
+fn add(x: i32) -> i32 { x + 1 }
+""" }]
+program_args = ["sample.rue"]
+exit_code = 0
+stdout = """
+   0..5    CONST
+   6..9    IDENT(sym:0)
+  10..11   EQ
+  12..19   AT_IMPORT
+  19..20   LPAREN
+  20..25   STRING(sym:0)
+  25..26   RPAREN
+  26..27   SEMI
+  28..30   FN
+  31..34   IDENT(sym:2)
+  34..35   LPAREN
+  35..36   IDENT(sym:3)
+  36..37   COLON
+  38..41   TYPE(i32)
+  41..42   RPAREN
+  43..45   ARROW
+  46..49   TYPE(i32)
+  50..51   LBRACE
+  52..53   IDENT(sym:3)
+  54..55   PLUS
+  56..57   INT(1)
+  58..59   RBRACE
+  60..60   EOF
+"""

@@ -1,0 +1,459 @@
+// lex — the Rue lexer, written in Rue.
+//
+// Implements the lexical grammar of Rue from the language specification
+// (docs/spec/src/02-lexical-structure and appendix A): whitespace and line
+// comments, identifiers, keywords, primitive type names, integer literals
+// (decimal / 0x / 0o / 0b with `_` separators), string literals with escape
+// sequences, and all operators and punctuation with maximal munch.
+//
+// Output format reproduces the compiler's own `--emit tokens` dump so the two
+// can be diffed byte-for-byte:  `{start:>4}..{end:<3}  KIND`  where start/end
+// are 0-based byte offsets. A `--pretty` mode instead prints `LINE:COL KIND`
+// using 1-based line/column spans tracked in parallel.
+
+const std = @import("std");
+const fmtutil = @import("fmtutil.rue");
+const interner = @import("interner.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+// Whether `key` equals keyword `word`. `word` is taken by value so a string
+// literal promotes into a non-owning StrBuf header (cap == 0, no allocation),
+// which can then be borrowed for the comparison.
+fn word_eq(borrow key: StrBuf, word: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow key, borrow word)
+}
+
+// --- byte classification (operate on the u64 values returned by peek) ---
+
+fn is_alpha(c: u64) -> bool {
+    (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+fn is_digit(c: u64) -> bool {
+    c >= 48 && c <= 57
+}
+
+fn is_ident_start(c: u64) -> bool {
+    is_alpha(c) || c == 95
+}
+
+fn is_ident_cont(c: u64) -> bool {
+    is_alpha(c) || is_digit(c) || c == 95
+}
+
+// Value of a hex/oct/dec digit byte, or 99 when `c` is not a digit at all.
+fn digit_val(c: u64) -> u64 {
+    if c >= 48 && c <= 57 {
+        c - 48
+    } else if c >= 97 && c <= 102 {
+        c - 97 + 10
+    } else if c >= 65 && c <= 70 {
+        c - 65 + 10
+    } else {
+        99
+    }
+}
+
+// The byte value produced by escape letter `e` in a string literal, or 256
+// when `e` does not form a valid escape sequence (2.1:7).
+fn decode_escape(e: u64) -> u64 {
+    if e == 92 {
+        92
+    } else if e == 34 {
+        34
+    } else if e == 110 {
+        10
+    } else if e == 116 {
+        9
+    } else if e == 114 {
+        13
+    } else if e == 48 {
+        0
+    } else {
+        256
+    }
+}
+
+pub struct Lexer {
+    src: Bytes,
+    n: u64,
+    pos: u64,
+    line: u64,
+    col: u64,
+    interner: interner.Interner,
+    pretty: bool,
+
+    fn new(src: Bytes, pretty: bool) -> Self {
+        let mut lx = Self {
+            src: src,
+            n: 0,
+            pos: 0,
+            line: 1,
+            col: 1,
+            interner: interner.Interner.new(),
+            pretty: pretty,
+        };
+        lx.n = lx.src.len();
+        lx
+    }
+
+    // --- cursor primitives ---
+
+    fn at(borrow self, i: u64) -> u8 {
+        self.src.get_or(i, 0)
+    }
+
+    // Byte `k` ahead of the cursor as a u64, or 256 at/after end of input.
+    fn peek(borrow self, k: u64) -> u64 {
+        if self.pos + k >= self.n {
+            256
+        } else {
+            let b: u8 = self.src.get_or(self.pos + k, 0);
+            @intCast(b)
+        }
+    }
+
+    // Consume one byte, maintaining 1-based line/column (columns count bytes).
+    fn advance(inout self) {
+        let c = self.at(self.pos);
+        self.pos = self.pos + 1;
+        if c == 10 {
+            self.line = self.line + 1;
+            self.col = 1;
+        } else {
+            self.col = self.col + 1;
+        }
+    }
+
+    // Skip whitespace (space/tab/CR/LF, 2.3:1) and line comments (`//` to end
+    // of line, 2.2:1; the terminating newline is left for the ws skip).
+    fn skip_trivia(inout self) {
+        loop {
+            let c = self.peek(0);
+            if c == 32 || c == 9 || c == 13 || c == 10 {
+                self.advance();
+            } else if c == 47 && self.peek(1) == 47 {
+                while self.pos < self.n && self.peek(0) != 10 {
+                    self.advance();
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    // A fresh StrBuf of source bytes [a, b).
+    fn slice_key(borrow self, a: u64, b: u64) -> StrBuf {
+        let mut k = StrBuf.new();
+        let mut i = a;
+        while i < b {
+            k.push(self.at(i));
+            i = i + 1;
+        }
+        k
+    }
+
+    // --- token recognizers (cursor is at the token start; each consumes the
+    //     token and returns its kind string) ---
+
+    fn lex_ident(inout self, start: u64) -> StrBuf {
+        while is_ident_cont(self.peek(0)) {
+            self.advance();
+        }
+        let a = start;
+        let b = self.pos;
+
+        if b - a == 1 && self.at(a) == 95 {
+            return "UNDERSCORE";
+        }
+
+        // Build the lexeme once; keyword/type checks and (if it is neither)
+        // interning all read it. `word_eq` compares against a keyword literal
+        // promoted to a non-owning StrBuf.
+        let key = self.slice_key(a, b);
+
+        // Keywords (2.4:2). `self`/`Self`/`true`/`false` get distinct kinds.
+        if word_eq(borrow key, "borrow") { return "BORROW"; }
+        if word_eq(borrow key, "fn") { return "FN"; }
+        if word_eq(borrow key, "inout") { return "INOUT"; }
+        if word_eq(borrow key, "let") { return "LET"; }
+        if word_eq(borrow key, "linear") { return "LINEAR"; }
+        if word_eq(borrow key, "mut") { return "MUT"; }
+        if word_eq(borrow key, "if") { return "IF"; }
+        if word_eq(borrow key, "else") { return "ELSE"; }
+        if word_eq(borrow key, "while") { return "WHILE"; }
+        if word_eq(borrow key, "loop") { return "LOOP"; }
+        if word_eq(borrow key, "for") { return "FOR"; }
+        if word_eq(borrow key, "in") { return "IN"; }
+        if word_eq(borrow key, "match") { return "MATCH"; }
+        if word_eq(borrow key, "return") { return "RETURN"; }
+        if word_eq(borrow key, "break") { return "BREAK"; }
+        if word_eq(borrow key, "comptime") { return "COMPTIME"; }
+        if word_eq(borrow key, "continue") { return "CONTINUE"; }
+        if word_eq(borrow key, "true") { return "TRUE"; }
+        if word_eq(borrow key, "false") { return "FALSE"; }
+        if word_eq(borrow key, "struct") { return "STRUCT"; }
+        if word_eq(borrow key, "enum") { return "ENUM"; }
+        if word_eq(borrow key, "impl") { return "IMPL"; }
+        if word_eq(borrow key, "self") { return "SELF"; }
+        if word_eq(borrow key, "Self") { return "SELFTYPE"; }
+        if word_eq(borrow key, "drop") { return "DROP"; }
+        if word_eq(borrow key, "pub") { return "PUB"; }
+        if word_eq(borrow key, "const") { return "CONST"; }
+        if word_eq(borrow key, "checked") { return "CHECKED"; }
+        if word_eq(borrow key, "unchecked") { return "UNCHECKED"; }
+        if word_eq(borrow key, "ptr") { return "PTR"; }
+
+        // Primitive type names (2.4:3). NB: usize/isize are NOT keyword tokens
+        // (appendix A note); they lex as ordinary identifiers.
+        if word_eq(borrow key, "i8") { return "TYPE(i8)"; }
+        if word_eq(borrow key, "i16") { return "TYPE(i16)"; }
+        if word_eq(borrow key, "i32") { return "TYPE(i32)"; }
+        if word_eq(borrow key, "i64") { return "TYPE(i64)"; }
+        if word_eq(borrow key, "u8") { return "TYPE(u8)"; }
+        if word_eq(borrow key, "u16") { return "TYPE(u16)"; }
+        if word_eq(borrow key, "u32") { return "TYPE(u32)"; }
+        if word_eq(borrow key, "u64") { return "TYPE(u64)"; }
+        if word_eq(borrow key, "bool") { return "TYPE(bool)"; }
+        if word_eq(borrow key, "type") { return "TYPE(type)"; }
+
+        let sym = self.interner.intern(borrow key);
+        fmtutil.kn("IDENT(sym:", sym, ")")
+    }
+
+    fn lex_number(inout self, start: u64) -> StrBuf {
+        let c0 = self.peek(0);
+        if c0 == 48 {
+            let c1 = self.peek(1);
+            if c1 == 120 { return self.lex_based(16); }
+            if c1 == 111 { return self.lex_based(8); }
+            if c1 == 98 { return self.lex_based(2); }
+        }
+        let mut val: u64 = 0;
+        loop {
+            let d = self.peek(0);
+            if is_digit(d) {
+                let dig: u64 = d - 48;
+                if val <= (18446744073709551615 - dig) / 10 {
+                    val = val * 10 + dig;
+                } else {
+                    val = 18446744073709551615;
+                }
+                self.advance();
+            } else if d == 95 {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        fmtutil.kn("INT(", val, ")")
+    }
+
+    // A based literal (`0x`/`0o`/`0b`). `base` is 16, 8, or 2; the cursor is on
+    // the leading `0`. Requires at least one digit of the base (2.1:20).
+    fn lex_based(inout self, base: u64) -> StrBuf {
+        self.advance(); // '0'
+        self.advance(); // base letter
+        let mut val: u64 = 0;
+        let mut any = false;
+        loop {
+            let d = self.peek(0);
+            if d == 95 {
+                self.advance();
+            } else {
+                let dv = digit_val(d);
+                if dv < base {
+                    any = true;
+                    if val <= (18446744073709551615 - dv) / base {
+                        val = val * base + dv;
+                    } else {
+                        val = 18446744073709551615;
+                    }
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        if !any {
+            return "ERROR(empty base literal)";
+        }
+        fmtutil.kn("INT(", val, ")")
+    }
+
+    fn lex_string(inout self, start: u64) -> StrBuf {
+        self.advance(); // opening quote
+        let mut key = StrBuf.new();
+        loop {
+            if self.pos >= self.n {
+                return "ERROR(unterminated string)";
+            }
+            let c = self.peek(0);
+            if c == 10 {
+                return "ERROR(unterminated string)";
+            }
+            if c == 34 {
+                self.advance(); // closing quote
+                break;
+            }
+            if c == 92 {
+                self.advance(); // backslash
+                if self.pos >= self.n {
+                    return "ERROR(unterminated string)";
+                }
+                let e = self.peek(0);
+                if e == 10 {
+                    return "ERROR(unterminated string)";
+                }
+                let dec = decode_escape(e);
+                if dec == 256 {
+                    self.advance();
+                    return "ERROR(invalid escape)";
+                }
+                let db: u8 = @intCast(dec);
+                key.push(db);
+                self.advance();
+            } else {
+                let cb: u8 = @intCast(c);
+                key.push(cb);
+                self.advance();
+            }
+        }
+        let sym = self.interner.intern(borrow key);
+        fmtutil.kn("STRING(sym:", sym, ")")
+    }
+
+    // Operators and punctuation, longest match first (2.1:2). Two-byte tokens
+    // (<<, >>, ==, !=, <=, >=, &&, ||, ->, =>) are tried before their one-byte
+    // prefixes.
+    fn lex_op(inout self, start: u64) -> StrBuf {
+        let c = self.peek(0);
+        let c1 = self.peek(1);
+
+        // `@import` is a single dedicated token in the compiler's lexer, and
+        // the word `import` is NOT interned as an identifier (empirically
+        // verified against `--emit tokens`; this is the ONLY special-cased
+        // `@name` — `@size_of`, `@syscall`, ... all lex as AT + IDENT). The
+        // language spec (2.5) says builtins are uniformly `@ IDENT`, so this
+        // is a spec-vs-compiler divergence the tool must mirror to match.
+        if c == 64 {
+            let mut e = self.pos + 1;
+            while e < self.n && is_ident_cont(@intCast(self.at(e))) {
+                e = e + 1;
+            }
+            let after = self.slice_key(self.pos + 1, e);
+            if word_eq(borrow after, "import") {
+                // The compiler still interns "import" (it bumps the symbol
+                // counter) even though it emits ONE `AT_IMPORT` token and no
+                // separate IDENT — so intern it here to keep symbol numbers in
+                // lockstep, discarding the returned index.
+                let _ = self.interner.intern(borrow after);
+                while self.pos < e {
+                    self.advance();
+                }
+                return "AT_IMPORT";
+            }
+            self.advance();
+            return "AT";
+        }
+
+        if c == 45 && c1 == 62 { self.advance(); self.advance(); return "ARROW"; }
+        if c == 61 && c1 == 62 { self.advance(); self.advance(); return "FATARROW"; }
+        if c == 61 && c1 == 61 { self.advance(); self.advance(); return "EQEQ"; }
+        if c == 33 && c1 == 61 { self.advance(); self.advance(); return "BANGEQ"; }
+        if c == 60 && c1 == 61 { self.advance(); self.advance(); return "LTEQ"; }
+        if c == 62 && c1 == 61 { self.advance(); self.advance(); return "GTEQ"; }
+        if c == 60 && c1 == 60 { self.advance(); self.advance(); return "LTLT"; }
+        if c == 62 && c1 == 62 { self.advance(); self.advance(); return "GTGT"; }
+        if c == 38 && c1 == 38 { self.advance(); self.advance(); return "AMPAMP"; }
+        if c == 124 && c1 == 124 { self.advance(); self.advance(); return "PIPEPIPE"; }
+
+        self.advance();
+        if c == 43 { return "PLUS"; }
+        if c == 45 { return "MINUS"; }
+        if c == 42 { return "STAR"; }
+        if c == 47 { return "SLASH"; }
+        if c == 37 { return "PERCENT"; }
+        if c == 61 { return "EQ"; }
+        if c == 33 { return "BANG"; }
+        if c == 60 { return "LT"; }
+        if c == 62 { return "GT"; }
+        if c == 38 { return "AMP"; }
+        if c == 124 { return "PIPE"; }
+        if c == 94 { return "CARET"; }
+        if c == 126 { return "TILDE"; }
+        if c == 40 { return "LPAREN"; }
+        if c == 41 { return "RPAREN"; }
+        if c == 123 { return "LBRACE"; }
+        if c == 125 { return "RBRACE"; }
+        if c == 91 { return "LBRACKET"; }
+        if c == 93 { return "RBRACKET"; }
+        if c == 44 { return "COMMA"; }
+        if c == 59 { return "SEMI"; }
+        if c == 58 { return "COLON"; }
+        if c == 46 { return "DOT"; }
+        if c == 63 { return "QUESTION"; }
+        // NB: `@` (c == 64) is handled at the top of this function.
+
+        fmtutil.kn("ERROR(invalid byte ", c, ")")
+    }
+
+    // Append one formatted token line for a token spanning bytes [start, end),
+    // starting at 1-based line/col (sl, sc).
+    fn emit(borrow self, inout out: StrBuf, start: u64, end: u64, sl: u64, sc: u64, kind: StrBuf) {
+        if self.pretty {
+            out.push_str(fmtutil.u(sl));
+            out.push_str(":");
+            out.push_str(fmtutil.u(sc));
+            out.push_str(" ");
+            out.push_str(kind);
+            out.push_str("\n");
+        } else {
+            // Column layout matches the compiler's `--emit tokens`:
+            // `{start:>4}..{end:<4} {KIND}` — start right-justified to width 4,
+            // end left-justified to width 4, then a single space.
+            out.push_str(fmtutil.pad_left(start, 4));
+            out.push_str("..");
+            out.push_str(fmtutil.pad_right(end, 4));
+            out.push_str(" ");
+            out.push_str(kind);
+            out.push_str("\n");
+        }
+    }
+
+    // Tokenize the whole input, appending one line per token to `out`, ending
+    // with an EOF token whose span is (n, n).
+    fn run(inout self, inout out: StrBuf) {
+        loop {
+            self.skip_trivia();
+            if self.pos >= self.n {
+                break;
+            }
+            let start = self.pos;
+            let sl = self.line;
+            let sc = self.col;
+            let c = self.peek(0);
+            let kind = if is_ident_start(c) {
+                self.lex_ident(start)
+            } else if is_digit(c) {
+                self.lex_number(start)
+            } else if c == 34 {
+                self.lex_string(start)
+            } else {
+                self.lex_op(start)
+            };
+            let end = self.pos;
+            self.emit(inout out, start, end, sl, sc, kind);
+        }
+        self.emit(inout out, self.n, self.n, self.line, self.col, "EOF");
+    }
+}
+
+// Tokenize `src`, returning the full formatted dump. Consumes `src`.
+pub fn tokenize(src: Bytes, pretty: bool) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut lx = Lexer.new(src, pretty);
+    lx.run(inout out);
+    out
+}
