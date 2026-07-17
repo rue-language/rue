@@ -355,6 +355,66 @@ const ENTRIES: &[Entry] = &[
         semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
+    // std.fs File IO v0 (RUE-712, ADR-0057): pure-Rue fs over @syscall. The
+    // oracle model cannot execute the raw-pointer/syscall substrate (StrBuf/
+    // ArrayBuf `@int_to_ptr` prologue, `@alloc_bytes`, `@syscall`), so every
+    // case is accepted debt, exactly like the arraybuf/strbuf CLI cases. The
+    // two error-detection cases run `only_on` Linux (macOS carry-flag gap,
+    // ADR-0057 §3a), so their gap registration is Linux-scoped to match.
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_append",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_drop_close_reopen",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_close_then_reopen_safe",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_read_full_buffer_invalid",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_read_whole_file_loop",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_reserve_then_read_fills",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_open_missing_not_found",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_write_to_readonly",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
     Entry::new(
         "cli.heap_intrinsics",
         "alloc_count_size_overflow_traps",

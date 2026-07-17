@@ -13,6 +13,7 @@
 // - std.result.Result: Fallible values (Ok/Err), propagated with `?`
 // - std.strbuf.StrBuf: Source-defined growable string buffer header
 // - std.arraybuf.ArrayBuf: Growable heap-backed collections
+// - std.fs.File: File IO v0 (open/create/append/read/write/close over @syscall)
 
 // Re-export library modules.
 pub const math = @import("math.rue");
@@ -24,6 +25,9 @@ pub const option = @import("option.rue");
 pub const result = @import("result.rue");
 pub const strbuf = @import("strbuf.rue");
 pub const arraybuf = @import("arraybuf.rue");
+
+// File IO v0 (RUE-712, ADR-0057): pure-Rue std.fs over @syscall.
+pub const fs = @import("fs.rue");
 
 // Collections (Standard library v1, M2).
 pub const stack = @import("stack.rue");

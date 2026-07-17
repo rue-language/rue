@@ -180,38 +180,50 @@ pub fn ArrayBuf(comptime T: type) -> type {
 
         // --- mutation ---
 
-        // Ensure there is room for at least one more element, growing the
-        // buffer (amortized 2x) when full. Internal helper.
-        fn reserve(inout self) {
-            if self.len == self.cap {
-                let new_cap: u64 = if self.cap == 0 {
-                    4
-                } else {
-                    if self.cap > 9223372036854775807 {
-                        @panic("out of memory");
-                    }
-                    self.cap * 2
-                };
-                let element_size: u64 = @intCast(@size_of(T));
-                if element_size > 0 {
-                    if new_cap > 18446744073709551615 / element_size {
-                        @panic("out of memory");
-                    }
-                    checked {
-                        let grown = @realloc(self.buf, self.cap, new_cap);
-                        if @ptr_to_int(grown) == 0 {
-                            @panic("out of memory");
-                        }
-                        self.buf = grown;
-                    };
-                }
-                self.cap = new_cap;
+        // Ensure spare capacity for at least `additional` more elements,
+        // growing the buffer when the current spare (`capacity() - len()`) is
+        // insufficient. Growth is amortized 2x, but always at least enough to
+        // hold `additional` more, so after `reserve(n)` at least `n` more
+        // `push`es (or, for an `ArrayBuf(u8)`, `n` bytes read by
+        // `std.fs.File.read`) proceed without reallocating. `reserve(0)` and an
+        // already-large-enough buffer are no-ops. This mirrors
+        // `StrBuf.reserve(additional)` and is the public capacity hint that
+        // makes a whole-file read loop (`reserve`, `read`, repeat) writable.
+        fn reserve(inout self, additional: u64) {
+            if additional > 18446744073709551615 - self.len {
+                @panic("out of memory");
             }
+            let required = self.len + additional;
+            if required <= self.cap {
+                return;
+            }
+            let mut new_cap: u64 = if self.cap == 0 { 4 } else { self.cap };
+            while new_cap < required {
+                if new_cap > 9223372036854775807 {
+                    new_cap = required;
+                } else {
+                    new_cap = new_cap * 2;
+                }
+            }
+            let element_size: u64 = @intCast(@size_of(T));
+            if element_size > 0 {
+                if new_cap > 18446744073709551615 / element_size {
+                    @panic("out of memory");
+                }
+                checked {
+                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    if @ptr_to_int(grown) == 0 {
+                        @panic("out of memory");
+                    }
+                    self.buf = grown;
+                };
+            }
+            self.cap = new_cap;
         }
 
         // Append `x` to the end, growing if necessary.
         fn push(inout self, x: T) {
-            self.reserve();
+            self.reserve(1);
             checked {
                 let slot = @ptr_offset(self.buf, self.len);
                 @ptr_write(slot, x);

@@ -1,0 +1,447 @@
+// std.fs — File IO v0 (RUE-712, ADR-0057).
+//
+// Pure-Rue filesystem access over the `@syscall` intrinsic. There is no Rust
+// runtime helper: per-target syscall numbers, open flags, `AT_FDCWD`, and errno
+// values are all selected in Rue by a total `@target_arch()`/`@target_os()`
+// match, exactly as `std.exit()` selects its exit-syscall number. This keeps
+// IO freestanding — it compiles for every target with no additions to the
+// per-target runtime archive (ADR-0034/0055).
+//
+// v0 surface: `File.open` (read-only), `File.create` (truncate+write),
+// `File.append`, `read`, `write`/`write_all`, and a consuming `close`. Files
+// close themselves via a `drop fn` at scope exit. No seek, stat, directories,
+// rename, or buffering (ADR-0057 defers all of it).
+//
+// PATHS are byte-string `StrBuf`s; the syscall boundary copies the bytes into a
+// NUL-terminated buffer and never exposes that terminator to the caller.
+//
+// ERRORS normalize to `FileError` from per-OS errno tables — a raw errno never
+// escapes. Linux and macOS give the same logical error different integers
+// (e.g. EAGAIN is 11 on Linux, 35 on macOS), so the tables are per-OS.
+//
+// PLATFORM ERROR-DETECTION CAVEAT (ADR-0057, "macOS error-detection gap"):
+// error detection here relies on a failed syscall returning `-errno` (a
+// negative value). Linux does exactly that. macOS/Darwin instead returns a
+// POSITIVE errno and signals failure with the carry flag — and the current
+// `@syscall` codegen lowering discards the carry flag (it just moves x0),
+// so on macOS a failed syscall is indistinguishable from a success that
+// returns a small value (a failed openat returning ENOENT=2 looks exactly
+// like a successful openat returning fd 2). Success paths are correct on
+// macOS; error DETECTION is not, until the `@syscall` lowering is taught to
+// negate-on-carry the way the Rust runtime wrappers already do. Tracked as a
+// codegen follow-up (see ADR-0057). Linux behavior is correct and CI-validated.
+
+const result = @import("result.rue");
+const option = @import("option.rue");
+const strbuf = @import("strbuf.rue");
+const arraybuf = @import("arraybuf.rue");
+
+// A normalized, target-independent file error. Decoded from the per-OS errno
+// tables below so that a program matching on `FileError` means the same thing
+// on every target (ADR-0057 §3). Everything not named here falls through to
+// `Other(i64)` carrying the raw errno, so no error is ever lost.
+pub enum FileError {
+    NotFound,           // ENOENT
+    PermissionDenied,   // EACCES, EPERM
+    AlreadyExists,      // EEXIST
+    Interrupted,        // EINTR
+    WouldBlock,         // EAGAIN / EWOULDBLOCK
+    InvalidInput,       // EINVAL, EBADF
+    Other(i64),         // any other raw errno
+}
+
+// ---------------------------------------------------------------------------
+// Per-target syscall numbers. openat(2) is used UNIFORMLY on every target:
+// AArch64 Linux has no `open` syscall at all (the generic syscall ABI only
+// provides openat), so issuing openat(AT_FDCWD, ...) everywhere is both correct
+// there and uniform elsewhere (ADR-0057 §1).
+// ---------------------------------------------------------------------------
+
+fn _sys_openat() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 257,
+                Os.Macos => 463,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 56,
+                Os.Macos => 463,
+            }
+        },
+    }
+}
+
+fn _sys_close() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 3,
+                Os.Macos => 6,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 57,
+                Os.Macos => 6,
+            }
+        },
+    }
+}
+
+fn _sys_read() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 0,
+                Os.Macos => 3,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 63,
+                Os.Macos => 3,
+            }
+        },
+    }
+}
+
+fn _sys_write() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 1,
+                Os.Macos => 4,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 64,
+                Os.Macos => 4,
+            }
+        },
+    }
+}
+
+// AT_FDCWD as a u64 bit pattern. Linux uses -100, macOS uses -2, so this is
+// per-OS data, not a shared constant.
+fn _at_fdcwd() -> u64 {
+    match @target_os() {
+        Os.Linux => 18446744073709551516, // -100
+        Os.Macos => 18446744073709551614, // -2
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-OS open(2) flag values. O_RDONLY/O_WRONLY/O_RDWR agree across kernels,
+// but O_CREAT/O_TRUNC/O_APPEND diverge (Linux uses the asm-generic octal
+// values, macOS the BSD hex values), so these are per-OS (ADR-0057 §1).
+// ---------------------------------------------------------------------------
+
+fn _o_rdonly() -> u64 { 0 }
+fn _o_wronly() -> u64 { 1 }
+
+fn _o_creat() -> u64 {
+    match @target_os() {
+        Os.Linux => 64,   // 0o100
+        Os.Macos => 512,  // 0x0200
+    }
+}
+
+fn _o_trunc() -> u64 {
+    match @target_os() {
+        Os.Linux => 512,  // 0o1000
+        Os.Macos => 1024, // 0x0400
+    }
+}
+
+fn _o_append() -> u64 {
+    match @target_os() {
+        Os.Linux => 1024, // 0o2000
+        Os.Macos => 8,    // 0x0008
+    }
+}
+
+// Default mode for newly created files: 0o644.
+fn _create_mode() -> u64 { 420 }
+
+// ---------------------------------------------------------------------------
+// Errno normalization. `errno` is the POSITIVE OS error number. The tables are
+// per-OS because the same logical error has different integers on Linux vs
+// macOS (ADR-0057 §3).
+// ---------------------------------------------------------------------------
+
+fn _normalize_errno(errno: i64) -> FileError {
+    match @target_os() {
+        Os.Linux => _normalize_linux(errno),
+        Os.Macos => _normalize_macos(errno),
+    }
+}
+
+fn _normalize_linux(e: i64) -> FileError {
+    // Linux asm-generic errno (same on x86-64 and aarch64):
+    // EPERM=1 ENOENT=2 EINTR=4 EBADF=9 EAGAIN=11 EACCES=13 EEXIST=17 EINVAL=22
+    if e == 2 {
+        FileError.NotFound
+    } else if e == 1 {
+        FileError.PermissionDenied
+    } else if e == 13 {
+        FileError.PermissionDenied
+    } else if e == 17 {
+        FileError.AlreadyExists
+    } else if e == 4 {
+        FileError.Interrupted
+    } else if e == 11 {
+        FileError.WouldBlock
+    } else if e == 22 {
+        FileError.InvalidInput
+    } else if e == 9 {
+        FileError.InvalidInput
+    } else {
+        FileError.Other(e)
+    }
+}
+
+fn _normalize_macos(e: i64) -> FileError {
+    // macOS/Darwin errno:
+    // EPERM=1 ENOENT=2 EINTR=4 EBADF=9 EACCES=13 EEXIST=17 EINVAL=22 EAGAIN=35
+    if e == 2 {
+        FileError.NotFound
+    } else if e == 1 {
+        FileError.PermissionDenied
+    } else if e == 13 {
+        FileError.PermissionDenied
+    } else if e == 17 {
+        FileError.AlreadyExists
+    } else if e == 4 {
+        FileError.Interrupted
+    } else if e == 35 {
+        FileError.WouldBlock
+    } else if e == 22 {
+        FileError.InvalidInput
+    } else if e == 9 {
+        FileError.InvalidInput
+    } else {
+        FileError.Other(e)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Path marshalling. `StrBuf` is not NUL-terminated, so copy its bytes into a
+// fresh `len + 1` buffer with a trailing NUL and hand the kernel that pointer.
+// Reads bytes through the public `StrBuf.byte_at` accessor (RUE-712 uses the
+// PR #1714 `byte_at`), so `fs` never touches `StrBuf`'s private buffer.
+// The caller frees the returned buffer with `len + 1`.
+// ---------------------------------------------------------------------------
+
+fn _path_to_cbuf(borrow path: strbuf.StrBuf) -> ptr mut u8 {
+    let n = path.len();
+    let buf: ptr mut u8 = checked { @alloc_bytes(n + 1) };
+    if checked { @ptr_to_int(buf) } == 0 {
+        @panic("out of memory");
+    }
+    let O = option.Option(u8);
+    let mut i: u64 = 0;
+    while i < n {
+        let b = match path.byte_at(i) {
+            O.Some(x) => x,
+            O.None => 0,
+        };
+        checked { @byte_write(buf, i, b); };
+        i = i + 1;
+    }
+    checked { @byte_write(buf, n, 0); };
+    buf
+}
+
+// ---------------------------------------------------------------------------
+// File: an owned descriptor. Closes on scope exit via `drop fn`; `close(self)`
+// consumes the value for callers who need to observe the close error. `fd == -1`
+// is the closed/sentinel state that both the consuming close and the drop path
+// check (ADR-0057 §4).
+// ---------------------------------------------------------------------------
+
+pub struct File {
+    fd: i32,
+
+    // Shared openat path used by the three constructors.
+    fn _open_with(borrow path: strbuf.StrBuf, flags: u64, mode: u64) -> result.Result(File, FileError) {
+        let R = result.Result(File, FileError);
+        let cbuf = _path_to_cbuf(borrow path);
+        let addr: u64 = checked { @ptr_to_int(cbuf) };
+        let free_len = path.len() + 1;
+        let ret: i64 = checked { @syscall(_sys_openat(), _at_fdcwd(), addr, flags, mode) };
+        checked { @free_bytes(cbuf, free_len); };
+        if ret < 0 {
+            R.Err(_normalize_errno(0 - ret))
+        } else {
+            let fd: i32 = @intCast(ret);
+            R.Ok(File { fd: fd })
+        }
+    }
+
+    // Open an existing file read-only (O_RDONLY).
+    fn open(borrow path: strbuf.StrBuf) -> result.Result(File, FileError) {
+        File._open_with(borrow path, _o_rdonly(), 0)
+    }
+
+    // Create-or-truncate for writing (O_WRONLY|O_CREAT|O_TRUNC, mode 0o644).
+    fn create(borrow path: strbuf.StrBuf) -> result.Result(File, FileError) {
+        let flags = _o_wronly() | _o_creat() | _o_trunc();
+        File._open_with(borrow path, flags, _create_mode())
+    }
+
+    // Open-or-create for appending (O_WRONLY|O_CREAT|O_APPEND, mode 0o644).
+    fn append(borrow path: strbuf.StrBuf) -> result.Result(File, FileError) {
+        let flags = _o_wronly() | _o_creat() | _o_append();
+        File._open_with(borrow path, flags, _create_mode())
+    }
+
+    // Read up to the buffer's SPARE capacity (`capacity() - len()`) bytes,
+    // appending them to `buf`, and return the count. `Ok(0)` means END OF FILE
+    // and nothing else. Reading into a buffer that has NO spare capacity
+    // (`capacity() == len()`) is a caller error and returns
+    // `Err(FileError.InvalidInput)` — deliberately NOT `Ok(0)` — so a whole-file
+    // loop (`loop { buf.reserve(chunk); n = f.read(inout buf)?; if n == 0 { break } }`)
+    // cannot silently truncate at the buffer's initial capacity. Grow the buffer
+    // with `ArrayBuf(u8).reserve(n)` (or start with `with_capacity(n)`) before
+    // each read. Marshals through a temporary contiguous buffer (v0 keeps
+    // `ArrayBuf`'s backing pointer private; the copy goes away when read/write
+    // move to `inout [u8]` slices, ADR-0057 §5).
+    fn read(inout self, inout buf: arraybuf.ArrayBuf(u8)) -> result.Result(u64, FileError) {
+        let R = result.Result(u64, FileError);
+        let want = buf.capacity() - buf.len();
+        if want == 0 {
+            // A full buffer is a caller error, distinct from EOF (Ok(0)).
+            return R.Err(FileError.InvalidInput);
+        }
+        let tmp: ptr mut u8 = checked { @alloc_bytes(want) };
+        if checked { @ptr_to_int(tmp) } == 0 {
+            @panic("out of memory");
+        }
+        let addr: u64 = checked { @ptr_to_int(tmp) };
+        let fd_u: u64 = @intCast(self.fd);
+        let ret: i64 = checked { @syscall(_sys_read(), fd_u, addr, want) };
+        if ret < 0 {
+            checked { @free_bytes(tmp, want); };
+            return R.Err(_normalize_errno(0 - ret));
+        }
+        let n: u64 = @intCast(ret);
+        let mut i: u64 = 0;
+        while i < n {
+            let b = checked { @byte_read(tmp, i) };
+            buf.push(b);
+            i = i + 1;
+        }
+        checked { @free_bytes(tmp, want); };
+        R.Ok(n)
+    }
+
+    // Write the bytes of `buf` in a single write(2). May write fewer than
+    // `buf.len()` bytes; the count is returned. `write_all` loops for the
+    // whole-buffer guarantee. Marshals through a temporary contiguous buffer
+    // (see `read`).
+    fn write(inout self, borrow buf: arraybuf.ArrayBuf(u8)) -> result.Result(u64, FileError) {
+        let R = result.Result(u64, FileError);
+        let n = buf.len();
+        if n == 0 {
+            return R.Ok(0);
+        }
+        let tmp: ptr mut u8 = checked { @alloc_bytes(n) };
+        if checked { @ptr_to_int(tmp) } == 0 {
+            @panic("out of memory");
+        }
+        let mut i: u64 = 0;
+        while i < n {
+            checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
+            i = i + 1;
+        }
+        let addr: u64 = checked { @ptr_to_int(tmp) };
+        let fd_u: u64 = @intCast(self.fd);
+        let ret: i64 = checked { @syscall(_sys_write(), fd_u, addr, n) };
+        checked { @free_bytes(tmp, n); };
+        if ret < 0 {
+            R.Err(_normalize_errno(0 - ret))
+        } else {
+            R.Ok(@intCast(ret))
+        }
+    }
+
+    // Write every byte of `buf`, looping over short writes and retrying EINTR.
+    fn write_all(inout self, borrow buf: arraybuf.ArrayBuf(u8)) -> result.Result((), FileError) {
+        let R = result.Result((), FileError);
+        let n = buf.len();
+        if n == 0 {
+            return R.Ok(());
+        }
+        let tmp: ptr mut u8 = checked { @alloc_bytes(n) };
+        if checked { @ptr_to_int(tmp) } == 0 {
+            @panic("out of memory");
+        }
+        let mut i: u64 = 0;
+        while i < n {
+            checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
+            i = i + 1;
+        }
+        let base: u64 = checked { @ptr_to_int(tmp) };
+        let fd_u: u64 = @intCast(self.fd);
+        let mut off: u64 = 0;
+        while off < n {
+            let ret: i64 = checked { @syscall(_sys_write(), fd_u, base + off, n - off) };
+            if ret < 0 {
+                let e = _normalize_errno(0 - ret);
+                let retry = match e {
+                    FileError.Interrupted => true,
+                    _ => false,
+                };
+                if !retry {
+                    checked { @free_bytes(tmp, n); };
+                    return R.Err(e);
+                }
+            } else {
+                let wrote: u64 = @intCast(ret);
+                if wrote == 0 {
+                    // No progress on a non-error write; stop rather than spin.
+                    checked { @free_bytes(tmp, n); };
+                    return R.Err(FileError.Other(0));
+                }
+                off = off + wrote;
+            }
+        }
+        checked { @free_bytes(tmp, n); };
+        R.Ok(())
+    }
+
+    // Consuming close: closes the fd and returns the close error. Moving `self`
+    // out of the caller's binding means the caller's scope-exit drop does not
+    // fire; the sentinel (`fd = -1`) makes THIS value's own scope-exit drop a
+    // no-op, so the fd is closed exactly once (ADR-0057 §4, double-close guard).
+    fn close(self) -> result.Result((), FileError) {
+        let R = result.Result((), FileError);
+        let mut me = self;
+        let fd = me.fd;
+        me.fd = -1;
+        if fd < 0 {
+            return R.Ok(());
+        }
+        let fd_u: u64 = @intCast(fd);
+        let ret: i64 = checked { @syscall(_sys_close(), fd_u) };
+        if ret < 0 {
+            R.Err(_normalize_errno(0 - ret))
+        } else {
+            R.Ok(())
+        }
+    }
+}
+
+// Scope-exit close. Guarded by the `fd == -1` sentinel so a value already
+// consumed by `close(self)` is not closed a second time (ADR-0057 §4). A raw
+// close whose error nobody can observe is the right default for the drop path.
+drop fn File(self) {
+    if self.fd >= 0 {
+        let fd_u: u64 = @intCast(self.fd);
+        checked { @syscall(_sys_close(), fd_u); };
+    }
+}
