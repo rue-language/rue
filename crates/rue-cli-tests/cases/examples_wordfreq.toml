@@ -1,0 +1,31 @@
+# The word-frequency counter written in Rue (RUE-939): examples/wordfreq/. This
+# case compiles the checked-in example directly via `source_path` (so the suite
+# stays pinned to the program users actually see), then runs it on a small
+# fixture text file passed as an argument and asserts its exact stdout.
+#
+# The fixture exercises the behaviors that matter: repeated words, ASCII case
+# folding ("The"/"the"/"QUICK" all fold together), punctuation and whitespace as
+# separators, and a single clear most-frequent word ("the", 6 occurrences). The
+# pinned output is exactly what the program prints, verified at authoring time.
+
+[section]
+id = "cli.examples_wordfreq"
+name = "Word-frequency counter written in Rue (wordfreq)"
+description = "compile examples/wordfreq and run it on a fixture, asserting the exact words/distinct/top summary"
+
+[[case]]
+name = "wordfreq_counts_fixture"
+description = "wordfreq folds case, splits on punctuation, and reports the unique top word with its count."
+source_path = "examples/wordfreq/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "input.txt", source = """
+The quick brown fox. The lazy dog; the QUICK fox!
+The fox, the fox, the fox.
+""" }]
+program_args = ["input.txt"]
+exit_code = 0
+stdout = """
+words=16
+distinct=6
+top=the count=6
+"""

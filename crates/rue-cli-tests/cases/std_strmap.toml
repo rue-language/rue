@@ -1,0 +1,95 @@
+# Standard library v1 — StrMap(V), the StrBuf-keyed open-addressing hash map
+# (RUE-938), through the real std bundle. Mirrors the score-accumulation smoke
+# pattern of std_collections.toml: one program runs every StrMap operation and
+# exits 42 only when all checks pass.
+#
+# Coverage: insert/get roundtrip, overwrite (does not grow len), missing key ->
+# None, contains true/false, remove then contains=false, a second remove
+# returning false, re-insert after remove, growth past several rehashes (60
+# generated keys, all retrievable, len correct), original keys surviving the
+# rehashes, and two distinct keys mapping to distinct values.
+
+[section]
+id = "cli.std_strmap"
+name = "Standard library v1 — StrMap"
+description = "StrMap(V): StrBuf-keyed open-addressing hash map with FNV-1a hashing, through @import(\"std\")."
+
+[[case]]
+name = "std_strmap_smoke"
+description = "All StrMap operations produce correct results (17 checks -> exit 42)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let M = std.strmap.StrMap(u64);
+    let OU = std.option.Option(u64);
+    let mut m = M.new(0);
+    let mut score: i64 = 0;
+
+    let apple: StrBuf = "apple";
+    let banana: StrBuf = "banana";
+    let cherry: StrBuf = "cherry";
+
+    // insert / get roundtrip, two distinct keys -> distinct values
+    m.insert(borrow apple, 1);
+    m.insert(borrow banana, 2);
+    match m.get(borrow apple) { OU.Some(v) => { if v == 1 { score = score + 1; } }, OU.None => {} }
+    match m.get(borrow banana) { OU.Some(v) => { if v == 2 { score = score + 1; } }, OU.None => {} }
+    if !StrBuf.equals_borrowed(borrow apple, borrow banana) { score = score + 1; }
+
+    // overwrite an existing key; len is unchanged
+    m.insert(borrow apple, 99);
+    match m.get(borrow apple) { OU.Some(v) => { if v == 99 { score = score + 1; } }, OU.None => {} }
+    if m.len() == 2 { score = score + 1; }
+
+    // missing key -> None
+    match m.get(borrow cherry) { OU.Some(v) => {}, OU.None => { score = score + 1; } }
+
+    // contains true / false
+    if m.contains(borrow banana) { score = score + 1; }
+    if !m.contains(borrow cherry) { score = score + 1; }
+
+    // remove, then contains is false; a second remove reports absence
+    if m.remove(borrow banana) { score = score + 1; }
+    if !m.contains(borrow banana) { score = score + 1; }
+    if m.len() == 1 { score = score + 1; }
+    if !m.remove(borrow banana) { score = score + 1; }
+
+    // re-insert after remove
+    m.insert(borrow banana, 7);
+    match m.get(borrow banana) { OU.Some(v) => { if v == 7 { score = score + 1; } }, OU.None => {} }
+    if m.len() == 2 { score = score + 1; }
+
+    // growth past several rehashes: 60 generated keys
+    let mut i: u64 = 0;
+    while i < 60 {
+        let mut key: StrBuf = "gen";
+        key.push_str(@to_string(i));
+        m.insert(borrow key, i + 1000);
+        i = i + 1;
+    }
+    if m.len() == 62 { score = score + 1; }
+
+    let mut all_ok = true;
+    i = 0;
+    while i < 60 {
+        let mut key: StrBuf = "gen";
+        key.push_str(@to_string(i));
+        match m.get(borrow key) {
+            OU.Some(v) => { if v != i + 1000 { all_ok = false; } },
+            OU.None => { all_ok = false; },
+        }
+        i = i + 1;
+    }
+    if all_ok { score = score + 1; }
+
+    // original keys survive the rehashes
+    match m.get(borrow apple) { OU.Some(v) => { if v == 99 { score = score + 1; } }, OU.None => {} }
+
+    if score == 17 { 42 } else { @intCast(score) }
+}
+""" }]
