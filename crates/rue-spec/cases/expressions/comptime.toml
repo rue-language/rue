@@ -2329,18 +2329,52 @@ exit_code = 42
 name = "module_qualified_type_ctor_pattern_head_accepted"
 spec = ["4.14:23"]
 real_std = true
-description = "A module-qualified inline type-constructor pattern head is accepted with no preview flag (RUE-947, stabilized RUE-598)"
+description = "A module-qualified inline type-constructor pattern head is accepted with no preview flag; the i64 payload literal is pinned to the declared width, not defaulted to i32 (RUE-947, stabilized RUE-598, wide-literal fixed RUE-950)"
 source = """
 const std = @import("std");
 fn main() -> i32 {
-    let ok = std.result.Result(i32, i32).Ok(40);
+    let ok = std.result.Result(i64, i32).Ok(40);
     match ok {
-        std.result.Result(i32, i32).Ok(v) => v,
-        std.result.Result(i32, i32).Err(e) => e,
+        std.result.Result(i64, i32).Ok(v) => if v == 40 { 40 } else { 1 },
+        std.result.Result(i64, i32).Err(e) => e,
     }
 }
 """
 exit_code = 40
+
+[[case]]
+name = "module_qualified_inline_enum_head_wide_payload_literal"
+spec = ["4.14:23"]
+real_std = true
+description = "An integer payload literal on a module-qualified inline enum-variant head is typed at the declared payload type, not defaulted to i32: std.result.Result(i64, i32).Ok(41) — the module-qualified analogue of the local RUE-599 fix (RUE-950)"
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let r = std.result.Result(i64, i32).Ok(41);
+    match r {
+        std.result.Result(i64, i32).Ok(v) => if v == 41 { 42 } else { 1 },
+        std.result.Result(i64, i32).Err(e) => e,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "module_qualified_inline_enum_head_u64_payload_literal"
+spec = ["4.14:23"]
+real_std = true
+description = "An integer payload literal on a module-qualified inline enum-variant head widens to an unsigned declared payload type: std.result.Result(u64, i32).Ok(41) (RUE-950)"
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let r = std.result.Result(u64, i32).Ok(41);
+    match r {
+        std.result.Result(u64, i32).Ok(v) => if v == 41 { 42 } else { 1 },
+        std.result.Result(u64, i32).Err(e) => e,
+    }
+}
+"""
+exit_code = 42
 
 [[case]]
 name = "inline_type_ctor_enum_head_wide_payload_literal"

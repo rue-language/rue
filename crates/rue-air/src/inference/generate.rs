@@ -2679,11 +2679,36 @@ impl<'a> ConstraintGenerator<'a> {
                     // Receiver still a type variable: sema resolves the
                     // receiver and diagnoses later (mirrors FieldGet's
                     // fallback, RUE-126/RUE-119).
+                    //
+                    // Exception: a module-qualified inline type-constructor
+                    // head (`std.result.Result(i64, i32).Ok(41)`, RUE-950)
+                    // reaches the outer construction with a `Var` receiver —
+                    // its inner generic module-member call yields a fresh
+                    // variable, not `COMPTIME_TYPE`, so the arm above never
+                    // fires (the local `Result(i64, i32).Ok(41)` form does
+                    // reach it, its receiver being a plain `Call`). Sema
+                    // pre-reduced the head in `inline_ctor_head_types` keyed
+                    // by the receiver `InstRef` regardless of resolution
+                    // route, so constrain the construction's arguments against
+                    // the reduced variant-payload / assoc-fn signature here —
+                    // the same expectation-threading as the local form
+                    // (RUE-599). Without it the payload literal stayed
+                    // unconstrained, defaulted to i32, and failed a wider
+                    // declared payload type with E0206.
                     _ => {
-                        for arg in call_args.iter() {
-                            self.generate(arg.value, ctx);
+                        if let Some(reduced) = self
+                            .inline_ctor_head_types
+                            .and_then(|heads| heads.get(receiver).copied())
+                            && let Some(result) =
+                                self.generate_call_on_reduced_type(reduced, *method, args, ctx)
+                        {
+                            result
+                        } else {
+                            for arg in call_args.iter() {
+                                self.generate(arg.value, ctx);
+                            }
+                            InferType::Var(self.fresh_var())
                         }
-                        InferType::Var(self.fresh_var())
                     }
                 };
 
