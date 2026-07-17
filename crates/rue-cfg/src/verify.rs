@@ -1266,9 +1266,7 @@ mod tests {
     };
     use crate::{OptLevel, opt};
     use lasso::ThreadedRodeo;
-    use rue_air::{
-        ArrayTypeId, FrozenTypeInternPool, StructDef, StructField, StructId, Type, TypeInternPool,
-    };
+    use rue_air::{FrozenTypeInternPool, StructDef, StructField, StructId, Type, TypeInternPool};
     use rue_span::Span;
 
     fn unit_cfg() -> Cfg {
@@ -1321,11 +1319,10 @@ mod tests {
         cfg.verify(); // must not panic
     }
 
-    fn cfg_with_field_place(base_type: Type) -> Cfg {
+    fn cfg_with_field_place(base_type: Type, struct_id: StructId) -> Cfg {
         let mut cfg = Cfg::new(Type::I32, 1, 0, "field_place".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let struct_id = StructId::from_pool_index(9);
         let place = cfg.make_place(
             PlaceBase::Local(0),
             base_type,
@@ -1348,14 +1345,19 @@ mod tests {
 
     #[test]
     fn verify_accepts_matching_place_base_type() {
-        let struct_type = Type::new_struct(StructId::from_pool_index(9));
-        cfg_with_field_place(struct_type).verify();
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let struct_id = register_struct(&pool, &interner, "FieldBase", &[Type::I32]);
+        cfg_with_field_place(Type::new_struct(struct_id), struct_id).verify();
     }
 
     #[test]
     #[should_panic(expected = "first projection requires base type")]
     fn verify_rejects_field_projection_with_wrong_base_type() {
-        cfg_with_field_place(Type::I32).verify();
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let struct_id = register_struct(&pool, &interner, "WrongBase", &[Type::I32]);
+        cfg_with_field_place(Type::I32, struct_id).verify();
     }
 
     #[test]
@@ -1380,7 +1382,9 @@ mod tests {
                 span: Span::new(0, 1),
             },
         );
-        let array_type = Type::new_array(ArrayTypeId::from_pool_index(10));
+        let array_type = TypeInternPool::new()
+            .try_intern_array(Type::I32, 1)
+            .unwrap();
         let place = cfg.make_place(
             PlaceBase::Local(0),
             Type::I32,
@@ -1909,6 +1913,9 @@ mod tests {
     #[should_panic(expected = "references invalid struct id")]
     fn verify_rejects_invalid_struct_projection_id() {
         let pool = FrozenTypeInternPool::new();
+        let source_pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let foreign_struct = register_struct(&source_pool, &interner, "Foreign", &[Type::I32]);
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "invalid_struct".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -1916,7 +1923,7 @@ mod tests {
             PlaceBase::Local(0),
             Type::I32,
             [Projection::Field {
-                struct_id: StructId::from_pool_index(99),
+                struct_id: foreign_struct,
                 field_index: 0,
             }],
         );
@@ -1936,6 +1943,9 @@ mod tests {
     #[should_panic(expected = "references invalid array id")]
     fn verify_rejects_invalid_array_projection_id() {
         let pool = FrozenTypeInternPool::new();
+        let array_type = TypeInternPool::new()
+            .try_intern_array(Type::I32, 1)
+            .unwrap();
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "invalid_array".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -1947,7 +1957,6 @@ mod tests {
                 span: Span::new(0, 0),
             },
         );
-        let array_type = Type::new_array(ArrayTypeId::from_pool_index(99));
         let place = cfg.make_place(
             PlaceBase::Local(0),
             Type::I32,
@@ -2173,7 +2182,9 @@ mod tests {
                 span: Span::new(0, 0),
             },
         );
-        let array_type = Type::new_array(ArrayTypeId::from_pool_index(1));
+        let array_type = TypeInternPool::new()
+            .try_intern_array(Type::I32, 1)
+            .unwrap();
         let place = cfg.make_place(
             PlaceBase::Local(0),
             array_type,

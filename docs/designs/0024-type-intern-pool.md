@@ -1,12 +1,12 @@
 ---
 id: 0024
 title: Canonical Type Handle and Intern Pool
-status: accepted
+status: implemented
 tags: [architecture, type-system, performance, parallelization]
 feature-flag: null
 created: 2026-01-02
 accepted: 2026-07-16
-implemented:
+implemented: 2026-07-16
 spec-sections: []
 superseded-by:
 relates: ["RUE-766", "RUE-835", "RUE-836", "RUE-837", "RUE-838"]
@@ -16,10 +16,9 @@ relates: ["RUE-766", "RUE-835", "RUE-836", "RUE-837", "RUE-838"]
 
 ## Status
 
-Accepted under RUE-766 on 2026-07-16. The representation convergence is not
-implemented until RUE-835 through RUE-838 land. This is an internal compiler
-architecture decision with no language-semantics, specification, or preview
-feature change.
+Implemented under RUE-766 and RUE-835 through RUE-838 on 2026-07-16. This is an
+internal compiler architecture decision with no language-semantics,
+specification, or preview-feature change.
 
 ## Summary
 
@@ -42,41 +41,19 @@ They deliberately do not reuse the request-local live handle encoding.
 
 ## Context
 
-At acceptance time, the source has most of the intended architecture:
+`Type` in `crates/rue-air/src/types.rs` is the compiler's compact live handle. It
+directly tags primitives and carries typed payloads for composite, module,
+comptime, never, and error categories. `TypeKind` is its checked,
+pattern-matchable view. AIR and every surrounding compiler phase exchange this
+handle.
 
-- `Type` in `crates/rue-air/src/types.rs` is a compact `u32` handle. It directly
-  encodes primitive, composite, module, comptime, never, and error categories.
-- `TypeKind` is the decoded, pattern-matchable view returned by checked decoding
-  APIs.
-- AIR and the surrounding compiler phases overwhelmingly exchange `Type`.
-- `TypeInternPool` owns nominal definitions and canonical structural array and
-  pointer entries. RUE-659 and RUE-660 established
-  `FrozenTypeInternPool` as the backend-facing read-only projection after
-  semantic construction finishes.
-- `DurableType` and the semantic import/export schemas represent stable,
-  request-independent types for reuse and invalidation.
-
-One transitional representation remains: `InternedType` is a second public
-`u32` type universe in `crates/rue-air/src/intern_pool.rs`. It has a different
-primitive table from `Type`, omits comptime and module categories, and maps every
-composite to an offset pool index. Recovering the composite category therefore
-requires consulting pool storage. Public conversions and pool APIs allow both
-representations to persist.
-
-This duplication creates architectural ambiguity:
-
-- a phase API can accidentally choose either handle without expressing a
-  different ownership or lifetime boundary;
-- primitive values can have different raw meanings depending on the wrapper;
-- a bare composite index does not prove whether its entry is a struct, enum,
-  array, or pointer;
-- comptime-only, module, error, and malformed encodings cannot be described
-  uniformly; and
-- tests can validate each representation independently while missing divergence
-  between them.
-
-The compiler needs one live type identity, not a conversion protocol between
-two request-local identities.
+`TypeInternPool` owns nominal definitions and canonical structural array and
+pointer entries. `FrozenTypeInternPool` is the backend-facing read-only
+projection after semantic construction finishes. Opaque category IDs identify
+typed pool entries, while raw positions and their construction and extraction
+remain private to AIR. `DurableType` and the semantic import/export schemas are
+the separate request-independent representation used for reuse and
+invalidation.
 
 ## Decision
 
@@ -162,8 +139,8 @@ intern_ptr_const(pointee: Type) -> Type
 intern_ptr_mut(pointee: Type) -> Type
 ```
 
-The exact Rust spelling may differ, but callers do not convert through
-`InternedType` before or after interning.
+The exact Rust spelling may differ, but structural operations consume and
+return the canonical handle directly.
 
 ### Runtime structural children are validated
 
@@ -217,6 +194,16 @@ The legal transitions are `Reserved -> Complete` for anonymous construction and
 at most once. A completed entry can never be overwritten by another completion.
 Duplicate-name and wrong-kind checks apply to both transitions.
 
+Completion fixes nominal identity and definition shape: fields, variants,
+visibility, copy/builtin status, defining file, and structural children cannot
+be replaced afterward. Before freeze, semantic construction has two narrow
+metadata-finalization operations. Infectious linearity may move `is_linear`
+only from false to true. Destructor discovery may assign a destructor symbol
+once, and collision handling may subsequently requalify only that symbol's
+spelling. These crate-private operations cannot replace a whole definition,
+create a destructor during requalification, remove metadata, or run after the
+pool becomes immutable.
+
 Structural interning and type-graph construction may read the identity and
 category of a declared shell. Definition, layout, durable export, backend, and
 successful-compilation reads require completion. Reserved entries reject all
@@ -231,8 +218,9 @@ of either incomplete state.
 
 ### Mutation and read ownership stay phase-scoped
 
-Semantic construction owns creation, registration, interning, and completion
-of live types. Once the semantic type universe is complete,
+Semantic construction owns creation, registration, interning, completion, and
+the narrow monotonic metadata finalization described above. Once the semantic
+type universe is frozen,
 `FrozenTypeInternPool` remains the shared read authority for CFG and backend
 consumers. Consolidating type handles does not create a peer mutation path in
 later phases.
@@ -280,47 +268,30 @@ Pool/owner contract:
 8. Reserved anonymous entries are never issued as `Type`. Declared nominal
    shells may be issued and referenced recursively, but definition/layout/
    durable/backend reads require completion.
-9. Each reserved or declared entry completes at most once, completed entries
-   cannot be overwritten, and freeze rejects either incomplete state.
+9. Each reserved or declared entry completes at most once, completed definition
+   shape cannot be overwritten, narrow linearity/destructor metadata
+   finalization obeys its monotonic invariants, and freeze rejects either
+   incomplete state.
 10. Recovery-only `Error` graphs may survive error output and freeze but cannot
     enter successful durable output, layout, backend work, or compilation.
 11. Durable type identity contains no live handle encoding or pool index.
-12. Phase APIs do not require bidirectional `Type`/`InternedType` conversion.
+12. Phase APIs exchange `Type` directly and expose no peer live type handle.
 
-## Implementation sequence
+## Implemented architecture
 
-The M5 work proceeds in dependency order:
+The compact encoding has one source of truth for tags, primitives, malformed
+and encoding-reserved patterns, payload limits, construction, and decoding.
+Pool entries retain explicit kind and lifecycle state. Structural interning and
+every compiler consumer operate on `Type`; raw positions are confined to AIR's
+implementation. Whole-definition overwrite APIs do not exist; the only
+post-completion mutations are crate-private monotonic linearity and destructor
+metadata finalization before freeze.
 
-1. **RUE-835 — centralize the canonical encoding and entry states.** Define one
-   source of truth for tags, primitives, malformed and encoding-reserved
-   patterns, checked construction, and decoding. Make pool entries retain
-   explicit kind metadata, and represent reserved anonymous entries, declared
-   nominal shells, and completed definitions distinctly.
-2. **RUE-836 — migrate pool and phase APIs.** Change structural interning,
-   lookup, keys, and consumers to accept and return `Type`. Add the
-   `Reserved -> Complete` and `Declared -> Complete` transitions,
-   operation-specific entry-state checks, the exact structural representability
-   rules, and fallible durable-import validation. Preserve the owner/pool
-   boundary without introducing a branded replacement handle. Use raw pool
-   positions only inside the pool; retain opaque category-specific IDs where
-   the typed public API needs them.
-3. **RUE-837 — prove the representation.** Add round-trip and uniqueness
-   properties, malformed/corrupt encoding tests, the exact child-representability
-   matrix, recursive declared-shell coverage, both single-completion
-   transitions, overwrite rejection, operation-specific incomplete-state
-   failures, recovery-`Error` success-boundary rejection, structural
-   deduplication, durable cross-epoch round trips, and concurrent interning
-   coverage.
-4. **RUE-838 — remove the transitional universe.** Delete `InternedType`,
-   bidirectional conversions, duplicate primitive tables, migration
-   scaffolding, and exports that expose raw pool implementation details. Update
-   this ADR's context, checklist, status, and generated index to describe the
-   completed architecture.
-
-This is a sequential dependency chain, not parallel work. Linear relations must
-record `RUE-836 blockedBy RUE-835` and `RUE-837 blockedBy RUE-836`. The migrated
-API supplies the final surface for RUE-837, and RUE-838 removes compatibility
-code only after those properties pass.
+Bounded property and corruption tests cover encoding round trips, invalid bit
+patterns, pool ownership, lifecycle transitions, structural child legality,
+recovery graphs, durable cross-epoch projection, and concurrent canonical
+interning. Source inventories guard the one-handle API and durable-schema
+boundary.
 
 ## Ownership boundaries
 
@@ -334,8 +305,8 @@ code only after those properties pass.
 | Stable cross-revision type identity | `DurableType` and import/export schemas |
 | Orchestration and artifact lifetime | `CompilerSession` |
 
-No consumer may reproduce a responsibility from another row merely for
-presentation, compatibility, or convenience.
+No consumer may reproduce a responsibility from another row for presentation
+or convenience.
 
 ## Non-goals
 
@@ -368,10 +339,8 @@ This decision does not:
 
 ### Costs and risks
 
-- Migrating keys and APIs touches semantic and pool code broadly even though
-  language behavior is unchanged.
-- A centralized encoding change can have wide impact; property tests and
-  corruption tests must land before compatibility scaffolding is deleted.
+- Changes to the centralized encoding can have wide impact and require the
+  property and corruption suites to remain authoritative.
 - Compact encodings have finite tag and payload space. Constructors must reject
   overflow rather than truncate IDs into a different valid type.
 - Concurrent structural interning must preserve one canonical result under
@@ -382,46 +351,49 @@ This decision does not:
 
 ## Completion criteria
 
-ADR-0024 returns to `implemented` only when:
+ADR-0024 is implemented with these verified properties:
 
-- [ ] RUE-835, RUE-836, RUE-837, and RUE-838 are merged.
-- [ ] Public compiler phase APIs use `Type` for live type values.
-- [ ] `InternedType` and its public conversions and exports no longer exist.
-- [ ] Primitive, tag, malformed/encoding-reserved pattern, construction-limit,
+- [x] RUE-835, RUE-836, RUE-837, and RUE-838 implement the M5 architecture.
+- [x] Public compiler phase APIs use `Type` for live type values.
+- [x] No peer primitive-or-composite live handle, conversion, or export exists.
+- [x] Primitive, tag, malformed/encoding-reserved pattern, construction-limit,
       and decoding logic has one authoritative implementation.
-- [ ] Encoding tests distinguish encoding-valid values from malformed or
+- [x] Encoding tests distinguish encoding-valid values from malformed or
       encoding-reserved values without requiring a pool.
-- [ ] Live phase artifacts retain their authoritative pool, and no API treats
+- [x] Live phase artifacts retain their authoritative pool, and no API treats
       naked `Type` bits as a cross-epoch transfer format.
-- [ ] Pool-aware reads check range, stored category, entry state, and
+- [x] Pool-aware reads check range, stored category, entry state, and
       operation-specific child requirements in the owner-provided pool without
       claiming to detect coincidentally equal foreign bits.
-- [ ] Reserved anonymous entries are private and unissued as `Type`; declared
+- [x] Reserved anonymous entries are private and unissued as `Type`; declared
       nominal shells may be issued and used in recursive structural keys/type
       graphs.
-- [ ] `Reserved -> Complete` and `Declared -> Complete` preserve slot identity,
+- [x] `Reserved -> Complete` and `Declared -> Complete` preserve slot identity,
       happen at most once, reject completed-entry overwrite, and enforce
       duplicate-name and wrong-kind checks.
-- [ ] Definition, layout, durable, backend, and successful-compilation reads
+- [x] Completed definition shape has no replacement API; phase-scoped linearity
+      and destructor metadata finalization is narrow, crate-private, and
+      invariant-checked before freeze.
+- [x] Definition, layout, durable, backend, and successful-compilation reads
       reject declared shells; ordinary reads reject reserved entries; freeze
       rejects either incomplete state.
-- [ ] Structural interning consumes and returns `Type`, enforces the child
+- [x] Structural interning consumes and returns `Type`, enforces the child
       legality matrix, and remains deterministic under concurrency.
-- [ ] Property and corruption tests cover encoding validity, pool/epoch
+- [x] Property and corruption tests cover encoding validity, pool/epoch
       validity under an authoritative owner, all encoding categories, every
       structural child category, recursive declared shells, and malformed,
       wrong-kind, out-of-range, reserved, and declared cases.
-- [ ] Recovery structural types containing `Error` are canonical for diagnostics
+- [x] Recovery structural types containing `Error` are canonical for diagnostics
       and may survive freeze on error paths, but successful durable export,
       layout, backend work, and compilation reject them.
-- [ ] A source and public-API inventory proves durable types contain no live
+- [x] A source and public-API inventory proves durable types contain no live
       bits, pool indices, nominal IDs, or unchecked conversion path.
-- [ ] Durable projection/import tests perform successful cross-epoch round
+- [x] Durable projection/import tests perform successful cross-epoch round
       trips and prove malformed or illegal imports fail closed.
-- [ ] The focused type/pool tests and Rue's required compiler validation suites
+- [x] The focused type/pool tests and Rue's required compiler validation suites
       pass.
-- [ ] RUE-838 updates this ADR's acceptance-time context, checklist, status, and
-      generated README index to record the verified completed architecture.
+- [x] Raw category-ID fields, pool-position constructors, and position
+      extractors are absent from Rue AIR's public surface.
 
 ## References
 

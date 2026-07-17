@@ -1,5 +1,11 @@
 load("//crates:defs.bzl", "rue_binary")
 
+filegroup(
+    name = "type-architecture-inventory-sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["PUBLIC"],
+)
+
 export_file(
     name = "benchmark-main-definition",
     src = "src/main.rs",

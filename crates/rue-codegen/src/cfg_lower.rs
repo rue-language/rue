@@ -125,7 +125,7 @@ impl fmt::Display for LoweringDebugInfo {
 }
 
 /// Format a CFG instruction data as a human-readable string. Takes the `Cfg`
-/// so places render with their projections resolved (`$0.#2.1`), not as raw
+/// so places render with their projections resolved (`$0.#StructId(2).1`), not as raw
 /// projection-arena index ranges (`$0[3..5]`).
 pub fn format_cfg_inst_data(cfg: &rue_cfg::Cfg, data: &rue_cfg::CfgInstData) -> String {
     format_cfg_inst_data_impl(cfg, data, None)
@@ -229,7 +229,7 @@ fn format_cfg_inst_data_impl(
                 .iter()
                 .map(|v| format!("{}", v))
                 .collect();
-            format!("struct_init #{} {{{}}}", struct_id.0, fields.join(", "))
+            format!("struct_init #{struct_id:?} {{{}}}", fields.join(", "))
         }
         CfgInstData::ArrayInit { .. } => {
             // Note: Can't show elements without Cfg access
@@ -240,7 +240,7 @@ fn format_cfg_inst_data_impl(
             variant_index,
             ..
         } => {
-            format!("enum_variant #{}.{}", enum_id.0, variant_index)
+            format!("enum_variant #{enum_id:?}.{variant_index}")
         }
         CfgInstData::EnumPayloadGet {
             base,
@@ -249,8 +249,8 @@ fn format_cfg_inst_data_impl(
             field_index,
         } => {
             format!(
-                "enum_payload_get {} #{}.{}.{}",
-                base, enum_id.0, variant_index, field_index
+                "enum_payload_get {} #{:?}.{}.{}",
+                base, enum_id, variant_index, field_index
             )
         }
         CfgInstData::IntCast { value, from_ty } => {

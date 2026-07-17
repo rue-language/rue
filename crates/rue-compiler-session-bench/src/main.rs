@@ -4,7 +4,7 @@
 
 use std::{collections::HashMap, env, process, sync::Arc, time::Instant};
 
-use rue_air::FrozenTypeInternPool;
+use rue_air::{FrozenTypeInternPool, TypeKind};
 use rue_compiler::{
     AcceptedReadManifestEntry, CanonicalSemanticOutput, CompileOptions, CompilerSession,
     CompilerSessionWork, DiscoverySourceAssembler, DurableBodyWork,
@@ -789,29 +789,19 @@ fn measured_semantic(
 }
 
 fn type_pool_snapshot(pool: &FrozenTypeInternPool) -> Vec<String> {
-    let mut entries = Vec::with_capacity(pool.len());
-    entries.extend(
-        pool.all_struct_ids()
-            .map(|id| (id.0, format!("struct:{:?}", pool.struct_def(id)))),
-    );
-    entries.extend(
-        pool.all_enum_ids()
-            .map(|id| (id.0, format!("enum:{:?}", pool.enum_def(id)))),
-    );
-    entries.extend(pool.all_array_ids().map(|id| {
-        let (element, len) = pool.array_def(id);
-        (id.0, format!("array:{element:?}:{len}"))
-    }));
-    entries.extend(
-        pool.all_ptr_const_ids()
-            .map(|id| (id.0, format!("ptr_const:{:?}", pool.ptr_const_def(id)))),
-    );
-    entries.extend(
-        pool.all_ptr_mut_ids()
-            .map(|id| (id.0, format!("ptr_mut:{:?}", pool.ptr_mut_def(id)))),
-    );
-    entries.sort_unstable_by_key(|(index, _)| *index);
-    entries.into_iter().map(|(_, entry)| entry).collect()
+    pool.all_types()
+        .map(|ty| match ty.kind() {
+            TypeKind::Struct(id) => format!("struct:{:?}", pool.struct_def(id)),
+            TypeKind::Enum(id) => format!("enum:{:?}", pool.enum_def(id)),
+            TypeKind::Array(id) => {
+                let (element, len) = pool.array_def(id);
+                format!("array:{element:?}:{len}")
+            }
+            TypeKind::PtrConst(id) => format!("ptr_const:{:?}", pool.ptr_const_def(id)),
+            TypeKind::PtrMut(id) => format!("ptr_mut:{:?}", pool.ptr_mut_def(id)),
+            _ => unreachable!("type pool stores only composite types"),
+        })
+        .collect()
 }
 
 fn assert_diagnostic_parity(
@@ -2199,6 +2189,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_air::{Type, TypeInternPool};
+
+    #[test]
+    fn type_pool_snapshot_preserves_global_allocation_order() {
+        let pool = TypeInternPool::new();
+        let pointer = pool.try_intern_ptr_const(Type::I32).unwrap();
+        let array = pool.try_intern_array(Type::I32, 3).unwrap();
+        let frozen = pool.freeze();
+
+        assert_eq!(frozen.all_types().collect::<Vec<_>>(), [pointer, array]);
+        assert_eq!(
+            type_pool_snapshot(&frozen),
+            ["ptr_const:Type::I32", "array:Type::I32:3"]
+        );
+    }
 
     #[test]
     fn small_workload_is_a_structural_smoke_test() {

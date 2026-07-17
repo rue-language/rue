@@ -2531,11 +2531,11 @@ mod tests {
     }
 
     // ========================================================================
-    // Type Intern Pool tests (ADR-0024 Phase 1)
+    // Canonical type pool tests (ADR-0024)
     //
     // These tests verify that the TypeInternPool is correctly populated during
-    // declaration collection and that its contents match the existing type
-    // registries (struct_defs, enum_defs).
+    // declaration collection and that its typed indexes remain internally
+    // consistent.
     // ========================================================================
 
     /// Helper to gather declarations and return the Sema state for testing.

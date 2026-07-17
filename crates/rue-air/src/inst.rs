@@ -1156,7 +1156,7 @@ impl Air {
                             AirPattern::EnumVariant {
                                 enum_id,
                                 variant_index,
-                            } => format!("enum#{}::{}", enum_id.0, variant_index),
+                            } => format!("enum#{enum_id:?}::{variant_index}"),
                         };
                         write!(f, "{} => {}", pat_str, body)?;
                     }
@@ -1284,7 +1284,7 @@ impl Air {
                     fields_len,
                     source_order_start,
                 } => {
-                    write!(f, "struct_init #{} {{", struct_id.0)?;
+                    write!(f, "struct_init #{struct_id:?} {{")?;
                     let (fields, source_order) =
                         self.get_struct_init(*fields_start, *fields_len, *source_order_start);
                     for (i, field) in fields.enumerate() {
@@ -1332,7 +1332,7 @@ impl Air {
                     payload_len,
                 } => {
                     if *payload_len == 0 {
-                        writeln!(f, "enum_variant #{}::{}", enum_id.0, variant_index)?;
+                        writeln!(f, "enum_variant #{enum_id:?}::{variant_index}")?;
                     } else {
                         let payload: Vec<String> = self
                             .get_air_refs(*payload_start, *payload_len)
@@ -1340,8 +1340,8 @@ impl Air {
                             .collect();
                         writeln!(
                             f,
-                            "enum_variant #{}::{}({})",
-                            enum_id.0,
+                            "enum_variant #{:?}::{}({})",
+                            enum_id,
                             variant_index,
                             payload.join(", ")
                         )?;
@@ -1355,8 +1355,8 @@ impl Air {
                 } => {
                     writeln!(
                         f,
-                        "enum_payload_get {} #{}::{}.{}",
-                        base, enum_id.0, variant_index, field_index
+                        "enum_payload_get {} #{:?}::{}.{}",
+                        base, enum_id, variant_index, field_index
                     )?;
                 }
                 AirInstData::IntCast { value, from_ty } => {

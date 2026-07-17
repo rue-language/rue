@@ -288,7 +288,7 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) builtin_os_id: Option<EnumId>,
     /// Pre-interned known symbols for fast comparison.
     pub(crate) known: KnownSymbols,
-    /// Type intern pool for unified type representation (ADR-0024 Phase 1).
+    /// Canonical composite-type storage for this semantic epoch (ADR-0024).
     pub(crate) type_pool: TypeInternPool,
     /// Canonically prepopulated module registry for the current semantic epoch.
     pub(crate) module_registry: crate::module_registry::ModuleRegistry,

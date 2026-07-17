@@ -346,7 +346,7 @@ fn type_name(ty: Type, type_pool: &FrozenTypeInternPool) -> String {
         TypeKind::Error => "error".to_string(),
         // ComptimeType only exists at compile time, no runtime representation
         TypeKind::ComptimeType => "comptime_type".to_string(),
-        TypeKind::Enum(enum_id) => format!("enum{}", enum_id.0),
+        TypeKind::Enum(enum_id) => type_pool.enum_symbol_name(enum_id),
         // Struct types include builtin types like String
         // File-qualified when the struct name spans files (RUE-571); must
         // match rue_compiler::drop_glue::type_name.
