@@ -1,0 +1,81 @@
+// interner — a string interning table that reproduces the Rue compiler's
+// symbol numbering for `--emit tokens`.
+//
+// The compiler assigns each distinct identifier lexeme AND each distinct
+// DECODED string-literal value a symbol index, shared in one table, in order
+// of first appearance in the token stream (verified empirically against
+// `rue --emit tokens`). This table does the same: `intern(key)` returns the
+// existing index for a previously seen key or appends a new one.
+//
+// Storage avoids `ArrayBuf(StrBuf)` (whose by-copy `get` is gated for
+// drop-glue element types): all interned bytes live concatenated in one
+// `pool: StrBuf`, with parallel `offs`/`lens` arrays of u64 describing each
+// entry's slice. Lookup is a linear scan with byte comparison.
+
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const U64s = std.arraybuf.ArrayBuf(u64);
+const OptU8 = std.option.Option(u8);
+
+pub struct Interner {
+    pool: StrBuf,
+    offs: U64s,
+    lens: U64s,
+
+    fn new() -> Self {
+        Self {
+            pool: StrBuf.new(),
+            offs: U64s.new(),
+            lens: U64s.new(),
+        }
+    }
+
+    fn byte_of(borrow value: StrBuf, index: u64) -> u8 {
+        match value.byte_at(index) {
+            OptU8.Some(x) => x,
+            OptU8.None => 0,
+        }
+    }
+
+    // Whether interned entry `i` has exactly the bytes of `key`.
+    fn entry_eq(borrow self, i: u64, borrow key: StrBuf) -> bool {
+        let off = self.offs.get_or(i, 0);
+        let len = self.lens.get_or(i, 0);
+        if len != key.len() {
+            return false;
+        }
+        let mut j: u64 = 0;
+        while j < len {
+            let a = Self.byte_of(borrow self.pool, off + j);
+            let b = Self.byte_of(borrow key, j);
+            if a != b {
+                return false;
+            }
+            j = j + 1;
+        }
+        true
+    }
+
+    // Return the symbol index for `key`, appending a new entry if unseen.
+    fn intern(inout self, borrow key: StrBuf) -> u64 {
+        let n = self.offs.len();
+        let mut i: u64 = 0;
+        while i < n {
+            if self.entry_eq(i, borrow key) {
+                return i;
+            }
+            i = i + 1;
+        }
+        let off = self.pool.len();
+        let len = key.len();
+        let mut j: u64 = 0;
+        while j < len {
+            let b = Self.byte_of(borrow key, j);
+            self.pool.push(b);
+            j = j + 1;
+        }
+        self.offs.push(off);
+        self.lens.push(len);
+        n
+    }
+}
