@@ -396,8 +396,25 @@ fn ensure_preheader_transaction(
     let mut editor = cfg.clone();
     let ph = ensure_preheader_in(&mut editor, lp, &mut injection)?;
     injection.before_validation(&mut editor, ph);
+    // Validate the materialized preheader with the materialization verifier, NOT
+    // the strict `verify_with_type_pool`. Preheader materialization runs
+    // mid-pipeline during LICM (RUE-927), between `simplify` and the pipeline's
+    // final DCE, so the CFG legitimately carries two kinds of transient debris
+    // that DCE has not swept yet and that this transaction did not introduce:
+    //   * detached-but-in-arena dead values left by `forward`/`cse` — tolerated
+    //     because the check does not require complete attachment; and
+    //   * pre-DCE husks — unreachable blocks whose stale terminators still pass
+    //     edge arguments to targets that `simplify` reparameterized (e.g. a
+    //     folded const `if`'s dead `else` still holds `goto merge([6])` after
+    //     `merge` lost its parameter). Skipping unreachable blocks keeps that
+    //     husk from being mistaken for a defect in the preheader we just built.
+    // The preheader and the loop it feeds are reachable, so a genuinely
+    // malformed materialization (bad arity, ill-typed/dominance-violating edge,
+    // missing terminator) is still rejected before the owner is published. The
+    // pipeline's final `finish_after_optimization` re-verifies the whole graph
+    // strictly once DCE has removed the husks.
     editor
-        .verify_with_type_pool(type_pool)
+        .verify_materialization_with_type_pool(type_pool)
         .map_err(CfgOptimizationError::Verification)?;
     *cfg = editor;
     Ok(ph)
