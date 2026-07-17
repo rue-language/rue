@@ -219,3 +219,24 @@ fn air_payload_ownership_and_validation_boundary_cannot_regress() {
     assert!(sema.contains("pub fn new_synthetic(\n        rir: &'a Rir,"));
     assert!(!sema.contains("&'a mut Rir"));
 }
+
+#[test]
+fn semantic_definition_taxonomy_has_one_enum_declaration() {
+    let canonical = include_str!("semantic_identity.rs");
+    let bindings = include_str!("sema/binding_manifest.rs");
+    let bodies = include_str!("semantic_body.rs");
+
+    assert_eq!(
+        canonical.matches("pub enum StableDefinitionKind").count(),
+        1
+    );
+    assert_eq!(
+        canonical
+            .matches("pub enum StableDefinitionNamespace")
+            .count(),
+        1
+    );
+    assert!(!bindings.contains("pub enum StableDefinitionKind"));
+    assert!(!bindings.contains("pub enum StableDefinitionNamespace"));
+    assert!(!bodies.contains("pub enum StableDefinitionKind"));
+}

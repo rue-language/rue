@@ -259,26 +259,15 @@ pub enum DurableBodyConversionFailure {
     FingerprintUnavailable,
 }
 
-fn semantic_kind(kind: StableDefinitionKind) -> Option<SemanticBodyDefinitionKind> {
-    match kind {
-        StableDefinitionKind::Function => Some(SemanticBodyDefinitionKind::FreeFunction),
-        StableDefinitionKind::Method => Some(SemanticBodyDefinitionKind::Method),
-        StableDefinitionKind::AssociatedFunction => {
-            Some(SemanticBodyDefinitionKind::AssociatedFunction)
-        }
-        StableDefinitionKind::Destructor => Some(SemanticBodyDefinitionKind::Destructor),
-        StableDefinitionKind::Struct => Some(SemanticBodyDefinitionKind::Struct),
-        StableDefinitionKind::Enum => Some(SemanticBodyDefinitionKind::Enum),
-        StableDefinitionKind::ValueConst => Some(SemanticBodyDefinitionKind::ValueConst),
-        StableDefinitionKind::ModuleBinding => Some(SemanticBodyDefinitionKind::ModuleBinding),
-    }
+fn semantic_kind(kind: StableDefinitionKind) -> StableDefinitionKind {
+    kind
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct DefinitionJoinIdentity<'a> {
     file_id: u32,
     name: &'a str,
-    kind: SemanticBodyDefinitionKind,
+    kind: StableDefinitionKind,
     owner: Option<&'a str>,
 }
 
@@ -317,7 +306,7 @@ impl<'a> DefinitionJoinIndex<'a> {
                 DefinitionJoinIdentity {
                     file_id: *module_files.get(key.module())?,
                     name: key.name(),
-                    kind: semantic_kind(key.kind())?,
+                    kind: semantic_kind(key.kind()),
                     owner: key.owner().map(|owner| owner.name()),
                 },
                 key,
@@ -664,7 +653,7 @@ pub fn attach_specialized_implicit_drop_dependencies(
         let destructor = rue_air::SemanticBodyDefinitionIdentity {
             file_id: event.target_file,
             name: Arc::from(event.target_owner_name.as_str()),
-            kind: rue_air::SemanticBodyDefinitionKind::Destructor,
+            kind: rue_air::StableDefinitionKind::Destructor,
             owner: Some(Arc::from(event.target_owner_name.as_str())),
         };
         let destructor = join_definition(&destructor, &index, work)?.clone();
@@ -1371,7 +1360,7 @@ mod tests {
     fn join_identity<'a>(
         file_id: u32,
         name: &'a str,
-        kind: SemanticBodyDefinitionKind,
+        kind: StableDefinitionKind,
     ) -> DefinitionJoinIdentity<'a> {
         DefinitionJoinIdentity {
             file_id,
@@ -1384,7 +1373,7 @@ mod tests {
     fn semantic_identity(
         file_id: u32,
         name: &str,
-        kind: SemanticBodyDefinitionKind,
+        kind: StableDefinitionKind,
     ) -> SemanticBodyDefinitionIdentity {
         SemanticBodyDefinitionIdentity {
             file_id,
@@ -1404,14 +1393,14 @@ mod tests {
             None,
         );
         let index = DefinitionJoinIndex::from_entries([(
-            join_identity(7, "Large", SemanticBodyDefinitionKind::Struct),
+            join_identity(7, "Large", StableDefinitionKind::Struct),
             &key,
         )]);
         let mut work = DurableBodyWork::default();
 
         assert_eq!(
             index.join(
-                &semantic_identity(7, "Large", SemanticBodyDefinitionKind::Struct),
+                &semantic_identity(7, "Large", StableDefinitionKind::Struct),
                 &mut work,
             ),
             Ok(&key),
@@ -1429,20 +1418,20 @@ mod tests {
             None,
         );
         let second = first.clone();
-        let identity = join_identity(3, "Duplicate", SemanticBodyDefinitionKind::Struct);
+        let identity = join_identity(3, "Duplicate", StableDefinitionKind::Struct);
         let index = DefinitionJoinIndex::from_entries([(identity, &first), (identity, &second)]);
         let mut work = DurableBodyWork::default();
 
         assert_eq!(
             index.join(
-                &semantic_identity(3, "Duplicate", SemanticBodyDefinitionKind::Struct),
+                &semantic_identity(3, "Duplicate", StableDefinitionKind::Struct),
                 &mut work,
             ),
             Err(DurableBodyConversionFailure::AmbiguousStableDefinition),
         );
         assert_eq!(
             index.join(
-                &semantic_identity(3, "Missing", SemanticBodyDefinitionKind::Struct),
+                &semantic_identity(3, "Missing", StableDefinitionKind::Struct),
                 &mut work,
             ),
             Err(DurableBodyConversionFailure::MissingStableDefinition),

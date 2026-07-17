@@ -94,15 +94,15 @@ impl DefinitionNameKey {
 /// across source revisions or independently built snapshots, even when their
 /// numeric components happen to match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DefinitionId {
+pub struct DefinitionOccurrenceId {
     module_index: usize,
     definition_index: usize,
 }
 
-/// Explicit name for the snapshot-local occurrence locator.
-pub type DefinitionOccurrenceId = DefinitionId;
+/// Compatibility name; occurrence IDs are always snapshot-local.
+pub type DefinitionId = DefinitionOccurrenceId;
 
-impl DefinitionId {
+impl DefinitionOccurrenceId {
     /// The issuing snapshot's logical-module index.
     #[inline]
     pub fn module_index(self) -> usize {

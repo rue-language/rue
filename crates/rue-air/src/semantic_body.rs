@@ -8,20 +8,8 @@ use std::sync::Arc;
 use crate::ParamSlotModes;
 use crate::{
     AirArgMode, AirPlaceBase, BodyOwnerToken, SemanticImportConstValue, SemanticImportFailure,
-    SemanticImportType,
+    SemanticImportType, StableDefinitionKind,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SemanticBodyDefinitionKind {
-    FreeFunction,
-    Method,
-    AssociatedFunction,
-    Destructor,
-    Struct,
-    Enum,
-    ValueConst,
-    ModuleBinding,
-}
 
 /// Request-independent textual identity used only until the compiler joins it
 /// to its authoritative stable-definition universe.
@@ -29,7 +17,7 @@ pub enum SemanticBodyDefinitionKind {
 pub struct SemanticBodyDefinitionIdentity {
     pub file_id: u32,
     pub name: Arc<str>,
-    pub kind: SemanticBodyDefinitionKind,
+    pub kind: StableDefinitionKind,
     pub owner: Option<Arc<str>>,
 }
 

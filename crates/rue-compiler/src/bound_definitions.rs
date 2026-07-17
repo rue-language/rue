@@ -1,14 +1,15 @@
 //! Stable source-definition identities issued only after semantic binding.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 
 use rue_air::{
-    CanonicalImportView, DeclarationBindingWork, Sema, SemanticBinding, SemanticBindingKind,
-    SemanticBindingManifestWork, SemanticBindingNamespace, SemanticDeclarationShell,
+    CanonicalImportView, DeclarationBindingWork, Sema, SemanticBinding,
+    SemanticBindingManifestWork, SemanticDeclarationShell,
 };
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind, MultiErrorResult};
 use rue_parser::ast::{Item, Visibility};
@@ -76,25 +77,11 @@ struct DefinitionIssuer {
 }
 static NEXT_DEFINITION_ISSUER: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum StableDefinitionNamespace {
-    Value,
-    Type,
-    Destructor,
-    Method,
-}
+/// Durable-key name for the canonical semantic namespace taxonomy.
+pub type StableDefinitionNamespace = rue_air::StableDefinitionNamespace;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum StableDefinitionKind {
-    Function,
-    Struct,
-    Enum,
-    ValueConst,
-    ModuleBinding,
-    Destructor,
-    Method,
-    AssociatedFunction,
-}
+/// Durable-key name for the canonical semantic kind taxonomy.
+pub type StableDefinitionKind = rue_air::StableDefinitionKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StableNamedTypeKey {
@@ -165,23 +152,26 @@ impl StableDefinitionKey {
 }
 
 #[derive(Debug, Clone)]
-pub struct BoundDefinitionId {
+pub struct SnapshotBoundDefinitionId {
     key: StableDefinitionKey,
     issuer: Arc<DefinitionIssuer>,
 }
 
-impl BoundDefinitionId {
+/// Compatibility name for an issuer-scoped, snapshot-local authorization ID.
+pub type BoundDefinitionId = SnapshotBoundDefinitionId;
+
+impl SnapshotBoundDefinitionId {
     pub fn stable_key(&self) -> &StableDefinitionKey {
         &self.key
     }
 }
 
-impl PartialEq for BoundDefinitionId {
+impl PartialEq for SnapshotBoundDefinitionId {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key && Arc::ptr_eq(&self.issuer, &other.issuer)
     }
 }
-impl Eq for BoundDefinitionId {}
+impl Eq for SnapshotBoundDefinitionId {}
 
 #[derive(Debug, Clone)]
 pub struct BoundDefinitionRecord {
@@ -248,6 +238,66 @@ pub struct BoundDefinitionSet {
     definitions: Arc<[BoundDefinitionRecord]>,
     manifest_work: SemanticBindingManifestWork,
     work: BoundDefinitionWork,
+}
+
+/// Fail-closed outcomes at the snapshot-local to durable identity join.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DefinitionIdentityJoinFailure {
+    MissingSyntaxOccurrence,
+    AmbiguousSyntaxOccurrence,
+    DuplicateStableDefinition(StableDefinitionKey),
+}
+
+impl fmt::Display for DefinitionIdentityJoinFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingSyntaxOccurrence => {
+                formatter.write_str("semantic winner has no matching syntax occurrence")
+            }
+            Self::AmbiguousSyntaxOccurrence => {
+                formatter.write_str("semantic winner joins multiple syntax occurrences")
+            }
+            Self::DuplicateStableDefinition(key) => write!(
+                formatter,
+                "semantic bindings duplicate durable key {}::{:?}::{:?}::{}",
+                key.module().as_str(),
+                key.namespace(),
+                key.kind(),
+                key.name()
+            ),
+        }
+    }
+}
+
+fn join_syntax_occurrence<'a>(
+    definitions: &'a crate::DefinitionSnapshot,
+    name_key: &crate::DefinitionNameKey,
+    kind: DefinitionKind,
+) -> Result<&'a crate::DefinitionRecord, DefinitionIdentityJoinFailure> {
+    let mut matches = definitions
+        .definitions_named(name_key)
+        .filter(|record| record.kind() == kind);
+    let first = matches
+        .next()
+        .ok_or(DefinitionIdentityJoinFailure::MissingSyntaxOccurrence)?;
+    if matches.next().is_some() {
+        return Err(DefinitionIdentityJoinFailure::AmbiguousSyntaxOccurrence);
+    }
+    Ok(first)
+}
+
+fn reject_duplicate_stable_definitions(
+    records: &[BoundDefinitionRecord],
+) -> Result<(), DefinitionIdentityJoinFailure> {
+    if let Some(pair) = records
+        .windows(2)
+        .find(|pair| pair[0].stable_key() == pair[1].stable_key())
+    {
+        return Err(DefinitionIdentityJoinFailure::DuplicateStableDefinition(
+            pair[0].stable_key().clone(),
+        ));
+    }
+    Ok(())
 }
 
 impl BoundDefinitionSet {
@@ -711,7 +761,7 @@ pub(crate) fn issue_bound_definitions(
         if binding.declaration_span.file_id != binding.file_id {
             return Err(invalid("semantic binding span has a mismatched file ID"));
         }
-        let stable_kind = stable_kind(binding.kind);
+        let stable_kind = binding.kind;
         let owner = binding.owner.as_ref().map(|owner| StableNamedTypeKey {
             module: module.module_id().clone(),
             kind: StableDefinitionKind::Struct,
@@ -719,12 +769,12 @@ pub(crate) fn issue_bound_definitions(
         });
         let key = StableDefinitionKey {
             module: module.module_id().clone(),
-            namespace: stable_namespace(binding.namespace),
+            namespace: binding.namespace,
             kind: stable_kind,
             name: binding.name.clone(),
             owner,
         };
-        let (occurrence, visibility) = if binding.namespace == SemanticBindingNamespace::Method {
+        let (occurrence, visibility) = if binding.namespace == StableDefinitionNamespace::Method {
             work.named_methods_issued += 1;
             (
                 None,
@@ -736,7 +786,7 @@ pub(crate) fn issue_bound_definitions(
             )
         } else {
             let syntax_kind = syntax_kind(binding.kind);
-            let namespace = if binding.kind == SemanticBindingKind::Destructor {
+            let namespace = if binding.kind == StableDefinitionKind::Destructor {
                 DefinitionNamespace::Destructor
             } else {
                 DefinitionNamespace::ModuleItem
@@ -746,16 +796,8 @@ pub(crate) fn issue_bound_definitions(
                 namespace,
                 binding.name.as_ref(),
             );
-            let matches = merged
-                .definitions()
-                .definitions_named(&name_key)
-                .filter(|record| record.kind() == syntax_kind)
-                .collect::<Vec<_>>();
-            let [winner] = matches.as_slice() else {
-                return Err(invalid(
-                    "semantic winner does not join exactly one syntax occurrence",
-                ));
-            };
+            let winner = join_syntax_occurrence(merged.definitions(), &name_key, syntax_kind)
+                .map_err(|failure| invalid(failure.to_string()))?;
             if winner.declaration_span() != binding.declaration_span {
                 return Err(invalid(
                     "semantic winner span does not match its syntax occurrence",
@@ -763,7 +805,7 @@ pub(crate) fn issue_bound_definitions(
             }
             work.top_level_occurrences_joined += 1;
             let expected_public = winner.visibility() == Some(Visibility::Public);
-            if binding.kind != SemanticBindingKind::Destructor
+            if binding.kind != StableDefinitionKind::Destructor
                 && binding.is_public != expected_public
             {
                 return Err(invalid(
@@ -774,7 +816,7 @@ pub(crate) fn issue_bound_definitions(
         };
         let input_partition = definition_input_partition(module, binding)?;
         records.push(BoundDefinitionRecord {
-            id: BoundDefinitionId {
+            id: SnapshotBoundDefinitionId {
                 key,
                 issuer: issuer.clone(),
             },
@@ -785,14 +827,8 @@ pub(crate) fn issue_bound_definitions(
         });
     }
     records.sort_by(|left, right| left.stable_key().cmp(right.stable_key()));
-    if records
-        .windows(2)
-        .any(|pair| pair[0].stable_key() == pair[1].stable_key())
-    {
-        return Err(invalid(
-            "semantic binding produced duplicate stable definition keys",
-        ));
-    }
+    reject_duplicate_stable_definitions(&records)
+        .map_err(|failure| invalid(failure.to_string()))?;
     for record in &records {
         if let Some(owner) = record.stable_key().owner() {
             let owner_key = StableDefinitionKey {
@@ -869,7 +905,7 @@ fn definition_input_partition(
         })
     };
 
-    if binding.namespace == SemanticBindingNamespace::Method {
+    if binding.namespace == StableDefinitionNamespace::Method {
         binding
             .owner
             .as_deref()
@@ -955,22 +991,12 @@ fn partition_prefix(declaration: Span, payload: Span) -> Result<Span, CompileErr
 }
 
 fn validate_binding_shape(binding: &SemanticBinding) -> Result<(), CompileError> {
-    let valid = match (binding.namespace, binding.kind, binding.owner.as_deref()) {
-        (SemanticBindingNamespace::Value, SemanticBindingKind::Function, None)
-        | (SemanticBindingNamespace::Value, SemanticBindingKind::ValueConst, None)
-        | (SemanticBindingNamespace::Value, SemanticBindingKind::ModuleBinding, None)
-        | (SemanticBindingNamespace::Type, SemanticBindingKind::Struct, None)
-        | (SemanticBindingNamespace::Type, SemanticBindingKind::Enum, None) => true,
-        (
-            SemanticBindingNamespace::Method,
-            SemanticBindingKind::Method | SemanticBindingKind::AssociatedFunction,
-            Some(_),
-        ) => true,
-        (SemanticBindingNamespace::Destructor, SemanticBindingKind::Destructor, Some(owner)) => {
-            owner == binding.name.as_ref() && !binding.is_public
-        }
-        _ => false,
-    };
+    let owner_shape_matches = binding.owner.is_some() == binding.kind.requires_owner();
+    let destructor_shape_matches = binding.kind != StableDefinitionKind::Destructor
+        || (binding.owner.as_deref() == Some(binding.name.as_ref()) && !binding.is_public);
+    let valid = binding.namespace == binding.kind.namespace()
+        && owner_shape_matches
+        && destructor_shape_matches;
     if valid {
         Ok(())
     } else {
@@ -980,38 +1006,16 @@ fn validate_binding_shape(binding: &SemanticBinding) -> Result<(), CompileError>
     }
 }
 
-fn stable_namespace(value: SemanticBindingNamespace) -> StableDefinitionNamespace {
+fn syntax_kind(value: StableDefinitionKind) -> DefinitionKind {
     match value {
-        SemanticBindingNamespace::Value => StableDefinitionNamespace::Value,
-        SemanticBindingNamespace::Type => StableDefinitionNamespace::Type,
-        SemanticBindingNamespace::Destructor => StableDefinitionNamespace::Destructor,
-        SemanticBindingNamespace::Method => StableDefinitionNamespace::Method,
-    }
-}
-
-fn stable_kind(value: SemanticBindingKind) -> StableDefinitionKind {
-    match value {
-        SemanticBindingKind::Function => StableDefinitionKind::Function,
-        SemanticBindingKind::Struct => StableDefinitionKind::Struct,
-        SemanticBindingKind::Enum => StableDefinitionKind::Enum,
-        SemanticBindingKind::ValueConst => StableDefinitionKind::ValueConst,
-        SemanticBindingKind::ModuleBinding => StableDefinitionKind::ModuleBinding,
-        SemanticBindingKind::Destructor => StableDefinitionKind::Destructor,
-        SemanticBindingKind::Method => StableDefinitionKind::Method,
-        SemanticBindingKind::AssociatedFunction => StableDefinitionKind::AssociatedFunction,
-    }
-}
-
-fn syntax_kind(value: SemanticBindingKind) -> DefinitionKind {
-    match value {
-        SemanticBindingKind::Function => DefinitionKind::Function,
-        SemanticBindingKind::Struct => DefinitionKind::Struct,
-        SemanticBindingKind::Enum => DefinitionKind::Enum,
-        SemanticBindingKind::ValueConst | SemanticBindingKind::ModuleBinding => {
+        StableDefinitionKind::Function => DefinitionKind::Function,
+        StableDefinitionKind::Struct => DefinitionKind::Struct,
+        StableDefinitionKind::Enum => DefinitionKind::Enum,
+        StableDefinitionKind::ValueConst | StableDefinitionKind::ModuleBinding => {
             DefinitionKind::Const
         }
-        SemanticBindingKind::Destructor => DefinitionKind::Destructor,
-        SemanticBindingKind::Method | SemanticBindingKind::AssociatedFunction => {
+        StableDefinitionKind::Destructor => DefinitionKind::Destructor,
+        StableDefinitionKind::Method | StableDefinitionKind::AssociatedFunction => {
             unreachable!("methods have no top-level syntax occurrence")
         }
     }
@@ -1522,6 +1526,42 @@ mod tests {
         assert_eq!(first.source_revision(), second.source_revision());
         assert_eq!(keys(&first), keys(&second));
         assert_eq!(first.work(), second.work());
+    }
+
+    #[test]
+    fn snapshot_to_durable_join_reports_missing_ambiguous_and_duplicate_outcomes_by_type() {
+        let input = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn repeated() {} fn repeated() {} fn main() {}",
+            )],
+            1,
+        );
+        let parsed = parse_source_snapshot_modules(&input).unwrap();
+        let definitions = crate::DefinitionSnapshot::from_parsed_modules(&parsed).unwrap();
+        let repeated = crate::DefinitionNameKey::new(
+            crate::ModuleId::from_logical_path("main.rue").unwrap(),
+            DefinitionNamespace::ModuleItem,
+            "repeated",
+        );
+        assert_eq!(
+            join_syntax_occurrence(&definitions, &repeated, DefinitionKind::Function).unwrap_err(),
+            DefinitionIdentityJoinFailure::AmbiguousSyntaxOccurrence
+        );
+        assert_eq!(
+            join_syntax_occurrence(&definitions, &repeated, DefinitionKind::Struct).unwrap_err(),
+            DefinitionIdentityJoinFailure::MissingSyntaxOccurrence
+        );
+
+        let set = bind(&snapshot(&[(7, "/one.rue", "one.rue", "fn main() {}")], 7));
+        let record = set.definitions()[0].clone();
+        let duplicate_key = record.stable_key().clone();
+        assert_eq!(
+            reject_duplicate_stable_definitions(&[record.clone(), record]).unwrap_err(),
+            DefinitionIdentityJoinFailure::DuplicateStableDefinition(duplicate_key)
+        );
     }
 
     #[test]

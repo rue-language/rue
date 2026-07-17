@@ -24,6 +24,7 @@ mod runtime_call;
 mod scope;
 mod sema;
 mod semantic_body;
+mod semantic_identity;
 mod semantic_import;
 pub mod specialize;
 mod type_encoding;
@@ -69,16 +70,16 @@ pub use sema::{
     NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent,
     NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
     OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, RirDeclarationIndexWork, Sema,
-    SemaMetadata, SemaOutput, SemanticBinding, SemanticBindingKind, SemanticBindingManifest,
-    SemanticBindingManifestWork, SemanticBindingNamespace, SemanticDeclarationExport,
-    SemanticDeclarationExportWork, SemanticDeclarationPayload, SemanticDeclarationShell,
-    SemanticDeclarationShellIdentity, SemanticExportConstValue, SemanticExportFailure,
-    SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
-    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
+    SemaMetadata, SemaOutput, SemanticBinding, SemanticBindingManifest,
+    SemanticBindingManifestWork, SemanticDeclarationExport, SemanticDeclarationExportWork,
+    SemanticDeclarationPayload, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
+    SemanticExportConstValue, SemanticExportFailure, SemanticExportParameter, SemanticExportType,
+    SemanticNominalIdentity, SemanticParameterMode, SpecializedFreeFunctionDependencyEvent,
+    SpecializedFreeFunctionOrigin,
 };
 pub use semantic_body::{
     SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg, SemanticBodyCandidate,
-    SemanticBodyCandidateInstallWork, SemanticBodyDefinitionIdentity, SemanticBodyDefinitionKind,
+    SemanticBodyCandidateInstallWork, SemanticBodyDefinitionIdentity,
     SemanticBodyExport, SemanticBodyExportFailure, SemanticBodyImportFailure,
     SemanticBodyImportFailureKind, SemanticBodyInst, SemanticBodyInstData, SemanticBodyMatchArm,
     SemanticBodyModuleIdentity, SemanticBodyPattern, SemanticBodyPlace, SemanticBodyPlaceRef,
@@ -86,6 +87,7 @@ pub use semantic_body::{
     SemanticSpecializationIdentity, SemanticSpecializedBodyCandidate,
     SemanticSpecializedBodyExport, SemanticSpecializedCandidateInstallWork,
 };
+pub use semantic_identity::{StableDefinitionKind, StableDefinitionNamespace};
 pub use semantic_import::{
     SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,
     SemanticImportNominalKind, SemanticImportType, SemanticImportTypeFold,

@@ -1061,21 +1061,14 @@ fn finish_canonical_analysis(
         air_candidates,
         |key: &crate::StableDefinitionKey| {
             let record = authoritative_definitions.definition_by_key(key)?;
-            let kind = match key.kind() {
-                crate::StableDefinitionKind::Function => {
-                    rue_air::SemanticBodyDefinitionKind::FreeFunction
-                }
-                crate::StableDefinitionKind::Method => rue_air::SemanticBodyDefinitionKind::Method,
-                crate::StableDefinitionKind::AssociatedFunction => {
-                    rue_air::SemanticBodyDefinitionKind::AssociatedFunction
-                }
-                crate::StableDefinitionKind::Destructor => {
-                    rue_air::SemanticBodyDefinitionKind::Destructor
-                }
-                crate::StableDefinitionKind::Struct => rue_air::SemanticBodyDefinitionKind::Struct,
-                crate::StableDefinitionKind::Enum => rue_air::SemanticBodyDefinitionKind::Enum,
-                _ => return None,
-            };
+            let kind = key.kind();
+            if matches!(
+                kind,
+                crate::StableDefinitionKind::ValueConst
+                    | crate::StableDefinitionKind::ModuleBinding
+            ) {
+                return None;
+            }
             Some(rue_air::SemanticBodyDefinitionIdentity {
                 file_id: record.declaration_span().file_id.index(),
                 name: std::sync::Arc::from(key.name()),
@@ -1099,26 +1092,7 @@ fn finish_canonical_analysis(
         specialized_air_candidates,
         |key: &crate::StableDefinitionKey| {
             let record = authoritative_definitions.definition_by_key(key)?;
-            let kind = match key.kind() {
-                crate::StableDefinitionKind::Function => {
-                    rue_air::SemanticBodyDefinitionKind::FreeFunction
-                }
-                crate::StableDefinitionKind::Method => rue_air::SemanticBodyDefinitionKind::Method,
-                crate::StableDefinitionKind::AssociatedFunction => {
-                    rue_air::SemanticBodyDefinitionKind::AssociatedFunction
-                }
-                crate::StableDefinitionKind::Destructor => {
-                    rue_air::SemanticBodyDefinitionKind::Destructor
-                }
-                crate::StableDefinitionKind::Struct => rue_air::SemanticBodyDefinitionKind::Struct,
-                crate::StableDefinitionKind::Enum => rue_air::SemanticBodyDefinitionKind::Enum,
-                crate::StableDefinitionKind::ValueConst => {
-                    rue_air::SemanticBodyDefinitionKind::ValueConst
-                }
-                crate::StableDefinitionKind::ModuleBinding => {
-                    rue_air::SemanticBodyDefinitionKind::ModuleBinding
-                }
-            };
+            let kind = key.kind();
             Some(rue_air::SemanticBodyDefinitionIdentity {
                 file_id: record.declaration_span().file_id.index(),
                 name: Arc::from(key.name()),

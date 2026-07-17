@@ -7,11 +7,11 @@
 use std::sync::Arc;
 
 use rue_air::{
-    SemanticBinding, SemanticBindingKind, SemanticBindingNamespace, SemanticDeclarationExport,
-    SemanticDeclarationPayload, SemanticDeclarationShell, SemanticExportConstValue,
-    SemanticExportFailure, SemanticExportType, SemanticImportConstValue, SemanticImportEpoch,
-    SemanticImportFailure, SemanticImportNominal, SemanticImportNominalKind, SemanticImportType,
-    SemanticParameterMode,
+    SemanticBinding, SemanticDeclarationExport, SemanticDeclarationPayload,
+    SemanticDeclarationShell, SemanticExportConstValue, SemanticExportFailure, SemanticExportType,
+    SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,
+    SemanticImportNominalKind, SemanticImportType, SemanticParameterMode,
+    StableDefinitionNamespace,
 };
 use rue_span::FileId;
 
@@ -504,25 +504,25 @@ pub fn project_durable_declaration_semantics(
     Ok((exports.into(), work))
 }
 
-fn stable_namespace(value: SemanticBindingNamespace) -> crate::StableDefinitionNamespace {
+fn stable_namespace(value: StableDefinitionNamespace) -> crate::StableDefinitionNamespace {
     match value {
-        SemanticBindingNamespace::Value => crate::StableDefinitionNamespace::Value,
-        SemanticBindingNamespace::Type => crate::StableDefinitionNamespace::Type,
-        SemanticBindingNamespace::Destructor => crate::StableDefinitionNamespace::Destructor,
-        SemanticBindingNamespace::Method => crate::StableDefinitionNamespace::Method,
+        StableDefinitionNamespace::Value => crate::StableDefinitionNamespace::Value,
+        StableDefinitionNamespace::Type => crate::StableDefinitionNamespace::Type,
+        StableDefinitionNamespace::Destructor => crate::StableDefinitionNamespace::Destructor,
+        StableDefinitionNamespace::Method => crate::StableDefinitionNamespace::Method,
     }
 }
 
-fn stable_kind(value: SemanticBindingKind) -> Option<StableDefinitionKind> {
+fn stable_kind(value: StableDefinitionKind) -> Option<StableDefinitionKind> {
     Some(match value {
-        SemanticBindingKind::Function => StableDefinitionKind::Function,
-        SemanticBindingKind::Struct => StableDefinitionKind::Struct,
-        SemanticBindingKind::Enum => StableDefinitionKind::Enum,
-        SemanticBindingKind::ValueConst => StableDefinitionKind::ValueConst,
-        SemanticBindingKind::ModuleBinding => StableDefinitionKind::ModuleBinding,
-        SemanticBindingKind::Destructor => StableDefinitionKind::Destructor,
-        SemanticBindingKind::Method => StableDefinitionKind::Method,
-        SemanticBindingKind::AssociatedFunction => StableDefinitionKind::AssociatedFunction,
+        StableDefinitionKind::Function => StableDefinitionKind::Function,
+        StableDefinitionKind::Struct => StableDefinitionKind::Struct,
+        StableDefinitionKind::Enum => StableDefinitionKind::Enum,
+        StableDefinitionKind::ValueConst => StableDefinitionKind::ValueConst,
+        StableDefinitionKind::ModuleBinding => StableDefinitionKind::ModuleBinding,
+        StableDefinitionKind::Destructor => StableDefinitionKind::Destructor,
+        StableDefinitionKind::Method => StableDefinitionKind::Method,
+        StableDefinitionKind::AssociatedFunction => StableDefinitionKind::AssociatedFunction,
     })
 }
 
@@ -535,8 +535,8 @@ fn current_nominal(
         .definition_by_key(key)
         .ok_or(DurableSemanticProjectionFailure::MissingDefinition)?;
     let kind = match key.kind() {
-        StableDefinitionKind::Struct => SemanticBindingKind::Struct,
-        StableDefinitionKind::Enum => SemanticBindingKind::Enum,
+        StableDefinitionKind::Struct => StableDefinitionKind::Struct,
+        StableDefinitionKind::Enum => StableDefinitionKind::Enum,
         _ => return Err(DurableSemanticProjectionFailure::KindMismatch),
     };
     Ok(rue_air::SemanticNominalIdentity {
@@ -662,9 +662,9 @@ fn validate_payload_shape(
 ) -> Result<(), DurableSemanticProjectionFailure> {
     match (shell.identity.kind, payload) {
         (
-            SemanticBindingKind::Function
-            | SemanticBindingKind::Method
-            | SemanticBindingKind::AssociatedFunction,
+            StableDefinitionKind::Function
+            | StableDefinitionKind::Method
+            | StableDefinitionKind::AssociatedFunction,
             SemanticDeclarationPayload::Callable {
                 parameters,
                 has_self,
@@ -677,9 +677,9 @@ fn validate_payload_shape(
         {
             Ok(())
         }
-        (SemanticBindingKind::Struct, SemanticDeclarationPayload::Struct { .. })
-        | (SemanticBindingKind::Enum, SemanticDeclarationPayload::Enum { .. })
-        | (SemanticBindingKind::Destructor, SemanticDeclarationPayload::Destructor) => Ok(()),
+        (StableDefinitionKind::Struct, SemanticDeclarationPayload::Struct { .. })
+        | (StableDefinitionKind::Enum, SemanticDeclarationPayload::Enum { .. })
+        | (StableDefinitionKind::Destructor, SemanticDeclarationPayload::Destructor) => Ok(()),
         _ => Err(DurableSemanticProjectionFailure::KindMismatch),
     }
 }
@@ -718,16 +718,16 @@ pub(crate) fn convert_declaration_semantics(
     definitions: &BoundDefinitionSet,
     exports: &[SemanticDeclarationExport],
 ) -> Result<Arc<[DurableDeclarationSemantic]>, DurableSemanticExportFailure> {
-    fn stable_kind(kind: SemanticBindingKind) -> Option<StableDefinitionKind> {
+    fn stable_kind(kind: StableDefinitionKind) -> Option<StableDefinitionKind> {
         Some(match kind {
-            SemanticBindingKind::Function => StableDefinitionKind::Function,
-            SemanticBindingKind::Struct => StableDefinitionKind::Struct,
-            SemanticBindingKind::Enum => StableDefinitionKind::Enum,
-            SemanticBindingKind::ValueConst => StableDefinitionKind::ValueConst,
-            SemanticBindingKind::Destructor => StableDefinitionKind::Destructor,
-            SemanticBindingKind::Method => StableDefinitionKind::Method,
-            SemanticBindingKind::AssociatedFunction => StableDefinitionKind::AssociatedFunction,
-            SemanticBindingKind::ModuleBinding => return None,
+            StableDefinitionKind::Function => StableDefinitionKind::Function,
+            StableDefinitionKind::Struct => StableDefinitionKind::Struct,
+            StableDefinitionKind::Enum => StableDefinitionKind::Enum,
+            StableDefinitionKind::ValueConst => StableDefinitionKind::ValueConst,
+            StableDefinitionKind::Destructor => StableDefinitionKind::Destructor,
+            StableDefinitionKind::Method => StableDefinitionKind::Method,
+            StableDefinitionKind::AssociatedFunction => StableDefinitionKind::AssociatedFunction,
+            StableDefinitionKind::ModuleBinding => return None,
         })
     }
     let module_for_file = |file_id| {
@@ -742,10 +742,10 @@ pub(crate) fn convert_declaration_semantics(
         let module = module_for_file(file_id)?;
         let stable_kind = stable_kind(kind)?;
         let owner_is_valid = match kind {
-            SemanticBindingKind::Method | SemanticBindingKind::AssociatedFunction => {
+            StableDefinitionKind::Method | StableDefinitionKind::AssociatedFunction => {
                 owner.is_some()
             }
-            SemanticBindingKind::Destructor => owner == Some(name),
+            StableDefinitionKind::Destructor => owner == Some(name),
             _ => owner.is_none(),
         };
         if !owner_is_valid {
@@ -781,8 +781,8 @@ pub(crate) fn convert_declaration_semantics(
                 .map(|m| m.module_id())
                 .ok_or(DurableSemanticExportFailure::MissingStableNominalDefinition)?;
             let kind = match identity.kind {
-                SemanticBindingKind::Struct => StableDefinitionKind::Struct,
-                SemanticBindingKind::Enum => StableDefinitionKind::Enum,
+                StableDefinitionKind::Struct => StableDefinitionKind::Struct,
+                StableDefinitionKind::Enum => StableDefinitionKind::Enum,
                 _ => return Err(DurableSemanticExportFailure::MissingStableNominalDefinition),
             };
             definitions
@@ -911,7 +911,7 @@ pub(crate) fn convert_declaration_semantics(
                     SemanticExportConstValue::Unit => DurableConstValue::Unit,
                     SemanticExportConstValue::Function { file_id, name } => {
                         DurableConstValue::Function(
-                            key_for(*file_id, name, SemanticBindingKind::Function, None).ok_or(
+                            key_for(*file_id, name, StableDefinitionKind::Function, None).ok_or(
                                 DurableSemanticExportFailure::MissingStableFunctionDefinition,
                             )?,
                         )
