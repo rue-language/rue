@@ -33,7 +33,7 @@ use crate::vreg::VReg;
 /// Implementations are thin: `emit_load_slot` is a single frame-relative load
 /// instruction (`mov dst, [rbp+offset]` / `ldr dst, [fp, #offset]`); the rest
 /// expose existing lowerer state.
-pub trait SlotBackend: BoundsCheckBackend {
+pub(crate) trait SlotBackend: BoundsCheckBackend {
     /// The shared lowering context (CFG, type pool, slot counts).
     fn ctx(&self) -> &CfgLowerContext<'_>;
 
@@ -72,7 +72,10 @@ pub trait SlotBackend: BoundsCheckBackend {
 /// Returns `None` for non-aggregate types. Valid multi-slot aggregate values
 /// are either materialized directly here or are lowered on demand and read
 /// from the cache populated by their lowering rule.
-pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) -> Option<Vec<VReg>> {
+pub(crate) fn get_or_compute_field_vregs<B: SlotBackend>(
+    b: &mut B,
+    value: CfgValue,
+) -> Option<Vec<VReg>> {
     if let Some(vregs) = b.slot_cache().get(&value).cloned() {
         return Some(vregs);
     }
@@ -93,7 +96,7 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
 /// a primary vreg alone would emit a partial value. Missing or incorrectly
 /// sized representations therefore indicate malformed internal IR and fail an
 /// invariant in release builds.
-pub fn require_aggregate_slots<B: SlotBackend>(b: &mut B, value: CfgValue) -> Vec<VReg> {
+pub(crate) fn require_aggregate_slots<B: SlotBackend>(b: &mut B, value: CfgValue) -> Vec<VReg> {
     let ty = b.ctx().cfg.get_inst(value).ty;
     let plan = crate::value_plan::ValuePlan::for_value(b.ctx(), value);
     assert!(
@@ -133,7 +136,7 @@ fn assert_complete_slot_count(value: CfgValue, actual: usize, expected: usize) {
 /// 0 and freshly-allocated vregs for the remaining slots. Zero-slot aggregates
 /// intentionally cache an empty list, matching their source values and keeping
 /// join-edge slot-count checks honest (RUE-167, RUE-194, RUE-248).
-pub fn preallocate_block_param_slots<B: SlotBackend>(
+pub(crate) fn preallocate_block_param_slots<B: SlotBackend>(
     b: &mut B,
     param_value: CfgValue,
     ty: Type,
@@ -161,7 +164,7 @@ pub fn preallocate_block_param_slots<B: SlotBackend>(
 /// (a higher slot number is a lower address), so logical slot `k` is stored at
 /// frame slot `base_slot + (len-1) - k` — the region's low end is its
 /// highest-numbered slot.
-pub fn store_slots<B: SlotBackend>(b: &mut B, vals: &[VReg], base_slot: u32) {
+pub(crate) fn store_slots<B: SlotBackend>(b: &mut B, vals: &[VReg], base_slot: u32) {
     let low_slot = base_slot + (vals.len() as u32).saturating_sub(1);
     store_slots_at_low(b, vals, low_slot);
 }
@@ -170,7 +173,7 @@ pub fn store_slots<B: SlotBackend>(b: &mut B, vals: &[VReg], base_slot: u32) {
 /// low-end (slot-0) at frame slot `low_slot`; logical slot `k` lands at frame
 /// slot `low_slot - k` (each higher slot at a higher address — ascending,
 /// ADR-0040).
-pub fn store_slots_at_low<B: SlotBackend>(b: &mut B, vals: &[VReg], low_slot: u32) {
+pub(crate) fn store_slots_at_low<B: SlotBackend>(b: &mut B, vals: &[VReg], low_slot: u32) {
     for (k, val) in vals.iter().enumerate() {
         b.emit_store_slot(*val, low_slot - k as u32);
     }
@@ -181,7 +184,7 @@ pub fn store_slots_at_low<B: SlotBackend>(b: &mut B, vals: &[VReg], low_slot: u3
 /// pointee's low-end address (what `@raw` and `@ptr_offset` yield, and where
 /// `@alloc` blocks begin), so aggregate slots ascend uniformly for pointers of
 /// every origin — stack, heap, or `@int_to_ptr` (ADR-0040 / RUE-311).
-pub fn store_slots_through_ptr<B: SlotBackend>(
+pub(crate) fn store_slots_through_ptr<B: SlotBackend>(
     b: &mut B,
     vals: &[VReg],
     ptr: VReg,
@@ -199,7 +202,7 @@ pub fn store_slots_through_ptr<B: SlotBackend>(
 /// aggregate memory access now uses (ADR-0040 / RUE-311).
 ///
 /// See `crate::cfg_lower::type_uses_sret_return` for when returns use sret.
-pub fn store_slots_to_sret<B: SlotBackend>(b: &mut B, vals: &[VReg]) {
+pub(crate) fn store_slots_to_sret<B: SlotBackend>(b: &mut B, vals: &[VReg]) {
     let ptr = b.alloc_vreg();
     let sret_slot = b.ctx().sret_ptr_slot();
     b.emit_load_slot(ptr, sret_slot);
@@ -215,7 +218,11 @@ pub fn store_slots_to_sret<B: SlotBackend>(b: &mut B, vals: &[VReg]) {
 /// field (RUE-242). `ptr` is the pointee's low-end address; every value of an
 /// aggregate type occupies `type_slot_count` consecutive ascending slots
 /// (ADR-0040 / RUE-311).
-pub fn load_slots_through_ptr<B: SlotBackend>(b: &mut B, ptr: VReg, count: u32) -> Vec<VReg> {
+pub(crate) fn load_slots_through_ptr<B: SlotBackend>(
+    b: &mut B,
+    ptr: VReg,
+    count: u32,
+) -> Vec<VReg> {
     load_through_ptr(b, ptr, count)
 }
 
@@ -226,7 +233,7 @@ pub fn load_slots_through_ptr<B: SlotBackend>(b: &mut B, ptr: VReg, count: u32) 
 /// Load `count` logical slots (slot 0 first) from the frame with the value's
 /// low-end (slot 0) at frame slot `low_slot`; logical slot `k` is read from
 /// frame slot `low_slot - k` (ascending, ADR-0040).
-pub fn load_slots_at_low<B: SlotBackend>(b: &mut B, low_slot: u32, count: u32) -> Vec<VReg> {
+pub(crate) fn load_slots_at_low<B: SlotBackend>(b: &mut B, low_slot: u32, count: u32) -> Vec<VReg> {
     let mut vregs = Vec::with_capacity(count as usize);
     for k in 0..count {
         let vreg = b.alloc_vreg();

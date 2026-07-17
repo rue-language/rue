@@ -22,7 +22,7 @@ use rue_air::Type;
 pub type ResolvedPlace = crate::value_plan::PlacePlan;
 
 /// Per-target instruction leaves used by shared place lowering.
-pub trait PlaceLowerBackend: SlotBackend {
+pub(crate) trait PlaceLowerBackend: SlotBackend {
     /// Get or lazily materialize a received by-reference parameter pointer.
     fn ensure_by_ref_param_ptr(&mut self, param_slot: u32) -> VReg;
 
@@ -165,7 +165,7 @@ fn frame_access<B: PlaceLowerBackend + ?Sized>(
     }
 }
 
-pub fn lower_place_read_plan<B: PlaceLowerBackend>(
+pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
     b: &mut B,
     dst: VReg,
     place: &ResolvedPlace,
@@ -200,7 +200,7 @@ pub fn lower_place_read_plan<B: PlaceLowerBackend>(
     }
 }
 
-pub fn lower_place_write_plan<B: PlaceLowerBackend>(
+pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
     b: &mut B,
     place: &ResolvedPlace,
     vals: &[VReg],
@@ -282,7 +282,7 @@ fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
 /// Form a place address after applying the shared bounds policy. Aggregate
 /// reads use this entry point so their multi-slot load path cannot bypass an
 /// indexed-place trap.
-pub fn lower_checked_place_addr_plan<B: PlaceLowerBackend + ?Sized>(
+pub(crate) fn lower_checked_place_addr_plan<B: PlaceLowerBackend + ?Sized>(
     b: &mut B,
     dst: VReg,
     place: &ResolvedPlace,
@@ -292,7 +292,7 @@ pub fn lower_checked_place_addr_plan<B: PlaceLowerBackend + ?Sized>(
 
 /// Form an unchecked place address for target leaves whose caller has already
 /// established the policy (for example raw ABI pointer materialization).
-pub fn lower_place_addr_plan<B: PlaceLowerBackend + ?Sized>(
+pub(crate) fn lower_place_addr_plan<B: PlaceLowerBackend + ?Sized>(
     b: &mut B,
     dst: VReg,
     place: &ResolvedPlace,
@@ -396,12 +396,17 @@ mod tests {
         };
         let cfg = build_cfg("main");
 
-        let x86 = X86CfgLower::new(&cfg, &output.type_pool, &interner)
+        let x86 = X86CfgLower::new_unchecked(&cfg, &output.type_pool, &interner)
             .lower()
             .expect("x86 fixture should lower");
-        let arm = Aarch64CfgLower::new(&cfg, &output.type_pool, &interner, Target::Aarch64Linux)
-            .lower()
-            .expect("AArch64 fixture should lower");
+        let arm = Aarch64CfgLower::new_unchecked(
+            &cfg,
+            &output.type_pool,
+            &interner,
+            Target::Aarch64Linux,
+        )
+        .lower()
+        .expect("AArch64 fixture should lower");
 
         // RHS read, write destination, @raw's argument read/address pair, and
         // final read each walk both indices. Only the write emits an indexed
@@ -523,10 +528,10 @@ mod tests {
             )
             .unwrap();
         indexed_cfg.set_return(indexed_entry, Some(read));
-        let pair_x86 = X86CfgLower::new(&indexed_cfg, &synthetic_types, &interner)
+        let pair_x86 = X86CfgLower::new_unchecked(&indexed_cfg, &synthetic_types, &interner)
             .lower()
             .expect("x86 indexed aggregate read should lower");
-        let pair_arm = Aarch64CfgLower::new(
+        let pair_arm = Aarch64CfgLower::new_unchecked(
             &indexed_cfg,
             &synthetic_types,
             &interner,
@@ -599,10 +604,10 @@ mod tests {
         // root-origin address arithmetic (and x86 keeps its 64-bit immediate).
         for by_ref_fn in ["read_borrow", "read_inout"] {
             let by_ref_cfg = build_cfg(by_ref_fn);
-            let by_ref_x86 = X86CfgLower::new(&by_ref_cfg, &output.type_pool, &interner)
+            let by_ref_x86 = X86CfgLower::new_unchecked(&by_ref_cfg, &output.type_pool, &interner)
                 .lower()
                 .expect("x86 by-ref fixture should lower");
-            let by_ref_arm = Aarch64CfgLower::new(
+            let by_ref_arm = Aarch64CfgLower::new_unchecked(
                 &by_ref_cfg,
                 &output.type_pool,
                 &interner,
@@ -631,10 +636,10 @@ mod tests {
         }
 
         let unit_cfg = build_cfg("read_unit");
-        let unit_x86 = X86CfgLower::new(&unit_cfg, &output.type_pool, &interner)
+        let unit_x86 = X86CfgLower::new_unchecked(&unit_cfg, &output.type_pool, &interner)
             .lower()
             .expect("x86 ZST fixture should lower");
-        let unit_arm = Aarch64CfgLower::new(
+        let unit_arm = Aarch64CfgLower::new_unchecked(
             &unit_cfg,
             &output.type_pool,
             &interner,
@@ -655,10 +660,11 @@ mod tests {
         // language-level bounds check. Both the value and address paths must
         // retain the shared trap edge even though they materialize no bytes.
         let unit_index_cfg = build_cfg("read_unit_index");
-        let unit_index_x86 = X86CfgLower::new(&unit_index_cfg, &output.type_pool, &interner)
-            .lower()
-            .expect("x86 indexed ZST fixture should lower");
-        let unit_index_arm = Aarch64CfgLower::new(
+        let unit_index_x86 =
+            X86CfgLower::new_unchecked(&unit_index_cfg, &output.type_pool, &interner)
+                .lower()
+                .expect("x86 indexed ZST fixture should lower");
+        let unit_index_arm = Aarch64CfgLower::new_unchecked(
             &unit_index_cfg,
             &output.type_pool,
             &interner,
@@ -674,10 +680,11 @@ mod tests {
         }));
 
         let unit_write_cfg = build_cfg("write_unit_index");
-        let unit_write_x86 = X86CfgLower::new(&unit_write_cfg, &output.type_pool, &interner)
-            .lower()
-            .expect("x86 indexed ZST write fixture should lower");
-        let unit_write_arm = Aarch64CfgLower::new(
+        let unit_write_x86 =
+            X86CfgLower::new_unchecked(&unit_write_cfg, &output.type_pool, &interner)
+                .lower()
+                .expect("x86 indexed ZST write fixture should lower");
+        let unit_write_arm = Aarch64CfgLower::new_unchecked(
             &unit_write_cfg,
             &output.type_pool,
             &interner,

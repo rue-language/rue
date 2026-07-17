@@ -528,7 +528,7 @@ pub struct ValuePlan {
 impl ValuePlan {
     /// Decide the policy for one CFG instruction.  `value` is only used to
     /// inspect operand types; it is not retained in the returned plan.
-    pub fn for_value(ctx: &CfgLowerContext<'_>, value: CfgValue) -> Self {
+    pub(crate) fn for_value(ctx: &CfgLowerContext<'_>, value: CfgValue) -> Self {
         let inst = ctx.cfg.get_inst(value);
         let ty = inst.ty;
         let shape = shape(ctx, ty);
@@ -1144,7 +1144,7 @@ fn residual_kind(plan: &ResidualValuePlan) -> ValueKind {
 }
 
 /// The sole raw CFG semantic dispatcher and cache association owner.
-pub fn lower_value<A: ValueLowerAdapter>(
+pub(crate) fn lower_value<A: ValueLowerAdapter>(
     ctx: &CfgLowerContext<'_>,
     adapter: &mut A,
     value: CfgValue,
@@ -2024,7 +2024,7 @@ pub fn integer_range(width: IntegerWidth) -> (i64, i64) {
 
 /// Return the by-reference parameter slots that must be preloaded before the
 /// block walk.  Both backends use this exact policy and cache rule.
-pub fn by_ref_param_slots(ctx: &CfgLowerContext<'_>) -> Vec<u32> {
+pub(crate) fn by_ref_param_slots(ctx: &CfgLowerContext<'_>) -> Vec<u32> {
     (0..ctx.num_params)
         .filter(|&slot| ctx.cfg.is_param_by_ref(slot))
         .collect()
@@ -2406,7 +2406,7 @@ mod tests {
             })
         );
 
-        let x86 = X86CfgLower::new(&cfg, &pool, &interner)
+        let x86 = X86CfgLower::new_unchecked(&cfg, &pool, &interner)
             .lower()
             .expect("x86 enum comparison should lower");
         assert!(
@@ -2420,7 +2420,7 @@ mod tests {
                 .any(|instruction| matches!(instruction, X86Inst::Cmp64RR { .. }))
         );
 
-        let arm = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux)
+        let arm = Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux)
             .lower()
             .expect("AArch64 enum comparison should lower");
         assert!(
@@ -2681,12 +2681,13 @@ mod tests {
         let cfg = synthetic_cfg(values, 0, 0, vec![], CfgValue::from_raw(4));
         let pool = rue_air::FrozenTypeInternPool::new();
         let interner = ThreadedRodeo::new();
-        let (x86, x86_debug) = X86CfgLower::new(&cfg, &pool, &interner)
+        let (x86, x86_debug) = X86CfgLower::new_unchecked(&cfg, &pool, &interner)
             .lower_with_debug()
             .expect("x86 fixture should lower");
-        let (arm, arm_debug) = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux)
-            .lower_with_debug()
-            .expect("AArch64 fixture should lower");
+        let (arm, arm_debug) =
+            Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux)
+                .lower_with_debug()
+                .expect("AArch64 fixture should lower");
 
         let x86_debug_cases = x86_debug
             .blocks
@@ -2724,12 +2725,13 @@ mod tests {
             vec![true],
             dummy_value(),
         );
-        let x86_byref = X86CfgLower::new(&byref_cfg, &pool, &interner)
+        let x86_byref = X86CfgLower::new_unchecked(&byref_cfg, &pool, &interner)
             .lower()
             .expect("x86 by-ref fixture should lower");
-        let arm_byref = Aarch64CfgLower::new(&byref_cfg, &pool, &interner, Target::Aarch64Linux)
-            .lower()
-            .expect("AArch64 by-ref fixture should lower");
+        let arm_byref =
+            Aarch64CfgLower::new_unchecked(&byref_cfg, &pool, &interner, Target::Aarch64Linux)
+                .lower()
+                .expect("AArch64 by-ref fixture should lower");
         assert!(
             x86_byref
                 .instructions()
@@ -2747,12 +2749,13 @@ mod tests {
     #[test]
     fn both_target_debug_traces_cover_every_cfg_value_variant() {
         let (cfg, pool, interner, values) = every_cfg_value_fixture();
-        let (x86, x86_debug) = X86CfgLower::new(&cfg, &pool, &interner)
+        let (x86, x86_debug) = X86CfgLower::new_unchecked(&cfg, &pool, &interner)
             .lower_with_debug()
             .expect("x86 coverage fixture should lower");
-        let (arm, arm_debug) = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux)
-            .lower_with_debug()
-            .expect("AArch64 coverage fixture should lower");
+        let (arm, arm_debug) =
+            Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux)
+                .lower_with_debug()
+                .expect("AArch64 coverage fixture should lower");
 
         let signature = |debug: &crate::LoweringDebugInfo| {
             let mut entries = debug
@@ -2836,10 +2839,10 @@ mod tests {
         cfg.set_return(entry, Some(param));
         let interner = ThreadedRodeo::new();
 
-        let x86 = X86CfgLower::new(&cfg, &pool, &interner)
+        let x86 = X86CfgLower::new_unchecked(&cfg, &pool, &interner)
             .lower()
             .expect("x86 zero-slot parameter should lower");
-        let arm = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux)
+        let arm = Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux)
             .lower()
             .expect("AArch64 zero-slot parameter should lower");
         assert!(
@@ -2911,7 +2914,7 @@ mod tests {
         let pool = pool.freeze();
 
         let x86_ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
-        let mut x86 = X86CfgLower::new(&cfg, &pool, &interner);
+        let mut x86 = X86CfgLower::new_unchecked(&cfg, &pool, &interner);
         let x86_value = super::operand(&x86_ctx, &mut x86, value);
         let x86_actions = super::drop_plan(&x86_ctx, &mut x86, value);
         assert_eq!(x86_value.slots.len(), 3);
@@ -2920,7 +2923,7 @@ mod tests {
         assert_eq!(x86_actions[0].slots, x86_value.slots);
 
         let arm_ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
-        let mut arm = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux);
+        let mut arm = Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux);
         let arm_value = super::operand(&arm_ctx, &mut arm, value);
         let arm_actions = super::drop_plan(&arm_ctx, &mut arm, value);
         assert_eq!(arm_value.slots.len(), 3);
@@ -3163,12 +3166,13 @@ mod tests {
         );
 
         let interner = ThreadedRodeo::new();
-        let (_, x86_debug) = X86CfgLower::new(&cfg, &pool, &interner)
+        let (_, x86_debug) = X86CfgLower::new_unchecked(&cfg, &pool, &interner)
             .lower_with_debug()
             .expect("x86 zero-slot storage fixture should lower");
-        let (_, arm_debug) = Aarch64CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux)
-            .lower_with_debug()
-            .expect("AArch64 zero-slot storage fixture should lower");
+        let (_, arm_debug) =
+            Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux)
+                .lower_with_debug()
+                .expect("AArch64 zero-slot storage fixture should lower");
 
         for value in [alloc, load, store, param_store] {
             let x86 = x86_debug

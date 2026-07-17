@@ -208,7 +208,7 @@ pub struct CallInputs {
 }
 
 impl CallInputs {
-    pub fn from_cfg(
+    pub(crate) fn from_cfg(
         cfg: &Cfg,
         type_pool: &FrozenTypeInternPool,
         return_ty: Type,

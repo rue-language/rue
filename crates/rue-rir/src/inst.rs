@@ -945,6 +945,46 @@ pub struct Rir {
 
 /// Mutable construction-phase owner. Payload descriptors never leave this
 /// owner through the public API; callers add or replace complete nodes.
+///
+/// Family identities cannot be interchanged:
+///
+/// ```compile_fail
+/// use rue_rir::{Rir, RirParamsRange};
+/// fn wrong_family(rir: &Rir, params: &RirParamsRange) {
+///     let _ = rir.call_args(params);
+/// }
+/// ```
+///
+/// Raw positions cannot be reconstructed:
+///
+/// ```compile_fail
+/// use rue_rir::RirCallArgsRange;
+/// let _ = RirCallArgsRange::from_parts(0, 0);
+/// ```
+///
+/// A descriptor cannot be extracted from a published owner for movement to a
+/// different editor:
+///
+/// ```compile_fail
+/// use rue_rir::{InstData, InstRef, Rir, RirCallArgsRange};
+/// fn extract(rir: &Rir, inst: InstRef) -> RirCallArgsRange {
+///     match &rir.get_inst(inst).data {
+///         InstData::Call { args, .. } => *args,
+///         _ => panic!("not a call"),
+///     }
+/// }
+/// ```
+///
+/// Consequently a payload-bearing node cannot be detached from one owner and
+/// inserted into another:
+///
+/// ```compile_fail
+/// use rue_rir::{Inst, InstData, InstRef, Rir, RirEditor};
+/// fn detach(source: &Rir, destination: &mut RirEditor, inst: InstRef) {
+///     let borrowed = source.get_inst(inst);
+///     destination.add_inst(Inst { data: borrowed.data, span: borrowed.span });
+/// }
+/// ```
 #[derive(Debug, Default)]
 pub struct RirEditor {
     rir: Rir,

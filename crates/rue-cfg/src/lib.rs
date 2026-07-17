@@ -16,6 +16,8 @@
 //! AIR (structured) → CFG (explicit control flow) → X86Mir (machine code)
 //! ```
 
+#[cfg(test)]
+mod api_inventory;
 mod build;
 mod dominators;
 mod inst;

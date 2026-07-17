@@ -315,6 +315,31 @@ sh_test(
 )
 
 sh_test(
+    name = "payload-ownership-inventory-validation",
+    test = "scripts/validate-payload-ownership.py",
+    args = [
+        "--source", "rue-rir=$(location //crates/rue-rir:payload-ownership-inventory-sources)",
+        "--source", "rue-air=$(location //crates/rue-air:payload-ownership-inventory-sources)",
+        "--source", "rue-cfg=$(location //crates/rue-cfg:payload-ownership-inventory-sources)",
+        "--source", "rue-codegen=$(location //crates/rue-codegen:payload-ownership-inventory-sources)",
+    ],
+)
+
+sh_test(
+    name = "payload-ownership-inventory-tool-tests",
+    test = "scripts/test-payload-ownership.py",
+    resources = ["scripts/validate-payload-ownership.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+test_suite(
+    name = "payload-ownership-compile-fail-tests",
+    tests = ["//crates/rue-rir:rue-rir[doc]"],
+)
+
+sh_test(
     name = "benchmark-tool-tests",
     test = "scripts/test-benchmark-tools.py",
     env = {

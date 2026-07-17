@@ -79,6 +79,36 @@ production compiler-session path. Those hooks are compiled through dedicated
 fuzz-support Buck targets and are absent from the production RIR, AIR, and CFG
 crate surfaces.
 
+## Evolving a payload schema
+
+A payload family is owned by exactly one of `rue-rir`, `rue-air`, or
+`rue-cfg`. Add or change it in that owner's schema/artifact module; consumers
+must receive only its opaque family range and traverse it through the owner's
+typed borrowing view. Do not expose a raw start, extent, physical store, or
+detached payload-bearing node, and do not duplicate width, tag, count, or
+offset arithmetic in a producer or consumer.
+
+Every schema change must update the owner family-name inventory and the
+compiler's deliberately repeated cross-phase inventory. Add owner tests for
+round trips, empty and boundary sizes, malformed metadata and records,
+atomic-failure rollback, range layout, and zero-allocation traversal. Exercise
+owner cloning or selective remapping when the family participates in either,
+and extend the safe fuzz corruption hook. The API/source inventory tests must
+continue to prove that stores, constructors, range fields, and raw mutation
+remain private. Finally run the focused owner, compiler payload-schema, and
+fuzz tests plus `scripts/rue quick`; use the full suite for a cross-phase or
+representation change.
+
+`Sema::new(&Rir)` is a read-only semantic-consumption boundary: `Rir` exposes
+neither its payload store nor a mutable/raw range API. Public machine-code
+generation accepts `&ValidatedCfg`, preventing an editor from bypassing CFG
+verification. The publicly re-exported backend lowering constructors likewise
+require `&ValidatedCfg`; only crate-private helpers borrow the underlying
+`&Cfg` after that checked boundary, and they use typed getters. The shared
+lowering context and value/terminator planning entry points are crate-private,
+so a public consumer cannot assemble an unchecked lowering path from those
+pieces.
+
 ## Whole-compiler result
 
 One warmup preceded seven fresh-process pairs with alternating pair order. The

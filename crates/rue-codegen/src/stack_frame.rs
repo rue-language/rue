@@ -6,7 +6,7 @@
 
 use lasso::ThreadedRodeo;
 use rue_air::FrozenTypeInternPool;
-use rue_cfg::Cfg;
+use rue_cfg::ValidatedCfg;
 use rue_error::CompileResult;
 use rue_target::{Arch, Target};
 
@@ -252,7 +252,7 @@ impl std::fmt::Display for StackFrameInfo {
 /// This function runs the codegen pipeline up to register allocation to determine
 /// the actual stack layout, including spill slots and callee-saved registers.
 pub fn generate_stack_frame_info(
-    cfg: &Cfg,
+    cfg: &ValidatedCfg,
     function_name: &str,
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
@@ -270,7 +270,7 @@ pub fn generate_stack_frame_info(
 
 /// Generate stack frame info for x86-64.
 fn generate_x86_64_stack_frame(
-    cfg: &Cfg,
+    cfg: &ValidatedCfg,
     function_name: &str,
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
@@ -418,7 +418,7 @@ fn generate_x86_64_stack_frame(
 
 /// Generate stack frame info for AArch64.
 fn generate_aarch64_stack_frame(
-    cfg: &Cfg,
+    cfg: &ValidatedCfg,
     function_name: &str,
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,

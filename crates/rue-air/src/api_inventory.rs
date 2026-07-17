@@ -179,4 +179,43 @@ fn air_payload_ownership_and_validation_boundary_cannot_regress() {
     assert!(exports.contains("ValidatedAir"));
     assert!(semantic_output.contains("pub air: crate::ValidatedAir"));
     assert!(imported_body.contains("pub air: crate::ValidatedAir"));
+
+    let air = inst
+        .split("pub struct Air {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("AIR owner declaration");
+    for store in ["instructions", "extra", "projections", "places"] {
+        assert!(
+            !air.contains(&format!("pub {store}:")),
+            "AIR exposed {store} store"
+        );
+    }
+    let place = inst
+        .split("pub struct AirPlace {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("AIR place declaration");
+    assert!(!place.contains("pub projections:"));
+    for raw_api in [
+        "pub fn add_extra(",
+        "pub fn get_extra(",
+        "pub fn extra_mut(",
+        "pub fn projection_store_mut(",
+        "pub fn from_parts(",
+    ] {
+        assert!(
+            !inst.contains(raw_api),
+            "AIR exposed raw payload API: {raw_api}"
+        );
+    }
+    assert_eq!(inst.matches("word_range!(Air").count(), 10);
+    assert_eq!(crate::AIR_PAYLOAD_FAMILY_NAMES.len(), 10);
+
+    // Semantic consumers receive an immutable RIR. Its payload fields and
+    // stores remain inaccessible, so this lower-level entry point is not a
+    // payload escape hatch.
+    let sema = include_str!("sema/mod.rs");
+    assert!(sema.contains("pub fn new(\n        rir: &'a Rir,"));
+    assert!(!sema.contains("&'a mut Rir"));
 }

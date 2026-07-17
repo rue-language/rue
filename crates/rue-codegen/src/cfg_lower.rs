@@ -124,15 +124,8 @@ impl fmt::Display for LoweringDebugInfo {
     }
 }
 
-/// Format a CFG instruction data as a human-readable string. Takes the `Cfg`
-/// so places render with their projections resolved (`$0.#StructId(2).1`), not as raw
-/// projection-arena index ranges (`$0[3..5]`).
-pub fn format_cfg_inst_data(cfg: &rue_cfg::Cfg, data: &rue_cfg::CfgInstData) -> String {
-    format_cfg_inst_data_impl(cfg, data, None)
-}
-
 /// Format CFG instruction data with interned symbols resolved to stable names.
-pub fn format_cfg_inst_data_with_interner(
+pub(crate) fn format_cfg_inst_data_with_interner(
     cfg: &rue_cfg::Cfg,
     data: &rue_cfg::CfgInstData,
     interner: &ThreadedRodeo,
@@ -298,7 +291,7 @@ pub fn type_uses_sret_return(
 
 /// Does this function return its value via the sret convention?
 /// See [`type_uses_sret_return`] for the convention.
-pub fn fn_uses_sret_return(
+pub(crate) fn fn_uses_sret_return(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
     ret_reg_budget: u32,
@@ -321,20 +314,20 @@ pub fn fn_uses_sret_return(
 ///
 /// Each backend's `CfgLower` embeds this context and delegates to its methods.
 #[derive(Clone, Copy)]
-pub struct CfgLowerContext<'a> {
+pub(crate) struct CfgLowerContext<'a> {
     /// The CFG being lowered.
-    pub cfg: &'a Cfg,
+    pub(crate) cfg: &'a Cfg,
     /// Type intern pool for struct/enum/array lookups.
-    pub type_pool: &'a FrozenTypeInternPool,
+    pub(crate) type_pool: &'a FrozenTypeInternPool,
     /// Number of local variable slots.
-    pub num_locals: u32,
+    pub(crate) num_locals: u32,
     /// Number of parameter slots.
-    pub num_params: u32,
+    pub(crate) num_params: u32,
 }
 
 impl<'a> CfgLowerContext<'a> {
     /// Create a new CFG lowering context.
-    pub fn new(cfg: &'a Cfg, type_pool: &'a FrozenTypeInternPool) -> Self {
+    pub(crate) fn new(cfg: &'a Cfg, type_pool: &'a FrozenTypeInternPool) -> Self {
         Self {
             cfg,
             type_pool,
@@ -350,13 +343,6 @@ impl<'a> CfgLowerContext<'a> {
     /// Get the length of an array type.
     pub fn array_length(&self, array_type: Type) -> u64 {
         types::array_length_from_type(self.type_pool, array_type)
-    }
-
-    /// Get the array type definition.
-    ///
-    /// Returns `Some((element_type, length))` for array types, `None` otherwise.
-    pub fn array_type_def(&self, array_type: Type) -> Option<(Type, u64)> {
-        types::array_type_def_from_type(self.type_pool, array_type)
     }
 
     /// Calculate the total number of slots needed to store a type.
@@ -381,13 +367,6 @@ impl<'a> CfgLowerContext<'a> {
     /// Calculate the slot offset for a field within a struct.
     pub fn struct_field_slot_offset(&self, struct_id: StructId, field_index: u32) -> u32 {
         types::struct_field_slot_offset(self.type_pool, struct_id, field_index)
-    }
-
-    /// Total slot count of a struct (sum of its fields' slot counts). Used as
-    /// the root-object origin shift for ascending place addressing
-    /// (ADR-0040 / RUE-311).
-    pub fn struct_total_slot_count(&self, struct_id: StructId) -> u32 {
-        types::struct_slot_count(self.type_pool, struct_id)
     }
 
     // ========================================================================
@@ -418,19 +397,8 @@ impl<'a> CfgLowerContext<'a> {
         }
     }
 
-    /// Does a by-value return of `ty` use the sret convention for the
-    /// backend's return-register budget? See [`type_uses_sret_return`].
-    pub fn type_uses_sret(&self, ty: Type, ret_reg_budget: u32) -> bool {
-        type_uses_sret_return(self.type_pool, ty, ret_reg_budget)
-    }
-
-    /// Does the function being lowered return via the sret convention?
-    pub fn uses_sret_return(&self, ret_reg_budget: u32) -> bool {
-        self.type_uses_sret(self.cfg.return_type(), ret_reg_budget)
-    }
-
     /// The frame slot holding the incoming sret pointer, one past the param
-    /// area (only meaningful when [`Self::uses_sret_return`] is true). The
+    /// area (only meaningful for an sret-returning function). The
     /// prologue stores the hidden first argument here; the return path loads
     /// it back to write the result through. Register-allocator spill slots
     /// start after this slot.
