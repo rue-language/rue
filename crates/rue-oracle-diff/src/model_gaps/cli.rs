@@ -814,7 +814,10 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.std_core",
         "std_core_m1_smoke",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        // `std.mem.swap` now performs a bytewise exchange through `@raw_mut`
+        // (RUE-943), so the oracle model's first unsupported intrinsic for this
+        // case is the address-of rather than the later `@int_to_ptr`.
+        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
         &[],
     ),
     Entry::new(
@@ -926,6 +929,18 @@ const ENTRIES: &[Entry] = &[
         "cli.std_strbuf",
         "canonical_identity_drives_string_semantics",
         semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_strbuf",
+        "generic_inout_accepts_literal_initialized_strbuf",
+        semantic(SemanticGapKind::InoutParameterForwarding),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_strbuf",
+        "mem_swap_exchanges_move_only_strbufs",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
         &[],
     ),
     Entry::new(

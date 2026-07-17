@@ -908,7 +908,18 @@ impl<'a> BodySema<'a> {
         let operand = args[0].value;
         let operand_root = self.extract_root_variable(operand);
         let operand_move_state_before = operand_root.and_then(|v| ctx.moved_vars.get(&v).cloned());
-        let arg_result = self.analyze_inst(air, operand, ctx)?;
+        // Analyze the operand as a borrow (`byref_arg_root`), exactly as `@dbg`
+        // and by-ref call arguments do. Without this, addressing a by-ref
+        // parameter (`@raw_mut(a)` where `a: inout T` is non-Copy) reads the
+        // param on the move path and is rejected outright (E0437 for `inout`,
+        // E0429 for `borrow`) before the address-of semantics below cancel the
+        // move.
+        // Address-of is a borrow, so the read must not count as a move; this
+        // makes `std.mem.swap` and other by-ref-param addressing work (RUE-943).
+        let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, operand_root);
+        let arg_result = self.analyze_inst(air, operand, ctx);
+        ctx.byref_arg_root = prev_byref_root;
+        let arg_result = arg_result?;
 
         // @raw/@raw_mut take the ADDRESS of an addressable PLACE (spec 9.1:12,
         // ADR-0028), so the operand MUST be a place. A non-place operand

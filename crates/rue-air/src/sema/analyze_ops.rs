@@ -2762,7 +2762,19 @@ impl<'a> BodySema<'a> {
             // string literal `"..."` materializes as a 2-word static-backed
             // `str` rather than the 3-word heap `String` (ADR-0043 Phase 3,
             // RUE-324). Enums do the same for fallible-intrinsic `Option(T)`.
-            if annot.is_enum() || self.is_str_like(annot) {
+            //
+            // A `StrBuf` annotation is likewise the expected type so a string
+            // literal materializes directly as the 3-word `StrBuf` (the
+            // literal-backed `cap == 0` representation) rather than defaulting
+            // to `str` (RUE-944). Without this the binding's storage would be a
+            // 2-word `str` slot whenever inference could not pin the literal —
+            // e.g. `let mut a: S = "x";` passed to a generic `inout T` parameter,
+            // where `T` is unresolvable during constraint generation so no
+            // literal-constraining `Equal(lit, StrBuf)` is emitted. The concrete
+            // `inout StrBuf` path pins the literal through its argument
+            // constraint and already saw `StrBuf`; this makes the binding's
+            // storage `StrBuf` at the source so both paths agree.
+            if annot.is_enum() || self.is_str_like(annot) || self.is_strbuf(annot) {
                 ctx.expected_type = Some(annot);
             }
         } else if let Some(inferred) = ctx.resolved_types.get(&init).copied()

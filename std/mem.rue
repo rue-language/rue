@@ -10,13 +10,28 @@
 
 // Exchange the values held in `a` and `b`.
 //
-// Works for any `T` (including move-only aggregates): the three moves leave
-// each binding holding exactly one value, so affine/linear obligations are
-// preserved.
+// Works for any `T` (including move-only aggregates). A `let tmp = a;` would
+// move out of the `inout` borrow and leave the caller's binding uninitialized
+// (E0437), so this instead performs a bytewise three-way exchange through
+// raw-pointer primitives: it addresses each binding's storage and swaps the
+// `@size_of(T)` bytes in place. Both bindings stay fully initialized the whole
+// time, so affine/linear obligations are preserved — after the swap each
+// binding owns exactly the resources the other held, and each is still dropped
+// exactly once (no leak, no double-free).
 pub fn swap(comptime T: type, inout a: T, inout b: T) {
-    let tmp = a;
-    a = b;
-    b = tmp;
+    let size: u64 = @intCast(@size_of(T));
+    let addr_a: u64 = checked { @ptr_to_int(@raw_mut(a)) };
+    let addr_b: u64 = checked { @ptr_to_int(@raw_mut(b)) };
+    let pa: ptr mut u8 = checked { @int_to_ptr(addr_a) };
+    let pb: ptr mut u8 = checked { @int_to_ptr(addr_b) };
+    let mut i: u64 = 0;
+    while i < size {
+        let ta = checked { @byte_read(pa, i) };
+        let tb = checked { @byte_read(pb, i) };
+        checked { @byte_write(pa, i, tb); };
+        checked { @byte_write(pb, i, ta); };
+        i = i + 1;
+    }
 }
 
 // Store `v` into `dst` and return the value that was there before.

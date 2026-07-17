@@ -375,3 +375,90 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 0
+
+# RUE-943: std.mem.swap works for move-only aggregates. The doc claims "any T
+# (including move-only aggregates)", but `let tmp = a;` would move out of the
+# `inout` borrow (E0437). swap instead exchanges the two values byte-for-byte
+# through raw-pointer primitives; both bindings stay initialized, so each keeps
+# exactly one drop obligation. Executed as a real binary so a double-free or
+# leak on the balanced-drop path would abort rather than pass.
+[[case]]
+name = "mem_swap_exchanges_move_only_strbufs"
+description = "std.mem.swap exchanges two owning StrBufs with balanced drops (RUE-943)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let S = std.strbuf.StrBuf;
+    let mut a = S.new(); a.push(65); a.push(66); a.push(67);  // "ABC"
+    let mut b = S.new(); b.push(90);                          // "Z"
+
+    std.mem.swap(S, inout a, inout b);
+
+    // Contents exchanged.
+    if a.len() != 1 { return 1; }
+    if b.len() != 3 { return 2; }
+    if a[0] != 90 { return 3; }
+    if b[0] != 65 { return 4; }
+    if b[2] != 67 { return 5; }
+
+    // Each binding now owns the other's buffer; both remain independently
+    // mutable, proving the exchange moved ownership rather than aliasing.
+    b.push(68);                                               // "ABCD"
+    a.push(89);                                               // "ZY"
+    if b.len() != 4 { return 6; }
+    if b[3] != 68 { return 7; }
+    if a.len() != 2 { return 8; }
+    if a[1] != 89 { return 9; }
+
+    // Both a and b drop here: swap must have preserved exactly one owner per
+    // buffer, so neither the original nor the exchanged allocation double-frees.
+    42
+}
+""" }]
+
+# RUE-944: a literal-initialized StrBuf binding (`let mut a: S = "x";`) passes a
+# generic `inout T` parameter as StrBuf, matching the concrete `inout StrBuf`
+# path. Previously the literal defaulted to `str` storage under generic
+# unification (E0206 expected StrBuf found str) while the concrete signature
+# pinned it. Both paths now agree the binding's storage is StrBuf.
+[[case]]
+name = "generic_inout_accepts_literal_initialized_strbuf"
+description = "A literal-initialized StrBuf binding passes generic `inout T`, matching the concrete inout path (RUE-944)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn generic_fill(comptime T: type, inout x: T) {
+    x.push(66);                                              // 'B'
+    x.push(67);                                              // 'C'
+}
+
+fn concrete_fill(inout x: std.strbuf.StrBuf) {
+    x.push(68);                                              // 'D'
+}
+
+fn main() -> i32 {
+    let S = std.strbuf.StrBuf;
+
+    // Generic `inout T` with a literal-initialized StrBuf binding (RUE-944).
+    let mut a: S = "x";
+    generic_fill(S, inout a);
+    if a.len() != 3 { return 1; }                            // "xBC"
+    if a[0] != 120 { return 2; }
+    if a[2] != 67 { return 3; }
+
+    // The concrete `inout StrBuf` path stays covered and agrees.
+    let mut c: S = "y";
+    concrete_fill(inout c);
+    if c.len() != 2 { return 4; }                            // "yD"
+    if c[1] != 68 { return 5; }
+
+    42
+}
+""" }]
