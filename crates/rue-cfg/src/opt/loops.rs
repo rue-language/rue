@@ -616,12 +616,11 @@ mod tests {
         }
     }
 
-    fn switch(
-        cfg: &mut Cfg,
-        scrutinee: CfgValue,
-        cases: impl IntoIterator<Item = (i64, BlockId)>,
-        default: BlockId,
-    ) -> Terminator {
+    fn switch<I>(cfg: &mut Cfg, scrutinee: CfgValue, cases: I, default: BlockId) -> Terminator
+    where
+        I: IntoIterator<Item = (i64, BlockId)>,
+        I::IntoIter: ExactSizeIterator,
+    {
         Terminator::Switch {
             scrutinee,
             cases: cfg.push_switch_cases(cases).unwrap(),

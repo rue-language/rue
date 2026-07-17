@@ -27,3 +27,23 @@ rue_crate(
         "//third-party:rayon",
     ],
 )
+
+native.rust_library(
+    name = "rue-air-fuzz-support",
+    crate = "rue_air_fuzz_support",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        "//crates/rue-builtins:rue-builtins",
+        "//crates/rue-error:rue-error",
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-parser:rue-parser",
+        "//crates/rue-rir:rue-rir",
+        "//crates/rue-runtime-abi:rue-runtime-abi",
+        "//crates/rue-span:rue-span",
+        "//crates/rue-target:rue-target",
+        "//third-party:lasso",
+        "//third-party:rayon",
+    ],
+    rustc_flags = ["--cfg", "feature=\"fuzz-support\""],
+    visibility = ["//crates/rue-compiler:", "//crates/rue-fuzz:"],
+)

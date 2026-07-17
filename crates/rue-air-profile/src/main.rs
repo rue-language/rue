@@ -9,11 +9,13 @@ use std::time::Instant;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_air::{
-    AIR_PAYLOAD_FAMILY_NAMES, AirArgMode, AirCallArg, AirEditor, AirInstData, AirPattern,
+    AIR_PAYLOAD_FAMILY_NAMES, Air, AirArgMode, AirCallArg, AirEditor, AirInstData, AirPattern,
     AirPayloadStorageStats, AirPlaceBase, AirProjection, ConstValue, EnumDef, EnumId, StructDef,
     StructField, StructId, Type, TypeInternPool,
 };
+use rue_cfg::{CFG_PAYLOAD_FAMILY_NAMES, CfgPayloadStorageStats};
 use rue_compiler::{CompileOptions, CompilerSession, SourceSnapshot};
+use rue_rir::RIR_PAYLOAD_FAMILY_NAMES;
 use rue_span::Span;
 use serde_json::{Map, Value, json};
 
@@ -22,6 +24,58 @@ struct CountingAllocator;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+fn air_payload_storage_stats(air: &Air) -> AirPayloadStorageStats {
+    let mut stats = air.payload_store_stats();
+    let mut account = |family: usize, words: usize| {
+        stats.family_logical_bytes[family] += words * std::mem::size_of::<u32>();
+    };
+    for inst in air.instructions() {
+        match &inst.data {
+            AirInstData::Match { arms, .. } => {
+                account(0, arms.len());
+                stats.nonempty_match_envelopes += usize::from(!arms.is_empty());
+            }
+            AirInstData::Call { args, .. } => account(1, args.len()),
+            AirInstData::CallGeneric {
+                type_args,
+                value_args,
+                args,
+                ..
+            } => {
+                account(2, type_args.len());
+                account(3, value_args.len());
+                stats.peak_staging_bytes = stats
+                    .peak_staging_bytes
+                    .max(value_args.len() * std::mem::size_of::<u32>());
+                account(1, args.len());
+            }
+            AirInstData::Intrinsic { args, .. } => account(4, args.len()),
+            AirInstData::Block { statements, .. } => account(5, statements.len()),
+            AirInstData::StructInit {
+                fields,
+                source_order,
+                ..
+            } => {
+                account(6, fields.len());
+                account(7, source_order.len());
+            }
+            AirInstData::ArrayInit { elements } => account(8, elements.len()),
+            AirInstData::EnumVariant { payload, .. } => account(9, payload.len()),
+            _ => {}
+        }
+    }
+    stats.peak_staging_bytes = stats.peak_staging_bytes.max(
+        air.places()
+            .iter()
+            .map(|place| {
+                air.get_place_projections(place).len() * std::mem::size_of::<AirProjection>()
+            })
+            .max()
+            .unwrap_or(0),
+    );
+    stats
+}
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -90,9 +144,21 @@ fn main() {
     let elapsed_ns = started.elapsed().as_nanos();
     ENABLED.store(false, Ordering::SeqCst);
 
+    let rir_stats = session
+        .rir()
+        .expect("successful semantic query retains validated RIR")
+        .rir()
+        .payload_storage_stats();
+    let rir_family_logical_bytes: Map<String, Value> = RIR_PAYLOAD_FAMILY_NAMES
+        .into_iter()
+        .zip(rir_stats.family_logical_bytes)
+        .map(|(name, bytes)| (name.to_owned(), json!(bytes)))
+        .collect();
+
     let mut total = AirPayloadStorageStats::default();
+    let mut cfg_total = CfgPayloadStorageStats::default();
     for function in semantic.functions() {
-        let stats = function.analyzed.air.payload_storage_stats();
+        let stats = air_payload_storage_stats(&function.analyzed.air);
         for (to, from) in total
             .family_logical_bytes
             .iter_mut()
@@ -108,16 +174,39 @@ fn main() {
         total.place_store_capacity_bytes += stats.place_store_capacity_bytes;
         total.nonempty_match_envelopes += stats.nonempty_match_envelopes;
         total.peak_staging_bytes = total.peak_staging_bytes.max(stats.peak_staging_bytes);
+        let stats = function.cfg.payload_storage_stats();
+        for (to, from) in cfg_total
+            .family_logical_bytes
+            .iter_mut()
+            .zip(stats.family_logical_bytes)
+        {
+            *to += from;
+        }
+        cfg_total.value_store_logical_bytes += stats.value_store_logical_bytes;
+        cfg_total.value_store_capacity_bytes += stats.value_store_capacity_bytes;
+        cfg_total.call_store_logical_bytes += stats.call_store_logical_bytes;
+        cfg_total.call_store_capacity_bytes += stats.call_store_capacity_bytes;
+        cfg_total.switch_store_logical_bytes += stats.switch_store_logical_bytes;
+        cfg_total.switch_store_capacity_bytes += stats.switch_store_capacity_bytes;
+        cfg_total.projection_store_logical_bytes += stats.projection_store_logical_bytes;
+        cfg_total.projection_store_capacity_bytes += stats.projection_store_capacity_bytes;
+        cfg_total.nonempty_variable_envelopes += stats.nonempty_variable_envelopes;
+        cfg_total.peak_staging_bytes = cfg_total.peak_staging_bytes.max(stats.peak_staging_bytes);
     }
     let family_logical_bytes: Map<String, Value> = AIR_PAYLOAD_FAMILY_NAMES
         .into_iter()
         .zip(total.family_logical_bytes)
         .map(|(name, bytes)| (name.to_owned(), json!(bytes)))
         .collect();
+    let cfg_family_logical_bytes: Map<String, Value> = CFG_PAYLOAD_FAMILY_NAMES
+        .into_iter()
+        .zip(cfg_total.family_logical_bytes)
+        .map(|(name, bytes)| (name.to_owned(), json!(bytes)))
+        .collect();
     println!(
         "{}",
         json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "air_phase_ns": elapsed_ns,
             "allocations": ALLOCATIONS.load(Ordering::SeqCst),
             "allocated_bytes": ALLOCATED_BYTES.load(Ordering::SeqCst),
@@ -137,6 +226,26 @@ fn main() {
                 + total.place_store_capacity_bytes,
             "nonempty_match_envelopes": total.nonempty_match_envelopes,
             "peak_staging_bytes": total.peak_staging_bytes,
+            "rir": {
+                "family_logical_bytes": rir_family_logical_bytes,
+                "word_store_logical_bytes": rir_stats.word_store_logical_bytes,
+                "word_store_capacity_bytes": rir_stats.word_store_capacity_bytes,
+                "nonempty_variable_envelopes": rir_stats.nonempty_variable_envelopes,
+                "peak_staging_bytes": rir_stats.peak_staging_bytes,
+            },
+            "cfg": {
+                "family_logical_bytes": cfg_family_logical_bytes,
+                "value_store_logical_bytes": cfg_total.value_store_logical_bytes,
+                "value_store_capacity_bytes": cfg_total.value_store_capacity_bytes,
+                "call_store_logical_bytes": cfg_total.call_store_logical_bytes,
+                "call_store_capacity_bytes": cfg_total.call_store_capacity_bytes,
+                "switch_store_logical_bytes": cfg_total.switch_store_logical_bytes,
+                "switch_store_capacity_bytes": cfg_total.switch_store_capacity_bytes,
+                "projection_store_logical_bytes": cfg_total.projection_store_logical_bytes,
+                "projection_store_capacity_bytes": cfg_total.projection_store_capacity_bytes,
+                "nonempty_variable_envelopes": cfg_total.nonempty_variable_envelopes,
+                "peak_staging_bytes": cfg_total.peak_staging_bytes,
+            },
         })
     );
 }
@@ -411,7 +520,7 @@ fn profile_families() -> Value {
             .expect("microbenchmark fixture must be valid AIR");
     }
     let mut output = Map::new();
-    for (name, family) in FAMILIES {
+    for (family_index, (name, family)) in FAMILIES.into_iter().enumerate() {
         let mut fixtures: Vec<_> = (0..BUILDS).map(|_| fixture()).collect();
         ALLOCATIONS.store(0, Ordering::SeqCst);
         ALLOCATED_BYTES.store(0, Ordering::SeqCst);
@@ -443,19 +552,33 @@ fn profile_families() -> Value {
         }
         let traversal_ns = started.elapsed().as_nanos();
         ENABLED.store(false, Ordering::SeqCst);
-        let stats = fixtures[0].editor.payload_storage_stats();
+        let stats = air_payload_storage_stats(&fixtures[0].editor);
+        let elements = consumed / TRAVERSALS;
+        let logical_bytes = if family_index < AIR_PAYLOAD_FAMILY_NAMES.len() {
+            stats.family_logical_bytes[family_index]
+        } else {
+            stats.projection_store_logical_bytes + stats.place_store_logical_bytes
+        };
+        let capacity_bytes = stats.word_store_capacity_bytes
+            + stats.projection_store_capacity_bytes
+            + stats.place_store_capacity_bytes;
         output.insert(
             name.into(),
             json!({
-                "elements": consumed / TRAVERSALS,
+                "elements": elements,
                 "builds": BUILDS,
                 "build_ns": build_ns,
                 "build_allocations": build_allocations,
                 "build_allocated_bytes": build_bytes,
+                "build_elements_per_second": (elements * BUILDS) as f64 / (build_ns as f64 / 1e9),
                 "traversals": TRAVERSALS,
                 "traversal_ns": traversal_ns,
                 "traversal_allocations": ALLOCATIONS.load(Ordering::SeqCst),
                 "elements_per_second": consumed as f64 / (traversal_ns as f64 / 1e9),
+                "logical_bytes": logical_bytes,
+                "capacity_bytes": capacity_bytes,
+                "total_bytes": logical_bytes + capacity_bytes,
+                "envelopes": if matches!(family, Family::Match) { stats.nonempty_match_envelopes } else { 0 },
                 "side_table_logical_bytes": stats.word_store_logical_bytes
                     + stats.projection_store_logical_bytes + stats.place_store_logical_bytes,
                 "side_table_capacity_bytes": stats.word_store_capacity_bytes

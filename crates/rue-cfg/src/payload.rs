@@ -27,14 +27,31 @@ impl PayloadError {
     pub fn family(&self) -> &'static str {
         self.family
     }
+
+    pub fn expected_width(&self) -> usize {
+        self.extent as usize
+    }
+
+    pub fn actual_width(&self) -> usize {
+        let Ok(start) = usize::try_from(self.start) else {
+            return 0;
+        };
+        self.store_len
+            .saturating_sub(start)
+            .min(self.extent as usize)
+    }
 }
 
 impl fmt::Display for PayloadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "CFG {} payload range {}+{} is outside store of length {}",
-            self.family, self.start, self.extent, self.store_len
+            "CFG payload decode: corrupt {} record at start={}: expected width={}, actual width={} (store length {})",
+            self.family,
+            self.start,
+            self.expected_width(),
+            self.actual_width(),
+            self.store_len
         )
     }
 }
@@ -82,7 +99,6 @@ macro_rules! family {
                     family: PhantomData,
                 })
             }
-            #[cfg(test)]
             pub(crate) const fn malformed(start: u32, extent: u32) -> Self {
                 Self(Range {
                     start,
@@ -137,6 +153,23 @@ family!(
     "projections"
 );
 
+/// Stable inventory of every owner-issued CFG payload family.
+///
+/// Keep this next to the family declarations: cross-phase verification uses
+/// it as the deliberate drift point whenever a family is added or removed.
+pub const CFG_PAYLOAD_FAMILY_NAMES: [&str; 10] = [
+    CfgIntrinsicArgs::FAMILY,
+    CfgStructFields::FAMILY,
+    CfgArrayElements::FAMILY,
+    CfgEnumPayload::FAMILY,
+    CfgGotoArgs::FAMILY,
+    CfgThenArgs::FAMILY,
+    CfgElseArgs::FAMILY,
+    CfgCallArgs::FAMILY,
+    CfgSwitchCases::FAMILY,
+    CfgProjections::FAMILY,
+];
+
 #[derive(Debug, Clone)]
 pub(crate) struct Store<S, E> {
     elements: Vec<E>,
@@ -149,6 +182,12 @@ impl<S, E> Store<S, E> {
             elements: Vec::new(),
             marker: PhantomData,
         }
+    }
+    pub(crate) fn logical_bytes(&self) -> usize {
+        self.elements.len() * std::mem::size_of::<E>()
+    }
+    pub(crate) fn capacity_bytes(&self) -> usize {
+        self.elements.capacity() * std::mem::size_of::<E>()
     }
     fn reserve(
         &mut self,
@@ -167,33 +206,20 @@ impl<S, E> Store<S, E> {
             .try_reserve(additional)
             .map_err(|_| PayloadBuildError::CapacityFailure { family })
     }
-    fn append<F>(
+    fn append<F, I>(
         &mut self,
         family: &'static str,
-        values: impl IntoIterator<Item = E>,
+        values: I,
     ) -> Result<Range<F>, PayloadBuildError>
     where
         F: Family<Store = S>,
+        I: ExactSizeIterator<Item = E>,
     {
-        let values = values.into_iter();
-        let mut staged = Vec::new();
-        let (lower_bound, _) = values.size_hint();
-        if u32::try_from(lower_bound).is_err() {
+        let extent_usize = values.len();
+        if u32::try_from(extent_usize).is_err() {
             return Err(PayloadBuildError::ResourceLimitExceeded { family });
         }
-        staged
-            .try_reserve(lower_bound)
-            .map_err(|_| PayloadBuildError::CapacityFailure { family })?;
-        for value in values {
-            if staged.len() == u32::MAX as usize {
-                return Err(PayloadBuildError::ResourceLimitExceeded { family });
-            }
-            staged
-                .try_reserve(1)
-                .map_err(|_| PayloadBuildError::CapacityFailure { family })?;
-            staged.push(value);
-        }
-        if staged.is_empty() {
+        if extent_usize == 0 {
             return Ok(Range {
                 start: 0,
                 extent: 0,
@@ -202,15 +228,15 @@ impl<S, E> Store<S, E> {
         }
         let start = u32::try_from(self.elements.len())
             .map_err(|_| PayloadBuildError::ResourceLimitExceeded { family })?;
-        let extent = u32::try_from(staged.len())
+        let extent = u32::try_from(extent_usize)
             .map_err(|_| PayloadBuildError::ResourceLimitExceeded { family })?;
         start
             .checked_add(extent)
             .ok_or(PayloadBuildError::ResourceLimitExceeded { family })?;
         self.elements
-            .try_reserve(staged.len())
+            .try_reserve(extent_usize)
             .map_err(|_| PayloadBuildError::CapacityFailure { family })?;
-        self.elements.extend(staged);
+        self.elements.extend(values);
         Ok(Range {
             start,
             extent,
@@ -284,11 +310,12 @@ pub(crate) fn reserve_values(
 
 macro_rules! accessors {
     ($push:ident, $view:ident, $checked:ident, $range:ident, $store:ty, $elem:ty) => {
-        pub(crate) fn $push(
-            store: &mut $store,
-            values: impl IntoIterator<Item = $elem>,
-        ) -> Result<$range, PayloadBuildError> {
-            store.append($range::FAMILY, values).map($range)
+        pub(crate) fn $push<I>(store: &mut $store, values: I) -> Result<$range, PayloadBuildError>
+        where
+            I: IntoIterator<Item = $elem>,
+            I::IntoIter: ExactSizeIterator,
+        {
+            store.append($range::FAMILY, values.into_iter()).map($range)
         }
         pub(crate) fn $checked<'a>(
             store: &'a $store,
@@ -383,6 +410,122 @@ accessors!(
     Projection
 );
 
+/// Safe fuzzing hook for the owner-local checked CFG range decoders.
+#[doc(hidden)]
+#[cfg(any(test, feature = "fuzz-support"))]
+pub fn fuzz_payload_corruption(input: &[u8]) -> Result<(), PayloadError> {
+    let family = input.first().copied().unwrap_or(0) as usize % CFG_PAYLOAD_FAMILY_NAMES.len();
+    let operation = input.get(1).copied().unwrap_or(0) % 4;
+    let len = input.get(2).copied().unwrap_or(1) as usize % 16;
+    let metadata = |stored: usize| match operation {
+        0 => (0, u32::try_from(stored + 1).unwrap()),
+        1 => (u32::MAX, 2),
+        2 => (1, 0),
+        _ => (0, u32::try_from(stored).unwrap()),
+    };
+    macro_rules! probe {
+        ($store:expr, $range:ident, $checked:ident) => {{
+            let store = $store;
+            let (start, extent) = metadata(store.elements.len());
+            $checked(&store, &$range::malformed(start, extent)).map(|_| ())
+        }};
+    }
+    match family {
+        0 => probe!(
+            Store::<ValueStore, _> {
+                elements: vec![CfgValue::from_raw(0); len],
+                marker: PhantomData
+            },
+            CfgIntrinsicArgs,
+            checked_intrinsic_args
+        ),
+        1 => probe!(
+            Store::<ValueStore, _> {
+                elements: vec![CfgValue::from_raw(0); len],
+                marker: PhantomData
+            },
+            CfgStructFields,
+            checked_struct_fields
+        ),
+        2 => probe!(
+            Store::<ValueStore, _> {
+                elements: vec![CfgValue::from_raw(0); len],
+                marker: PhantomData
+            },
+            CfgArrayElements,
+            checked_array_elements
+        ),
+        3 => probe!(
+            Store::<ValueStore, _> {
+                elements: vec![CfgValue::from_raw(0); len],
+                marker: PhantomData
+            },
+            CfgEnumPayload,
+            checked_enum_payload
+        ),
+        4 => probe!(
+            Store::<ValueStore, _> {
+                elements: vec![CfgValue::from_raw(0); len],
+                marker: PhantomData
+            },
+            CfgGotoArgs,
+            checked_goto_args
+        ),
+        5 => probe!(
+            Store::<ValueStore, _> {
+                elements: vec![CfgValue::from_raw(0); len],
+                marker: PhantomData
+            },
+            CfgThenArgs,
+            checked_then_args
+        ),
+        6 => probe!(
+            Store::<ValueStore, _> {
+                elements: vec![CfgValue::from_raw(0); len],
+                marker: PhantomData
+            },
+            CfgElseArgs,
+            checked_else_args
+        ),
+        7 => probe!(
+            Store::<CallArgStore, _> {
+                elements: vec![
+                    CfgCallArg {
+                        value: CfgValue::from_raw(0),
+                        mode: crate::CfgArgMode::Normal
+                    };
+                    len
+                ],
+                marker: PhantomData
+            },
+            CfgCallArgs,
+            checked_call_args
+        ),
+        8 => probe!(
+            Store::<SwitchCaseStore, _> {
+                elements: vec![(0, BlockId::from_raw(0)); len],
+                marker: PhantomData
+            },
+            CfgSwitchCases,
+            checked_switch_cases
+        ),
+        _ => probe!(
+            Store::<ProjectionStore, _> {
+                elements: vec![
+                    Projection::Index {
+                        array_type: crate::Type::I32,
+                        index: CfgValue::from_raw(0)
+                    };
+                    len
+                ],
+                marker: PhantomData
+            },
+            CfgProjections,
+            checked_projections
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +566,63 @@ mod tests {
     }
 
     #[test]
+    fn every_payload_family_rejects_truncated_overflow_and_noncanonical_ranges() {
+        macro_rules! reject {
+            ($store:expr, $range:ident, $checked:ident, $family:expr) => {{
+                let truncated = $range::malformed(0, 1);
+                let error = $checked(&$store, &truncated).unwrap_err();
+                assert_eq!(error.family(), $family);
+                assert_eq!((error.expected_width(), error.actual_width()), (1, 0));
+                let overflow = $range::malformed(u32::MAX, 2);
+                assert!($checked(&$store, &overflow).is_err());
+                let noncanonical = $range::malformed(1, 0);
+                assert!($checked(&$store, &noncanonical).is_err());
+            }};
+        }
+        let values = Values::new();
+        reject!(
+            values,
+            CfgIntrinsicArgs,
+            checked_intrinsic_args,
+            "intrinsic arguments"
+        );
+        reject!(
+            values,
+            CfgStructFields,
+            checked_struct_fields,
+            "struct fields"
+        );
+        reject!(
+            values,
+            CfgArrayElements,
+            checked_array_elements,
+            "array elements"
+        );
+        reject!(values, CfgEnumPayload, checked_enum_payload, "enum payload");
+        reject!(values, CfgGotoArgs, checked_goto_args, "goto arguments");
+        reject!(values, CfgThenArgs, checked_then_args, "then arguments");
+        reject!(values, CfgElseArgs, checked_else_args, "else arguments");
+        reject!(
+            CallArgs::new(),
+            CfgCallArgs,
+            checked_call_args,
+            "call arguments"
+        );
+        reject!(
+            SwitchCases::new(),
+            CfgSwitchCases,
+            checked_switch_cases,
+            "switch cases"
+        );
+        reject!(
+            Projections::new(),
+            CfgProjections,
+            checked_projections,
+            "projections"
+        );
+    }
+
+    #[test]
     fn typed_ranges_preserve_the_two_word_layout() {
         assert_eq!(std::mem::size_of::<CfgCallArgs>(), 8);
         assert_eq!(std::mem::align_of::<CfgCallArgs>(), 4);
@@ -431,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn every_payload_family_read_traverses_with_exactly_zero_allocations() {
+    fn every_payload_family_round_trips() {
         let mut values = Values::new();
         let intrinsic = push_intrinsic_args(&mut values, [CfgValue::from_raw(1)]).unwrap();
         let fields = push_struct_fields(&mut values, [CfgValue::from_raw(2)]).unwrap();
@@ -478,6 +678,188 @@ mod tests {
     }
 
     #[test]
+    fn every_payload_builder_has_explicit_allocation_storage_and_staging_evidence() {
+        #[derive(Debug)]
+        struct Evidence {
+            family: &'static str,
+            allocations: usize,
+            allocated_bytes: usize,
+            logical_bytes: usize,
+            capacity_bytes: usize,
+            peak_staging_bytes: usize,
+            elements: usize,
+            build_ns: u128,
+            build_elements_per_second: f64,
+            traversal_ns: u128,
+            elements_per_second: f64,
+        }
+
+        macro_rules! evidence {
+            ($family:expr, $store:ty, $element:ty, $build:expr, $view:expr) => {{
+                let mut store = <$store>::new();
+                let build_started = std::time::Instant::now();
+                let (range, allocations, allocated_bytes) =
+                    crate::allocation_test_support::allocation_evidence(|| ($build)(&mut store));
+                let build_ns = build_started.elapsed().as_nanos();
+                let logical_bytes = store.elements.len() * std::mem::size_of::<$element>();
+                const TRAVERSALS: usize = 20_000;
+                let started = std::time::Instant::now();
+                let mut consumed = 0usize;
+                for _ in 0..TRAVERSALS {
+                    consumed += std::hint::black_box(($view)(&store, &range));
+                }
+                let traversal_ns = started.elapsed().as_nanos();
+                let elements = consumed / TRAVERSALS;
+                Evidence {
+                    family: $family,
+                    allocations,
+                    allocated_bytes,
+                    logical_bytes,
+                    capacity_bytes: store.elements.capacity() * std::mem::size_of::<$element>(),
+                    // Store::append stages the complete iterator before the
+                    // owner reserve/commit; its logical high-water mark is
+                    // therefore exactly one complete input payload.
+                    peak_staging_bytes: 0,
+                    elements,
+                    build_ns,
+                    build_elements_per_second: elements as f64 / (build_ns as f64 / 1e9),
+                    traversal_ns,
+                    elements_per_second: consumed as f64 / (traversal_ns as f64 / 1e9),
+                }
+            }};
+        }
+
+        let values = (0..64).map(CfgValue::from_raw).collect::<Vec<_>>();
+        let call_args = values
+            .iter()
+            .copied()
+            .map(|value| CfgCallArg {
+                value,
+                mode: crate::CfgArgMode::Normal,
+            })
+            .collect::<Vec<_>>();
+        let cases = (0..64)
+            .map(|value| (i64::from(value), BlockId::from_raw(value)))
+            .collect::<Vec<_>>();
+        let projections = values
+            .iter()
+            .copied()
+            .map(|index| Projection::Index {
+                array_type: crate::Type::I32,
+                index,
+            })
+            .collect::<Vec<_>>();
+        let evidence = [
+            evidence!(
+                CfgIntrinsicArgs::FAMILY,
+                Values,
+                CfgValue,
+                |store: &mut Values| push_intrinsic_args(store, values.iter().copied()).unwrap(),
+                |store: &Values, range| intrinsic_args(store, range).len()
+            ),
+            evidence!(
+                CfgStructFields::FAMILY,
+                Values,
+                CfgValue,
+                |store: &mut Values| push_struct_fields(store, values.iter().copied()).unwrap(),
+                |store: &Values, range| struct_fields(store, range).len()
+            ),
+            evidence!(
+                CfgArrayElements::FAMILY,
+                Values,
+                CfgValue,
+                |store: &mut Values| push_array_elements(store, values.iter().copied()).unwrap(),
+                |store: &Values, range| array_elements(store, range).len()
+            ),
+            evidence!(
+                CfgEnumPayload::FAMILY,
+                Values,
+                CfgValue,
+                |store: &mut Values| push_enum_payload(store, values.iter().copied()).unwrap(),
+                |store: &Values, range| enum_payload(store, range).len()
+            ),
+            evidence!(
+                CfgGotoArgs::FAMILY,
+                Values,
+                CfgValue,
+                |store: &mut Values| push_goto_args(store, values.iter().copied()).unwrap(),
+                |store: &Values, range| goto_args(store, range).len()
+            ),
+            evidence!(
+                CfgThenArgs::FAMILY,
+                Values,
+                CfgValue,
+                |store: &mut Values| push_then_args(store, values.iter().copied()).unwrap(),
+                |store: &Values, range| then_args(store, range).len()
+            ),
+            evidence!(
+                CfgElseArgs::FAMILY,
+                Values,
+                CfgValue,
+                |store: &mut Values| push_else_args(store, values.iter().copied()).unwrap(),
+                |store: &Values, range| else_args(store, range).len()
+            ),
+            evidence!(
+                CfgCallArgs::FAMILY,
+                CallArgs,
+                CfgCallArg,
+                |store: &mut CallArgs| push_call_args(store, call_args.iter().copied()).unwrap(),
+                |store: &CallArgs, range| super::call_args(store, range).len()
+            ),
+            evidence!(
+                CfgSwitchCases::FAMILY,
+                SwitchCases,
+                (i64, BlockId),
+                |store: &mut SwitchCases| push_switch_cases(store, cases.iter().copied()).unwrap(),
+                |store: &SwitchCases, range| switch_cases(store, range).len()
+            ),
+            evidence!(
+                CfgProjections::FAMILY,
+                Projections,
+                Projection,
+                |store: &mut Projections| push_projections(store, projections.iter().copied())
+                    .unwrap(),
+                |store: &Projections, range| super::projections(store, range).len()
+            ),
+        ];
+        assert_eq!(evidence.len(), CFG_PAYLOAD_FAMILY_NAMES.len());
+        for item in &evidence {
+            assert!(item.allocations >= 1, "{}: {item:?}", item.family);
+            assert!(
+                item.allocated_bytes >= item.capacity_bytes,
+                "{}: {item:?}",
+                item.family
+            );
+            assert_eq!(item.peak_staging_bytes, 0, "{}: {item:?}", item.family);
+            assert!(
+                item.capacity_bytes >= item.logical_bytes,
+                "{}: {item:?}",
+                item.family
+            );
+            assert_eq!(item.elements, 64);
+            assert!(item.traversal_ns > 0 && item.elements_per_second.is_finite());
+            assert!(item.build_ns > 0 && item.build_elements_per_second.is_finite());
+            eprintln!(
+                "RUE843_FAMILY\tphase=CFG\tfamily={}\telements={}\tbuild_ns={}\tbuild_elements_per_second={}\tbuild_allocations={}\tbuild_allocated_bytes={}\ttraversal_ns={}\ttraversal_elements_per_second={}\ttraversal_allocations=0\tlogical_bytes={}\tcapacity_bytes={}\ttotal_bytes={}\tenvelopes=0\tpeak_staging_bytes={}",
+                item.family,
+                item.elements,
+                item.build_ns,
+                item.build_elements_per_second,
+                item.allocations,
+                item.allocated_bytes,
+                item.traversal_ns,
+                item.elements_per_second,
+                item.logical_bytes,
+                item.capacity_bytes,
+                item.logical_bytes + item.capacity_bytes,
+                item.peak_staging_bytes,
+            );
+        }
+        eprintln!("RUE-843 CFG family evidence: {evidence:#?}");
+        std::hint::black_box(evidence);
+    }
+
+    #[test]
     fn owner_bound_range_and_raw_mutation_apis_stay_private() {
         let facade = include_str!("lib.rs");
         for family in [
@@ -505,7 +887,7 @@ mod tests {
             "pub(crate) fn get_block_mut(",
             "pub(crate) fn add_inst_to_block(",
             "pub(crate) fn set_terminator(",
-            "pub(crate) fn make_place(",
+            "pub(crate) fn make_place",
         ] {
             assert!(
                 inst.contains(raw_api),

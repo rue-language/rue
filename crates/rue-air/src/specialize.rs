@@ -204,30 +204,34 @@ impl Specializer {
             // picked up on the next internal round.
             let scan_end = functions_with_strings.len();
             let mut pending: Vec<SpecializationKey> = Vec::new();
+            let mut rewrite_needed = Vec::with_capacity(scan_end - self.next_unscanned);
             for (function, _) in &functions_with_strings[self.next_unscanned..scan_end] {
-                collect_specializations(
+                rewrite_needed.push(collect_specializations(
                     &function.air,
                     interner,
                     &mut self.specializations,
                     &mut pending,
                     &mut sema.body_analysis_work,
-                );
+                ));
             }
 
             // Previously scanned bodies have no CallGeneric instructions left.
             let mut unscanned = functions_with_strings.split_off(self.next_unscanned);
             let later = unscanned.split_off(scan_end - self.next_unscanned);
-            for (mut function, strings) in unscanned {
-                let mut editor = function.air.into_editor();
-                rewrite_call_generic(
-                    &mut editor,
-                    &self.specializations,
-                    &mut sema.body_analysis_work,
-                );
-                function.air = editor.finish(crate::AirValidationContext::SemanticWithSymbols(
-                    &sema.type_pool,
-                    interner,
-                ))?;
+            for ((mut function, strings), needs_rewrite) in
+                unscanned.into_iter().zip(rewrite_needed)
+            {
+                if needs_rewrite {
+                    let mut editor = function.air.into_editor();
+                    rewrite_call_generic(
+                        &mut editor,
+                        &self.specializations,
+                        &mut sema.body_analysis_work,
+                    );
+                    function.air = editor.finish(
+                        crate::AirValidationContext::SemanticWithSymbols(&sema.type_pool, interner),
+                    )?;
+                }
                 functions_with_strings.push((function, strings));
             }
             functions_with_strings.extend(later);
@@ -502,7 +506,8 @@ fn collect_specializations(
     specializations: &mut HashMap<SpecializationKey, SpecializationInfo>,
     pending: &mut Vec<SpecializationKey>,
     work: &mut crate::BodyAnalysisWork,
-) {
+) -> bool {
+    let mut has_call_generic = false;
     for inst in air.instructions() {
         work.specialization_air_instructions_scanned += 1;
         if let AirInstData::CallGeneric {
@@ -512,6 +517,7 @@ fn collect_specializations(
             ..
         } = &inst.data
         {
+            has_call_generic = true;
             work.generic_calls_observed += 1;
             let type_args: Vec<Type> = air.get_type_args(type_args).collect();
             let value_args = air.get_const_values(value_args).collect();
@@ -541,6 +547,7 @@ fn collect_specializations(
             }
         }
     }
+    has_call_generic
 }
 
 fn rewrite_call_generic(

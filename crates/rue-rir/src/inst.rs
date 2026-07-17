@@ -9,6 +9,8 @@ use std::marker::PhantomData;
 use lasso::{Key, Spur};
 use rue_span::{FileId, Span};
 
+mod payload_support;
+
 /// A failure while staging a compact RIR payload.
 #[derive(Debug)]
 pub enum RirPayloadBuildError {
@@ -49,26 +51,52 @@ pub struct RirPayloadError {
     pub start: u32,
     pub extent: u32,
     pub record: Option<u32>,
+    pub expected_width: usize,
+    pub actual_width: usize,
     pub reason: &'static str,
 }
 
-impl fmt::Display for RirPayloadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "corrupt RIR {} payload at {}+{}{}: {}",
-            self.family,
-            self.start,
-            self.extent,
-            self.record
-                .map(|record| format!(", record {record}"))
-                .unwrap_or_default(),
-            self.reason
+macro_rules! rir_payload_error {
+    (
+        $family:ident,
+        $start:ident,
+        $extent:ident,
+        record: $record:expr,
+        expected: $expected:expr,
+        actual: $actual:expr,
+        reason: $reason:expr $(,)?
+    ) => {
+        RirPayloadError::new(
+            $family, $start, $extent, $record, $expected, $actual, $reason,
         )
-    }
+    };
+    (
+        family: $family:expr,
+        start: $start:expr,
+        extent: $extent:expr,
+        record: $record:expr,
+        expected: $expected:expr,
+        actual: $actual:expr,
+        $reason:ident $(,)?
+    ) => {
+        RirPayloadError::new(
+            $family, $start, $extent, $record, $expected, $actual, $reason,
+        )
+    };
+    (
+        family: $family:expr,
+        start: $start:expr,
+        extent: $extent:expr,
+        record: $record:expr,
+        expected: $expected:expr,
+        actual: $actual:expr,
+        reason: $reason:expr $(,)?
+    ) => {
+        RirPayloadError::new(
+            $family, $start, $extent, $record, $expected, $actual, $reason,
+        )
+    };
 }
-
-impl std::error::Error for RirPayloadError {}
 
 /// Canonical source/interner bounds required to publish an immutable RIR.
 pub struct RirValidationContext<'a> {
@@ -181,6 +209,42 @@ payload_family!(
     "anonymous enum variant payloads"
 );
 payload_family!(RirArrayElemsRange, ArrayElemsFamily, "array elements");
+
+/// Stable inventory of every owner-issued variable-payload family.
+///
+/// Verification and benchmark tooling consumes this list so adding a schema
+/// family necessarily changes the cross-phase inventory rather than silently
+/// escaping its coverage.
+pub const RIR_PAYLOAD_FAMILY_NAMES: [&str; 17] = [
+    RirMatchArmsRange::FAMILY,
+    RirDirectivesRange::FAMILY,
+    RirParamsRange::FAMILY,
+    RirCallArgsRange::FAMILY,
+    RirIntrinsicArgsRange::FAMILY,
+    RirInternalIntrinsicArgsRange::FAMILY,
+    RirBlockInstsRange::FAMILY,
+    RirStructFieldsRange::FAMILY,
+    RirAnonStructFieldsRange::FAMILY,
+    RirStructMethodsRange::FAMILY,
+    RirAnonStructMethodsRange::FAMILY,
+    RirFieldInitsRange::FAMILY,
+    RirEnumVariantsRange::FAMILY,
+    RirAnonEnumVariantsRange::FAMILY,
+    RirEnumPayloadsRange::FAMILY,
+    RirAnonEnumPayloadsRange::FAMILY,
+    RirArrayElemsRange::FAMILY,
+];
+
+/// Read-only accounting for the compact RIR payload store.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RirPayloadStorageStats {
+    pub family_logical_bytes: [usize; 17],
+    pub word_store_logical_bytes: usize,
+    pub word_store_capacity_bytes: usize,
+    pub nonempty_variable_envelopes: usize,
+    /// Largest complete logical payload staged by one atomic builder.
+    pub peak_staging_bytes: usize,
+}
 
 /// A reference to an instruction in the RIR.
 ///
@@ -1393,6 +1457,31 @@ impl Rir {
         Ok((start, extent))
     }
 
+    fn append_payload_direct(
+        &mut self,
+        family: &'static str,
+        extent: usize,
+        encode: impl FnOnce(&mut Vec<u32>),
+    ) -> Result<(u32, u32), RirPayloadBuildError> {
+        if extent == 0 {
+            return Ok((0, 0));
+        }
+        let start = u32::try_from(self.extra.len())
+            .map_err(|_| RirPayloadBuildError::ResourceLimitExceeded { family })?;
+        let extent_u32 = u32::try_from(extent)
+            .map_err(|_| RirPayloadBuildError::ResourceLimitExceeded { family })?;
+        start
+            .checked_add(extent_u32)
+            .ok_or(RirPayloadBuildError::ResourceLimitExceeded { family })?;
+        self.extra
+            .try_reserve(extent)
+            .map_err(|_| RirPayloadBuildError::CapacityFailure { family })?;
+        let old_len = self.extra.len();
+        encode(&mut self.extra);
+        debug_assert_eq!(self.extra.len(), old_len + extent);
+        Ok((start, extent_u32))
+    }
+
     fn payload_words<'a, R>(
         &'a self,
         range: &R,
@@ -1403,30 +1492,38 @@ impl Rir {
             if start == 0 {
                 return Ok(&[]);
             }
-            return Err(RirPayloadError {
+            return Err(rir_payload_error! {
                 family,
                 start,
                 extent,
                 record: None,
+                expected: 0,
+                actual: 0,
                 reason: "noncanonical empty range",
             });
         }
-        let end = start.checked_add(extent).ok_or(RirPayloadError {
-            family,
-            start,
-            extent,
-            record: None,
-            reason: "range end overflows u32",
-        })?;
-        self.extra
-            .get(start as usize..end as usize)
-            .ok_or(RirPayloadError {
+        let end = start.checked_add(extent).ok_or_else(|| {
+            rir_payload_error! {
                 family,
                 start,
                 extent,
                 record: None,
+                expected: extent as usize,
+                actual: 0,
+                reason: "range end overflows u32",
+            }
+        })?;
+        self.extra.get(start as usize..end as usize).ok_or_else(|| {
+            rir_payload_error! {
+                family,
+                start,
+                extent,
+                record: None,
+                expected: extent as usize,
+                actual: self.extra.len().saturating_sub(start as usize).min(extent as usize),
                 reason: "range is outside the word store",
-            })
+            }
+        })
     }
 
     fn validate_fixed<R>(
@@ -1438,11 +1535,13 @@ impl Rir {
         let (start, extent, family) = parts(range);
         let words = self.payload_words(range, |_| (start, extent, family))?;
         if words.len() % width != 0 {
-            return Err(RirPayloadError {
+            return Err(rir_payload_error! {
                 family,
                 start,
                 extent,
                 record: Some((words.len() / width) as u32),
+                expected: width,
+                actual: words.len() % width,
                 reason: "payload ends in a partial record",
             });
         }
@@ -1467,11 +1566,13 @@ impl Rir {
                 .iter()
                 .any(|offset| decode_symbol_word(words[*offset]).is_none())
             {
-                return Err(RirPayloadError {
+                return Err(rir_payload_error! {
                     family,
                     start,
                     extent,
                     record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    expected: schema.width,
+                    actual: schema.width,
                     reason: "symbol word is not representable",
                 });
             }
@@ -1494,37 +1595,70 @@ impl Rir {
         let mut pos = 1usize;
         for record in 0..count {
             let Some(width) = record_extent(words, pos) else {
-                return Err(RirPayloadError {
+                let remaining = words.len().saturating_sub(pos);
+                let (expected, reason) = if family == RirMatchArmsRange::FAMILY {
+                    match words.get(pos + RECORD_KIND).copied() {
+                        None => (RECORD_KIND + 1, "record header is truncated"),
+                        Some(kind) if kind == PatternKind::Path as u32 => (
+                            MATCH_PATH_BINDING_COUNT + 1,
+                            "path record header is truncated",
+                        ),
+                        Some(kind)
+                            if kind != PatternKind::Wildcard as u32
+                                && kind != PatternKind::Int as u32
+                                && kind != PatternKind::Bool as u32 =>
+                        {
+                            (1, "invalid pattern kind")
+                        }
+                        Some(_) => (1, "record extent is not representable"),
+                    }
+                } else {
+                    (
+                        DIRECTIVE_ARG_COUNT + 1,
+                        "directive record header is truncated",
+                    )
+                };
+                return Err(rir_payload_error! {
                     family,
                     start,
                     extent,
                     record: Some(record as u32),
-                    reason: "record header or body is truncated",
+                    expected: expected,
+                    actual: remaining.min(expected),
+                    reason: reason,
                 });
             };
-            pos = pos.checked_add(width).ok_or(RirPayloadError {
-                family,
-                start,
-                extent,
-                record: Some(record as u32),
-                reason: "record end overflows usize",
-            })?;
-            if pos > words.len() {
-                return Err(RirPayloadError {
+            pos = pos.checked_add(width).ok_or_else(|| {
+                rir_payload_error! {
                     family,
                     start,
                     extent,
                     record: Some(record as u32),
+                    expected: width,
+                    actual: words.len().saturating_sub(pos),
+                    reason: "record end overflows usize",
+                }
+            })?;
+            if pos > words.len() {
+                return Err(rir_payload_error! {
+                    family,
+                    start,
+                    extent,
+                    record: Some(record as u32),
+                    expected: width,
+                    actual: words.len().saturating_sub(pos - width),
                     reason: "record body is truncated",
                 });
             }
         }
         if pos != words.len() {
-            return Err(RirPayloadError {
+            return Err(rir_payload_error! {
                 family,
                 start,
                 extent,
                 record: Some(count as u32),
+                expected: 0,
+                actual: words.len().saturating_sub(pos),
                 reason: "trailing words after final record",
             });
         }
@@ -1549,20 +1683,24 @@ impl Rir {
                         .enumerate()
                     {
                         if words[PARAM_MODE] > RirParamMode::Borrow as u32 {
-                            return Err(RirPayloadError {
+                            return Err(rir_payload_error! {
                                 family: RirParamsRange::FAMILY,
                                 start: params.start(),
                                 extent: params.extent(),
                                 record: Some(record as u32),
+                                expected: PARAM_SCHEMA.width,
+                                actual: PARAM_SCHEMA.width,
                                 reason: "invalid parameter mode",
                             });
                         }
                         if words[PARAM_COMPTIME] > 1 {
-                            return Err(RirPayloadError {
+                            return Err(rir_payload_error! {
                                 family: RirParamsRange::FAMILY,
                                 start: params.start(),
                                 extent: params.extent(),
                                 record: Some(record as u32),
+                                expected: PARAM_SCHEMA.width,
+                                actual: PARAM_SCHEMA.width,
                                 reason: "invalid comptime flag",
                             });
                         }
@@ -1581,11 +1719,13 @@ impl Rir {
                         .enumerate()
                     {
                         if words[CALL_ARG_MODE] > RirArgMode::Borrow as u32 {
-                            return Err(RirPayloadError {
+                            return Err(rir_payload_error! {
                                 family: RirCallArgsRange::FAMILY,
                                 start: args.start(),
                                 extent: args.extent(),
                                 record: Some(record as u32),
+                                expected: CALL_ARG_SCHEMA.width,
+                                actual: CALL_ARG_SCHEMA.width,
                                 reason: "invalid argument mode",
                             });
                         }
@@ -1672,33 +1812,41 @@ impl Rir {
         }
         let mut position = 1usize;
         for record in 0..words[0] as usize {
+            let record_width = decoded_match_record_extent(words, position)
+                .expect("variable-record validation established match extent");
             let kind = words[position + RECORD_KIND];
             if embedded_span(words, position).is_none() {
-                return Err(RirPayloadError {
+                return Err(rir_payload_error! {
                     family: RirMatchArmsRange::FAMILY,
                     start: range.start(),
                     extent: range.extent(),
                     record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    expected: record_width,
+                    actual: record_width,
                     reason: "pattern span overflows u32",
                 });
             }
             if kind == PatternKind::Int as u32 {
                 if words[position + MATCH_INT_NEGATIVE_OR_PATH_TYPE] > 1 {
-                    return Err(RirPayloadError {
+                    return Err(rir_payload_error! {
                         family: RirMatchArmsRange::FAMILY,
                         start: range.start(),
                         extent: range.extent(),
                         record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                        expected: record_width,
+                        actual: record_width,
                         reason: "invalid integer-sign flag",
                     });
                 }
             } else if kind == PatternKind::Bool as u32 {
                 if words[position + MATCH_VALUE_LO_OR_BOOL_OR_BODY] > 1 {
-                    return Err(RirPayloadError {
+                    return Err(rir_payload_error! {
                         family: RirMatchArmsRange::FAMILY,
                         start: range.start(),
                         extent: range.extent(),
                         record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                        expected: record_width,
+                        actual: record_width,
                         reason: "invalid boolean scalar",
                     });
                 }
@@ -1710,21 +1858,27 @@ impl Rir {
                     .iter()
                     .any(|word| decode_symbol_word(*word).is_none())
                 {
-                    return Err(RirPayloadError {
+                    return Err(rir_payload_error! {
                         family: RirMatchArmsRange::FAMILY,
                         start: range.start(),
                         extent: range.extent(),
                         record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                        expected: record_width,
+                        actual: record_width,
                         reason: "symbol word is not representable",
                     });
                 }
             }
-            let (_, _, width) = decode_match_record(words, position).ok_or(RirPayloadError {
-                family: RirMatchArmsRange::FAMILY,
-                start: range.start(),
-                extent: range.extent(),
-                record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
-                reason: "match record failed schema decoding",
+            let (_, _, width) = decode_match_record(words, position).ok_or_else(|| {
+                rir_payload_error! {
+                    family: RirMatchArmsRange::FAMILY,
+                    start: range.start(),
+                    extent: range.extent(),
+                    record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    expected: record_width,
+                    actual: record_width,
+                    reason: "match record failed schema decoding",
+                }
             })?;
             position += width;
         }
@@ -1738,11 +1892,13 @@ impl Rir {
         context: &RirValidationContext<'_>,
     ) -> Result<(), RirPayloadError> {
         fn error(index: u32, reason: &'static str) -> RirPayloadError {
-            RirPayloadError {
+            rir_payload_error! {
                 family: "instruction context",
                 start: index,
                 extent: 1,
                 record: None,
+                expected: 1,
+                actual: 1,
                 reason,
             }
         }
@@ -2110,12 +2266,16 @@ impl Rir {
         }
         let mut position = 1usize;
         for record in 0..words[0] as usize {
+            let record_width = decoded_directive_record_extent(words, position)
+                .expect("variable-record validation established directive extent");
             if embedded_span(words, position).is_none() {
-                return Err(RirPayloadError {
+                return Err(rir_payload_error! {
                     family: RirDirectivesRange::FAMILY,
                     start: range.start(),
                     extent: range.extent(),
                     record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    expected: record_width,
+                    actual: record_width,
                     reason: "directive span overflows u32",
                 });
             }
@@ -2126,22 +2286,27 @@ impl Rir {
                 .iter()
                 .any(|word| decode_symbol_word(*word).is_none())
             {
-                return Err(RirPayloadError {
+                return Err(rir_payload_error! {
                     family: RirDirectivesRange::FAMILY,
                     start: range.start(),
                     extent: range.extent(),
                     record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    expected: record_width,
+                    actual: record_width,
                     reason: "symbol word is not representable",
                 });
             }
-            let (_, record_extent) =
-                decode_directive_record(words, position).ok_or(RirPayloadError {
+            let (_, record_extent) = decode_directive_record(words, position).ok_or_else(|| {
+                rir_payload_error! {
                     family: RirDirectivesRange::FAMILY,
                     start: range.start(),
                     extent: range.extent(),
                     record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    expected: record_width,
+                    actual: record_width,
                     reason: "directive record failed schema decoding",
-                })?;
+                }
+            })?;
             let end = position + record_extent;
             position = end;
         }
@@ -2162,20 +2327,25 @@ impl Rir {
         let mut pos = 0usize;
         for record in 0..variants {
             if words.get(pos).is_none() {
-                return Err(RirPayloadError {
+                return Err(rir_payload_error! {
                     family,
                     start,
                     extent,
                     record: Some(record as u32),
+                    expected: 1,
+                    actual: 0,
                     reason: "missing variant payload record",
                 });
             }
+            let record_width = 1usize.saturating_add(words[pos] as usize);
             let Some((payload_start, end)) = enum_payload_record(words, pos) else {
-                return Err(RirPayloadError {
+                return Err(rir_payload_error! {
                     family,
                     start,
                     extent,
                     record: Some(record as u32),
+                    expected: record_width,
+                    actual: words.len().saturating_sub(pos).min(record_width),
                     reason: "variant payload record is truncated",
                 });
             };
@@ -2183,22 +2353,26 @@ impl Rir {
                 .iter()
                 .any(|word| decode_symbol_word(*word).is_none())
             {
-                return Err(RirPayloadError {
+                return Err(rir_payload_error! {
                     family,
                     start,
                     extent,
                     record: Some(record as u32),
+                    expected: record_width,
+                    actual: record_width,
                     reason: "symbol word is not representable",
                 });
             }
             pos = end;
         }
         if pos != words.len() {
-            return Err(RirPayloadError {
+            return Err(rir_payload_error! {
                 family,
                 start,
                 extent,
                 record: Some(variants as u32),
+                expected: 0,
+                actual: words.len().saturating_sub(pos),
                 reason: "trailing words after variant payloads",
             });
         }
@@ -2231,12 +2405,9 @@ impl Rir {
         refs: &[InstRef],
         make: impl FnOnce(u32, u32) -> R,
     ) -> Result<R, RirPayloadBuildError> {
-        let mut staged = Vec::new();
-        staged
-            .try_reserve(refs.len())
-            .map_err(|_| RirPayloadBuildError::CapacityFailure { family })?;
-        staged.extend(refs.iter().map(|reference| reference.as_u32()));
-        let (start, extent) = self.append_payload(family, staged)?;
+        let (start, extent) = self.append_payload_direct(family, refs.len(), |words| {
+            words.extend(refs.iter().map(|reference| reference.as_u32()));
+        })?;
         Ok(make(start, extent))
     }
 
@@ -2359,16 +2530,11 @@ impl Rir {
             .len()
             .checked_mul(CALL_ARG_SCHEMA.width)
             .ok_or(RirPayloadBuildError::ResourceLimitExceeded { family })?;
-        let mut data = Vec::new();
-        data.try_reserve(words)
-            .map_err(|_| RirPayloadBuildError::CapacityFailure { family })?;
-        for arg in args {
-            let mut record = [0; CALL_ARG_SCHEMA.width];
-            record[CALL_ARG_VALUE] = arg.value.as_u32();
-            record[CALL_ARG_MODE] = arg.mode.as_u32();
-            data.extend(record);
-        }
-        let (start, extent) = self.append_payload(family, data)?;
+        let (start, extent) = self.append_payload_direct(family, words, |data| {
+            for arg in args {
+                data.extend([arg.value.as_u32(), arg.mode.as_u32()]);
+            }
+        })?;
         Ok(make(start, extent))
     }
 
@@ -2415,23 +2581,24 @@ impl Rir {
                 family: RirParamsRange::FAMILY,
             },
         )?;
-        let mut data = Vec::new();
-        data.try_reserve(words)
-            .map_err(|_| RirPayloadBuildError::CapacityFailure {
-                family: RirParamsRange::FAMILY,
-            })?;
         for param in params {
-            let mut record = [0; PARAM_SCHEMA.width];
-            record[PARAM_NAME] = Self::symbol_word(RirParamsRange::FAMILY, param.name)?;
-            record[PARAM_TYPE] = Self::symbol_word(RirParamsRange::FAMILY, param.ty)?;
-            record[PARAM_MODE] = param.mode.as_u32();
-            record[PARAM_COMPTIME] = param.is_comptime as u32;
-            record[PARAM_SPAN_FILE] = param.span.file_id.index();
-            record[PARAM_SPAN_START] = param.span.start;
-            record[PARAM_SPAN_END] = param.span.end;
-            data.extend(record);
+            Self::symbol_word(RirParamsRange::FAMILY, param.name)?;
+            Self::symbol_word(RirParamsRange::FAMILY, param.ty)?;
         }
-        let (start, extent) = self.append_payload(RirParamsRange::FAMILY, data)?;
+        let (start, extent) =
+            self.append_payload_direct(RirParamsRange::FAMILY, words, |data| {
+                for param in params {
+                    data.extend([
+                        u32::try_from(param.name.into_usize()).expect("prevalidated symbol"),
+                        u32::try_from(param.ty.into_usize()).expect("prevalidated symbol"),
+                        param.mode.as_u32(),
+                        param.is_comptime as u32,
+                        param.span.file_id.index(),
+                        param.span.start,
+                        param.span.end,
+                    ]);
+                }
+            })?;
         Ok(RirParamsRange::from_parts(start, extent))
     }
 
@@ -2478,89 +2645,107 @@ impl Rir {
                     family: RirMatchArmsRange::FAMILY,
                 })
         })?;
-        let mut staged = Vec::new();
-        staged.try_reserve_exact(exact_words).map_err(|_| {
-            RirPayloadBuildError::CapacityFailure {
-                family: RirMatchArmsRange::FAMILY,
-            }
-        })?;
-        staged.push(count);
-        for (pattern, body) in arms {
-            match pattern {
-                RirPattern::Wildcard(span) => {
-                    staged.extend([
-                        PatternKind::Wildcard as u32,
-                        span.start(),
-                        span.len(),
-                        span.file_id.index(),
-                        body.as_u32(),
-                    ]);
-                }
-                RirPattern::Int {
-                    value,
-                    negative,
-                    span,
-                } => {
-                    staged.extend([
-                        PatternKind::Int as u32,
-                        span.start(),
-                        span.len(),
-                        span.file_id.index(),
-                    ]);
-                    // Store u64 magnitude as two u32s (little-endian) plus sign flag
-                    staged.extend([
-                        *value as u32,
-                        (*value >> 32) as u32,
-                        u32::from(*negative),
-                        body.as_u32(),
-                    ]);
-                }
-                RirPattern::Bool(value, span) => {
-                    staged.extend([
-                        PatternKind::Bool as u32,
-                        span.start(),
-                        span.len(),
-                        span.file_id.index(),
-                        u32::from(*value),
-                        body.as_u32(),
-                    ]);
-                }
-                RirPattern::Path {
-                    module,
-                    ctor_head,
-                    type_name,
-                    variant,
-                    bindings,
-                    span,
-                } => {
-                    staged.extend([
-                        PatternKind::Path as u32,
-                        span.start(),
-                        span.len(),
-                        span.file_id.index(),
-                    ]);
-                    // Store module as u32::MAX for None, otherwise the InstRef
-                    staged.push(module.map_or(u32::MAX, |r| r.as_u32()));
-                    // Store ctor_head (inline type-constructor pattern head,
-                    // RUE-596) the same way — u32::MAX for None.
-                    staged.push(ctor_head.map_or(u32::MAX, |r| r.as_u32()));
-                    staged.push(Self::symbol_word(RirMatchArmsRange::FAMILY, *type_name)?);
-                    staged.push(Self::symbol_word(RirMatchArmsRange::FAMILY, *variant)?);
-                    // Variable-length payload bindings (RUE-221): a count
-                    // followed by the binding symbols, then the body last.
-                    staged.push(u32::try_from(bindings.len()).map_err(|_| {
-                        RirPayloadBuildError::ResourceLimitExceeded {
-                            family: RirMatchArmsRange::FAMILY,
-                        }
-                    })?);
-                    for b in bindings {
-                        staged.push(Self::symbol_word(RirMatchArmsRange::FAMILY, *b)?);
+        for (pattern, _) in arms {
+            if let RirPattern::Path {
+                type_name,
+                variant,
+                bindings,
+                ..
+            } = pattern
+            {
+                u32::try_from(bindings.len()).map_err(|_| {
+                    RirPayloadBuildError::ResourceLimitExceeded {
+                        family: RirMatchArmsRange::FAMILY,
                     }
-                    staged.push(body.as_u32());
+                })?;
+                Self::symbol_word(RirMatchArmsRange::FAMILY, *type_name)?;
+                Self::symbol_word(RirMatchArmsRange::FAMILY, *variant)?;
+                for binding in bindings {
+                    Self::symbol_word(RirMatchArmsRange::FAMILY, *binding)?;
                 }
             }
         }
-        let (start, extent) = self.append_payload(RirMatchArmsRange::FAMILY, staged)?;
+        let (start, extent) =
+            self.append_payload_direct(RirMatchArmsRange::FAMILY, exact_words, |words| {
+                words.push(count);
+                for (pattern, body) in arms {
+                    match pattern {
+                        RirPattern::Wildcard(span) => {
+                            words.extend([
+                                PatternKind::Wildcard as u32,
+                                span.start(),
+                                span.len(),
+                                span.file_id.index(),
+                                body.as_u32(),
+                            ]);
+                        }
+                        RirPattern::Int {
+                            value,
+                            negative,
+                            span,
+                        } => {
+                            words.extend([
+                                PatternKind::Int as u32,
+                                span.start(),
+                                span.len(),
+                                span.file_id.index(),
+                            ]);
+                            // Store u64 magnitude as two u32s (little-endian) plus sign flag
+                            words.extend([
+                                *value as u32,
+                                (*value >> 32) as u32,
+                                u32::from(*negative),
+                                body.as_u32(),
+                            ]);
+                        }
+                        RirPattern::Bool(value, span) => {
+                            words.extend([
+                                PatternKind::Bool as u32,
+                                span.start(),
+                                span.len(),
+                                span.file_id.index(),
+                                u32::from(*value),
+                                body.as_u32(),
+                            ]);
+                        }
+                        RirPattern::Path {
+                            module,
+                            ctor_head,
+                            type_name,
+                            variant,
+                            bindings,
+                            span,
+                        } => {
+                            words.extend([
+                                PatternKind::Path as u32,
+                                span.start(),
+                                span.len(),
+                                span.file_id.index(),
+                            ]);
+                            // Store module as u32::MAX for None, otherwise the InstRef
+                            words.push(module.map_or(u32::MAX, |r| r.as_u32()));
+                            // Store ctor_head (inline type-constructor pattern head,
+                            // RUE-596) the same way — u32::MAX for None.
+                            words.push(ctor_head.map_or(u32::MAX, |r| r.as_u32()));
+                            words.push(
+                                u32::try_from(type_name.into_usize()).expect("prevalidated symbol"),
+                            );
+                            words.push(
+                                u32::try_from(variant.into_usize()).expect("prevalidated symbol"),
+                            );
+                            // Variable-length payload bindings (RUE-221): a count
+                            // followed by the binding symbols, then the body last.
+                            words.push(u32::try_from(bindings.len()).expect("prevalidated length"));
+                            for b in bindings {
+                                words.push(
+                                    u32::try_from(b.into_usize()).expect("prevalidated symbol"),
+                                );
+                            }
+                            words.push(body.as_u32());
+                        }
+                    }
+                }
+            })?;
         Ok(RirMatchArmsRange::from_parts(start, extent))
     }
 
@@ -2598,18 +2783,18 @@ impl Rir {
                 family: RirFieldInitsRange::FAMILY,
             },
         )?;
-        let mut data = Vec::new();
-        data.try_reserve(words)
-            .map_err(|_| RirPayloadBuildError::CapacityFailure {
-                family: RirFieldInitsRange::FAMILY,
-            })?;
-        for (name, value) in fields {
-            let mut record = [0; FIELD_INIT_SCHEMA.width];
-            record[FIELD_INIT_NAME] = Self::symbol_word(RirFieldInitsRange::FAMILY, *name)?;
-            record[FIELD_INIT_VALUE] = value.as_u32();
-            data.extend(record);
+        for (name, _) in fields {
+            Self::symbol_word(RirFieldInitsRange::FAMILY, *name)?;
         }
-        let (start, extent) = self.append_payload(RirFieldInitsRange::FAMILY, data)?;
+        let (start, extent) =
+            self.append_payload_direct(RirFieldInitsRange::FAMILY, words, |data| {
+                for (name, value) in fields {
+                    data.extend([
+                        u32::try_from(name.into_usize()).expect("prevalidated symbol"),
+                        value.as_u32(),
+                    ]);
+                }
+            })?;
         Ok(RirFieldInitsRange::from_parts(start, extent))
     }
 
@@ -2640,16 +2825,18 @@ impl Rir {
             .len()
             .checked_mul(FIELD_DECL_SCHEMA.width)
             .ok_or(RirPayloadBuildError::ResourceLimitExceeded { family })?;
-        let mut data = Vec::new();
-        data.try_reserve(words)
-            .map_err(|_| RirPayloadBuildError::CapacityFailure { family })?;
         for (name, ty) in fields {
-            let mut record = [0; FIELD_DECL_SCHEMA.width];
-            record[FIELD_DECL_NAME] = Self::symbol_word(family, *name)?;
-            record[FIELD_DECL_TYPE] = Self::symbol_word(family, *ty)?;
-            data.extend(record);
+            Self::symbol_word(family, *name)?;
+            Self::symbol_word(family, *ty)?;
         }
-        let (start, extent) = self.append_payload(family, data)?;
+        let (start, extent) = self.append_payload_direct(family, words, |data| {
+            for (name, ty) in fields {
+                data.extend([
+                    u32::try_from(name.into_usize()).expect("prevalidated symbol"),
+                    u32::try_from(ty.into_usize()).expect("prevalidated symbol"),
+                ]);
+            }
+        })?;
         Ok(make(start, extent))
     }
     pub(crate) fn add_struct_fields(
@@ -4685,16 +4872,30 @@ mod typed_payload_tests {
             },
             span: span(),
         });
+        let error = rir.validate_payloads().unwrap_err();
         assert_eq!(
-            rir.validate_payloads().unwrap_err(),
-            RirPayloadError {
+            error,
+            rir_payload_error! {
                 family: "match arms",
                 start: 0,
                 extent: 2,
                 record: Some(0),
-                reason: "record header or body is truncated",
+                expected: MATCH_PATH_BINDING_COUNT + 1,
+                actual: 1,
+                reason: "path record header is truncated",
             }
         );
+        assert_eq!(error.phase(), "RIR payload decode");
+        assert_eq!(error.expected_width(), MATCH_PATH_BINDING_COUNT + 1);
+        assert_eq!(error.actual_width(), 1);
+        let rendered = error.to_string();
+        assert!(rendered.contains("match arms"));
+        assert!(rendered.contains("start=0"));
+        assert!(rendered.contains("record 0"));
+        assert!(rendered.contains(&format!(
+            "expected width={}, actual width=1",
+            MATCH_PATH_BINDING_COUNT + 1
+        )));
     }
 
     #[test]
@@ -4726,9 +4927,11 @@ mod typed_payload_tests {
             },
             span: span(),
         });
+        let error = partial.validate_payloads().unwrap_err();
+        assert_eq!(error.reason, "payload ends in a partial record");
         assert_eq!(
-            partial.validate_payloads().unwrap_err().reason,
-            "payload ends in a partial record"
+            (error.expected_width(), error.actual_width()),
+            (CALL_ARG_SCHEMA.width, 1)
         );
 
         let mut invalid_mode = Rir::new();
@@ -4759,10 +4962,9 @@ mod typed_payload_tests {
             },
             span: span(),
         });
-        assert_eq!(
-            unknown.validate_payloads().unwrap_err().reason,
-            "record header or body is truncated"
-        );
+        let error = unknown.validate_payloads().unwrap_err();
+        assert_eq!(error.reason, "invalid pattern kind");
+        assert_eq!((error.expected_width(), error.actual_width()), (1, 1));
 
         let mut trailing = Rir::new();
         trailing.extra.extend([0, 7]);
@@ -4881,11 +5083,13 @@ mod typed_payload_tests {
 
         assert_eq!(
             ValidatedRir::finish(editor, &context()).unwrap_err(),
-            RirPayloadError {
+            rir_payload_error! {
                 family: RirDirectivesRange::FAMILY,
                 start: 0,
                 extent: 7,
                 record: Some(0),
+                expected: 6,
+                actual: 6,
                 reason: "symbol word is not representable",
             }
         );
@@ -4920,11 +5124,13 @@ mod typed_payload_tests {
 
         assert_eq!(
             ValidatedRir::finish(editor, &context()).unwrap_err(),
-            RirPayloadError {
+            rir_payload_error! {
                 family: RirMatchArmsRange::FAMILY,
                 start: 0,
                 extent: 12,
                 record: Some(0),
+                expected: 11,
+                actual: 11,
                 reason: "symbol word is not representable",
             }
         );
@@ -5283,78 +5489,166 @@ mod typed_payload_tests {
             allocated_bytes: usize,
             logical_bytes: usize,
             retained_capacity_bytes: usize,
+            elements: usize,
+            build_ns: u128,
+            build_elements_per_second: f64,
+            traversal_ns: u128,
+            elements_per_second: f64,
+            peak_staging_bytes: usize,
         }
         macro_rules! evidence {
-            ($family:expr, $build:expr) => {{
+            ($family:expr, $build:expr, $consume:expr) => {{
                 let mut rir = Rir::new();
-                let (allocation_calls, allocated_bytes) =
-                    allocation_evidence(|| ($build)(&mut rir));
+                let mut range = None;
+                let build_started = std::time::Instant::now();
+                let (allocation_calls, allocated_bytes) = allocation_evidence(|| {
+                    range = Some(($build)(&mut rir));
+                });
+                let build_ns = build_started.elapsed().as_nanos();
+                let range = range.unwrap();
+                const TRAVERSALS: usize = 20_000;
+                let started = std::time::Instant::now();
+                let mut consumed = 0usize;
+                for _ in 0..TRAVERSALS {
+                    consumed += std::hint::black_box(($consume)(&rir, &range));
+                }
+                let traversal_ns = started.elapsed().as_nanos();
+                let elements = consumed / TRAVERSALS;
+                let logical_bytes = rir.extra.len() * std::mem::size_of::<u32>();
+                let peak_staging_bytes = match $family {
+                    RirIntrinsicArgsRange::FAMILY
+                    | RirInternalIntrinsicArgsRange::FAMILY
+                    | RirBlockInstsRange::FAMILY
+                    | RirStructMethodsRange::FAMILY
+                    | RirAnonStructMethodsRange::FAMILY
+                    | RirArrayElemsRange::FAMILY
+                    | RirCallArgsRange::FAMILY
+                    | RirParamsRange::FAMILY
+                    | RirMatchArmsRange::FAMILY
+                    | RirFieldInitsRange::FAMILY
+                    | RirStructFieldsRange::FAMILY
+                    | RirAnonStructFieldsRange::FAMILY => 0,
+                    _ => logical_bytes,
+                };
                 Evidence {
                     family: $family,
                     allocation_calls,
                     allocated_bytes,
-                    logical_bytes: rir.extra.len() * std::mem::size_of::<u32>(),
+                    logical_bytes,
                     retained_capacity_bytes: rir.extra.capacity() * std::mem::size_of::<u32>(),
+                    elements,
+                    build_ns,
+                    build_elements_per_second: elements as f64 / (build_ns as f64 / 1e9),
+                    traversal_ns,
+                    elements_per_second: consumed as f64 / (traversal_ns as f64 / 1e9),
+                    peak_staging_bytes,
                 }
             }};
         }
         let evidence = [
-            evidence!(RirIntrinsicArgsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_intrinsic_args(&[r0, r1]).unwrap();
-            }),
-            evidence!(RirInternalIntrinsicArgsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_internal_intrinsic_args(&[r0]).unwrap();
-            }),
-            evidence!(RirBlockInstsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_block_insts(&[r0, r1]).unwrap();
-            }),
-            evidence!(RirStructMethodsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_struct_methods(&[r0]).unwrap();
-            }),
-            evidence!(RirAnonStructMethodsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_anon_struct_methods(&[r1]).unwrap();
-            }),
-            evidence!(RirArrayElemsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_array_elements(&[r0, r1]).unwrap();
-            }),
-            evidence!(RirCallArgsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_call_args(&calls).unwrap();
-            }),
-            evidence!(RirParamsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_params(&params).unwrap();
-            }),
-            evidence!(RirMatchArmsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_match_arms(&[(RirPattern::Wildcard(span()), r0)])
-                    .unwrap();
-            }),
-            evidence!(RirFieldInitsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_field_inits(&[(a, r0)]).unwrap();
-            }),
-            evidence!(RirStructFieldsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_struct_fields(&[(a, b)]).unwrap();
-            }),
-            evidence!(RirAnonStructFieldsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_anon_struct_fields(&[(a, b)]).unwrap();
-            }),
-            evidence!(RirDirectivesRange::FAMILY, |rir: &mut Rir| {
-                rir.add_directives(&directives).unwrap();
-            }),
-            evidence!(RirEnumVariantsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_enum_variants(&[a, b]).unwrap();
-            }),
-            evidence!(RirAnonEnumVariantsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_anon_enum_variants(&[b]).unwrap();
-            }),
-            evidence!(RirEnumPayloadsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_enum_payloads(&enum_payloads).unwrap();
-            }),
-            evidence!(RirAnonEnumPayloadsRange::FAMILY, |rir: &mut Rir| {
-                rir.add_anon_enum_payloads(&anon_payloads).unwrap();
-            }),
+            evidence!(
+                RirIntrinsicArgsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_intrinsic_args(&[r0, r1]).unwrap() },
+                |rir: &Rir, range| rir.intrinsic_args(range).len()
+            ),
+            evidence!(
+                RirInternalIntrinsicArgsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_internal_intrinsic_args(&[r0]).unwrap() },
+                |rir: &Rir, range| rir.internal_intrinsic_args(range).len()
+            ),
+            evidence!(
+                RirBlockInstsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_block_insts(&[r0, r1]).unwrap() },
+                |rir: &Rir, range| rir.block_insts(range).len()
+            ),
+            evidence!(
+                RirStructMethodsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_struct_methods(&[r0]).unwrap() },
+                |rir: &Rir, range| rir.struct_methods(range).len()
+            ),
+            evidence!(
+                RirAnonStructMethodsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_anon_struct_methods(&[r1]).unwrap() },
+                |rir: &Rir, range| rir.anon_struct_methods(range).len()
+            ),
+            evidence!(
+                RirArrayElemsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_array_elements(&[r0, r1]).unwrap() },
+                |rir: &Rir, range| rir.array_elements(range).len()
+            ),
+            evidence!(
+                RirCallArgsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_call_args(&calls).unwrap() },
+                |rir: &Rir, range| rir.call_args(range).len()
+            ),
+            evidence!(
+                RirParamsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_params(&params).unwrap() },
+                |rir: &Rir, range| rir.params(range).len()
+            ),
+            evidence!(
+                RirMatchArmsRange::FAMILY,
+                |rir: &mut Rir| {
+                    rir.add_match_arms(&[(RirPattern::Wildcard(span()), r0)])
+                        .unwrap()
+                },
+                |rir: &Rir, range| rir.match_arms(range).len()
+            ),
+            evidence!(
+                RirFieldInitsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_field_inits(&[(a, r0)]).unwrap() },
+                |rir: &Rir, range| rir.field_inits(range).len()
+            ),
+            evidence!(
+                RirStructFieldsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_struct_fields(&[(a, b)]).unwrap() },
+                |rir: &Rir, range| rir.struct_fields(range).len()
+            ),
+            evidence!(
+                RirAnonStructFieldsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_anon_struct_fields(&[(a, b)]).unwrap() },
+                |rir: &Rir, range| rir.anon_struct_fields(range).len()
+            ),
+            evidence!(
+                RirDirectivesRange::FAMILY,
+                |rir: &mut Rir| { rir.add_directives(&directives).unwrap() },
+                |rir: &Rir, range| rir.directives(range).len()
+            ),
+            evidence!(
+                RirEnumVariantsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_enum_variants(&[a, b]).unwrap() },
+                |rir: &Rir, range| rir.enum_variants(range).len()
+            ),
+            evidence!(
+                RirAnonEnumVariantsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_anon_enum_variants(&[b]).unwrap() },
+                |rir: &Rir, range| rir.anon_enum_variants(range).len()
+            ),
+            evidence!(
+                RirEnumPayloadsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_enum_payloads(&enum_payloads).unwrap() },
+                |rir: &Rir, range| rir
+                    .enum_payloads(range, &RirEnumVariantsRange::from_parts(0, 2))
+                    .map(|v| v.len())
+                    .sum::<usize>()
+            ),
+            evidence!(
+                RirAnonEnumPayloadsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_anon_enum_payloads(&anon_payloads).unwrap() },
+                |rir: &Rir, range| rir
+                    .anon_enum_payloads(range, &RirAnonEnumVariantsRange::from_parts(0, 1))
+                    .map(|v| v.len())
+                    .sum::<usize>()
+            ),
         ];
         assert_eq!(evidence.len(), 17);
         for item in &evidence {
-            assert!(item.allocation_calls >= 2, "{}: {item:?}", item.family);
+            let minimum_allocations = if item.peak_staging_bytes == 0 { 1 } else { 2 };
+            assert!(
+                item.allocation_calls >= minimum_allocations,
+                "{}: {item:?}",
+                item.family
+            );
             assert!(item.logical_bytes > 0, "{}: {item:?}", item.family);
             assert!(
                 item.retained_capacity_bytes >= item.logical_bytes,
@@ -5366,7 +5660,34 @@ mod typed_payload_tests {
                 "{}: {item:?}",
                 item.family
             );
+            assert!(item.elements > 0 && item.traversal_ns > 0);
+            assert!(item.elements_per_second.is_finite());
+            assert!(item.build_ns > 0 && item.build_elements_per_second.is_finite());
+            assert!(item.peak_staging_bytes == 0 || item.peak_staging_bytes == item.logical_bytes);
+            eprintln!(
+                "RUE843_FAMILY\tphase=RIR\tfamily={}\telements={}\tbuild_ns={}\tbuild_elements_per_second={}\tbuild_allocations={}\tbuild_allocated_bytes={}\ttraversal_ns={}\ttraversal_elements_per_second={}\ttraversal_allocations=0\tlogical_bytes={}\tcapacity_bytes={}\ttotal_bytes={}\tenvelopes={}\tpeak_staging_bytes={}",
+                item.family,
+                item.elements,
+                item.build_ns,
+                item.build_elements_per_second,
+                item.allocation_calls,
+                item.allocated_bytes,
+                item.traversal_ns,
+                item.elements_per_second,
+                item.logical_bytes,
+                item.retained_capacity_bytes,
+                item.logical_bytes + item.retained_capacity_bytes,
+                usize::from(matches!(
+                    item.family,
+                    "match arms"
+                        | "directives"
+                        | "enum variant payloads"
+                        | "anonymous enum variant payloads"
+                )),
+                item.peak_staging_bytes,
+            );
         }
+        eprintln!("RUE-843 RIR family evidence: {evidence:#?}");
         std::hint::black_box(evidence);
     }
 }

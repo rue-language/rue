@@ -166,6 +166,32 @@ impl FuzzTarget for CompilerTarget {
     }
 }
 
+/// Fuzz the production payload publication path shared by RIR, AIR, and CFG.
+///
+/// This intentionally enters through `CompilerSession`: RIR and AIR are
+/// consumed into their validated owner types and semantic publication builds
+/// validated CFGs. Keeping the target on that path prevents a fuzz-only raw
+/// decoder from drifting from the schemas used by real compilation.
+pub struct PayloadSchemasTarget;
+
+impl FuzzTarget for PayloadSchemasTarget {
+    fn name(&self) -> &'static str {
+        "payload_schemas"
+    }
+
+    fn fuzz(&self, input: &[u8]) {
+        // The first bytes select a family and bounded corruption operation in
+        // each owner. Results are deliberately accepted: the fuzz invariant is
+        // that production checked decoders return structured errors, not panic.
+        let _ = std::hint::black_box(rue_rir_fuzz_support::Rir::fuzz_payload_corruption(input));
+        let _ = std::hint::black_box(rue_air_fuzz_support::Air::fuzz_payload_corruption(input));
+        let _ = std::hint::black_box(rue_cfg_fuzz_support::fuzz_payload_corruption(input));
+        if let Ok(source) = std::str::from_utf8(input) {
+            assert_no_ice(&query_semantics(source));
+        }
+    }
+}
+
 /// Fuzz target for the x86-64 instruction emitter.
 ///
 /// Goal: The emitter should never panic on any sequence of valid instructions.
@@ -638,6 +664,7 @@ pub fn all_targets() -> Vec<Box<dyn FuzzTarget>> {
         Box::new(ParserTarget),
         Box::new(SemaTarget),
         Box::new(CompilerTarget),
+        Box::new(PayloadSchemasTarget),
         Box::new(EmitterTarget),
         Box::new(EmitterAarch64Target),
         Box::new(EmitterSequenceTarget),
@@ -651,6 +678,7 @@ pub fn get_target(name: &str) -> Option<Box<dyn FuzzTarget>> {
         "parser" => Some(Box::new(ParserTarget)),
         "sema" => Some(Box::new(SemaTarget)),
         "compiler" => Some(Box::new(CompilerTarget)),
+        "payload_schemas" => Some(Box::new(PayloadSchemasTarget)),
         "emitter" => Some(Box::new(EmitterTarget)),
         "emitter_aarch64" => Some(Box::new(EmitterAarch64Target)),
         "emitter_sequence" => Some(Box::new(EmitterSequenceTarget)),
@@ -679,6 +707,19 @@ mod tests {
     fn test_lexer_target_garbage() {
         let target = LexerTarget;
         target.fuzz(b"@#$%^&*()!~`");
+    }
+
+    #[test]
+    fn payload_schema_target_reaches_every_family_and_corruption_operation() {
+        let target = PayloadSchemasTarget;
+        // The phase-local selectors have 17, 10, and 10 families. Walking the
+        // least common bounded selector range exercises every family in every
+        // owner under each of the four supported corruption operations.
+        for selector in 0_u8..170 {
+            for operation in 0_u8..4 {
+                target.fuzz(&[selector, operation, 0, 0, 0, 0]);
+            }
+        }
     }
 
     #[test]
@@ -769,7 +810,7 @@ mod tests {
     #[test]
     fn test_all_targets() {
         let targets = all_targets();
-        assert_eq!(targets.len(), 7);
+        assert_eq!(targets.len(), 8);
     }
 
     #[test]
@@ -778,6 +819,7 @@ mod tests {
         assert!(get_target("parser").is_some());
         assert!(get_target("sema").is_some());
         assert!(get_target("compiler").is_some());
+        assert!(get_target("payload_schemas").is_some());
         assert!(get_target("emitter").is_some());
         assert!(get_target("emitter_aarch64").is_some());
         assert!(get_target("emitter_sequence").is_some());
