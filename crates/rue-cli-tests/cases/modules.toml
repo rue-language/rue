@@ -334,9 +334,14 @@ compile_fail = true
 error_contains = ["E0701", "expects 1 argument, found 0"]
 compile_stdout_not_contains = ["\"version\": 1", "\"status\":"]
 
+# RUE-767: this case formerly pinned that the canonical unresolved-import
+# topology preceded mixed positional/import validation. With the flat positional
+# surface removed, `--emit deps main.rue helper.rue` is refused at the CLI before
+# discovery, so no deps envelope is produced. The unresolved-import envelope is
+# still covered by `emit_deps_rejects_unresolved_import` above.
 [[case]]
 name = "emit_deps_mixed_positional_with_missing_prefers_incomplete_graph"
-description = "RUE-810: canonical unresolved topology and diagnostics precede mixed positional/import validation."
+description = "RUE-767: a second positional source under --emit deps is refused before discovery."
 files = [
     { path = "main.rue", source = """
 const helper = @import("helper");
@@ -349,17 +354,16 @@ pub fn value() -> i32 { 42 }
 ]
 args = ["--emit", "deps", "main.rue", "helper.rue"]
 compile_fail = true
-error_contains = ["E0704", "missing"]
-compile_stderr_not_contains = ["must not also be loaded through @import"]
-compile_stdout_contains = [
-    "\"status\": \"incomplete\"",
-    "\"specifier\": \"missing\"",
-    "\"status\": \"missing\"",
-]
+error_contains = ["unexpected extra source file", "helper.rue", "@import"]
+compile_stdout_not_contains = ["\"status\":", "\"version\": 1"]
 
+# RUE-767: this case formerly pinned that a normal compile reported the
+# canonical unresolved import before mixed-source validation. The second
+# positional is now refused at the CLI before discovery, so the unresolved
+# import is never reached here; that ordering concern no longer exists.
 [[case]]
 name = "mixed_positional_with_missing_prefers_canonical_diagnostic"
-description = "RUE-810: non-dependency compilation also reports the canonical unresolved import before mixed-source validation."
+description = "RUE-767: a second positional source is refused before import discovery."
 files = [
     { path = "main.rue", source = """
 const helper = @import("helper");
@@ -372,8 +376,8 @@ pub fn value() -> i32 { 42 }
 ]
 args = ["main.rue", "helper.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0704", "missing"]
-compile_stderr_not_contains = ["must not also be loaded through @import"]
+error_contains = ["unexpected extra source file", "helper.rue", "@import"]
+compile_stderr_not_contains = ["E0704"]
 
 [[case]]
 name = "missing_import_precedes_output_clobber_validation"
@@ -662,9 +666,13 @@ pub fn add(x: i32, y: i32) -> i32 {
 ]
 stdout = "42\n"
 
+# RUE-767: RUE-434 rejected a helper that was BOTH listed positionally and
+# reached through @import. With the flat positional surface removed, the second
+# positional is refused at the CLI before import discovery runs, so the
+# arg-level refusal now supersedes RUE-434's mixed-source diagnostic.
 [[case]]
 name = "mixed_positional_and_import_reachable_file_rejected"
-description = "RUE-434: a helper file must not be both listed positionally and loaded through the root import graph."
+description = "RUE-767: a second positional source (even one reachable via @import) is refused."
 files = [
     { path = "main.rue", source = """
 const helper = @import("helper");
@@ -681,7 +689,7 @@ pub fn value() -> i32 {
 ]
 args = ["main.rue", "helper.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["must not also be loaded through @import", "rue main.rue -o prog"]
+error_contains = ["unexpected extra source file", "helper.rue", "@import"]
 
 # Direct member access on a loaded std (no const re-export chain): proves
 # std loading itself works; the re-export chain is RUE-136.
@@ -1111,15 +1119,20 @@ error_contains = ["E0418", "duplicate constant 'm'"]
 # end at a path separator (the discovery resolver enforces the boundary check).
 # ---------------------------------------------------------------------------
 
+# RUE-767: util.rue enters the compilation through an @import from the root
+# (not a second positional). The regression is unchanged: the typo'd
+# `@import("til.rue")` must be E0704, not a silent suffix-match to the loaded
+# util.rue.
 [[case]]
 name = "typo_import_is_not_suffix_matched"
 description = "A typo'd import that is a suffix of another loaded file's name is E0704, not a silent bind."
 files = [
     { path = "typo.rue", source = """
+const good = @import("util.rue");
 const m = @import("til.rue");
 
 fn main() -> i32 {
-    m.forty_two()
+    good.forty_two()
 }
 """ },
     { path = "util.rue", source = """
@@ -1128,7 +1141,7 @@ pub fn forty_two() -> i32 {
 }
 """ },
 ]
-args = ["typo.rue", "util.rue", "-o", "prog"]
+args = ["typo.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0704", "til.rue"]
 
@@ -1183,10 +1196,14 @@ fn secret() -> i32 {
 compile_fail = true
 error_contains = ["E0202", "undefined function 'secret'"]
 
+# RUE-767: RUE-434 rejected a file that was both listed on the CLI and imported.
+# The second positional is now refused at the CLI before any name resolution,
+# so the arg-level refusal supersedes RUE-434's mixed-source diagnostic. The
+# unqualified-resolution guarantee is covered by
+# `private_fn_cross_dir_unqualified_rejected` above.
 [[case]]
 name = "private_fn_cross_dir_unqualified_rejected_when_also_listed"
-description = "RUE-434: a file both listed on the CLI and imported is rejected before legacy flat name resolution runs."
-args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+description = "RUE-767: a second positional source (also imported) is refused before name resolution."
 files = [
     { path = "main.rue", source = """
 const lib = @import("sub/lib.rue");
@@ -1201,8 +1218,9 @@ fn secret() -> i32 {
 }
 """ },
 ]
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["must not also be loaded through @import", "rue main.rue -o prog"]
+error_contains = ["unexpected extra source file", "sub/lib.rue", "@import"]
 
 [[case]]
 name = "private_fn_same_dir_module_access_allowed"
@@ -1243,62 +1261,51 @@ pub fn open() -> i32 {
 compile_fail = true
 error_contains = ["E0202", "undefined function 'open'"]
 
+# RUE-767: a second positional source is the removed flat-mode input surface,
+# so this invocation is now refused before compilation. This case formerly
+# pinned that a listed, never-@import-ed file does not inject private functions
+# into another file's unqualified namespace — that guarantee is now covered by
+# the @import unqualified-rejection cases above (e.g.
+# `private_fn_cross_dir_unqualified_rejected`).
 [[case]]
 name = "flat_multifile_private_fn_cross_dir_rejected"
-description = "A never-imported listed file does not inject private functions into another file's unqualified namespace."
-args = ["main.rue", "sub/util.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    secret()
-}
-""" },
-    { path = "sub/util.rue", source = """
-fn secret() -> i32 {
-    42
-}
-""" },
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "sub/util.rue", source = "fn secret() -> i32 { 42 }\n" },
 ]
+args = ["main.rue", "sub/util.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0202", "undefined function 'secret'"]
+error_contains = ["unexpected extra source file", "sub/util.rue", "@import"]
 
+# RUE-767: refused before compilation. Formerly pinned that a listed,
+# never-@import-ed file does not inject pub functions into another file's
+# unqualified namespace — now covered by
+# `pub_fn_cross_dir_qualified_allowed_unqualified_rejected` above.
 [[case]]
 name = "flat_multifile_pub_fn_cross_dir_rejected"
-description = "A never-imported listed file does not inject pub functions into another file's unqualified namespace."
-args = ["main.rue", "sub/util.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    open()
-}
-""" },
-    { path = "sub/util.rue", source = """
-pub fn open() -> i32 {
-    42
-}
-""" },
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "sub/util.rue", source = "pub fn open() -> i32 { 42 }\n" },
 ]
+args = ["main.rue", "sub/util.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0202", "undefined function 'open'"]
+error_contains = ["unexpected extra source file", "sub/util.rue", "@import"]
 
+# RUE-767: refused before compilation. Formerly pinned that another listed
+# same-directory file does not inject private functions into the unqualified
+# namespace; unqualified resolution is covered by the @import cases above.
 [[case]]
 name = "flat_multifile_private_fn_same_dir_rejected"
-description = "Another listed file in the same directory does not inject private functions into the unqualified namespace."
-args = ["main.rue", "util.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    secret()
-}
-""" },
-    { path = "util.rue", source = """
-fn secret() -> i32 {
-    42
-}
-""" },
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "util.rue", source = "fn secret() -> i32 { 42 }\n" },
 ]
+args = ["main.rue", "util.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0202", "undefined function 'secret'"]
+error_contains = ["unexpected extra source file", "util.rue", "@import"]
 
 # Structs and constants obey the same uniform rule (RUE-183): naming a
 # private struct (annotation or literal) or reading a private constant from
@@ -1406,106 +1413,76 @@ const LIMIT: i32 = 99;
 compile_fail = true
 error_contains = ["E0201", "undefined variable 'LIMIT'"]
 
+# RUE-767: refused before compilation. Formerly pinned that a listed file does
+# not inject private structs into another file's unqualified namespace — now
+# covered by `private_struct_cross_dir_unqualified_rejected` above.
 [[case]]
 name = "flat_multifile_private_struct_cross_dir_rejected"
-description = "Flat listed files do not inject private structs into another file's unqualified namespace."
-args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    let p: Point = Point { x: 40, y: 2 };
-    p.x + p.y
-}
-""" },
-    { path = "sub/lib.rue", source = """
-struct Point {
-    x: i32,
-    y: i32,
-}
-""" },
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "sub/lib.rue", source = "struct Point { x: i32, y: i32 }\n" },
 ]
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0204", "unknown type 'Point'"]
+error_contains = ["unexpected extra source file", "sub/lib.rue", "@import"]
 
+# RUE-767: refused before compilation. Formerly pinned that a listed file does
+# not inject private constants into another file's unqualified namespace — now
+# covered by `private_const_cross_dir_unqualified_rejected` above.
 [[case]]
 name = "flat_multifile_private_const_cross_dir_rejected"
-description = "Flat listed files do not inject private constants into another file's unqualified namespace."
-args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    LIMIT
-}
-""" },
-    { path = "sub/lib.rue", source = """
-const LIMIT: i32 = 99;
-""" },
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "sub/lib.rue", source = "const LIMIT: i32 = 99;\n" },
 ]
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0201", "undefined variable 'LIMIT'"]
+error_contains = ["unexpected extra source file", "sub/lib.rue", "@import"]
 
+# RUE-767: refused before compilation. Formerly pinned that a const initializer
+# does not see a constant from a different listed file unqualified; that surface
+# no longer exists.
 [[case]]
 name = "flat_multifile_private_const_in_const_init_rejected"
-description = "A constant initializer does not see a constant from a different listed file unqualified."
-args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-const X: i32 = LIMIT;
-
-fn main() -> i32 {
-    X
-}
-""" },
-    { path = "sub/lib.rue", source = """
-const LIMIT: i32 = 99;
-""" },
+    { path = "main.rue", source = "const X: i32 = 1;\nfn main() -> i32 { X }\n" },
+    { path = "sub/lib.rue", source = "const LIMIT: i32 = 99;\n" },
 ]
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0434", "not supported in const context"]
+error_contains = ["unexpected extra source file", "sub/lib.rue", "@import"]
 
+# RUE-767: refused before compilation. Formerly pinned that pub structs and
+# constants in another listed directory are not usable unqualified — now covered
+# by `pub_fn_cross_dir_qualified_allowed_unqualified_rejected` and the private
+# struct/const @import cases above.
 [[case]]
 name = "flat_multifile_pub_struct_and_const_cross_dir_rejected"
-description = "Pub structs and constants in another listed directory are not usable unqualified; use explicit module-qualified access."
-args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    let p: Point = Point { x: 30, y: 2 };
-    p.x + p.y + BONUS
-}
-""" },
-    { path = "sub/lib.rue", source = """
-pub struct Point {
-    x: i32,
-    y: i32,
-}
-pub const BONUS: i32 = 10;
-""" },
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "sub/lib.rue", source = "pub struct Point { x: i32, y: i32 }\npub const BONUS: i32 = 10;\n" },
 ]
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0204", "unknown type 'Point'"]
+error_contains = ["unexpected extra source file", "sub/lib.rue", "@import"]
 
+# RUE-767: refused before compilation. Formerly pinned that another listed
+# same-directory file does not inject private structs/constants into the
+# unqualified namespace; that surface no longer exists.
 [[case]]
 name = "flat_multifile_private_struct_and_const_same_dir_rejected"
-description = "Another listed file in the same directory does not inject private structs/constants into the unqualified namespace."
-args = ["main.rue", "lib.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    let p: Point = Point { x: 30, y: 2 };
-    p.x + p.y + BONUS
-}
-""" },
-    { path = "lib.rue", source = """
-struct Point {
-    x: i32,
-    y: i32,
-}
-const BONUS: i32 = 10;
-""" },
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "lib.rue", source = "struct Point { x: i32, y: i32 }\nconst BONUS: i32 = 10;\n" },
 ]
+args = ["main.rue", "lib.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0204", "unknown type 'Point'"]
+error_contains = ["unexpected extra source file", "lib.rue", "@import"]
 
 # Enums obey the same uniform rule (RUE-185): naming a private enum from
 # another directory — annotation, variant construction, or match pattern —
@@ -1681,31 +1658,19 @@ pub enum E {
 compile_fail = true
 error_contains = ["type mismatch"]
 
+# RUE-767: refused before compilation. Formerly pinned that a listed file does
+# not inject private enum names into another file's unqualified namespace — now
+# covered by `private_enum_cross_dir_unqualified_rejected` above.
 [[case]]
 name = "flat_multifile_private_enum_construction_rejected"
-description = "Flat listed files do not inject private enum names into another file's unqualified namespace."
-args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    let c = Color.Blue;
-    0
-}
-""" },
-    { path = "sub/lib.rue", source = """
-enum Color {
-    Red,
-    Green,
-    Blue,
-}
-""" },
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "sub/lib.rue", source = "enum Color { Red, Green, Blue }\n" },
 ]
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 compile_fail = true
-# With `.` as the sole member-access spelling (RUE-488), `Color.Blue` where
-# `Color` is not in this file's unqualified namespace is an undefined-name
-# reference (E0201) rather than an unknown-enum-type path (E0421). The private
-# enum is still correctly not injected into another file's namespace.
-error_contains = ["E0201", "undefined variable 'Color'"]
+error_contains = ["unexpected extra source file", "sub/lib.rue", "@import"]
 
 [[case]]
 name = "flat_multifile_private_enum_match_pattern_rejected"
@@ -1765,31 +1730,19 @@ pub fn make() -> Color {
 compile_fail = true
 error_contains = ["E0706", "enum `Color` is private"]
 
+# RUE-767: refused before compilation. Formerly pinned that a pub enum in
+# another listed directory is not usable unqualified — now covered by the
+# @import enum cases above (e.g. `private_enum_cross_dir_unqualified_rejected`).
 [[case]]
 name = "flat_multifile_pub_enum_cross_dir_rejected"
-description = "A pub enum in another listed directory is not usable unqualified; use explicit module-qualified access."
-args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    let c: Color = Color.Blue;
-    match c {
-        Color.Red => 10,
-        Color.Green => 20,
-        Color.Blue => 42,
-    }
-}
-""" },
-    { path = "sub/lib.rue", source = """
-pub enum Color {
-    Red,
-    Green,
-    Blue,
-}
-""" },
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "sub/lib.rue", source = "pub enum Color { Red, Green, Blue }\n" },
 ]
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0204", "unknown type 'Color'"]
+error_contains = ["unexpected extra source file", "sub/lib.rue", "@import"]
 
 [[case]]
 name = "pub_enum_module_qualified_pattern_allowed"
@@ -1819,31 +1772,19 @@ pub fn make() -> Color {
 ]
 exit_code = 42
 
+# RUE-767: refused before compilation. Formerly pinned that another listed
+# same-directory file does not inject private enum names into the unqualified
+# namespace; that surface no longer exists.
 [[case]]
 name = "flat_multifile_private_enum_same_dir_rejected"
-description = "Another listed file in the same directory does not inject private enum names into the unqualified namespace."
-args = ["main.rue", "lib.rue", "-o", "prog"]
+description = "RUE-767: listing a second positional source is refused (removed flat-mode surface)."
 files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    let c: Color = Color.Green;
-    match c {
-        Color.Red => 1,
-        Color.Green => 42,
-        Color.Blue => 3,
-    }
-}
-""" },
-    { path = "lib.rue", source = """
-enum Color {
-    Red,
-    Green,
-    Blue,
-}
-""" },
+    { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+    { path = "lib.rue", source = "enum Color { Red, Green, Blue }\n" },
 ]
+args = ["main.rue", "lib.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0204", "unknown type 'Color'"]
+error_contains = ["unexpected extra source file", "lib.rue", "@import"]
 
 # ---------------------------------------------------------------------------
 # Nested module member access (RUE-122 regression coverage).
@@ -2052,15 +1993,20 @@ error_contains = ["E0707", "module `math` has no member `nosuch`"]
 # ---------------------------------------------------------------------------
 
 # const + fn with one name in DIFFERENT files: module-scoped, legal (RUE-572).
-# b.rue's unqualified call resolves to its own fn, whatever the CLI order.
+# RUE-767 modernized this from two flat positionals to a root that @imports the
+# helper: b.rue (the root) still resolves its unqualified `shared()` to its own
+# fn, while a.rue's same-named `shared` const stays module-scoped and does not
+# collide.
 [[case]]
 name = "dup_const_fn_const_first"
-description = "RUE-572: a const and a fn sharing a name in different files are module-scoped and coexist (const file listed first)."
+description = "RUE-572: a const and a fn sharing a name in different files are module-scoped and coexist."
 files = [
     { path = "a.rue", source = """
-const shared: i32 = 5;
+pub const shared: i32 = 5;
 """ },
     { path = "b.rue", source = """
+const a = @import("a.rue");
+
 pub fn shared() -> i32 {
     100
 }
@@ -2070,29 +2016,22 @@ fn main() -> i32 {
 }
 """ },
 ]
-args = ["b.rue", "a.rue", "-o", "prog"]
+args = ["b.rue", "-o", "prog"]
 exit_code = 100
 
-# Same program, files in the other CLI order — same result (order-independent).
+# RUE-767: this case was the order-swapped twin of the one above, pinning that
+# flat positional order did not matter. With exactly one root source there is no
+# positional order to vary, so it now asserts the extra-source refusal instead.
 [[case]]
 name = "dup_const_fn_fn_first"
-description = "RUE-572: order-independent — swapping the CLI file order still compiles and resolves module-locally."
+description = "RUE-767: a second positional source is refused (formerly the order-swap twin of dup_const_fn_const_first)."
 files = [
-    { path = "a.rue", source = """
-const shared: i32 = 5;
-""" },
-    { path = "b.rue", source = """
-pub fn shared() -> i32 {
-    100
-}
-
-fn main() -> i32 {
-    shared()
-}
-""" },
+    { path = "a.rue", source = "const shared: i32 = 5;\n" },
+    { path = "b.rue", source = "fn main() -> i32 { 0 }\n" },
 ]
 args = ["b.rue", "a.rue", "-o", "prog"]
-exit_code = 100
+compile_fail = true
+error_contains = ["unexpected extra source file", "a.rue", "@import"]
 
 # fn + struct in ONE file: previously compiled (both coexisted); now E0436.
 [[case]]
@@ -2118,12 +2057,16 @@ compile_fail = true
 error_contains = ["E0436", "Thing"]
 
 # fn + struct with one name in DIFFERENT files: module-scoped, legal
-# (RUE-572); the call resolves to main.rue's own fn.
+# (RUE-572); the call resolves to main.rue's own fn. RUE-767 modernized this
+# from a flat second positional to an @import from the root: other.rue's struct
+# `Thing` still coexists with main.rue's fn `Thing`.
 [[case]]
 name = "dup_fn_struct_cross_file"
 description = "RUE-572: a function and a struct with the same name in different files are module-scoped and coexist."
 files = [
     { path = "main.rue", source = """
+const other = @import("other.rue");
+
 fn Thing() -> i32 {
     5
 }
@@ -2138,7 +2081,7 @@ pub struct Thing {
 }
 """ },
 ]
-args = ["main.rue", "other.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 5
 
 # enum + const: cross-namespace collision (type vs const) is E0436.
@@ -2703,19 +2646,21 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-# RUE-558: same-named structs in two flat positional files must not ICE.
-# Types are file-scoped (RUE-454); the global by-name struct map drops
-# duplicated names, and method/destructor analysis looked up name-only,
-# producing E9000 "struct 'P' not found in struct map".
-name = "flat_positional_same_named_structs_no_ice"
+# RUE-558: same-named structs in two files must not ICE. Types are file-scoped
+# (RUE-454); the global by-name struct map dropped duplicated names, and
+# method/destructor analysis looked up name-only, producing E9000 "struct 'P'
+# not found in struct map". RUE-767 modernized this from two flat positionals to
+# a root that @imports b.rue, keeping both same-named `P` structs in the graph.
+name = "same_named_structs_no_ice"
 files = [
   { path = "a.rue", source = """
+const b = @import("b.rue");
 struct P { x: i32 }
 fn main() -> i32 { 0 }
 """ },
-  { path = "b.rue", source = "struct P { y: i32 }\n" },
+  { path = "b.rue", source = "pub struct P { y: i32 }\n" },
 ]
-args = ["a.rue", "b.rue", "-o", "prog"]
+args = ["a.rue", "-o", "prog"]
 exit_code = 0
 
 [[case]]

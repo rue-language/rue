@@ -8,22 +8,21 @@ id = "cli.emit_pipeline"
 name = "--emit pipeline parity"
 description = "--emit modes resolve modules and report warnings like a normal build."
 
+# RUE-767: this case pinned that RIR presentation retained the caller order of
+# two flat positional sources. With exactly one root source there is no
+# positional order to preserve, so it now asserts the extra-source refusal.
+# Single-root RIR presentation is covered by combined_rir_air_resolves_imports_once.
 [[case]]
-name = "emit_rir_uses_canonical_frontend_and_preserves_caller_order"
-description = "RUE-728: canonical RIR presentation retains positional text even when logical module order differs."
+name = "emit_rir_extra_source_refused"
+description = "RUE-767: a second positional source under --emit rir is refused."
 files = [
     { path = "z.rue", source = "fn main() -> i32 { let z = 40; z + 2 }\n" },
     { path = "a.rue", source = "fn alpha() -> i32 { let a = 1; a }\n" },
 ]
 args = ["--emit", "rir", "z.rue", "a.rue"]
-compile_only = true
-compile_stdout_contains = [
-    "=== RIR ===",
-    "%0 = const 40",
-    "%6 = fn main()",
-    "%7 = const 1",
-    "%11 = fn alpha()",
-]
+compile_fail = true
+error_contains = ["unexpected extra source file", "a.rue", "@import"]
+compile_stdout_not_contains = ["=== RIR ==="]
 
 [[case]]
 name = "combined_rir_air_resolves_imports_once"
@@ -58,16 +57,22 @@ compile_fail = true
 compile_stderr_contains = ["E0703", "@import requires a string literal argument"]
 compile_stdout_not_contains = ["=== RIR ==="]
 
+# RUE-767 modernized this from two flat positionals to a clean root that
+# @imports two broken helpers. The root imports z-helper before a-helper, so
+# discovery order is z-helper then a-helper — the reverse of logical
+# (alphabetical) order — and both files' errors must still be accumulated in one
+# session-backed emit rather than the discovery aborting after the first.
 [[case]]
 name = "emit_rir_multifile_errors_follow_discovery_not_logical_order"
-description = "RUE-736: session-backed emit diagnostics retain caller discovery order when logical module order differs."
+description = "RUE-736: session-backed emit diagnostics accumulate every discovered file's errors, in discovery order."
 files = [
-    { path = "z-root.rue", source = "fn main() { let # = 1; }\n" },
-    { path = "a-helper.rue", source = "fn helper() { let # = 2; }\n" },
+    { path = "root.rue", source = "const z = @import(\"z-helper.rue\");\nconst a = @import(\"a-helper.rue\");\nfn main() -> i32 { 0 }\n" },
+    { path = "z-helper.rue", source = "fn zulu() { let # = 1; }\n" },
+    { path = "a-helper.rue", source = "fn alpha() { let # = 2; }\n" },
 ]
-args = ["--emit", "rir", "z-root.rue", "a-helper.rue"]
+args = ["--emit", "rir", "root.rue"]
 compile_fail = true
-compile_stderr_contains = ["z-root.rue:", "let # = 1", "a-helper.rue:", "let # = 2"]
+compile_stderr_contains = ["z-helper.rue:", "let # = 1", "a-helper.rue:", "let # = 2"]
 compile_stdout_not_contains = ["=== RIR ==="]
 
 [[case]]
@@ -106,14 +111,16 @@ compile_only = true
 compile_stdout_contains = ["=== AIR ==="]
 compile_stderr_not_contains = ["E0704"]
 
-# A lex error in the SECOND file used to be reported with the first file's
+# A lex error in an imported file used to be reported with the root file's
 # path and source snippet, because the --emit tokens path lexed every file
-# with FileId::DEFAULT (RUE-38).
+# with FileId::DEFAULT (RUE-38). RUE-767 modernized this from a legacy second
+# positional to an @import from the root; the error still lives in bad.rue.
 [[case]]
 name = "emit_tokens_lex_error_attributed_to_correct_file"
 description = "Lex errors under multi-file --emit tokens name the file that actually contains the error."
 files = [
     { path = "main.rue", source = """
+const bad = @import("bad.rue");
 fn main() -> i32 { 0 }
 """ },
     { path = "bad.rue", source = """
@@ -121,7 +128,7 @@ fn ok() -> i32 { 1 }
 let # = 3;
 """ },
 ]
-args = ["--emit", "tokens", "main.rue", "bad.rue"]
+args = ["--emit", "tokens", "main.rue"]
 compile_fail = true
 compile_stderr_contains = ["bad.rue:", "let # = 3;"]
 compile_stderr_not_contains = ["main.rue:"]
@@ -139,20 +146,19 @@ compile_stderr_contains = [
     "unexpected character: #",
 ]
 
+# RUE-767: RUE-644's duplicate-normalized-identity check (E1400) only fired when
+# two positional sources normalized to the same file. With the flat positional
+# surface removed, `--emit tokens main.rue ./main.rue` is refused at the CLI
+# before discovery, so the duplicate-identity path is no longer reachable here.
 [[case]]
 name = "emit_tokens_rejects_duplicate_normalized_source_identity_before_output"
-description = "RUE-644: invalid source identity is E1400 and fails before --emit tokens prints partial output."
+description = "RUE-767: a second positional source (a re-spelled duplicate) is refused before output."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { 0 }
 """ }]
-args = ["--emit", "tokens", "--error-format", "json", "main.rue", "./main.rue"]
+args = ["--emit", "tokens", "main.rue", "./main.rue"]
 compile_fail = true
-compile_stderr_contains = [
-    '"severity":"error"',
-    '"code":"E1400"',
-    'physical paths for 1 and 2 normalize to the same identity',
-]
-compile_stderr_not_contains = ["error[E1400]", "-->"]
+error_contains = ["unexpected extra source file", "./main.rue", "@import"]
 compile_stdout_not_contains = ["=== Tokens"]
 
 # RUE-352: `-j`/`--jobs` was silently ignored under --emit. The jobs setting was

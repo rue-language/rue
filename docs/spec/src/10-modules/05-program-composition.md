@@ -6,22 +6,23 @@ template = "spec/page.html"
 
 # Program Composition
 
-This section specifies how the root source file, imported modules, and
-explicitly listed source files compose into one program.
+This section specifies how the root source file and its imported modules
+compose into one program.
 
-The driver contract is root-module based: a normal compiler invocation
-names one root source file, and that root's transitive `@import` graph
+The driver contract is root-module based: a compiler invocation names
+**exactly one** root source file, and that root's transitive `@import` graph
 determines the semantic module graph. Source files may also be declared to
 a build system as action inputs (a source manifest, ADR-0047), but
 declaration as an available input is not a way to put names in scope: a
 source file affects name resolution only when the program reaches it
 through an explicit import.
 
-Extra source files listed positionally on the command line are a legacy
-input form (ADR-0046 defines its removal; RUE-434 tracks it). Listed files
-are loaded, but their names are **not** placed in any shared scope: an
-unqualified reference to another file's item is a name-resolution error
-exactly as it is between imported modules (rule 10.5:2).
+There is no way to add a file to the program by listing it positionally on
+the command line. The legacy flat-mode input form — extra positional source
+files loaded into a shared namespace — was removed (ADR-0046). Every driver
+form (`-o`, `--emit`, default output) accepts a single positional source;
+additional positional source arguments are refused with a migration
+diagnostic that points at `@import` and `--source-manifest`.
 
 ## Top-Level Names Are Module-Scoped
 

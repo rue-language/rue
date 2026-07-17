@@ -33,10 +33,11 @@ RUE="$(scripts/rue-bin)"
 "$RUE" --emit air --emit cfg main.rue
 ```
 
-The normal model is one root source file per compile; additional files should
-be reached through `@import` and are discovered transitively from the root.
-Passing extra `.rue` files positionally is legacy flat-mode behavior being
-removed.
+The model is exactly one root source file per compile; additional files are
+reached through `@import` and discovered transitively from the root. The legacy
+flat-mode input form — extra `.rue` files listed positionally — was removed
+(ADR-0046 / RUE-767): a second positional source is refused with a diagnostic
+pointing at `@import` and `--source-manifest`.
 
 Build-system integrations can constrain module reads with a source manifest:
 

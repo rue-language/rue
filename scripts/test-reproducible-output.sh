@@ -175,24 +175,23 @@ assert_source_order_independent_ir() {
     local ir_a="$root_a/tmp/source-order-ir.txt"
     local ir_b="$root_b/tmp/source-order-ir.txt"
 
-    # RUE-620: permute the unrelated noise siblings around a fixed root. That
-    # changes process-local interner allocation without changing which files
-    # or definitions make up the program. (main.rue is pinned first: the root
-    # module owns the entry point since RUE-920/spec 6.1:38, so it can no
-    # longer move across the siblings the way the original gate did.)
+    # RUE-620 / RUE-767: the unrelated noise siblings are discovered through the
+    # root's @import graph (the legacy flat positional listing was removed with
+    # flat mode, ADR-0046). main.rue is the sole positional source; it @imports
+    # noise-a and noise-b so they still enter the compilation and perturb the
+    # interner. Perturbation now comes from parallelism (-j1 vs -j32) and path
+    # spelling rather than positional order, which no longer exists.
     (
         cd "$root_a/project/source-order"
         "$RUE_BINARY" -j1 \
             --emit air --emit cfg --emit lowering \
-            main.rue noise-a.rue noise-b.rue > "$ir_a"
+            main.rue > "$ir_a"
     )
     "$RUE_BINARY" -j32 \
         --emit air --emit cfg --emit lowering \
-        "$root_b/project/source-order/main.rue" \
-        "$root_b/project/source-order/noise-b.rue" \
-        "$root_b/project/source-order/noise-a.rue" > "$ir_b"
+        "$root_b/project/source-order/./main.rue" > "$ir_b"
 
-    assert_identical "source-order-permuted AIR/CFG/lowering" "$ir_a" "$ir_b"
+    assert_identical "source-order root-only AIR/CFG/lowering" "$ir_a" "$ir_b"
 
     # Make the comparison non-vacuous: each adapter must have resolved the
     # symbols exercised by ordinary, generic, and intrinsic calls.
