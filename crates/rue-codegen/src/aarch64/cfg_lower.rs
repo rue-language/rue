@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
 use rue_air::FrozenTypeInternPool;
-use rue_cfg::{BlockId, Cfg, CfgValue, Type};
+use rue_cfg::{BlockId, Cfg, CfgValue, Type, ValidatedCfg};
 use rue_error::CompileResult;
 use rue_target::Target;
 
@@ -101,6 +101,25 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
 impl<'a> CfgLower<'a> {
     /// Create a new CFG lowering pass.
     pub fn new(
+        cfg: &'a ValidatedCfg,
+        type_pool: &'a FrozenTypeInternPool,
+        interner: &'a ThreadedRodeo,
+        target: Target,
+    ) -> Self {
+        Self::new_inner(cfg, type_pool, interner, target)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_unchecked(
+        cfg: &'a Cfg,
+        type_pool: &'a FrozenTypeInternPool,
+        interner: &'a ThreadedRodeo,
+        target: Target,
+    ) -> Self {
+        Self::new_inner(cfg, type_pool, interner, target)
+    }
+
+    fn new_inner(
         cfg: &'a Cfg,
         type_pool: &'a FrozenTypeInternPool,
         interner: &'a ThreadedRodeo,
@@ -2564,7 +2583,11 @@ impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
 
     fn value_description(&self, value: CfgValue) -> String {
         let inst = self.ctx.cfg.get_inst(value);
-        crate::format_cfg_inst_data_with_interner(self.ctx.cfg, &inst.data, self.interner)
+        crate::cfg_lower::format_cfg_inst_data_with_interner(
+            self.ctx.cfg,
+            &inst.data,
+            self.interner,
+        )
     }
 
     fn instruction_count(&self) -> usize {

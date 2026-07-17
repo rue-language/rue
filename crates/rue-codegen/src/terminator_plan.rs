@@ -354,7 +354,7 @@ fn return_value<A: TerminatorAdapter>(
 }
 
 /// Build the one canonical plan for a CFG terminator.
-pub fn plan_terminator<A: TerminatorAdapter>(
+pub(crate) fn plan_terminator<A: TerminatorAdapter>(
     ctx: &CfgLowerContext<'_>,
     adapter: &mut A,
     block: &BasicBlock,
@@ -469,7 +469,7 @@ pub fn plan_terminator<A: TerminatorAdapter>(
 /// Lower every CFG block through the same block order, label policy, and
 /// terminator planner.  The optional debug sink observes these exact plans;
 /// it does not invoke a presentation-specific lowerer.
-pub fn lower_cfg<A: CfgLowerAdapter>(
+pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
     ctx: &CfgLowerContext<'_>,
     adapter: &mut A,
     mut debug_info: Option<&mut crate::LoweringDebugInfo>,
@@ -599,12 +599,13 @@ mod tests {
         crate::aarch64::Aarch64Mir,
         crate::LoweringDebugInfo,
     ) {
-        let (x86, x86_debug) = X86CfgLower::new(cfg, pool, interner)
+        let (x86, x86_debug) = X86CfgLower::new_unchecked(cfg, pool, interner)
             .lower_with_debug()
             .expect("x86 fixture should lower");
-        let (arm, arm_debug) = Aarch64CfgLower::new(cfg, pool, interner, Target::Aarch64Linux)
-            .lower_with_debug()
-            .expect("AArch64 fixture should lower");
+        let (arm, arm_debug) =
+            Aarch64CfgLower::new_unchecked(cfg, pool, interner, Target::Aarch64Linux)
+                .lower_with_debug()
+                .expect("AArch64 fixture should lower");
         (x86, x86_debug, arm, arm_debug)
     }
 

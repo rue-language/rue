@@ -52,8 +52,10 @@ pub mod terminator_plan;
 pub mod value_plan;
 
 pub mod aarch64;
-pub mod agg_slots;
+mod agg_slots;
 pub mod aggregate_eq;
+#[cfg(test)]
+mod api_inventory;
 pub mod byref_args;
 pub mod cfg_lower;
 pub mod index_map;
@@ -384,7 +386,6 @@ pub use x86_64::generate;
 // Re-export shared types
 pub use cfg_lower::{
     BlockLoweringInfo, LoweringDebugInfo, LoweringDecision, TerminatorLoweringDecision,
-    format_cfg_inst_data, format_cfg_inst_data_with_interner,
 };
 pub use index_map::{Handle, IndexMap};
 pub use regalloc::{

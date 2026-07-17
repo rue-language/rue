@@ -24,7 +24,7 @@ use crate::vreg::VReg;
 /// Sema accepts as a by-ref argument a place: a variable (`Load`/`Param`) or a
 /// field/index projection chain rooted at one (`PlaceRead`). A non-place value
 /// with no storage to address is a violated sema/CFG invariant (RUE-760).
-pub fn lower_byref_arg_addr<B: PlaceLowerBackend + ?Sized>(
+pub(crate) fn lower_byref_arg_addr<B: PlaceLowerBackend + ?Sized>(
     b: &mut B,
     plan: &ByRefAddressPlan,
 ) -> VReg {

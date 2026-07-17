@@ -30,14 +30,14 @@ use crate::regalloc::RegAllocDebugInfo;
 
 use lasso::ThreadedRodeo;
 use rue_air::FrozenTypeInternPool;
-use rue_cfg::Cfg;
+use rue_cfg::ValidatedCfg;
 use rue_error::CompileResult;
 
 // Re-export from parent
 pub use super::{EmittedCode, EmittedRelocation, MachineCode};
 
 fn prepare_backend(
-    cfg: &Cfg,
+    cfg: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
 ) -> CompileResult<crate::codegen_pipeline::PreparedMir<X86Mir, Reg>> {
@@ -56,7 +56,7 @@ fn prepare_backend(
 }
 
 fn generate_inner<T, Emit>(
-    cfg: &Cfg,
+    cfg: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -104,7 +104,7 @@ where
 /// This is the main entry point for x86-64 code generation.
 /// The pipeline is: CFG → X86Mir → Machine Code
 pub fn generate(
-    cfg: &Cfg,
+    cfg: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -126,7 +126,7 @@ pub fn generate(
 /// This returns both machine code bytes and human-readable assembly text
 /// showing the actual emitted instructions (including prologue/epilogue).
 pub fn generate_with_asm(
-    cfg: &Cfg,
+    cfg: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -148,7 +148,7 @@ pub fn generate_with_asm(
 /// This returns information about the register allocation process,
 /// including live ranges, interference, and allocation decisions.
 pub fn generate_regalloc_info(
-    cfg: &Cfg,
+    cfg: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
 ) -> CompileResult<RegAllocDebugInfo<Reg>> {

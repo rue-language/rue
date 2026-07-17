@@ -1,12 +1,12 @@
 ---
 id: 0056
 title: Typed IR payload schemas
-status: accepted
+status: implemented
 tags: [architecture, compiler, ir, performance, validation]
 feature-flag: null
 created: 2026-07-16
 accepted: 2026-07-16
-implemented:
+implemented: 2026-07-17
 spec-sections: []
 superseded-by:
 relates: ["RUE-790", "RUE-839", "RUE-840", "RUE-841", "RUE-842", "RUE-843", "RUE-844"]
@@ -21,8 +21,11 @@ review required enforceable artifact-instance provenance, separate logical
 family and physical-store markers, owning validation typestate with canonical
 external contexts, and explicit M5/performance/guardrail gates. This is an
 internal compiler architecture decision. It does not change Rue language
-semantics, the specification, or a preview feature. Production M6 migrations
-remain gated on RUE-838.
+semantics, the specification, or a preview feature. The production M6
+migrations were gated on RUE-838 and are complete as of 2026-07-17 under
+RUE-844. RIR, AIR, and CFG now own typed payload schemas, validated
+owner/editor boundaries, malformed-data and fuzz coverage, and source/API
+inventories that prevent raw storage paths from returning.
 
 The maintainer approved one measured performance-gate amendment on 2026-07-17
 under RUE-843. An AIR owner-local incremental rebuild may regress by at most 4%
@@ -49,11 +52,12 @@ support malformed-data tests without `unsafe` or a second decoder.
 
 ## Context
 
-Rue's compact side tables are valuable, but their type and layout contracts are
-currently spread between instruction fields, producers, and consumers.
+Rue's compact side tables are valuable. Before this decision was implemented,
+their type and layout contracts were spread between instruction fields,
+producers, and consumers.
 
-In `crates/rue-rir/src/inst.rs`, `Rir` owns `extra: Vec<u32>`. `InstData`
-variants store raw `(start, len)` fields, and the module manually keeps layout
+In the pre-migration RIR, `Rir` owned `extra: Vec<u32>`. `InstData` variants
+stored raw `(start, len)` fields, and the module manually kept layout
 constants such as `CALL_ARG_SIZE`, `PARAM_SIZE`, and the pattern sizes in sync
 with `add_*` and `get_*` methods. `get_inst_refs`, `get_symbols`,
 `get_call_args`, `get_params`, `get_match_arms`, `get_field_inits`,
@@ -62,7 +66,7 @@ specifically requires those reads to become zero-allocation. Variable-width
 path patterns and directives also perform positional arithmetic directly, so a
 producer and a consumer can disagree about an offset or encoded count.
 
-In `crates/rue-air/src/inst.rs`, `Air` owns `extra: Vec<u32>` and a separate
+In the pre-migration AIR, `Air` owned `extra: Vec<u32>` and a separate
 `Vec<AirProjection>`. Some reads, including `get_air_refs`, `get_call_args`,
 and `get_match_arms`, already return iterators, and projection reads already
 borrow a slice. Nevertheless, instruction data and `AirPlace` still expose raw
@@ -70,20 +74,19 @@ start/length pairs. Encoding, tag decoding, direct extra slicing, and range
 arithmetic remain distributed between `AirPattern`, `Air`, semantic producers,
 and downstream consumers.
 
-In `crates/rue-cfg/src/inst.rs`, `Cfg` deliberately uses several element
-stores: `Vec<CfgValue>`, `Vec<CfgCallArg>`, `Vec<(i64, BlockId)>`, and
+In the pre-migration CFG, `Cfg` deliberately used several element stores:
+`Vec<CfgValue>`, `Vec<CfgCallArg>`, `Vec<(i64, BlockId)>`, and
 `Vec<Projection>`. Instructions, places, and terminators refer to them with raw
 `u32` start/length pairs. The similar arithmetic hides the fact that the
 element types and invariants are different. A common design must preserve this
 phase-specific representation rather than forcing all CFG payloads through a
 `u32` serialization layer.
 
-These raw APIs escape their owning modules. Semantic analysis constructs and
-reads RIR and AIR payloads; CFG construction, optimizers, and verification
-read and rewrite CFG payloads; codegen consumes CFG ranges; compiler-owned drop
-glue and artifact projection cross the same boundaries. A localized helper
-that leaves public raw constructors and fields in place would only create a
-second, optional path.
+Those raw APIs escaped their owning modules. The implemented architecture now
+keeps construction and mutation in the owner, while semantic analysis,
+optimizers, codegen, display, and artifact projection consume typed borrowing
+views. Public machine-code generation requires a validated CFG; the read-only
+`Sema::new(&Rir)` boundary cannot access payload positions or storage.
 
 The failure modes are architectural, not merely ergonomic:
 
@@ -765,50 +768,50 @@ This decision does not:
 
 ADR-0056 becomes implemented only when:
 
-- [ ] RUE-790 and RUE-839 through RUE-844 are merged in their dependency order.
-- [ ] RUE-838 is merged before the production M6 migrations begin, and Linear
+- [x] RUE-790 and RUE-839 through RUE-844 are merged in their dependency order.
+- [x] RUE-838 is merged before the production M6 migrations begin, and Linear
       records the external M5 gate on the first runnable M6 issues.
-- [ ] RIR, AIR, and CFG each own handwritten phase-local schema modules under
+- [x] RIR, AIR, and CFG each own handwritten phase-local schema modules under
       the common contract, with no shared erased store or schema generator.
-- [ ] All production instruction, place, and terminator payload fields use
+- [x] All production instruction, place, and terminator payload fields use
       family-specific typed ranges or indices.
-- [ ] Compile-time assertions prove stored ranges remain two `u32`s with the
+- [x] Compile-time assertions prove stored ranges remain two `u32`s with the
       expected alignment.
-- [ ] Raw range construction, physical store mutation, and range fields are
+- [x] Raw range construction, physical store mutation, and range fields are
       private to owning schema/artifact modules.
-- [ ] Payload-bearing nodes cannot be cloned or inserted detached from their
+- [x] Payload-bearing nodes cannot be cloned or inserted detached from their
       owner; whole-owner clone is coherent and selective transfer rebuilds.
-- [ ] Each family has one authoritative width/tag/count/offset implementation
+- [x] Each family has one authoritative width/tag/count/offset implementation
       used by its builder, checked decoder, and artifact validator.
-- [ ] Builders check every conversion and arithmetic operation, append
+- [x] Builders check every conversion and arithmetic operation, append
       atomically, and cover empty and maximum-size behavior.
-- [ ] Checked malformed fixtures cover truncation, overflow metadata, unknown
+- [x] Checked malformed fixtures cover truncation, overflow metadata, unknown
       tags, noncanonical booleans, bad IDs/references, trailing words, and
       bad same-family ranges without `unsafe` or undefined behavior;
       compile-fail tests cover family/store mismatch, raw construction, range
       extraction or cross-editor movement, and detached node insertion.
-- [ ] RIR getters named in the context traverse without allocating, and all
+- [x] RIR getters named in the context traverse without allocating, and all
       migrated family iterators implement `ExactSizeIterator`.
-- [ ] AIR and CFG borrowing consumers retain their phase-specific typed element
+- [x] AIR and CFG borrowing consumers retain their phase-specific typed element
       stores rather than being flattened into words.
-- [ ] Editors are the only mutable form; consuming validation with canonical
+- [x] Editors are the only mutable form; consuming validation with canonical
       interner/source/type contexts produces immutable validated owners, and
       `CompilerSession` publishes only those owners.
-- [ ] Import, whole-owner clone, selective remap, transform, rewrite, fuzz, and
+- [x] Import, whole-owner clone, selective remap, transform, rewrite, fuzz, and
       canonical publication paths use the production schema validators and
       preserve or rebuild owner provenance.
-- [ ] Infallible validated-artifact access delegates to the checked decoder;
+- [x] Infallible validated-artifact access delegates to the checked decoder;
       no unsafe or duplicate trusted decoder exists.
-- [ ] The benchmark matrix records paired before/after wall time, RSS,
+- [x] The benchmark matrix records paired before/after wall time, RSS,
       allocations, phase timing, compiler clean build, and incremental rebuild
       evidence, including logical/capacity/staging bytes, and all structural
       and non-regression gates pass.
-- [ ] RUE-844's inventory proves public raw constructors, direct side-table
+- [x] RUE-844's inventory proves public raw constructors, direct side-table
       indexing, raw enum casts, allocating default getters, mutable raw side
       tables, and compatibility payload paths are absent from production code.
-- [ ] Focused tests, `scripts/rue quick`, relevant compiler/CFG/codegen suites,
+- [x] Focused tests, `scripts/rue quick`, relevant compiler/CFG/codegen suites,
       and CI pass.
-- [ ] RUE-844 updates this ADR's context, checklist, status, and generated index
+- [x] RUE-844 updates this ADR's context, checklist, status, and generated index
       to describe the verified final architecture.
 
 ## Open questions

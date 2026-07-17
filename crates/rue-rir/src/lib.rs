@@ -20,6 +20,8 @@
 //!
 //! Inspired by Zig's ZIR (Zig Intermediate Representation).
 
+#[cfg(test)]
+mod api_inventory;
 mod astgen;
 mod inst;
 

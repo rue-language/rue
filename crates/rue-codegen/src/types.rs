@@ -7,7 +7,7 @@
 //! canonical `FrozenTypeInternPool` (ADR-0024).
 
 use rue_air::{ArrayTypeId, EnumId, FrozenTypeInternPool, StructId, TypeKind};
-use rue_cfg::{Cfg, CfgInstData, CfgValue, Type};
+use rue_cfg::{CfgInstData, CfgValue, Type, ValidatedCfg};
 use std::collections::HashMap;
 
 use crate::vreg::VReg;
@@ -265,7 +265,7 @@ pub fn struct_field_slot_offset(
 /// * `value` - The CFG value to collect vregs from
 /// * `get_vreg` - Closure to get/allocate a vreg for a given CFG value
 pub fn collect_array_scalar_vregs(
-    cfg: &Cfg,
+    cfg: &ValidatedCfg,
     struct_slot_vregs: &HashMap<CfgValue, Vec<VReg>>,
     value: CfgValue,
     get_vreg: &mut impl FnMut(CfgValue) -> VReg,
@@ -378,7 +378,7 @@ fn type_name(ty: Type, type_pool: &FrozenTypeInternPool) -> String {
 /// * `value` - The CFG value to collect vregs from
 /// * `get_vreg` - Closure to get/allocate a vreg for a given CFG value
 pub fn collect_struct_scalar_vregs(
-    cfg: &Cfg,
+    cfg: &ValidatedCfg,
     struct_slot_vregs: &HashMap<CfgValue, Vec<VReg>>,
     value: CfgValue,
     get_vreg: &mut impl FnMut(CfgValue) -> VReg,

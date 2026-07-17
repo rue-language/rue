@@ -218,6 +218,6 @@ The table is generated from ADR frontmatter. Run
 | [0053](0053-typed-compiler-query-state.md) | Typed CompilerSession query state | Accepted | architecture, compiler, incremental, tooling |
 | [0054](0054-loop-optimizations.md) | Loop Optimizations — LICM and Unrolling | Accepted | compiler, codegen, optimization |
 | [0055](0055-typed-runtime-abi-manifest.md) | Typed compiler-runtime ABI manifest | Implemented | architecture, compiler, runtime, abi, codegen |
-| [0056](0056-typed-ir-payload-schemas.md) | Typed IR payload schemas | Accepted | architecture, compiler, ir, performance, validation |
+| [0056](0056-typed-ir-payload-schemas.md) | Typed IR payload schemas | Implemented | architecture, compiler, ir, performance, validation |
 | [0057](0057-file-io-v0.md) | File IO v0: pure-Rue fs over @syscall with normalized FileError | Accepted | stdlib, io, syscalls, runtime, error-handling, ownership |
 <!-- ADR-INDEX:END -->
