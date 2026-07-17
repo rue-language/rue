@@ -3041,6 +3041,26 @@ mod tests {
             .unwrap_or_else(|| panic!("missing call to {helper:?}"))
     }
 
+    #[test]
+    fn runtime_manifest_fits_register_only_target_c_subset() {
+        for id in rue_runtime_abi::RuntimeHelperId::ALL {
+            let helper = id.helper();
+            assert_eq!(
+                helper.calling_convention,
+                rue_runtime_abi::CallingConvention::TargetC,
+                "{} must use the target C convention",
+                helper.symbol
+            );
+            assert!(
+                helper.parameters.len() <= ARG_REGS.len(),
+                "{} has {} parameters, exceeding the AArch64 register-only runtime-call budget of {}",
+                helper.symbol,
+                helper.parameters.len(),
+                ARG_REGS.len()
+            );
+        }
+    }
+
     fn lower_to_mir(source: &str) -> Aarch64Mir {
         lower_function_to_mir(source, "main")
     }

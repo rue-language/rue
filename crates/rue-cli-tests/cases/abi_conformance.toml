@@ -1,0 +1,60 @@
+# RUE-738: compile and link the same calling-convention probe for every
+# supported target. Foreign outputs receive structural executable validation;
+# the matching native CI host also executes the independently linked runtime
+# boundary and checks exact results.
+
+[section]
+id = "cli.abi_conformance"
+name = "Calling-convention conformance"
+description = "Native Rue and typed Target-C runtime boundaries compile, link, and execute across the supported target matrix."
+
+[[case]]
+name = "x86_64_linux_abi_conformance"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }" }]
+source_path = "cli-test-fixtures/abi_conformance_smoke.rue"
+args = ["${SOURCE}", "--target", "x86-64-linux", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = """
+-5
+250
+42
+46
+abcd
+"""
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_abi_conformance"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }" }]
+source_path = "cli-test-fixtures/abi_conformance_smoke.rue"
+args = ["${SOURCE}", "--target", "aarch64-linux", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """
+-5
+250
+42
+46
+abcd
+"""
+exit_code = 0
+
+[[case]]
+name = "aarch64_macos_abi_conformance"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }" }]
+source_path = "cli-test-fixtures/abi_conformance_smoke.rue"
+args = ["${SOURCE}", "--target", "aarch64-macos", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+executable_target = "aarch64-macos"
+execute_if_native = true
+stdout = """
+-5
+250
+42
+46
+abcd
+"""
+exit_code = 0

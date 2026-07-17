@@ -1,0 +1,74 @@
+// RUE-738: executable coverage for the two calling conventions that exist
+// today. Native Rue calls exercise register exhaustion, sret, and values live
+// across a Target-C call. Runtime calls exercise narrow integer extension,
+// pointer inputs, scalar results, and explicit out-pointer results.
+
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+
+@copy
+struct Nine {
+    values: [i32; 8],
+    marker: i32,
+}
+
+fn sum_nine(
+    a: i32,
+    b: i32,
+    c: i32,
+    d: i32,
+    e: i32,
+    f: i32,
+    g: i32,
+    h: i32,
+    i: i32,
+) -> i32 {
+    a + b + c + d + e + f + g + h + i
+}
+
+fn bump(value: Nine, delta: i32) -> Nine {
+    let mut result = value;
+    result.marker = result.marker + delta;
+    result
+}
+
+fn live_across_target_c(seed: i32) -> i32 {
+    let a = seed + 1;
+    let b = seed + 2;
+    let c = seed + 3;
+    let d = seed + 4;
+    let e = seed + 5;
+    let f = seed + 6;
+    let g = seed + 7;
+    let h = seed + 8;
+    let i = seed + 9;
+    let j = seed + 10;
+    if "abi" == "abi" { a + b + c + d + e + f + g + h + i + j } else { 0 }
+}
+
+fn main() -> i32 {
+    let signed: i8 = @intCast(0 - 5);
+    let unsigned: u8 = 250;
+    @dbg(signed);
+    @dbg(unsigned);
+
+    let Opt = Option(i32);
+    let parsed: Opt = @parse_i32("42");
+    match parsed {
+        Opt.Some(value) => @dbg(value),
+        Opt.None => return 1,
+    }
+
+    if live_across_target_c(0) != 55 { return 2; }
+    let total = sum_nine(1, 2, 3, 4, 5, 6, 7, 8, 9);
+    let value = Nine { values: [1, 2, 3, 4, 5, 6, 7, 8], marker: total };
+    let changed = bump(value, 1);
+    @dbg(changed.marker);
+
+    let mut buffer: StrBuf = "abc";
+    buffer.push(100);
+    @dbg(buffer);
+    0
+}

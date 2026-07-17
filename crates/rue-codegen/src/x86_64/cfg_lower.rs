@@ -2914,6 +2914,26 @@ mod tests {
     }
 
     #[test]
+    fn runtime_manifest_fits_register_only_target_c_subset() {
+        for id in rue_runtime_abi::RuntimeHelperId::ALL {
+            let helper = id.helper();
+            assert_eq!(
+                helper.calling_convention,
+                rue_runtime_abi::CallingConvention::TargetC,
+                "{} must use the target C convention",
+                helper.symbol
+            );
+            assert!(
+                helper.parameters.len() <= ARG_REGS.len(),
+                "{} has {} parameters, exceeding the x86-64 register-only runtime-call budget of {}",
+                helper.symbol,
+                helper.parameters.len(),
+                ARG_REGS.len()
+            );
+        }
+    }
+
+    #[test]
     fn test_simple_return() {
         let mir = lower_to_mir("fn main() -> i32 { 42 }");
         assert!(!mir.instructions().is_empty());
