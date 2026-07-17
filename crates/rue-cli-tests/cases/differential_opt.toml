@@ -771,3 +771,36 @@ stdout = """0
 18
 """
 exit_code = 18
+
+# LICM mutable-parameter soundness (RUE-927): a `while` loop that reads an
+# `inout` parameter and writes it back every iteration. The parameter read
+# lowers to a bare `Param` value with no operands, so LICM's operand walk
+# trivially calls it invariant — but the loop body mutates the parameter
+# (a `ParamStore`), so its value changes each iteration. Hoisting the read into
+# the preheader would freeze the parameter at its entry value and miscompile the
+# loop (the same hazard the memory-read gate guards, and CSE's
+# `never_written_params`). Every level must return `x + n`; a regression that
+# hoisted the `inout` read would make -O3 return `x + 1` while -O0 returns
+# `x + n`, and the differential net names that divergence.
+[[case]]
+name = "licm_mutable_inout_param_read_not_hoisted_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn accumulate(inout x: i32, n: i32) -> i32 {
+    let mut i: i32 = 0;
+    while i < n {
+        x = x + 1;
+        i = i + 1;
+    }
+    x
+}
+
+fn main() -> i32 {
+    let mut v: i32 = 10;
+    let r: i32 = accumulate(inout v, 5);
+    @dbg(r);
+    r
+}
+""" }]
+stdout = "15\n"
+exit_code = 15
