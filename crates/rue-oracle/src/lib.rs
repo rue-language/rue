@@ -272,6 +272,18 @@ pub enum ExternalDependencyKind {
     RandomU32,
     RandomU64,
     SystemCall,
+    /// `@arg_count` — the process argument count captured at entry (RUE-935).
+    ArgCount,
+    /// `@arg_ptr` — a pointer into the loader-owned argv vector (RUE-935).
+    ArgPtr,
+    /// `@arg_len` — the byte length of a captured argv entry (RUE-935).
+    ArgLen,
+    /// `@env_count` — the process environment entry count (RUE-935).
+    EnvCount,
+    /// `@env_ptr` — a pointer into the loader-owned envp vector (RUE-935).
+    EnvPtr,
+    /// `@env_len` — the byte length of a captured envp entry (RUE-935).
+    EnvLen,
 }
 
 /// An observation for which Rue does not specify one exact value.
@@ -755,6 +767,15 @@ fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
         "random_u32" => UnsupportedKind::ExternalDependency(External::RandomU32),
         "random_u64" => UnsupportedKind::ExternalDependency(External::RandomU64),
         "syscall" => UnsupportedKind::ExternalDependency(External::SystemCall),
+        // Process arguments/environment are captured from loader-supplied
+        // process state at entry, so their values lie outside deterministic Rue
+        // semantics — an external dependency like `@random_*` (RUE-935).
+        "arg_count" => UnsupportedKind::ExternalDependency(External::ArgCount),
+        "arg_ptr" => UnsupportedKind::ExternalDependency(External::ArgPtr),
+        "arg_len" => UnsupportedKind::ExternalDependency(External::ArgLen),
+        "env_count" => UnsupportedKind::ExternalDependency(External::EnvCount),
+        "env_ptr" => UnsupportedKind::ExternalDependency(External::EnvPtr),
+        "env_len" => UnsupportedKind::ExternalDependency(External::EnvLen),
         _ => UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic),
     }
 }
@@ -1243,7 +1264,9 @@ impl<'a> Interp<'a> {
         }
 
         let arity_matches = match name {
-            "read_line" | "random_u32" | "random_u64" => args.is_empty(),
+            "read_line" | "random_u32" | "random_u64" | "arg_count" | "env_count" => {
+                args.is_empty()
+            }
             "ptr_write" | "ptr_offset" | "free" | "free_bytes" | "byte_read" => args.len() == 2,
             "realloc" | "realloc_bytes" | "byte_write" => args.len() == 3,
             "syscall" => (1..=7).contains(&args.len()),
@@ -1359,6 +1382,11 @@ impl<'a> Interp<'a> {
                 .is_some_and(|payload| self.is_owned_string_type(payload)),
             "random_u32" => result_ty == Type::U32,
             "random_u64" => result_ty == Type::U64,
+            "arg_count" | "env_count" => result_ty == Type::U64,
+            "arg_len" | "env_len" => ty(0) == Type::U64 && result_ty == Type::U64,
+            "arg_ptr" | "env_ptr" => {
+                ty(0) == Type::U64 && self.pointer_pointee(result_ty) == Some((Type::U8, true))
+            }
             "syscall" => {
                 args.iter().all(|arg| cfg.get_inst(*arg).ty == Type::U64) && result_ty == Type::I64
             }

@@ -42,6 +42,12 @@
 //! - `output`: name of produced executable (default `"prog"`)
 //! - `env`: extra env vars for the compiler; the value `"${REAL_STD}"`
 //!   expands to the absolute path of the repo's `std/` directory
+//! - `program_args`: command-line arguments for the compiled program's run
+//!   (its `argv[1..]`; `argv[0]` is the program path). Distinct from `args`,
+//!   which are the compiler's flags (RUE-935)
+//! - `program_env`: extra env vars for the compiled program's run, layered on
+//!   the inherited environment. Distinct from `env` (the compiler's env)
+//!   (RUE-935)
 //! - `stdin`: piped to the compiled program when it runs
 //! - `compile_fail` + `error_contains`: expect compilation failure
 //! - `compile_only`: don't run the produced binary
@@ -419,6 +425,16 @@ struct Case {
     /// Extra environment variables for the compiler invocation.
     #[serde(default)]
     env: HashMap<String, String>,
+    /// Command-line arguments passed to the COMPILED PROGRAM when it runs
+    /// (RUE-935). These become `argv[1..]`; `argv[0]` is the program path the
+    /// harness invokes. Distinct from `args`, which are the compiler's flags.
+    #[serde(default)]
+    program_args: Vec<String>,
+    /// Extra environment variables for the COMPILED PROGRAM's run (RUE-935),
+    /// layered on top of the inherited environment. Distinct from `env`, which
+    /// applies to the compiler invocation.
+    #[serde(default)]
+    program_env: HashMap<String, String>,
     /// Piped to the compiled program's stdin.
     #[serde(default)]
     stdin: Option<String>,
@@ -713,19 +729,22 @@ fn validate_elf_executable(bytes: &[u8], target: Target) -> Result<(), String> {
 
     match target.arch() {
         Arch::X86_64 => {
+            // Entry shim since RUE-935: `mov rdi, rsp` (capture argc/argv/envp
+            // pointer) + `and rsp, -16` + `call` + `ud2`.
             let entry_bytes = bytes
-                .get(entry_offset..entry_offset + 11)
+                .get(entry_offset..entry_offset + 14)
                 .ok_or_else(|| "truncated x86-64 entry point".to_string())?;
-            if entry_bytes[..5] != [0x48, 0x83, 0xe4, 0xf0, 0xe8]
-                || entry_bytes[9..] != [0x0f, 0x0b]
+            if entry_bytes[..8] != [0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0xe8]
+                || entry_bytes[12..] != [0x0f, 0x0b]
             {
                 return Err(
-                    "x86-64 entry does not contain the runtime alignment/call/ud2 shim".to_string(),
+                    "x86-64 entry does not contain the runtime capture/alignment/call/ud2 shim"
+                        .to_string(),
                 );
             }
-            let displacement = i32::from_le_bytes(entry_bytes[5..9].try_into().unwrap()) as i64;
+            let displacement = i32::from_le_bytes(entry_bytes[8..12].try_into().unwrap()) as i64;
             let target_address = entry
-                .checked_add(9)
+                .checked_add(12)
                 .and_then(|address| address.checked_add_signed(displacement))
                 .ok_or_else(|| "x86-64 entry call target overflows".to_string())?;
             if !(executable_start..executable_end).contains(&target_address) {
@@ -1148,6 +1167,13 @@ fn run_case(
     // its own process group and kills the group on timeout.
     let mut run_cmd = Command::new(&program);
     run_cmd.current_dir(dir);
+    // Runtime argv/env for the compiled program (RUE-935): `program_args`
+    // become `argv[1..]` and `program_env` layers over the inherited
+    // environment, so a case can exercise `std.env` against known input.
+    run_cmd.args(&case.program_args);
+    for (key, value) in &case.program_env {
+        run_cmd.env(key, value);
+    }
     let timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
     let run_output = run_with_timeout(run_cmd, timeout, case.stdin.as_deref())?;
 

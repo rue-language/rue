@@ -111,11 +111,20 @@ pub(crate) extern "C" fn __rue_stack_overflow_handler(_sig: i32) -> ! {
 const _: extern "C" fn(i32) -> ! = __rue_stack_overflow_handler;
 
 /// Normal SysV function called by the prologue-free x86-64 Linux entry shim.
+///
+/// `stack` is the untouched initial `%rsp` the shim captured before aligning
+/// the stack; the System V startup layout places argc there, so the process
+/// module derives argc/argv/envp from it (RUE-935).
 #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
-pub(crate) fn __rue_x86_64_linux_start() -> ! {
+pub(crate) fn __rue_x86_64_linux_start(stack: *const usize) -> ! {
     unsafe extern "C" {
         fn main() -> i32;
     }
+
+    // Capture argc/argv/envp from the entry stack before any user code runs so
+    // `std.env` can read them later (RUE-935).
+    // SAFETY: `stack` is the initial process stack pointer from `_start`.
+    unsafe { crate::process::capture_from_stack(stack) };
 
     // Install the stack-overflow SIGSEGV handler before running user code so a
     // deep-recursion overflow aborts cleanly (RUE-645) instead of dying with a
@@ -130,22 +139,31 @@ pub(crate) fn __rue_x86_64_linux_start() -> ! {
 
 /// Program entry point for macOS aarch64.
 ///
-/// On macOS, the entry point is `_main` (or `start` for dyld). The kernel
-/// starts execution with SP 16-byte aligned. The AAPCS64 ABI expects SP
-/// to be 16-byte aligned at function entry.
+/// The Rue Mach-O executable is a dynamic executable (`LC_MAIN`), so dyld's
+/// bootstrap calls this entry point as the C `main(argc, argv, envp, apple)`:
+/// argc in `w0`, argv in `x1`, envp in `x2` (apple, in `x3`, is ignored). This
+/// differs from the Linux targets, where the kernel enters `_start` with the
+/// raw stack and a shim recovers the pointers. Receiving them as `extern "C"`
+/// parameters is what lets us capture them (RUE-935) — a register-only read
+/// would be clobbered by this function's prologue.
 ///
 /// # Safety
 ///
-/// This must only be entered by the macOS process loader with the initial
-/// stack and register state required by AAPCS64.
+/// This must only be entered by dyld with the AAPCS64 register/stack state of
+/// the process entry point.
 #[cfg(all(not(test), target_arch = "aarch64", target_os = "macos"))]
-pub(crate) unsafe fn _main() -> ! {
+pub(crate) unsafe fn _main(argc: i32, argv: *const *const u8, envp: *const *const u8) -> ! {
     use core::arch::asm;
 
     // main is defined by the user's code
     unsafe extern "C" {
         fn main() -> i32;
     }
+
+    // Capture argc/argv/envp handed to us by dyld before running user code so
+    // `std.env` can read them later (RUE-935).
+    // SAFETY: `argv`/`envp` are the loader-supplied vectors for this process.
+    unsafe { crate::process::capture(argc as u64, argv, envp) };
 
     // Install the stack-overflow SIGSEGV handler before running user code.
     // (A deliberate no-op on macOS; the Darwin trampoline is tracked by
@@ -172,24 +190,31 @@ pub(crate) unsafe fn _main() -> ! {
     platform::exit(exit_code)
 }
 
-/// Program entry point for Linux aarch64.
+/// Normal AAPCS64 function called by the prologue-free AArch64 Linux entry
+/// shim.
 ///
-/// On Linux, the entry point is `_start`. The kernel starts execution
-/// with SP 16-byte aligned. The AAPCS64 ABI expects SP to be 16-byte
-/// aligned at function entry.
+/// `stack` is the untouched initial `sp` the shim captured before aligning the
+/// stack; the System V startup layout places argc there (argc at `[sp]`, argv
+/// following, envp after the argv NULL), so the process module derives
+/// argc/argv/envp from it (RUE-935).
 ///
 /// # Safety
 ///
-/// This must only be entered by the Linux process loader with the initial
-/// stack and register state required by AAPCS64.
+/// This must only be entered from the `_start` shim with the initial stack
+/// pointer the kernel supplied at process entry.
 #[cfg(all(not(test), target_arch = "aarch64", target_os = "linux"))]
-pub(crate) unsafe fn _start() -> ! {
+pub(crate) fn __rue_aarch64_linux_start(stack: *const usize) -> ! {
     use core::arch::asm;
 
     // main is defined by the user's code
     unsafe extern "C" {
         fn main() -> i32;
     }
+
+    // Capture argc/argv/envp from the entry stack before any user code runs so
+    // `std.env` can read them later (RUE-935).
+    // SAFETY: `stack` is the initial process stack pointer from `_start`.
+    unsafe { crate::process::capture_from_stack(stack) };
 
     // Install the stack-overflow SIGSEGV handler before running user code so a
     // deep-recursion overflow aborts cleanly (RUE-645) instead of dying with a
@@ -198,8 +223,7 @@ pub(crate) unsafe fn _start() -> ! {
     platform::install_stack_overflow_handler(__rue_stack_overflow_handler);
 
     let exit_code: i32;
-    // SAFETY: This is the program entry point called by the kernel.
-    // - The kernel starts execution with SP 16-byte aligned
+    // SAFETY:
     // - `main` is an extern "C" function defined by user code and linked in
     // - The assembly uses the AAPCS64 calling convention
     // - After `main` returns, we pass its return value (in w0) to exit()

@@ -783,6 +783,53 @@ macro_rules! for_each_runtime_helper {
             result: VOID,
             safety: TERMINATES,
             returns: NEVER
+        },
+        ArgCount => safe __rue_arg_count() -> u64 {
+            symbol: "__rue_arg_count",
+            parameters: params![],
+            result: U64_RESULT,
+            // The runtime captured argc at process entry; reading a stored count
+            // imposes no caller obligation.
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        ArgPtr => safe __rue_arg_ptr(index: u64) -> *mut u8 {
+            symbol: "__rue_arg_ptr",
+            parameters: params![U64_VALUE],
+            result: MUT_POINTER_RESULT,
+            // The runtime bounds-checks `index` against the captured count and
+            // returns null when out of range, so the caller owes nothing.
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        ArgLen => safe __rue_arg_len(index: u64) -> u64 {
+            symbol: "__rue_arg_len",
+            parameters: params![U64_VALUE],
+            result: U64_RESULT,
+            // NUL-terminated scan of a captured argv entry; out-of-range yields 0.
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        EnvCount => safe __rue_env_count() -> u64 {
+            symbol: "__rue_env_count",
+            parameters: params![],
+            result: U64_RESULT,
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        EnvPtr => safe __rue_env_ptr(index: u64) -> *mut u8 {
+            symbol: "__rue_env_ptr",
+            parameters: params![U64_VALUE],
+            result: MUT_POINTER_RESULT,
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        EnvLen => safe __rue_env_len(index: u64) -> u64 {
+            symbol: "__rue_env_len",
+            parameters: params![U64_VALUE],
+            result: U64_RESULT,
+            safety: SafetyContract::NONE,
+            returns: RETURNS
         }
             }
     };
@@ -868,11 +915,23 @@ macro_rules! for_each_reserved_runtime_export {
                 class: ReservedExportClass::ProgramEntry,
                 signature: NEVER_FUNCTION
             }),
-            (MacosMain => function aarch64_macos unsafe _main() -> ! {
+            (MacosMain => function aarch64_macos unsafe _main(
+                argc: i32,
+                argv: *const *const u8,
+                envp: *const *const u8,
+            ) -> ! {
                 class: ReservedExportClass::ProgramEntry,
                 signature: NEVER_FUNCTION
             }),
-            (X86_64LinuxStart => function x86_64_linux safe __rue_x86_64_linux_start() -> ! {
+            (X86_64LinuxStart => function x86_64_linux safe __rue_x86_64_linux_start(
+                stack: *const usize,
+            ) -> ! {
+                class: ReservedExportClass::PlatformShim,
+                signature: NEVER_FUNCTION
+            }),
+            (Aarch64LinuxStart => function aarch64_linux safe __rue_aarch64_linux_start(
+                stack: *const usize,
+            ) -> ! {
                 class: ReservedExportClass::PlatformShim,
                 signature: NEVER_FUNCTION
             }),
@@ -1061,6 +1120,7 @@ macro_rules! define_reserved_exports {
     (@targets linux) => { TargetSet::X86_64_LINUX.union(TargetSet::AARCH64_LINUX) };
     (@targets aarch64_macos) => { TargetSet::AARCH64_MACOS };
     (@targets x86_64_linux) => { TargetSet::X86_64_LINUX };
+    (@targets aarch64_linux) => { TargetSet::AARCH64_LINUX };
 }
 
 for_each_reserved_runtime_export!(define_reserved_exports);
@@ -1214,7 +1274,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 35);
+        assert_eq!(RuntimeHelperId::ALL.len(), 41);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1271,6 +1331,12 @@ mod tests {
             "__rue_random_u32",
             "__rue_random_u64",
             "__rue_invalid_utf8",
+            "__rue_arg_count",
+            "__rue_arg_ptr",
+            "__rue_arg_len",
+            "__rue_env_count",
+            "__rue_env_ptr",
+            "__rue_env_len",
         ];
         assert_eq!(
             RUNTIME_HELPERS.map(|helper| helper.symbol),
@@ -1282,7 +1348,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 35],
+            visited: &mut [bool; 41],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1303,7 +1369,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 35];
+        let mut visited = [false; 41];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -1479,6 +1545,30 @@ mod tests {
             &mut visited,
             &[RuntimeHelperId::RandomU64],
             &[],
+            U64_RESULT,
+            SafetyContract::NONE,
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::ArgCount, RuntimeHelperId::EnvCount],
+            &[],
+            U64_RESULT,
+            SafetyContract::NONE,
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::ArgPtr, RuntimeHelperId::EnvPtr],
+            &[U64_VALUE],
+            MUT_POINTER_RESULT,
+            SafetyContract::NONE,
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::ArgLen, RuntimeHelperId::EnvLen],
+            &[U64_VALUE],
             U64_RESULT,
             SafetyContract::NONE,
             RETURNS,

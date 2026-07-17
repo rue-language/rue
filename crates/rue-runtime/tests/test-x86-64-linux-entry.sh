@@ -18,13 +18,17 @@ trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
 mkdir -p "$work_dir"
 
 # Pin the complete prologue-free shim encoding in the same optimized, LTO'd
-# staticlib embedded by the compiler. The call displacement is relocated, so
-# its four-byte placeholder is zero in the archive member.
+# staticlib embedded by the compiler. The shim first copies the untouched entry
+# %rsp (which points at argc) into %rdi so the Rust helper can capture
+# argc/argv/envp (RUE-935), then aligns the stack and calls the helper. The call
+# displacement is relocated, so its four-byte placeholder is zero in the archive
+# member.
 start_disassembly="$work_dir/start.disassembly"
 objdump -dr --disassemble=_start "$RUE_RUNTIME" > "$start_disassembly"
-grep -Eq '^[[:space:]]*0:[[:space:]]+48 83 e4 f0[[:space:]]+and' "$start_disassembly"
-grep -Eq '^[[:space:]]*4:[[:space:]]+e8 00 00 00 00[[:space:]]+call' "$start_disassembly"
-grep -Eq '^[[:space:]]*9:[[:space:]]+0f 0b[[:space:]]+ud2' "$start_disassembly"
+grep -Eq '^[[:space:]]*0:[[:space:]]+48 89 e7[[:space:]]+mov' "$start_disassembly"
+grep -Eq '^[[:space:]]*3:[[:space:]]+48 83 e4 f0[[:space:]]+and' "$start_disassembly"
+grep -Eq '^[[:space:]]*7:[[:space:]]+e8 00 00 00 00[[:space:]]+call' "$start_disassembly"
+grep -Eq '^[[:space:]]*c:[[:space:]]+0f 0b[[:space:]]+ud2' "$start_disassembly"
 grep -q '__rue_x86_64_linux_start' "$start_disassembly"
 nm -g --defined-only "$RUE_RUNTIME" | grep -Eq '[[:space:]]_start$'
 nm -g --defined-only "$RUE_RUNTIME" | grep -Eq '[[:space:]]__rue_x86_64_linux_start$'

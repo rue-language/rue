@@ -2072,3 +2072,71 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "[E0206]"
+
+# =============================================================================
+# Process arguments and environment: @arg_count / @arg_len / @arg_ptr and
+# @env_count / @env_len / @env_ptr (4.13:103-111, RUE-935)
+#
+# These read the loader-supplied argument and environment vectors captured at
+# process entry. The spec harness launches each program with no extra arguments
+# and the inherited environment, so only order-independent facts are asserted:
+# argv[0] is always present, and an out-of-range index yields 0 / null.
+# =============================================================================
+
+[[case]]
+name = "arg_count_includes_argv0"
+spec = ["4.13:103", "4.13:104"]
+description = "@arg_count() counts argv[0], so a program launched with no extra arguments still observes at least one argument."
+source = """
+fn main() -> i32 {
+    @dbg(@arg_count() >= 1);
+    0
+}
+"""
+expected_stdout = """
+true
+"""
+exit_code = 0
+
+[[case]]
+name = "arg_len_and_ptr_in_and_out_of_range"
+spec = ["4.13:105", "4.13:106"]
+description = "@arg_len(0)/@arg_ptr(0) describe the non-empty argv[0], while an index equal to @arg_count() yields length 0 and a null pointer."
+source = """
+fn main() -> i32 {
+    let n = @arg_count();
+    @dbg(@arg_len(0) > 0);
+    @dbg(@arg_len(n) == 0);
+    let in_range_non_null: bool = checked { @ptr_to_int(@arg_ptr(0)) != 0 };
+    let out_of_range_null: bool = checked { @ptr_to_int(@arg_ptr(n)) == 0 };
+    @dbg(in_range_non_null);
+    @dbg(out_of_range_null);
+    0
+}
+"""
+expected_stdout = """
+true
+true
+true
+true
+"""
+exit_code = 0
+
+[[case]]
+name = "env_len_and_ptr_out_of_range"
+spec = ["4.13:108", "4.13:109", "4.13:110"]
+description = "An environment index equal to @env_count() yields length 0 from @env_len and a null pointer from @env_ptr, regardless of how many entries the environment holds."
+source = """
+fn main() -> i32 {
+    let n = @env_count();
+    @dbg(@env_len(n) == 0);
+    let out_of_range_null: bool = checked { @ptr_to_int(@env_ptr(n)) == 0 };
+    @dbg(out_of_range_null);
+    0
+}
+"""
+expected_stdout = """
+true
+true
+"""
+exit_code = 0

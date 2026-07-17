@@ -1,0 +1,143 @@
+# Command-line arguments and environment access through std.env (RUE-935).
+#
+# These are the first Rue programs to consume runtime argv/envp. The runtime
+# captures argc/argv/envp at process entry and exposes them through the
+# `__rue_arg_*`/`__rue_env_*` ABI helpers; the `@arg_*`/`@env_*` intrinsic
+# bridge lowers std.env's accessors onto those helpers. The harness passes
+# runtime argv via `program_args` and env via `program_env`.
+
+[section]
+id = "cli.std_env"
+name = "std.env command-line and environment access"
+description = "argv/envp capture surfaced through std.env.arg_count/arg/args/var."
+
+# arg_count() counts argv[0] plus every passed argument.
+[[case]]
+name = "arg_count_includes_argv0_and_passed_args"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["alpha", "beta"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    // argv[0] + "alpha" + "beta" == 3.
+    @dbg(std.env.arg_count());
+    0
+}
+""" }]
+stdout = "3\n"
+exit_code = 0
+
+# arg(i) returns each argument as an owned StrBuf; argv[0] is the program path,
+# so echo only argv[1..] to keep the assertion path-independent.
+[[case]]
+name = "args_are_echoed_in_order"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["hello", "world"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Opt = std.option.Option(StrBuf);
+
+fn main() -> i32 {
+    let n = std.env.arg_count();
+    let mut i: u64 = 1;               // skip argv[0] (the program path)
+    while i < n {
+        match std.env.arg(i) {
+            Opt.Some(a) => @dbg(a),
+            Opt.None => {},
+        }
+        i = i + 1;
+    }
+    0
+}
+""" }]
+stdout = "hello\nworld\n"
+exit_code = 0
+
+# argv[0] is always present: arg(0) is Some and has a non-zero length. Exit with
+# the low byte of that length being non-zero is path-dependent, so just assert
+# arg(0) is Some by printing a marker.
+[[case]]
+name = "argv0_is_present"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Opt = std.option.Option(StrBuf);
+
+fn main() -> i32 {
+    match std.env.arg(0) {
+        Opt.Some(a) => { @dbg("has-argv0"); @dbg(a.len() > 0); },
+        Opt.None => @dbg("no-argv0"),
+    }
+    0
+}
+""" }]
+stdout = "has-argv0\ntrue\n"
+exit_code = 0
+
+# An out-of-range argument index yields None.
+[[case]]
+name = "arg_out_of_range_is_none"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["only"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Opt = std.option.Option(StrBuf);
+
+fn main() -> i32 {
+    let n = std.env.arg_count();       // 2: argv[0] + "only"
+    match std.env.arg(n) {             // one past the last -> None
+        Opt.Some(a) => @dbg(a),
+        Opt.None => @dbg("none"),
+    }
+    0
+}
+""" }]
+stdout = "none\n"
+exit_code = 0
+
+# var(name) returns the value of a present environment variable.
+[[case]]
+name = "var_present_returns_value"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_env = { RUE_CLI_ENV_MARKER = "present-value" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Opt = std.option.Option(StrBuf);
+
+fn main() -> i32 {
+    let key: StrBuf = "RUE_CLI_ENV_MARKER";
+    match std.env.var(borrow key) {
+        Opt.Some(v) => @dbg(v),
+        Opt.None => @dbg("absent"),
+    }
+    0
+}
+""" }]
+stdout = "present-value\n"
+exit_code = 0
+
+# var(name) returns None for an absent environment variable.
+[[case]]
+name = "var_absent_returns_none"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Opt = std.option.Option(StrBuf);
+
+fn main() -> i32 {
+    let key: StrBuf = "RUE_CLI_DEFINITELY_UNSET_VARIABLE";
+    match std.env.var(borrow key) {
+        Opt.Some(v) => @dbg(v),
+        Opt.None => @dbg("absent"),
+    }
+    0
+}
+""" }]
+stdout = "absent\n"
+exit_code = 0

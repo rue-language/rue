@@ -433,6 +433,12 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         ("random_u32", ExternalDependencyKind::RandomU32),
         ("random_u64", ExternalDependencyKind::RandomU64),
         ("syscall", ExternalDependencyKind::SystemCall),
+        ("arg_count", ExternalDependencyKind::ArgCount),
+        ("arg_ptr", ExternalDependencyKind::ArgPtr),
+        ("arg_len", ExternalDependencyKind::ArgLen),
+        ("env_count", ExternalDependencyKind::EnvCount),
+        ("env_ptr", ExternalDependencyKind::EnvPtr),
+        ("env_len", ExternalDependencyKind::EnvLen),
     ] {
         assert_eq!(
             unsupported_intrinsic_kind(name),

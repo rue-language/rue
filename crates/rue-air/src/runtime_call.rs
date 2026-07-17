@@ -139,6 +139,12 @@ pub enum RuntimeCallKind {
     AllocBytes,
     FreeBytes,
     ReallocBytes,
+    ArgCount,
+    ArgPtr,
+    ArgLen,
+    EnvCount,
+    EnvPtr,
+    EnvLen,
 }
 
 const STR_BYTE_AT: &[RuntimeOperandOrigin] = &[
@@ -229,6 +235,13 @@ const ALLOC_BYTES: &[RuntimeOperandOrigin] = &[
     },
     RuntimeOperandOrigin::ByteAlignment,
 ];
+// The indexed process-inventory accessors (`@arg_ptr`/`@arg_len`/`@env_ptr`/
+// `@env_len`, RUE-935) all pass a single `u64` index straight through to the
+// runtime helper.
+const PROCESS_INDEX: &[RuntimeOperandOrigin] = &[RuntimeOperandOrigin::ValueArgument {
+    index: 0,
+    ty: AbiType::U64,
+}];
 const FREE_BYTES: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::MutablePointerArgument {
         index: 0,
@@ -257,7 +270,7 @@ const REALLOC_BYTES: &[RuntimeOperandOrigin] = &[
 ];
 
 impl RuntimeCallKind {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 38] = [
         Self::StrByteAt,
         Self::StrCharScalar,
         Self::StrCharNext,
@@ -290,6 +303,12 @@ impl RuntimeCallKind {
         Self::AllocBytes,
         Self::FreeBytes,
         Self::ReallocBytes,
+        Self::ArgCount,
+        Self::ArgPtr,
+        Self::ArgLen,
+        Self::EnvCount,
+        Self::EnvPtr,
+        Self::EnvLen,
     ];
 
     pub const fn helper(self) -> RuntimeHelperId {
@@ -321,6 +340,12 @@ impl RuntimeCallKind {
             Self::AllocTyped | Self::AllocBytes => RuntimeHelperId::Alloc,
             Self::FreeTyped | Self::FreeBytes => RuntimeHelperId::Free,
             Self::ReallocTyped | Self::ReallocBytes => RuntimeHelperId::Realloc,
+            Self::ArgCount => RuntimeHelperId::ArgCount,
+            Self::ArgPtr => RuntimeHelperId::ArgPtr,
+            Self::ArgLen => RuntimeHelperId::ArgLen,
+            Self::EnvCount => RuntimeHelperId::EnvCount,
+            Self::EnvPtr => RuntimeHelperId::EnvPtr,
+            Self::EnvLen => RuntimeHelperId::EnvLen,
         }
     }
 
@@ -344,7 +369,13 @@ impl RuntimeCallKind {
             Self::DebugI64 => SIGNED_SCALAR,
             Self::DebugU64 => UNSIGNED_SCALAR,
             Self::DebugBool => BOOL_SCALAR,
-            Self::PanicNoMessage | Self::AssertFailed | Self::RandomU32 | Self::RandomU64 => NONE,
+            Self::PanicNoMessage
+            | Self::AssertFailed
+            | Self::RandomU32
+            | Self::RandomU64
+            | Self::ArgCount
+            | Self::EnvCount => NONE,
+            Self::ArgPtr | Self::ArgLen | Self::EnvPtr | Self::EnvLen => PROCESS_INDEX,
             Self::ReadLine => READ_LINE,
             Self::ParseI32 | Self::ParseI64 | Self::ParseU32 | Self::ParseU64 => PARSE,
             Self::AllocTyped => ALLOC_TYPED,

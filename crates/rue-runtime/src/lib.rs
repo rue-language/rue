@@ -151,6 +151,7 @@ pub mod error;
 pub mod io;
 pub mod memory;
 pub mod parse;
+pub mod process;
 pub mod random;
 pub mod string;
 
@@ -190,6 +191,12 @@ macro_rules! call_runtime_helper_implementation {
     (__rue_random_u32($($argument:expr),*)) => { crate::random::__rue_random_u32($($argument),*) };
     (__rue_random_u64($($argument:expr),*)) => { crate::random::__rue_random_u64($($argument),*) };
     (__rue_invalid_utf8($($argument:expr),*)) => { crate::error::__rue_invalid_utf8($($argument),*) };
+    (__rue_arg_count($($argument:expr),*)) => { crate::process::__rue_arg_count($($argument),*) };
+    (__rue_arg_ptr($($argument:expr),*)) => { crate::process::__rue_arg_ptr($($argument),*) };
+    (__rue_arg_len($($argument:expr),*)) => { crate::process::__rue_arg_len($($argument),*) };
+    (__rue_env_count($($argument:expr),*)) => { crate::process::__rue_env_count($($argument),*) };
+    (__rue_env_ptr($($argument:expr),*)) => { crate::process::__rue_env_ptr($($argument),*) };
+    (__rue_env_len($($argument:expr),*)) => { crate::process::__rue_env_len($($argument),*) };
 }
 
 macro_rules! declare_runtime_helper {
@@ -247,7 +254,9 @@ macro_rules! call_reserved_export_implementation {
     (__rue_x86_64_linux_start($($argument:expr),*)) => {
         crate::entry::__rue_x86_64_linux_start($($argument),*)
     };
-    (_start($($argument:expr),*)) => { crate::entry::_start($($argument),*) };
+    (__rue_aarch64_linux_start($($argument:expr),*)) => {
+        crate::entry::__rue_aarch64_linux_start($($argument),*)
+    };
 }
 
 macro_rules! declare_reserved_function {
@@ -283,23 +292,32 @@ macro_rules! declare_reserved_function {
             call_reserved_export_implementation!($function($($argument),*))
         }
     };
+    (
+        aarch64_linux safe $function:ident($($argument:ident : $rust_type:ty),* $(,)?)
+        $(-> $result:ty)?
+    ) => {
+        #[cfg(all(not(test), target_arch = "aarch64", target_os = "linux"))]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $function($($argument: $rust_type),*) $(-> $result)? {
+            call_reserved_export_implementation!($function($($argument),*))
+        }
+    };
 }
 
 macro_rules! declare_linux_entry {
     (linux unsafe $function:ident() -> $result:ty) => {
-        #[cfg(all(not(test), target_arch = "aarch64", target_os = "linux"))]
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $function() -> $result {
-            // SAFETY: This is entered only through the platform entry ABI.
-            unsafe { call_reserved_export_implementation!($function()) }
-        }
-
+        // x86-64 Linux: a prologue-free shim that captures the untouched entry
+        // `%rsp` (which points at argc) into the first argument register before
+        // aligning the stack, then tail-calls the Rust start helper. Capturing
+        // before `and rsp, -16` is required — the alignment can move `%rsp`, and
+        // the helper's own prologue would otherwise clobber the entry pointer.
         #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
         core::arch::global_asm!(
             concat!(".pushsection .text.", stringify!($function), ",\"ax\",@progbits"),
             concat!(".global ", stringify!($function)),
             concat!(".type ", stringify!($function), ",@function"),
             concat!(stringify!($function), ":"),
+            "mov rdi, rsp",
             "and rsp, -16",
             "call {start}",
             "ud2",
@@ -308,12 +326,46 @@ macro_rules! declare_linux_entry {
             start = sym __rue_x86_64_linux_start,
         );
 
-        #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
+        // AArch64 Linux: the same idea. The kernel enters `_start` with `sp`
+        // pointing at argc; a plain Rust entry function's prologue would adjust
+        // `sp` before we could read it, so the shim captures `sp` into `x0`
+        // first and calls the Rust start helper.
+        #[cfg(all(not(test), target_arch = "aarch64", target_os = "linux"))]
+        core::arch::global_asm!(
+            concat!(".pushsection .text.", stringify!($function), ",\"ax\",@progbits"),
+            concat!(".global ", stringify!($function)),
+            concat!(".type ", stringify!($function), ",@function"),
+            concat!(stringify!($function), ":"),
+            "mov x0, sp",
+            // AArch64 logical-immediate ops cannot target SP directly; align
+            // through a scratch register (x9 is caller-saved and dead at entry).
+            "and x9, x0, #-16",
+            "mov sp, x9",
+            "bl {start}",
+            "brk #0x1",
+            concat!(".size ", stringify!($function), ", .-", stringify!($function)),
+            ".popsection",
+            start = sym __rue_aarch64_linux_start,
+        );
+
+        #[cfg(all(
+            not(test),
+            any(
+                all(target_arch = "x86_64", target_os = "linux"),
+                all(target_arch = "aarch64", target_os = "linux")
+            )
+        ))]
         unsafe extern "C" {
             fn $function() -> $result;
         }
 
-        #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
+        #[cfg(all(
+            not(test),
+            any(
+                all(target_arch = "x86_64", target_os = "linux"),
+                all(target_arch = "aarch64", target_os = "linux")
+            )
+        ))]
         const _: unsafe extern "C" fn() -> $result = $function;
     };
 }

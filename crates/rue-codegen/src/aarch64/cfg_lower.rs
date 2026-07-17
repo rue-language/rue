@@ -1411,6 +1411,18 @@ impl<'a> CfgLower<'a> {
                 )
                 .primary
             }
+            crate::value_plan::IntrinsicOperation::ArgCount
+            | crate::value_plan::IntrinsicOperation::ArgPtr
+            | crate::value_plan::IntrinsicOperation::ArgLen
+            | crate::value_plan::IntrinsicOperation::EnvCount
+            | crate::value_plan::IntrinsicOperation::EnvPtr
+            | crate::value_plan::IntrinsicOperation::EnvLen => {
+                self.lower_runtime_call(
+                    plan.runtime_call
+                        .expect("process arg/env intrinsic runtime call plan"),
+                )
+                .primary
+            }
             crate::value_plan::IntrinsicOperation::PtrToInt
             | crate::value_plan::IntrinsicOperation::IntToPtr => {
                 let dst = self.mir.alloc_vreg();

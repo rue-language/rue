@@ -52,6 +52,11 @@ use crate::constants::{
     R_AARCH64_ADR_PREL_PG_HI21,
     R_AARCH64_CALL26,
     R_AARCH64_JUMP26,
+    R_AARCH64_LDST8_ABS_LO12_NC,
+    R_AARCH64_LDST16_ABS_LO12_NC,
+    R_AARCH64_LDST32_ABS_LO12_NC,
+    R_AARCH64_LDST64_ABS_LO12_NC,
+    R_AARCH64_LDST128_ABS_LO12_NC,
     R_X86_64_32,
     R_X86_64_32S,
     R_X86_64_64,
@@ -303,6 +308,16 @@ pub enum RelocationType {
     AdrpPage21,
     /// R_AARCH64_ADD_ABS_LO12_NC: AArch64 ADD instruction page offset.
     AddLo12,
+    /// R_AARCH64_LDST8_ABS_LO12_NC: 8-bit load/store page offset (imm12 << 0).
+    Ldst8Lo12,
+    /// R_AARCH64_LDST16_ABS_LO12_NC: 16-bit load/store page offset (imm12 << 1).
+    Ldst16Lo12,
+    /// R_AARCH64_LDST32_ABS_LO12_NC: 32-bit load/store page offset (imm12 << 2).
+    Ldst32Lo12,
+    /// R_AARCH64_LDST64_ABS_LO12_NC: 64-bit load/store page offset (imm12 << 3).
+    Ldst64Lo12,
+    /// R_AARCH64_LDST128_ABS_LO12_NC: 128-bit load/store page offset (imm12 << 4).
+    Ldst128Lo12,
     /// Unknown relocation type.
     Unknown(u32),
 }
@@ -325,6 +340,11 @@ impl RelocationType {
                 R_AARCH64_ABS64 => RelocationType::Aarch64Abs64,
                 R_AARCH64_ADR_PREL_PG_HI21 => RelocationType::AdrpPage21,
                 R_AARCH64_ADD_ABS_LO12_NC => RelocationType::AddLo12,
+                R_AARCH64_LDST8_ABS_LO12_NC => RelocationType::Ldst8Lo12,
+                R_AARCH64_LDST16_ABS_LO12_NC => RelocationType::Ldst16Lo12,
+                R_AARCH64_LDST32_ABS_LO12_NC => RelocationType::Ldst32Lo12,
+                R_AARCH64_LDST64_ABS_LO12_NC => RelocationType::Ldst64Lo12,
+                R_AARCH64_LDST128_ABS_LO12_NC => RelocationType::Ldst128Lo12,
                 R_AARCH64_JUMP26 => RelocationType::Jump26,
                 R_AARCH64_CALL26 => RelocationType::Call26,
                 _ => RelocationType::Unknown(r_type),
@@ -2023,6 +2043,26 @@ mod tests {
         assert_eq!(
             RelocationType::from_elf(R_AARCH64_CALL26, Aarch64),
             RelocationType::Call26
+        );
+        assert_eq!(
+            RelocationType::from_elf(R_AARCH64_LDST8_ABS_LO12_NC, Aarch64),
+            RelocationType::Ldst8Lo12
+        );
+        assert_eq!(
+            RelocationType::from_elf(R_AARCH64_LDST16_ABS_LO12_NC, Aarch64),
+            RelocationType::Ldst16Lo12
+        );
+        assert_eq!(
+            RelocationType::from_elf(R_AARCH64_LDST32_ABS_LO12_NC, Aarch64),
+            RelocationType::Ldst32Lo12
+        );
+        assert_eq!(
+            RelocationType::from_elf(R_AARCH64_LDST64_ABS_LO12_NC, Aarch64),
+            RelocationType::Ldst64Lo12
+        );
+        assert_eq!(
+            RelocationType::from_elf(R_AARCH64_LDST128_ABS_LO12_NC, Aarch64),
+            RelocationType::Ldst128Lo12
         );
         assert_eq!(
             RelocationType::from_elf(99, Aarch64),

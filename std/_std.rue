@@ -40,6 +40,12 @@ pub const strings = @import("strings.rue");
 pub const sort = @import("sort.rue");
 pub const rand = @import("rand.rue");
 
+// Process environment: command-line arguments and environment variables
+// (RUE-935). Backed by runtime-captured argc/argv/envp exposed through the
+// runtime ABI. Functional once the `@arg_*`/`@env_*` intrinsic bridge lands
+// (see std/env.rue); the accessors are analyzed only when called.
+pub const env = @import("env.rue");
+
 fn _exit_syscall_number() -> u64 {
     match @target_arch() {
         Arch.X86_64 => {
