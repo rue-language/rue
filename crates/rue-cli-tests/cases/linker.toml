@@ -22,50 +22,65 @@ fn main() -> i32 { 0 }
 """ }]
 args = ["main.rue", "--target", "aarch64-macos", "-o", "prog"]
 compile_only = true
+executable_target = "aarch64-macos"
 compile_stderr_not_contains = ["DEBUG"]
 
 # ---------------------------------------------------------------------------
 # RUE-36 / ADR-0034: cross-target executable links select target runtimes.
-# Each case is scoped to hosts where the requested target is foreign.
+# Every supported CI host builds every target. The harness inspects foreign
+# executables without running them and executes the matching native member.
 # ---------------------------------------------------------------------------
 
 [[case]]
 name = "cross_link_to_aarch64_linux_succeeds"
-description = "On non-aarch64-linux hosts, --target aarch64-linux links with the target runtime."
+description = "Every supported host produces a bounded AArch64 ELF with a resolved runtime entry branch; the native host also exercises strings and allocation."
+# Keep the original minimal inline source as parser-corpus continuity; this
+# matrix case compiles the checked-in runtime smoke via source_path below.
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { 0 }
 """ }]
-args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
-compile_only = true
-only_on = ["x86-64-linux", "aarch64-macos"]
+source_path = "cli-test-fixtures/cross_runtime_smoke.rue"
+args = ["${SOURCE}", "--target", "aarch64-linux", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "runtime matrix\n"
+exit_code = 42
 
 [[case]]
 name = "cross_link_to_x86_64_linux_succeeds"
-description = "On aarch64 hosts, --target x86-64-linux links with the target runtime."
+description = "Every supported host produces a bounded x86-64 ELF with a resolved runtime entry call; the native host also exercises strings and allocation."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { 0 }
 """ }]
-args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
-compile_only = true
-only_on = ["aarch64-linux", "aarch64-macos"]
+source_path = "cli-test-fixtures/cross_runtime_smoke.rue"
+args = ["${SOURCE}", "--target", "x86-64-linux", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "runtime matrix\n"
+exit_code = 42
 
 [[case]]
 name = "cross_link_to_aarch64_macos_succeeds"
-description = "On linux hosts, --target aarch64-macos links with the target runtime without debug spew."
+description = "Every supported host produces a bounded arm64 Mach-O with valid loads, relocations, and entry branch; the native host also exercises strings and allocation."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { 0 }
 """ }]
-args = ["main.rue", "--target", "aarch64-macos", "-o", "prog"]
-compile_only = true
-compile_stderr_not_contains = ["Plt32", "unsupported relocation"]
-only_on = ["x86-64-linux", "aarch64-linux"]
+source_path = "cli-test-fixtures/cross_runtime_smoke.rue"
+args = ["${SOURCE}", "--target", "aarch64-macos", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+executable_target = "aarch64-macos"
+execute_if_native = true
+compile_stderr_not_contains = ["DEBUG", "Plt32", "unsupported relocation"]
+stdout = "runtime matrix\n"
+exit_code = 42
 
-# Cross-target CODEGEN must keep working everywhere: --emit asm doesn't link,
-# so it must not be affected by the RUE-36 refusal. These run on every host
-# (on the matching host they're a native emit, which must also work).
+# Cross-target CODEGEN must keep working everywhere independently of linking.
+# These run on every host (on the matching host they are native emits).
 [[case]]
 name = "emit_asm_for_aarch64_linux_works_everywhere"
-description = "--emit asm --target aarch64-linux prints aarch64 assembly on any host (no link, no RUE-36 refusal)."
+description = "--emit asm --target aarch64-linux prints aarch64 assembly on any host without linking."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { 42 }
 """ }]
@@ -79,7 +94,7 @@ compile_stdout_contains = [
 
 [[case]]
 name = "emit_asm_for_x86_64_linux_works_everywhere"
-description = "--emit asm --target x86-64-linux prints x86-64 assembly on any host (no link, no RUE-36 refusal)."
+description = "--emit asm --target x86-64-linux prints x86-64 assembly on any host without linking."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { 42 }
 """ }]

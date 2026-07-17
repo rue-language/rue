@@ -35,7 +35,8 @@
 //! ```
 //!
 //! Optional fields:
-//! - `args`: explicit compiler args (default: `[<first file>, "-o", "prog"]`)
+//! - `args`: explicit compiler args (default: `[<first file>, "-o", "prog"]`);
+//!   `${SOURCE}` expands to the resolved `source_path`
 //! - `source_path`: repo-root-relative source path to compile instead of
 //!   inline `files`, for cases that should pin a checked-in example/program
 //! - `output`: name of produced executable (default `"prog"`)
@@ -44,6 +45,11 @@
 //! - `stdin`: piped to the compiled program when it runs
 //! - `compile_fail` + `error_contains`: expect compilation failure
 //! - `compile_only`: don't run the produced binary
+//! - `executable_target`: validate the produced executable's bounded ELF or
+//!   Mach-O structure, architecture, load commands, entry point, and resolved
+//!   entry relocation against this Rue target
+//! - `execute_if_native`: run the executable only when `executable_target`
+//!   matches the current host; foreign matrix members remain inspection-only
 //! - `compile_stdout_contains`: substrings that must appear in compiler stdout (e.g. `--emit`)
 //! - `compile_stdout_not_contains`: substrings that must not appear in compiler stdout
 //! - `stdout` / `stdout_contains`: assert on the program's stdout
@@ -85,6 +91,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
+use rue_target::{Arch, Target};
 use rue_test_runner::{
     DEFAULT_TIMEOUT_MS, ExpectedFailureOutcome, KNOWN_TARGETS, TestFailure, TestResult,
     classify_expected_failure, compiler_command, find_dir, find_rue_binary, ice_message,
@@ -424,6 +431,14 @@ struct Case {
     /// Compile but don't run the produced binary.
     #[serde(default)]
     compile_only: bool,
+    /// Target whose executable structure must be validated after compilation.
+    #[serde(default)]
+    executable_target: Option<String>,
+    /// Run a structurally validated executable only when it is native to this
+    /// host. This lets one case cover every host-target compile pair without
+    /// attempting to execute foreign machine code.
+    #[serde(default)]
+    execute_if_native: bool,
     /// Substrings expected in the compiler's stdout (e.g. `--emit` output).
     #[serde(default)]
     compile_stdout_contains: Vec<String>,
@@ -501,6 +516,386 @@ struct RunOutcome {
     ran: bool,
     exit_code: Option<i32>,
     stdout: String,
+}
+
+const MAX_EXECUTABLE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_LOAD_ENTRIES: usize = 64;
+const MAX_SECTIONS: usize = 4096;
+const MAX_RELOCATIONS: usize = 1_000_000;
+
+fn checked_region(offset: u64, size: u64, limit: usize, label: &str) -> Result<(), String> {
+    let end = offset
+        .checked_add(size)
+        .ok_or_else(|| format!("{label} range overflows"))?;
+    if end > limit as u64 {
+        return Err(format!(
+            "{label} range {offset:#x}..{end:#x} exceeds file size {limit:#x}"
+        ));
+    }
+    Ok(())
+}
+
+fn read_u16(bytes: &[u8], offset: usize, label: &str) -> Result<u16, String> {
+    let raw = bytes
+        .get(offset..offset + 2)
+        .ok_or_else(|| format!("truncated {label}"))?;
+    Ok(u16::from_le_bytes(raw.try_into().unwrap()))
+}
+
+fn read_u32(bytes: &[u8], offset: usize, label: &str) -> Result<u32, String> {
+    let raw = bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| format!("truncated {label}"))?;
+    Ok(u32::from_le_bytes(raw.try_into().unwrap()))
+}
+
+fn read_u64(bytes: &[u8], offset: usize, label: &str) -> Result<u64, String> {
+    let raw = bytes
+        .get(offset..offset + 8)
+        .ok_or_else(|| format!("truncated {label}"))?;
+    Ok(u64::from_le_bytes(raw.try_into().unwrap()))
+}
+
+fn validate_aarch64_entry_branch(
+    bytes: &[u8],
+    entry_offset: usize,
+    entry_address: u64,
+    executable_start: u64,
+    executable_end: u64,
+) -> Result<(), String> {
+    if entry_address % 4 != 0 || entry_offset % 4 != 0 {
+        return Err("AArch64 entry point is not 4-byte aligned".to_string());
+    }
+    for byte_offset in (0..64).step_by(4) {
+        let instruction_offset = entry_offset
+            .checked_add(byte_offset)
+            .ok_or_else(|| "entry instruction offset overflows".to_string())?;
+        let instruction = read_u32(bytes, instruction_offset, "AArch64 entry instruction")?;
+        if instruction & 0xfc00_0000 != 0x9400_0000 {
+            continue;
+        }
+        let displacement = (((instruction & 0x03ff_ffff) << 6) as i32 >> 4) as i64;
+        let instruction_address = entry_address
+            .checked_add(byte_offset as u64)
+            .ok_or_else(|| "entry instruction address overflows".to_string())?;
+        let target = instruction_address
+            .checked_add_signed(displacement)
+            .ok_or_else(|| "entry BL target overflows".to_string())?;
+        if (executable_start..executable_end).contains(&target) {
+            return Ok(());
+        }
+        return Err(format!(
+            "AArch64 entry BL resolves outside executable code: {target:#x}"
+        ));
+    }
+    Err("AArch64 entry contains no resolved BL instruction in its first 64 bytes".to_string())
+}
+
+fn validate_elf_executable(bytes: &[u8], target: Target) -> Result<(), String> {
+    if bytes.len() < 64 || bytes.get(..4) != Some(b"\x7fELF") {
+        return Err("output is not an ELF file".to_string());
+    }
+    if bytes[4..7] != [2, 1, 1] {
+        return Err("ELF is not a little-endian ELF64 version 1 file".to_string());
+    }
+    if read_u16(bytes, 16, "ELF type")? != 2 {
+        return Err("ELF output is not ET_EXEC".to_string());
+    }
+    let expected_machine = target
+        .elf_machine()
+        .ok_or_else(|| format!("{target} does not use ELF"))?;
+    let machine = read_u16(bytes, 18, "ELF machine")?;
+    if machine != expected_machine {
+        return Err(format!(
+            "ELF machine is {machine:#x}, expected {expected_machine:#x} for {target}"
+        ));
+    }
+    if read_u32(bytes, 20, "ELF version")? != 1 {
+        return Err("ELF header version is not 1".to_string());
+    }
+
+    let entry = read_u64(bytes, 24, "ELF entry")?;
+    let phoff = read_u64(bytes, 32, "ELF program-header offset")?;
+    let shoff = read_u64(bytes, 40, "ELF section-header offset")?;
+    let phentsize = read_u16(bytes, 54, "ELF program-header size")? as u64;
+    let phnum = read_u16(bytes, 56, "ELF program-header count")? as usize;
+    let shentsize = read_u16(bytes, 58, "ELF section-header size")? as u64;
+    let shnum = read_u16(bytes, 60, "ELF section-header count")? as usize;
+    if phentsize != 56 || phnum == 0 || phnum > MAX_LOAD_ENTRIES {
+        return Err(format!(
+            "ELF has invalid bounded program-header layout: size={phentsize}, count={phnum}"
+        ));
+    }
+    checked_region(
+        phoff,
+        phentsize * phnum as u64,
+        bytes.len(),
+        "ELF program headers",
+    )?;
+
+    let mut executable_load = None;
+    let mut load_count = 0;
+    for index in 0..phnum {
+        let offset = (phoff + index as u64 * phentsize) as usize;
+        if read_u32(bytes, offset, "ELF segment type")? != 1 {
+            continue;
+        }
+        load_count += 1;
+        let flags = read_u32(bytes, offset + 4, "ELF segment flags")?;
+        let file_offset = read_u64(bytes, offset + 8, "ELF segment file offset")?;
+        let virtual_address = read_u64(bytes, offset + 16, "ELF segment address")?;
+        let file_size = read_u64(bytes, offset + 32, "ELF segment file size")?;
+        let memory_size = read_u64(bytes, offset + 40, "ELF segment memory size")?;
+        let alignment = read_u64(bytes, offset + 48, "ELF segment alignment")?;
+        if file_size > memory_size {
+            return Err(format!("ELF PT_LOAD {index} has filesz larger than memsz"));
+        }
+        checked_region(file_offset, file_size, bytes.len(), "ELF PT_LOAD")?;
+        if alignment > 1
+            && (!alignment.is_power_of_two()
+                || virtual_address % alignment != file_offset % alignment)
+        {
+            return Err(format!("ELF PT_LOAD {index} has invalid alignment"));
+        }
+        let virtual_end = virtual_address
+            .checked_add(file_size)
+            .ok_or_else(|| "ELF PT_LOAD virtual range overflows".to_string())?;
+        if flags & 1 != 0 && (virtual_address..virtual_end).contains(&entry) {
+            let entry_offset = file_offset
+                .checked_add(entry - virtual_address)
+                .ok_or_else(|| "ELF entry file offset overflows".to_string())?;
+            executable_load = Some((entry_offset as usize, virtual_address, virtual_end));
+        }
+    }
+    if load_count == 0 || load_count > MAX_LOAD_ENTRIES {
+        return Err(format!("ELF has invalid PT_LOAD count {load_count}"));
+    }
+    let (entry_offset, executable_start, executable_end) = executable_load
+        .ok_or_else(|| "ELF entry is not backed by an executable PT_LOAD".to_string())?;
+
+    if shnum > MAX_SECTIONS {
+        return Err(format!(
+            "ELF section count {shnum} exceeds limit {MAX_SECTIONS}"
+        ));
+    }
+    if shnum > 0 {
+        if shentsize < 64 {
+            return Err("ELF section-header entries are too small".to_string());
+        }
+        checked_region(
+            shoff,
+            shentsize * shnum as u64,
+            bytes.len(),
+            "ELF section headers",
+        )?;
+        for index in 0..shnum {
+            let offset = (shoff + index as u64 * shentsize) as usize;
+            let kind = read_u32(bytes, offset + 4, "ELF section type")?;
+            if kind == 4 || kind == 9 {
+                let relocation_offset = read_u64(bytes, offset + 24, "ELF relocation offset")?;
+                let relocation_size = read_u64(bytes, offset + 32, "ELF relocation size")?;
+                let entry_size = read_u64(bytes, offset + 56, "ELF relocation entry size")?;
+                if entry_size == 0
+                    || relocation_size % entry_size != 0
+                    || relocation_size / entry_size > MAX_RELOCATIONS as u64
+                {
+                    return Err(format!("ELF relocation section {index} is not bounded"));
+                }
+                checked_region(
+                    relocation_offset,
+                    relocation_size,
+                    bytes.len(),
+                    "ELF relocations",
+                )?;
+            }
+        }
+    }
+
+    match target.arch() {
+        Arch::X86_64 => {
+            let entry_bytes = bytes
+                .get(entry_offset..entry_offset + 11)
+                .ok_or_else(|| "truncated x86-64 entry point".to_string())?;
+            if entry_bytes[..5] != [0x48, 0x83, 0xe4, 0xf0, 0xe8]
+                || entry_bytes[9..] != [0x0f, 0x0b]
+            {
+                return Err(
+                    "x86-64 entry does not contain the runtime alignment/call/ud2 shim".to_string(),
+                );
+            }
+            let displacement = i32::from_le_bytes(entry_bytes[5..9].try_into().unwrap()) as i64;
+            let target_address = entry
+                .checked_add(9)
+                .and_then(|address| address.checked_add_signed(displacement))
+                .ok_or_else(|| "x86-64 entry call target overflows".to_string())?;
+            if !(executable_start..executable_end).contains(&target_address) {
+                return Err(format!(
+                    "x86-64 entry call resolves outside executable code: {target_address:#x}"
+                ));
+            }
+        }
+        Arch::Aarch64 => validate_aarch64_entry_branch(
+            bytes,
+            entry_offset,
+            entry,
+            executable_start,
+            executable_end,
+        )?,
+    }
+    Ok(())
+}
+
+fn validate_macho_executable(bytes: &[u8], target: Target) -> Result<(), String> {
+    if target != Target::Aarch64Macos {
+        return Err(format!("{target} does not use Mach-O"));
+    }
+    if bytes.len() < 32 || bytes.get(..4) != Some(&[0xcf, 0xfa, 0xed, 0xfe]) {
+        return Err("output is not a little-endian 64-bit Mach-O file".to_string());
+    }
+    if read_u32(bytes, 4, "Mach-O CPU type")? != 0x0100_000c {
+        return Err("Mach-O output is not arm64".to_string());
+    }
+    if read_u32(bytes, 12, "Mach-O file type")? != 2 {
+        return Err("Mach-O output is not MH_EXECUTE".to_string());
+    }
+    let command_count = read_u32(bytes, 16, "Mach-O load-command count")? as usize;
+    let command_bytes = read_u32(bytes, 20, "Mach-O load-command bytes")? as u64;
+    if command_count == 0 || command_count > MAX_LOAD_ENTRIES {
+        return Err(format!(
+            "Mach-O load-command count {command_count} is not bounded"
+        ));
+    }
+    checked_region(32, command_bytes, bytes.len(), "Mach-O load commands")?;
+
+    let command_end = 32usize + command_bytes as usize;
+    let mut command_offset = 32usize;
+    let mut entry_offset = None;
+    let mut executable_segment = None;
+    let mut segment_count = 0;
+    for index in 0..command_count {
+        let command = read_u32(bytes, command_offset, "Mach-O load command")?;
+        let command_size =
+            read_u32(bytes, command_offset + 4, "Mach-O load-command size")? as usize;
+        if command_size < 8 || command_offset + command_size > command_end {
+            return Err(format!("Mach-O load command {index} has an invalid size"));
+        }
+        if command == 0x19 {
+            segment_count += 1;
+            if command_size < 72 {
+                return Err("truncated Mach-O LC_SEGMENT_64".to_string());
+            }
+            let virtual_address = read_u64(bytes, command_offset + 24, "Mach-O segment address")?;
+            let virtual_size = read_u64(bytes, command_offset + 32, "Mach-O segment size")?;
+            let file_offset = read_u64(bytes, command_offset + 40, "Mach-O segment file offset")?;
+            let file_size = read_u64(bytes, command_offset + 48, "Mach-O segment file size")?;
+            let initial_protection =
+                read_u32(bytes, command_offset + 60, "Mach-O segment protection")?;
+            let section_count =
+                read_u32(bytes, command_offset + 64, "Mach-O section count")? as usize;
+            if file_size > virtual_size || section_count > MAX_SECTIONS {
+                return Err(format!(
+                    "Mach-O segment {index} has an invalid bounded layout"
+                ));
+            }
+            checked_region(file_offset, file_size, bytes.len(), "Mach-O segment")?;
+            let expected_command_size = 72usize
+                .checked_add(
+                    section_count
+                        .checked_mul(80)
+                        .ok_or_else(|| "Mach-O section table size overflows".to_string())?,
+                )
+                .ok_or_else(|| "Mach-O segment command size overflows".to_string())?;
+            if expected_command_size > command_size {
+                return Err(format!(
+                    "Mach-O segment {index} has a truncated section table"
+                ));
+            }
+            for section_index in 0..section_count {
+                let section = command_offset + 72 + section_index * 80;
+                let section_size = read_u64(bytes, section + 40, "Mach-O section size")?;
+                let section_offset = read_u32(bytes, section + 48, "Mach-O section offset")? as u64;
+                let relocation_offset =
+                    read_u32(bytes, section + 56, "Mach-O relocation offset")? as u64;
+                let relocation_count =
+                    read_u32(bytes, section + 60, "Mach-O relocation count")? as usize;
+                let flags = read_u32(bytes, section + 64, "Mach-O section flags")?;
+                if flags & 0xff != 1 && section_size > 0 {
+                    checked_region(section_offset, section_size, bytes.len(), "Mach-O section")?;
+                }
+                if relocation_count > MAX_RELOCATIONS {
+                    return Err(format!(
+                        "Mach-O section {section_index} has too many relocations"
+                    ));
+                }
+                checked_region(
+                    relocation_offset,
+                    relocation_count as u64 * 8,
+                    bytes.len(),
+                    "Mach-O relocations",
+                )?;
+            }
+            if initial_protection & 4 != 0 && file_size > 0 {
+                let file_end = file_offset
+                    .checked_add(file_size)
+                    .ok_or_else(|| "Mach-O executable file range overflows".to_string())?;
+                let virtual_end = virtual_address
+                    .checked_add(file_size)
+                    .ok_or_else(|| "Mach-O executable virtual range overflows".to_string())?;
+                executable_segment = Some((file_offset, file_end, virtual_address, virtual_end));
+            }
+        } else if command == 0x8000_0028 {
+            if command_size != 24 {
+                return Err("Mach-O LC_MAIN has an invalid size".to_string());
+            }
+            entry_offset = Some(read_u64(bytes, command_offset + 8, "Mach-O entry offset")?);
+        }
+        command_offset += command_size;
+    }
+    if command_offset != command_end || segment_count == 0 || segment_count > MAX_LOAD_ENTRIES {
+        return Err("Mach-O load-command layout is inconsistent".to_string());
+    }
+    let entry_offset = entry_offset.ok_or_else(|| "Mach-O output has no LC_MAIN".to_string())?;
+    let (file_start, file_end, virtual_start, virtual_end) = executable_segment
+        .ok_or_else(|| "Mach-O output has no file-backed executable segment".to_string())?;
+    if !(file_start..file_end).contains(&entry_offset) {
+        return Err("Mach-O LC_MAIN entry is outside executable code".to_string());
+    }
+    let entry_address = virtual_start
+        .checked_add(entry_offset - file_start)
+        .ok_or_else(|| "Mach-O entry virtual address overflows".to_string())?;
+    validate_aarch64_entry_branch(
+        bytes,
+        entry_offset as usize,
+        entry_address,
+        virtual_start,
+        virtual_end,
+    )
+}
+
+fn validate_executable(path: &Path, target: Target) -> TestResult {
+    let bytes = std::fs::read(path).map_err(|error| {
+        TestFailure::assertion(format!(
+            "failed to read produced executable '{}': {error}",
+            path.display()
+        ))
+    })?;
+    if bytes.len() > MAX_EXECUTABLE_BYTES {
+        return Err(TestFailure::assertion(format!(
+            "produced executable is {} bytes, exceeding the {} byte inspection limit",
+            bytes.len(),
+            MAX_EXECUTABLE_BYTES
+        )));
+    }
+    let result = if target.is_elf() {
+        validate_elf_executable(&bytes, target)
+    } else {
+        validate_macho_executable(&bytes, target)
+    };
+    result.map_err(|error| {
+        TestFailure::assertion(format!(
+            "produced executable failed {target} structural validation: {error}"
+        ))
+    })
 }
 
 /// Expand `${REAL_STD}` in env values to the absolute path of the repo's std/.
@@ -626,6 +1021,14 @@ fn run_case(
             vec![first, "-o".to_string(), output_name.clone()]
         }
     };
+    if let Some(source_path) = &source_path {
+        let source_path = source_path.display().to_string();
+        for argument in &mut args {
+            if argument == "${SOURCE}" {
+                *argument = source_path.clone();
+            }
+        }
+    }
     // For an opt-level differential run, append the level flag. Flag position
     // is irrelevant to the CLI, so this composes with either default or
     // explicit args (differential cases are validated to not carry their own
@@ -715,18 +1118,29 @@ fn run_case(
         )));
     }
 
-    if case.compile_only {
-        return Ok(RunOutcome::default());
-    }
-
-    // Run the produced binary from the temp dir.
     let program = dir.join(&output_name);
-    if !program.exists() {
+    if (case.executable_target.is_some() || !case.compile_only) && !program.exists() {
         return Err(TestFailure::assertion(format!(
             "compiler reported success but did not produce '{}'",
             output_name
         )));
     }
+
+    let executable_target = case
+        .executable_target
+        .as_deref()
+        .map(str::parse::<Target>)
+        .transpose()
+        .map_err(|error| TestFailure::assertion(error.to_string()))?;
+    if let Some(target) = executable_target {
+        validate_executable(&program, target)?;
+    }
+
+    if case.compile_only || (case.execute_if_native && executable_target != Target::host()) {
+        return Ok(RunOutcome::default());
+    }
+
+    // Run the produced binary from the temp dir.
 
     // Run the produced binary under a per-case wall-clock timeout. An infinite
     // loop in generated code must fail this one case (as a distinct TIMEOUT
@@ -950,6 +1364,16 @@ fn compile_fail_has_exit_code(case: &Case) -> bool {
     case.compile_fail && case.exit_code.is_some()
 }
 
+fn invalid_execute_if_native(case: &Case) -> bool {
+    case.execute_if_native && (case.compile_only || case.executable_target.is_none())
+}
+
+fn invalid_executable_target(case: &Case) -> Option<&str> {
+    case.executable_target
+        .as_deref()
+        .filter(|target| target.parse::<Target>().is_err())
+}
+
 fn unknown_only_on_targets(case: &Case) -> Vec<&str> {
     case.only_on
         .iter()
@@ -985,6 +1409,27 @@ fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
                 // load time so the doc comment's promise is enforced, not merely
                 // documented (RUE-132).
                 for case in &tf.cases {
+                    if let Some(target) = invalid_executable_target(case) {
+                        eprintln!(
+                            "error: {}: case '{}' has unknown executable_target '{}' (known: {})",
+                            path.display(),
+                            case.name,
+                            target,
+                            Target::all_names()
+                        );
+                        std::process::exit(1);
+                    }
+                    if invalid_execute_if_native(case) {
+                        eprintln!(
+                            concat!(
+                                "error: {}: case '{}' uses `execute_if_native`, which requires ",
+                                "`executable_target` and is incompatible with `compile_only`"
+                            ),
+                            path.display(),
+                            case.name
+                        );
+                        std::process::exit(1);
+                    }
                     let unknown_platforms = unknown_only_on_targets(case);
                     if !unknown_platforms.is_empty() {
                         eprintln!(

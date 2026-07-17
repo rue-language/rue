@@ -1,11 +1,11 @@
 ---
 id: 0034
 title: Per-Target Runtime Archives for Cross-Compilation
-status: accepted
+status: implemented
 tags: [runtime, cross-compilation, build-system, targets]
 created: 2026-06-11
 accepted: 2026-06-11
-implemented:
+implemented: 2026-07-16
 spec-sections: []
 superseded-by:
 ---
@@ -14,10 +14,11 @@ superseded-by:
 
 ## Status
 
-Accepted. Option B was ratified for the current implementation; option A is the
-probable eventual destination. The stopgap refusal behavior shipped in PR #978.
+Implemented with option B. The compiler embeds a hermetically built runtime for
+every supported target and selects and validates the matching archive for each
+link. The earlier option C refusal was a temporary safety measure.
 
-**Tracking:** RUE-36, RUE-144 item 7, RUE-85
+**Tracking:** RUE-36, RUE-85, RUE-862, RUE-863, RUE-864
 
 ## Problem
 
@@ -27,20 +28,11 @@ point contained **x86-64 machine code** (objdump-verified; the entry was
 not even 4-byte aligned). The same held for `--target aarch64-macos`. The
 binary was silently unrunnable on real hardware.
 
-The aarch64 *codegen* is fine — CI builds `rue` natively on arm64 and
-runs the produced binaries. Only the cross-compile **driver** path was
-broken, and the root cause is in the build graph, not in the compiler
-source:
-
-- `crates/rue-compiler/BUCK` maps `//crates/rue-runtime:rue-runtime[staticlib]`
-  into `src/librue_runtime.a`, which `lib.rs` embeds via `include_bytes!`.
-- Buck2 builds that staticlib in the **host configuration**. There is
-  exactly one embedded archive, and it is always the host's.
-- Every link (internal ELF/Mach-O linker or `--linker <system>`) pulled
-  that host archive into the output regardless of `--target`. The
-  runtime contains the entry point (`_start`/`__main`), the syscall
-  layer, panic handlers, and all `String`/IO support — i.e. real
-  executable code of the wrong architecture.
+The aarch64 *codegen* was already sound. The broken cross-compile driver path
+embedded one host-configured `rue-runtime` static library and supplied it to
+every target link. The runtime contains the entry point (`_start`/`__main`),
+syscall layer, panic handlers, allocation, and IO support, so this could put
+real host machine code in a foreign executable.
 
 Two partial defenses landed independently of this ADR:
 
@@ -51,9 +43,8 @@ Two partial defenses landed independently of this ADR:
    Aarch64Linux") is misleading — the user's own objects are fine; it is
    the invisible embedded runtime that is foreign — and it names neither
    the cause nor a workaround.
-2. This ADR's stopgap (option C below, implemented): the driver refuses
-   the link up front with an error that explains exactly what is
-   missing.
+2. This ADR's option C stopgap made the driver refuse foreign executable links
+   until per-target archives were available.
 
 ## Goals
 
@@ -98,11 +89,12 @@ configuration transition (or `configured_alias`) to build
    objects (rustc's internal ar), so a Linux host can build the
    aarch64-macos runtime archive and vice versa.
 
-Concretely: a small `cross_runtime` rule (or genrule) per target that
-runs `rustc --target {triple} --crate-type staticlib` with the existing
-runtime flags, three `mapped_srcs` entries in `crates/rue-compiler/BUCK`
-(`src/librue_runtime-{target}.a`), three `include_bytes!` statics, and
-`runtime_for_target()` becomes a total match instead of a host check.
+Concretely, `runtime_staticlib` builds each archive with the pinned
+hermetic `rustc`, target `rust-std` component, and shared runtime flags.
+`crates/rue-compiler/BUCK` maps all three archives into the compiler;
+`runtime_for_target()` is a total match over [`Target`](../../crates/rue-target/src/lib.rs),
+and both linker modes validate the selected archive's object format, machine,
+and typed runtime ABI before consuming it.
 
 Details to handle:
 
@@ -110,15 +102,10 @@ Details to handle:
   `-Ctarget-feature=-lse,-lse2,-outline-atomics` is aarch64-only;
   `-Crelocation-model=static`, `-Cpanic=abort`, `-Copt-level=z`, LTO
   apply everywhere.
-- CI implication: every platform's build downloads the three (two
-  foreign) `rust-std` components, ~40 MB compressed each, cached by
-  Buck2 like the existing toolchain archives. `validate_runtime()`
-  extends to all three archives, and the existing CLI cases flip from
-  "refused" to "succeeds + correct ELF machine field" (each scoped
-  `only_on` the hosts where the target is foreign).
-- aarch64-macos output remains gated on RUE-85 (Mach-O cross-linking
-  has its own issues beyond the runtime archive); the runtime archive
-  part is still worth shipping so RUE-85 is the only remainder.
+- CI implication: every platform can build all three executable targets. The
+  CLI matrix bounds and validates ELF/Mach-O headers, load structures,
+  relocations, and the runtime entry architecture without executing foreign
+  code; it executes the native member with string and allocation coverage.
 
 - Pros: smallest hermetic full fix; no platform/transition machinery;
   reuses the `http_archive` pinning pattern; trivially testable
@@ -150,26 +137,20 @@ inspection is untouched.
 
 ## Decision
 
-- **Now (this change): option C.** The check lives in
-  `runtime_for_target()` in `crates/rue-compiler/src/lib.rs`, called by
-  both `link_internal_with_warnings` and `link_system_with_warnings`,
-  so every link path is covered and every `--emit` path is not.
-- **Full fix (proposed): option B.** Pin the three `rust-std`
-  components, add per-target staticlib rules invoking the hermetic
-  rustc, embed all three archives, and make `runtime_for_target()` a
-  total match. Option A is rejected as disproportionate machinery for
-  one dependency-free no-std crate; revisit if Rue ever grows more
-  per-target Rust components.
+- **Implemented: option B.** The build pins all three `rust-std` components,
+  produces all three static libraries with the same hermetic Rust toolchain,
+  embeds them, and selects by target. Option A remains disproportionate for
+  one small `no_std` runtime closure; revisit if Rue gains more per-target Rust
+  components.
+- The compiler validates runtime presence, archive structure, object
+  format/machine, and typed ABI on the canonical internal and system linker
+  paths before it publishes an executable.
 
 ## Consequences
 
-- Cross-target `-o` builds fail fast with a self-explanatory error
-  instead of producing broken binaries (pre-`cccb160c`) or a misleading
-  `ArchMismatch` (post-`cccb160c`).
-- CLI suite gained a host-conditional `only_on` case scope, since
-  whether `--target X` is a cross-compile depends on the host.
-- When option B lands: flip the three `cross_link_to_*_refused` CLI
-  cases to success cases asserting the ELF `e_machine` field (and keep
-  aarch64-macos xfailed under RUE-85 until Mach-O cross-linking works),
-  delete the refusal branch from `runtime_for_target()`, and mark this
-  ADR Implemented.
+- `rue --target <supported-target> ... -o out` emits an executable for all
+  three supported targets on every supported host.
+- Cross-target presentation modes remain independent of linking.
+- Adding a target now requires a pinned target component, runtime archive
+  mapping, a total selector arm, format/machine validation, and a CI matrix
+  member. A missing or malformed runtime fails before executable publication.
