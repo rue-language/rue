@@ -629,34 +629,34 @@ pub(crate) fn configure_canonical_sema<'a>(
         )));
     }
 
-    let mut sema = Sema::new_for_target(
-        rir.rir(),
-        rir.semantic_symbols().interner(),
-        preview_features,
-        target,
-    );
     let root = merged
         .ast()
         .modules()
         .iter()
         .find(|module| module.module_id() == merged.ast().root())
         .expect("canonical root module is admitted");
-    sema.set_root_file_id(root.file_id());
-    sema.set_file_paths(
+    let metadata = rue_air::SemaMetadata::new(
+        root.file_id(),
         merged
             .ast()
             .modules()
             .iter()
             .map(|module| (module.file_id(), module.physical_path().to_owned()))
             .collect(),
-    );
-    sema.set_symbol_paths(
         merged
             .ast()
             .modules()
             .iter()
             .map(|module| (module.file_id(), module.module_id().as_str().to_owned()))
             .collect(),
+    )
+    .map_err(CompileErrors::from)?;
+    let mut sema = Sema::new_for_target(
+        rir.rir(),
+        rir.semantic_symbols().interner(),
+        preview_features,
+        metadata,
+        target,
     );
     if graph.root() != merged.ast().root() {
         return Err(CompileErrors::from(invalid(

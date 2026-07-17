@@ -216,6 +216,6 @@ fn air_payload_ownership_and_validation_boundary_cannot_regress() {
     // stores remain inaccessible, so this lower-level entry point is not a
     // payload escape hatch.
     let sema = include_str!("sema/mod.rs");
-    assert!(sema.contains("pub fn new(\n        rir: &'a Rir,"));
+    assert!(sema.contains("pub fn new_synthetic(\n        rir: &'a Rir,"));
     assert!(!sema.contains("&'a mut Rir"));
 }

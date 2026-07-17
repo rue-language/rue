@@ -38,6 +38,7 @@ mod file_paths;
 mod inference_ctx;
 mod info;
 mod known_symbols;
+mod metadata;
 mod output;
 mod semantic_body_export;
 mod typeck;
@@ -57,6 +58,7 @@ pub use declaration_index::RirDeclarationIndexWork;
 pub use inference_ctx::InferenceContext;
 pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
+pub use metadata::SemaMetadata;
 pub use output::{
     AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisFailure, BodyAnalysisWork,
     BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,
@@ -716,10 +718,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             kind,
         );
         if self.body_owner_tokens.is_empty() {
-            // Legacy/non-canonical AIR callers do not request durable body
-            // identity.  Issuer zero is deliberately outside the compiler's
-            // issued universe and therefore fails closed if it ever reaches a
-            // stable dependency translation boundary.
+            // Explicit synthetic fixtures and declaration-failure recovery do
+            // not cross a durable identity boundary. Issuer zero is reserved
+            // for those present API contracts; successful canonical analysis
+            // installs compiler-issued tokens before bodies are analyzed.
             return BodyOwnerToken::new(0, file.index());
         }
         *self.body_owner_tokens.get(&key).unwrap_or_else(|| {
@@ -733,8 +735,13 @@ impl<'a> Sema<'a> {
         self.map_declarations(|MutableDeclarations(namespace)| SourceDeclarations(namespace))
     }
 
-    /// Create a new semantic analyzer.
-    pub fn new(
+    /// Create a phase-local semantic analyzer for synthetic/test use.
+    ///
+    /// This compatibility entry point derives explicit synthetic identities
+    /// from the RIR and never participates in durable compiler joins. Supported
+    /// compiler construction uses [`Self::new_for_target`] with canonical
+    /// metadata.
+    pub fn new_synthetic(
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
         preview_features: PreviewFeatures,
@@ -743,6 +750,7 @@ impl<'a> Sema<'a> {
             rir,
             interner,
             preview_features,
+            SemaMetadata::synthetic_for_rir(rir),
             Target::host()
                 .expect("Rue cannot choose a default sema target on this unsupported host"),
         )
@@ -753,8 +761,16 @@ impl<'a> Sema<'a> {
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
         preview_features: PreviewFeatures,
+        metadata: SemaMetadata,
         target: Target,
     ) -> Self {
+        let SemaMetadata {
+            root_file_id,
+            physical_paths,
+            logical_paths,
+        } = metadata;
+        let type_pool = TypeInternPool::new();
+        type_pool.set_symbol_paths(logical_paths.clone());
         Self {
             declarations: MutableDeclarations(DeclarationNamespace::new()),
             rir,
@@ -791,13 +807,13 @@ impl<'a> Sema<'a> {
             builtin_arch_id: None,
             builtin_os_id: None,
             known: KnownSymbols::new(interner),
-            type_pool: TypeInternPool::new(),
+            type_pool,
             module_registry: crate::module_registry::ModuleRegistry::new(),
             canonical_imports: None,
-            file_paths: HashMap::new(),
-            symbol_paths: HashMap::new(),
+            file_paths: physical_paths,
+            symbol_paths: logical_paths,
             trusted_standard_library_files: HashSet::new(),
-            root_file_id: None,
+            root_file_id: Some(root_file_id),
             param_arena: ParamArena::new(),
             anon_struct_method_sigs: HashMap::new(),
             anon_struct_captured_values: HashMap::new(),

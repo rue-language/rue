@@ -2865,7 +2865,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
 
-        let sema = Sema::new(&rir, &mut interner, preview);
+        let sema = Sema::new_synthetic(&rir, &mut interner, preview);
         let output = sema.analyze_all().unwrap();
 
         let func = &output.functions[0];

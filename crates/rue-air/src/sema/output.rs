@@ -316,8 +316,9 @@ impl ParamSlotModes {
     }
 }
 
-/// Compatibility for synthetic/test CFGs that only describe the physical
-/// convention. Such parameters are conservatively not writable.
+/// Phase-local compatibility for synthetic CFG tests that model only physical
+/// passing. Canonical semantic outputs always construct both vectors with
+/// [`ParamSlotModes::new`]; this adapter is not a supported compiler boundary.
 impl From<Vec<bool>> for ParamSlotModes {
     fn from(by_ref: Vec<bool>) -> Self {
         let writable = vec![false; by_ref.len()];

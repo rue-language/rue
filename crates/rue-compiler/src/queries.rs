@@ -657,7 +657,7 @@ mod failure_work_tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
-        let mut output = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let mut output = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .analyze_all()
             .unwrap();
 
