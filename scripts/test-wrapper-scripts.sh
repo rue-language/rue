@@ -652,6 +652,76 @@ test_rue_unit_unknown_crate_errors_cleanly() {
   rm -rf "$sb"
 }
 
+# ===========================================================================
+# RUE-924 — an unfiltered test.sh must FAIL LOUDLY when a corpus harness is
+# silently omitted from the run's results, instead of reporting a green tally
+# on a partial run (a served cache entry, a narrowed target pattern, or a
+# platform gate once dropped //:cli-tests and let a Pass count hide five real
+# CLI-case failures CI later caught).
+# ===========================================================================
+
+# Drive a copy of the real test.sh (no filter) against a fake `./buck2` so the
+# corpus-omission audit is exercised without a real (~10-minute) suite. The
+# fake serves all three unfiltered-path invocations: the rue_heavy_suite
+# uquery (returns FAKE_HEAVY_SUITES), the broad `test //...` pass (one
+# unrelated pass line, exits FAKE_BUCK_EXIT), and each per-suite `test
+# <target>` run (a result line only when the target is in FAKE_PASS_TARGETS).
+test_testsh_unfiltered_audits_corpus_presence() {
+  local sb; sb="$(mktemp -d)"
+  cp "$SRC_ROOT/test.sh" "$sb/test.sh"; chmod +x "$sb/test.sh"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "uquery" ]; then
+  for t in $FAKE_HEAVY_SUITES; do printf '%s\n' "$t"; done
+  exit 0
+fi
+if [ "$1" = "test" ]; then
+  tgt="$2"
+  if [ "$tgt" = "//..." ]; then
+    printf 'Pass: root//crates/rue-lexer:rue-lexer-test (0.1s)\n'
+    printf 'Tests finished: Pass 1. Fail 0. Skip 0.\n'
+    exit "${FAKE_BUCK_EXIT:-0}"
+  fi
+  for t in $FAKE_PASS_TARGETS; do
+    if [ "$t" = "$tgt" ]; then printf 'Pass: root%s (0.1s)\n' "$t"; fi
+  done
+  printf 'Tests finished: Pass 1. Fail 0. Skip 0.\n'
+  exit 0
+fi
+exit 90
+EOF
+  chmod +x "$sb/buck2"
+
+  local all="//:cli-tests //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
+
+  # (1) Full corpus present + buck2 green -> test.sh reports success.
+  local rc=0 out
+  out="$(cd "$sb" && RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: unfiltered run with the full corpus reports success" \
+    "$([ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -Fxq '=== TEST SUITE: PASSED ===' && echo 0 || echo 1)"
+
+  # (2) A corpus harness OMITTED while every buck2 invocation still exits 0 is
+  #     the RUE-924 false-green: it must become a hard failure naming the suite.
+  local partial="//:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
+  rc=0
+  out="$(cd "$sb" && RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$partial" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: a silently omitted corpus harness fails the run" \
+    "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  check "test.sh: the omission message names the missing harness" \
+    "$(printf '%s\n' "$out" | grep -Fq 'CORPUS OMITTED' && printf '%s\n' "$out" | grep -Fq '//:cli-tests' && echo 0 || echo 1)"
+  check "test.sh: an omitted-corpus run prints the failed sentinel" \
+    "$(printf '%s\n' "$out" | grep -Fq '=== TEST SUITE: FAILED' && echo 0 || echo 1)"
+
+  # (3) A genuine buck2 failure with the full corpus present is still
+  #     propagated verbatim (the audit must not mask real failures).
+  rc=0
+  out="$(cd "$sb" && RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" FAKE_BUCK_EXIT=17 ./test.sh 2>&1)" || rc=$?
+  check "test.sh: unfiltered buck2 failure exit code is propagated" \
+    "$([ "$rc" -eq 17 ] && echo 0 || echo 1)"
+
+  rm -rf "$sb"
+}
+
 # --- run everything ---------------------------------------------------------
 
 test_ruebin_build_failure_is_loud
@@ -667,6 +737,7 @@ test_rue_unit_maps_crate_and_forwards_args
 test_rue_unit_zero_match_fails_loud
 test_rue_unit_failing_test_propagates_exit
 test_rue_unit_unknown_crate_errors_cleanly
+test_testsh_unfiltered_audits_corpus_presence
 test_sanitizer_defaults_std_path
 test_sanitizer_recursive_discovery_contract
 test_sanitizer_status_contracts
