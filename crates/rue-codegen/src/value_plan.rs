@@ -183,6 +183,11 @@ pub struct ArithmeticPlan {
     pub operation: ArithmeticOperation,
     pub overflow_call: crate::runtime_call_plan::RuntimeCallPlan,
     pub div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan,
+    /// When `true`, this is a wrapping `Add`/`Sub`/`Mul` (`@wrapping_*`,
+    /// RUE-647): the backend emits the plain ALU op with NO overflow-check
+    /// branch, truncating sub-64-bit results to the declared width so the
+    /// two's-complement wrap is observable. Never set for `Div`/`Mod`/`Neg`.
+    pub wrap: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1182,6 +1187,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
                     RuntimeHelperId::DivByZero,
                 ),
+                wrap: false,
             });
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
@@ -1198,6 +1204,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
                     RuntimeHelperId::DivByZero,
                 ),
+                wrap: false,
             });
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
@@ -1228,6 +1235,67 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
                     RuntimeHelperId::DivByZero,
                 ),
+                wrap: false,
+            });
+            cache_result(adapter, value, result);
+            Some(ValueKind::BinaryArithmetic)
+        }
+        CfgInstData::WrappingAdd(lhs, rhs) => {
+            let width = policy.integer_width.expect("wrapping_add width");
+            let lhs = operand(ctx, adapter, lhs).primary;
+            let rhs = operand(ctx, adapter, rhs).primary;
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
+                operation: ArithmeticOperation::Add { lhs, rhs, width },
+                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::Overflow,
+                ),
+                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::DivByZero,
+                ),
+                wrap: true,
+            });
+            cache_result(adapter, value, result);
+            Some(ValueKind::BinaryArithmetic)
+        }
+        CfgInstData::WrappingSub(lhs, rhs) => {
+            let width = policy.integer_width.expect("wrapping_sub width");
+            let lhs = operand(ctx, adapter, lhs).primary;
+            let rhs = operand(ctx, adapter, rhs).primary;
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
+                operation: ArithmeticOperation::Sub { lhs, rhs, width },
+                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::Overflow,
+                ),
+                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::DivByZero,
+                ),
+                wrap: true,
+            });
+            cache_result(adapter, value, result);
+            Some(ValueKind::BinaryArithmetic)
+        }
+        CfgInstData::WrappingMul(lhs, rhs) => {
+            let width = policy.integer_width.expect("wrapping_mul width");
+            let lhs = operand(ctx, adapter, lhs).primary;
+            let rhs = operand(ctx, adapter, rhs).primary;
+            // Wrapping multiply is one plain ALU multiply per width: the low
+            // bits are identical for signed and unsigned two's-complement, so
+            // no power-of-two strength reduction and no widening overflow probe
+            // (RUE-647). `shift: None` forces the plain-multiply path.
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
+                operation: ArithmeticOperation::Mul {
+                    lhs,
+                    rhs,
+                    width,
+                    shift: None,
+                },
+                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::Overflow,
+                ),
+                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::DivByZero,
+                ),
+                wrap: true,
             });
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
@@ -1244,6 +1312,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
                     RuntimeHelperId::DivByZero,
                 ),
+                wrap: false,
             });
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
@@ -1260,6 +1329,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
                     RuntimeHelperId::DivByZero,
                 ),
+                wrap: false,
             });
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
@@ -1278,6 +1348,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
                     RuntimeHelperId::DivByZero,
                 ),
+                wrap: false,
             });
             cache_result(adapter, value, result);
             Some(ValueKind::UnaryArithmetic)

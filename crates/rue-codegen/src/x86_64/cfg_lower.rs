@@ -464,6 +464,24 @@ impl<'a> CfgLower<'a> {
         }
     }
 
+    /// Truncate a wrapping-arithmetic result to its declared width so the
+    /// two's-complement wrap is observable (RUE-647). A sub-word wrapping
+    /// `Add`/`Sub`/`Mul` is emitted as a 32-bit ALU op whose out-of-range bits
+    /// (bits N..31) do not match the canonical sign/zero extension of the low
+    /// N bits; re-extending fixes them. The 32-bit ops already zero bits 32..63,
+    /// so 32- and 64-bit results need no narrowing.
+    fn emit_wrap_narrow(&mut self, width: crate::value_plan::IntegerWidth, vreg: VReg) {
+        let dst = Operand::Virtual(vreg);
+        let src = Operand::Virtual(vreg);
+        match (width.bits, width.signed) {
+            (8, true) => self.mir.push(X86Inst::Movsx8To64 { dst, src }),
+            (8, false) => self.mir.push(X86Inst::Movzx8To64 { dst, src }),
+            (16, true) => self.mir.push(X86Inst::Movsx16To64 { dst, src }),
+            (16, false) => self.mir.push(X86Inst::Movzx16To64 { dst, src }),
+            _ => {}
+        }
+    }
+
     /// Allocate a new inline label ID.
     ///
     /// These labels are used for control flow within instruction lowering
@@ -573,6 +591,7 @@ impl<'a> CfgLower<'a> {
         use crate::value_plan::ArithmeticOperation;
         let overflow_call = plan.overflow_call;
         let div_by_zero_call = plan.div_by_zero_call;
+        let wrap = plan.wrap;
         let vreg = match plan.operation {
             ArithmeticOperation::Add { lhs, rhs, width } => {
                 let vreg = self.mir.alloc_vreg();
@@ -591,7 +610,11 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(rhs),
                     }
                 });
-                self.emit_overflow_check(width, vreg, overflow_call.clone());
+                if wrap {
+                    self.emit_wrap_narrow(width, vreg);
+                } else {
+                    self.emit_overflow_check(width, vreg, overflow_call.clone());
+                }
                 vreg
             }
             ArithmeticOperation::Sub { lhs, rhs, width } => {
@@ -611,7 +634,11 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(rhs),
                     }
                 });
-                self.emit_overflow_check(width, vreg, overflow_call.clone());
+                if wrap {
+                    self.emit_wrap_narrow(width, vreg);
+                } else {
+                    self.emit_overflow_check(width, vreg, overflow_call.clone());
+                }
                 vreg
             }
             ArithmeticOperation::Mul {
@@ -621,7 +648,29 @@ impl<'a> CfgLower<'a> {
                 shift,
             } => {
                 let vreg = self.mir.alloc_vreg();
-                if let Some((src, amount)) = shift.filter(|_| width.bits >= 32) {
+                if wrap {
+                    // Wrapping multiply: one plain two-operand IMUL per width.
+                    // Signed and unsigned agree on the low bits, and a 32-bit
+                    // IMUL already zeroes the upper half; sub-32-bit widths are
+                    // re-narrowed so the two's-complement wrap is observable
+                    // (RUE-647). No overflow probe is emitted.
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(lhs),
+                    });
+                    self.mir.push(if width.bits == 64 {
+                        X86Inst::ImulRR64 {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(rhs),
+                        }
+                    } else {
+                        X86Inst::ImulRR {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(rhs),
+                        }
+                    });
+                    self.emit_wrap_narrow(width, vreg);
+                } else if let Some((src, amount)) = shift.filter(|_| width.bits >= 32) {
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Virtual(src),

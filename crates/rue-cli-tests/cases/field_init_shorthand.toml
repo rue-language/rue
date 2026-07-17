@@ -1,14 +1,14 @@
-# Field-init shorthand `P { x }` desugaring to `P { x: x }` (RUE-613, preview
-# `field_init_shorthand`). These cases exercise the driver end-to-end: the
-# shorthand desugars in the parser, the preview gate fires in sema, and the
-# constructed struct's fields are read back at runtime (exact stdout pins the
-# desugaring maps `x` to the in-scope binding). The qualified case crosses a
-# module boundary (`shapes.Point { x, y }`), which the spec harness can't see.
+# Field-init shorthand `P { x }` desugaring to `P { x: x }` (RUE-613, stabilized
+# RUE-628). These cases exercise the driver end-to-end: the shorthand desugars in
+# the parser and the constructed struct's fields are read back at runtime (exact
+# stdout pins the desugaring maps `x` to the in-scope binding). The qualified case
+# crosses a module boundary (`shapes.Point { x, y }`), which the spec harness
+# can't see.
 
 [section]
 id = "cli.field_init_shorthand"
 name = "Field-init shorthand"
-description = "`P { x }` desugars to `P { x: x }` under --preview field_init_shorthand (RUE-613)."
+description = "`P { x }` desugars to `P { x: x }` (RUE-613, stabilized RUE-628)."
 
 # Mixed shorthand + explicit fields, values read back at runtime.
 [[case]]
@@ -24,7 +24,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "field_init_shorthand", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 stdout = "40\n2\n"
 exit_code = 0
 
@@ -42,7 +42,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "field_init_shorthand", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 stdout = "99\n"
 exit_code = 0
 
@@ -63,7 +63,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "field_init_shorthand", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 stdout = "11\n22\n"
 exit_code = 0
 
@@ -86,7 +86,7 @@ fn main() -> i32 {
 }
 """ },
 ]
-args = ["main.rue", "--preview", "field_init_shorthand", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 stdout = "42\n"
 exit_code = 0
 
@@ -112,19 +112,20 @@ args = ["main.rue", "-o", "prog"]
 stdout = "7\n9\n"
 exit_code = 0
 
-# The gate: without --preview the shorthand is rejected (E1100).
+# Stabilized: the shorthand compiles and runs with no preview flag (RUE-628).
 [[case]]
-name = "requires_preview_flag"
-description = "Without --preview field_init_shorthand the shorthand errors with E1100."
+name = "no_preview_flag_needed"
+description = "Shorthand builds and runs end-to-end with no preview flag."
 files = [{ path = "main.rue", source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
     let x = 1;
     let y = 2;
     let p = Point { x, y };
-    p.x + p.y
+    @dbg(p.x + p.y);
+    0
 }
 """ }]
 args = ["main.rue", "-o", "prog"]
-compile_fail = true
-error_contains = ["E1100", "field_init_shorthand"]
+stdout = "3\n"
+exit_code = 0

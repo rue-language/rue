@@ -171,6 +171,36 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "types.mutable_strings",
+        "string_byte_at_empty_none",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "types.mutable_strings",
+        "string_byte_at_in_bounds",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "types.mutable_strings",
+        "string_byte_at_last_byte_boundary",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "types.mutable_strings",
+        "string_byte_at_loop_sum",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "types.mutable_strings",
+        "string_byte_at_out_of_bounds_none",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "types.mutable_strings",
         "string_byte_semantics",
         intrinsic(UnsupportedIntrinsicKind::IntToPointer),
         &[],

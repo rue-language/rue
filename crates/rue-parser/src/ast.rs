@@ -928,10 +928,9 @@ pub struct FieldInit {
     /// Field value
     pub value: Box<Expr>,
     /// Whether this initializer used field-init shorthand (`P { x }` desugaring
-    /// to `P { x: x }`, RUE-613, preview `field_init_shorthand`). When `true`,
-    /// `value` is the desugared `Expr::Ident(name)`; the flag is preserved so
-    /// Sema can gate the shorthand form behind its preview flag and so
-    /// diagnostics can point at the shorthand.
+    /// to `P { x: x }`, RUE-613, stabilized in RUE-628). When `true`, `value` is
+    /// the desugared `Expr::Ident(name)`; the flag is preserved so diagnostics
+    /// can point at the shorthand.
     pub shorthand: bool,
     pub span: Span,
 }

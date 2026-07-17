@@ -354,6 +354,15 @@ where
                 SemanticBodyInstData::Add(a, b) => binary(*a, *b, AirInstData::Add)?,
                 SemanticBodyInstData::Sub(a, b) => binary(*a, *b, AirInstData::Sub)?,
                 SemanticBodyInstData::Mul(a, b) => binary(*a, *b, AirInstData::Mul)?,
+                SemanticBodyInstData::WrappingAdd(a, b) => {
+                    binary(*a, *b, AirInstData::WrappingAdd)?
+                }
+                SemanticBodyInstData::WrappingSub(a, b) => {
+                    binary(*a, *b, AirInstData::WrappingSub)?
+                }
+                SemanticBodyInstData::WrappingMul(a, b) => {
+                    binary(*a, *b, AirInstData::WrappingMul)?
+                }
                 SemanticBodyInstData::Div(a, b) => binary(*a, *b, AirInstData::Div)?,
                 SemanticBodyInstData::Mod(a, b) => binary(*a, *b, AirInstData::Mod)?,
                 SemanticBodyInstData::Eq(a, b) => binary(*a, *b, AirInstData::Eq)?,

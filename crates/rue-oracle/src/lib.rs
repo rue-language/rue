@@ -2252,6 +2252,15 @@ impl<'a> Interp<'a> {
             CfgInstData::Mul(a, b) => {
                 self.arith(cfg, frame, *a, *b, ty, |x, y| x.checked_mul(y))?
             }
+            CfgInstData::WrappingAdd(a, b) => {
+                self.wrapping_arith(cfg, frame, *a, *b, ty, |x, y| x.wrapping_add(y))?
+            }
+            CfgInstData::WrappingSub(a, b) => {
+                self.wrapping_arith(cfg, frame, *a, *b, ty, |x, y| x.wrapping_sub(y))?
+            }
+            CfgInstData::WrappingMul(a, b) => {
+                self.wrapping_arith(cfg, frame, *a, *b, ty, |x, y| x.wrapping_mul(y))?
+            }
             CfgInstData::Div(a, b) => self.divmod(cfg, frame, *a, *b, ty, false)?,
             CfgInstData::Mod(a, b) => self.divmod(cfg, frame, *a, *b, ty, true)?,
 
@@ -2604,6 +2613,26 @@ impl<'a> Interp<'a> {
         let x = self.eval(cfg, frame, a)?.as_int();
         let y = self.eval(cfg, frame, b)?.as_int();
         range_check(op(x, y), ty)
+    }
+
+    /// Wrapping `Add`/`Sub`/`Mul` (`@wrapping_*`, RUE-647): the true result
+    /// reduced modulo 2^N and reinterpreted as the declared type — never a
+    /// trap. Operands are ≤64-bit so the `i128` op never itself overflows;
+    /// `to_bits` then truncates to the operand width.
+    fn wrapping_arith(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        a: CfgValue,
+        b: CfgValue,
+        ty: Type,
+        op: impl Fn(i128, i128) -> i128,
+    ) -> Step<Value> {
+        let x = self.eval(cfg, frame, a)?.as_int();
+        let y = self.eval(cfg, frame, b)?.as_int();
+        let (bits, kind) = int_shape(ty)?;
+        let r = to_bits(op(x, y), bits) & width_mask(bits);
+        Ok(Value::Int(from_bits(r, bits, kind_signed(kind))))
     }
 
     fn divmod(

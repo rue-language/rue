@@ -826,3 +826,69 @@ declared in the imported file. Module membership is per-file: even though all
 compiled files share one global function namespace, a declaration from some
 other file is not a member of the module and **MUST NOT** be reachable
 through it.
+
+## `@wrapping_add`, `@wrapping_sub`, `@wrapping_mul`
+
+{{ rule(id="4.13:97", cat="normative") }}
+
+The `@wrapping_add`, `@wrapping_sub`, and `@wrapping_mul` intrinsics each take
+exactly two operands and compute, respectively, the sum, difference, and
+product of those operands with two's-complement wraparound instead of the
+overflow trap of the `+`, `-`, and `*` operators. Each is a non-trapping
+counterpart to the corresponding checked operator.
+
+{{ rule(id="4.13:98", cat="normative") }}
+
+Both operands and the result of a wrapping-arithmetic intrinsic share a single
+integer type, established by the same equality-and-integer constraints as the
+checked `+`, `-`, and `*` operators (§4.2). It is a compile-time error to
+apply one to a non-integer operand, and it is a compile-time error for the two
+operands to have differing integer types.
+
+{{ rule(id="4.13:99", cat="normative") }}
+
+The intrinsics are defined for every integer type — the signed widths `i8`,
+`i16`, `i32`, `i64` and the unsigned widths `u8`, `u16`, `u32`, `u64`. For a
+result type of width `N` bits, the value of the intrinsic is the true
+mathematical result reduced modulo `2^N` and interpreted as a two's-complement
+value of the result type. Equivalently, the result is congruent to the exact
+mathematical result modulo `2^N` and lies within the range of the result type.
+
+{{ rule(id="4.13:100", cat="dynamic-semantics") }}
+
+A wrapping-arithmetic intrinsic never traps: for every combination of operand
+values, including those for which the checked operator would trap on overflow,
+it produces the reduced value defined by 4.13:93. Because the low `N` bits of a
+two's-complement product do not depend on the signedness of the operands,
+`@wrapping_mul` yields the same bit pattern for a signed and an unsigned type
+of the same width.
+
+{{ rule(id="4.13:101", cat="normative") }}
+
+In a compile-time context, a wrapping-arithmetic intrinsic is evaluated exactly
+as `@intCast` is: the intrinsics introduce no new constant-evaluation rule, so
+an invocation that `@intCast` would not fold into a constant is likewise not a
+constant expression.
+
+{{ rule(id="4.13:102") }}
+
+```rue
+fn main() -> i32 {
+    // 127 + 1 wraps to the minimum i8 value.
+    let hi: i8 = 127;
+    let one: i8 = 1;
+    @dbg(@wrapping_add(hi, one));      // -128
+
+    // 0 - 1 wraps to the maximum u8 value.
+    let zero: u8 = 0;
+    let uone: u8 = 1;
+    @dbg(@wrapping_sub(zero, uone));   // 255
+
+    // The FNV-1a hashing step that overflows u64.
+    let hash: u64 = 14695981039346656037;
+    let prime: u64 = 1099511628211;
+    @dbg(@wrapping_mul(hash, prime));  // 12638153115695167455
+
+    0
+}
+```

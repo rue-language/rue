@@ -73,6 +73,15 @@ pub struct KnownSymbols {
     pub random_u32: Spur,
     /// The `random_u64` intrinsic symbol.
     pub random_u64: Spur,
+    /// The `wrapping_add` intrinsic symbol — two's-complement addition mod 2^N
+    /// (RUE-647).
+    pub wrapping_add: Spur,
+    /// The `wrapping_sub` intrinsic symbol — two's-complement subtraction mod
+    /// 2^N (RUE-647).
+    pub wrapping_sub: Spur,
+    /// The `wrapping_mul` intrinsic symbol — two's-complement multiplication mod
+    /// 2^N (RUE-647).
+    pub wrapping_mul: Spur,
 
     // Type intrinsics
 
@@ -145,6 +154,9 @@ impl KnownSymbols {
             import: interner.get_or_intern_static("import"),
             random_u32: interner.get_or_intern_static("random_u32"),
             random_u64: interner.get_or_intern_static("random_u64"),
+            wrapping_add: interner.get_or_intern_static("wrapping_add"),
+            wrapping_sub: interner.get_or_intern_static("wrapping_sub"),
+            wrapping_mul: interner.get_or_intern_static("wrapping_mul"),
 
             // Type intrinsics
 

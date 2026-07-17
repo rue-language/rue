@@ -3571,21 +3571,15 @@ impl<'a> BodySema<'a> {
         type_name: Spur,
         fields_start: u32,
         fields_len: u32,
-        shorthand_span: Option<Span>,
+        _shorthand_span: Option<Span>,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // Field-init shorthand (`P { x }` desugaring to `P { x: x }`, RUE-613) is
-        // gated behind its preview flag. AstGen already desugared the shorthand
-        // to explicit `x: x` field inits; `shorthand_span` is `Some` iff at least
-        // one field used the shorthand, and points at the first such field.
-        if let Some(sh_span) = shorthand_span {
-            self.require_preview(
-                PreviewFeature::FieldInitShorthand,
-                "field-init shorthand (`P { x }`)",
-                sh_span,
-            )?;
-        }
+        // stabilized (RUE-628): it needs no preview gate. AstGen already
+        // desugared the shorthand to explicit `x: x` field inits before this
+        // point, so `_shorthand_span` (the first shorthand field's span, retained
+        // as diagnostic provenance) is no longer consumed here.
         let field_inits = self.rir.get_field_inits(fields_start, fields_len);
         // Look up the struct type
         // First check if it's a comptime type variable (e.g., `let Point = make_point(); Point { ... }`)

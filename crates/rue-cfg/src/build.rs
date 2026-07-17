@@ -618,6 +618,51 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::WrappingAdd(lhs, rhs) => {
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
+                let value = self.emit(CfgInstData::WrappingAdd(lhs_val, rhs_val), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::WrappingSub(lhs, rhs) => {
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
+                let value = self.emit(CfgInstData::WrappingSub(lhs_val, rhs_val), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::WrappingMul(lhs, rhs) => {
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
+                let value = self.emit(CfgInstData::WrappingMul(lhs_val, rhs_val), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
             AirInstData::Div(lhs, rhs) => {
                 let Some(lhs_val) = self.lower_value(*lhs) else {
                     return Self::diverged();

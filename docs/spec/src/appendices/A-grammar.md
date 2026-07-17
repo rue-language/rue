@@ -176,7 +176,7 @@ array_literal  = "[" ( [ expression { "," expression } [ "," ] ]
 repeat_count   = INTEGER | IDENT ;  (* repeat form: a literal or named compile-time constant (no call form) *)
 field_inits    = field_init { "," field_init } [ "," ] ;
 field_init     = IDENT ":" expression      (* explicit *)
-               | IDENT ;                    (* field-init shorthand: `x` means `x: x` (preview field_init_shorthand, RUE-613) *)
+               | IDENT ;                    (* field-init shorthand: `x` means `x: x` (RUE-613) *)
 
 (* Lexical elements *)
 IDENT          = ( letter | "_" ) { letter | digit | "_" } ;

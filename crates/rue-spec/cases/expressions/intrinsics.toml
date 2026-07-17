@@ -1936,3 +1936,139 @@ fn main() -> i32 {
 }
 """
 exit_code = 20
+
+# =============================================================================
+# Wrapping arithmetic intrinsics: @wrapping_add / @wrapping_sub / @wrapping_mul
+# (4.13:91-96, RUE-647)
+#
+# Two's-complement result mod 2^N for every integer width, both signednesses;
+# never traps where the checked operator would.
+# =============================================================================
+
+[[case]]
+name = "wrapping_add_i8_max_boundary"
+spec = ["4.13:97", "4.13:98", "4.13:99", "4.13:100"]
+description = "@wrapping_add at the i8 maximum wraps 127 + 1 to -128 instead of trapping."
+source = """
+fn main() -> i32 {
+    let hi: i8 = 127;
+    let one: i8 = 1;
+    @dbg(@wrapping_add(hi, one));
+    0
+}
+"""
+expected_stdout = """
+-128
+"""
+exit_code = 0
+
+[[case]]
+name = "wrapping_sub_u8_zero_minus_one"
+spec = ["4.13:97", "4.13:99", "4.13:100"]
+description = "@wrapping_sub(0, 1) at u8 wraps to 255."
+source = """
+fn main() -> i32 {
+    let zero: u8 = 0;
+    let one: u8 = 1;
+    @dbg(@wrapping_sub(zero, one));
+    0
+}
+"""
+expected_stdout = """
+255
+"""
+exit_code = 0
+
+[[case]]
+name = "wrapping_mul_u64_fnv1a_step"
+spec = ["4.13:97", "4.13:99", "4.13:100"]
+description = "The u64 FNV-1a hashing step @wrapping_mul(14695981039346656037, 1099511628211) — the exact product that traps as checked `*` today — reduces mod 2^64 to 12638153115695167455."
+source = """
+fn main() -> i32 {
+    let hash: u64 = 14695981039346656037;
+    let prime: u64 = 1099511628211;
+    @dbg(@wrapping_mul(hash, prime));
+    0
+}
+"""
+expected_stdout = """
+12638153115695167455
+"""
+exit_code = 0
+
+[[case]]
+name = "wrapping_i64_min_max_boundaries"
+spec = ["4.13:98", "4.13:99", "4.13:100"]
+description = "i64 max + 1 wraps to i64 min and i64 min - 1 wraps to i64 max."
+source = """
+fn main() -> i32 {
+    let max: i64 = 9223372036854775807;
+    let min: i64 = -9223372036854775808;
+    let one: i64 = 1;
+    @dbg(@wrapping_add(max, one));
+    @dbg(@wrapping_sub(min, one));
+    0
+}
+"""
+expected_stdout = """
+-9223372036854775808
+9223372036854775807
+"""
+exit_code = 0
+
+[[case]]
+name = "wrapping_mul_signedness_low_bits_agree"
+spec = ["4.13:100"]
+description = "@wrapping_mul yields the same low bits for signed and unsigned operands of the same width: u16 65535*65535 and i16 (-1)*(-1) both reduce to 1."
+source = """
+fn main() -> i32 {
+    let umax: u16 = 65535;
+    @dbg(@wrapping_mul(umax, umax));
+    let neg: i16 = -1;
+    @dbg(@wrapping_mul(neg, neg));
+    0
+}
+"""
+expected_stdout = """
+1
+1
+"""
+exit_code = 0
+
+[[case]]
+name = "wrapping_result_exit_code"
+spec = ["4.13:98", "4.13:99"]
+description = "A wrapping-arithmetic result is an ordinary integer value usable as the program's exit code."
+source = """
+fn main() -> i32 {
+    let a: i32 = 40;
+    let b: i32 = 2;
+    @wrapping_add(a, b)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "wrapping_add_comptime_not_constant"
+spec = ["4.13:101"]
+description = "Inside a comptime block a wrapping-arithmetic intrinsic is not a constant expression, exactly as @intCast is not (no new constant-evaluation rule)."
+source = """
+fn main() -> i32 {
+    comptime { @wrapping_add(1, 2) }
+}
+"""
+compile_fail = true
+error_contains = "comptime evaluation failed"
+
+[[case]]
+name = "wrapping_add_rejects_non_integer"
+spec = ["4.13:98"]
+description = "A wrapping-arithmetic intrinsic requires integer operands."
+source = """
+fn main() -> i32 {
+    @dbg(@wrapping_add(true, false));
+    0
+}
+"""
+compile_fail = true
+error_contains = "[E0206]"

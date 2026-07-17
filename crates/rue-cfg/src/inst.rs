@@ -283,6 +283,10 @@ pub enum CfgInstData {
     Add(CfgValue, CfgValue),
     Sub(CfgValue, CfgValue),
     Mul(CfgValue, CfgValue),
+    /// Wrapping arithmetic (two's-complement mod 2^N, never traps) — RUE-647.
+    WrappingAdd(CfgValue, CfgValue),
+    WrappingSub(CfgValue, CfgValue),
+    WrappingMul(CfgValue, CfgValue),
     Div(CfgValue, CfgValue),
     Mod(CfgValue, CfgValue),
 
@@ -1069,6 +1073,9 @@ impl Cfg {
                 Add(a, b)
                 | Sub(a, b)
                 | Mul(a, b)
+                | WrappingAdd(a, b)
+                | WrappingSub(a, b)
+                | WrappingMul(a, b)
                 | Div(a, b)
                 | Mod(a, b)
                 | Eq(a, b)
@@ -1355,6 +1362,9 @@ impl Cfg {
             CfgInstData::Add(lhs, rhs) => write!(f, "add {}, {}", lhs, rhs),
             CfgInstData::Sub(lhs, rhs) => write!(f, "sub {}, {}", lhs, rhs),
             CfgInstData::Mul(lhs, rhs) => write!(f, "mul {}, {}", lhs, rhs),
+            CfgInstData::WrappingAdd(lhs, rhs) => write!(f, "wrapping_add {}, {}", lhs, rhs),
+            CfgInstData::WrappingSub(lhs, rhs) => write!(f, "wrapping_sub {}, {}", lhs, rhs),
+            CfgInstData::WrappingMul(lhs, rhs) => write!(f, "wrapping_mul {}, {}", lhs, rhs),
             CfgInstData::Div(lhs, rhs) => write!(f, "div {}, {}", lhs, rhs),
             CfgInstData::Mod(lhs, rhs) => write!(f, "mod {}, {}", lhs, rhs),
             CfgInstData::Eq(lhs, rhs) => write!(f, "eq {}, {}", lhs, rhs),

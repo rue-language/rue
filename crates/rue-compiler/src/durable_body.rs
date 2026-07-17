@@ -92,6 +92,9 @@ pub enum DurableAirInstData {
     Add(DurableAirRef, DurableAirRef),
     Sub(DurableAirRef, DurableAirRef),
     Mul(DurableAirRef, DurableAirRef),
+    WrappingAdd(DurableAirRef, DurableAirRef),
+    WrappingSub(DurableAirRef, DurableAirRef),
+    WrappingMul(DurableAirRef, DurableAirRef),
     Div(DurableAirRef, DurableAirRef),
     Mod(DurableAirRef, DurableAirRef),
     Eq(DurableAirRef, DurableAirRef),
@@ -899,6 +902,9 @@ pub fn convert_semantic_body_exports(
                 SemanticBodyInstData::Add(a, b) => bin!(Add, a, b),
                 SemanticBodyInstData::Sub(a, b) => bin!(Sub, a, b),
                 SemanticBodyInstData::Mul(a, b) => bin!(Mul, a, b),
+                SemanticBodyInstData::WrappingAdd(a, b) => bin!(WrappingAdd, a, b),
+                SemanticBodyInstData::WrappingSub(a, b) => bin!(WrappingSub, a, b),
+                SemanticBodyInstData::WrappingMul(a, b) => bin!(WrappingMul, a, b),
                 SemanticBodyInstData::Div(a, b) => bin!(Div, a, b),
                 SemanticBodyInstData::Mod(a, b) => bin!(Mod, a, b),
                 SemanticBodyInstData::Eq(a, b) => bin!(Eq, a, b),
@@ -1398,6 +1404,9 @@ impl DurableOrdinaryBodyPayload {
                 D::Add(a, b)
                 | D::Sub(a, b)
                 | D::Mul(a, b)
+                | D::WrappingAdd(a, b)
+                | D::WrappingSub(a, b)
+                | D::WrappingMul(a, b)
                 | D::Div(a, b)
                 | D::Mod(a, b)
                 | D::Eq(a, b)
@@ -1520,6 +1529,9 @@ impl DurableOrdinaryBodyPayload {
                 DurableAirInstData::Add(a, b) => bin!(Add, a, b),
                 DurableAirInstData::Sub(a, b) => bin!(Sub, a, b),
                 DurableAirInstData::Mul(a, b) => bin!(Mul, a, b),
+                DurableAirInstData::WrappingAdd(a, b) => bin!(WrappingAdd, a, b),
+                DurableAirInstData::WrappingSub(a, b) => bin!(WrappingSub, a, b),
+                DurableAirInstData::WrappingMul(a, b) => bin!(WrappingMul, a, b),
                 DurableAirInstData::Div(a, b) => bin!(Div, a, b),
                 DurableAirInstData::Mod(a, b) => bin!(Mod, a, b),
                 DurableAirInstData::Eq(a, b) => bin!(Eq, a, b),
