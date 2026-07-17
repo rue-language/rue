@@ -195,9 +195,12 @@ fn visit_terminator_uses(cfg: &Cfg, term: &Terminator, mut f: impl FnMut(CfgValu
 /// Visit values used by an instruction.
 ///
 /// Calls the provided function for each value used by the instruction.
-/// This avoids allocating a Vec for each call.
+/// This avoids allocating a Vec for each call. Exposed to sibling passes
+/// (LICM, RUE-927) so operand enumeration lives in exactly one exhaustive match
+/// over `CfgInstData` here — a new instruction variant cannot silently gain an
+/// operand that LICM's invariance check fails to see.
 #[inline]
-fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue)) {
+pub(super) fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue)) {
     match &cfg.get_inst(value).data {
         // Constants and parameters have no uses
         CfgInstData::Const(_)

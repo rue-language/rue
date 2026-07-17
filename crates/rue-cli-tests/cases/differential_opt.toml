@@ -674,3 +674,100 @@ fn main() -> i32 {
 """ }]
 stdout = ""
 exit_code = 7
+
+# LICM hoistable pure computation (RUE-927): `(a & b) | (a ^ b)` is loop-
+# invariant and trap-free (bitwise ops never trap), so -O3 LICM hoists it into
+# the loop preheader — it runs once instead of once per iteration. The observable
+# result must be byte-for-byte identical at every level: -O0/-O1/-O2 (no LICM)
+# compute it per iteration, -O3 computes it once, and both must agree.
+[[case]]
+name = "licm_hoistable_pure_computation_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn compute(a: i32, b: i32, n: i32) -> i32 {
+    let mut i: i32 = 0;
+    let mut acc: i32 = 0;
+    while i < n {
+        let inv: i32 = (a & b) | (a ^ b);
+        acc = acc + inv;
+        i = i + 1;
+    }
+    acc
+}
+
+fn main() -> i32 {
+    let r: i32 = compute(6, 7, 5);
+    @dbg(r);
+    r
+}
+""" }]
+stdout = "35\n"
+exit_code = 35
+
+# LICM TRAP-SAFETY (RUE-927, the mandatory ADR-0054 §2 regression): a ZERO-TRIP
+# loop whose body contains a loop-invariant division `100 / d` with `d == 0`.
+# The division is invariant (both operands defined outside the loop) but it
+# *may trap*, so LICM must NOT hoist it — the loop runs zero times, so the source
+# never executes the division, and hoisting it into the preheader (which runs
+# before the entry test) would manufacture a divide-by-zero trap out of thin air.
+# This is the inverse of RUE-57 (DCE deleting a mandatory trap); here LICM must
+# not INVENT one. Every level must exit cleanly with `0`; a regression that
+# hoisted the division would make -O3 abort with exit 101 while -O0 returns 0,
+# and the differential net names that divergence.
+[[case]]
+name = "licm_trap_safety_zero_trip_invariant_division_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn trap_safe(n: i32, d: i32) -> i32 {
+    let mut i: i32 = 0;
+    let mut acc: i32 = 0;
+    while i < n {
+        let q: i32 = 100 / d;
+        acc = acc + q;
+        i = i + 1;
+    }
+    acc
+}
+
+fn main() -> i32 {
+    let r: i32 = trap_safe(0, 0);
+    @dbg(r);
+    r
+}
+""" }]
+stdout = "0\n"
+exit_code = 0
+
+# LICM effect-order preservation (RUE-927): a loop whose body has an observable
+# `@dbg(i)` per iteration AND a hoistable invariant `(a | b) & (a ^ b)`. LICM may
+# hoist the pure computation at -O3, but it must never move, drop, or reorder the
+# observable `@dbg` effects — they must fire 0,1,2 in order, then `@dbg(acc)`,
+# identically at every level. Proves the pass leaves observable behavior exactly
+# as the source ordered it while still optimizing the invariant compute.
+[[case]]
+name = "licm_effect_order_preserved_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn effects(a: i32, b: i32, n: i32) -> i32 {
+    let mut i: i32 = 0;
+    let mut acc: i32 = 0;
+    while i < n {
+        let inv: i32 = (a | b) & (a ^ b);
+        @dbg(i);
+        acc = acc + inv;
+        i = i + 1;
+    }
+    @dbg(acc);
+    acc
+}
+
+fn main() -> i32 {
+    effects(5, 3, 3)
+}
+""" }]
+stdout = """0
+1
+2
+18
+"""
+exit_code = 18

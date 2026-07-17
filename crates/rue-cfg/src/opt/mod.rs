@@ -12,7 +12,8 @@
 //!   simplification, dead code elimination)
 //! - `-O2`: `-O1` plus value forwarding / copy propagation (RUE-914) and
 //!   block-local common-subexpression elimination (RUE-913)
-//! - `-O3`: Aggressive optimizations (same as -O2 for now)
+//! - `-O3`: `-O2` plus loop-invariant code motion (RUE-927), which hoists
+//!   trap-free invariant computations out of loops into their preheaders
 //!
 //! ## Pipeline
 //!
@@ -28,6 +29,7 @@ mod constopt;
 mod cse;
 mod dce;
 mod forward;
+mod licm;
 mod loops;
 mod peephole;
 mod simplify;
@@ -65,8 +67,10 @@ pub enum OptLevel {
 
     /// Aggressive optimizations (`-O3`).
     ///
-    /// Currently the same as O2. Future aggressive optimizations
-    /// (that may increase compile time significantly) will be added here.
+    /// Superset of `-O2`: adds loop-invariant code motion (RUE-927), which
+    /// hoists trap-free loop-invariant computations into each loop's preheader.
+    /// Trapping invariant ops are never moved (ADR-0054 §2). Further speculative
+    /// transforms (unrolling, RUE-928) will be added here.
     O3,
 }
 
@@ -231,6 +235,21 @@ pub fn optimize(
                     cse::run(&mut cfg)?;
                 }
 
+                // Loop-invariant code motion (RUE-927), at -O3 only — the first
+                // pass gated strictly above -O2 (ADR-0054 Phase 2). Runs after
+                // the whole -O1/-O2 sequence so the invariant operands it keys
+                // on are as exposed as constant folding, simplification,
+                // forwarding, and CSE can make them, and before DCE, which
+                // sweeps anything the moves orphan. It hoists ONLY trap-free
+                // (`is_speculatable`) invariant ops into each loop's preheader;
+                // trapping invariant ops never move, because hoisting one into
+                // a zero-trip preheader would manufacture a trap the source
+                // never runs (the inverse of RUE-57). It recomputes dominators
+                // + loops per the ADR's recompute rule.
+                if matches!(level, OptLevel::O3) {
+                    licm::run(&mut cfg, type_pool)?;
+                }
+
                 // Dead code elimination: remove unused values and unreachable blocks
                 dce::run(&mut cfg);
             }
@@ -243,7 +262,7 @@ pub fn optimize(
 
 fn publish_optimization(
     cfg: crate::CfgEditor,
-    pass_result: Result<(), CfgEditError>,
+    pass_result: Result<(), CfgOptimizationError>,
     type_pool: &FrozenTypeInternPool,
 ) -> Result<ValidatedCfg, CfgOptimizationError> {
     pass_result?;
@@ -265,7 +284,7 @@ mod tests {
         let error = CfgEditError::CapacityFailure {
             family: "optimizer failure injection",
         };
-        let propagated = publish_optimization(cfg, Err(error), &type_pool).unwrap_err();
+        let propagated = publish_optimization(cfg, Err(error.into()), &type_pool).unwrap_err();
         assert!(matches!(
             propagated,
             CfgOptimizationError::Edit(CfgEditError::CapacityFailure {
