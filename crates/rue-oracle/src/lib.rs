@@ -828,6 +828,11 @@ struct Frame {
     cache: HashMap<u32, Value>,
 }
 
+enum WritebackPlace<'a> {
+    Simple { base: PlaceBase, base_type: Type },
+    Stored(&'a Place),
+}
+
 impl<'a> Interp<'a> {
     fn string_literal_value(&self, text: String, ty: Type) -> Value {
         if self.is_str_like_type(ty) {
@@ -1068,15 +1073,11 @@ impl<'a> Interp<'a> {
             })
             .flatten()
             .any(|value| {
-                let CfgInstData::StructInit {
-                    struct_id,
-                    fields_start,
-                    fields_len,
-                } = cfg.get_inst(value).data
-                else {
+                let data = &cfg.get_inst(value).data;
+                let CfgInstData::StructInit { struct_id, .. } = data else {
                     return false;
                 };
-                let def = self.state.type_pool.struct_def(struct_id);
+                let def = self.state.type_pool.struct_def(*struct_id);
                 let is_slice = def.name.starts_with('[')
                     && def.name.ends_with(']')
                     && parse_array_type_syntax(&def.name).is_none();
@@ -1084,27 +1085,23 @@ impl<'a> Interp<'a> {
                     || def.fields.len() != 2
                     || def.fields[0].ty != pointer_ty
                     || def.fields[1].ty != Type::U64
-                    || fields_len != 2
-                    || cfg.get_inst(value).ty != Type::new_struct(struct_id)
+                    || cfg.get_struct_fields(data).len() != 2
+                    || cfg.get_inst(value).ty != Type::new_struct(*struct_id)
                     || cfg.value_use_count(value) != 1
                 {
                     return false;
                 }
-                let fields = cfg.get_extra(fields_start, fields_len);
+                let fields = cfg.get_struct_fields(data);
                 fields[0] == intrinsic
                     && cfg.get_inst(fields[1]).ty == Type::U64
                     && matches!(cfg.get_inst(fields[1]).data, CfgInstData::Const(0))
                     && cfg.blocks().iter().any(|block| {
                         block.insts.iter().any(|candidate| {
-                            let CfgInstData::Call {
-                                args_start,
-                                args_len,
-                                ..
-                            } = &cfg.get_inst(*candidate).data
-                            else {
+                            let data = &cfg.get_inst(*candidate).data;
+                            let CfgInstData::Call { .. } = data else {
                                 return false;
                             };
-                            cfg.get_call_args(*args_start, *args_len)
+                            cfg.get_call_args(data)
                                 .iter()
                                 .any(|arg| arg.value == value && arg.mode == CfgArgMode::Normal)
                         })
@@ -1627,6 +1624,7 @@ impl<'a> Interp<'a> {
             .iter()
             .map(|f| &f.cfg)
             .find(|c| c.fn_name() == name)
+            .map(|cfg| &**cfg)
     }
 
     /// Number of physical parameter slots occupied by one CFG call argument.
@@ -1830,19 +1828,19 @@ impl<'a> Interp<'a> {
                 self.eval(cfg, &mut frame, v)?;
             }
 
-            let term = block.terminator;
+            let term = &block.terminator;
             match term {
                 Terminator::Return { value } => {
                     let ret = match value {
-                        Some(v) => self.eval(cfg, &mut frame, v)?,
+                        Some(v) => self.eval(cfg, &mut frame, *v)?,
                         None => Value::Unit,
                     };
                     return Ok((ret, std::mem::take(&mut frame.params)));
                 }
                 Terminator::Goto { target, .. } => {
-                    let ce = cfg.get_goto_args(&term).to_vec();
+                    let ce = cfg.get_goto_args(term).to_vec();
                     incoming = self.eval_all(cfg, &mut frame, &ce)?;
-                    current = target;
+                    current = *target;
                 }
                 Terminator::Branch {
                     cond,
@@ -1850,30 +1848,27 @@ impl<'a> Interp<'a> {
                     else_block,
                     ..
                 } => {
-                    let c = self.eval(cfg, &mut frame, cond)?.as_bool();
+                    let c = self.eval(cfg, &mut frame, *cond)?.as_bool();
                     let args = if c {
-                        cfg.get_branch_then_args(&term)
+                        cfg.get_branch_then_args(term)
                     } else {
-                        cfg.get_branch_else_args(&term)
+                        cfg.get_branch_else_args(term)
                     }
                     .to_vec();
                     incoming = self.eval_all(cfg, &mut frame, &args)?;
-                    current = if c { then_block } else { else_block };
+                    current = if c { *then_block } else { *else_block };
                 }
                 Terminator::Switch {
-                    scrutinee,
-                    cases_start,
-                    cases_len,
-                    default,
+                    scrutinee, default, ..
                 } => {
                     // The scrutinee is an integer, a discriminant-only enum
                     // (`Int` tag), or a payload-carrying enum (`Aggregate` whose
                     // element 0 is the tag, RUE-285). Switch on the discriminant.
-                    let s = match self.eval(cfg, &mut frame, scrutinee)? {
+                    let s = match self.eval(cfg, &mut frame, *scrutinee)? {
                         Value::Aggregate(elems) => elems.first().map(Value::as_int).unwrap_or(0),
                         other => other.as_int(),
                     };
-                    let cases = cfg.get_switch_cases(cases_start, cases_len);
+                    let cases = cfg.get_switch_cases(term);
                     // Case values are stored as i64 bit patterns; compare by the
                     // 64-bit pattern so unsigned extremes (u64::MAX -> -1 as i64)
                     // and i64::MIN match the scrutinee regardless of signedness.
@@ -1882,7 +1877,7 @@ impl<'a> Interp<'a> {
                         .iter()
                         .find(|(val, _)| *val as u64 == s_bits)
                         .map(|(_, blk)| *blk)
-                        .unwrap_or(default);
+                        .unwrap_or(*default);
                     incoming = Vec::new();
                 }
                 Terminator::Unreachable => {
@@ -2341,8 +2336,7 @@ impl<'a> Interp<'a> {
                 Value::Unit
             }
             CfgInstData::PlaceRead { place } => {
-                let place = place.clone();
-                if !self.place_projection_metadata_is_valid(cfg, &place, ty, PlaceAccess::Read) {
+                if !self.place_projection_metadata_is_valid(cfg, place, ty, PlaceAccess::Read) {
                     return Err(unsupported(
                         UnsupportedKind::ContractViolation(
                             ContractViolationKind::PlaceProjectionMetadata,
@@ -2350,7 +2344,7 @@ impl<'a> Interp<'a> {
                         "PlaceRead projection metadata drift",
                     ));
                 }
-                if let Some(kind) = self.place_base_violation(cfg, &place, PlaceAccess::Read) {
+                if let Some(kind) = self.place_base_violation(cfg, place, PlaceAccess::Read) {
                     return Err(unsupported(
                         UnsupportedKind::ContractViolation(kind),
                         format!(
@@ -2363,13 +2357,12 @@ impl<'a> Interp<'a> {
                         ),
                     ));
                 }
-                self.place_read(cfg, frame, &place)?
+                self.place_read(cfg, frame, place)?
             }
             CfgInstData::PlaceWrite { place, value } => {
-                let place = place.clone();
                 if !self.place_projection_metadata_is_valid(
                     cfg,
-                    &place,
+                    place,
                     cfg.get_inst(*value).ty,
                     PlaceAccess::Write,
                 ) {
@@ -2380,7 +2373,7 @@ impl<'a> Interp<'a> {
                         "PlaceWrite projection metadata drift",
                     ));
                 }
-                if let Some(kind) = self.place_base_violation(cfg, &place, PlaceAccess::Write) {
+                if let Some(kind) = self.place_base_violation(cfg, place, PlaceAccess::Write) {
                     return Err(unsupported(
                         UnsupportedKind::ContractViolation(kind),
                         format!(
@@ -2394,23 +2387,16 @@ impl<'a> Interp<'a> {
                     ));
                 }
                 let val = self.eval(cfg, frame, *value)?;
-                self.place_write(cfg, frame, &place, val)?;
+                self.place_write(cfg, frame, place, val)?;
                 Value::Unit
             }
 
-            CfgInstData::StructInit {
-                fields_start,
-                fields_len,
-                ..
-            } => {
-                let fields = cfg.get_extra(*fields_start, *fields_len).to_vec();
+            CfgInstData::StructInit { .. } => {
+                let fields = cfg.get_struct_fields(&inst.data).to_vec();
                 Value::Aggregate(self.eval_all(cfg, frame, &fields)?)
             }
-            CfgInstData::ArrayInit {
-                elements_start,
-                elements_len,
-            } => {
-                let elems = cfg.get_extra(*elements_start, *elements_len).to_vec();
+            CfgInstData::ArrayInit { .. } => {
+                let elems = cfg.get_array_elements(&inst.data).to_vec();
                 Value::Aggregate(self.eval_all(cfg, frame, &elems)?)
             }
             // A discriminant-only variant is its tag (an `Int`); a payload-
@@ -2418,16 +2404,11 @@ impl<'a> Interp<'a> {
             // the rest are the payload fields, in declaration order (RUE-285).
             // This lets structural `==` distinguish `Circle(5)` from `Circle(6)`
             // and from `Square(5)`, and lets `EnumPayloadGet` project a field.
-            CfgInstData::EnumVariant {
-                variant_index,
-                payload_start,
-                payload_len,
-                ..
-            } => {
-                if *payload_len == 0 {
+            CfgInstData::EnumVariant { variant_index, .. } => {
+                if cfg.get_enum_payload(&inst.data).is_empty() {
                     Value::Int(*variant_index as i128)
                 } else {
-                    let payload_refs = cfg.get_extra(*payload_start, *payload_len).to_vec();
+                    let payload_refs = cfg.get_enum_payload(&inst.data).to_vec();
                     let mut elems = Vec::with_capacity(1 + payload_refs.len());
                     elems.push(Value::Int(*variant_index as i128));
                     elems.extend(self.eval_all(cfg, frame, &payload_refs)?);
@@ -2461,14 +2442,9 @@ impl<'a> Interp<'a> {
                 Self::set_param(frame, *param_slot, val);
                 Value::Unit
             }
-            CfgInstData::Call {
-                runtime,
-                name,
-                args_start,
-                args_len,
-            } => {
+            CfgInstData::Call { runtime, name, .. } => {
                 let fname = self.interner().resolve(name).to_string();
-                let call_args = cfg.get_call_args(*args_start, *args_len).to_vec();
+                let call_args = cfg.get_call_args(&inst.data).to_vec();
                 let arg_types: Vec<Type> = call_args
                     .iter()
                     .map(|arg| cfg.get_inst(arg.value).ty)
@@ -2513,7 +2489,7 @@ impl<'a> Interp<'a> {
                 // Copy-in every argument (by value); for `inout` args, remember
                 // the base parameter slot and the caller place to copy back into.
                 let mut argvals = Vec::with_capacity(call_args.len());
-                let mut writebacks: Vec<(usize, Place)> = Vec::new();
+                let mut writebacks: Vec<(usize, WritebackPlace<'a>)> = Vec::new();
                 let mut base = 0usize;
                 for (index, a) in call_args.iter().enumerate() {
                     let v = self.eval(cfg, frame, a.value)?;
@@ -2564,21 +2540,27 @@ impl<'a> Interp<'a> {
                     // the caller place it came from.
                     for (slot, place) in writebacks {
                         if let Some(val) = final_params.get(slot).and_then(|o| o.clone()) {
-                            self.place_write(cfg, frame, &place, val)?;
+                            match place {
+                                WritebackPlace::Simple { base, base_type } => {
+                                    let place = match base {
+                                        PlaceBase::Local(slot) => Place::local(slot, base_type),
+                                        PlaceBase::Param(slot) => Place::param(slot, base_type),
+                                    };
+                                    self.place_write(cfg, frame, &place, val)?;
+                                }
+                                WritebackPlace::Stored(place) => {
+                                    self.place_write(cfg, frame, place, val)?;
+                                }
+                            }
                         }
                     }
                     result
                 }
             }
 
-            CfgInstData::Intrinsic {
-                name,
-                args_start,
-                args_len,
-                ..
-            } => {
+            CfgInstData::Intrinsic { name, .. } => {
                 let iname = self.interner().resolve(name).to_string();
-                let args = cfg.get_extra(*args_start, *args_len).to_vec();
+                let args = cfg.get_intrinsic_args(&inst.data).to_vec();
                 if let Some(intrinsic) = self.preflight_abort_intrinsic(cfg, &iname, &args, ty)? {
                     self.eval_abort_intrinsic(cfg, frame, intrinsic, &args)?
                 } else if iname != "dbg" {
@@ -2920,13 +2902,14 @@ impl<'a> Interp<'a> {
 
     /// Recover the caller place an `inout` argument was loaded from, so its
     /// mutated value can be copied back after the call.
-    fn lvalue_of(&self, cfg: &'a Cfg, v: CfgValue) -> Step<Place> {
+    fn lvalue_of(&self, cfg: &'a Cfg, v: CfgValue) -> Step<WritebackPlace<'a>> {
         match &cfg.get_inst(v).data {
-            CfgInstData::Load { slot } if *slot < cfg.num_locals() => {
-                Ok(Place::local(*slot, cfg.get_inst(v).ty))
-            }
+            CfgInstData::Load { slot } if *slot < cfg.num_locals() => Ok(WritebackPlace::Simple {
+                base: PlaceBase::Local(*slot),
+                base_type: cfg.get_inst(v).ty,
+            }),
             CfgInstData::PlaceRead { place } if self.is_inout_writeback_place(cfg, v, place) => {
-                Ok(place.clone())
+                Ok(WritebackPlace::Stored(place))
             }
             other @ CfgInstData::Param { index }
                 if *index < cfg.num_params() && cfg.is_param_writable(*index) =>

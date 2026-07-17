@@ -232,6 +232,7 @@ pub(crate) enum CfgDomainFailure {
     Shape,
     Unsupported,
     Missing,
+    Edit(rue_cfg::CfgEditError),
 }
 
 impl CfgDomainProjection {
@@ -361,7 +362,7 @@ impl CfgDomainProjection {
         new: &Self,
         cfg: &rue_cfg::Cfg,
         new_span: Span,
-    ) -> Result<rue_cfg::Cfg, CfgDomainFailure> {
+    ) -> Result<rue_cfg::CfgEditor, CfgDomainFailure> {
         cfg.try_remap_domains(
             |value| new.current_type(&old.stable_type(value)?),
             |value| match new
@@ -418,6 +419,10 @@ impl CfgDomainProjection {
                 })
             },
         )
+        .map_err(|error| match error {
+            rue_cfg::CfgRemapError::Domain(error) => error,
+            rue_cfg::CfgRemapError::Edit(error) => CfgDomainFailure::Edit(error),
+        })
     }
 }
 
@@ -425,7 +430,7 @@ impl CfgDomainProjection {
 mod tests {
     use super::*;
     use lasso::Key;
-    use rue_cfg::{Cfg, CfgInst, CfgInstData};
+    use rue_cfg::{Cfg, CfgInstData};
 
     fn projection(symbol: Spur) -> CfgDomainProjection {
         CfgDomainProjection {
@@ -467,19 +472,8 @@ mod tests {
         let new = Spur::try_from_usize(17).unwrap();
         let mut cfg = Cfg::new(Type::I32, 0, 0, "f".into(), Vec::<bool>::new());
         let block = cfg.new_block();
-        cfg.add_inst_to_block(
-            block,
-            CfgInst {
-                data: CfgInstData::Call {
-                    runtime: None,
-                    name: old,
-                    args_start: 0,
-                    args_len: 0,
-                },
-                ty: Type::I32,
-                span: Span::new(4, 5),
-            },
-        );
+        cfg.append_call(block, None, old, [], Type::I32, Span::new(4, 5))
+            .unwrap();
         let imported = CfgDomainProjection::import_cfg(
             &projection(old),
             &projection(new),

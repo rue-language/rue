@@ -32,7 +32,7 @@ mod loops;
 mod peephole;
 mod simplify;
 
-use crate::Cfg;
+use crate::{CfgEditError, CfgVerificationError, ValidatedCfg};
 use rue_air::FrozenTypeInternPool;
 
 /// Optimization level, following standard compiler conventions.
@@ -104,6 +104,38 @@ impl std::fmt::Display for ParseOptLevelError {
 
 impl std::error::Error for ParseOptLevelError {}
 
+/// Recoverable failure while optimizing a validated CFG.
+#[derive(Debug)]
+pub enum CfgOptimizationError {
+    /// An optimizer payload edit could not be represented or allocated.
+    Edit(CfgEditError),
+    /// The optimized graph failed the publication-time verification boundary.
+    Verification(CfgVerificationError),
+}
+
+impl std::fmt::Display for CfgOptimizationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Edit(error) => write!(f, "CFG optimizer edit was rejected: {error:?}"),
+            Self::Verification(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for CfgOptimizationError {}
+
+impl From<CfgEditError> for CfgOptimizationError {
+    fn from(error: CfgEditError) -> Self {
+        Self::Edit(error)
+    }
+}
+
+impl From<CfgVerificationError> for CfgOptimizationError {
+    fn from(error: CfgVerificationError) -> Self {
+        Self::Verification(error)
+    }
+}
+
 impl std::str::FromStr for OptLevel {
     type Err = ParseOptLevelError;
 
@@ -141,76 +173,106 @@ impl std::fmt::Display for OptLevel {
 /// optimize(&mut cfg, OptLevel::O1, &type_pool);
 /// // cfg is now optimized
 /// ```
-pub fn optimize(cfg: &mut Cfg, level: OptLevel, type_pool: &FrozenTypeInternPool) {
-    // Verify construction output before any pass can detach dead values or
-    // erase unreachable blocks and thereby hide a malformed definition/use.
-    cfg.verify_with_type_pool(type_pool);
+pub fn optimize(
+    cfg: ValidatedCfg,
+    level: OptLevel,
+    type_pool: &FrozenTypeInternPool,
+) -> Result<ValidatedCfg, CfgOptimizationError> {
+    let mut cfg = cfg.into_editor();
 
-    match level {
-        OptLevel::O0 => {
-            // No optimization
-        }
-        OptLevel::O1 | OptLevel::O2 | OptLevel::O3 => {
-            // Constant folding interleaved with store-to-load constant
-            // propagation: folding a let's initializer can expose a constant
-            // store, and propagating it into Loads can expose new foldable
-            // operations (chains of single-assignment lets, RUE-154). The
-            // sparse worklist driver reaches that fixpoint by revisiting an
-            // instruction only when one of its inputs becomes constant, so
-            // deep chains stay linear instead of forcing quadratic full-CFG
-            // rescans (RUE-794).
-            constopt::run(cfg);
-
-            // Peephole algebraic simplification (RUE-912): rewire trap-free
-            // identities (x+0, x*1, ...) to their operand and strength-reduce
-            // unsigned division/modulo by powers of two. Runs after constopt
-            // so propagated constants are visible; annihilators that produce
-            // constants (x*0, x-x, ...) live in the constfold kernel inside
-            // the worklist instead, because their results cascade.
-            peephole::run(cfg);
-
-            // CFG simplification (RUE-910, RUE-911): fold constant-condition
-            // Branch/Switch terminators into Gotos so dead arms drop out of
-            // reachability, then thread empty forwarding blocks and merge
-            // single-predecessor Goto chains into straight-line blocks
-            // before DCE prunes the leftovers.
-            simplify::run(cfg);
-
-            // Value forwarding / copy propagation (RUE-914), at -O2/-O3 only.
-            // Runs after simplify and before CSE: it turns redundant `Load`s
-            // into the SSA value already holding the slot's contents (a global
-            // single-write rule plus a block-local last-store rule), which is
-            // exactly what lets CSE key expressions built over those loads.
-            // Both rules are trap-exact — a load never traps and the forwarded
-            // value is already computed — so the orphaned loads fall to DCE.
-            if matches!(level, OptLevel::O2 | OptLevel::O3) {
-                forward::run(cfg);
+    let pass_result = (|| {
+        match level {
+            OptLevel::O0 => {
+                // No optimization
             }
+            OptLevel::O1 | OptLevel::O2 | OptLevel::O3 => {
+                // Constant folding interleaved with store-to-load constant
+                // propagation: folding a let's initializer can expose a constant
+                // store, and propagating it into Loads can expose new foldable
+                // operations (chains of single-assignment lets, RUE-154). The
+                // sparse worklist driver reaches that fixpoint by revisiting an
+                // instruction only when one of its inputs becomes constant, so
+                // deep chains stay linear instead of forcing quadratic full-CFG
+                // rescans (RUE-794).
+                constopt::run(&mut cfg);
 
-            // Block-local common-subexpression elimination (RUE-913), at
-            // -O2/-O3 only (ADR-0044 places CSE at the release-default level).
-            // Runs after forwarding — expressions over forwarded loads are now
-            // keyable — and before DCE, which sweeps the dead placeholders each
-            // replaced duplicate (and each forwarded load) leaves behind.
-            if matches!(level, OptLevel::O2 | OptLevel::O3) {
-                cse::run(cfg);
+                // Peephole algebraic simplification (RUE-912): rewire trap-free
+                // identities (x+0, x*1, ...) to their operand and strength-reduce
+                // unsigned division/modulo by powers of two. Runs after constopt
+                // so propagated constants are visible; annihilators that produce
+                // constants (x*0, x-x, ...) live in the constfold kernel inside
+                // the worklist instead, because their results cascade.
+                peephole::run(&mut cfg)?;
+
+                // CFG simplification (RUE-910, RUE-911): fold constant-condition
+                // Branch/Switch terminators into Gotos so dead arms drop out of
+                // reachability, then thread empty forwarding blocks and merge
+                // single-predecessor Goto chains into straight-line blocks
+                // before DCE prunes the leftovers.
+                simplify::run(&mut cfg)?;
+
+                // Value forwarding / copy propagation (RUE-914), at -O2/-O3 only.
+                // Runs after simplify and before CSE: it turns redundant `Load`s
+                // into the SSA value already holding the slot's contents (a global
+                // single-write rule plus a block-local last-store rule), which is
+                // exactly what lets CSE key expressions built over those loads.
+                // Both rules are trap-exact — a load never traps and the forwarded
+                // value is already computed — so the orphaned loads fall to DCE.
+                if matches!(level, OptLevel::O2 | OptLevel::O3) {
+                    forward::run(&mut cfg)?;
+                }
+
+                // Block-local common-subexpression elimination (RUE-913), at
+                // -O2/-O3 only (ADR-0044 places CSE at the release-default level).
+                // Runs after forwarding — expressions over forwarded loads are now
+                // keyable — and before DCE, which sweeps the dead placeholders each
+                // replaced duplicate (and each forwarded load) leaves behind.
+                if matches!(level, OptLevel::O2 | OptLevel::O3) {
+                    cse::run(&mut cfg)?;
+                }
+
+                // Dead code elimination: remove unused values and unreachable blocks
+                dce::run(&mut cfg);
             }
-
-            // Dead code elimination: remove unused values and unreachable blocks
-            dce::run(cfg);
         }
-    }
+        Ok(())
+    })();
 
+    publish_optimization(cfg, pass_result, type_pool)
+}
+
+fn publish_optimization(
+    cfg: crate::CfgEditor,
+    pass_result: Result<(), CfgEditError>,
+    type_pool: &FrozenTypeInternPool,
+) -> Result<ValidatedCfg, CfgOptimizationError> {
+    pass_result?;
     // Recheck the graph handed to codegen. DCE deliberately leaves detached
     // dead values in the arena, so attachment completeness was established by
     // the strict pre-pass check above; all live attachments and uses are still
     // checked here. See `crate::verify`.
-    cfg.verify_after_optimization_with_type_pool(type_pool);
+    cfg.finish_after_optimization(type_pool).map_err(Into::into)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optimizer_edit_failures_preserve_the_failure_kind() {
+        let cfg = crate::Cfg::new(crate::Type::UNIT, 0, 0, "test".to_string(), vec![]);
+        let type_pool = rue_air::TypeInternPool::new().freeze();
+        let error = CfgEditError::CapacityFailure {
+            family: "optimizer failure injection",
+        };
+        let propagated = publish_optimization(cfg, Err(error), &type_pool).unwrap_err();
+        assert!(matches!(
+            propagated,
+            CfgOptimizationError::Edit(CfgEditError::CapacityFailure {
+                family: "optimizer failure injection"
+            })
+        ));
+    }
 
     #[test]
     fn test_opt_level_from_str() {

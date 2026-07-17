@@ -404,10 +404,10 @@ mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
     use rue_air::{Air, AirInst, AirInstData, FrozenTypeInternPool, Type, TypeInternPool};
-    use rue_cfg::{Cfg, CfgBuilder};
+    use rue_cfg::{CfgBuilder, ValidatedCfg};
     use rue_span::Span;
 
-    fn test_cfg() -> (Cfg, FrozenTypeInternPool, ThreadedRodeo) {
+    fn test_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
         let mut air = Air::new(Type::I32);
 
         let const_ref = air.add_inst(AirInst {
@@ -426,10 +426,10 @@ mod tests {
         let type_pool = FrozenTypeInternPool::new();
         let cfg_output =
             CfgBuilder::build(&air, 0, 0, "main", &type_pool, vec![], &interner, false);
-        (cfg_output.cfg, type_pool, interner)
+        (cfg_output.cfg.unwrap(), type_pool, interner)
     }
 
-    fn aggregate_cfg(len: u64) -> (Cfg, FrozenTypeInternPool, ThreadedRodeo) {
+    fn aggregate_cfg(len: u64) -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
         let type_pool = TypeInternPool::new();
         let array_id = type_pool.intern_array_from_type(Type::I64, len);
         let type_pool = type_pool.freeze();
@@ -484,10 +484,10 @@ mod tests {
             &interner,
             false,
         );
-        (cfg_output.cfg, type_pool, interner)
+        (cfg_output.cfg.unwrap(), type_pool, interner)
     }
 
-    fn syscall_cfg() -> (Cfg, FrozenTypeInternPool, ThreadedRodeo) {
+    fn syscall_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
         let type_pool = FrozenTypeInternPool::new();
         let interner = ThreadedRodeo::new();
         let mut air = Air::new(Type::I64);
@@ -524,7 +524,7 @@ mod tests {
             &interner,
             false,
         );
-        (cfg_output.cfg, type_pool, interner)
+        (cfg_output.cfg.unwrap(), type_pool, interner)
     }
 
     fn assert_same_machine_code(normal: &MachineCode, with_asm: &MachineCode) {

@@ -107,7 +107,7 @@ enum SlotClass {
 
 /// Run value forwarding. Call at `-O2`/`-O3` after simplification and before
 /// CSE.
-pub fn run(cfg: &mut Cfg) -> Stats {
+pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     let mut stats = Stats::default();
     let num_locals = cfg.num_locals() as usize;
 
@@ -127,13 +127,8 @@ pub fn run(cfg: &mut Cfg) -> Stats {
     let mut byref_arg_values: HashSet<CfgValue> = HashSet::new();
     for block in cfg.blocks() {
         for &value in &block.insts {
-            if let CfgInstData::Call {
-                args_start,
-                args_len,
-                ..
-            } = &cfg.get_inst(value).data
-            {
-                for arg in cfg.get_call_args(*args_start, *args_len) {
+            if let CfgInstData::Call { args, .. } = &cfg.get_inst(value).data {
+                for arg in cfg.call_args(args) {
                     if arg.is_by_ref() {
                         byref_arg_values.insert(arg.value);
                     }
@@ -185,12 +180,8 @@ pub fn run(cfg: &mut Cfg) -> Stats {
                         record_write(&mut slot_class, slot, None);
                     }
                 }
-                CfgInstData::Call {
-                    args_start,
-                    args_len,
-                    ..
-                } => {
-                    for arg in cfg.get_call_args(*args_start, *args_len) {
+                CfgInstData::Call { args, .. } => {
+                    for arg in cfg.call_args(args) {
                         if !arg.is_by_ref() {
                             continue;
                         }
@@ -238,7 +229,7 @@ pub fn run(cfg: &mut Cfg) -> Stats {
             let value = cfg.get_block(block_id).insts[i];
             stats.insts_scanned += 1;
 
-            match cfg.get_inst(value).data.clone() {
+            match cfg.get_inst(value).data.duplicate_with_owner() {
                 CfgInstData::Alloc { slot, init } | CfgInstData::Store { slot, value: init } => {
                     // Address-taken slots stay out of the block-local table.
                     if !cfg.is_address_taken(slot) && (slot as usize) < num_locals {
@@ -275,13 +266,9 @@ pub fn run(cfg: &mut Cfg) -> Stats {
                         }
                     }
                 }
-                CfgInstData::Call {
-                    args_start,
-                    args_len,
-                    ..
-                } => {
+                CfgInstData::Call { args, .. } => {
                     let mut clear_all = false;
-                    for arg in cfg.get_call_args(args_start, args_len).to_vec() {
+                    for arg in cfg.call_args(&args).to_vec() {
                         if !arg.is_by_ref() {
                             continue;
                         }
@@ -320,7 +307,7 @@ pub fn run(cfg: &mut Cfg) -> Stats {
 
     let forwarded = stats.loads_forwarded_single_write + stats.loads_forwarded_block_local;
     if forwarded == 0 {
-        return stats;
+        return Ok(stats);
     }
 
     // Turn the definite-initialization argument for Rule 1 into a checked
@@ -344,9 +331,9 @@ pub fn run(cfg: &mut Cfg) -> Stats {
     let resolved: Vec<CfgValue> = (0..cfg.value_count())
         .map(|i| resolve(&subst, CfgValue::from_raw(i as u32)))
         .collect();
-    cfg.rewrite_value_uses(|v| resolved[v.as_u32() as usize]);
+    cfg.rewrite_value_uses(|v| resolved[v.as_u32() as usize])?;
 
-    stats
+    Ok(stats)
 }
 
 /// Walk `subst` chains to the surviving value. A forwarded value can itself be
@@ -424,7 +411,7 @@ mod tests {
         let load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(load) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 1);
         assert_eq!(stats.loads_forwarded_block_local, 0);
         // The return now reads the Add directly.
@@ -457,7 +444,7 @@ mod tests {
         let sum = push(&mut cfg, CfgInstData::Add(read1, read2), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sum) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 0);
         assert_eq!(stats.loads_forwarded_block_local, 2);
         // read1 -> c1, read2 -> c2.
@@ -477,24 +464,25 @@ mod tests {
             Type::UNIT,
         );
         let arg_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
-        let (args_start, args_len) = cfg.push_call_args([CfgCallArg {
-            value: arg_load,
-            mode: CfgArgMode::Inout,
-        }]);
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: arg_load,
+                mode: CfgArgMode::Inout,
+            }])
+            .unwrap();
         push(
             &mut cfg,
             CfgInstData::Call {
                 runtime: None,
                 name: Spur::try_from_usize(0).unwrap(),
-                args_start,
-                args_len,
+                args,
             },
             Type::UNIT,
         );
         let read = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(read) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 0);
         assert_eq!(stats.loads_forwarded_block_local, 0);
         // Neither load was rewritten: the arg load stays a place, and the load
@@ -521,21 +509,20 @@ mod tests {
             Type::UNIT,
         );
         let load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
-        let (args_start, args_len) = cfg.push_extra(vec![load]);
+        let args = cfg.push_intrinsic_args(vec![load]).unwrap();
         let ptr = push(
             &mut cfg,
             CfgInstData::Intrinsic {
                 runtime: None,
                 name: Spur::try_from_usize(0).unwrap(),
-                args_start,
-                args_len,
+                args,
             },
             Type::I32,
         );
         cfg.mark_address_taken(0);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(ptr) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 0);
         assert_eq!(stats.loads_forwarded_block_local, 0);
         assert!(matches!(
@@ -557,15 +544,16 @@ mod tests {
             Type::UNIT,
         );
         let field_val = push(&mut cfg, CfgInstData::Const(9), Type::I32);
-        let (proj_start, proj_len) = cfg.push_projections([Projection::Field {
-            struct_id: test_struct_id(),
-            field_index: 0,
-        }]);
+        let projections = cfg
+            .push_projections([Projection::Field {
+                struct_id: test_struct_id(),
+                field_index: 0,
+            }])
+            .unwrap();
         let place = Place {
             base: PlaceBase::Local(0),
             base_type: Type::I32,
-            proj_start,
-            proj_len,
+            projections,
         };
         push(
             &mut cfg,
@@ -578,7 +566,7 @@ mod tests {
         let read = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(read) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 0);
         assert_eq!(stats.loads_forwarded_block_local, 0);
         assert!(matches!(
@@ -603,7 +591,7 @@ mod tests {
         cfg.set_terminator(cfg.entry, Terminator::Return { value: None });
         let _ = load;
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 0);
         assert_eq!(stats.loads_forwarded_block_local, 0);
         assert!(matches!(
@@ -635,14 +623,13 @@ mod tests {
             cfg.entry,
             Terminator::Goto {
                 target: block2,
-                args_start: 0,
-                args_len: 0,
+                args: crate::payload::CfgGotoArgs::EMPTY,
             },
         );
         let load = push_in(&mut cfg, block2, CfgInstData::Load { slot: 0 }, Type::I32);
         cfg.set_terminator(block2, Terminator::Return { value: Some(load) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 0);
         assert_eq!(stats.loads_forwarded_block_local, 0);
         assert!(matches!(
@@ -668,14 +655,13 @@ mod tests {
             cfg.entry,
             Terminator::Goto {
                 target: block2,
-                args_start: 0,
-                args_len: 0,
+                args: crate::payload::CfgGotoArgs::EMPTY,
             },
         );
         let load = push_in(&mut cfg, block2, CfgInstData::Load { slot: 0 }, Type::I32);
         cfg.set_terminator(block2, Terminator::Return { value: Some(load) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loads_forwarded_single_write, 1);
         assert!(matches!(
             cfg.get_block(block2).terminator,
@@ -703,7 +689,7 @@ mod tests {
             .map(|i| cfg.get_block(BlockId::from_raw(i as u32)).insts.len())
             .sum();
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.insts_scanned, total_insts as u64);
         assert_eq!(stats.loads_forwarded_single_write, 1);
 
@@ -713,7 +699,7 @@ mod tests {
         // (the load already has no uses) but not in its work counter. Once DCE
         // sweeps the load, a re-run finds nothing.
         super::super::dce::run(&mut cfg);
-        let again = run(&mut cfg);
+        let again = run(&mut cfg).unwrap();
         assert_eq!(again.loads_forwarded_single_write, 0);
         assert_eq!(again.loads_forwarded_block_local, 0);
     }
@@ -741,8 +727,7 @@ mod tests {
             entry,
             Terminator::Goto {
                 target: live,
-                args_start: 0,
-                args_len: 0,
+                args: crate::payload::CfgGotoArgs::EMPTY,
             },
         );
         let dead_load = push_in(&mut cfg, dead, CfgInstData::Load { slot: 0 }, Type::I32);
@@ -760,7 +745,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         // The reachable load forwards; the unreachable one is untouched.
         assert_eq!(stats.loads_forwarded_single_write, 1);
         assert!(matches!(

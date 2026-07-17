@@ -223,29 +223,47 @@ pub(crate) fn build_functions_and_cfgs(
                             && input.type_inputs == candidate.input.type_inputs
                     })
                     && let Some(projection) = projection.as_ref()
-                    && let Ok(imported) = crate::durable_cfg::CfgDomainProjection::import_cfg(
+                {
+                    match crate::durable_cfg::CfgDomainProjection::import_cfg(
                         &candidate.domains,
                         projection,
                         &candidate.cfg,
                         stable_input.unwrap().body_span,
-                    )
-                {
-                    function_work.cfg_import_successes = 1;
-                    function_work.cfg_reuses = 1;
-                    let artifact = candidate.clone();
-                    return Ok((
-                        (
-                            FunctionWithCfg {
-                                analyzed: func,
-                                cfg: imported,
-                            },
-                            Vec::new(),
-                            Vec::new(),
-                            true,
-                            Some(artifact),
-                        ),
-                        function_work,
-                    ));
+                    ) {
+                        Ok(imported) => {
+                            if let Ok(imported) = imported.finish(&type_pool) {
+                                function_work.cfg_import_successes = 1;
+                                function_work.cfg_reuses = 1;
+                                let artifact = candidate.clone();
+                                return Ok((
+                                    (
+                                        FunctionWithCfg {
+                                            analyzed: func,
+                                            cfg: imported,
+                                        },
+                                        Vec::new(),
+                                        Vec::new(),
+                                        true,
+                                        Some(artifact),
+                                    ),
+                                    function_work,
+                                ));
+                            }
+                        }
+                        Err(crate::durable_cfg::CfgDomainFailure::Edit(error)) => {
+                            function_work.cfg_import_failures = 1;
+                            function_work.cfg_builds_failed = 1;
+                            let mut errors = CompileErrors::new();
+                            errors.push(CompileError::new(
+                                ErrorKind::InternalError(format!(
+                                    "CFG import payload construction failed: {error:?}"
+                                )),
+                                stable_input.unwrap().body_span,
+                            ));
+                            return Err((errors, function_work));
+                        }
+                        Err(_) => {}
+                    }
                 }
                 function_work.cfg_import_failures = 1;
                 function_work.cfg_fallbacks = 1;
@@ -278,8 +296,20 @@ pub(crate) fn build_functions_and_cfgs(
             function_work.cfg_builds_succeeded = 1;
             function_work.optimization_attempts = 1;
             function_work.optimized_level_attempts = usize::from(opt_level != OptLevel::O0);
-            let mut cfg = cfg_output.cfg;
-            rue_cfg::opt::optimize(&mut cfg, opt_level, &type_pool);
+            let cfg = cfg_output
+                .cfg
+                .expect("successful CFG construction publishes a validated CFG");
+            let cfg = match rue_cfg::opt::optimize(cfg, opt_level, &type_pool) {
+                Ok(cfg) => cfg,
+                Err(error) => {
+                    function_work.cfg_builds_failed = 1;
+                    let mut errors = CompileErrors::new();
+                    errors.push(CompileError::without_span(ErrorKind::InternalError(
+                        format!("CFG optimization failed: {error}"),
+                    )));
+                    return Err((errors, function_work));
+                }
+            };
             function_work.optimization_completions = 1;
             function_work.cfg_warnings_emitted = cfg_output.warnings.len();
             function_work.implicit_destructor_targets_emitted =

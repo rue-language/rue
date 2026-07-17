@@ -99,11 +99,14 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         .iter()
         .flat_map(|block| block.insts.iter().copied())
     {
-        if let CfgInstData::PlaceRead { place } = &cfg.get_inst(value).data {
-            field_read = Some((value, place.clone()));
+        if matches!(cfg.get_inst(value).data, CfgInstData::PlaceRead { .. }) {
+            field_read = Some(value);
         }
     }
-    let (field_value, field_place) = field_read.expect("Pair field read");
+    let field_value = field_read.expect("Pair field read");
+    let CfgInstData::PlaceRead { place: field_place } = &cfg.get_inst(field_value).data else {
+        unreachable!()
+    };
     let mut interp = Interp {
         state: &state,
         stdout: String::new(),
@@ -121,7 +124,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         locals: vec![None; cfg.num_locals() as usize],
         cache: HashMap::new(),
     };
-    let projection = expect_flow_unsupported(interp.place_read(cfg, &mut frame, &field_place));
+    let projection = expect_flow_unsupported(interp.place_read(cfg, &mut frame, field_place));
     assert_eq!(
         projection.kind(),
         UnsupportedKind::ContractViolation(ContractViolationKind::NonAggregateProjectionRead)
@@ -172,7 +175,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
 }
 
 #[test]
-fn place_contract_requires_the_complete_ordinary_nominal_chain_to_be_well_typed() {
+fn validated_cfg_requires_the_complete_ordinary_nominal_chain_to_be_well_typed() {
     let source = r#"struct Pair { value: i32 }
         struct Header { pointer: u64, length: u64, capacity: u64 }
         fn read(p: Pair) -> i32 { p.value }
@@ -196,7 +199,7 @@ fn place_contract_requires_the_complete_ordinary_nominal_chain_to_be_well_typed(
             .iter()
             .position(|function| function.cfg.fn_name() == "read")
             .expect("read CFG");
-        let (place_value, original_place) = {
+        let (place_value, base) = {
             let cfg = &state.functions[read_index].cfg;
             cfg.blocks()
                 .iter()
@@ -205,13 +208,17 @@ fn place_contract_requires_the_complete_ordinary_nominal_chain_to_be_well_typed(
                     let CfgInstData::PlaceRead { place } = &cfg.get_inst(value).data else {
                         return None;
                     };
-                    Some((value, place.clone()))
+                    Some((value, place.base))
                 })
                 .expect("Pair field PlaceRead")
         };
-        let pair_projection = state.functions[read_index]
-            .cfg
-            .get_place_projections(&original_place)[0];
+        let pair_projection = {
+            let cfg = &state.functions[read_index].cfg;
+            let CfgInstData::PlaceRead { place } = &cfg.get_inst(place_value).data else {
+                unreachable!()
+            };
+            cfg.get_place_projections(place)[0]
+        };
         let projections = if invalid_suffix {
             vec![
                 Projection::Field {
@@ -226,31 +233,17 @@ fn place_contract_requires_the_complete_ordinary_nominal_chain_to_be_well_typed(
                 field_index: 0,
             }]
         };
+        let type_pool = &state.type_pool;
         let cfg = &mut state.functions[read_index].cfg;
-        let place = cfg.make_place(original_place.base, header_ty, projections);
-        cfg.get_inst_mut(place_value).data = CfgInstData::PlaceRead { place };
-
-        let cfg = &state.functions[read_index].cfg;
-        let mut interp = Interp {
-            state: &state,
-            stdout: String::new(),
-            stdout_bytes: 0,
-            stdout_cap: MAX_STDOUT_BYTES,
-            stderr_cap: MAX_STDERR_BYTES,
-            budget: STEP_BUDGET,
-            depth: 0,
-        };
-        let mut frame = Frame {
-            params: vec![Some(Value::string("not a Header"))],
-            locals: vec![None; cfg.num_locals() as usize],
-            cache: HashMap::new(),
-        };
-        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, place_value));
-        assert_eq!(
-            unsupported.kind(),
-            UnsupportedKind::ContractViolation(ContractViolationKind::PlaceProjectionMetadata),
-            "the malformed complete place chain must fail before its injected text runtime shape; invalid_suffix={invalid_suffix}"
-        );
+        let error = cfg
+            .try_edit(type_pool, |editor| {
+                editor.replace_place_read(place_value, base, header_ty, projections)
+            })
+            .expect_err("ValidatedCfg must reject a malformed nominal projection chain");
+        assert!(matches!(
+            error,
+            rue_cfg::CfgEditTransactionError::Verification(_)
+        ));
     }
 }
 
@@ -313,7 +306,7 @@ fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
 }
 
 #[test]
-fn text_projection_gaps_require_exact_representation_metadata() {
+fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
     let preview_features = PreviewFeatures::new();
     let view_state = query_cfg_state_with_preview_features(
         r#"fn main() -> i32 {
@@ -329,15 +322,20 @@ fn text_projection_gaps_require_exact_representation_metadata() {
         .map(|function| &function.cfg)
         .find(|cfg| cfg.fn_name() == "main")
         .expect("main CFG");
-    let view_place = view_cfg
+    let view_value = view_cfg
         .blocks()
         .iter()
         .flat_map(|block| block.insts.iter().copied())
-        .find_map(|value| match &view_cfg.get_inst(value).data {
-            CfgInstData::PlaceRead { place } => Some(place.clone()),
-            _ => None,
+        .find(|&value| {
+            matches!(
+                &view_cfg.get_inst(value).data,
+                CfgInstData::PlaceRead { .. }
+            )
         })
         .expect("str field projection");
+    let CfgInstData::PlaceRead { place: view_place } = &view_cfg.get_inst(view_value).data else {
+        unreachable!()
+    };
     let PlaceBase::Local(view_slot) = view_place.base else {
         panic!("str probe must be rooted in a local")
     };
@@ -357,7 +355,7 @@ fn text_projection_gaps_require_exact_representation_metadata() {
         depth: 0,
     };
     let width =
-        expect_flow_unsupported(view_interp.place_read(view_cfg, &mut view_frame, &view_place));
+        expect_flow_unsupported(view_interp.place_read(view_cfg, &mut view_frame, view_place));
     assert_eq!(
         width.kind(),
         UnsupportedKind::ContractViolation(ContractViolationKind::NonAggregateProjectionRead)
@@ -397,60 +395,44 @@ fn text_projection_gaps_require_exact_representation_metadata() {
     let TypeKind::Struct(owned_struct) = owned_ty.kind() else {
         panic!("String must be a struct type")
     };
+    let type_pool = &owned_state.type_pool;
     let cfg = &mut owned_state.functions[main_index].cfg;
-    let cap_place = cfg.make_place(
-        PlaceBase::Local(0),
-        owned_ty,
-        [Projection::Field {
-            struct_id: owned_struct,
-            field_index: 2,
-        }],
-    );
-    let index_place = cfg.make_place(
-        PlaceBase::Local(0),
-        owned_ty,
-        [Projection::Index {
-            array_type: owned_ty,
-            index: zero,
-        }],
-    );
-    let owned_cfg = &owned_state.functions[main_index].cfg;
-    let owned_interp = Interp {
-        state: &owned_state,
-        stdout: String::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-    };
-    for place in [cap_place, index_place] {
-        let mut frame = Frame {
-            params: Vec::new(),
-            locals: vec![Some(Value::string("owned"))],
-            cache: HashMap::new(),
-        };
-        let unsupported = expect_flow_unsupported({
-            let mut interp = Interp {
-                state: owned_interp.state,
-                stdout: String::new(),
-                stdout_bytes: 0,
-                stdout_cap: MAX_STDOUT_BYTES,
-                stderr_cap: MAX_STDERR_BYTES,
-                budget: STEP_BUDGET,
-                depth: 0,
-            };
-            interp.place_read(owned_cfg, &mut frame, &place)
-        });
-        assert_eq!(
-            unsupported.kind(),
-            UnsupportedKind::ContractViolation(ContractViolationKind::NonAggregateProjectionRead)
-        );
-    }
+    let span = cfg.get_inst(zero).span;
+    let error = cfg
+        .try_edit(type_pool, |editor| {
+            editor.append_place_read(
+                editor.entry,
+                PlaceBase::Local(0),
+                owned_ty,
+                [Projection::Field {
+                    struct_id: owned_struct,
+                    field_index: 2,
+                }],
+                Type::U64,
+                span,
+            )?;
+            editor.append_place_read(
+                editor.entry,
+                PlaceBase::Local(0),
+                owned_ty,
+                [Projection::Index {
+                    array_type: owned_ty,
+                    index: zero,
+                }],
+                Type::U64,
+                span,
+            )?;
+            Ok::<_, rue_cfg::CfgEditError>(())
+        })
+        .expect_err("ValidatedCfg must reject invalid owned-text projections");
+    assert!(matches!(
+        error,
+        rue_cfg::CfgEditTransactionError::Verification(_)
+    ));
 }
 
 #[test]
-fn place_write_contracts_precede_rhs_model_gaps() {
+fn validated_cfg_rejects_malformed_place_writes_before_oracle_model_gaps() {
     const SOURCE: &str = "struct Inner { value: u32 }
         struct Outer { inner: Inner }
         fn write() -> u32 {
@@ -489,84 +471,52 @@ fn place_write_contracts_precede_rhs_model_gaps() {
             .iter()
             .position(|function| function.cfg.fn_name() == "write")
             .expect("write CFG");
-        let (write_value, original_place, rhs) = {
+        let (write_value, base, base_type, rhs, projections) = {
             let cfg = &state.functions[write_index].cfg;
             cfg.blocks()
                 .iter()
                 .flat_map(|block| block.insts.iter().copied())
                 .find_map(|value| {
-                    let CfgInstData::PlaceWrite { place, value: rhs } = cfg.get_inst(value).data
+                    let CfgInstData::PlaceWrite { place, value: rhs } = &cfg.get_inst(value).data
                     else {
                         return None;
                     };
-                    (cfg.get_place_projections(&place).len() == 2).then_some((value, place, rhs))
+                    (cfg.get_place_projections(place).len() == 2).then_some((
+                        value,
+                        place.base,
+                        place.base_type,
+                        *rhs,
+                        cfg.get_place_projections(place).to_vec(),
+                    ))
                 })
                 .expect("nested PlaceWrite")
         };
-        let projections = state.functions[write_index]
-            .cfg
-            .get_place_projections(&original_place)
-            .to_vec();
-        let expected = match corruption {
-            Corruption::LocalBase | Corruption::ParamBase => {
-                UnsupportedKind::ContractViolation(ContractViolationKind::PlaceBaseOutOfBounds)
-            }
-            Corruption::RootType | Corruption::SuffixType | Corruption::FinalType => {
-                UnsupportedKind::ContractViolation(ContractViolationKind::PlaceProjectionMetadata)
-            }
-        };
+        let type_pool = &state.type_pool;
         let cfg = &mut state.functions[write_index].cfg;
-        let invalid_place = match corruption {
-            Corruption::LocalBase => Place {
-                base: PlaceBase::Local(cfg.num_locals()),
-                ..original_place
-            },
-            Corruption::ParamBase => Place {
-                base: PlaceBase::Param(cfg.num_params()),
-                ..original_place
-            },
-            Corruption::RootType => Place {
-                base_type: Type::I32,
-                ..original_place
-            },
-            Corruption::SuffixType => cfg.make_place(
-                original_place.base,
-                original_place.base_type,
-                [projections[0], projections[0]],
-            ),
-            Corruption::FinalType => cfg.make_place(
-                original_place.base,
-                original_place.base_type,
-                [projections[0]],
-            ),
+        let (base, base_type, projections) = match corruption {
+            Corruption::LocalBase => (PlaceBase::Local(cfg.num_locals()), base_type, projections),
+            Corruption::ParamBase => (PlaceBase::Param(cfg.num_params()), base_type, projections),
+            Corruption::RootType => (base, Type::I32, projections),
+            Corruption::SuffixType => (base, base_type, vec![projections[0], projections[0]]),
+            Corruption::FinalType => (base, base_type, vec![projections[0]]),
         };
-        cfg.get_inst_mut(write_value).data = CfgInstData::PlaceWrite {
-            place: invalid_place,
-            value: rhs,
-        };
-
-        let cfg = &state.functions[write_index].cfg;
-        let mut interp = Interp {
-            state: &state,
-            stdout: String::new(),
-            stdout_bytes: 0,
-            stdout_cap: MAX_STDOUT_BYTES,
-            stderr_cap: MAX_STDERR_BYTES,
-            budget: STEP_BUDGET,
-            depth: 0,
-        };
-        let mut frame = Frame {
-            params: vec![None; cfg.num_params() as usize],
-            locals: vec![None; cfg.num_locals() as usize],
-            cache: HashMap::new(),
-        };
-        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, write_value));
-        assert_eq!(unsupported.kind(), expected, "{corruption:?}");
+        let before = cfg.to_string();
+        let error = cfg
+            .try_edit(type_pool, |editor| {
+                editor.replace_place_write(write_value, base, base_type, projections, rhs)
+            })
+            .expect_err("ValidatedCfg must reject a malformed place write");
+        assert!(matches!(
+            error,
+            rue_cfg::CfgEditTransactionError::Edit(_)
+                | rue_cfg::CfgEditTransactionError::Verification(_)
+        ));
+        assert_eq!(cfg.to_string(), before, "{corruption:?}");
     }
 }
 
 #[test]
-fn place_read_base_contract_precedes_index_model_gap() {
+fn validated_cfg_rejects_out_of_bounds_place_read_bases() {
     const SOURCE: &str = "fn read() -> u32 {
             let values: [u32; 2] = [1, 2];
             values[@random_u32()]
@@ -587,57 +537,39 @@ fn place_read_base_contract_precedes_index_model_gap() {
             .iter()
             .position(|function| function.cfg.fn_name() == "read")
             .expect("read CFG");
-        let (read_value, original_place) = {
+        let (read_value, base_type, projections) = {
             let cfg = &state.functions[read_index].cfg;
             cfg.blocks()
                 .iter()
                 .flat_map(|block| block.insts.iter().copied())
                 .find_map(|value| {
-                    let CfgInstData::PlaceRead { place } = cfg.get_inst(value).data else {
+                    let CfgInstData::PlaceRead { place } = &cfg.get_inst(value).data else {
                         return None;
                     };
-                    matches!(
-                        cfg.get_place_projections(&place),
-                        [Projection::Index { .. }]
-                    )
-                    .then_some((value, place))
+                    matches!(cfg.get_place_projections(place), [Projection::Index { .. }])
+                        .then_some((
+                            value,
+                            place.base_type,
+                            cfg.get_place_projections(place).to_vec(),
+                        ))
                 })
                 .expect("indexed PlaceRead")
         };
+        let type_pool = &state.type_pool;
         let cfg = &mut state.functions[read_index].cfg;
-        let invalid_place = Place {
-            base: if param_base {
-                PlaceBase::Param(cfg.num_params())
-            } else {
-                PlaceBase::Local(cfg.num_locals())
-            },
-            ..original_place
+        let base = if param_base {
+            PlaceBase::Param(cfg.num_params())
+        } else {
+            PlaceBase::Local(cfg.num_locals())
         };
-        cfg.get_inst_mut(read_value).data = CfgInstData::PlaceRead {
-            place: invalid_place,
-        };
-
-        let cfg = &state.functions[read_index].cfg;
-        let mut interp = Interp {
-            state: &state,
-            stdout: String::new(),
-            stdout_bytes: 0,
-            stdout_cap: MAX_STDOUT_BYTES,
-            stderr_cap: MAX_STDERR_BYTES,
-            budget: STEP_BUDGET,
-            depth: 0,
-        };
-        let mut frame = Frame {
-            params: vec![None; cfg.num_params() as usize],
-            locals: vec![None; cfg.num_locals() as usize],
-            cache: HashMap::new(),
-        };
-        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, read_value));
-        assert_eq!(
-            unsupported.kind(),
-            UnsupportedKind::ContractViolation(ContractViolationKind::PlaceBaseOutOfBounds),
-            "param_base={param_base}"
-        );
+        let before = cfg.to_string();
+        let error = cfg
+            .try_edit(type_pool, |editor| {
+                editor.replace_place_read(read_value, base, base_type, projections)
+            })
+            .expect_err("ValidatedCfg must reject an out-of-bounds place base");
+        assert!(matches!(error, rue_cfg::CfgEditTransactionError::Edit(_)));
+        assert_eq!(cfg.to_string(), before, "param_base={param_base}");
     }
 }
 
@@ -654,16 +586,20 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
         .iter()
         .position(|function| function.cfg.fn_name() == "main")
         .expect("main CFG");
-    let (read_value, original_place) = {
+    let (read_value, base_type, projections) = {
         let cfg = &state.functions[main_index].cfg;
         cfg.blocks()
             .iter()
             .flat_map(|block| block.insts.iter().copied())
             .find_map(|value| {
-                let CfgInstData::PlaceRead { place } = cfg.get_inst(value).data else {
+                let CfgInstData::PlaceRead { place } = &cfg.get_inst(value).data else {
                     return None;
                 };
-                (!cfg.get_place_projections(&place).is_empty()).then_some((value, place))
+                (!cfg.get_place_projections(place).is_empty()).then_some((
+                    value,
+                    place.base_type,
+                    cfg.get_place_projections(place).to_vec(),
+                ))
             })
             .expect("zero-sized projected PlaceRead")
     };
@@ -678,53 +614,38 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
             budget: STEP_BUDGET,
             depth: 0,
         };
+        let CfgInstData::PlaceRead { place } = &cfg.get_inst(read_value).data else {
+            unreachable!()
+        };
+        assert_eq!(interp.state.type_pool.abi_slot_count(place.base_type), 0);
+        assert_eq!(place.base, PlaceBase::Local(cfg.num_locals()));
         assert_eq!(
-            interp
-                .state
-                .type_pool
-                .abi_slot_count(original_place.base_type),
-            0
-        );
-        assert_eq!(original_place.base, PlaceBase::Local(cfg.num_locals()));
-        assert_eq!(
-            interp.place_base_violation(cfg, &original_place, PlaceAccess::Read),
+            interp.place_base_violation(cfg, place, PlaceAccess::Read),
             None,
             "a zero-slot root may live at the canonical one-past boundary"
         );
     }
 
+    let type_pool = &state.type_pool;
     let cfg = &mut state.functions[main_index].cfg;
-    let invalid_place = Place {
-        base: PlaceBase::Local(cfg.num_locals() + 1),
-        ..original_place
-    };
-    cfg.get_inst_mut(read_value).data = CfgInstData::PlaceRead {
-        place: invalid_place,
-    };
-    let cfg = &state.functions[main_index].cfg;
-    let mut interp = Interp {
-        state: &state,
-        stdout: String::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-    };
-    let mut frame = Frame {
-        params: Vec::new(),
-        locals: vec![None; cfg.num_locals() as usize],
-        cache: HashMap::new(),
-    };
-    let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, read_value));
-    assert_eq!(
-        unsupported.kind(),
-        UnsupportedKind::ContractViolation(ContractViolationKind::PlaceBaseOutOfBounds)
-    );
+    let invalid_slot = cfg.num_locals() + 1;
+    let before = cfg.to_string();
+    let error = cfg
+        .try_edit(type_pool, |editor| {
+            editor.replace_place_read(
+                read_value,
+                PlaceBase::Local(invalid_slot),
+                base_type,
+                projections,
+            )
+        })
+        .expect_err("ValidatedCfg must reject a slot beyond the canonical ZST boundary");
+    assert!(matches!(error, rue_cfg::CfgEditTransactionError::Edit(_)));
+    assert_eq!(cfg.to_string(), before);
 }
 
 #[test]
-fn whole_place_write_requires_exact_type_and_writable_storage() {
+fn validated_cfg_requires_exact_type_and_writable_storage_for_whole_place_writes() {
     const SOURCE: &str = "fn write(input: u32) -> u32 {
             let mut value: u32 = input;
             value = @random_u32();
@@ -745,7 +666,7 @@ fn whole_place_write_requires_exact_type_and_writable_storage() {
             .iter()
             .position(|function| function.cfg.fn_name() == "write")
             .expect("write CFG");
-        let (write_value, original_place, rhs) = {
+        let (write_value, base, base_type, rhs) = {
             let cfg = &state.functions[write_index].cfg;
             cfg.blocks()
                 .iter()
@@ -759,62 +680,43 @@ fn whole_place_write_requires_exact_type_and_writable_storage() {
                     };
                     (state.interner.resolve(&name) == "random_u32").then_some((
                         value,
-                        Place::local(slot, cfg.get_inst(rhs).ty),
+                        PlaceBase::Local(slot),
+                        cfg.get_inst(rhs).ty,
                         rhs,
                     ))
                 })
                 .expect("whole-variable store with random RHS")
         };
+        let type_pool = &state.type_pool;
         let cfg = &mut state.functions[write_index].cfg;
         assert_eq!(cfg.num_params(), 1);
         assert!(!cfg.is_param_writable(0));
-        let invalid_place = if nonwritable_param {
-            Place {
-                base: PlaceBase::Param(0),
-                ..original_place
-            }
+        let (base, base_type) = if nonwritable_param {
+            (PlaceBase::Param(0), base_type)
         } else {
-            Place {
-                base_type: Type::I32,
-                ..original_place
-            }
+            (base, Type::I32)
         };
-        cfg.get_inst_mut(write_value).data = CfgInstData::PlaceWrite {
-            place: invalid_place,
-            value: rhs,
-        };
-
-        let cfg = &state.functions[write_index].cfg;
-        let mut interp = Interp {
-            state: &state,
-            stdout: String::new(),
-            stdout_bytes: 0,
-            stdout_cap: MAX_STDOUT_BYTES,
-            stderr_cap: MAX_STDERR_BYTES,
-            budget: STEP_BUDGET,
-            depth: 0,
-        };
-        let mut frame = Frame {
-            params: vec![Some(Value::Int(1))],
-            locals: vec![None; cfg.num_locals() as usize],
-            cache: HashMap::new(),
-        };
-        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, write_value));
-        let expected = if nonwritable_param {
-            ContractViolationKind::PlaceBaseNotWritable
-        } else {
-            ContractViolationKind::PlaceProjectionMetadata
-        };
+        let before = cfg.to_string();
+        let error = cfg
+            .try_edit(type_pool, |editor| {
+                editor.replace_place_write(write_value, base, base_type, [], rhs)
+            })
+            .expect_err("ValidatedCfg must reject an invalid whole-place write");
+        assert!(matches!(
+            error,
+            rue_cfg::CfgEditTransactionError::Edit(_)
+                | rue_cfg::CfgEditTransactionError::Verification(_)
+        ));
         assert_eq!(
-            unsupported.kind(),
-            UnsupportedKind::ContractViolation(expected),
+            cfg.to_string(),
+            before,
             "nonwritable_param={nonwritable_param}"
         );
     }
 }
 
 #[test]
-fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
+fn validated_cfg_allows_only_the_explicit_str_view_whole_place_read_coercion() {
     const SOURCE: &str = "fn take(borrow value: str) -> u64 { value.len() }
         fn probe() -> u64 {
             let value: Str(2) = \"hi\";
@@ -841,23 +743,29 @@ fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
                 .is_some_and(|struct_id| state.type_pool.struct_def(struct_id).name == "Str(3)")
         })
         .expect("Str(3) parameter type");
-    let (read_value, original_place, read_type) = {
+    let (read_value, read_type) = {
         let cfg = &state.functions[probe_index].cfg;
         cfg.blocks()
             .iter()
             .flat_map(|block| block.insts.iter().copied())
             .find_map(|value| {
                 let inst = cfg.get_inst(value);
-                let CfgInstData::PlaceRead { place } = inst.data else {
+                let CfgInstData::PlaceRead { place } = &inst.data else {
                     return None;
                 };
-                (cfg.get_place_projections(&place).is_empty() && place.base_type != inst.ty)
-                    .then_some((value, place, inst.ty))
+                (cfg.get_place_projections(place).is_empty() && place.base_type != inst.ty)
+                    .then_some((value, inst.ty))
             })
             .expect("Str(N)-to-str whole PlaceRead")
     };
     {
         let cfg = &state.functions[probe_index].cfg;
+        let CfgInstData::PlaceRead {
+            place: original_place,
+        } = &cfg.get_inst(read_value).data
+        else {
+            unreachable!()
+        };
         let interp = Interp {
             state: &state,
             stdout: String::new(),
@@ -872,7 +780,7 @@ fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
         assert!(interp.is_bare_str_type(read_type));
         assert!(interp.place_projection_metadata_is_valid(
             cfg,
-            &original_place,
+            original_place,
             read_type,
             PlaceAccess::Read,
         ));
@@ -880,39 +788,30 @@ fn whole_place_read_allows_only_the_explicit_str_view_coercion() {
         assert!(!interp.is_bare_str_type(other_fixed_type));
         assert!(!interp.place_projection_metadata_is_valid(
             cfg,
-            &original_place,
+            original_place,
             other_fixed_type,
             PlaceAccess::Read,
         ));
     }
 
-    state.functions[probe_index]
+    let base = {
+        let cfg = &state.functions[probe_index].cfg;
+        let CfgInstData::PlaceRead { place } = &cfg.get_inst(read_value).data else {
+            unreachable!()
+        };
+        place.base
+    };
+    let type_pool = &state.type_pool;
+    let before = state.functions[probe_index].cfg.to_string();
+    let error = state.functions[probe_index]
         .cfg
-        .get_inst_mut(read_value)
-        .data = CfgInstData::PlaceRead {
-        place: Place {
-            base_type: Type::I32,
-            ..original_place
-        },
-    };
-    let cfg = &state.functions[probe_index].cfg;
-    let mut interp = Interp {
-        state: &state,
-        stdout: String::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-    };
-    let mut frame = Frame {
-        params: Vec::new(),
-        locals: vec![None; cfg.num_locals() as usize],
-        cache: HashMap::new(),
-    };
-    let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, read_value));
-    assert_eq!(
-        unsupported.kind(),
-        UnsupportedKind::ContractViolation(ContractViolationKind::PlaceProjectionMetadata)
-    );
+        .try_edit(type_pool, |editor| {
+            editor.replace_place_read(read_value, base, Type::I32, [])
+        })
+        .expect_err("ValidatedCfg must reject a non-str whole-place read coercion");
+    assert!(matches!(
+        error,
+        rue_cfg::CfgEditTransactionError::Verification(_)
+    ));
+    assert_eq!(state.functions[probe_index].cfg.to_string(), before);
 }

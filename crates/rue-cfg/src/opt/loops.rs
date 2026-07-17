@@ -40,8 +40,11 @@
 #![allow(dead_code)]
 
 use crate::dominators::DominatorTree;
-use crate::{BlockId, Cfg, Terminator};
+use crate::{BlockId, Cfg, CfgEditError, Terminator};
+use rue_air::FrozenTypeInternPool;
 use std::collections::HashSet;
+
+use super::CfgOptimizationError;
 
 /// Index of a [`NaturalLoop`] within its [`LoopForest`].
 pub(crate) type LoopId = usize;
@@ -337,7 +340,74 @@ pub(crate) fn loops_with_stats(cfg: &Cfg, dom: &DominatorTree) -> (LoopForest, S
 /// The result leaves the CFG verifier-clean: `ph`'s block parameters mirror the
 /// header's, each redirected outside edge keeps its arity, and `ph`'s own
 /// parameters (defined in `ph`) are what it forwards on.
-pub(crate) fn ensure_preheader(cfg: &mut Cfg, lp: &NaturalLoop) -> BlockId {
+pub(crate) fn ensure_preheader(
+    cfg: &mut Cfg,
+    lp: &NaturalLoop,
+    type_pool: &FrozenTypeInternPool,
+) -> Result<BlockId, CfgOptimizationError> {
+    ensure_preheader_transaction(cfg, lp, type_pool, PayloadFailureInjection::default())
+}
+
+#[derive(Default)]
+struct PayloadFailureInjection {
+    #[cfg(test)]
+    fail_at: Option<usize>,
+    #[cfg(test)]
+    next: usize,
+}
+
+impl PayloadFailureInjection {
+    fn before(&mut self, family: &'static str) -> Result<(), CfgEditError> {
+        #[cfg(test)]
+        {
+            let stage = self.next;
+            self.next += 1;
+            if self.fail_at == Some(stage) {
+                return Err(CfgEditError::CapacityFailure { family });
+            }
+        }
+        #[cfg(not(test))]
+        let _ = family;
+        Ok(())
+    }
+
+    fn before_validation(&mut self, cfg: &mut Cfg, ph: BlockId) {
+        #[cfg(test)]
+        {
+            let stage = self.next;
+            self.next += 1;
+            if self.fail_at == Some(stage) {
+                // Deterministic corruption of the private candidate.
+                // Verification must reject it before owner publication.
+                cfg.get_block_mut(ph).terminator = Terminator::None;
+            }
+        }
+        #[cfg(not(test))]
+        let _ = (cfg, ph);
+    }
+}
+
+fn ensure_preheader_transaction(
+    cfg: &mut Cfg,
+    lp: &NaturalLoop,
+    type_pool: &FrozenTypeInternPool,
+    mut injection: PayloadFailureInjection,
+) -> Result<BlockId, CfgOptimizationError> {
+    let mut editor = cfg.clone();
+    let ph = ensure_preheader_in(&mut editor, lp, &mut injection)?;
+    injection.before_validation(&mut editor, ph);
+    editor
+        .verify_with_type_pool(type_pool)
+        .map_err(CfgOptimizationError::Verification)?;
+    *cfg = editor;
+    Ok(ph)
+}
+
+fn ensure_preheader_in(
+    cfg: &mut Cfg,
+    lp: &NaturalLoop,
+    injection: &mut PayloadFailureInjection,
+) -> Result<BlockId, CfgEditError> {
     let header = lp.header;
 
     // Partition the header's predecessors: a pred inside the body is a latch
@@ -356,7 +426,7 @@ pub(crate) fn ensure_preheader(cfg: &mut Cfg, lp: &NaturalLoop) -> BlockId {
         let p = outside[0];
         if matches!(cfg.get_block(p).terminator, Terminator::Goto { target, .. } if target == header)
         {
-            return p;
+            return Ok(p);
         }
     }
 
@@ -374,17 +444,17 @@ pub(crate) fn ensure_preheader(cfg: &mut Cfg, lp: &NaturalLoop) -> BlockId {
         .iter()
         .map(|&ty| cfg.add_block_param(ph, ty))
         .collect();
-    let (args_start, args_len) = cfg.push_extra(ph_params);
+    injection.before("goto args")?;
+    let args = cfg.push_goto_args(ph_params)?;
     cfg.get_block_mut(ph).terminator = Terminator::Goto {
         target: header,
-        args_start,
-        args_len,
+        args,
     };
 
     // Redirect every outside edge from the header to `ph`, preserving each
     // edge's arguments (they now feed `ph`'s mirror parameters).
     for p in outside {
-        redirect_edges(cfg, p, header, ph);
+        redirect_edges(cfg, p, header, ph, injection)?;
     }
 
     // If the header was the entry, the preheader becomes the new entry so it
@@ -393,37 +463,36 @@ pub(crate) fn ensure_preheader(cfg: &mut Cfg, lp: &NaturalLoop) -> BlockId {
         cfg.entry = ph;
     }
 
-    ph
+    Ok(ph)
 }
 
 /// Retarget every edge `from -> old_target` in `from`'s terminator to `new`,
 /// keeping each edge's block arguments. Latch/back edges are never passed here.
-fn redirect_edges(cfg: &mut Cfg, from: BlockId, old_target: BlockId, new: BlockId) {
-    let term = cfg.get_block(from).terminator;
+fn redirect_edges(
+    cfg: &mut Cfg,
+    from: BlockId,
+    old_target: BlockId,
+    new: BlockId,
+    injection: &mut PayloadFailureInjection,
+) -> Result<(), CfgEditError> {
+    let term = std::mem::replace(
+        &mut cfg.get_block_mut(from).terminator,
+        Terminator::Unreachable,
+    );
     let new_term = match term {
-        Terminator::Goto {
-            target,
-            args_start,
-            args_len,
-        } => {
+        Terminator::Goto { target, args } => {
             if target == old_target {
-                Terminator::Goto {
-                    target: new,
-                    args_start,
-                    args_len,
-                }
+                Terminator::Goto { target: new, args }
             } else {
-                return;
+                Terminator::Goto { target, args }
             }
         }
         Terminator::Branch {
             cond,
             then_block,
-            then_args_start,
-            then_args_len,
+            then_args,
             else_block,
-            else_args_start,
-            else_args_len,
+            else_args,
         } => {
             let new_then = if then_block == old_target {
                 new
@@ -438,17 +507,14 @@ fn redirect_edges(cfg: &mut Cfg, from: BlockId, old_target: BlockId, new: BlockI
             Terminator::Branch {
                 cond,
                 then_block: new_then,
-                then_args_start,
-                then_args_len,
+                then_args,
                 else_block: new_else,
-                else_args_start,
-                else_args_len,
+                else_args,
             }
         }
         Terminator::Switch {
             scrutinee,
-            cases_start,
-            cases_len,
+            cases,
             default,
         } => {
             // Switch edges carry no block arguments, so retargeting only
@@ -456,21 +522,32 @@ fn redirect_edges(cfg: &mut Cfg, from: BlockId, old_target: BlockId, new: BlockI
             // fresh; the old range is left as unreferenced arena slack (the
             // husk discipline simplify uses).
             let new_cases: Vec<(i64, BlockId)> = cfg
-                .get_switch_cases(cases_start, cases_len)
+                .switch_cases(&cases)
                 .iter()
                 .map(|&(v, t)| (v, if t == old_target { new } else { t }))
                 .collect();
-            let (new_start, new_len) = cfg.push_switch_cases(new_cases);
+            injection.before("switch cases")?;
+            let new_cases = match cfg.push_switch_cases(new_cases) {
+                Ok(new_cases) => new_cases,
+                Err(error) => {
+                    cfg.get_block_mut(from).terminator = Terminator::Switch {
+                        scrutinee,
+                        cases,
+                        default,
+                    };
+                    return Err(error);
+                }
+            };
             Terminator::Switch {
                 scrutinee,
-                cases_start: new_start,
-                cases_len: new_len,
+                cases: new_cases,
                 default: if default == old_target { new } else { default },
             }
         }
-        Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => return,
+        term @ (Terminator::Return { .. } | Terminator::Unreachable | Terminator::None) => term,
     };
     cfg.get_block_mut(from).terminator = new_term;
+    Ok(())
 }
 
 /// Successor blocks of `block` in control-flow order.
@@ -482,14 +559,9 @@ fn successors_of(cfg: &Cfg, block: BlockId) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch {
-            cases_start,
-            cases_len,
-            default,
-            ..
-        } => {
+        Terminator::Switch { cases, default, .. } => {
             let mut out: Vec<BlockId> = cfg
-                .get_switch_cases(*cases_start, *cases_len)
+                .switch_cases(cases)
                 .iter()
                 .map(|(_, target)| *target)
                 .collect();
@@ -512,11 +584,14 @@ mod tests {
         Cfg::new(Type::UNIT, 0, 0, "test".to_string(), vec![])
     }
 
+    fn test_type_pool() -> FrozenTypeInternPool {
+        rue_air::TypeInternPool::new().freeze()
+    }
+
     fn goto(target: BlockId) -> Terminator {
         Terminator::Goto {
             target,
-            args_start: 0,
-            args_len: 0,
+            args: crate::payload::CfgGotoArgs::EMPTY,
         }
     }
 
@@ -535,11 +610,22 @@ mod tests {
         Terminator::Branch {
             cond,
             then_block,
-            then_args_start: 0,
-            then_args_len: 0,
+            then_args: crate::payload::CfgThenArgs::EMPTY,
             else_block,
-            else_args_start: 0,
-            else_args_len: 0,
+            else_args: crate::payload::CfgElseArgs::EMPTY,
+        }
+    }
+
+    fn switch(
+        cfg: &mut Cfg,
+        scrutinee: CfgValue,
+        cases: impl IntoIterator<Item = (i64, BlockId)>,
+        default: BlockId,
+    ) -> Terminator {
+        Terminator::Switch {
+            scrutinee,
+            cases: cfg.push_switch_cases(cases).unwrap(),
+            default,
         }
     }
 
@@ -821,11 +907,11 @@ mod tests {
         let dom = DominatorTree::compute(&cfg);
         let forest = loops(&cfg, &dom);
         let lp = loop_of(&forest, header);
-        let ph = ensure_preheader(&mut cfg, lp);
+        let ph = ensure_preheader(&mut cfg, lp, &test_type_pool()).unwrap();
 
         assert_eq!(ph, entry, "the entry Goto is reused as the preheader");
         assert_eq!(cfg.block_count(), before, "no block inserted for reuse");
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -854,7 +940,7 @@ mod tests {
         let dom = DominatorTree::compute(&cfg);
         let forest = loops(&cfg, &dom);
         let lp = loop_of(&forest, header);
-        let ph = ensure_preheader(&mut cfg, lp);
+        let ph = ensure_preheader(&mut cfg, lp, &test_type_pool()).unwrap();
 
         assert_eq!(cfg.block_count(), before + 1, "a preheader is inserted");
         assert_ne!(ph, entry);
@@ -881,7 +967,7 @@ mod tests {
             cfg.get_block(body).terminator,
             Terminator::Goto { target, .. } if target == header
         ));
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -912,7 +998,7 @@ mod tests {
         let dom = DominatorTree::compute(&cfg);
         let forest = loops(&cfg, &dom);
         let lp = loop_of(&forest, header);
-        let ph = ensure_preheader(&mut cfg, lp);
+        let ph = ensure_preheader(&mut cfg, lp, &test_type_pool()).unwrap();
 
         assert_eq!(cfg.block_count(), before + 1);
         assert!(matches!(
@@ -934,7 +1020,97 @@ mod tests {
         let mut expected = vec![ph, body];
         expected.sort_by_key(|b| b.as_u32());
         assert_eq!(header_preds, expected);
-        cfg.verify();
+        cfg.verify().unwrap();
+    }
+
+    #[test]
+    fn preheader_failure_at_every_payload_stage_leaves_owner_unchanged() {
+        // Three fallible payload stages are exercised: the preheader's Goto
+        // arguments and one rewritten switch-case payload for each outside
+        // predecessor. The fourth stage forces publication-time verification
+        // to reject the finished private candidate. The transaction must
+        // discard its complete private owner at every boundary, including
+        // blocks, parameters, values, terminators, and payload side tables
+        // already changed by earlier stages.
+        let mut original = make_cfg();
+        let entry = original.new_block();
+        original.entry = entry;
+        let p1 = original.new_block();
+        let p2 = original.new_block();
+        let side1 = original.new_block();
+        let side2 = original.new_block();
+        let header = original.new_block();
+        let body = original.new_block();
+        let exit = original.new_block();
+
+        let entry_cond = bool_const(&mut original, entry);
+        original.set_terminator(entry, branch(entry_cond, p1, p2));
+        let p1_cond = bool_const(&mut original, p1);
+        let p1_term = switch(&mut original, p1_cond, [(1, header)], side1);
+        original.set_terminator(p1, p1_term);
+        let p2_cond = bool_const(&mut original, p2);
+        let p2_term = switch(&mut original, p2_cond, [(1, header)], side2);
+        original.set_terminator(p2, p2_term);
+        original.set_terminator(side1, Terminator::Return { value: None });
+        original.set_terminator(side2, Terminator::Return { value: None });
+        let header_cond = bool_const(&mut original, header);
+        original.set_terminator(header, branch(header_cond, body, exit));
+        original.set_terminator(body, goto(header));
+        original.set_terminator(exit, Terminator::Return { value: None });
+        original.verify().unwrap();
+
+        let forest = analyze(&original);
+        let lp = loop_of(&forest, header);
+        let before_debug = format!("{original:?}");
+        let before_display = original.to_string();
+        let before_shape = (
+            original.block_count(),
+            original.value_count(),
+            successors_of(&original, p1),
+            successors_of(&original, p2),
+        );
+
+        for fail_at in 0..4 {
+            let mut cfg = original.clone();
+            let error = ensure_preheader_transaction(
+                &mut cfg,
+                lp,
+                &test_type_pool(),
+                PayloadFailureInjection {
+                    fail_at: Some(fail_at),
+                    next: 0,
+                },
+            )
+            .unwrap_err();
+            if fail_at < 3 {
+                assert!(matches!(
+                    error,
+                    CfgOptimizationError::Edit(CfgEditError::CapacityFailure { .. })
+                ));
+            } else {
+                assert!(matches!(error, CfgOptimizationError::Verification(_)));
+            }
+            assert_eq!(
+                format!("{cfg:?}"),
+                before_debug,
+                "debug owner at stage {fail_at}"
+            );
+            assert_eq!(
+                cfg.to_string(),
+                before_display,
+                "display at stage {fail_at}"
+            );
+            assert_eq!(
+                (
+                    cfg.block_count(),
+                    cfg.value_count(),
+                    successors_of(&cfg, p1),
+                    successors_of(&cfg, p2),
+                ),
+                before_shape,
+                "structural equality at stage {fail_at}"
+            );
+        }
     }
 
     #[test]
@@ -961,16 +1137,16 @@ mod tests {
 
         let dom = DominatorTree::compute(&cfg);
         let forest = loops(&cfg, &dom);
-        let ph1 = ensure_preheader(&mut cfg, loop_of(&forest, header));
+        let ph1 = ensure_preheader(&mut cfg, loop_of(&forest, header), &test_type_pool()).unwrap();
         assert_eq!(cfg.block_count(), base + 1, "first call inserts one block");
 
         // Recompute from scratch (per-pass discipline) and call again.
         let dom = DominatorTree::compute(&cfg);
         let forest = loops(&cfg, &dom);
-        let ph2 = ensure_preheader(&mut cfg, loop_of(&forest, header));
+        let ph2 = ensure_preheader(&mut cfg, loop_of(&forest, header), &test_type_pool()).unwrap();
         assert_eq!(ph2, ph1, "the existing preheader is reused");
         assert_eq!(cfg.block_count(), base + 1, "second call inserts nothing");
-        cfg.verify();
+        cfg.verify().unwrap();
     }
 
     #[test]
@@ -1003,13 +1179,12 @@ mod tests {
                 span: Span::new(0, 0),
             },
         );
-        let (s1, l1) = cfg.push_extra(vec![v10]);
+        let args = cfg.push_goto_args(vec![v10]).unwrap();
         cfg.set_terminator(
             p1,
             Terminator::Goto {
                 target: header,
-                args_start: s1,
-                args_len: l1,
+                args,
             },
         );
         let v20 = cfg.add_inst_to_block(
@@ -1020,13 +1195,12 @@ mod tests {
                 span: Span::new(0, 0),
             },
         );
-        let (s2, l2) = cfg.push_extra(vec![v20]);
+        let args = cfg.push_goto_args(vec![v20]).unwrap();
         cfg.set_terminator(
             p2,
             Terminator::Goto {
                 target: header,
-                args_start: s2,
-                args_len: l2,
+                args,
             },
         );
 
@@ -1051,23 +1225,22 @@ mod tests {
                 span: Span::new(0, 0),
             },
         );
-        let (sb, lb) = cfg.push_extra(vec![next]);
+        let args = cfg.push_goto_args(vec![next]).unwrap();
         cfg.set_terminator(
             body,
             Terminator::Goto {
                 target: header,
-                args_start: sb,
-                args_len: lb,
+                args,
             },
         );
         cfg.set_terminator(exit, Terminator::Return { value: None });
 
-        cfg.verify();
+        cfg.verify().unwrap();
 
         let dom = DominatorTree::compute(&cfg);
         let forest = loops(&cfg, &dom);
         let lp = loop_of(&forest, header);
-        let ph = ensure_preheader(&mut cfg, lp);
+        let ph = ensure_preheader(&mut cfg, lp, &test_type_pool()).unwrap();
 
         // ph mirrors the header's single parameter.
         assert_eq!(cfg.get_block(ph).params.len(), 1);
@@ -1099,7 +1272,7 @@ mod tests {
 
         // The whole rewrite is verifier-clean: arity and types agree on every
         // edge, and ph dominates the header.
-        cfg.verify();
+        cfg.verify().unwrap();
         let dom = DominatorTree::compute(&cfg);
         assert!(dom.dominates(ph, header));
     }
@@ -1123,14 +1296,14 @@ mod tests {
         let dom = DominatorTree::compute(&cfg);
         let forest = loops(&cfg, &dom);
         let lp = loop_of(&forest, entry);
-        let ph = ensure_preheader(&mut cfg, lp);
+        let ph = ensure_preheader(&mut cfg, lp, &test_type_pool()).unwrap();
 
         assert_eq!(cfg.entry, ph, "the preheader is the new entry");
         assert!(matches!(
             cfg.get_block(ph).terminator,
             Terminator::Goto { target, .. } if target == entry
         ));
-        cfg.verify();
+        cfg.verify().unwrap();
         let dom = DominatorTree::compute(&cfg);
         assert!(dom.dominates(ph, entry));
     }

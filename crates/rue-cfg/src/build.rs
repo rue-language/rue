@@ -12,8 +12,12 @@ use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 
 use crate::CfgOutput;
 use crate::inst::{
-    BlockId, Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData, CfgValue, Place, PlaceBase,
-    Projection, Terminator,
+    BlockId, Cfg, CfgArgMode, CfgCallArg, CfgEditError, CfgInst, CfgInstData, CfgValue, Place,
+    PlaceBase, Projection, Terminator,
+};
+use crate::payload::{
+    CfgArrayElements, CfgCallArgs, CfgElseArgs, CfgEnumPayload, CfgGotoArgs, CfgIntrinsicArgs,
+    CfgProjections, CfgStructFields, CfgSwitchCases, CfgThenArgs,
 };
 
 /// Result of lowering an expression.
@@ -245,6 +249,24 @@ pub struct CfgBuilder<'a> {
 }
 
 impl<'a> CfgBuilder<'a> {
+    fn payload_or<T>(
+        &mut self,
+        result: Result<T, CfgEditError>,
+        fallback: T,
+        span: rue_span::Span,
+    ) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => {
+                self.errors.push(CompileError::new(
+                    ErrorKind::InternalError(format!("CFG payload construction failed: {error:?}")),
+                    span,
+                ));
+                fallback
+            }
+        }
+    }
+
     fn runtime_air_type(&self, ty: Type) -> Option<rue_air::RuntimeAirType> {
         use rue_air::RuntimeAirType as R;
 
@@ -455,8 +477,18 @@ impl<'a> CfgBuilder<'a> {
             .all_struct_ids()
             .filter(|id| builder.implicit_named_destructors.contains(id))
             .collect();
+        let cfg = match builder.cfg.finish(builder.type_pool) {
+            Ok(cfg) => Some(cfg),
+            Err(error) => {
+                builder.errors.push(CompileError::new(
+                    ErrorKind::InternalError(error.to_string()),
+                    rue_span::Span::default(),
+                ));
+                None
+            }
+        };
         CfgOutput {
-            cfg: builder.cfg,
+            cfg,
             warnings: builder.warnings,
             errors: builder.errors,
             implicit_named_destructors,
@@ -1035,13 +1067,13 @@ impl<'a> CfgBuilder<'a> {
                     });
                 }
                 // Store args in extra array
-                let (args_start, args_len) = self.cfg.push_call_args(arg_vals);
+                let args_result = self.cfg.push_call_args(arg_vals);
+                let args = self.payload_or(args_result, CfgCallArgs::EMPTY, span);
                 let value = self.emit(
                     CfgInstData::Call {
                         runtime: *runtime,
                         name: *name,
-                        args_start,
-                        args_len,
+                        args,
                     },
                     ty,
                     span,
@@ -1118,13 +1150,13 @@ impl<'a> CfgBuilder<'a> {
                     }
                 }
                 // Store args in extra array
-                let (args_start, args_len) = self.cfg.push_extra(arg_vals);
+                let args_result = self.cfg.push_intrinsic_args(arg_vals);
+                let args = self.payload_or(args_result, CfgIntrinsicArgs::EMPTY, span);
                 let intrinsic_value = self.emit(
                     CfgInstData::Intrinsic {
                         runtime: *runtime,
                         name: *name,
-                        args_start,
-                        args_len,
+                        args,
                     },
                     ty,
                     span,
@@ -1190,12 +1222,12 @@ impl<'a> CfgBuilder<'a> {
                     .collect();
 
                 // Store fields in extra array
-                let (fields_start, fields_len) = self.cfg.push_extra(field_vals);
+                let fields_result = self.cfg.push_struct_fields(field_vals);
+                let fields = self.payload_or(fields_result, CfgStructFields::EMPTY, span);
                 let value = self.emit(
                     CfgInstData::StructInit {
                         struct_id: *struct_id,
-                        fields_start,
-                        fields_len,
+                        fields,
                     },
                     ty,
                     span,
@@ -1380,18 +1412,18 @@ impl<'a> CfgBuilder<'a> {
                 let else_type = else_value.map(|e| self.air.get(e).ty);
 
                 // Branch to then/else
-                let (then_args_start, then_args_len) = self.cfg.push_extra(std::iter::empty());
-                let (else_args_start, else_args_len) = self.cfg.push_extra(std::iter::empty());
+                let then_result = self.cfg.push_then_args(std::iter::empty());
+                let then_args = self.payload_or(then_result, CfgThenArgs::EMPTY, span);
+                let else_result = self.cfg.push_else_args(std::iter::empty());
+                let else_args = self.payload_or(else_result, CfgElseArgs::EMPTY, span);
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Branch {
                         cond: cond_val,
                         then_block,
-                        then_args_start,
-                        then_args_len,
+                        then_args,
                         else_block,
-                        else_args_start,
-                        else_args_len,
+                        else_args,
                     },
                 );
 
@@ -1525,18 +1557,18 @@ impl<'a> CfgBuilder<'a> {
                 });
 
                 // Branch: if true go to body, if false exit
-                let (then_args_start, then_args_len) = self.cfg.push_extra(std::iter::empty());
-                let (else_args_start, else_args_len) = self.cfg.push_extra(std::iter::empty());
+                let then_result = self.cfg.push_then_args(std::iter::empty());
+                let then_args = self.payload_or(then_result, CfgThenArgs::EMPTY, span);
+                let else_result = self.cfg.push_else_args(std::iter::empty());
+                let else_args = self.payload_or(else_result, CfgElseArgs::EMPTY, span);
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Branch {
                         cond: cond_val,
                         then_block: body_block,
-                        then_args_start,
-                        then_args_len,
+                        then_args,
                         else_block: exit_block,
-                        else_args_start,
-                        else_args_len,
+                        else_args,
                     },
                 );
 
@@ -1708,13 +1740,13 @@ impl<'a> CfgBuilder<'a> {
                 });
 
                 // Set the switch terminator on current block
-                let (cases_start, cases_len) = self.cfg.push_switch_cases(switch_cases);
+                let cases_result = self.cfg.push_switch_cases(switch_cases);
+                let cases = self.payload_or(cases_result, CfgSwitchCases::EMPTY, span);
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Switch {
                         scrutinee: scrutinee_val,
-                        cases_start,
-                        cases_len,
+                        cases,
                         default,
                     },
                 );
@@ -1863,15 +1895,9 @@ impl<'a> CfgBuilder<'a> {
                     element_vals.push(val);
                 }
                 // Store elements in extra array
-                let (elements_start, elements_len) = self.cfg.push_extra(element_vals);
-                let value = self.emit(
-                    CfgInstData::ArrayInit {
-                        elements_start,
-                        elements_len,
-                    },
-                    ty,
-                    span,
-                );
+                let elements_result = self.cfg.push_array_elements(element_vals);
+                let elements = self.payload_or(elements_result, CfgArrayElements::EMPTY, span);
+                let value = self.emit(CfgInstData::ArrayInit { elements }, ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),
@@ -1957,7 +1983,7 @@ impl<'a> CfgBuilder<'a> {
                     };
                     self.emit_projected_overwrite_drop(
                         base_key,
-                        cfg_place,
+                        cfg_place.duplicate_with_owner(),
                         val_ty,
                         field_moved,
                         field_flag,
@@ -2032,13 +2058,13 @@ impl<'a> CfgBuilder<'a> {
                     };
                     payload_vals.push(v);
                 }
-                let (cfg_payload_start, cfg_payload_len) = self.cfg.push_extra(payload_vals);
+                let payload_result = self.cfg.push_enum_payload(payload_vals);
+                let payload = self.payload_or(payload_result, CfgEnumPayload::EMPTY, span);
                 let value = self.emit(
                     CfgInstData::EnumVariant {
                         enum_id: *enum_id,
                         variant_index: *variant_index,
-                        payload_start: cfg_payload_start,
-                        payload_len: cfg_payload_len,
+                        payload,
                     },
                     ty,
                     span,
@@ -2279,47 +2305,24 @@ impl<'a> CfgBuilder<'a> {
         let result_param = self.cfg.add_block_param(join_block, Type::BOOL);
         let short_circuit_value = self.emit(CfgInstData::BoolConst(!is_and), Type::BOOL, span);
 
-        let (short_args_start, short_args_len) =
-            self.cfg.push_extra(std::iter::once(short_circuit_value));
-        let (rhs_args_start, rhs_args_len) = self.cfg.push_extra(std::iter::empty::<CfgValue>());
-
-        let (
-            then_block,
-            then_args_start,
-            then_args_len,
-            else_block,
-            else_args_start,
-            else_args_len,
-        ) = if is_and {
-            (
-                rhs_block,
-                rhs_args_start,
-                rhs_args_len,
-                join_block,
-                short_args_start,
-                short_args_len,
-            )
+        let (then_block, then_values, else_block, else_values) = if is_and {
+            (rhs_block, vec![], join_block, vec![short_circuit_value])
         } else {
-            (
-                join_block,
-                short_args_start,
-                short_args_len,
-                rhs_block,
-                rhs_args_start,
-                rhs_args_len,
-            )
+            (join_block, vec![short_circuit_value], rhs_block, vec![])
         };
+        let then_result = self.cfg.push_then_args(then_values);
+        let then_args = self.payload_or(then_result, CfgThenArgs::EMPTY, span);
+        let else_result = self.cfg.push_else_args(else_values);
+        let else_args = self.payload_or(else_result, CfgElseArgs::EMPTY, span);
 
         self.cfg.set_terminator(
             self.current_block,
             Terminator::Branch {
                 cond: lhs_val,
                 then_block,
-                then_args_start,
-                then_args_len,
+                then_args,
                 else_block,
-                else_args_start,
-                else_args_len,
+                else_args,
             },
         );
 
@@ -2329,13 +2332,13 @@ impl<'a> CfgBuilder<'a> {
         let moved_before_rhs = self.moved.clone();
         self.current_block = rhs_block;
         if let Some(rhs_val) = self.lower_value(rhs) {
-            let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
+            let args_result = self.cfg.push_goto_args(std::iter::once(rhs_val));
+            let args = self.payload_or(args_result, CfgGotoArgs::EMPTY, span);
             self.cfg.set_terminator(
                 self.current_block,
                 Terminator::Goto {
                     target: join_block,
-                    args_start,
-                    args_len,
+                    args,
                 },
             );
         }
@@ -2351,15 +2354,10 @@ impl<'a> CfgBuilder<'a> {
 
     /// Terminate `exit_block` with a `Goto` to `target` and no block args.
     fn goto_no_args(&mut self, exit_block: BlockId, target: BlockId) {
-        let (args_start, args_len) = self.cfg.push_extra(std::iter::empty::<CfgValue>());
-        self.cfg.set_terminator(
-            exit_block,
-            Terminator::Goto {
-                target,
-                args_start,
-                args_len,
-            },
-        );
+        let args_result = self.cfg.push_goto_args(std::iter::empty::<CfgValue>());
+        let args = self.payload_or(args_result, CfgGotoArgs::EMPTY, rue_span::Span::default());
+        self.cfg
+            .set_terminator(exit_block, Terminator::Goto { target, args });
     }
 
     /// Terminate `exit_block` with a `Goto` into `join_block`, passing the
@@ -2379,13 +2377,13 @@ impl<'a> CfgBuilder<'a> {
             (Some(val), Some(_)) => vec![val],
             _ => vec![],
         };
-        let (args_start, args_len) = self.cfg.push_extra(args);
+        let args_result = self.cfg.push_goto_args(args);
+        let args = self.payload_or(args_result, CfgGotoArgs::EMPTY, rue_span::Span::default());
         self.cfg.set_terminator(
             exit_block,
             Terminator::Goto {
                 target: join_block,
-                args_start,
-                args_len,
+                args,
             },
         );
     }
@@ -2736,18 +2734,18 @@ impl<'a> CfgBuilder<'a> {
 
         let drop_block = self.cfg.new_block();
         let cont_block = self.cfg.new_block();
-        let (then_args_start, then_args_len) = self.cfg.push_extra(std::iter::empty());
-        let (else_args_start, else_args_len) = self.cfg.push_extra(std::iter::empty());
+        let then_result = self.cfg.push_then_args(std::iter::empty());
+        let then_args = self.payload_or(then_result, CfgThenArgs::EMPTY, span);
+        let else_result = self.cfg.push_else_args(std::iter::empty());
+        let else_args = self.payload_or(else_result, CfgElseArgs::EMPTY, span);
         self.cfg.set_terminator(
             self.current_block,
             Terminator::Branch {
                 cond,
                 then_block: drop_block,
-                then_args_start,
-                then_args_len,
+                then_args,
                 else_block: cont_block,
-                else_args_start,
-                else_args_len,
+                else_args,
             },
         );
         self.current_block = drop_block;
@@ -2966,20 +2964,29 @@ impl<'a> CfgBuilder<'a> {
                     MovedSlot::Param(index) => self.emit(CfgInstData::Param { index }, ty, span),
                 }
             } else {
-                let place = self.cfg.make_place(base, root_type, projs.iter().copied());
+                let place_result = self.cfg.make_place(base, root_type, projs.iter().copied());
+                let place = self.payload_or(
+                    place_result,
+                    Place {
+                        base,
+                        base_type: root_type,
+                        projections: CfgProjections::EMPTY,
+                    },
+                    span,
+                );
                 self.emit(CfgInstData::PlaceRead { place }, ty, span)
             };
             let name = self.interner.get_or_intern(destructor_name);
-            let (args_start, args_len) = self.cfg.push_call_args(std::iter::once(CfgCallArg {
+            let args_result = self.cfg.push_call_args(std::iter::once(CfgCallArg {
                 value: whole_val,
                 mode: CfgArgMode::Normal,
             }));
+            let args = self.payload_or(args_result, CfgCallArgs::EMPTY, span);
             self.emit(
                 CfgInstData::Call {
                     runtime: None,
                     name,
-                    args_start,
-                    args_len,
+                    args,
                 },
                 Type::UNIT,
                 span,
@@ -3054,7 +3061,16 @@ impl<'a> CfgBuilder<'a> {
                 false
             };
             if !recursed {
-                let place = self.cfg.make_place(base, root_type, projs.iter().copied());
+                let place_result = self.cfg.make_place(base, root_type, projs.iter().copied());
+                let place = self.payload_or(
+                    place_result,
+                    Place {
+                        base,
+                        base_type: root_type,
+                        projections: CfgProjections::EMPTY,
+                    },
+                    span,
+                );
                 let field_val = self.emit(CfgInstData::PlaceRead { place }, field.ty, span);
                 self.emit(CfgInstData::Drop { value: field_val }, Type::UNIT, span);
             }
@@ -3149,7 +3165,16 @@ impl<'a> CfgBuilder<'a> {
                 false
             };
             if !recursed {
-                let place = self.cfg.make_place(base, root_type, projs.iter().copied());
+                let place_result = self.cfg.make_place(base, root_type, projs.iter().copied());
+                let place = self.payload_or(
+                    place_result,
+                    Place {
+                        base,
+                        base_type: root_type,
+                        projections: CfgProjections::EMPTY,
+                    },
+                    span,
+                );
                 let elem_val = self.emit(CfgInstData::PlaceRead { place }, elem_ty, span);
                 self.emit(CfgInstData::Drop { value: elem_val }, Type::UNIT, span);
             }
@@ -3228,11 +3253,19 @@ impl<'a> CfgBuilder<'a> {
         }
 
         // Create the CFG place
-        let place = self
+        match self
             .cfg
-            .make_place(base, air_place.base_type, cfg_projections);
-
-        Some(place)
+            .make_place(base, air_place.base_type, cfg_projections)
+        {
+            Ok(place) => Some(place),
+            Err(error) => {
+                self.errors.push(CompileError::new(
+                    ErrorKind::InternalError(format!("CFG place construction failed: {error:?}")),
+                    rue_span::Span::default(),
+                ));
+                None
+            }
+        }
     }
 }
 
@@ -3301,6 +3334,8 @@ mod tests {
             func.allow_unreachable_code,
         )
         .cfg
+        .unwrap()
+        .into_editor()
     }
 
     /// Count the Drop instructions in a CFG.
@@ -3330,7 +3365,7 @@ mod tests {
                     else {
                         return None;
                     };
-                    Some((*place, struct_id))
+                    Some((place.duplicate_with_owner(), struct_id))
                 }
                 _ => None,
             })
@@ -3367,9 +3402,9 @@ mod tests {
             .blocks()
             .iter()
             .flat_map(|block| block.insts.iter().copied())
-            .find_map(|value| match cfg.get_inst(value).data {
+            .find_map(|value| match &cfg.get_inst(value).data {
                 CfgInstData::PlaceRead { place } if matches!(place.base, PlaceBase::Local(0)) => {
-                    Some(place)
+                    Some(place.duplicate_with_owner())
                 }
                 _ => None,
             })
@@ -4079,8 +4114,9 @@ mod tests {
                 span,
             });
 
-            let cfg =
-                CfgBuilder::build(&air, 1, 0, "probe", &type_pool, vec![], &interner, false).cfg;
+            let cfg = CfgBuilder::build(&air, 1, 0, "probe", &type_pool, vec![], &interner, false)
+                .cfg
+                .unwrap();
             let instructions = cfg
                 .blocks()
                 .iter()

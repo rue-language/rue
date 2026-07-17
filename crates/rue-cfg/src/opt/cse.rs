@@ -238,7 +238,7 @@ fn never_written_params(cfg: &Cfg) -> Vec<bool> {
 /// Run block-local CSE. Call at `-O2`/`-O3` after simplification (more
 /// duplicates are exposed once blocks are merged) and before DCE (which sweeps
 /// the dead placeholders).
-pub fn run(cfg: &mut Cfg) -> Stats {
+pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     let mut stats = Stats::default();
     // `subst[dup] = first` for every replaced duplicate. Persists across blocks
     // (each entry points earlier within its own block, so global resolution
@@ -280,10 +280,10 @@ pub fn run(cfg: &mut Cfg) -> Stats {
         let resolved: Vec<CfgValue> = (0..cfg.value_count())
             .map(|i| resolve(&subst, CfgValue::from_raw(i as u32)))
             .collect();
-        cfg.rewrite_value_uses(|v| resolved[v.as_u32() as usize]);
+        cfg.rewrite_value_uses(|v| resolved[v.as_u32() as usize])?;
     }
 
-    stats
+    Ok(stats)
 }
 
 #[cfg(test)]
@@ -326,7 +326,7 @@ mod tests {
         let add2 = push(&mut cfg, CfgInstData::Add(x, y), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(add2) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.duplicates_replaced, 1);
         // The return now reads the first add directly.
         assert!(matches!(
@@ -349,7 +349,7 @@ mod tests {
         let div2 = push(&mut cfg, CfgInstData::Div(a, b), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(div2) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.duplicates_replaced, 1);
         assert!(matches!(cfg.get_inst(div1).data, CfgInstData::Div(x, y) if x == a && y == b));
         assert!(matches!(cfg.get_inst(div2).data, CfgInstData::Const(0)));
@@ -369,7 +369,7 @@ mod tests {
         let add2 = push(&mut cfg, CfgInstData::Add(b, a), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(add2) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.duplicates_replaced, 1);
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
@@ -387,7 +387,7 @@ mod tests {
         let sub2 = push(&mut cfg, CfgInstData::Sub(b, a), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sub2) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.duplicates_replaced, 0);
         assert!(matches!(cfg.get_inst(sub1).data, CfgInstData::Sub(..)));
         assert!(matches!(cfg.get_inst(sub2).data, CfgInstData::Sub(..)));
@@ -406,7 +406,7 @@ mod tests {
         let add2 = push(&mut cfg, CfgInstData::Add(x, one_b), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(add2) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.duplicates_replaced, 2);
         // Surviving const and add are the first occurrences.
         assert!(matches!(cfg.get_inst(one_a).data, CfgInstData::Const(1)));
@@ -428,7 +428,7 @@ mod tests {
         let add = push(&mut cfg, CfgInstData::Add(load1, load2), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(add) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.duplicates_replaced, 0);
         assert!(matches!(
             cfg.get_inst(load1).data,
@@ -452,14 +452,13 @@ mod tests {
             cfg.entry,
             Terminator::Goto {
                 target: block2,
-                args_start: 0,
-                args_len: 0,
+                args: crate::payload::CfgGotoArgs::EMPTY,
             },
         );
         let add2 = push_in(&mut cfg, block2, CfgInstData::Add(a, b), Type::I32);
         cfg.set_terminator(block2, Terminator::Return { value: Some(add2) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.duplicates_replaced, 0);
         assert!(matches!(cfg.get_inst(add1).data, CfgInstData::Add(..)));
         assert!(matches!(cfg.get_inst(add2).data, CfgInstData::Add(..)));
@@ -480,12 +479,12 @@ mod tests {
             .map(|i| cfg.get_block(BlockId::from_raw(i as u32)).insts.len())
             .sum();
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.insts_scanned, total_insts as u64);
         assert_eq!(stats.duplicates_replaced, 1);
 
         // Idempotent: nothing left to eliminate.
-        let again = run(&mut cfg);
+        let again = run(&mut cfg).unwrap();
         assert_eq!(again.duplicates_replaced, 0);
     }
 
@@ -501,7 +500,7 @@ mod tests {
         let sum = push(&mut cfg, CfgInstData::Add(a1, a2), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sum) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.duplicates_replaced, 1);
         // The add now reads the first parameter value twice.
         assert!(matches!(cfg.get_inst(sum).data, CfgInstData::Add(x, y) if x == a1 && y == a1));
@@ -526,7 +525,7 @@ mod tests {
         let sum = push(&mut cfg, CfgInstData::Add(a1, a2), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sum) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.duplicates_replaced, 0);
         assert!(matches!(
             cfg.get_inst(a1).data,
@@ -559,7 +558,7 @@ mod tests {
         let sum = push(&mut cfg, CfgInstData::Add(a1, a2), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sum) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.duplicates_replaced, 0);
     }
 
@@ -613,11 +612,11 @@ mod tests {
         );
 
         super::super::constopt::run(&mut cfg);
-        let fwd = super::super::forward::run(&mut cfg);
+        let fwd = super::super::forward::run(&mut cfg).unwrap();
         // Both `Load`s forwarded to their slot's single write (the adds).
         assert_eq!(fwd.loads_forwarded_single_write, 2);
 
-        let cse = run(&mut cfg);
+        let cse = run(&mut cfg).unwrap();
         // a2, b2, and the second add are all duplicates.
         assert_eq!(cse.duplicates_replaced, 3);
         // The result now adds the single surviving add to itself.
@@ -643,7 +642,7 @@ mod tests {
         let sum = push(&mut cfg, CfgInstData::Add(p1, p2), Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sum) });
 
-        let stats = run(&mut cfg);
+        let stats = run(&mut cfg).unwrap();
         assert_eq!(
             stats.duplicates_replaced, 0,
             "address-taken param reads must not dedupe"

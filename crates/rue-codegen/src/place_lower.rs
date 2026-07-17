@@ -323,7 +323,7 @@ enum ProjectedAccess {
 mod tests {
     use lasso::ThreadedRodeo;
     use rue_air::{Sema, StructDef, StructField, Type, TypeInternPool};
-    use rue_cfg::{Cfg, CfgBuilder, CfgInst, CfgInstData, PlaceBase, Projection, Terminator};
+    use rue_cfg::{Cfg, CfgBuilder, CfgInst, CfgInstData, PlaceBase, Projection};
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
@@ -392,6 +392,7 @@ mod tests {
                 function.allow_unreachable_code,
             )
             .cfg
+            .unwrap()
         };
         let cfg = build_cfg("main");
 
@@ -500,29 +501,28 @@ mod tests {
         let mut indexed_cfg = Cfg::new(pair_ty, 1, 1, "indexed_pair_read".to_string(), vec![false]);
         let indexed_entry = indexed_cfg.new_block();
         indexed_cfg.entry = indexed_entry;
-        let index = indexed_cfg.add_inst(CfgInst {
-            data: CfgInstData::Param { index: 0 },
-            ty: Type::U64,
-            span: Span::new(0, 0),
-        });
-        let place = indexed_cfg.make_place(
-            PlaceBase::Local(0),
-            array_ty,
-            [Projection::Index {
-                array_type: array_ty,
-                index,
-            }],
+        let index = indexed_cfg.append_inst(
+            indexed_entry,
+            CfgInst {
+                data: CfgInstData::Param { index: 0 },
+                ty: Type::U64,
+                span: Span::new(0, 0),
+            },
         );
-        let read = indexed_cfg.add_inst(CfgInst {
-            data: CfgInstData::PlaceRead { place },
-            ty: pair_ty,
-            span: Span::new(0, 0),
-        });
-        indexed_cfg
-            .get_block_mut(indexed_entry)
-            .insts
-            .extend([index, read]);
-        indexed_cfg.set_terminator(indexed_entry, Terminator::Return { value: Some(read) });
+        let read = indexed_cfg
+            .append_place_read(
+                indexed_entry,
+                PlaceBase::Local(0),
+                array_ty,
+                [Projection::Index {
+                    array_type: array_ty,
+                    index,
+                }],
+                pair_ty,
+                Span::new(0, 0),
+            )
+            .unwrap();
+        indexed_cfg.set_return(indexed_entry, Some(read));
         let pair_x86 = X86CfgLower::new(&indexed_cfg, &synthetic_types, &interner)
             .lower()
             .expect("x86 indexed aggregate read should lower");

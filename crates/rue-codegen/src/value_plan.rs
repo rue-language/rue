@@ -647,7 +647,7 @@ impl ValuePlan {
 fn place_plan<A: ValueLowerAdapter>(
     ctx: &CfgLowerContext<'_>,
     adapter: &mut A,
-    place: Place,
+    place: &Place,
 ) -> PlacePlan {
     let base = match place.base {
         PlaceBase::Local(slot) => PlaceBasePlan::Local(slot),
@@ -658,7 +658,7 @@ fn place_plan<A: ValueLowerAdapter>(
     };
     let projections = ctx
         .cfg
-        .get_place_projections(&place)
+        .get_place_projections(place)
         .iter()
         .map(|projection| match *projection {
             Projection::Field {
@@ -747,17 +747,17 @@ fn addressable_value_plan<A: ValueLowerAdapter>(
     value: CfgValue,
 ) -> Option<ByRefAddressPlan> {
     let inst = ctx.cfg.get_inst(value);
-    match inst.data {
+    match &inst.data {
         CfgInstData::PlaceRead { place } => {
             Some(ByRefAddressPlan::Place(place_plan(ctx, adapter, place)))
         }
         CfgInstData::Load { slot } => Some(ByRefAddressPlan::FrameSlot {
-            slot,
+            slot: *slot,
             low_shift: ctx.type_slot_count(inst.ty).saturating_sub(1),
         }),
         CfgInstData::Param { index } => Some(ByRefAddressPlan::Parameter {
-            slot: index,
-            by_ref: ctx.cfg.is_param_by_ref(index),
+            slot: *index,
+            by_ref: ctx.cfg.is_param_by_ref(*index),
             low_shift: ctx.type_slot_count(inst.ty).saturating_sub(1),
         }),
         _ => None,
@@ -895,18 +895,11 @@ enum ResidualInput {
     },
     StructInit {
         struct_id: StructId,
-        fields_start: u32,
-        fields_len: u32,
     },
-    ArrayInit {
-        elements_start: u32,
-        elements_len: u32,
-    },
+    ArrayInit,
     EnumVariant {
         enum_id: EnumId,
         variant_index: u32,
-        payload_start: u32,
-        payload_len: u32,
     },
     EnumPayloadGet {
         base: CfgValue,
@@ -929,11 +922,8 @@ enum ResidualInput {
         slot: u32,
         local_ty: Type,
     },
-    PlaceRead {
-        place: Place,
-    },
+    PlaceRead,
     PlaceWrite {
-        place: Place,
         value: CfgValue,
     },
 }
@@ -1011,15 +1001,11 @@ fn residual_plan<A: ValueLowerAdapter>(
             value: operand(ctx, adapter, value),
             value_shape: ValuePlan::for_value(ctx, value).shape,
         },
-        ResidualInput::StructInit {
-            struct_id,
-            fields_start,
-            fields_len,
-        } => ResidualValuePlan::StructInit {
+        ResidualInput::StructInit { struct_id } => ResidualValuePlan::StructInit {
             struct_id,
             fields: ctx
                 .cfg
-                .get_extra(fields_start, fields_len)
+                .get_struct_fields(&ctx.cfg.get_inst(value).data)
                 .iter()
                 .copied()
                 .map(|field| {
@@ -1030,13 +1016,10 @@ fn residual_plan<A: ValueLowerAdapter>(
                 })
                 .collect(),
         },
-        ResidualInput::ArrayInit {
-            elements_start,
-            elements_len,
-        } => ResidualValuePlan::ArrayInit {
+        ResidualInput::ArrayInit => ResidualValuePlan::ArrayInit {
             elements: ctx
                 .cfg
-                .get_extra(elements_start, elements_len)
+                .get_array_elements(&ctx.cfg.get_inst(value).data)
                 .iter()
                 .copied()
                 .map(|element| {
@@ -1050,14 +1033,12 @@ fn residual_plan<A: ValueLowerAdapter>(
         ResidualInput::EnumVariant {
             enum_id,
             variant_index,
-            payload_start,
-            payload_len,
         } => ResidualValuePlan::EnumVariant {
             enum_id,
             variant_index,
             payload: ctx
                 .cfg
-                .get_extra(payload_start, payload_len)
+                .get_enum_payload(&ctx.cfg.get_inst(value).data)
                 .iter()
                 .copied()
                 .map(|field| {
@@ -1103,13 +1084,19 @@ fn residual_plan<A: ValueLowerAdapter>(
         ResidualInput::StorageDead { slot, local_ty } => {
             ResidualValuePlan::StorageDead { slot, local_ty }
         }
-        ResidualInput::PlaceRead { place } => ResidualValuePlan::PlaceRead {
-            place: place_plan(ctx, adapter, place),
+        ResidualInput::PlaceRead => ResidualValuePlan::PlaceRead {
+            place: match &ctx.cfg.get_inst(value).data {
+                CfgInstData::PlaceRead { place } => place_plan(ctx, adapter, place),
+                _ => unreachable!("residual place-read input changed kind"),
+            },
         },
-        ResidualInput::PlaceWrite { place, value } => ResidualValuePlan::PlaceWrite {
-            place: place_plan(ctx, adapter, place),
-            value: operand(ctx, adapter, value),
-            value_shape: ValuePlan::for_value(ctx, value).shape,
+        ResidualInput::PlaceWrite { value: stored } => ResidualValuePlan::PlaceWrite {
+            place: match &ctx.cfg.get_inst(value).data {
+                CfgInstData::PlaceWrite { place, .. } => place_plan(ctx, adapter, place),
+                _ => unreachable!("residual place-write input changed kind"),
+            },
+            value: operand(ctx, adapter, stored),
+            value_shape: ValuePlan::for_value(ctx, stored).shape,
         },
     }
 }
@@ -1165,7 +1152,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
     if adapter.value_is_lowered(value) {
         return None;
     }
-    let inst = ctx.cfg.get_inst(value).clone();
+    let inst = ctx.cfg.get_inst(value);
     let policy = ValuePlan::for_value(ctx, value);
     macro_rules! lower_residual {
         ($input:expr) => {{
@@ -1180,11 +1167,11 @@ pub fn lower_value<A: ValueLowerAdapter>(
             Some(kind)
         }};
     }
-    match inst.data {
+    match &inst.data {
         CfgInstData::Add(lhs, rhs) => {
             let width = policy.integer_width.expect("add width");
-            let lhs = operand(ctx, adapter, lhs).primary;
-            let rhs = operand(ctx, adapter, rhs).primary;
+            let lhs = operand(ctx, adapter, *lhs).primary;
+            let rhs = operand(ctx, adapter, *rhs).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Add { lhs, rhs, width },
                 overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
@@ -1200,8 +1187,8 @@ pub fn lower_value<A: ValueLowerAdapter>(
         }
         CfgInstData::Sub(lhs, rhs) => {
             let width = policy.integer_width.expect("sub width");
-            let lhs = operand(ctx, adapter, lhs).primary;
-            let rhs = operand(ctx, adapter, rhs).primary;
+            let lhs = operand(ctx, adapter, *lhs).primary;
+            let rhs = operand(ctx, adapter, *rhs).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Sub { lhs, rhs, width },
                 overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
@@ -1217,13 +1204,13 @@ pub fn lower_value<A: ValueLowerAdapter>(
         }
         CfgInstData::Mul(lhs, rhs) => {
             let width = policy.integer_width.expect("mul width");
-            let lhs_result = operand(ctx, adapter, lhs);
-            let rhs_result = operand(ctx, adapter, rhs);
+            let lhs_result = operand(ctx, adapter, *lhs);
+            let rhs_result = operand(ctx, adapter, *rhs);
             let shift = if width.bits >= 32 {
-                power_of_two_shift(ctx, lhs)
+                power_of_two_shift(ctx, *lhs)
                     .map(|shift| (rhs_result.primary, shift))
                     .or_else(|| {
-                        power_of_two_shift(ctx, rhs).map(|shift| (lhs_result.primary, shift))
+                        power_of_two_shift(ctx, *rhs).map(|shift| (lhs_result.primary, shift))
                     })
             } else {
                 None
@@ -1248,8 +1235,8 @@ pub fn lower_value<A: ValueLowerAdapter>(
         }
         CfgInstData::WrappingAdd(lhs, rhs) => {
             let width = policy.integer_width.expect("wrapping_add width");
-            let lhs = operand(ctx, adapter, lhs).primary;
-            let rhs = operand(ctx, adapter, rhs).primary;
+            let lhs = operand(ctx, adapter, *lhs).primary;
+            let rhs = operand(ctx, adapter, *rhs).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Add { lhs, rhs, width },
                 overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
@@ -1265,8 +1252,8 @@ pub fn lower_value<A: ValueLowerAdapter>(
         }
         CfgInstData::WrappingSub(lhs, rhs) => {
             let width = policy.integer_width.expect("wrapping_sub width");
-            let lhs = operand(ctx, adapter, lhs).primary;
-            let rhs = operand(ctx, adapter, rhs).primary;
+            let lhs = operand(ctx, adapter, *lhs).primary;
+            let rhs = operand(ctx, adapter, *rhs).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Sub { lhs, rhs, width },
                 overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
@@ -1282,8 +1269,8 @@ pub fn lower_value<A: ValueLowerAdapter>(
         }
         CfgInstData::WrappingMul(lhs, rhs) => {
             let width = policy.integer_width.expect("wrapping_mul width");
-            let lhs = operand(ctx, adapter, lhs).primary;
-            let rhs = operand(ctx, adapter, rhs).primary;
+            let lhs = operand(ctx, adapter, *lhs).primary;
+            let rhs = operand(ctx, adapter, *rhs).primary;
             // Wrapping multiply is one plain ALU multiply per width: the low
             // bits are identical for signed and unsigned two's-complement, so
             // no power-of-two strength reduction and no widening overflow probe
@@ -1308,8 +1295,8 @@ pub fn lower_value<A: ValueLowerAdapter>(
         }
         CfgInstData::Div(lhs, rhs) => {
             let width = policy.integer_width.expect("div width");
-            let lhs = operand(ctx, adapter, lhs).primary;
-            let rhs = operand(ctx, adapter, rhs).primary;
+            let lhs = operand(ctx, adapter, *lhs).primary;
+            let rhs = operand(ctx, adapter, *rhs).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Div { lhs, rhs, width },
                 overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
@@ -1325,8 +1312,8 @@ pub fn lower_value<A: ValueLowerAdapter>(
         }
         CfgInstData::Mod(lhs, rhs) => {
             let width = policy.integer_width.expect("mod width");
-            let lhs = operand(ctx, adapter, lhs).primary;
-            let rhs = operand(ctx, adapter, rhs).primary;
+            let lhs = operand(ctx, adapter, *lhs).primary;
+            let rhs = operand(ctx, adapter, *rhs).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Mod { lhs, rhs, width },
                 overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
@@ -1342,7 +1329,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
         }
         CfgInstData::Neg(operand_value) => {
             let width = policy.integer_width.expect("neg width");
-            let operand_vreg = operand(ctx, adapter, operand_value).primary;
+            let operand_vreg = operand(ctx, adapter, *operand_value).primary;
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
                 operation: ArithmeticOperation::Neg {
                     value: operand_vreg,
@@ -1359,13 +1346,8 @@ pub fn lower_value<A: ValueLowerAdapter>(
             cache_result(adapter, value, result);
             Some(ValueKind::UnaryArithmetic)
         }
-        CfgInstData::Call {
-            runtime,
-            name,
-            args_start,
-            args_len,
-        } => {
-            let call_args = ctx.cfg.get_call_args(args_start, args_len);
+        CfgInstData::Call { runtime, name, .. } => {
+            let call_args = ctx.cfg.get_call_args(&inst.data);
             let by_ref_plans = call_args
                 .iter()
                 .map(|arg| match arg.mode {
@@ -1387,7 +1369,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 &by_ref_plans,
                 adapter.return_register_budget(),
             );
-            let result = if let Some(runtime) = runtime {
+            let result = if let Some(runtime) = *runtime {
                 let helper = runtime.helper();
                 let plan = crate::runtime_call_plan::RuntimeCallPlan::from_cfg_inputs(
                     helper,
@@ -1400,7 +1382,7 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 });
                 adapter.emit_runtime_call(plan)
             } else {
-                let symbol = adapter.resolve_symbol(name);
+                let symbol = adapter.resolve_symbol(*name);
                 let result_vreg = adapter.reserve_value_result();
                 let plan = crate::call_plan::CallPlan::from_inputs_with_result(
                     crate::call_plan::CallTarget::rue(symbol),
@@ -1415,15 +1397,10 @@ pub fn lower_value<A: ValueLowerAdapter>(
             cache_result(adapter, value, result);
             Some(ValueKind::Call)
         }
-        CfgInstData::Intrinsic {
-            runtime,
-            name,
-            args_start,
-            args_len,
-        } => {
+        CfgInstData::Intrinsic { runtime, name, .. } => {
             debug_assert!(runtime.is_none_or(|runtime| runtime.validate()));
-            let args = ctx.cfg.get_extra(args_start, args_len);
-            let name_string = adapter.resolve_symbol(name);
+            let args = ctx.cfg.get_intrinsic_args(&inst.data);
+            let name_string = adapter.resolve_symbol(*name);
             let values: Vec<IntrinsicArgPlan> = args
                 .iter()
                 .copied()
@@ -1599,62 +1576,60 @@ pub fn lower_value<A: ValueLowerAdapter>(
                 Some(ValueKind::Intrinsic)
             }
         }
-        CfgInstData::Const(value) => lower_residual!(ResidualInput::Const(value)),
-        CfgInstData::BoolConst(value) => lower_residual!(ResidualInput::BoolConst(value)),
+        CfgInstData::Const(value) => lower_residual!(ResidualInput::Const(*value)),
+        CfgInstData::BoolConst(value) => lower_residual!(ResidualInput::BoolConst(*value)),
         CfgInstData::StringConst(string_id) => {
-            lower_residual!(ResidualInput::StringConst(string_id))
+            lower_residual!(ResidualInput::StringConst(*string_id))
         }
-        CfgInstData::Param { index } => lower_residual!(ResidualInput::Param(index)),
-        CfgInstData::BlockParam { index } => lower_residual!(ResidualInput::BlockParam(index)),
-        CfgInstData::Eq(lhs, rhs) => lower_residual!(ResidualInput::Eq(lhs, rhs)),
-        CfgInstData::Ne(lhs, rhs) => lower_residual!(ResidualInput::Ne(lhs, rhs)),
-        CfgInstData::Lt(lhs, rhs) => lower_residual!(ResidualInput::Lt(lhs, rhs)),
-        CfgInstData::Gt(lhs, rhs) => lower_residual!(ResidualInput::Gt(lhs, rhs)),
-        CfgInstData::Le(lhs, rhs) => lower_residual!(ResidualInput::Le(lhs, rhs)),
-        CfgInstData::Ge(lhs, rhs) => lower_residual!(ResidualInput::Ge(lhs, rhs)),
-        CfgInstData::BitAnd(lhs, rhs) => lower_residual!(ResidualInput::BitAnd(lhs, rhs)),
-        CfgInstData::BitOr(lhs, rhs) => lower_residual!(ResidualInput::BitOr(lhs, rhs)),
-        CfgInstData::BitXor(lhs, rhs) => lower_residual!(ResidualInput::BitXor(lhs, rhs)),
-        CfgInstData::Shl(lhs, rhs) => lower_residual!(ResidualInput::Shl(lhs, rhs)),
-        CfgInstData::Shr(lhs, rhs) => lower_residual!(ResidualInput::Shr(lhs, rhs)),
-        CfgInstData::Not(value) => lower_residual!(ResidualInput::Not(value)),
-        CfgInstData::BitNot(value) => lower_residual!(ResidualInput::BitNot(value)),
+        CfgInstData::Param { index } => lower_residual!(ResidualInput::Param(*index)),
+        CfgInstData::BlockParam { index } => lower_residual!(ResidualInput::BlockParam(*index)),
+        CfgInstData::Eq(lhs, rhs) => lower_residual!(ResidualInput::Eq(*lhs, *rhs)),
+        CfgInstData::Ne(lhs, rhs) => lower_residual!(ResidualInput::Ne(*lhs, *rhs)),
+        CfgInstData::Lt(lhs, rhs) => lower_residual!(ResidualInput::Lt(*lhs, *rhs)),
+        CfgInstData::Gt(lhs, rhs) => lower_residual!(ResidualInput::Gt(*lhs, *rhs)),
+        CfgInstData::Le(lhs, rhs) => lower_residual!(ResidualInput::Le(*lhs, *rhs)),
+        CfgInstData::Ge(lhs, rhs) => lower_residual!(ResidualInput::Ge(*lhs, *rhs)),
+        CfgInstData::BitAnd(lhs, rhs) => lower_residual!(ResidualInput::BitAnd(*lhs, *rhs)),
+        CfgInstData::BitOr(lhs, rhs) => lower_residual!(ResidualInput::BitOr(*lhs, *rhs)),
+        CfgInstData::BitXor(lhs, rhs) => lower_residual!(ResidualInput::BitXor(*lhs, *rhs)),
+        CfgInstData::Shl(lhs, rhs) => lower_residual!(ResidualInput::Shl(*lhs, *rhs)),
+        CfgInstData::Shr(lhs, rhs) => lower_residual!(ResidualInput::Shr(*lhs, *rhs)),
+        CfgInstData::Not(value) => lower_residual!(ResidualInput::Not(*value)),
+        CfgInstData::BitNot(value) => lower_residual!(ResidualInput::BitNot(*value)),
         CfgInstData::Alloc { slot, init } => {
-            lower_residual!(ResidualInput::Alloc { slot, init })
+            lower_residual!(ResidualInput::Alloc {
+                slot: *slot,
+                init: *init
+            })
         }
-        CfgInstData::Load { slot } => lower_residual!(ResidualInput::Load { slot }),
+        CfgInstData::Load { slot } => lower_residual!(ResidualInput::Load { slot: *slot }),
         CfgInstData::Store { slot, value } => {
-            lower_residual!(ResidualInput::Store { slot, value })
+            lower_residual!(ResidualInput::Store {
+                slot: *slot,
+                value: *value
+            })
         }
         CfgInstData::ParamStore { param_slot, value } => {
-            lower_residual!(ResidualInput::ParamStore { param_slot, value })
+            lower_residual!(ResidualInput::ParamStore {
+                param_slot: *param_slot,
+                value: *value
+            })
         }
-        CfgInstData::StructInit {
-            struct_id,
-            fields_start,
-            fields_len,
-        } => lower_residual!(ResidualInput::StructInit {
-            struct_id,
-            fields_start,
-            fields_len,
-        }),
-        CfgInstData::ArrayInit {
-            elements_start,
-            elements_len,
-        } => lower_residual!(ResidualInput::ArrayInit {
-            elements_start,
-            elements_len,
-        }),
+        CfgInstData::StructInit { struct_id, .. } => {
+            lower_residual!(ResidualInput::StructInit {
+                struct_id: *struct_id
+            })
+        }
+        CfgInstData::ArrayInit { .. } => {
+            lower_residual!(ResidualInput::ArrayInit)
+        }
         CfgInstData::EnumVariant {
             enum_id,
             variant_index,
-            payload_start,
-            payload_len,
+            ..
         } => lower_residual!(ResidualInput::EnumVariant {
-            enum_id,
-            variant_index,
-            payload_start,
-            payload_len,
+            enum_id: *enum_id,
+            variant_index: *variant_index,
         }),
         CfgInstData::EnumPayloadGet {
             base,
@@ -1662,24 +1637,33 @@ pub fn lower_value<A: ValueLowerAdapter>(
             variant_index,
             field_index,
         } => lower_residual!(ResidualInput::EnumPayloadGet {
-            base,
-            enum_id,
-            variant_index,
-            field_index,
+            base: *base,
+            enum_id: *enum_id,
+            variant_index: *variant_index,
+            field_index: *field_index,
         }),
         CfgInstData::IntCast { value, from_ty } => {
-            lower_residual!(ResidualInput::IntCast { value, from_ty })
+            lower_residual!(ResidualInput::IntCast {
+                value: *value,
+                from_ty: *from_ty
+            })
         }
-        CfgInstData::Drop { value } => lower_residual!(ResidualInput::Drop { value }),
+        CfgInstData::Drop { value } => lower_residual!(ResidualInput::Drop { value: *value }),
         CfgInstData::StorageLive { slot, local_ty } => {
-            lower_residual!(ResidualInput::StorageLive { slot, local_ty })
+            lower_residual!(ResidualInput::StorageLive {
+                slot: *slot,
+                local_ty: *local_ty
+            })
         }
         CfgInstData::StorageDead { slot, local_ty } => {
-            lower_residual!(ResidualInput::StorageDead { slot, local_ty })
+            lower_residual!(ResidualInput::StorageDead {
+                slot: *slot,
+                local_ty: *local_ty
+            })
         }
-        CfgInstData::PlaceRead { place } => lower_residual!(ResidualInput::PlaceRead { place }),
-        CfgInstData::PlaceWrite { place, value } => {
-            lower_residual!(ResidualInput::PlaceWrite { place, value })
+        CfgInstData::PlaceRead { .. } => lower_residual!(ResidualInput::PlaceRead),
+        CfgInstData::PlaceWrite { value, .. } => {
+            lower_residual!(ResidualInput::PlaceWrite { value: *value })
         }
     }
 }
@@ -2060,12 +2044,12 @@ mod tests {
     use super::{
         ComparisonPreparation, DebugValuePlan, IntegerExtension, IntegerWidth, IntrinsicArgPlan,
         IntrinsicOperation, MaterializationRequirement, MaterializedValue, OptionIntrinsic,
-        StoragePolicy, StoreDestination, ValueKind, ValuePlan, ValueShape, assert_slot_policy,
+        StoragePolicy, StoreDestination, ValuePlan, ValueShape, assert_slot_policy,
         comparison_integer_width, integer_range, type_bits, type_range,
     };
-    use lasso::{Spur, ThreadedRodeo};
+    use lasso::ThreadedRodeo;
     use rue_air::{EnumDef, LangItem, ParamSlotModes, StructDef, StructField, TypeInternPool};
-    use rue_cfg::{Cfg, CfgInst, CfgInstData, CfgValue, Place, Terminator, Type};
+    use rue_cfg::{Cfg, CfgInst, CfgInstData, CfgValue, Place, Type};
     use rue_runtime_abi::RuntimeHelperId;
     use rue_span::{FileId, Span};
     use rue_target::Target;
@@ -2090,16 +2074,10 @@ mod tests {
         let entry = cfg.new_block();
         cfg.entry = entry;
         for (index, inst) in values.into_iter().enumerate() {
-            let value = cfg.add_inst(inst);
+            let value = cfg.append_inst(entry, inst);
             assert_eq!(value.as_u32(), index as u32);
-            cfg.get_block_mut(entry).insts.push(value);
         }
-        cfg.set_terminator(
-            entry,
-            Terminator::Return {
-                value: Some(return_value),
-            },
-        );
+        cfg.set_return(entry, Some(return_value));
         cfg
     }
 
@@ -2187,6 +2165,7 @@ mod tests {
         let struct_ty = Type::new_struct(struct_id);
         let enum_ty = Type::new_enum(enum_id);
         let array_ty = Type::new_array(array_id);
+        let enum_pool = pool.clone().freeze();
 
         let mut cfg = Cfg::new(
             Type::I32,
@@ -2197,16 +2176,11 @@ mod tests {
         );
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let mut values = Vec::new();
-        let block_parameter = cfg.add_inst(inst(CfgInstData::BlockParam { index: 0 }, Type::I32));
-        cfg.get_block_mut(entry)
-            .params
-            .push((block_parameter, Type::I32));
-        values.push(block_parameter);
-        let mut add = |cfg: &mut Cfg, data: CfgInstData, ty: Type| {
-            let value = cfg.add_inst(inst(data, ty));
-            cfg.get_block_mut(entry).insts.push(value);
-            values.push(value);
+        let block_parameter = cfg.add_block_param(entry, Type::I32);
+        let values = std::cell::RefCell::new(vec![block_parameter]);
+        let add = |cfg: &mut Cfg, data: CfgInstData, ty: Type| {
+            let value = cfg.append_inst(entry, inst(data, ty));
+            values.borrow_mut().push(value);
             value
         };
 
@@ -2264,57 +2238,41 @@ mod tests {
             Type::UNIT,
         );
         let call_name = interner.get_or_intern("coverage_call");
-        add(
-            &mut cfg,
-            CfgInstData::Call {
-                runtime: None,
-                name: call_name,
-                args_start: 0,
-                args_len: 0,
-            },
-            Type::I32,
-        );
+        let call = cfg
+            .append_call(entry, None, call_name, [], Type::I32, Span::new(0, 0))
+            .unwrap();
+        values.borrow_mut().push(call);
         let panic_name = interner.get_or_intern("panic");
-        add(
-            &mut cfg,
-            CfgInstData::Intrinsic {
-                runtime: None,
-                name: panic_name,
-                args_start: 0,
-                args_len: 0,
-            },
-            Type::UNIT,
-        );
-        let (fields_start, fields_len) = cfg.push_extra([constant, load]);
-        let struct_value = add(
-            &mut cfg,
-            CfgInstData::StructInit {
+        let intrinsic = cfg
+            .append_intrinsic(entry, None, panic_name, [], Type::UNIT, Span::new(0, 0))
+            .unwrap();
+        values.borrow_mut().push(intrinsic);
+        let struct_value = cfg
+            .append_struct_init(
+                entry,
                 struct_id,
-                fields_start,
-                fields_len,
-            },
-            struct_ty,
-        );
-        let (elements_start, elements_len) = cfg.push_extra([constant, load]);
-        add(
-            &mut cfg,
-            CfgInstData::ArrayInit {
-                elements_start,
-                elements_len,
-            },
-            array_ty,
-        );
-        let (payload_start, payload_len) = cfg.push_extra([constant]);
-        let enum_value = add(
-            &mut cfg,
-            CfgInstData::EnumVariant {
+                [constant, load],
+                struct_ty,
+                Span::new(0, 0),
+            )
+            .unwrap();
+        values.borrow_mut().push(struct_value);
+        let array_value = cfg
+            .append_array_init(entry, [constant, load], array_ty, Span::new(0, 0))
+            .unwrap();
+        values.borrow_mut().push(array_value);
+        let enum_value = cfg
+            .append_enum_variant(
+                &enum_pool,
+                entry,
                 enum_id,
-                variant_index: 1,
-                payload_start,
-                payload_len,
-            },
-            enum_ty,
-        );
+                1,
+                [constant],
+                enum_ty,
+                Span::new(0, 0),
+            )
+            .unwrap();
+        values.borrow_mut().push(enum_value);
         add(
             &mut cfg,
             CfgInstData::EnumPayloadGet {
@@ -2371,15 +2329,14 @@ mod tests {
             },
             Type::UNIT,
         );
-        cfg.set_terminator(
-            entry,
-            Terminator::Return {
-                value: Some(constant),
-            },
-        );
+        cfg.set_return(entry, Some(constant));
 
-        assert_eq!(values.len(), 40, "fixture must contain every CFG variant");
-        (cfg, pool.freeze(), interner, values)
+        assert_eq!(
+            values.borrow().len(),
+            40,
+            "fixture must contain every CFG variant"
+        );
+        (cfg, pool.freeze(), interner, values.into_inner())
     }
 
     #[test]
@@ -2508,168 +2465,16 @@ mod tests {
 
     #[test]
     fn planner_is_exhaustive_for_every_cfg_value_variant() {
-        let v = dummy_value();
-        let place = Place::local(0, Type::I32);
-        let symbol = Spur::default();
-        let pool = TypeInternPool::new();
-        let interner = ThreadedRodeo::new();
-        let (struct_id, _) = pool.register_struct(
-            interner.get_or_intern("PlannerStruct"),
-            StructDef {
-                name: "PlannerStruct".to_string(),
-                fields: vec![],
-                is_copy: false,
-                is_linear: false,
-                destructor: None,
-                is_builtin: false,
-                is_pub: false,
-                file_id: FileId::DEFAULT,
-            },
-        );
-        let (enum_id, _) = pool.register_enum(
-            interner.get_or_intern("PlannerEnum"),
-            EnumDef {
-                name: "PlannerEnum".to_string(),
-                variants: vec!["Only".to_string()],
-                variant_payloads: vec![],
-                is_pub: false,
-                file_id: FileId::DEFAULT,
-            },
-        );
-        let cases = vec![
-            (CfgInstData::Const(1), ValueKind::Constant),
-            (CfgInstData::BoolConst(true), ValueKind::BoolConstant),
-            (CfgInstData::StringConst(0), ValueKind::StringConstant),
-            (CfgInstData::Param { index: 0 }, ValueKind::Parameter),
-            (
-                CfgInstData::BlockParam { index: 0 },
-                ValueKind::BlockParameter,
-            ),
-            (CfgInstData::Add(v, v), ValueKind::BinaryArithmetic),
-            (CfgInstData::Sub(v, v), ValueKind::BinaryArithmetic),
-            (CfgInstData::Mul(v, v), ValueKind::BinaryArithmetic),
-            (CfgInstData::Div(v, v), ValueKind::BinaryArithmetic),
-            (CfgInstData::Mod(v, v), ValueKind::BinaryArithmetic),
-            (CfgInstData::Eq(v, v), ValueKind::Comparison),
-            (CfgInstData::Ne(v, v), ValueKind::Comparison),
-            (CfgInstData::Lt(v, v), ValueKind::Comparison),
-            (CfgInstData::Gt(v, v), ValueKind::Comparison),
-            (CfgInstData::Le(v, v), ValueKind::Comparison),
-            (CfgInstData::Ge(v, v), ValueKind::Comparison),
-            (CfgInstData::BitAnd(v, v), ValueKind::Bitwise),
-            (CfgInstData::BitOr(v, v), ValueKind::Bitwise),
-            (CfgInstData::BitXor(v, v), ValueKind::Bitwise),
-            (CfgInstData::Shl(v, v), ValueKind::Shift),
-            (CfgInstData::Shr(v, v), ValueKind::Shift),
-            (CfgInstData::Neg(v), ValueKind::UnaryArithmetic),
-            (CfgInstData::Not(v), ValueKind::UnaryArithmetic),
-            (CfgInstData::BitNot(v), ValueKind::Bitwise),
-            (
-                CfgInstData::Alloc { slot: 0, init: v },
-                ValueKind::Allocation,
-            ),
-            (CfgInstData::Load { slot: 0 }, ValueKind::Load),
-            (CfgInstData::Store { slot: 0, value: v }, ValueKind::Store),
-            (
-                CfgInstData::ParamStore {
-                    param_slot: 0,
-                    value: v,
-                },
-                ValueKind::ParameterStore,
-            ),
-            (
-                CfgInstData::Call {
-                    runtime: None,
-                    name: symbol,
-                    args_start: 0,
-                    args_len: 0,
-                },
-                ValueKind::Call,
-            ),
-            (
-                CfgInstData::Intrinsic {
-                    runtime: None,
-                    name: symbol,
-                    args_start: 0,
-                    args_len: 0,
-                },
-                ValueKind::Intrinsic,
-            ),
-            (
-                CfgInstData::StructInit {
-                    struct_id,
-                    fields_start: 0,
-                    fields_len: 0,
-                },
-                ValueKind::StructInit,
-            ),
-            (
-                CfgInstData::ArrayInit {
-                    elements_start: 0,
-                    elements_len: 0,
-                },
-                ValueKind::ArrayInit,
-            ),
-            (
-                CfgInstData::EnumVariant {
-                    enum_id,
-                    variant_index: 0,
-                    payload_start: 0,
-                    payload_len: 0,
-                },
-                ValueKind::EnumVariant,
-            ),
-            (
-                CfgInstData::EnumPayloadGet {
-                    base: v,
-                    enum_id,
-                    variant_index: 0,
-                    field_index: 0,
-                },
-                ValueKind::EnumPayloadGet,
-            ),
-            (
-                CfgInstData::IntCast {
-                    value: v,
-                    from_ty: Type::I32,
-                },
-                ValueKind::IntegerCast,
-            ),
-            (CfgInstData::Drop { value: v }, ValueKind::Drop),
-            (
-                CfgInstData::StorageLive {
-                    slot: 0,
-                    local_ty: Type::I32,
-                },
-                ValueKind::StorageLive,
-            ),
-            (
-                CfgInstData::StorageDead {
-                    slot: 0,
-                    local_ty: Type::I32,
-                },
-                ValueKind::StorageDead,
-            ),
-            (CfgInstData::PlaceRead { place }, ValueKind::PlaceRead),
-            (
-                CfgInstData::PlaceWrite { place, value: v },
-                ValueKind::PlaceWrite,
-            ),
-        ];
-
-        let values = cases
-            .iter()
-            .map(|(data, _)| inst(data.clone(), Type::I32))
-            .collect::<Vec<_>>();
-        let cfg = synthetic_cfg(values, 1, 1, vec![true], dummy_value());
-        let pool = rue_air::FrozenTypeInternPool::new();
+        let (cfg, pool, _interner, values) = every_cfg_value_fixture();
         let ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
-
-        for (index, _) in cases.iter().enumerate() {
-            let value = CfgValue::from_raw(index as u32);
-            let _plan = ValuePlan::for_value(&ctx, value);
+        for value in &values {
+            let _plan = ValuePlan::for_value(&ctx, *value);
         }
-        assert_eq!(cases.len(), 40, "test must cover every CfgInstData variant");
+        assert_eq!(
+            values.len(),
+            40,
+            "test must cover every CfgInstData variant"
+        );
     }
 
     #[test]
@@ -2790,19 +2595,13 @@ mod tests {
         let empty_array_id = empty_pool.intern_array_from_type(Type::UNIT, 2);
         let empty_pool = empty_pool.freeze();
         let empty_array_ty = Type::new_array(empty_array_id);
-        let empty_cfg = synthetic_cfg(
-            vec![inst(
-                CfgInstData::ArrayInit {
-                    elements_start: 0,
-                    elements_len: 0,
-                },
-                empty_array_ty,
-            )],
-            0,
-            0,
-            vec![],
-            dummy_value(),
-        );
+        let mut empty_cfg = Cfg::new(Type::I32, 0, 0, "empty_array_plan".to_string(), vec![]);
+        let empty_entry = empty_cfg.new_block();
+        empty_cfg.entry = empty_entry;
+        let empty_value = empty_cfg
+            .append_array_init(empty_entry, [], empty_array_ty, Span::new(0, 0))
+            .unwrap();
+        empty_cfg.set_return(empty_entry, Some(empty_value));
         let empty_ctx = crate::cfg_lower::CfgLowerContext::new(&empty_cfg, &empty_pool);
         let empty_plan = ValuePlan::for_value(&empty_ctx, dummy_value());
         assert_eq!(
@@ -2847,20 +2646,13 @@ mod tests {
         strbuf_pool.set_struct_lang_item(struct_id, LangItem::StrBuf);
         let strbuf_pool = strbuf_pool.freeze();
         let strbuf_ty = Type::new_struct(struct_id);
-        let strbuf_cfg = synthetic_cfg(
-            vec![inst(
-                CfgInstData::StructInit {
-                    struct_id,
-                    fields_start: 0,
-                    fields_len: 0,
-                },
-                strbuf_ty,
-            )],
-            0,
-            0,
-            vec![],
-            dummy_value(),
-        );
+        let mut strbuf_cfg = Cfg::new(Type::I32, 0, 0, "strbuf_plan".to_string(), vec![]);
+        let strbuf_entry = strbuf_cfg.new_block();
+        strbuf_cfg.entry = strbuf_entry;
+        let strbuf_value = strbuf_cfg
+            .append_struct_init(strbuf_entry, struct_id, [], strbuf_ty, Span::new(0, 0))
+            .unwrap();
+        strbuf_cfg.set_return(strbuf_entry, Some(strbuf_value));
         let strbuf_ctx = crate::cfg_lower::CfgLowerContext::new(&strbuf_cfg, &strbuf_pool);
         let strbuf_plan = ValuePlan::for_value(&strbuf_ctx, dummy_value());
         assert!(strbuf_plan.is_strbuf);
@@ -3040,9 +2832,8 @@ mod tests {
         let mut cfg = Cfg::new(array_ty, 0, 1, "zero_slot_param".to_string(), vec![false]);
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let param = cfg.add_inst(inst(CfgInstData::Param { index: 0 }, array_ty));
-        cfg.get_block_mut(entry).insts.push(param);
-        cfg.set_terminator(entry, Terminator::Return { value: Some(param) });
+        let param = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, array_ty));
+        cfg.set_return(entry, Some(param));
         let interner = ThreadedRodeo::new();
 
         let x86 = X86CfgLower::new(&cfg, &pool, &interner)
@@ -3104,22 +2895,19 @@ mod tests {
         );
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let first = cfg.add_inst(inst(CfgInstData::Const(1), Type::U64));
-        let second = cfg.add_inst(inst(CfgInstData::Const(2), Type::U64));
-        let third = cfg.add_inst(inst(CfgInstData::Const(3), Type::U64));
-        let (fields_start, fields_len) = cfg.push_extra([first, second, third]);
-        let value = cfg.add_inst(inst(
-            CfgInstData::StructInit {
+        let first = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::U64));
+        let second = cfg.append_inst(entry, inst(CfgInstData::Const(2), Type::U64));
+        let third = cfg.append_inst(entry, inst(CfgInstData::Const(3), Type::U64));
+        let value = cfg
+            .append_struct_init(
+                entry,
                 struct_id,
-                fields_start,
-                fields_len,
-            },
-            aggregate_ty,
-        ));
-        cfg.get_block_mut(entry)
-            .insts
-            .extend([first, second, third, value]);
-        cfg.set_terminator(entry, Terminator::Return { value: None });
+                [first, second, third],
+                aggregate_ty,
+                Span::new(0, 0),
+            )
+            .unwrap();
+        cfg.set_return(entry, None);
         let pool = pool.freeze();
 
         let x86_ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
@@ -3316,39 +3104,41 @@ mod tests {
         );
         let entry = cfg.new_block();
         cfg.entry = entry;
-        let zero = cfg.add_inst(inst(
-            CfgInstData::ArrayInit {
-                elements_start: 0,
-                elements_len: 0,
-            },
-            array_ty,
-        ));
-        let alloc = cfg.add_inst(inst(
-            CfgInstData::Alloc {
-                slot: 0,
-                init: zero,
-            },
-            Type::UNIT,
-        ));
-        let load = cfg.add_inst(inst(CfgInstData::Load { slot: 0 }, array_ty));
-        let store = cfg.add_inst(inst(
-            CfgInstData::Store {
-                slot: 0,
-                value: zero,
-            },
-            Type::UNIT,
-        ));
-        let param_store = cfg.add_inst(inst(
-            CfgInstData::ParamStore {
-                param_slot: 0,
-                value: zero,
-            },
-            Type::UNIT,
-        ));
-        cfg.get_block_mut(entry)
-            .insts
-            .extend([zero, alloc, load, store, param_store]);
-        cfg.set_terminator(entry, Terminator::Return { value: None });
+        let zero = cfg
+            .append_array_init(entry, [], array_ty, Span::new(0, 0))
+            .unwrap();
+        let alloc = cfg.append_inst(
+            entry,
+            inst(
+                CfgInstData::Alloc {
+                    slot: 0,
+                    init: zero,
+                },
+                Type::UNIT,
+            ),
+        );
+        let load = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, array_ty));
+        let store = cfg.append_inst(
+            entry,
+            inst(
+                CfgInstData::Store {
+                    slot: 0,
+                    value: zero,
+                },
+                Type::UNIT,
+            ),
+        );
+        let param_store = cfg.append_inst(
+            entry,
+            inst(
+                CfgInstData::ParamStore {
+                    param_slot: 0,
+                    value: zero,
+                },
+                Type::UNIT,
+            ),
+        );
+        cfg.set_return(entry, None);
 
         let ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
         assert_eq!(
@@ -3408,25 +3198,20 @@ mod tests {
         );
         let byref_entry = byref_cfg.new_block();
         byref_cfg.entry = byref_entry;
-        let byref_zero = byref_cfg.add_inst(inst(
-            CfgInstData::ArrayInit {
-                elements_start: 0,
-                elements_len: 0,
-            },
-            array_ty,
-        ));
-        let byref_store = byref_cfg.add_inst(inst(
-            CfgInstData::Store {
-                slot: 0,
-                value: byref_zero,
-            },
-            Type::UNIT,
-        ));
-        byref_cfg
-            .get_block_mut(byref_entry)
-            .insts
-            .extend([byref_zero, byref_store]);
-        byref_cfg.set_terminator(byref_entry, Terminator::Return { value: None });
+        let byref_zero = byref_cfg
+            .append_array_init(byref_entry, [], array_ty, Span::new(0, 0))
+            .unwrap();
+        let _byref_store = byref_cfg.append_inst(
+            byref_entry,
+            inst(
+                CfgInstData::Store {
+                    slot: 0,
+                    value: byref_zero,
+                },
+                Type::UNIT,
+            ),
+        );
+        byref_cfg.set_return(byref_entry, None);
         let byref_ctx = crate::cfg_lower::CfgLowerContext::new(&byref_cfg, &pool);
         assert_eq!(
             super::store_destination(&byref_ctx, 0),

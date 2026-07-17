@@ -224,14 +224,16 @@ mod tests {
         // A PlaceRead through an Index projection performs a bounds check.
         let mut cfg = make_cfg();
         let idx = konst(&mut cfg, 0);
-        let place = cfg.make_place(
-            PlaceBase::Local(0),
-            Type::I32,
-            [Projection::Index {
-                array_type: Type::I32,
-                index: idx,
-            }],
-        );
+        let place = cfg
+            .make_place(
+                PlaceBase::Local(0),
+                Type::I32,
+                [Projection::Index {
+                    array_type: Type::I32,
+                    index: idx,
+                }],
+            )
+            .unwrap();
         let read = add(&mut cfg, CfgInstData::PlaceRead { place }, Type::I32);
         assert!(may_trap(&cfg, read), "indexed PlaceRead must be may_trap");
         assert!(!is_speculatable(&cfg, read));
@@ -260,8 +262,8 @@ mod tests {
         let v = konst(&mut cfg, 7);
         let interner = ThreadedRodeo::new();
         let name = interner.get_or_intern("f");
-        let (args_start, args_len) = cfg.push_call_args(std::iter::empty());
-        let (iargs_start, iargs_len) = cfg.push_extra(std::iter::empty());
+        let args = cfg.push_call_args(std::iter::empty()).unwrap();
+        let iargs = cfg.push_intrinsic_args(std::iter::empty()).unwrap();
 
         let effecting = [
             add(
@@ -269,8 +271,7 @@ mod tests {
                 CfgInstData::Call {
                     runtime: None,
                     name,
-                    args_start,
-                    args_len,
+                    args,
                 },
                 Type::UNIT,
             ),
@@ -279,8 +280,7 @@ mod tests {
                 CfgInstData::Intrinsic {
                     runtime: None,
                     name,
-                    args_start: iargs_start,
-                    args_len: iargs_len,
+                    args: iargs,
                 },
                 Type::UNIT,
             ),

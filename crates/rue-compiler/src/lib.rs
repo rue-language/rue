@@ -197,7 +197,7 @@ pub(crate) use syntax::SyntaxWork;
 
 pub use lasso::ThreadedRodeo;
 pub(crate) use rue_air::{AnalyzedFunction, SemaOutput, Type};
-pub(crate) use rue_cfg::{Cfg, CfgBuilder};
+pub(crate) use rue_cfg::{CfgBuilder, ValidatedCfg as Cfg};
 pub(crate) use rue_codegen::{RelocationKind, X86Mir, aarch64::Aarch64Mir};
 pub(crate) use rue_linker::{
     Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType,

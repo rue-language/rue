@@ -163,28 +163,22 @@ fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
 #[inline]
 fn visit_terminator_uses(cfg: &Cfg, term: &Terminator, mut f: impl FnMut(CfgValue)) {
     match term {
-        Terminator::Goto {
-            args_start,
-            args_len,
-            ..
-        } => {
-            for &arg in cfg.get_extra(*args_start, *args_len) {
+        Terminator::Goto { args: _, .. } => {
+            for &arg in cfg.get_goto_args(term) {
                 f(arg);
             }
         }
         Terminator::Branch {
             cond,
-            then_args_start,
-            then_args_len,
-            else_args_start,
-            else_args_len,
+            then_args: _,
+            else_args: _,
             ..
         } => {
             f(*cond);
-            for &arg in cfg.get_extra(*then_args_start, *then_args_len) {
+            for &arg in cfg.get_branch_then_args(term) {
                 f(arg);
             }
-            for &arg in cfg.get_extra(*else_args_start, *else_args_len) {
+            for &arg in cfg.get_branch_else_args(term) {
                 f(arg);
             }
         }
@@ -246,52 +240,32 @@ fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue
         CfgInstData::ParamStore { value, .. } => f(*value),
 
         // Function calls
-        CfgInstData::Call {
-            args_start,
-            args_len,
-            ..
-        } => {
-            for arg in cfg.get_call_args(*args_start, *args_len) {
+        CfgInstData::Call { args, .. } => {
+            for arg in cfg.call_args(args) {
                 f(arg.value);
             }
         }
-        CfgInstData::Intrinsic {
-            args_start,
-            args_len,
-            ..
-        } => {
-            for &v in cfg.get_extra(*args_start, *args_len) {
+        CfgInstData::Intrinsic { args, .. } => {
+            for &v in cfg.intrinsic_args(args) {
                 f(v);
             }
         }
 
         // Struct operations
-        CfgInstData::StructInit {
-            fields_start,
-            fields_len,
-            ..
-        } => {
-            for &v in cfg.get_extra(*fields_start, *fields_len) {
+        CfgInstData::StructInit { fields, .. } => {
+            for &v in cfg.struct_fields(fields) {
                 f(v);
             }
         }
         // Array operations
-        CfgInstData::ArrayInit {
-            elements_start,
-            elements_len,
-            ..
-        } => {
-            for &v in cfg.get_extra(*elements_start, *elements_len) {
+        CfgInstData::ArrayInit { elements, .. } => {
+            for &v in cfg.array_elements(elements) {
                 f(v);
             }
         }
         // Enum operations: a tuple variant reads its payload operands.
-        CfgInstData::EnumVariant {
-            payload_start,
-            payload_len,
-            ..
-        } => {
-            for &v in cfg.get_extra(*payload_start, *payload_len) {
+        CfgInstData::EnumVariant { payload, .. } => {
+            for &v in cfg.enum_payload(payload) {
                 f(v);
             }
         }
@@ -388,13 +362,8 @@ pub(super) fn compute_reachable_blocks(cfg: &Cfg) -> BitSet {
                 worklist.push(*then_block);
                 worklist.push(*else_block);
             }
-            Terminator::Switch {
-                cases_start,
-                cases_len,
-                default,
-                ..
-            } => {
-                for (_, target) in cfg.get_switch_cases(*cases_start, *cases_len) {
+            Terminator::Switch { cases, default, .. } => {
+                for (_, target) in cfg.switch_cases(cases) {
                     worklist.push(*target);
                 }
                 worklist.push(*default);
@@ -604,15 +573,14 @@ mod tests {
         // Create a call (side effect) that's not used by return
         let interner = ThreadedRodeo::new();
         let side_effect_sym = interner.get_or_intern("side_effect");
-        let (args_start, args_len) = cfg.push_call_args(std::iter::empty());
+        let args = cfg.push_call_args(std::iter::empty()).unwrap();
         let call = cfg.add_inst_to_block(
             entry,
             CfgInst {
                 data: CfgInstData::Call {
                     runtime: None,
                     name: side_effect_sym,
-                    args_start,
-                    args_len,
+                    args,
                 },
                 ty: Type::UNIT,
                 span: Span::new(0, 0),

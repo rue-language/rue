@@ -2992,7 +2992,7 @@ mod tests {
 
         // Use host target for tests
         CfgLower::new(
-            &cfg_output.cfg,
+            cfg_output.cfg.as_ref().unwrap(),
             type_pool,
             &interner,
             Target::host().expect("test lowering requires a supported Rue host target"),
