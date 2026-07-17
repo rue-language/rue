@@ -990,9 +990,15 @@ mod durable_body_integration_tests {
 
     #[test]
     fn unsupported_generic_and_warning_bodies_publish_no_candidates_without_losing_analysis() {
-        for source in [
-            "fn identity(comptime T: type, x: T) -> T { x } fn main() -> i32 { identity(i32, 42) }",
-            "fn main() -> i32 { let unused = 1; 42 }",
+        for (source, expected) in [
+            (
+                "fn identity(comptime T: type, x: T) -> T { x } fn main() -> i32 { identity(i32, 42) }",
+                rue_air::SemanticBodyExportFailure::UnsupportedGenericCall,
+            ),
+            (
+                "fn main() -> i32 { let unused = 1; 42 }",
+                rue_air::SemanticBodyExportFailure::UnsupportedWarningMetadata,
+            ),
         ] {
             let source = snapshot(&[(1, "/p/main.rue", "main.rue", source)], 1);
             let mut session = CompilerSession::new();
@@ -1002,12 +1008,11 @@ mod durable_body_integration_tests {
                 .unwrap();
             assert!(manifest.durable_ordinary_bodies().is_empty());
             assert!(!manifest.body_dependencies().is_empty());
-            assert!(
-                !session
-                    .semantic(&CompileOptions::default())
-                    .unwrap()
-                    .functions()
-                    .is_empty()
+            let semantic = session.semantic(&CompileOptions::default()).unwrap();
+            assert!(!semantic.functions().is_empty());
+            assert_eq!(
+                semantic.work().durable_bodies.last_export_failure,
+                Some(expected)
             );
         }
     }
@@ -1762,6 +1767,7 @@ impl FrontendQueryDatabase {
 
 #[derive(Debug, Clone)]
 struct DurableDeclarationCache {
+    schema_version: crate::DurableSemanticSchemaVersion,
     root: crate::ModuleId,
     target: crate::Target,
     preview_features: crate::PreviewFeatures,
@@ -4792,7 +4798,10 @@ impl CompilerSession {
                             body,
                         },
                     ),
-                    Err(_) => durable_body_work.candidate_fallbacks += 1,
+                    Err(reason) => {
+                        durable_body_work.candidate_fallbacks += 1;
+                        durable_body_work.last_projection_failure = Some(reason);
+                    }
                 }
             }
             for candidate in previous.specialized_bodies.iter() {
@@ -4833,13 +4842,24 @@ impl CompilerSession {
                             dependency_boundary_complete: candidate.dependency_boundary_complete,
                         },
                     ),
-                    Err(_) => durable_body_work.candidate_fallbacks += 1,
+                    Err(reason) => {
+                        durable_body_work.candidate_fallbacks += 1;
+                        durable_body_work.last_projection_failure = Some(reason);
+                    }
                 }
             }
         }
         let mut reuse_plan = crate::canonical_semantic::CanonicalDeclarationReuseWork::default();
         let reusable = previous_declaration_cache.as_ref().and_then(|cache| {
             reuse_plan.plan_executions = 1;
+            if !crate::DURABLE_SEMANTIC_SCHEMA_VERSION.accepts(cache.schema_version) {
+                reuse_plan.schema_version_rejections = 1;
+                reuse_plan.fallbacks = 1;
+                reuse_plan.last_fallback_reason = Some(
+                    crate::canonical_semantic::CanonicalDeclarationFallbackReason::SchemaVersionMismatch,
+                );
+                return None;
+            }
             if cache.root != *merged.ast().root()
                 || cache.target != options.target
                 || cache.preview_features != options.preview_features
@@ -4947,6 +4967,7 @@ impl CompilerSession {
                         .collect::<Result<Vec<_>, _>>()
                     {
                         published_declaration_cache = Some(DurableDeclarationCache {
+                            schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
                             root: merged.ast().root().clone(),
                             target: options.target,
                             preview_features: options.preview_features.clone(),
@@ -6113,7 +6134,9 @@ impl CompilerSession {
                                         .project_semantic_body(&mut durable_body_work)
                                     {
                                         Ok(dto) => dto,
-                                        Err(_) => {
+                                        Err(reason) => {
+                                            durable_body_work.last_projection_failure =
+                                                Some(reason);
                                             durable_body_work.atomic_discards += 1;
                                             failed = true;
                                             break;
@@ -6124,13 +6147,19 @@ impl CompilerSession {
                                         .filter(|record| record.stable_key() == candidate.owner())
                                         .collect::<Vec<_>>();
                                     let [owner_record] = owner_records.as_slice() else {
-                                        durable_body_work.import_failures += 1;
+                                        durable_body_work.record_import_failure(
+                                            rue_air::SemanticBodyImportFailureKind::StructuralValidation,
+                                            1,
+                                        );
                                         durable_body_work.atomic_discards += 1;
                                         failed = true;
                                         break;
                                     };
                                     let Some(body_span) = owner_record.body_span() else {
-                                        durable_body_work.import_failures += 1;
+                                        durable_body_work.record_import_failure(
+                                            rue_air::SemanticBodyImportFailureKind::StructuralValidation,
+                                            1,
+                                        );
                                         durable_body_work.atomic_discards += 1;
                                         failed = true;
                                         break;
@@ -6143,8 +6172,9 @@ impl CompilerSession {
                                             installed_places += imported.air.places().len();
                                             installed_strings += imported.strings.len();
                                         }
-                                        Err(_) => {
-                                            durable_body_work.import_failures += 1;
+                                        Err(reason) => {
+                                            durable_body_work
+                                                .record_import_failure(reason.kind(), 1);
                                             durable_body_work.atomic_discards += 1;
                                             failed = true;
                                             break;
@@ -6165,8 +6195,11 @@ impl CompilerSession {
                                     candidates
                                 }
                             }
-                            Err(_) => {
-                                durable_body_work.import_failures += 1;
+                            Err(reason) => {
+                                durable_body_work.record_import_failure(
+                                    rue_air::SemanticBodyImportFailureKind::Semantic(reason),
+                                    1,
+                                );
                                 durable_body_work.atomic_discards += 1;
                                 Arc::from([])
                             }
@@ -8475,10 +8508,11 @@ mod tests {
             .iter_mut()
             .find(|candidate| candidate.input.specialization.is_some())
             .unwrap();
-        specialization.schema_version = u32::MAX;
+        specialization.semantic_schema_version.implementation_epoch += 1;
         session.update(&second).into_result().unwrap();
         let warm = session.semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_import_failures, 2);
+        assert_eq!(warm.work().cfg.cfg_schema_version_rejections, 1);
         assert_eq!(warm.work().cfg.cfg_fallbacks, 2);
         assert_eq!(warm.work().cfg.cfg_reuses, 0);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 3);
@@ -8882,12 +8916,62 @@ mod tests {
         assert_eq!(fallback.work().declaration_reuse.fallbacks, 1);
         assert_eq!(fallback.work().declaration_reuse.fallback_epochs_started, 1);
         assert_eq!(fallback.work().declaration_reuse.semantic_epochs_started, 2);
+        assert!(matches!(
+            fallback.work().declaration_reuse.last_fallback_reason,
+            Some(crate::canonical_semantic::CanonicalDeclarationFallbackReason::Import(_))
+        ));
 
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
         let ordinary = fresh.semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &fallback, &ordinary);
         assert_eq!(fallback.type_pool().stats(), ordinary.type_pool().stats());
+        assert_diagnostic_parity(&session, &fresh);
+    }
+
+    #[test]
+    fn incompatible_durable_semantic_schema_epoch_is_a_measured_fallback() {
+        let source = |value| {
+            snapshot(
+                &[(
+                    1,
+                    "/p/main.rue",
+                    "main.rue",
+                    &format!("fn answer() -> i32 {{ {value} }} fn main() -> i32 {{ answer() }}"),
+                )],
+                1,
+            )
+        };
+        let first = source(1);
+        let edited = source(2);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.semantic(&options).unwrap();
+
+        let cache = session.durable_declaration_cache.as_mut().unwrap();
+        cache.schema_version.implementation_epoch += 1;
+
+        session.update(&edited).into_result().unwrap();
+        let fallback = session.semantic(&options).unwrap();
+        assert_eq!(
+            fallback.work().declaration_reuse.schema_version_rejections,
+            1
+        );
+        assert_eq!(fallback.work().declaration_reuse.fallbacks, 1);
+        assert_eq!(
+            fallback.work().declaration_reuse.last_fallback_reason,
+            Some(crate::canonical_semantic::CanonicalDeclarationFallbackReason::SchemaVersionMismatch)
+        );
+        assert_eq!(
+            fallback.work().binding.declaration_resolution_invocations,
+            1
+        );
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&edited).into_result().unwrap();
+        let ordinary = fresh.semantic(&options).unwrap();
+        assert_semantic_artifact_parity(&session, &fallback, &ordinary);
         assert_diagnostic_parity(&session, &fresh);
     }
 

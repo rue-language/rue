@@ -256,6 +256,8 @@ impl Specializer {
                         // The durable warning algebra is intentionally lossless;
                         // passing a marker preserves fail-closed behavior.
                         sema.body_analysis_work.specialized_body_exports_rejected += 1;
+                        sema.body_analysis_work.last_specialized_body_export_failure =
+                            Some(crate::SemanticBodyExportFailure::UnsupportedWarningMetadata);
                         continue;
                     };
                     match sema.export_specialized_body(
@@ -282,8 +284,10 @@ impl Specializer {
                                 export.body.strings.len();
                             sema.specialized_body_exports.push(export);
                         }
-                        Err(_) => {
+                        Err(reason) => {
                             sema.body_analysis_work.specialized_body_exports_rejected += 1;
+                            sema.body_analysis_work.last_specialized_body_export_failure =
+                                Some(reason);
                         }
                     }
                 }

@@ -1094,6 +1094,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
             if let Some(candidate) = sema.reusable_ordinary_bodies.remove(&ordinary_owner) {
                 sema.body_analysis_work.ordinary_body_import_attempts += 1;
                 let imported = import_staged_body(sema, &candidate.body, sema.rir.get(body).span);
+                let import_failure = imported.as_ref().err().map(|reason| reason.kind());
                 if let Ok(imported) = imported {
                     sema.body_analysis_work.ordinary_body_import_successes += 1;
                     sema.body_analysis_work
@@ -1168,7 +1169,11 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 export.body.strings.len();
                             sema.ordinary_body_exports.push(export);
                         }
-                        Err(_) => sema.body_analysis_work.ordinary_body_exports_rejected += 1,
+                        Err(reason) => {
+                            sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                            sema.body_analysis_work.last_ordinary_body_export_failure =
+                                Some(reason);
+                        }
                     }
                     functions_with_strings.push((analyzed, imported.strings));
                     enqueue_references_sorted(
@@ -1183,6 +1188,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                     continue;
                 } else {
                     sema.body_analysis_work.ordinary_body_import_failures += 1;
+                    sema.body_analysis_work.last_ordinary_body_import_failure = import_failure;
                     sema.body_analysis_work.ordinary_body_import_atomic_discards += 1;
                 }
             }
@@ -1258,8 +1264,10 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 export.body.strings.len();
                             sema.ordinary_body_exports.push(export);
                         }
-                        Err(_) => {
+                        Err(reason) => {
                             sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                            sema.body_analysis_work.last_ordinary_body_export_failure =
+                                Some(reason);
                         }
                     }
                     analyzed.implicit_drop_source =
@@ -1607,8 +1615,10 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                     export.body.strings.len();
                                 sema.ordinary_body_exports.push(export);
                             }
-                            Err(_) => {
+                            Err(reason) => {
                                 sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                                sema.body_analysis_work.last_ordinary_body_export_failure =
+                                    Some(reason);
                             }
                         }
                         functions_with_strings.push((analyzed, imported.strings));
@@ -1623,8 +1633,10 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                         );
                         continue;
                     }
-                    Err(_) => {
+                    Err(reason) => {
                         sema.body_analysis_work.ordinary_body_import_failures += 1;
+                        sema.body_analysis_work.last_ordinary_body_import_failure =
+                            Some(reason.kind());
                         sema.body_analysis_work.ordinary_body_import_atomic_discards += 1;
                     }
                 }
@@ -1725,8 +1737,10 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                     export.body.strings.len();
                                 sema.ordinary_body_exports.push(export);
                             }
-                            Err(_) => {
+                            Err(reason) => {
                                 sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                                sema.body_analysis_work.last_ordinary_body_export_failure =
+                                    Some(reason);
                             }
                         }
                     }
@@ -1908,8 +1922,10 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                         export.body.strings.len();
                                     sema.ordinary_body_exports.push(export);
                                 }
-                                Err(_) => {
+                                Err(reason) => {
                                     sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                                    sema.body_analysis_work.last_ordinary_body_export_failure =
+                                        Some(reason);
                                 }
                             }
                             functions_with_strings.push((analyzed, imported.strings));
@@ -1924,8 +1940,10 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                             );
                             continue;
                         }
-                        Err(_) => {
+                        Err(reason) => {
                             sema.body_analysis_work.ordinary_body_import_failures += 1;
+                            sema.body_analysis_work.last_ordinary_body_import_failure =
+                                Some(reason.kind());
                             sema.body_analysis_work.ordinary_body_import_atomic_discards += 1;
                         }
                     }
@@ -2009,8 +2027,10 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                     export.body.strings.len();
                                 sema.ordinary_body_exports.push(export);
                             }
-                            Err(_) => {
+                            Err(reason) => {
                                 sema.body_analysis_work.ordinary_body_exports_rejected += 1;
+                                sema.body_analysis_work.last_ordinary_body_export_failure =
+                                    Some(reason);
                             }
                         }
                         analyzed.implicit_drop_source =

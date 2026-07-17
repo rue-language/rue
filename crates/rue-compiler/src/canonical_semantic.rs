@@ -29,7 +29,9 @@ pub(crate) struct PreparedDurableSpecializedBodyCandidate {
 fn fold_body_import_work(durable: &mut crate::DurableBodyWork, body: BodyAnalysisWork) {
     durable.import_attempts += body.ordinary_body_import_attempts;
     durable.import_successes += body.ordinary_body_import_successes;
-    durable.import_failures += body.ordinary_body_import_failures;
+    if let Some(reason) = body.last_ordinary_body_import_failure {
+        durable.record_import_failure(reason, body.ordinary_body_import_failures);
+    }
     durable.atomic_discards += body.ordinary_body_import_atomic_discards;
     durable.candidate_fallbacks += body.ordinary_body_import_failures;
     durable.installed_instructions += body.ordinary_body_import_instructions_installed;
@@ -161,6 +163,14 @@ pub(crate) struct CanonicalPreparedDeclarations<'a> {
     declaration_index: RirDeclarationIndexWork,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalDeclarationFallbackReason {
+    SchemaVersionMismatch,
+    UnsupportedExport(crate::DurableSemanticExportFailure),
+    Projection(crate::DurableSemanticProjectionFailure),
+    Import(rue_air::DeclarationInstallFailure),
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CanonicalDeclarationReuseWork {
     pub plan_executions: usize,
@@ -169,6 +179,14 @@ pub struct CanonicalDeclarationReuseWork {
     pub ordinary_declaration_resolutions_skipped: usize,
     pub install_invocations: usize,
     pub fallbacks: usize,
+    /// Candidates rejected before projection because their canonical algebra
+    /// version or compiler implementation epoch is incompatible.
+    pub schema_version_rejections: usize,
+    pub unsupported_export_fallbacks: usize,
+    pub stable_join_fallbacks: usize,
+    pub structural_validation_fallbacks: usize,
+    pub unsupported_import_fallbacks: usize,
+    pub last_fallback_reason: Option<CanonicalDeclarationFallbackReason>,
     /// Actual request-local semantic epochs constructed, including a fresh
     /// epoch required after a consuming installation failure.
     pub semantic_epochs_started: usize,
@@ -291,6 +309,7 @@ pub struct CfgConstructionWork {
     pub cfg_import_attempts: usize,
     pub cfg_import_successes: usize,
     pub cfg_import_failures: usize,
+    pub cfg_schema_version_rejections: usize,
     pub cfg_reuses: usize,
     pub cfg_fallbacks: usize,
     pub cfg_warnings_reused: usize,
@@ -623,7 +642,7 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
         definitions,
         declaration_index,
     } = prepared;
-    let declaration_reuse = CanonicalDeclarationReuseWork {
+    let mut declaration_reuse = CanonicalDeclarationReuseWork {
         semantic_epochs_started: 1,
         declaration_indexes_built: declaration_index.build_invocations,
         shell_predeclaration_epochs: 1,
@@ -633,12 +652,27 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
         declaration_resolution_failure(failure, declaration_index, false, declaration_reuse)
     })?;
 
-    let durable_declarations = bound
-        .with_declaration_semantics_from_shells(&shell_records, |records, _work| {
+    let durable_declarations =
+        match bound.with_declaration_semantics_from_shells(&shell_records, |records, _work| {
             crate::durable_semantics::convert_declaration_semantics(merged, &definitions, records)
-        })
-        .ok()
-        .and_then(Result::ok);
+        }) {
+            Ok(Ok(values)) => Some(values),
+            Ok(Err(reason)) => {
+                declaration_reuse.unsupported_export_fallbacks += 1;
+                declaration_reuse.last_fallback_reason = Some(
+                    CanonicalDeclarationFallbackReason::UnsupportedExport(reason),
+                );
+                None
+            }
+            Err(reason) => {
+                let reason = crate::DurableSemanticExportFailure::from(reason);
+                declaration_reuse.unsupported_export_fallbacks += 1;
+                declaration_reuse.last_fallback_reason = Some(
+                    CanonicalDeclarationFallbackReason::UnsupportedExport(reason),
+                );
+                None
+            }
+        };
 
     let output = finish_canonical_analysis(
         input,
@@ -712,8 +746,17 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         &shell_records,
         durable,
     ) {
-        Err(_) => {
+        Err(reason) => {
             reuse.fallbacks = 1;
+            match reason {
+                crate::DurableSemanticProjectionFailure::UnsupportedDeclaration
+                | crate::DurableSemanticProjectionFailure::UnsupportedType => {
+                    reuse.structural_validation_fallbacks = 1;
+                }
+                _ => reuse.stable_join_fallbacks = 1,
+            }
+            reuse.last_fallback_reason =
+                Some(CanonicalDeclarationFallbackReason::Projection(reason));
             // Projection is read-only, so ordinary resolution consumes the
             // exact same unmutated shells and does not create a hidden epoch.
             shells.resolve_declarations_with_work().map_err(|failure| {
@@ -728,10 +771,19 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
                     reuse.ordinary_declaration_resolutions_skipped = 1;
                     bound
                 }
-                Err(_) => {
+                Err(reason) => {
                     // Installation consumes potentially mutated shells. Only
                     // this failure requires a wholly fresh ordinary epoch.
                     reuse.fallbacks = 1;
+                    match reason {
+                        rue_air::DeclarationInstallFailure::UnsupportedType
+                        | rue_air::DeclarationInstallFailure::UnsupportedDeclaration => {
+                            reuse.unsupported_import_fallbacks = 1;
+                        }
+                        _ => reuse.structural_validation_fallbacks = 1,
+                    }
+                    reuse.last_fallback_reason =
+                        Some(CanonicalDeclarationFallbackReason::Import(reason));
                     let fallback = configure_timed_canonical_sema(merged, rir, options, imports)
                         .map_err(|errors| {
                             CanonicalSemanticFailure::declaration(
@@ -1120,6 +1172,9 @@ fn finish_canonical_analysis(
         export_attempts: body_analysis.ordinary_body_exports_attempted,
         export_successes: body_analysis.ordinary_body_exports_succeeded,
         export_rejections: body_analysis.ordinary_body_exports_rejected,
+        last_export_failure: body_analysis
+            .last_ordinary_body_export_failure
+            .or(body_analysis.last_specialized_body_export_failure),
         instructions_exported: body_analysis.ordinary_body_export_instructions_emitted,
         places_exported: body_analysis.ordinary_body_export_places_emitted,
         strings_exported: body_analysis.ordinary_body_export_strings_emitted,
