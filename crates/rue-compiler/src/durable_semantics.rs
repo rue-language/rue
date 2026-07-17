@@ -992,6 +992,8 @@ impl From<SemanticExportFailure> for DurableSemanticExportFailure {
 mod tests {
     use super::*;
     use crate::StableDefinitionNamespace;
+    use std::collections::HashSet;
+    use std::hash::{DefaultHasher, Hash, Hasher};
 
     fn assert_query_value<T: Send + Sync + Clone + Eq + Ord + std::hash::Hash>() {}
 
@@ -1003,6 +1005,187 @@ mod tests {
         assert_query_value::<DurableDeclarationPayload>();
         assert_query_value::<DurableDeclarationSemantic>();
         assert_query_value::<DurableSemanticExportFailure>();
+    }
+
+    fn stable_hash<T: Hash>(value: &T) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn durable_type_schema_contains_only_stable_identity_carriers() {
+        let source = include_str!("durable_semantics.rs");
+        let schema = source
+            .split_once("pub enum DurableType {")
+            .unwrap()
+            .1
+            .split_once("/// An owned, request-independent compile-time value.")
+            .unwrap()
+            .0;
+
+        for forbidden in [
+            "rue_air::Type",
+            "InternedType",
+            "StructId",
+            "EnumId",
+            "ArrayTypeId",
+            "PtrConstTypeId",
+            "PtrMutTypeId",
+            "FileId",
+            "Spur",
+            "raw_encoding",
+            "pool_index",
+        ] {
+            assert!(
+                !schema.contains(forbidden),
+                "durable type schema leaked request-local identity: {forbidden}"
+            );
+        }
+        assert!(schema.contains("Nominal(StableDefinitionKey)"));
+        assert!(schema.contains("Module(ModuleId)"));
+    }
+
+    #[test]
+    fn bounded_durable_types_round_trip_across_fresh_epochs() {
+        let module = ModuleId::from_logical_path("pkg/main.rue").unwrap();
+        let dependency = ModuleId::from_logical_path("pkg/dep.rue").unwrap();
+        let structure = StableDefinitionKey::for_test(
+            module.clone(),
+            StableDefinitionNamespace::Type,
+            StableDefinitionKind::Struct,
+            "Record",
+            None,
+        );
+        let enumeration = StableDefinitionKey::for_test(
+            module.clone(),
+            StableDefinitionNamespace::Type,
+            StableDefinitionKind::Enum,
+            "Choice",
+            None,
+        );
+        let callable_key = StableDefinitionKey::for_test(
+            module,
+            StableDefinitionNamespace::Value,
+            StableDefinitionKind::Function,
+            "generic",
+            None,
+        );
+        let declarations = vec![
+            DurableDeclarationSemantic {
+                key: structure.clone(),
+                is_public: true,
+                payload: DurableDeclarationPayload::Struct {
+                    fields: Arc::from([]),
+                    is_copy: false,
+                    is_linear: false,
+                },
+            },
+            DurableDeclarationSemantic {
+                key: enumeration.clone(),
+                is_public: true,
+                payload: DurableDeclarationPayload::Enum {
+                    variants: Arc::from([(Arc::from("Only"), Arc::from([]))]),
+                },
+            },
+            DurableDeclarationSemantic {
+                key: callable_key,
+                is_public: true,
+                payload: DurableDeclarationPayload::Callable {
+                    parameters: Arc::from([
+                        DurableSemanticParameter {
+                            ty: DurableType::ComptimeType,
+                            mode: DurableParameterMode::Value,
+                            is_comptime: true,
+                        },
+                        DurableSemanticParameter {
+                            ty: DurableType::GenericParameter(0),
+                            mode: DurableParameterMode::Value,
+                            is_comptime: false,
+                        },
+                        DurableSemanticParameter {
+                            ty: DurableType::Module(dependency.clone()),
+                            mode: DurableParameterMode::Value,
+                            is_comptime: false,
+                        },
+                    ]),
+                    result: DurableType::Unit,
+                    has_self: false,
+                    is_unchecked: false,
+                },
+            },
+        ];
+        let first = import_durable_declaration_semantics(&declarations).unwrap();
+        let second = import_durable_declaration_semantics(&declarations).unwrap();
+
+        let mut all = vec![
+            DurableType::I8,
+            DurableType::I16,
+            DurableType::I32,
+            DurableType::I64,
+            DurableType::U8,
+            DurableType::U16,
+            DurableType::U32,
+            DurableType::U64,
+            DurableType::Bool,
+            DurableType::Unit,
+            DurableType::Never,
+            DurableType::ComptimeType,
+            DurableType::BuiltinNominal {
+                name: Arc::from("str"),
+                kind: SemanticImportNominalKind::Struct,
+            },
+            DurableType::Nominal(structure),
+            DurableType::Nominal(enumeration),
+            DurableType::Module(dependency),
+            DurableType::Array {
+                element: Box::new(DurableType::U8),
+                len: u64::MAX,
+            },
+        ];
+        let mut frontier = all
+            .iter()
+            .filter(|ty| {
+                !matches!(
+                    ty,
+                    DurableType::ComptimeType
+                        | DurableType::Module(_)
+                        | DurableType::GenericParameter(_)
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for depth in 1..=2 {
+            let mut next = Vec::with_capacity(frontier.len() * 3);
+            for ty in frontier {
+                next.push(DurableType::Array {
+                    element: Box::new(ty.clone()),
+                    len: depth,
+                });
+                next.push(DurableType::PtrConst(Box::new(ty.clone())));
+                next.push(DurableType::PtrMut(Box::new(ty)));
+            }
+            all.extend(next.iter().cloned());
+            frontier = next;
+        }
+
+        let mut unique = HashSet::new();
+        for durable in all {
+            assert!(unique.insert(durable.clone()));
+            assert_eq!(stable_hash(&durable), stable_hash(&durable.clone()));
+            assert!(!format!("{durable:?}").is_empty());
+
+            let dto = durable.import_dto();
+            let local = first.import_type(&dto).unwrap();
+            let exported = first.export_type(local.clone()).unwrap();
+            assert_eq!(exported, dto);
+            let remapped = second.import_type(&exported).unwrap();
+            assert_eq!(second.export_type(remapped).unwrap(), dto);
+            assert_eq!(
+                second.export_type(local),
+                Err(SemanticImportFailure::ForeignLocalType)
+            );
+        }
     }
 
     #[test]
