@@ -13575,8 +13575,12 @@ fn main() -> i32 { selected.value() }"#,
             .iter()
             .map(|payload| payload.identity.value_arguments.as_ref())
             .collect::<Vec<_>>();
-        assert!(bool_identities.contains(&[crate::DurableConstValue::Bool(true)].as_slice()));
-        assert!(bool_identities.contains(&[crate::DurableConstValue::Bool(false)].as_slice()));
+        assert!(
+            bool_identities.contains(&[rue_air::SemanticImportConstValue::Bool(true)].as_slice())
+        );
+        assert!(
+            bool_identities.contains(&[rue_air::SemanticImportConstValue::Bool(false)].as_slice())
+        );
 
         let changed_text = first_text.replace("41", "42");
         let changed_source = snapshot(
