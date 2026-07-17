@@ -1,5 +1,11 @@
 load("//crates:defs.bzl", "rue_crate")
 
+export_file(
+    name = "lib.rs",
+    src = "src/lib.rs",
+    visibility = ["//crates/rue-runtime:"],
+)
+
 # This is the dependency-light source of truth for the compiler/runtime ABI.
 # Keep it independent of compiler IR, target, linker, and runtime crates.
 rue_crate(
