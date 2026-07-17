@@ -28,6 +28,7 @@ Each step has a corresponding document in this directory and a Claude Code comma
 | Implement | [implementation.md](implementation.md) | `/implement` | Write code, tests, and spec updates |
 | Review | [code-review.md](code-review.md) | `/code-review` | Check quality before committing |
 | Commit | [committing.md](committing.md) | `/commit` | Create well-formed commits |
+| - | [ci.md](ci.md) | - | Maintain required CI and its pinned tools |
 | - | [tutorial.md](tutorial.md) | - | Maintain tutorial outline, style, and snippet checks |
 | - | [issue-tracking.md](issue-tracking.md) | Linear MCP tools | Track work with Linear |
 
