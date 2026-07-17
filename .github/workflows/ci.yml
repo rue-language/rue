@@ -62,8 +62,10 @@ jobs:
         # A workflow file GitHub can't parse fails every run in 0s with no
         # useful error, and nothing in ./test.sh can see it — benchmarks.yml
         # was broken this way for five months (gh-991). actionlint also
-        # shellchecks all run: blocks.
-        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
+        # shellchecks all run: blocks. Keep the reviewed release visible next
+        # to its immutable OCI index digest; docs/process/ci.md documents the
+        # update and verification procedure.
+        run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color -shellcheck=/usr/local/bin/shellcheck
 
   rust-project:
     runs-on: ubuntu-latest

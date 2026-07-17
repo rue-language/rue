@@ -97,6 +97,15 @@ filegroup(
     srcs = glob(["docs/designs/**"]),
 )
 
+# Required pull-request and merge-group CI must not execute a moving container
+# tag. Keep this list explicit so the policy follows branch-protection scope
+# rather than accidentally treating an unrelated maintenance workflow as a
+# required check.
+filegroup(
+    name = "required-ci-workflows",
+    srcs = [".github/workflows/ci.yml"],
+)
+
 benchmark_tool_local_inputs = glob(["benchmarks/**"]) + [
         "scripts/append-benchmark.py",
         "scripts/benchmark_collection.py",
@@ -243,6 +252,21 @@ sh_test(
         "--adr-dir",
         "$(location :adr-designs)/docs/designs",
     ],
+)
+
+sh_test(
+    name = "required-ci-container-pin-validation",
+    test = "scripts/validate-required-ci-container-pins.py",
+    args = ["$(location :required-ci-workflows)/.github/workflows/ci.yml"],
+)
+
+sh_test(
+    name = "required-ci-container-pin-tool-tests",
+    test = "scripts/test-required-ci-container-pins.py",
+    resources = ["scripts/validate-required-ci-container-pins.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
 )
 
 sh_test(
