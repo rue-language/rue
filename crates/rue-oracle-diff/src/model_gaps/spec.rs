@@ -801,6 +801,12 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "runtime.syscall",
+        "syscall_error_is_negative_aarch64_macos",
+        external(ExternalDependencyKind::SystemCall),
+        &["aarch64-macos"],
+    ),
+    Entry::new(
+        "runtime.syscall",
         "syscall_max_args",
         external(ExternalDependencyKind::SystemCall),
         &["x86-64-linux"],

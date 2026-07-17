@@ -28,7 +28,10 @@ The `@syscall` intrinsic takes at least one argument (the syscall number) and at
 
 {{ rule(id="9.2:4", cat="dynamic-semantics") }}
 
-The `@syscall` intrinsic returns an `i64` value representing the result of the syscall. On Linux x86-64, negative values typically indicate errors. The exact behavior depends on the syscall being invoked and the platform.
+The `@syscall` intrinsic returns an `i64` value representing the result of the
+syscall. On every supported platform, operating-system syscall errors are
+returned as negative error numbers. Successful return values and the meaning of
+each error number depend on the syscall and platform.
 
 {{ rule(id="9.2:5", cat="informative") }}
 

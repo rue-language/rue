@@ -673,6 +673,8 @@ mod tests {
         .expect("AArch64 Linux assembly generation should succeed");
         assert_same_machine_code(&linux, &linux_asm_code);
         assert!(linux_asm.contains("svc #0x0"));
+        assert!(!linux_asm.contains("b.lo "));
+        assert!(!linux_asm.contains("neg x0, x0"));
 
         let macos = aarch64::generate(
             &cfg,
@@ -692,6 +694,18 @@ mod tests {
         .expect("AArch64 macOS assembly generation should succeed");
         assert_same_machine_code(&macos, &macos_asm_code);
         assert!(macos_asm.contains("svc #0x80"));
+        let svc = macos_asm
+            .find("svc #0x80")
+            .expect("macOS syscall must use Darwin's SVC immediate");
+        let carry_test = macos_asm[svc..]
+            .find("b.lo ")
+            .map(|offset| svc + offset)
+            .expect("macOS syscall must test for carry clear");
+        let negation = macos_asm[carry_test..]
+            .find("neg x0, x0")
+            .map(|offset| carry_test + offset)
+            .expect("macOS syscall must negate carry-set errno");
+        assert!(svc < carry_test && carry_test < negation);
         assert_ne!(linux.code, macos.code);
     }
 }
