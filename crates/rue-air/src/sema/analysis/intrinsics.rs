@@ -52,6 +52,8 @@ impl<'a> BodySema<'a> {
                 || name == known.free_bytes
                 || name == known.byte_read
                 || name == known.byte_write
+                || name == known.byte_copy
+                || name == known.byte_set
                 || name == known.arg_ptr
                 || name == known.env_ptr)
         {
@@ -203,6 +205,10 @@ impl<'a> BodySema<'a> {
             self.analyze_byte_read_intrinsic(air, name, &args, span, ctx)
         } else if name == known.byte_write {
             self.analyze_byte_write_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.byte_copy {
+            self.analyze_byte_copy_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.byte_set {
+            self.analyze_byte_set_intrinsic(air, name, &args, span, ctx)
         } else if name == known.raw {
             let raw = self.known.raw;
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, false, raw, "addr_of")

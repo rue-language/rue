@@ -707,6 +707,30 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "runtime.raw_bytes",
+        "byte_copy_round_trip",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
+        "runtime.raw_bytes",
+        "byte_set_fills_every_byte",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
+        "runtime.raw_bytes",
+        "byte_copy_size_zero_is_noop",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
+        "runtime.raw_bytes",
+        "byte_copy_copies_subrange",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
         "runtime.pointers",
         "field_ptr_first_field",
         intrinsic(UnsupportedIntrinsicKind::FieldPointer),

@@ -25,12 +25,18 @@ fn copy_packed_bytes(
     destination_start: u64,
     count: u64,
 ) {
-    let mut i: u64 = 0;
-    while i < count {
-        let byte = read_packed_byte(source, source_start + i);
-        write_packed_byte(destination, destination_start + i, byte);
-        i = i + 1;
-    }
+    // A memcpy-shaped bulk copy (ADR-0058). Every StrBuf caller copies between
+    // two distinct allocations (a fresh block during grow/duplicate, a foreign
+    // buffer during append/concat), so the source and destination ranges never
+    // overlap — the non-overlapping `@byte_copy` contract holds. `@ptr_offset`
+    // cannot form the sub-range pointers because it strides by the typed-pointer
+    // slot size, so the byte offsets are folded into the addresses directly.
+    checked {
+        let source_ptr: ptr mut u8 = @int_to_ptr(@ptr_to_int(source) + source_start);
+        let destination_ptr: ptr mut u8 =
+            @int_to_ptr(@ptr_to_int(destination) + destination_start);
+        @byte_copy(destination_ptr, source_ptr, count);
+    };
 }
 
 pub struct StrBuf {

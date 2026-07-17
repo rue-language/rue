@@ -290,6 +290,8 @@ pub enum IntrinsicOperation {
     ReallocBytes,
     ByteRead,
     ByteWrite,
+    ByteCopy,
+    ByteSet,
     ArgCount,
     ArgPtr,
     ArgLen,
@@ -1533,6 +1535,8 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     "realloc_bytes" => IntrinsicOperation::ReallocBytes,
                     "byte_read" => IntrinsicOperation::ByteRead,
                     "byte_write" => IntrinsicOperation::ByteWrite,
+                    "byte_copy" => IntrinsicOperation::ByteCopy,
+                    "byte_set" => IntrinsicOperation::ByteSet,
                     "arg_count" => IntrinsicOperation::ArgCount,
                     "arg_ptr" => IntrinsicOperation::ArgPtr,
                     "arg_len" => IntrinsicOperation::ArgLen,
@@ -1756,6 +1760,22 @@ fn intrinsic_runtime_call(
                 RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
                 RuntimeCallArg::value(args[1].primary, AbiType::U64),
                 RuntimeCallArg::immediate(1, AbiType::U64),
+            ],
+        ),
+        IntrinsicOperation::ByteCopy => (
+            RuntimeHelperId::ByteCopy,
+            vec![
+                RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
+                RuntimeCallArg::const_pointer(args[1].primary, AbiType::Byte),
+                RuntimeCallArg::value(args[2].primary, AbiType::U64),
+            ],
+        ),
+        IntrinsicOperation::ByteSet => (
+            RuntimeHelperId::ByteSet,
+            vec![
+                RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
+                RuntimeCallArg::extended(args[1].primary, args[1].integer_extension, AbiType::U64),
+                RuntimeCallArg::value(args[2].primary, AbiType::U64),
             ],
         ),
         IntrinsicOperation::Realloc { .. } | IntrinsicOperation::ReallocBytes => {

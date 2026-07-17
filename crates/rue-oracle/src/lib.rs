@@ -245,6 +245,8 @@ pub enum UnsupportedIntrinsicKind {
     ReallocateBytes,
     ByteRead,
     ByteWrite,
+    ByteCopy,
+    ByteSet,
 }
 
 /// A compiler-emitted runtime call whose deterministic semantics are not
@@ -763,6 +765,8 @@ fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
         }
         "byte_read" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteRead)),
         "byte_write" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteWrite)),
+        "byte_copy" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteCopy)),
+        "byte_set" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteSet)),
         "read_line" => UnsupportedKind::ExternalDependency(External::StandardInput),
         "random_u32" => UnsupportedKind::ExternalDependency(External::RandomU32),
         "random_u64" => UnsupportedKind::ExternalDependency(External::RandomU64),
@@ -1265,7 +1269,9 @@ impl<'a> Interp<'a> {
                 args.is_empty()
             }
             "ptr_write" | "ptr_offset" | "free" | "free_bytes" | "byte_read" => args.len() == 2,
-            "realloc" | "realloc_bytes" | "byte_write" => args.len() == 3,
+            "realloc" | "realloc_bytes" | "byte_write" | "byte_copy" | "byte_set" => {
+                args.len() == 3
+            }
             "syscall" => (1..=7).contains(&args.len()),
             _ => args.len() == 1,
         };
@@ -1372,6 +1378,20 @@ impl<'a> Interp<'a> {
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
                     && ty(1) == Type::U64
                     && ty(2) == Type::U8
+                    && result_ty == Type::UNIT
+            }
+            "byte_copy" => {
+                self.pointer_pointee(ty(0)) == Some((Type::U8, true))
+                    && self
+                        .pointer_pointee(ty(1))
+                        .is_some_and(|(pointee, _)| pointee == Type::U8)
+                    && ty(2) == Type::U64
+                    && result_ty == Type::UNIT
+            }
+            "byte_set" => {
+                self.pointer_pointee(ty(0)) == Some((Type::U8, true))
+                    && ty(1) == Type::U8
+                    && ty(2) == Type::U64
                     && result_ty == Type::UNIT
             }
             "read_line" => self

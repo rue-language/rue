@@ -197,6 +197,8 @@ macro_rules! call_runtime_helper_implementation {
     (__rue_env_count($($argument:expr),*)) => { crate::process::__rue_env_count($($argument),*) };
     (__rue_env_ptr($($argument:expr),*)) => { crate::process::__rue_env_ptr($($argument),*) };
     (__rue_env_len($($argument:expr),*)) => { crate::process::__rue_env_len($($argument),*) };
+    (__rue_byte_copy($($argument:expr),*)) => { crate::memory::__rue_byte_copy($($argument),*) };
+    (__rue_byte_set($($argument:expr),*)) => { crate::memory::__rue_byte_set($($argument),*) };
 }
 
 macro_rules! declare_runtime_helper {

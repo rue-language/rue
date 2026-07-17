@@ -84,6 +84,32 @@ pub unsafe fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
     dst
 }
 
+/// `@byte_copy(dst, src, size)` runtime helper: copy `size` bytes from `src`
+/// into the non-overlapping region at `dst` (ADR-0058, RUE-937).
+///
+/// # Safety
+///
+/// - When `size > 0`, `dst` must be valid for writes of `size` bytes and `src`
+///   valid for reads of `size` bytes; the regions must not overlap.
+/// - Either pointer may be null when `size == 0` (a no-op).
+pub unsafe fn __rue_byte_copy(dst: *mut u8, src: *const u8, size: u64) {
+    // SAFETY: the caller upholds `memcpy`'s non-overlap and validity contract.
+    unsafe { memcpy(dst, src, size as usize) };
+}
+
+/// `@byte_set(dst, value, size)` runtime helper: write the low byte of `value`
+/// to each of `size` bytes at `dst` (ADR-0058, RUE-937).
+///
+/// # Safety
+///
+/// - When `size > 0`, `dst` must be valid for writes of `size` bytes.
+/// - `dst` may be null when `size == 0` (a no-op).
+pub unsafe fn __rue_byte_set(dst: *mut u8, value: u64, size: u64) {
+    // SAFETY: the caller upholds `memset`'s validity contract. `memset` masks
+    // the fill value to its low byte, matching the intrinsic's `u8` operand.
+    unsafe { memset(dst, value as i32, size as usize) };
+}
+
 /// Compare `n` bytes of memory at `s1` and `s2`.
 ///
 /// Returns 0 if equal, negative if s1 < s2, positive if s1 > s2.

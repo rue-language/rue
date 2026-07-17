@@ -1625,6 +1625,50 @@ impl<'a> ConstraintGenerator<'a> {
                         }
                     }
                     InferType::Concrete(Type::UNIT)
+                } else if intrinsic_name == "byte_copy" {
+                    // @byte_copy(dst: ptr mut u8, src: ptr const u8 | ptr mut u8,
+                    // size: u64) -> (). Constrain dst to `ptr mut u8` and size to
+                    // u64; the source pointer may be const or mut u8, so it is
+                    // left to sema's `require_u8_pointer` rather than pinned here.
+                    let ptr_ty =
+                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
+                    for (i, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        let expected = match i {
+                            0 => Some(ptr_ty),
+                            2 => Some(Type::U64),
+                            _ => None,
+                        };
+                        if let Some(expected) = expected {
+                            self.add_constraint(Constraint::equal(
+                                info.ty,
+                                InferType::Concrete(expected),
+                                info.span,
+                            ));
+                        }
+                    }
+                    InferType::Concrete(Type::UNIT)
+                } else if intrinsic_name == "byte_set" {
+                    // @byte_set(dst: ptr mut u8, byte: u8, size: u64) -> ().
+                    let ptr_ty =
+                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
+                    for (i, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        let expected = match i {
+                            0 => Some(ptr_ty),
+                            1 => Some(Type::U8),
+                            2 => Some(Type::U64),
+                            _ => None,
+                        };
+                        if let Some(expected) = expected {
+                            self.add_constraint(Constraint::equal(
+                                info.ty,
+                                InferType::Concrete(expected),
+                                info.span,
+                            ));
+                        }
+                    }
+                    InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "int_to_ptr" {
                     // @int_to_ptr: returns a pointer type inferred from context
                     for arg_ref in args.iter() {

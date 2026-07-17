@@ -158,11 +158,12 @@ fn main() -> i32 {
 
 {{ rule(id="9.2:14a", cat="normative") }}
 
-The `@alloc_bytes`, `@realloc_bytes`, `@free_bytes`, `@byte_read`, and
-`@byte_write` intrinsics provide raw access to packed physical bytes. They are
-enabled by the `raw_bytes` preview feature and may only appear inside a
-`checked` block. They do not change the element-scaled semantics of `@alloc`,
-`@realloc`, `@free`, `@ptr_offset`, `@ptr_read`, or `@ptr_write`.
+The `@alloc_bytes`, `@realloc_bytes`, `@free_bytes`, `@byte_read`,
+`@byte_write`, `@byte_copy`, and `@byte_set` intrinsics provide raw access to
+packed physical bytes. They are enabled by the `raw_bytes` preview feature and
+may only appear inside a `checked` block. They do not change the element-scaled
+semantics of `@alloc`, `@realloc`, `@free`, `@ptr_offset`, `@ptr_read`, or
+`@ptr_write`.
 
 {{ rule(id="9.2:14b", cat="dynamic-semantics") }}
 
@@ -210,6 +211,46 @@ fn main() -> i32 {
         let result: i32 = @intCast(@byte_read(p, 1));
         @free_bytes(p, 2);
         result // 66
+    }
+}
+```
+
+{{ rule(id="9.2:14g", cat="dynamic-semantics") }}
+
+`@byte_copy(dst, src, size)` copies exactly `size` physical bytes from the
+region beginning at `src` to the region beginning at `dst`, in the manner of a
+memcpy. The two regions must not overlap; a call in which `[dst, dst + size)`
+and `[src, src + size)` overlap is undefined behavior (§9.1, ADR-0028). `dst`
+must be `ptr mut u8`; `src` may be `ptr const u8` or `ptr mut u8`. `@byte_set(dst,
+byte, size)` writes the `u8` value `byte` to each of the `size` physical bytes
+beginning at `dst`, in the manner of a memset; `dst` must be `ptr mut u8`. In
+both intrinsics `size` has type `u64`, byte counts are not multiplied by Rue's
+typed-pointer slot size, and a `size` of zero performs no access and reads and
+writes no memory.
+
+{{ rule(id="9.2:14h", cat="legality-rule") }}
+
+`@byte_copy` and `@byte_set` each require both `--preview raw_bytes` and an
+enclosing `checked` block. Their destination operand is exactly `ptr mut u8`;
+the `@byte_copy` source operand is `ptr const u8` or `ptr mut u8`. The
+`@byte_set` fill operand is exactly `u8`, and every `size` operand is exactly
+`u64`. Both intrinsics evaluate to `()`.
+
+{{ rule(id="9.2:14i", cat="example") }}
+
+```rue
+fn main() -> i32 {
+    checked {
+        let src = @alloc_bytes(3);
+        @byte_set(src, 7, 3);
+        let dst = @alloc_bytes(3);
+        @byte_copy(dst, src, 3);
+        let result: i32 = @intCast(@byte_read(dst, 0))
+            + @intCast(@byte_read(dst, 1))
+            + @intCast(@byte_read(dst, 2));
+        @free_bytes(src, 3);
+        @free_bytes(dst, 3);
+        result // 21
     }
 }
 ```

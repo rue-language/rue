@@ -1820,6 +1820,14 @@ impl<'a> CfgLower<'a> {
                 self.lower_runtime_call(plan.runtime_call.expect("realloc-bytes runtime call plan"))
                     .primary
             }
+            crate::value_plan::IntrinsicOperation::ByteCopy => {
+                self.lower_runtime_call(plan.runtime_call.expect("byte-copy runtime call plan"))
+                    .primary
+            }
+            crate::value_plan::IntrinsicOperation::ByteSet => {
+                self.lower_runtime_call(plan.runtime_call.expect("byte-set runtime call plan"))
+                    .primary
+            }
             crate::value_plan::IntrinsicOperation::ByteRead => {
                 let addr = self.mir.alloc_vreg();
                 self.mir.push(X86Inst::MovRR {

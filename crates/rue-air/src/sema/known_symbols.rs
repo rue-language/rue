@@ -139,6 +139,10 @@ pub struct KnownSymbols {
     pub free_bytes: Spur,
     pub byte_read: Spur,
     pub byte_write: Spur,
+    /// Bulk byte primitives `@byte_copy` (memcpy) and `@byte_set` (memset),
+    /// ADR-0058 Phase 1 (RUE-937).
+    pub byte_copy: Spur,
+    pub byte_set: Spur,
 
     // Target platform intrinsics
     /// The `target_arch` intrinsic symbol - returns target CPU architecture.
@@ -205,6 +209,8 @@ impl KnownSymbols {
             free_bytes: interner.get_or_intern_static("free_bytes"),
             byte_read: interner.get_or_intern_static("byte_read"),
             byte_write: interner.get_or_intern_static("byte_write"),
+            byte_copy: interner.get_or_intern_static("byte_copy"),
+            byte_set: interner.get_or_intern_static("byte_set"),
 
             // Target platform intrinsics
             target_arch: interner.get_or_intern_static("target_arch"),
@@ -285,6 +291,8 @@ mod tests {
         assert_eq!(interner.resolve(&known.free_bytes), "free_bytes");
         assert_eq!(interner.resolve(&known.byte_read), "byte_read");
         assert_eq!(interner.resolve(&known.byte_write), "byte_write");
+        assert_eq!(interner.resolve(&known.byte_copy), "byte_copy");
+        assert_eq!(interner.resolve(&known.byte_set), "byte_set");
         assert_eq!(interner.resolve(&known.target_arch), "target_arch");
         assert_eq!(interner.resolve(&known.target_os), "target_os");
     }
