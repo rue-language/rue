@@ -827,11 +827,9 @@ impl<'a> BodySema<'a> {
                 self.analyze_infinite_loop(air, *body, *iter_borrow, inst.span, ctx)
             }
 
-            InstData::Match {
-                scrutinee,
-                arms_start,
-                arms_len,
-            } => self.analyze_match(air, *scrutinee, *arms_start, *arms_len, inst.span, ctx),
+            InstData::Match { scrutinee, arms } => {
+                self.analyze_match(air, *scrutinee, arms, inst.span, ctx)
+            }
 
             InstData::Try { operand } => self.analyze_try(air, *operand, inst.span, ctx),
 
@@ -880,8 +878,8 @@ impl<'a> BodySema<'a> {
                 self.analyze_return(air, inner.as_ref().copied(), inst.span, ctx)
             }
 
-            InstData::Block { extra_start, len } => {
-                self.analyze_block(air, *extra_start, *len, inst.span, ctx)
+            InstData::Block { instructions } => {
+                self.analyze_block(air, instructions, inst.span, ctx)
             }
 
             _ => Err(CompileError::new(
@@ -1415,8 +1413,7 @@ impl<'a> BodySema<'a> {
         &mut self,
         air: &mut Air,
         scrutinee: InstRef,
-        arms_start: u32,
-        arms_len: u32,
+        arms: &rue_rir::RirMatchArmsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
@@ -1436,7 +1433,7 @@ impl<'a> BodySema<'a> {
         // then reports non-exhaustiveness).
         if !ctx.comptime_value_vars.is_empty() {
             if let Some(value) = self.try_evaluate_const_in_fn(scrutinee, ctx) {
-                let arms = self.rir.get_match_arms(arms_start, arms_len);
+                let arms = self.rir.match_arms(arms);
                 let mut selected: Option<InstRef> = None;
                 let mut prunable = !arms.is_empty();
                 let mut has_wildcard = false;
@@ -1549,7 +1546,7 @@ impl<'a> BodySema<'a> {
         // alias the pattern names, so we resolve the first enum pattern's type
         // here and expose it while the scrutinee is analyzed. Resolution errors
         // are ignored — pattern legality is checked on the normal path below.
-        let arms_for_expected = self.rir.get_match_arms(arms_start, arms_len);
+        let arms_for_expected = self.rir.match_arms(arms);
         let expected_scrutinee = arms_for_expected.iter().find_map(|(pattern, _)| {
             if let RirPattern::Path { type_name, .. } = &pattern {
                 self.resolve_type_with_ctx(*type_name, span, ctx)
@@ -1577,7 +1574,7 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        let arms = self.rir.get_match_arms(arms_start, arms_len);
+        let arms = self.rir.match_arms(arms);
         // An empty match is only legal on a zero-variant (uninhabited) enum,
         // where zero arms vacuously satisfy exhaustiveness because the type
         // has no values (spec 4.7:26, RUE-169). The match can never be
@@ -2580,13 +2577,12 @@ impl<'a> BodySema<'a> {
     fn analyze_block(
         &mut self,
         air: &mut Air,
-        extra_start: u32,
-        len: u32,
+        instructions: &rue_rir::RirBlockInstsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // Get the instruction refs from extra data
-        let inst_refs = self.rir.get_extra(extra_start, len);
+        let inst_refs = self.rir.block_insts(instructions);
 
         // Push a new scope for this block.
         ctx.push_scope();
@@ -2595,8 +2591,7 @@ impl<'a> BodySema<'a> {
         let mut statements = Vec::new();
         let mut last_result: Option<AnalysisResult> = None;
         let num_insts = inst_refs.len();
-        for (i, &raw_ref) in inst_refs.iter().enumerate() {
-            let inst_ref = InstRef::from_raw(raw_ref);
+        for (i, inst_ref) in inst_refs.values().enumerate() {
             let is_last = i == num_insts - 1;
             let result = if is_last {
                 self.analyze_inst(air, inst_ref, ctx)?
@@ -2677,24 +2672,14 @@ impl<'a> BodySema<'a> {
 
         match &inst.data {
             InstData::Alloc {
-                directives_start,
-                directives_len,
+                directives,
                 name,
                 is_mut,
                 ty,
                 init,
                 iter_elem,
             } => self.analyze_alloc(
-                air,
-                *directives_start,
-                *directives_len,
-                *name,
-                *is_mut,
-                *ty,
-                *init,
-                *iter_elem,
-                inst.span,
-                ctx,
+                air, directives, *name, *is_mut, *ty, *init, *iter_elem, inst.span, ctx,
             ),
 
             InstData::VarRef { name } => {
@@ -2720,8 +2705,7 @@ impl<'a> BodySema<'a> {
     fn analyze_alloc(
         &mut self,
         air: &mut Air,
-        directives_start: u32,
-        directives_len: u32,
+        directives: &rue_rir::RirDirectivesRange,
         name: Option<Spur>,
         is_mut: bool,
         ty: Option<Spur>,
@@ -2890,7 +2874,7 @@ impl<'a> BodySema<'a> {
         }
 
         // Check if @allow(unused_variable) directive is present
-        let directives = self.rir.get_directives(directives_start, directives_len);
+        let directives = self.rir.directives(directives);
         let allow_unused = self.has_allow_directive(directives.iter(), "unused_variable");
 
         // Allocate slots
@@ -3540,16 +3524,14 @@ impl<'a> BodySema<'a> {
                 module,
                 ctor_head,
                 type_name,
-                fields_start,
-                fields_len,
+                fields,
                 shorthand_span,
             } => self.analyze_struct_init(
                 air,
                 *module,
                 *ctor_head,
                 *type_name,
-                *fields_start,
-                *fields_len,
+                fields,
                 *shorthand_span,
                 inst.span,
                 ctx,
@@ -3581,8 +3563,7 @@ impl<'a> BodySema<'a> {
         module: Option<InstRef>,
         ctor_head: Option<InstRef>,
         type_name: Spur,
-        fields_start: u32,
-        fields_len: u32,
+        fields: &rue_rir::RirFieldInitsRange,
         _shorthand_span: Option<Span>,
         span: Span,
         ctx: &mut AnalysisContext,
@@ -3592,7 +3573,7 @@ impl<'a> BodySema<'a> {
         // desugared the shorthand to explicit `x: x` field inits before this
         // point, so `_shorthand_span` (the first shorthand field's span, retained
         // as diagnostic provenance) is no longer consumed here.
-        let field_inits = self.rir.get_field_inits(fields_start, fields_len);
+        let field_inits = self.rir.field_inits(fields);
         // Look up the struct type
         // First check if it's a comptime type variable (e.g., `let Point = make_point(); Point { ... }`)
         let type_name_str = self.interner.resolve(&type_name);
@@ -4648,10 +4629,9 @@ impl<'a> BodySema<'a> {
         let inst = self.rir.get(inst_ref);
 
         match &inst.data {
-            InstData::ArrayInit {
-                elems_start,
-                elems_len,
-            } => self.analyze_array_init(air, inst_ref, *elems_start, *elems_len, inst.span, ctx),
+            InstData::ArrayInit { elements } => {
+                self.analyze_array_init(air, inst_ref, elements, inst.span, ctx)
+            }
 
             InstData::ArrayRepeat { value, .. } => {
                 self.analyze_array_repeat(air, inst_ref, *value, inst.span, ctx)
@@ -4771,8 +4751,7 @@ impl<'a> BodySema<'a> {
         module_ref: rue_rir::InstRef,
         type_name: Spur,
         method: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Option<AnalysisResult>> {
@@ -4813,8 +4792,7 @@ impl<'a> BodySema<'a> {
                     variant_index as u32,
                     type_name,
                     /* privacy_exempt = */ true,
-                    args_start,
-                    args_len,
+                    args,
                     span,
                     ctx,
                 )
@@ -4846,8 +4824,7 @@ impl<'a> BodySema<'a> {
                     air,
                     type_name,
                     method,
-                    args_start,
-                    args_len,
+                    args,
                     span,
                     ctx,
                     Some(struct_id),
@@ -5001,12 +4978,11 @@ impl<'a> BodySema<'a> {
         &mut self,
         air: &mut Air,
         inst_ref: InstRef,
-        elems_start: u32,
-        elems_len: u32,
+        elements: &rue_rir::RirArrayElemsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let elem_refs = self.rir.get_inst_refs(elems_start, elems_len);
+        let elem_refs = self.rir.array_elements(elements);
 
         // An array literal of `type` values (`[i32, i32]`) has no runtime
         // representation: type values only exist at compile time (spec
@@ -6067,7 +6043,7 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref).clone();
+        let inst = self.rir.get(inst_ref);
 
         // A call has a declared result type; an expectation on that result
         // must not become the context of its receiver or arguments. The
@@ -6075,26 +6051,13 @@ impl<'a> BodySema<'a> {
         // operand instead. Keep the isolation at this shared dispatch so it
         // covers direct, module, method, associated, builtin, and enum calls.
         ctx.with_expected_type(None, |ctx| match &inst.data {
-            InstData::Call {
-                name,
-                args_start,
-                args_len,
-            } => self.analyze_call(air, *name, *args_start, *args_len, inst.span, ctx),
+            InstData::Call { name, args } => self.analyze_call(air, *name, args, inst.span, ctx),
 
             InstData::MethodCall {
                 receiver,
                 method,
-                args_start,
-                args_len,
-            } => self.analyze_method_call(
-                air,
-                *receiver,
-                *method,
-                *args_start,
-                *args_len,
-                inst.span,
-                ctx,
-            ),
+                args,
+            } => self.analyze_method_call(air, *receiver, *method, args, inst.span, ctx),
 
             _ => Err(CompileError::new(
                 ErrorKind::InternalError(format!(
@@ -6114,8 +6077,7 @@ impl<'a> BodySema<'a> {
         &mut self,
         air: &mut Air,
         name: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
@@ -6157,7 +6119,7 @@ impl<'a> BodySema<'a> {
             && local_name.is_none()
             && (source_name == self.known.print || source_name == self.known.println)
         {
-            return self.analyze_print_builtin(air, source_name, args_start, args_len, span, ctx);
+            return self.analyze_print_builtin(air, source_name, args, span, ctx);
         }
 
         if !resolved_alias && local_name.is_none() {
@@ -6177,9 +6139,7 @@ impl<'a> BodySema<'a> {
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
         let fn_info = fn_info.clone();
 
-        self.analyze_resolved_function_call(
-            air, name, fn_info, args_start, args_len, span, ctx, true,
-        )
+        self.analyze_resolved_function_call(air, name, fn_info, args, span, ctx, true)
     }
 
     /// Analyze a call after the source-level callee has already been resolved
@@ -6198,8 +6158,7 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         name: Spur,
         fn_info: FunctionInfo,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
         check_unqualified_visibility: bool,
@@ -6243,7 +6202,7 @@ impl<'a> BodySema<'a> {
         let param_comptime = self.param_arena.comptime(fn_info.params);
         let param_names = self.param_arena.names(fn_info.params);
 
-        let args = self.rir.get_call_args(args_start, args_len);
+        let args = self.rir.call_args(args);
         // Check argument count
         if args.len() != param_types.len() {
             let expected = param_types.len();
@@ -6613,12 +6572,11 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         receiver: InstRef,
         method: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.analyze_method_call_impl(air, receiver, method, args_start, args_len, span, ctx)
+        self.analyze_method_call_impl(air, receiver, method, args, span, ctx)
     }
 
     /// Resolve a path/pattern enum type name that may be a comptime
@@ -6749,8 +6707,7 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         type_name: Spur,
         function: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
@@ -6770,17 +6727,14 @@ impl<'a> BodySema<'a> {
                     variant_index as u32,
                     type_name,
                     via_comptime,
-                    args_start,
-                    args_len,
+                    args,
                     span,
                     ctx,
                 );
             }
         }
 
-        self.analyze_assoc_fn_call_impl(
-            air, type_name, function, args_start, args_len, span, ctx, None,
-        )
+        self.analyze_assoc_fn_call_impl(air, type_name, function, args, span, ctx, None)
     }
 
     /// Analyze construction of an enum tuple variant with a payload
@@ -6793,8 +6747,7 @@ impl<'a> BodySema<'a> {
         variant_index: u32,
         type_name: Spur,
         privacy_exempt: bool,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
@@ -6817,7 +6770,7 @@ impl<'a> BodySema<'a> {
             )?;
         }
 
-        let args = self.rir.get_call_args(args_start, args_len);
+        let args = self.rir.call_args(args);
 
         // Arity check.
         if args.len() != payload_types.len() {
@@ -6889,41 +6842,18 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref).clone();
+        let inst = self.rir.get(inst_ref);
         let result_expected = ctx.expected_type;
 
         match &inst.data {
-            InstData::Intrinsic {
-                name,
-                args_start,
-                args_len,
-            } => ctx.with_expected_type(None, |ctx| {
-                self.analyze_intrinsic(
-                    air,
-                    inst_ref,
-                    *name,
-                    *args_start,
-                    *args_len,
-                    inst.span,
-                    result_expected,
-                    ctx,
-                )
+            InstData::Intrinsic { name, args } => ctx.with_expected_type(None, |ctx| {
+                self.analyze_intrinsic(air, inst_ref, *name, args, inst.span, result_expected, ctx)
             }),
 
-            InstData::InternalIntrinsic {
-                intrinsic,
-                args_start,
-                args_len,
-            } => ctx.with_expected_type(None, |ctx| {
-                self.analyze_internal_intrinsic_impl(
-                    air,
-                    *intrinsic,
-                    *args_start,
-                    *args_len,
-                    inst.span,
-                    ctx,
-                )
-            }),
+            InstData::InternalIntrinsic { intrinsic, args } => ctx
+                .with_expected_type(None, |ctx| {
+                    self.analyze_internal_intrinsic_impl(air, *intrinsic, args, inst.span, ctx)
+                }),
 
             InstData::TypeIntrinsic { name, type_arg } => {
                 self.analyze_type_intrinsic(air, *name, *type_arg, inst.span, ctx)
@@ -7114,22 +7044,12 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         inst_ref: InstRef,
         name: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirIntrinsicArgsRange,
         span: Span,
         result_expected: Option<Type>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.analyze_intrinsic_impl(
-            air,
-            inst_ref,
-            name,
-            args_start,
-            args_len,
-            span,
-            result_expected,
-            ctx,
-        )
+        self.analyze_intrinsic_impl(air, inst_ref, name, args, span, result_expected, ctx)
     }
 
     // ========================================================================

@@ -1571,7 +1571,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         let type_sym = self.interner.get("type");
         let flags: Vec<bool> = self
             .rir
-            .get_params(function.rir_params_start, function.rir_params_len)
+            .params(function.rir_params(self.rir))
             .iter()
             .map(|param| param.is_comptime && Some(param.ty) == type_sym)
             .collect();
@@ -1600,9 +1600,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             return Ok(declared);
         }
 
-        let rir_params = self
-            .rir
-            .get_params(function.rir_params_start, function.rir_params_len);
+        let rir_params = self.rir.params(function.rir_params(self.rir));
         let param = rir_params.get(param_index).ok_or_else(|| {
             CompileError::new(
                 ErrorKind::InternalError(format!(
@@ -2720,7 +2718,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         let param_comptime_type = self.comptime_type_param_flags(&function);
         let rir_param_types: Vec<Spur> = self
             .rir
-            .get_params(function.rir_params_start, function.rir_params_len)
+            .params(function.rir_params(self.rir))
             .iter()
             .map(|param| param.ty)
             .collect();

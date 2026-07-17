@@ -12,12 +12,11 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         receiver: InstRef,
         method: Spur,
-        args_start: u32,
-        args_len: u32,
+        args_range: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let args = self.rir.get_call_args(args_start, args_len);
+        let args = self.rir.call_args(args_range);
         let receiver_var = self.extract_root_variable(receiver);
         let method_name_str = self.interner.resolve(&method).to_string();
 
@@ -39,7 +38,7 @@ impl<'a> BodySema<'a> {
                 || self.resolve_enum_type_name(name, ctx).is_some()
                 || ctx.comptime_type_vars.contains_key(&name))
         {
-            return self.analyze_assoc_fn_call(air, name, method, args_start, args_len, span, ctx);
+            return self.analyze_assoc_fn_call(air, name, method, args_range, span, ctx);
         }
 
         // Module-qualified associated-function call / tuple-variant construction:
@@ -51,7 +50,7 @@ impl<'a> BodySema<'a> {
             field: type_name,
         } = self.rir.get(receiver).data
             && let Some(result) = self.try_analyze_module_qualified_type_call(
-                air, module_ref, type_name, method, args_start, args_len, span, ctx,
+                air, module_ref, type_name, method, args_range, span, ctx,
             )?
         {
             return Ok(result);
@@ -139,9 +138,8 @@ impl<'a> BodySema<'a> {
 
         // Handle module member access: module.function() becomes a direct function call
         if let Some(module_id) = receiver_type.as_module() {
-            return self.analyze_module_member_call_impl(
-                air, module_id, method, args_start, args_len, span, ctx,
-            );
+            return self
+                .analyze_module_member_call_impl(air, module_id, method, args_range, span, ctx);
         }
 
         // Inline type-constructor call head (RUE-596, preview
@@ -185,8 +183,7 @@ impl<'a> BodySema<'a> {
                             vidx as u32,
                             method,
                             true,
-                            args_start,
-                            args_len,
+                            args_range,
                             span,
                             ctx,
                         );
@@ -211,8 +208,7 @@ impl<'a> BodySema<'a> {
                         air,
                         method,
                         method,
-                        args_start,
-                        args_len,
+                        args_range,
                         span,
                         ctx,
                         Some(struct_id),
@@ -476,8 +472,7 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         module_id: ModuleId,
         function_name: Spur,
-        args_start: u32,
-        args_len: u32,
+        args_range: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
@@ -546,7 +541,7 @@ impl<'a> BodySema<'a> {
 
         let param_types = self.param_arena.types(fn_info.params).to_vec();
         let param_modes = self.param_arena.modes(fn_info.params).to_vec();
-        let args = self.rir.get_call_args(args_start, args_len);
+        let args = self.rir.call_args(args_range);
         // A re-export was already visibility-checked against its facade const.
         let accessible =
             via_reexport || self.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
@@ -573,8 +568,7 @@ impl<'a> BodySema<'a> {
                 air,
                 function_key,
                 fn_info,
-                args_start,
-                args_len,
+                args_range,
                 span,
                 ctx,
                 false,
@@ -636,13 +630,12 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         type_name: Spur,
         function: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
         resolved: Option<StructId>,
     ) -> CompileResult<AnalysisResult> {
-        let args = self.rir.get_call_args(args_start, args_len);
+        let args = self.rir.call_args(args);
         let type_name_str = self.interner.resolve(&type_name).to_string();
         let function_name_str = self.interner.resolve(&function).to_string();
 

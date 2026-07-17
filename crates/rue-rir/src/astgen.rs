@@ -5,7 +5,7 @@
 //! has no per-AST construction path: callers normalize symbols, append module
 //! items in order, and finish one lowering session.
 
-use lasso::{Key, Spur, ThreadedRodeo};
+use lasso::{Spur, ThreadedRodeo};
 
 /// Known type intrinsics that take a type argument rather than an expression.
 /// These intrinsics operate on types at compile time (e.g., @size_of(i32)).
@@ -30,16 +30,35 @@ use rue_parser::{
 };
 
 use crate::inst::{
-    Inst, InstData, InstRef, InternalIntrinsic, RepeatCount, Rir, RirArgMode, RirCallArg,
-    RirDirective, RirParam, RirParamMode, RirPattern,
+    Inst, InstData, InstRef, InternalIntrinsic, PayloadFallback, RepeatCount, Rir, RirArgMode,
+    RirCallArg, RirDirective, RirEditor, RirParam, RirParamMode, RirPattern,
 };
+
+trait RecordPayloadFailure<T> {
+    fn record_failure(self, first_error: &mut Option<crate::RirPayloadBuildError>) -> T;
+}
+
+impl<T: PayloadFallback> RecordPayloadFailure<T> for Result<T, crate::RirPayloadBuildError> {
+    fn record_failure(self, first_error: &mut Option<crate::RirPayloadBuildError>) -> T {
+        match self {
+            Ok(value) => value,
+            Err(error) => {
+                if first_error.is_none() {
+                    *first_error = Some(error);
+                }
+                T::payload_fallback()
+            }
+        }
+    }
+}
 
 /// Generates RIR from an AST.
 pub struct AstGen<'a> {
     /// String interner for symbols (thread-safe, takes shared reference)
     interner: &'a ThreadedRodeo,
     /// Output RIR
-    rir: Rir,
+    rir: RirEditor,
+    payload_error: Option<crate::RirPayloadBuildError>,
     /// Monotonic counter used to mint unique names for the compiler-generated
     /// temporaries of a `for`-loop desugaring (RUE-220), so nested for-loops
     /// don't shadow one another's position/length/collection bindings.
@@ -56,7 +75,8 @@ impl<'a> AstGen<'a> {
     ) -> Self {
         Self {
             interner,
-            rir: Rir::new(),
+            rir: RirEditor::new(),
+            payload_error: None,
             for_counter: 0,
             normalize_symbol: Box::new(normalize_symbol),
         }
@@ -85,7 +105,33 @@ impl<'a> AstGen<'a> {
     /// Finish a normalized multi-module lowering session.
     #[doc(hidden)]
     pub fn finish(self) -> Rir {
+        self.try_finish()
+            .expect("AstGen payload construction failed")
+    }
+
+    /// Finish while retaining the owner-mediated editor for controlled test
+    /// synthesis and compiler-internal replacement operations.
+    #[doc(hidden)]
+    pub fn finish_editor(self) -> RirEditor {
+        self.try_finish_editor()
+            .expect("AstGen payload construction failed")
+    }
+
+    /// Finish while preserving categorized resource/capacity/builder failures.
+    pub fn try_finish(self) -> Result<Rir, crate::RirPayloadBuildError> {
+        Ok(self.try_finish_editor()?.into_unvalidated())
+    }
+
+    /// Finish into the owner-mediated construction form used by the canonical
+    /// validation/publication boundary.
+    pub fn try_finish_editor(self) -> Result<RirEditor, crate::RirPayloadBuildError> {
+        if let Some(error) = self.payload_error {
+            return Err(error);
+        }
         self.rir
+            .validate_payloads()
+            .expect("AstGen produced malformed RIR payloads");
+        Ok(self.rir)
     }
 
     fn symbol(&self, symbol: Spur) -> Spur {
@@ -300,7 +346,6 @@ impl<'a> AstGen<'a> {
 
     fn gen_struct(&mut self, struct_decl: &StructDecl) -> InstRef {
         let directives = self.convert_directives(&struct_decl.directives);
-        let (directives_start, directives_len) = self.rir.add_directives(&directives);
         let name = self.symbol(struct_decl.name.name);
         let fields: Vec<_> = struct_decl
             .fields
@@ -311,30 +356,23 @@ impl<'a> AstGen<'a> {
                 (field_name, field_type)
             })
             .collect();
-        let (fields_start, fields_len) = self.rir.add_field_decls(&fields);
-
         // Generate each method defined inline in the struct
         let methods: Vec<_> = struct_decl
             .methods
             .iter()
             .map(|m| self.gen_method(m))
             .collect();
-        let (methods_start, methods_len) = self.rir.add_inst_refs(&methods);
-
-        self.rir.add_inst(Inst {
-            data: InstData::StructDecl {
-                directives_start,
-                directives_len,
-                is_pub: struct_decl.visibility == Visibility::Public,
-                is_linear: struct_decl.is_linear,
+        self.rir
+            .add_struct_decl(
+                &directives,
+                struct_decl.visibility == Visibility::Public,
+                struct_decl.is_linear,
                 name,
-                fields_start,
-                fields_len,
-                methods_start,
-                methods_len,
-            },
-            span: struct_decl.span,
-        })
+                &fields,
+                &methods,
+                struct_decl.span,
+            )
+            .record_failure(&mut self.payload_error)
     }
 
     fn gen_enum(&mut self, enum_decl: &EnumDecl) -> InstRef {
@@ -344,59 +382,48 @@ impl<'a> AstGen<'a> {
             .iter()
             .map(|v| self.symbol(v.name.name))
             .collect();
-        let (variants_start, variants_len) = self.rir.add_symbols(&variants);
-
         // Encode tuple-variant payloads (RUE-221) as a self-describing flat
         // sequence: for each variant, a count `k` followed by `k` payload
         // type-name symbols. Discriminant-only variants contribute a `0`.
         // The whole region is omitted (len 0) when no variant carries data.
-        let has_any_payload = enum_decl.variants.iter().any(|v| !v.payload.is_empty());
-        let (payloads_start, payloads_len) = if has_any_payload {
-            let mut payload_words: Vec<u32> = Vec::new();
-            for variant in &enum_decl.variants {
-                payload_words.push(variant.payload.len() as u32);
-                for ty in &variant.payload {
-                    let ty_sym = self.intern_type(ty);
-                    payload_words.push(ty_sym.into_usize() as u32);
-                }
-            }
-            let start = self.rir.add_extra(&payload_words);
-            (start, payload_words.len() as u32)
-        } else {
-            (0, 0)
-        };
-
-        self.rir.add_inst(Inst {
-            data: InstData::EnumDecl {
-                is_pub: enum_decl.visibility == Visibility::Public,
+        let payload_types: Vec<Vec<Spur>> = enum_decl
+            .variants
+            .iter()
+            .map(|variant| {
+                variant
+                    .payload
+                    .iter()
+                    .map(|ty| self.intern_type(ty))
+                    .collect()
+            })
+            .collect();
+        self.rir
+            .add_enum_decl(
+                enum_decl.visibility == Visibility::Public,
                 name,
-                variants_start,
-                variants_len,
-                payloads_start,
-                payloads_len,
-            },
-            span: enum_decl.span,
-        })
+                &variants,
+                &payload_types,
+                enum_decl.span,
+            )
+            .record_failure(&mut self.payload_error)
     }
 
     fn gen_const(&mut self, const_decl: &ConstDecl) -> InstRef {
         let directives = self.convert_directives(&const_decl.directives);
-        let (directives_start, directives_len) = self.rir.add_directives(&directives);
         let name = self.symbol(const_decl.name.name);
         let ty = const_decl.ty.as_ref().map(|t| self.intern_type(t));
         let init = self.gen_expr(&const_decl.init);
 
-        self.rir.add_inst(Inst {
-            data: InstData::ConstDecl {
-                directives_start,
-                directives_len,
-                is_pub: const_decl.visibility == Visibility::Public,
+        self.rir
+            .add_const_decl(
+                &directives,
+                const_decl.visibility == Visibility::Public,
                 name,
                 ty,
                 init,
-            },
-            span: const_decl.span,
-        })
+                const_decl.span,
+            )
+            .record_failure(&mut self.payload_error)
     }
 
     fn gen_drop_fn(&mut self, drop_fn: &DropFn) -> InstRef {
@@ -414,7 +441,6 @@ impl<'a> AstGen<'a> {
     fn gen_method(&mut self, method: &Method) -> InstRef {
         // Convert directives
         let directives = self.convert_directives(&method.directives);
-        let (directives_start, directives_len) = self.rir.add_directives(&directives);
 
         // Get the method name (already a Symbol) and return type
         let name = self.symbol(method.name.name);
@@ -435,8 +461,6 @@ impl<'a> AstGen<'a> {
                 span: p.name.span,
             })
             .collect();
-        let (params_start, params_len) = self.rir.add_params(&params);
-
         // Generate body expression
         let body = self.gen_expr(&method.body);
 
@@ -454,22 +478,21 @@ impl<'a> AstGen<'a> {
         // and self_mode to add it in the declared borrow/inout/by-value mode.
         // Methods don't have their own visibility - they're accessible if the type is accessible.
         // Methods cannot be marked unchecked (that's a function-level modifier).
-        let decl = self.rir.add_inst(Inst {
-            data: InstData::FnDecl {
-                directives_start,
-                directives_len,
-                is_pub: false,
-                is_unchecked: false,
+        let decl = self
+            .rir
+            .add_fn_decl(
+                &directives,
+                false,
+                false,
                 name,
-                params_start,
-                params_len,
+                &params,
                 return_type,
                 body,
                 has_self,
                 self_mode,
-            },
-            span: method.span,
-        });
+                method.span,
+            )
+            .record_failure(&mut self.payload_error);
 
         decl
     }
@@ -526,7 +549,6 @@ impl<'a> AstGen<'a> {
     fn gen_function(&mut self, func: &Function) -> InstRef {
         // Convert directives
         let directives = self.convert_directives(&func.directives);
-        let (directives_start, directives_len) = self.rir.add_directives(&directives);
 
         // Get the function name (already a Symbol) and return type
         let name = self.symbol(func.name.name);
@@ -547,29 +569,26 @@ impl<'a> AstGen<'a> {
                 span: p.name.span,
             })
             .collect();
-        let (params_start, params_len) = self.rir.add_params(&params);
-
         // Generate body expression
         let body = self.gen_expr(&func.body);
 
         // Create function declaration instruction
         // Regular functions don't have a self receiver
-        let decl = self.rir.add_inst(Inst {
-            data: InstData::FnDecl {
-                directives_start,
-                directives_len,
-                is_pub: func.visibility == Visibility::Public,
-                is_unchecked: func.is_unchecked,
+        let decl = self
+            .rir
+            .add_fn_decl(
+                &directives,
+                func.visibility == Visibility::Public,
+                func.is_unchecked,
                 name,
-                params_start,
-                params_len,
+                &params,
                 return_type,
                 body,
-                has_self: false,
-                self_mode: RirParamMode::Normal,
-            },
-            span: func.span,
-        });
+                false,
+                RirParamMode::Normal,
+                func.span,
+            )
+            .record_failure(&mut self.payload_error);
 
         decl
     }
@@ -694,29 +713,16 @@ impl<'a> AstGen<'a> {
                         (pattern, body)
                     })
                     .collect();
-                let (arms_start, arms_len) = self.rir.add_match_arms(&arms);
-
-                self.rir.add_inst(Inst {
-                    data: InstData::Match {
-                        scrutinee,
-                        arms_start,
-                        arms_len,
-                    },
-                    span: match_expr.span,
-                })
+                self.rir
+                    .add_match(scrutinee, &arms, match_expr.span)
+                    .record_failure(&mut self.payload_error)
             }
             Expr::Call(call) => {
                 let args: Vec<_> = call.args.iter().map(|a| self.convert_call_arg(a)).collect();
-                let (args_start, args_len) = self.rir.add_call_args(&args);
-
-                self.rir.add_inst(Inst {
-                    data: InstData::Call {
-                        name: self.symbol(call.name.name),
-                        args_start,
-                        args_len,
-                    },
-                    span: call.span,
-                })
+                let name = self.symbol(call.name.name);
+                self.rir
+                    .add_call(name, &args, call.span)
+                    .record_failure(&mut self.payload_error)
             }
             Expr::Break(break_expr) => {
                 let value = break_expr.value.as_ref().map(|v| self.gen_expr(v));
@@ -748,15 +754,10 @@ impl<'a> AstGen<'a> {
                 // instruction; sema reduces it to the struct type at comptime.
                 let ctor_head = struct_lit.ctor_args.as_ref().map(|args| {
                     let arg_refs: Vec<_> = args.iter().map(|a| self.convert_call_arg(a)).collect();
-                    let (args_start, args_len) = self.rir.add_call_args(&arg_refs);
-                    self.rir.add_inst(Inst {
-                        data: InstData::Call {
-                            name: self.symbol(struct_lit.name.name),
-                            args_start,
-                            args_len,
-                        },
-                        span: struct_lit.span,
-                    })
+                    let name = self.symbol(struct_lit.name.name);
+                    self.rir
+                        .add_call(name, &arg_refs, struct_lit.span)
+                        .record_failure(&mut self.payload_error)
                 });
 
                 let fields: Vec<_> = struct_lit
@@ -767,8 +768,6 @@ impl<'a> AstGen<'a> {
                         (self.symbol(f.name.name), field_value)
                     })
                     .collect();
-                let (fields_start, fields_len) = self.rir.add_field_inits(&fields);
-
                 // Field-init shorthand (`P { x }`, RUE-613) is fully desugared to
                 // `x: x` above; carry the first shorthand field's span so Sema can
                 // gate the form behind its preview flag.
@@ -778,17 +777,17 @@ impl<'a> AstGen<'a> {
                     .find(|f| f.shorthand)
                     .map(|f| f.span);
 
-                self.rir.add_inst(Inst {
-                    data: InstData::StructInit {
+                let type_name = self.symbol(struct_lit.name.name);
+                self.rir
+                    .add_struct_init(
                         module,
                         ctor_head,
-                        type_name: self.symbol(struct_lit.name.name),
-                        fields_start,
-                        fields_len,
+                        type_name,
+                        &fields,
                         shorthand_span,
-                    },
-                    span: struct_lit.span,
-                })
+                        struct_lit.span,
+                    )
+                    .record_failure(&mut self.payload_error)
             }
             Expr::Field(field_expr) => {
                 let base = self.gen_expr(&field_expr.base);
@@ -881,16 +880,9 @@ impl<'a> AstGen<'a> {
                         }
                     })
                     .collect();
-                let (args_start, args_len) = self.rir.add_inst_refs(&args);
-
-                self.rir.add_inst(Inst {
-                    data: InstData::Intrinsic {
-                        name,
-                        args_start,
-                        args_len,
-                    },
-                    span: intrinsic.span,
-                })
+                self.rir
+                    .add_intrinsic(name, &args, intrinsic.span)
+                    .record_failure(&mut self.payload_error)
             }
             Expr::ArrayLit(array_lit) => {
                 if let Some(count) = &array_lit.repeat {
@@ -919,15 +911,9 @@ impl<'a> AstGen<'a> {
                         .iter()
                         .map(|e| self.gen_expr(e))
                         .collect();
-                    let (elems_start, elems_len) = self.rir.add_inst_refs(&elements);
-
-                    self.rir.add_inst(Inst {
-                        data: InstData::ArrayInit {
-                            elems_start,
-                            elems_len,
-                        },
-                        span: array_lit.span,
-                    })
+                    self.rir
+                        .add_array_init(&elements, array_lit.span)
+                        .record_failure(&mut self.payload_error)
                 }
             }
             Expr::Index(index_expr) => {
@@ -962,17 +948,10 @@ impl<'a> AstGen<'a> {
                     .iter()
                     .map(|a| self.convert_call_arg(a))
                     .collect();
-                let (args_start, args_len) = self.rir.add_call_args(&args);
-
-                self.rir.add_inst(Inst {
-                    data: InstData::MethodCall {
-                        receiver,
-                        method: self.symbol(method_call.method.name),
-                        args_start,
-                        args_len,
-                    },
-                    span: method_call.span,
-                })
+                let method = self.symbol(method_call.method.name);
+                self.rir
+                    .add_method_call(receiver, method, &args, method_call.span)
+                    .record_failure(&mut self.payload_error)
             }
             Expr::SelfExpr(self_expr) => {
                 // `self` in method bodies is just a variable reference to the implicit self parameter
@@ -1015,23 +994,13 @@ impl<'a> AstGen<'a> {
                                 (name, ty)
                             })
                             .collect();
-                        let (fields_start, fields_len) = self.rir.add_field_decls(&field_decls);
-
                         // Generate each method inside the anonymous struct
                         // (reusing gen_method, which generates FnDecl instructions)
                         let method_refs: Vec<InstRef> =
                             methods.iter().map(|m| self.gen_method(m)).collect();
-                        let (methods_start, methods_len) = self.rir.add_inst_refs(&method_refs);
-
-                        self.rir.add_inst(Inst {
-                            data: InstData::AnonStructType {
-                                fields_start,
-                                fields_len,
-                                methods_start,
-                                methods_len,
-                            },
-                            span: type_lit.span,
-                        })
+                        self.rir
+                            .add_anon_struct_type(&field_decls, &method_refs, type_lit.span)
+                            .record_failure(&mut self.payload_error)
                     }
                     TypeExpr::AnonymousEnum { variants, .. } => {
                         // Generate an anonymous enum type instruction. Variant
@@ -1040,33 +1009,19 @@ impl<'a> AstGen<'a> {
                         // (RUE-221, ADR-0038).
                         let variant_syms: Vec<Spur> =
                             variants.iter().map(|v| self.symbol(v.name.name)).collect();
-                        let (variants_start, variants_len) = self.rir.add_symbols(&variant_syms);
-
-                        let has_any_payload = variants.iter().any(|v| !v.payload.is_empty());
-                        let (payloads_start, payloads_len) = if has_any_payload {
-                            let mut payload_words: Vec<u32> = Vec::new();
-                            for variant in variants {
-                                payload_words.push(variant.payload.len() as u32);
-                                for ty in &variant.payload {
-                                    let ty_sym = self.intern_type(ty);
-                                    payload_words.push(ty_sym.into_usize() as u32);
-                                }
-                            }
-                            let start = self.rir.add_extra(&payload_words);
-                            (start, payload_words.len() as u32)
-                        } else {
-                            (0, 0)
-                        };
-
-                        self.rir.add_inst(Inst {
-                            data: InstData::AnonEnumType {
-                                variants_start,
-                                variants_len,
-                                payloads_start,
-                                payloads_len,
-                            },
-                            span: type_lit.span,
-                        })
+                        let payload_types: Vec<Vec<Spur>> = variants
+                            .iter()
+                            .map(|variant| {
+                                variant
+                                    .payload
+                                    .iter()
+                                    .map(|ty| self.intern_type(ty))
+                                    .collect()
+                            })
+                            .collect();
+                        self.rir
+                            .add_anon_enum_type(&variant_syms, &payload_types, type_lit.span)
+                            .record_failure(&mut self.payload_error)
                     }
                     _ => {
                         // For named types, unit, never, arrays, and pointers, generate TypeConst
@@ -1156,15 +1111,10 @@ impl<'a> AstGen<'a> {
                 // instruction; sema reduces it to the enum type at comptime.
                 let ctor_head = path.ctor_args.as_ref().map(|args| {
                     let arg_refs: Vec<_> = args.iter().map(|a| self.convert_call_arg(a)).collect();
-                    let (args_start, args_len) = self.rir.add_call_args(&arg_refs);
-                    self.rir.add_inst(Inst {
-                        data: InstData::Call {
-                            name: self.symbol(path.type_name.name),
-                            args_start,
-                            args_len,
-                        },
-                        span: path.span,
-                    })
+                    let name = self.symbol(path.type_name.name);
+                    self.rir
+                        .add_call(name, &arg_refs, path.span)
+                        .record_failure(&mut self.payload_error)
                 });
                 // Payload binding names for a tuple-variant pattern (RUE-221).
                 let bindings: Vec<Spur> =
@@ -1201,13 +1151,10 @@ impl<'a> AstGen<'a> {
             inst_refs.push(final_expr.as_u32());
 
             // Store the refs in extra data
-            let extra_start = self.rir.add_extra(&inst_refs);
-            let len = inst_refs.len() as u32;
-
-            self.rir.add_inst(Inst {
-                data: InstData::Block { extra_start, len },
-                span: block.span,
-            })
+            let refs: Vec<_> = inst_refs.into_iter().map(InstRef::from_raw).collect();
+            self.rir
+                .add_block(&refs, block.span)
+                .record_failure(&mut self.payload_error)
         }
     }
 
@@ -1273,19 +1220,10 @@ impl<'a> AstGen<'a> {
         } else {
             let init = self.gen_expr(coll_expr);
             let name = self.interner.get_or_intern(format!("__rue_for_coll_{n}"));
-            let (ds, dl) = self.rir.add_directives(&[]);
-            let alloc = self.rir.add_inst(Inst {
-                data: InstData::Alloc {
-                    directives_start: ds,
-                    directives_len: dl,
-                    name: Some(name),
-                    is_mut: false,
-                    ty: None,
-                    init,
-                    iter_elem: false,
-                },
-                span,
-            });
+            let alloc = self
+                .rir
+                .add_alloc(&[], Some(name), false, None, init, false, span)
+                .record_failure(&mut self.payload_error);
             outer_stmts.push(alloc.as_u32());
             name
         };
@@ -1297,19 +1235,10 @@ impl<'a> AstGen<'a> {
             data: InstData::IntConst(0),
             span,
         });
-        let (ds, dl) = self.rir.add_directives(&[]);
-        let p_alloc = self.rir.add_inst(Inst {
-            data: InstData::Alloc {
-                directives_start: ds,
-                directives_len: dl,
-                name: Some(p_name),
-                is_mut: true,
-                ty: Some(u64_sym),
-                init: zero,
-                iter_elem: false,
-            },
-            span,
-        });
+        let p_alloc = self
+            .rir
+            .add_alloc(&[], Some(p_name), true, Some(u64_sym), zero, false, span)
+            .record_failure(&mut self.payload_error);
         outer_stmts.push(p_alloc.as_u32());
 
         // let __len: u64 = InternalIntrinsic::IterLen(__coll);
@@ -1322,28 +1251,22 @@ impl<'a> AstGen<'a> {
             data: InstData::VarRef { name: coll_name },
             span: iter_span,
         });
-        let (la_start, la_len) = self.rir.add_inst_refs(&[coll_for_len]);
-        let len_call = self.rir.add_inst(Inst {
-            data: InstData::InternalIntrinsic {
-                intrinsic: InternalIntrinsic::IterLen,
-                args_start: la_start,
-                args_len: la_len,
-            },
-            span: iter_span,
-        });
-        let (ds, dl) = self.rir.add_directives(&[]);
-        let len_alloc = self.rir.add_inst(Inst {
-            data: InstData::Alloc {
-                directives_start: ds,
-                directives_len: dl,
-                name: Some(len_name),
-                is_mut: false,
-                ty: Some(u64_sym),
-                init: len_call,
-                iter_elem: false,
-            },
-            span,
-        });
+        let len_call = self
+            .rir
+            .add_internal_intrinsic(InternalIntrinsic::IterLen, &[coll_for_len], iter_span)
+            .record_failure(&mut self.payload_error);
+        let len_alloc = self
+            .rir
+            .add_alloc(
+                &[],
+                Some(len_name),
+                false,
+                Some(u64_sym),
+                len_call,
+                false,
+                span,
+            )
+            .record_failure(&mut self.payload_error);
         outer_stmts.push(len_alloc.as_u32());
 
         // ---- loop body ----
@@ -1406,15 +1329,9 @@ impl<'a> AstGen<'a> {
             } else {
                 InternalIntrinsic::CharScalar
             };
-            let (s, l) = self.rir.add_inst_refs(&[coll_for_get, p_for_get]);
-            self.rir.add_inst(Inst {
-                data: InstData::InternalIntrinsic {
-                    intrinsic,
-                    args_start: s,
-                    args_len: l,
-                },
-                span,
-            })
+            self.rir
+                .add_internal_intrinsic(intrinsic, &[coll_for_get, p_for_get], span)
+                .record_failure(&mut self.payload_error)
         } else {
             self.rir.add_inst(Inst {
                 data: InstData::IndexGet {
@@ -1424,23 +1341,12 @@ impl<'a> AstGen<'a> {
                 span,
             })
         };
-        let (ds, dl) = self.rir.add_directives(&[]);
-        let binder_alloc = self.rir.add_inst(Inst {
-            data: InstData::Alloc {
-                directives_start: ds,
-                directives_len: dl,
-                name: binder_name,
-                is_mut: false,
-                ty: None,
-                init: get_inst,
-                // The element binding is a shared read of the collection
-                // (spec 4.8:26): analyzed as a by-ref read so a non-Copy
-                // element is not moved out (RUE-259), and a non-Copy binder is
-                // a non-owning borrow slot the collection still drops.
-                iter_elem: true,
-            },
-            span,
-        });
+        // The element binding is a shared read of the collection (spec 4.8:26):
+        // analyzed as a by-ref read so a non-Copy element is not moved out.
+        let binder_alloc = self
+            .rir
+            .add_alloc(&[], binder_name, false, None, get_inst, true, span)
+            .record_failure(&mut self.payload_error);
         body_stmts.push(binder_alloc.as_u32());
 
         // __p = <advance>;   (advanced before the body so `continue` steps)
@@ -1458,15 +1364,9 @@ impl<'a> AstGen<'a> {
             } else {
                 InternalIntrinsic::CharNext
             };
-            let (s, l) = self.rir.add_inst_refs(&[coll_for_adv, p_for_adv]);
-            self.rir.add_inst(Inst {
-                data: InstData::InternalIntrinsic {
-                    intrinsic,
-                    args_start: s,
-                    args_len: l,
-                },
-                span,
-            })
+            self.rir
+                .add_internal_intrinsic(intrinsic, &[coll_for_adv, p_for_adv], span)
+                .record_failure(&mut self.payload_error)
         } else {
             let one = self.rir.add_inst(Inst {
                 data: InstData::IntConst(1),
@@ -1500,14 +1400,11 @@ impl<'a> AstGen<'a> {
         });
         body_stmts.push(body_unit.as_u32());
 
-        let body_extra_start = self.rir.add_extra(&body_stmts);
-        let loop_body = self.rir.add_inst(Inst {
-            data: InstData::Block {
-                extra_start: body_extra_start,
-                len: body_stmts.len() as u32,
-            },
-            span,
-        });
+        let body_refs: Vec<_> = body_stmts.into_iter().map(InstRef::from_raw).collect();
+        let loop_body = self
+            .rir
+            .add_block(&body_refs, span)
+            .record_failure(&mut self.payload_error);
 
         // A `for` over a named variable holds a scoped shared borrow of that
         // variable for the loop's duration (spec 4.8:26): sema rejects any
@@ -1530,39 +1427,33 @@ impl<'a> AstGen<'a> {
         });
         outer_stmts.push(outer_unit.as_u32());
 
-        let outer_extra_start = self.rir.add_extra(&outer_stmts);
-        self.rir.add_inst(Inst {
-            data: InstData::Block {
-                extra_start: outer_extra_start,
-                len: outer_stmts.len() as u32,
-            },
-            span,
-        })
+        let outer_refs: Vec<_> = outer_stmts.into_iter().map(InstRef::from_raw).collect();
+        self.rir
+            .add_block(&outer_refs, span)
+            .record_failure(&mut self.payload_error)
     }
 
     fn gen_statement(&mut self, stmt: &Statement) -> InstRef {
         match stmt {
             Statement::Let(let_stmt) => {
                 let directives = self.convert_directives(&let_stmt.directives);
-                let (directives_start, directives_len) = self.rir.add_directives(&directives);
                 let name = match &let_stmt.pattern {
                     LetPattern::Ident(ident) => Some(self.symbol(ident.name)),
                     LetPattern::Wildcard(_) => None,
                 };
                 let ty = let_stmt.ty.as_ref().map(|t| self.intern_type(t));
                 let init = self.gen_expr(&let_stmt.init);
-                self.rir.add_inst(Inst {
-                    data: InstData::Alloc {
-                        directives_start,
-                        directives_len,
+                self.rir
+                    .add_alloc(
+                        &directives,
                         name,
-                        is_mut: let_stmt.is_mut,
+                        let_stmt.is_mut,
                         ty,
                         init,
-                        iter_elem: false,
-                    },
-                    span: let_stmt.span,
-                })
+                        false,
+                        let_stmt.span,
+                    )
+                    .record_failure(&mut self.payload_error)
             }
             Statement::Assign(assign) => {
                 let value = self.gen_expr(&assign.value);
@@ -1635,15 +1526,14 @@ mod tests {
         match &fn_inst.data {
             InstData::FnDecl {
                 name,
-                params_start,
-                params_len,
+                params,
                 return_type,
                 body,
                 has_self,
                 ..
             } => {
                 assert_eq!(interner.resolve(&*name), "main");
-                let params = rir.get_params(*params_start, *params_len);
+                let params = rir.params(params);
                 assert_eq!(params.len(), 0);
                 assert_eq!(interner.resolve(&*return_type), "i32");
                 assert!(!has_self); // Regular functions don't have self
@@ -1868,12 +1758,12 @@ mod tests {
             InstData::FnDecl { body, .. } => {
                 let body_inst = rir.get(*body);
                 match &body_inst.data {
-                    InstData::Block { extra_start, len } => {
+                    InstData::Block { instructions } => {
                         // Block contains: Alloc, VarRef
-                        assert_eq!(*len, 2);
-                        let inst_refs = rir.get_extra(*extra_start, *len);
+                        let inst_refs = rir.block_insts(instructions);
+                        assert_eq!(inst_refs.len(), 2);
                         // Last instruction in block is the VarRef
-                        let var_ref_inst = rir.get(InstRef::from_raw(inst_refs[1]));
+                        let var_ref_inst = rir.get(inst_refs.get(1).unwrap());
                         match &var_ref_inst.data {
                             InstData::VarRef { name } => {
                                 assert_eq!(interner.resolve(&*name), "x");
@@ -1925,12 +1815,12 @@ mod tests {
             InstData::FnDecl { body, .. } => {
                 let body_inst = rir.get(*body);
                 match &body_inst.data {
-                    InstData::Block { extra_start, len } => {
+                    InstData::Block { instructions } => {
                         // Block contains: Alloc(x), Alloc(y), Add
-                        assert_eq!(*len, 3);
-                        let inst_refs = rir.get_extra(*extra_start, *len);
+                        let inst_refs = rir.block_insts(instructions);
+                        assert_eq!(inst_refs.len(), 3);
                         // Last instruction in block is the Add
-                        let add_inst = rir.get(InstRef::from_raw(inst_refs[2]));
+                        let add_inst = rir.get(inst_refs.get(2).unwrap());
                         assert!(matches!(add_inst.data, InstData::Add { .. }));
                     }
                     _ => panic!("expected Block"),
@@ -1963,14 +1853,9 @@ mod tests {
 
         let (_, inst) = struct_decl.unwrap();
         match &inst.data {
-            InstData::StructDecl {
-                name,
-                methods_start,
-                methods_len,
-                ..
-            } => {
+            InstData::StructDecl { name, methods, .. } => {
                 assert_eq!(interner.resolve(&*name), "Point");
-                let methods = rir.get_inst_refs(*methods_start, *methods_len).to_vec();
+                let methods = rir.struct_methods(methods).values().collect::<Vec<_>>();
                 assert_eq!(methods.len(), 1);
 
                 // Check the method is a FnDecl with has_self=true
@@ -2008,12 +1893,8 @@ mod tests {
 
         let (_, inst) = struct_decl.unwrap();
         match &inst.data {
-            InstData::StructDecl {
-                methods_start,
-                methods_len,
-                ..
-            } => {
-                let methods = rir.get_inst_refs(*methods_start, *methods_len);
+            InstData::StructDecl { methods, .. } => {
+                let methods = rir.struct_methods(methods);
                 assert_eq!(methods.len(), 3);
 
                 // Check get_x and get_y have self, origin does not
@@ -2061,11 +1942,10 @@ mod tests {
             InstData::MethodCall {
                 receiver: _,
                 method,
-                args_start,
-                args_len,
+                args,
             } => {
                 assert_eq!(interner.resolve(&*method), "get_x");
-                let args = rir.get_call_args(*args_start, *args_len);
+                let args = rir.call_args(args);
                 assert_eq!(args.len(), 0); // No explicit args (self is implicit)
             }
             _ => panic!("expected MethodCall"),
@@ -2101,15 +1981,14 @@ mod tests {
             InstData::MethodCall {
                 receiver,
                 method,
-                args_start,
-                args_len,
+                args,
             } => {
                 match &rir.get(*receiver).data {
                     InstData::VarRef { name } => assert_eq!(interner.resolve(name), "Point"),
                     other => panic!("expected VarRef receiver, got {other:?}"),
                 }
                 assert_eq!(interner.resolve(&*method), "origin");
-                let args = rir.get_call_args(*args_start, *args_len);
+                let args = rir.call_args(args);
                 assert_eq!(args.len(), 0);
             }
             _ => panic!("expected MethodCall"),
@@ -2137,13 +2016,9 @@ mod tests {
 
         let (_, inst) = match_inst.unwrap();
         match &inst.data {
-            InstData::Match {
-                arms_start,
-                arms_len,
-                ..
-            } => {
+            InstData::Match { arms, .. } => {
                 let arms: Vec<_> = rir
-                    .get_match_arms(*arms_start, *arms_len)
+                    .match_arms(arms)
                     .iter()
                     .map(|(pattern, body)| (pattern.to_owned(), body))
                     .collect();
@@ -2175,13 +2050,9 @@ mod tests {
 
         let (_, inst) = match_inst.unwrap();
         match &inst.data {
-            InstData::Match {
-                arms_start,
-                arms_len,
-                ..
-            } => {
+            InstData::Match { arms, .. } => {
                 let arms: Vec<_> = rir
-                    .get_match_arms(*arms_start, *arms_len)
+                    .match_arms(arms)
                     .iter()
                     .map(|(pattern, body)| (pattern.to_owned(), body))
                     .collect();
@@ -2229,13 +2100,9 @@ mod tests {
 
         let (_, inst) = match_inst.unwrap();
         match &inst.data {
-            InstData::Match {
-                arms_start,
-                arms_len,
-                ..
-            } => {
+            InstData::Match { arms, .. } => {
                 let arms: Vec<_> = rir
-                    .get_match_arms(*arms_start, *arms_len)
+                    .match_arms(arms)
                     .iter()
                     .map(|(pattern, body)| (pattern.to_owned(), body))
                     .collect();
@@ -2282,13 +2149,9 @@ mod tests {
 
         let (_, inst) = match_inst.unwrap();
         match &inst.data {
-            InstData::Match {
-                arms_start,
-                arms_len,
-                ..
-            } => {
+            InstData::Match { arms, .. } => {
                 let arms: Vec<_> = rir
-                    .get_match_arms(*arms_start, *arms_len)
+                    .match_arms(arms)
                     .iter()
                     .map(|(pattern, body)| (pattern.to_owned(), body))
                     .collect();
@@ -2322,13 +2185,9 @@ mod tests {
 
         let (_, inst) = match_inst.unwrap();
         match &inst.data {
-            InstData::Match {
-                arms_start,
-                arms_len,
-                ..
-            } => {
+            InstData::Match { arms, .. } => {
                 let arms: Vec<_> = rir
-                    .get_match_arms(*arms_start, *arms_len)
+                    .match_arms(arms)
                     .iter()
                     .map(|(pattern, body)| (pattern.to_owned(), body))
                     .collect();
@@ -2466,25 +2325,20 @@ mod tests {
 
         let (_, inst) = struct_decl.unwrap();
         match &inst.data {
-            InstData::StructDecl {
-                methods_start,
-                methods_len,
-                ..
-            } => {
-                let methods = rir.get_inst_refs(*methods_start, *methods_len).to_vec();
+            InstData::StructDecl { methods, .. } => {
+                let methods = rir.struct_methods(methods).values().collect::<Vec<_>>();
                 let method_inst = rir.get(methods[0]);
                 match &method_inst.data {
                     InstData::FnDecl {
                         name,
-                        params_start,
-                        params_len,
+                        params,
                         has_self,
                         ..
                     } => {
                         assert_eq!(interner.resolve(&*name), "add");
                         assert!(*has_self);
                         // params should contain 'amount', not 'self'
-                        let params = rir.get_params(*params_start, *params_len).to_vec();
+                        let params = rir.params(params).to_vec();
                         assert_eq!(params.len(), 1);
                         assert_eq!(interner.resolve(&params[0].name), "amount");
                     }
@@ -2554,21 +2408,15 @@ mod tests {
 
         let (_, inst) = anon_struct.unwrap();
         match &inst.data {
-            InstData::AnonStructType {
-                fields_start,
-                fields_len,
-                methods_start,
-                methods_len,
-            } => {
+            InstData::AnonStructType { fields, methods } => {
                 // Should have 2 fields (x and y)
-                let fields = rir.get_field_decls(*fields_start, *fields_len).to_vec();
+                let fields = rir.anon_struct_fields(fields).to_vec();
                 assert_eq!(fields.len(), 2);
                 assert_eq!(interner.resolve(&fields[0].0), "x");
                 assert_eq!(interner.resolve(&fields[1].0), "y");
 
                 // Should have 2 methods (get_x and origin)
-                assert_eq!(*methods_len, 2);
-                let methods = rir.get_inst_refs(*methods_start, *methods_len);
+                let methods = rir.anon_struct_methods(methods);
                 assert_eq!(methods.len(), 2);
 
                 // Verify each method is a FnDecl
@@ -2614,8 +2462,11 @@ mod tests {
 
         let (_, inst) = anon_struct.unwrap();
         match &inst.data {
-            InstData::AnonStructType { methods_len, .. } => {
-                assert_eq!(*methods_len, 0, "Expected no methods");
+            InstData::AnonStructType { methods, .. } => {
+                assert!(
+                    rir.anon_struct_methods(methods).is_empty(),
+                    "Expected no methods"
+                );
             }
             _ => panic!("Expected AnonStructType"),
         }

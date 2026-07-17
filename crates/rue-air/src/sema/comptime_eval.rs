@@ -49,7 +49,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-use lasso::{Key, Spur};
+use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
 use rue_rir::{InstData, InstRef, RepeatCount};
 use rue_span::{FileId, Span};
@@ -774,20 +774,15 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             // Block: evaluate `let` statements into the environment, then the
             // tail expression. Loops, assignments and calls are not supported
             // and make the block non-evaluable.
-            InstData::Block { extra_start, len } => {
-                if *len == 0 {
+            InstData::Block { instructions } => {
+                let stmt_refs = self.rir.block_insts(instructions);
+                if stmt_refs.is_empty() {
                     return Ok(Some(ConstValue::Unit));
                 }
-                let stmt_refs: Vec<InstRef> = self
-                    .rir
-                    .get_extra(*extra_start, *len)
-                    .iter()
-                    .map(|&raw| InstRef::from_raw(raw))
-                    .collect();
                 // Bindings are scoped to the block.
                 let saved_locals = env.locals.clone();
                 let mut result = Some(ConstValue::Unit);
-                for (i, &stmt_ref) in stmt_refs.iter().enumerate() {
+                for (i, stmt_ref) in stmt_refs.values().enumerate() {
                     let is_tail = i + 1 == stmt_refs.len();
                     let value =
                         if let InstData::Alloc { name, init, .. } = &self.rir.get(stmt_ref).data {
@@ -845,16 +840,12 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             // (spec 4.14:19, RUE-262). An enum-variant (`Path`) pattern isn't
             // representable as a `ConstValue`, and a non-constant scrutinee is
             // not decidable here — both make the `match` non-evaluable.
-            InstData::Match {
-                scrutinee,
-                arms_start,
-                arms_len,
-            } => {
-                let (scrutinee, arms_start, arms_len) = (*scrutinee, *arms_start, *arms_len);
+            InstData::Match { scrutinee, arms } => {
+                let scrutinee = *scrutinee;
                 let Some(scrut) = self.eval_const_expr(scrutinee, env)? else {
                     return Ok(None);
                 };
-                let arms = self.rir.get_match_arms(arms_start, arms_len);
+                let arms = self.rir.match_arms(arms);
                 for (pattern, body) in arms.iter() {
                     match const_pattern_matches(&pattern, scrut) {
                         Some(true) => return self.eval_const_expr(body, env),
@@ -871,13 +862,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
             // Anonymous struct type: evaluate to a comptime type value,
             // resolving field types through the type substitution.
-            InstData::AnonStructType {
-                fields_start,
-                fields_len,
-                methods_start,
-                methods_len,
-            } => {
-                let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
+            InstData::AnonStructType { fields, methods } => {
+                let field_decls = self.rir.anon_struct_fields(fields);
 
                 // Comptime `let` locals in scope participate in field-type
                 // resolution (`let Inner = Mk(T); struct { x: Inner }`,
@@ -908,7 +894,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 }
 
                 // Extract method signatures for structural equality comparison
-                let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
+                let method_sigs = self.extract_anon_method_sigs(methods);
 
                 let (struct_ty, _is_new) = self.find_or_create_anon_struct(
                     &struct_fields,
@@ -918,7 +904,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
                 // Register methods if present and not yet registered for this
                 // struct (it may have been created earlier without methods).
-                if *methods_len > 0 {
+                if !self.rir.anon_struct_methods(methods).is_empty() {
                     // A method that declares its own `comptime T: type`
                     // parameter would need per-call monomorphization over that
                     // parameter, which is unsupported (RUE-284). Reject it at
@@ -926,7 +912,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     // reduction cannot degrade into an unrelated E1200 at the
                     // instantiation site.
                     if let Some((method_span, method_name)) =
-                        self.find_method_own_comptime_type_param(*methods_start, *methods_len)
+                        self.find_method_own_comptime_type_param(methods)
                     {
                         return Err(CompileError::new(
                             ErrorKind::ComptimeEvaluationFailed {
@@ -946,7 +932,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                         return Ok(None);
                     };
 
-                    let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
+                    let method_refs = self.rir.anon_struct_methods(methods);
                     let first_method_ref = method_refs.get(0).unwrap();
                     let first_method_inst = self.rir.get(first_method_ref);
                     if let InstData::FnDecl {
@@ -960,8 +946,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                                 .register_anon_struct_methods_for_comptime_with_subst(
                                     struct_id,
                                     struct_ty,
-                                    *methods_start,
-                                    *methods_len,
+                                    methods,
                                     span,
                                     &local_type_subst,
                                     &local_value_subst,
@@ -994,18 +979,13 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             // The enum analog of the AnonStructType arm above — this is what
             // makes `fn Option(comptime T: type) -> type { enum { Some(T), None } }`
             // monomorphize per instantiation (ADR-0038, RUE-6 phase 2).
-            InstData::AnonEnumType {
-                variants_start,
-                variants_len,
-                payloads_start,
-                payloads_len,
-            } => {
-                let variant_syms: Vec<lasso::Spur> = self
+            InstData::AnonEnumType { variants, payloads } => {
+                let variant_syms: Vec<lasso::Spur> = self.rir.anon_enum_variants(variants).to_vec();
+                let payload_symbols: Vec<Vec<lasso::Spur>> = self
                     .rir
-                    .get_symbols(*variants_start, *variants_len)
-                    .to_vec();
-                let payload_words: Vec<u32> =
-                    self.rir.get_extra(*payloads_start, *payloads_len).to_vec();
+                    .anon_enum_payloads(payloads, variants)
+                    .map(|payload| payload.to_vec())
+                    .collect();
 
                 // Decode the self-describing payload region into per-variant
                 // type-symbol lists (parallel to `variant_syms`), then resolve
@@ -1016,23 +996,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
                 let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
                 let mut variant_payloads: Vec<Vec<Type>> = Vec::with_capacity(variant_syms.len());
-                let mut pi = 0usize;
-                for &vsym in &variant_syms {
+                for (&vsym, symbols) in variant_syms.iter().zip(payload_symbols) {
                     variant_names.push(self.interner.resolve(&vsym).to_string());
-                    // A variant carries a payload only when the payload region
-                    // is present (`payloads_len > 0`) and describes arity `k`.
-                    let k = if payload_words.is_empty() {
-                        0
-                    } else {
-                        let k = payload_words[pi] as usize;
-                        pi += 1;
-                        k
-                    };
-                    let mut tys: Vec<Type> = Vec::with_capacity(k);
-                    for _ in 0..k {
-                        let ty_sym = lasso::Spur::try_from_usize(payload_words[pi] as usize)
-                            .expect("valid payload type symbol");
-                        pi += 1;
+                    let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
+                    for ty_sym in symbols {
                         let Some(ty) = self
                             .resolve_type_for_comptime_with_subst_and_values_at_span(
                                 ty_sym,
@@ -1224,13 +1191,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             // compose in ANY position — a delegating return body
             // (`fn Alias() -> type { Point() }`), a nested argument
             // (`WrapA(WrapA(i32))`), and chains thereof (RUE-251).
-            InstData::Call {
-                name,
-                args_start,
-                args_len,
-            } => {
-                let (name, args_start, args_len) = (*name, *args_start, *args_len);
-                self.eval_comptime_type_call(name, args_start, args_len, env, false)
+            InstData::Call { name, args } => {
+                let name = *name;
+                self.eval_comptime_type_call(name, args, env, false)
                     .map_err(|e| Self::label_ctor_instantiation_site(e, span))
             }
 
@@ -1297,14 +1260,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             InstData::MethodCall {
                 receiver,
                 method,
-                args_start,
-                args_len,
+                args,
             } => {
-                let (receiver, method, args_start, args_len) =
-                    (*receiver, *method, *args_start, *args_len);
-                self.eval_module_qualified_comptime_call(
-                    receiver, method, args_start, args_len, span, env,
-                )
+                let (receiver, method) = (*receiver, *method);
+                self.eval_module_qualified_comptime_call(receiver, method, args, span, env)
             }
 
             // Everything else requires runtime evaluation
@@ -1329,8 +1288,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         &mut self,
         receiver: InstRef,
         method: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         env: &mut ComptimeEnv,
     ) -> CompileResult<Option<ConstValue>> {
@@ -1424,7 +1382,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         )?;
         // Reduce through the shared path; arguments are evaluated in the current
         // environment so `T` (an enclosing comptime parameter) still resolves.
-        self.eval_comptime_type_call(function_key, args_start, args_len, env, true)
+        self.eval_comptime_type_call(function_key, args, env, true)
             .map_err(|e| Self::label_ctor_instantiation_site(e, span))
     }
 
@@ -1588,8 +1546,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     fn eval_comptime_type_call(
         &mut self,
         name: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         env: &mut ComptimeEnv,
         name_is_resolved_key: bool,
     ) -> CompileResult<Option<ConstValue>> {
@@ -1631,7 +1588,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let param_modes = self.param_arena.modes(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
         let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-        let args = self.rir.get_call_args(args_start, args_len);
+        let args = self.rir.call_args(args);
         if args.len() != param_names.len() {
             return Ok(None);
         }
@@ -2004,13 +1961,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         frame: &mut Vec<(Spur, Option<Type>, bool)>,
     ) {
         match &self.rir.get(inst_ref).data {
-            InstData::Block { extra_start, len } => {
-                let stmts: Vec<InstRef> = self
-                    .rir
-                    .get_extra(*extra_start, *len)
-                    .iter()
-                    .map(|&raw| InstRef::from_raw(raw))
-                    .collect();
+            InstData::Block { instructions } => {
+                let stmts: Vec<InstRef> = self.rir.block_insts(instructions).values().collect();
                 let mut inner_frame = Vec::new();
                 for stmt in stmts {
                     self.walk_comptime_type_locals(
@@ -2090,14 +2042,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     frame,
                 );
             }
-            InstData::Match {
-                arms_start,
-                arms_len,
-                ..
-            } => {
+            InstData::Match { arms, .. } => {
                 let bodies: Vec<InstRef> = self
                     .rir
-                    .get_match_arms(*arms_start, *arms_len)
+                    .match_arms(arms)
                     .iter()
                     .map(|(_, body)| body)
                     .collect();

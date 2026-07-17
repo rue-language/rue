@@ -4,9 +4,183 @@
 //! This provides good cache locality and efficient traversal.
 
 use std::fmt;
+use std::marker::PhantomData;
 
 use lasso::{Key, Spur};
 use rue_span::{FileId, Span};
+
+/// A failure while staging a compact RIR payload.
+#[derive(Debug)]
+pub enum RirPayloadBuildError {
+    ResourceLimitExceeded {
+        family: &'static str,
+    },
+    CapacityFailure {
+        family: &'static str,
+    },
+    InvalidBuilderInput {
+        family: &'static str,
+        reason: &'static str,
+    },
+}
+
+impl fmt::Display for RirPayloadBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ResourceLimitExceeded { family } => {
+                write!(f, "RIR {family} payload exceeds the u32 word-store limit")
+            }
+            Self::CapacityFailure { family } => {
+                write!(f, "could not reserve storage for RIR {family} payload")
+            }
+            Self::InvalidBuilderInput { family, reason } => {
+                write!(f, "invalid RIR {family} builder input: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RirPayloadBuildError {}
+
+/// Structured corruption reported by the production RIR payload decoder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RirPayloadError {
+    pub family: &'static str,
+    pub start: u32,
+    pub extent: u32,
+    pub record: Option<u32>,
+    pub reason: &'static str,
+}
+
+impl fmt::Display for RirPayloadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "corrupt RIR {} payload at {}+{}{}: {}",
+            self.family,
+            self.start,
+            self.extent,
+            self.record
+                .map(|record| format!(", record {record}"))
+                .unwrap_or_default(),
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for RirPayloadError {}
+
+/// Canonical source/interner bounds required to publish an immutable RIR.
+pub struct RirValidationContext<'a> {
+    pub symbol_count: usize,
+    pub source_lengths: &'a [(FileId, u32)],
+}
+
+#[repr(C)]
+#[derive(PartialEq, Eq)]
+struct PayloadRange<Family> {
+    start: u32,
+    extent: u32,
+    family: PhantomData<fn() -> Family>,
+}
+
+macro_rules! payload_family {
+    ($name:ident, $marker:ident, $family:literal) => {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum $marker {}
+
+        /// Opaque range into the RIR word store for this payload family.
+        #[repr(transparent)]
+        #[derive(PartialEq, Eq)]
+        pub struct $name(PayloadRange<$marker>);
+
+        impl $name {
+            const FAMILY: &'static str = $family;
+
+            const fn from_parts(start: u32, extent: u32) -> Self {
+                Self(PayloadRange {
+                    start,
+                    extent,
+                    family: PhantomData,
+                })
+            }
+
+            const fn start(&self) -> u32 {
+                self.0.start
+            }
+            const fn extent(&self) -> u32 {
+                self.0.extent
+            }
+        }
+
+        impl PayloadFallback for $name {
+            fn payload_fallback() -> Self {
+                Self::from_parts(0, 0)
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_struct(stringify!($name))
+                    .field("words", &format_args!("{}+{}", self.0.start, self.0.extent))
+                    .finish()
+            }
+        }
+
+        const _: () = assert!(std::mem::size_of::<$name>() == 2 * std::mem::size_of::<u32>());
+        const _: () = assert!(std::mem::align_of::<$name>() == std::mem::align_of::<u32>());
+    };
+}
+
+pub(crate) trait PayloadFallback {
+    fn payload_fallback() -> Self;
+}
+
+payload_family!(RirMatchArmsRange, MatchArmsFamily, "match arms");
+payload_family!(RirDirectivesRange, DirectivesFamily, "directives");
+payload_family!(RirParamsRange, ParamsFamily, "parameters");
+payload_family!(RirCallArgsRange, CallArgsFamily, "call arguments");
+payload_family!(
+    RirIntrinsicArgsRange,
+    IntrinsicArgsFamily,
+    "intrinsic arguments"
+);
+payload_family!(
+    RirInternalIntrinsicArgsRange,
+    InternalIntrinsicArgsFamily,
+    "internal intrinsic arguments"
+);
+payload_family!(RirBlockInstsRange, BlockInstsFamily, "block instructions");
+payload_family!(RirStructFieldsRange, StructFieldsFamily, "struct fields");
+payload_family!(
+    RirAnonStructFieldsRange,
+    AnonStructFieldsFamily,
+    "anonymous struct fields"
+);
+payload_family!(RirStructMethodsRange, StructMethodsFamily, "struct methods");
+payload_family!(
+    RirAnonStructMethodsRange,
+    AnonStructMethodsFamily,
+    "anonymous struct methods"
+);
+payload_family!(RirFieldInitsRange, FieldInitsFamily, "field initializers");
+payload_family!(RirEnumVariantsRange, EnumVariantsFamily, "enum variants");
+payload_family!(
+    RirAnonEnumVariantsRange,
+    AnonEnumVariantsFamily,
+    "anonymous enum variants"
+);
+payload_family!(
+    RirEnumPayloadsRange,
+    EnumPayloadsFamily,
+    "enum variant payloads"
+);
+payload_family!(
+    RirAnonEnumPayloadsRange,
+    AnonEnumPayloadsFamily,
+    "anonymous enum variant payloads"
+);
+payload_family!(RirArrayElemsRange, ArrayElemsFamily, "array elements");
 
 /// A reference to an instruction in the RIR.
 ///
@@ -25,6 +199,12 @@ impl InstRef {
     #[inline]
     pub const fn as_u32(self) -> u32 {
         self.0
+    }
+}
+
+impl PayloadFallback for InstRef {
+    fn payload_fallback() -> Self {
+        Self(u32::MAX)
     }
 }
 
@@ -434,15 +614,39 @@ impl RirDirectiveView<'_> {
 /// Extra data marker types for type-safe storage in the extra array.
 /// These types represent data stored in the extra array.
 
-/// Stored representation of RirCallArg in the extra array.
-/// Layout: [value: u32, mode: u32] = 2 u32s per arg
-const CALL_ARG_SIZE: u32 = 2;
+#[derive(Clone, Copy)]
+struct FixedPayloadSchema {
+    width: usize,
+    symbol_offsets: &'static [usize],
+}
 
-/// Stored representation of RirParam in the extra array.
-/// Layout: [name: u32, ty: u32, mode: u32, is_comptime: u32,
-///          span.file_id: u32, span.start: u32, span.end: u32] = 7 u32s per
-/// param (must match `add_params`/`get_params`)
-const PARAM_SIZE: u32 = 7;
+const REF_SCHEMA: FixedPayloadSchema = FixedPayloadSchema {
+    width: 1,
+    symbol_offsets: &[],
+};
+const SYMBOL_SCHEMA: FixedPayloadSchema = FixedPayloadSchema {
+    width: 1,
+    symbol_offsets: &[0],
+};
+/// `[value, mode]`.
+const CALL_ARG_SCHEMA: FixedPayloadSchema = FixedPayloadSchema {
+    width: 2,
+    symbol_offsets: &[],
+};
+const CALL_ARG_VALUE: usize = 0;
+const CALL_ARG_MODE: usize = 1;
+/// `[name, ty, mode, is_comptime, span.file, span.start, span.end]`.
+const PARAM_SCHEMA: FixedPayloadSchema = FixedPayloadSchema {
+    width: 7,
+    symbol_offsets: &[PARAM_NAME, PARAM_TYPE],
+};
+const PARAM_NAME: usize = 0;
+const PARAM_TYPE: usize = 1;
+const PARAM_MODE: usize = 2;
+const PARAM_COMPTIME: usize = 3;
+const PARAM_SPAN_FILE: usize = 4;
+const PARAM_SPAN_START: usize = 5;
+const PARAM_SPAN_END: usize = 6;
 
 /// Stored representation of match arm in the extra array.
 /// Layout: pattern data + [body: u32]
@@ -472,17 +676,195 @@ pub enum PatternKind {
 const PATTERN_WILDCARD_SIZE: u32 = 5; // kind, span_start, span_len, span_file, body
 const PATTERN_INT_SIZE: u32 = 8; // kind, span_start, span_len, span_file, value_lo, value_hi, negative, body
 const PATTERN_BOOL_SIZE: u32 = 6; // kind, span_start, span_len, span_file, value, body
+const PATTERN_PATH_BASE_SIZE: usize = 10;
+const DIRECTIVE_HEADER_WORDS: usize = 5;
+const RECORD_KIND: usize = 0;
+const RECORD_SPAN_START: usize = 1;
+const RECORD_SPAN_LEN: usize = 2;
+const RECORD_SPAN_FILE: usize = 3;
+const MATCH_VALUE_LO_OR_BOOL_OR_BODY: usize = 4;
+const MATCH_VALUE_HI_OR_BOOL_BODY: usize = 5;
+const MATCH_INT_NEGATIVE_OR_PATH_TYPE: usize = 6;
+const MATCH_INT_BODY_OR_PATH_VARIANT: usize = 7;
+const MATCH_PATH_BINDING_COUNT: usize = 8;
+const MATCH_PATH_BINDINGS_START: usize = 9;
+const DIRECTIVE_NAME: usize = 0;
+const DIRECTIVE_ARG_COUNT: usize = 4;
+const DIRECTIVE_ARGS_START: usize = 5;
 // Path patterns are variable-length (RUE-221): kind, span×3, module,
 // type_name, variant, n_bindings, bindings…, body = 9 + n_bindings words.
 // See `add_match_arms`/`get_match_arms` for the layout.
 
 /// Stored representation of struct field initializer.
 /// Layout: [field_name: u32, value: u32] = 2 u32s per field
-const FIELD_INIT_SIZE: u32 = 2;
+const FIELD_INIT_SCHEMA: FixedPayloadSchema = FixedPayloadSchema {
+    width: 2,
+    symbol_offsets: &[FIELD_INIT_NAME],
+};
+const FIELD_INIT_NAME: usize = 0;
+const FIELD_INIT_VALUE: usize = 1;
 
 /// Stored representation of struct field declaration.
 /// Layout: [field_name: u32, field_type: u32] = 2 u32s per field
-const FIELD_DECL_SIZE: u32 = 2;
+const FIELD_DECL_SCHEMA: FixedPayloadSchema = FixedPayloadSchema {
+    width: 2,
+    symbol_offsets: &[FIELD_DECL_NAME, FIELD_DECL_TYPE],
+};
+const FIELD_DECL_NAME: usize = 0;
+const FIELD_DECL_TYPE: usize = 1;
+
+fn decode_symbol_word(word: u32) -> Option<Spur> {
+    Spur::try_from_usize(word as usize)
+}
+
+fn validated_symbol_word(word: u32) -> Spur {
+    match decode_symbol_word(word) {
+        Some(symbol) => symbol,
+        None => unreachable!("RIR symbol word passed schema validation"),
+    }
+}
+
+fn encoded_match_record_extent(pattern: &RirPattern) -> Option<usize> {
+    match pattern {
+        RirPattern::Wildcard(_) => Some(PATTERN_WILDCARD_SIZE as usize),
+        RirPattern::Int { .. } => Some(PATTERN_INT_SIZE as usize),
+        RirPattern::Bool(..) => Some(PATTERN_BOOL_SIZE as usize),
+        RirPattern::Path { bindings, .. } => PATTERN_PATH_BASE_SIZE.checked_add(bindings.len()),
+    }
+}
+
+fn encoded_directive_record_extent(directive: &RirDirective) -> Option<usize> {
+    DIRECTIVE_HEADER_WORDS.checked_add(directive.args.len())
+}
+
+fn decoded_match_record_extent(words: &[u32], position: usize) -> Option<usize> {
+    match words.get(position + RECORD_KIND).copied()? {
+        x if x == PatternKind::Wildcard as u32 => Some(PATTERN_WILDCARD_SIZE as usize),
+        x if x == PatternKind::Int as u32 => Some(PATTERN_INT_SIZE as usize),
+        x if x == PatternKind::Bool as u32 => Some(PATTERN_BOOL_SIZE as usize),
+        x if x == PatternKind::Path as u32 => words
+            .get(position + MATCH_PATH_BINDING_COUNT)
+            .and_then(|count| PATTERN_PATH_BASE_SIZE.checked_add(*count as usize)),
+        _ => None,
+    }
+}
+
+fn decoded_directive_record_extent(words: &[u32], position: usize) -> Option<usize> {
+    words
+        .get(position + DIRECTIVE_ARG_COUNT)
+        .and_then(|count| DIRECTIVE_HEADER_WORDS.checked_add(*count as usize))
+}
+
+fn embedded_span(words: &[u32], position: usize) -> Option<Span> {
+    let start = *words.get(position + RECORD_SPAN_START)?;
+    let len = *words.get(position + RECORD_SPAN_LEN)?;
+    let file = FileId::new(*words.get(position + RECORD_SPAN_FILE)?);
+    Some(Span::with_file(file, start, start.checked_add(len)?))
+}
+
+fn enum_payload_record(words: &[u32], position: usize) -> Option<(usize, usize)> {
+    let count = *words.get(position)? as usize;
+    let start = position.checked_add(1)?;
+    let end = start.checked_add(count)?;
+    (end <= words.len()).then_some((start, end))
+}
+
+fn encoded_enum_payload_record_extent(payload: &[Spur]) -> Option<usize> {
+    1usize.checked_add(payload.len())
+}
+
+fn decode_match_record(
+    words: &[u32],
+    position: usize,
+) -> Option<(RirPatternView<'_>, InstRef, usize)> {
+    let kind = *words.get(position + RECORD_KIND)?;
+    let span = embedded_span(words, position)?;
+    let extent = decoded_match_record_extent(words, position)?;
+    if position.checked_add(extent)? > words.len() {
+        return None;
+    }
+    match kind {
+        x if x == PatternKind::Wildcard as u32 => Some((
+            RirPatternView::Wildcard(span),
+            InstRef::from_raw(*words.get(position + MATCH_VALUE_LO_OR_BOOL_OR_BODY)?),
+            extent,
+        )),
+        x if x == PatternKind::Int as u32 => {
+            let negative = *words.get(position + MATCH_INT_NEGATIVE_OR_PATH_TYPE)?;
+            if negative > 1 {
+                return None;
+            }
+            Some((
+                RirPatternView::Int {
+                    value: *words.get(position + MATCH_VALUE_LO_OR_BOOL_OR_BODY)? as u64
+                        | ((*words.get(position + MATCH_VALUE_HI_OR_BOOL_BODY)? as u64) << 32),
+                    negative: negative != 0,
+                    span,
+                },
+                InstRef::from_raw(*words.get(position + MATCH_INT_BODY_OR_PATH_VARIANT)?),
+                extent,
+            ))
+        }
+        x if x == PatternKind::Bool as u32 => {
+            let value = *words.get(position + MATCH_VALUE_LO_OR_BOOL_OR_BODY)?;
+            if value > 1 {
+                return None;
+            }
+            Some((
+                RirPatternView::Bool(value != 0, span),
+                InstRef::from_raw(*words.get(position + MATCH_VALUE_HI_OR_BOOL_BODY)?),
+                extent,
+            ))
+        }
+        x if x == PatternKind::Path as u32 => {
+            let count = *words.get(position + MATCH_PATH_BINDING_COUNT)? as usize;
+            let end = position.checked_add(extent)?;
+            let optional_ref = |word| (word != u32::MAX).then(|| InstRef::from_raw(word));
+            let binding_start = position + MATCH_PATH_BINDINGS_START;
+            Some((
+                RirPatternView::Path {
+                    module: optional_ref(words[position + MATCH_VALUE_LO_OR_BOOL_OR_BODY]),
+                    ctor_head: optional_ref(words[position + MATCH_VALUE_HI_OR_BOOL_BODY]),
+                    type_name: decode_symbol_word(
+                        words[position + MATCH_INT_NEGATIVE_OR_PATH_TYPE],
+                    )?,
+                    variant: decode_symbol_word(words[position + MATCH_INT_BODY_OR_PATH_VARIANT])?,
+                    bindings: RirSlice::new(
+                        &words[binding_start..binding_start + count],
+                        SYMBOL_SCHEMA.width,
+                        |record| validated_symbol_word(record[0]),
+                    ),
+                    span,
+                },
+                InstRef::from_raw(words[end - 1]),
+                extent,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn decode_directive_record(
+    words: &[u32],
+    position: usize,
+) -> Option<(RirDirectiveView<'_>, usize)> {
+    let extent = decoded_directive_record_extent(words, position)?;
+    let end = position.checked_add(extent)?;
+    if end > words.len() {
+        return None;
+    }
+    let args_start = position + DIRECTIVE_ARGS_START;
+    Some((
+        RirDirectiveView {
+            name: decode_symbol_word(words[position + DIRECTIVE_NAME])?,
+            args: RirSlice::new(&words[args_start..end], SYMBOL_SCHEMA.width, |record| {
+                validated_symbol_word(record[0])
+            }),
+            span: embedded_span(words, position)?,
+        },
+        extent,
+    ))
+}
 
 /// Stored representation of directive in the extra array.
 /// Layout: [name: u32, span_start: u32, span_len: u32, args_len: u32, args...]
@@ -497,14 +879,449 @@ pub struct Rir {
     extra: Vec<u32>,
 }
 
+/// Mutable construction-phase owner. Payload descriptors never leave this
+/// owner through the public API; callers add or replace complete nodes.
+#[derive(Debug, Default)]
+pub struct RirEditor {
+    rir: Rir,
+}
+
+impl RirEditor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn into_unvalidated(self) -> Rir {
+        self.rir
+    }
+
+    fn atomic<T>(
+        &mut self,
+        build: impl FnOnce(&mut Rir) -> Result<T, RirPayloadBuildError>,
+    ) -> Result<T, RirPayloadBuildError> {
+        let instruction_len = self.rir.instructions.len();
+        let extra_len = self.rir.extra.len();
+        match build(&mut self.rir) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.rir.instructions.truncate(instruction_len);
+                self.rir.extra.truncate(extra_len);
+                Err(error)
+            }
+        }
+    }
+
+    /// Add a payload-free node. Payload-bearing nodes use the atomic methods
+    /// below, whose descriptors never escape the editor.
+    pub fn add_inst(&mut self, inst: Inst) -> InstRef {
+        self.rir.add_inst(inst)
+    }
+
+    pub fn add_intrinsic(
+        &mut self,
+        name: Spur,
+        args: &[InstRef],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let args = rir.add_intrinsic_args(args)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::Intrinsic { name, args },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_internal_intrinsic(
+        &mut self,
+        intrinsic: InternalIntrinsic,
+        args: &[InstRef],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let args = rir.add_internal_intrinsic_args(args)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::InternalIntrinsic { intrinsic, args },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_block(
+        &mut self,
+        instructions: &[InstRef],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let instructions = rir.add_block_insts(instructions)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::Block { instructions },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_call(
+        &mut self,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let args = rir.add_call_args(args)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::Call { name, args },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_method_call(
+        &mut self,
+        receiver: InstRef,
+        method: Spur,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let args = rir.add_method_args(args)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::MethodCall {
+                    receiver,
+                    method,
+                    args,
+                },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_match(
+        &mut self,
+        scrutinee: InstRef,
+        arms: &[(RirPattern, InstRef)],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let arms = rir.add_match_arms(arms)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::Match { scrutinee, arms },
+                span,
+            }))
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_fn_decl(
+        &mut self,
+        directives: &[RirDirective],
+        is_pub: bool,
+        is_unchecked: bool,
+        name: Spur,
+        params: &[RirParam],
+        return_type: Spur,
+        body: InstRef,
+        has_self: bool,
+        self_mode: RirParamMode,
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let directives = rir.add_directives(directives)?;
+            let params = rir.add_params(params)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::FnDecl {
+                    directives,
+                    is_pub,
+                    is_unchecked,
+                    name,
+                    params,
+                    return_type,
+                    body,
+                    has_self,
+                    self_mode,
+                },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_const_decl(
+        &mut self,
+        directives: &[RirDirective],
+        is_pub: bool,
+        name: Spur,
+        ty: Option<Spur>,
+        init: InstRef,
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let directives = rir.add_directives(directives)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::ConstDecl {
+                    directives,
+                    is_pub,
+                    name,
+                    ty,
+                    init,
+                },
+                span,
+            }))
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_alloc(
+        &mut self,
+        directives: &[RirDirective],
+        name: Option<Spur>,
+        is_mut: bool,
+        ty: Option<Spur>,
+        init: InstRef,
+        iter_elem: bool,
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let directives = rir.add_directives(directives)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::Alloc {
+                    directives,
+                    name,
+                    is_mut,
+                    ty,
+                    init,
+                    iter_elem,
+                },
+                span,
+            }))
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_struct_decl(
+        &mut self,
+        directives: &[RirDirective],
+        is_pub: bool,
+        is_linear: bool,
+        name: Spur,
+        fields: &[(Spur, Spur)],
+        methods: &[InstRef],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let directives = rir.add_directives(directives)?;
+            let fields = rir.add_struct_fields(fields)?;
+            let methods = rir.add_struct_methods(methods)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::StructDecl {
+                    directives,
+                    is_pub,
+                    is_linear,
+                    name,
+                    fields,
+                    methods,
+                },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_struct_init(
+        &mut self,
+        module: Option<InstRef>,
+        ctor_head: Option<InstRef>,
+        type_name: Spur,
+        fields: &[(Spur, InstRef)],
+        shorthand_span: Option<Span>,
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let fields = rir.add_field_inits(fields)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::StructInit {
+                    module,
+                    ctor_head,
+                    type_name,
+                    fields,
+                    shorthand_span,
+                },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_enum_decl(
+        &mut self,
+        is_pub: bool,
+        name: Spur,
+        variants: &[Spur],
+        payloads: &[Vec<Spur>],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            if variants.len() != payloads.len() {
+                return Err(RirPayloadBuildError::InvalidBuilderInput {
+                    family: RirEnumPayloadsRange::FAMILY,
+                    reason: "variant and payload counts differ",
+                });
+            }
+            let variants = rir.add_enum_variants(variants)?;
+            let payloads = rir.add_enum_payloads(payloads)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::EnumDecl {
+                    is_pub,
+                    name,
+                    variants,
+                    payloads,
+                },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_array_init(
+        &mut self,
+        elements: &[InstRef],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let elements = rir.add_array_elements(elements)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::ArrayInit { elements },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_anon_struct_type(
+        &mut self,
+        fields: &[(Spur, Spur)],
+        methods: &[InstRef],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let fields = rir.add_anon_struct_fields(fields)?;
+            let methods = rir.add_anon_struct_methods(methods)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::AnonStructType { fields, methods },
+                span,
+            }))
+        })
+    }
+
+    pub fn add_anon_enum_type(
+        &mut self,
+        variants: &[Spur],
+        payloads: &[Vec<Spur>],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            if variants.len() != payloads.len() {
+                return Err(RirPayloadBuildError::InvalidBuilderInput {
+                    family: RirAnonEnumPayloadsRange::FAMILY,
+                    reason: "variant and payload counts differ",
+                });
+            }
+            let variants = rir.add_anon_enum_variants(variants)?;
+            let payloads = rir.add_anon_enum_payloads(payloads)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::AnonEnumType { variants, payloads },
+                span,
+            }))
+        })
+    }
+
+    /// Atomically replace an instruction with a compiler-internal intrinsic.
+    pub fn replace_internal_intrinsic(
+        &mut self,
+        instruction: InstRef,
+        intrinsic: InternalIntrinsic,
+        args: &[InstRef],
+    ) -> Result<(), RirPayloadBuildError> {
+        if self.rir.instructions.get(instruction.0 as usize).is_none() {
+            return Err(RirPayloadBuildError::InvalidBuilderInput {
+                family: RirInternalIntrinsicArgsRange::FAMILY,
+                reason: "replacement instruction is outside the editor",
+            });
+        }
+        let range = self.rir.add_internal_intrinsic_args(args)?;
+        let inst = &mut self.rir.instructions[instruction.0 as usize];
+        inst.data = InstData::InternalIntrinsic {
+            intrinsic,
+            args: range,
+        };
+        Ok(())
+    }
+
+    /// Change function visibility without exposing detached instruction data.
+    pub fn set_function_public(
+        &mut self,
+        instruction: InstRef,
+        is_pub: bool,
+    ) -> Result<(), RirPayloadBuildError> {
+        let Some(inst) = self.rir.instructions.get_mut(instruction.0 as usize) else {
+            return Err(RirPayloadBuildError::InvalidBuilderInput {
+                family: "function declaration",
+                reason: "replacement instruction is outside the editor",
+            });
+        };
+        let InstData::FnDecl { is_pub: slot, .. } = &mut inst.data else {
+            return Err(RirPayloadBuildError::InvalidBuilderInput {
+                family: "function declaration",
+                reason: "visibility replacement requires a function declaration",
+            });
+        };
+        *slot = is_pub;
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for RirEditor {
+    type Target = Rir;
+
+    fn deref(&self) -> &Self::Target {
+        &self.rir
+    }
+}
+
+/// Immutable RIR whose complete payload graph passed structural validation.
+#[derive(Debug)]
+pub struct ValidatedRir(Rir);
+
+impl ValidatedRir {
+    /// Consume and validate an editor at the construction/publication boundary.
+    pub fn finish(
+        editor: RirEditor,
+        context: &RirValidationContext<'_>,
+    ) -> Result<Self, RirPayloadError> {
+        editor.validate_payloads()?;
+        editor.validate_context(context)?;
+        Ok(Self(editor.into_unvalidated()))
+    }
+}
+
+impl std::ops::Deref for ValidatedRir {
+    type Target = Rir;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl Rir {
+    fn symbol_word(family: &'static str, symbol: Spur) -> Result<u32, RirPayloadBuildError> {
+        u32::try_from(symbol.into_usize()).map_err(|_| RirPayloadBuildError::InvalidBuilderInput {
+            family,
+            reason: "symbol index exceeds u32",
+        })
+    }
+
     /// Create a new empty RIR.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Add an instruction and return its reference.
-    pub fn add_inst(&mut self, inst: Inst) -> InstRef {
+    pub(crate) fn add_inst(&mut self, inst: Inst) -> InstRef {
         // Debug assertion for u32 overflow - catches pathological inputs during development
         debug_assert!(
             self.instructions.len() < u32::MAX as usize,
@@ -512,7 +1329,8 @@ impl Rir {
             self.instructions.len()
         );
 
-        let index = self.instructions.len() as u32;
+        let index = u32::try_from(self.instructions.len())
+            .expect("RIR instruction count checked before insertion");
         self.instructions.push(inst);
         InstRef::from_raw(index)
     }
@@ -521,12 +1339,6 @@ impl Rir {
     #[inline]
     pub fn get(&self, inst_ref: InstRef) -> &Inst {
         &self.instructions[inst_ref.0 as usize]
-    }
-
-    /// Get a mutable reference to an instruction.
-    #[inline]
-    pub fn get_mut(&mut self, inst_ref: InstRef) -> &mut Inst {
-        &mut self.instructions[inst_ref.0 as usize]
     }
 
     /// The number of instructions.
@@ -549,158 +1361,1169 @@ impl Rir {
 
     /// Iterate over all instructions with their references.
     pub fn iter(&self) -> impl Iterator<Item = (InstRef, &Inst)> {
-        self.instructions
-            .iter()
-            .enumerate()
-            .map(|(i, inst)| (InstRef::from_raw(i as u32), inst))
-    }
-
-    /// Add extra data and return the start index.
-    pub fn add_extra(&mut self, data: &[u32]) -> u32 {
-        // Debug assertions for u32 overflow - catches pathological inputs during development
-        debug_assert!(
-            self.extra.len() <= u32::MAX as usize,
-            "RIR extra data overflow: {} entries exceeds u32::MAX",
-            self.extra.len()
-        );
-        debug_assert!(
-            self.extra.len().saturating_add(data.len()) <= u32::MAX as usize,
-            "RIR extra data would overflow: {} + {} exceeds u32::MAX",
-            self.extra.len(),
-            data.len()
-        );
-
-        let start = self.extra.len() as u32;
-        self.extra.extend_from_slice(data);
-        start
-    }
-
-    /// Get extra data by index.
-    #[inline]
-    pub fn get_extra(&self, start: u32, len: u32) -> &[u32] {
-        let start = start as usize;
-        let end = start + len as usize;
-        &self.extra[start..end]
-    }
-
-    // ===== Helper methods for storing/retrieving typed data in the extra array =====
-
-    /// Store a slice of InstRefs and return (start, len).
-    pub fn add_inst_refs(&mut self, refs: &[InstRef]) -> (u32, u32) {
-        let data: Vec<u32> = refs.iter().map(|r| r.as_u32()).collect();
-        let start = self.add_extra(&data);
-        (start, refs.len() as u32)
-    }
-
-    /// Retrieve InstRefs from the extra array.
-    pub fn get_inst_refs(&self, start: u32, len: u32) -> RirSlice<'_, InstRef> {
-        RirSlice::new(self.get_extra(start, len), 1, |record| {
-            InstRef::from_raw(record[0])
+        self.instructions.iter().enumerate().map(|(i, inst)| {
+            (
+                InstRef::from_raw(
+                    u32::try_from(i).expect("RIR instruction count is bounded by u32"),
+                ),
+                inst,
+            )
         })
     }
 
-    /// Store a slice of Spurs and return (start, len).
-    pub fn add_symbols(&mut self, symbols: &[Spur]) -> (u32, u32) {
-        let data: Vec<u32> = symbols.iter().map(|s| s.into_usize() as u32).collect();
-        let start = self.add_extra(&data);
-        (start, symbols.len() as u32)
+    fn append_payload(
+        &mut self,
+        family: &'static str,
+        staged: Vec<u32>,
+    ) -> Result<(u32, u32), RirPayloadBuildError> {
+        if staged.is_empty() {
+            return Ok((0, 0));
+        }
+        let start = u32::try_from(self.extra.len())
+            .map_err(|_| RirPayloadBuildError::ResourceLimitExceeded { family })?;
+        let extent = u32::try_from(staged.len())
+            .map_err(|_| RirPayloadBuildError::ResourceLimitExceeded { family })?;
+        start
+            .checked_add(extent)
+            .ok_or(RirPayloadBuildError::ResourceLimitExceeded { family })?;
+        self.extra
+            .try_reserve(staged.len())
+            .map_err(|_| RirPayloadBuildError::CapacityFailure { family })?;
+        self.extra.extend(staged);
+        Ok((start, extent))
     }
 
-    /// Retrieve Spurs from the extra array.
-    pub fn get_symbols(&self, start: u32, len: u32) -> RirSymbols<'_> {
-        RirSlice::new(self.get_extra(start, len), 1, |record| {
-            Spur::try_from_usize(record[0] as usize).unwrap()
+    fn payload_words<'a, R>(
+        &'a self,
+        range: &R,
+        parts: impl FnOnce(&R) -> (u32, u32, &'static str),
+    ) -> Result<&'a [u32], RirPayloadError> {
+        let (start, extent, family) = parts(range);
+        if extent == 0 {
+            if start == 0 {
+                return Ok(&[]);
+            }
+            return Err(RirPayloadError {
+                family,
+                start,
+                extent,
+                record: None,
+                reason: "noncanonical empty range",
+            });
+        }
+        let end = start.checked_add(extent).ok_or(RirPayloadError {
+            family,
+            start,
+            extent,
+            record: None,
+            reason: "range end overflows u32",
+        })?;
+        self.extra
+            .get(start as usize..end as usize)
+            .ok_or(RirPayloadError {
+                family,
+                start,
+                extent,
+                record: None,
+                reason: "range is outside the word store",
+            })
+    }
+
+    fn validate_fixed<R>(
+        &self,
+        range: &R,
+        width: usize,
+        parts: impl FnOnce(&R) -> (u32, u32, &'static str),
+    ) -> Result<(), RirPayloadError> {
+        let (start, extent, family) = parts(range);
+        let words = self.payload_words(range, |_| (start, extent, family))?;
+        if words.len() % width != 0 {
+            return Err(RirPayloadError {
+                family,
+                start,
+                extent,
+                record: Some((words.len() / width) as u32),
+                reason: "payload ends in a partial record",
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_fixed_symbols<R>(
+        &self,
+        range: &R,
+        schema: FixedPayloadSchema,
+        parts: impl FnOnce(&R) -> (u32, u32, &'static str),
+    ) -> Result<(), RirPayloadError> {
+        let (start, extent, family) = parts(range);
+        self.validate_fixed(range, schema.width, |_| (start, extent, family))?;
+        for (record, words) in self
+            .payload_words(range, |_| (start, extent, family))?
+            .chunks_exact(schema.width)
+            .enumerate()
+        {
+            if schema
+                .symbol_offsets
+                .iter()
+                .any(|offset| decode_symbol_word(words[*offset]).is_none())
+            {
+                return Err(RirPayloadError {
+                    family,
+                    start,
+                    extent,
+                    record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    reason: "symbol word is not representable",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_variable_records<R>(
+        &self,
+        range: &R,
+        parts: impl FnOnce(&R) -> (u32, u32, &'static str),
+        record_extent: impl Fn(&[u32], usize) -> Option<usize>,
+    ) -> Result<(), RirPayloadError> {
+        let (start, extent, family) = parts(range);
+        let words = self.payload_words(range, |_| (start, extent, family))?;
+        if words.is_empty() {
+            return Ok(());
+        }
+        let count = words[0] as usize;
+        let mut pos = 1usize;
+        for record in 0..count {
+            let Some(width) = record_extent(words, pos) else {
+                return Err(RirPayloadError {
+                    family,
+                    start,
+                    extent,
+                    record: Some(record as u32),
+                    reason: "record header or body is truncated",
+                });
+            };
+            pos = pos.checked_add(width).ok_or(RirPayloadError {
+                family,
+                start,
+                extent,
+                record: Some(record as u32),
+                reason: "record end overflows usize",
+            })?;
+            if pos > words.len() {
+                return Err(RirPayloadError {
+                    family,
+                    start,
+                    extent,
+                    record: Some(record as u32),
+                    reason: "record body is truncated",
+                });
+            }
+        }
+        if pos != words.len() {
+            return Err(RirPayloadError {
+                family,
+                start,
+                extent,
+                record: Some(count as u32),
+                reason: "trailing words after final record",
+            });
+        }
+        Ok(())
+    }
+
+    /// Validate every variable-length payload before publishing this RIR.
+    pub fn validate_payloads(&self) -> Result<(), RirPayloadError> {
+        for (_, inst) in self.iter() {
+            match &inst.data {
+                InstData::Match { arms, .. } => self.validate_match_range(arms)?,
+                InstData::FnDecl {
+                    directives, params, ..
+                } => {
+                    self.validate_directive_range(directives)?;
+                    self.validate_fixed_symbols(params, PARAM_SCHEMA, |r| {
+                        (r.start(), r.extent(), RirParamsRange::FAMILY)
+                    })?;
+                    for (record, words) in self
+                        .payload_words(params, |r| (r.start(), r.extent(), RirParamsRange::FAMILY))?
+                        .chunks_exact(PARAM_SCHEMA.width)
+                        .enumerate()
+                    {
+                        if words[PARAM_MODE] > RirParamMode::Borrow as u32 {
+                            return Err(RirPayloadError {
+                                family: RirParamsRange::FAMILY,
+                                start: params.start(),
+                                extent: params.extent(),
+                                record: Some(record as u32),
+                                reason: "invalid parameter mode",
+                            });
+                        }
+                        if words[PARAM_COMPTIME] > 1 {
+                            return Err(RirPayloadError {
+                                family: RirParamsRange::FAMILY,
+                                start: params.start(),
+                                extent: params.extent(),
+                                record: Some(record as u32),
+                                reason: "invalid comptime flag",
+                            });
+                        }
+                    }
+                }
+                InstData::ConstDecl { directives, .. } | InstData::Alloc { directives, .. } => {
+                    self.validate_directive_range(directives)?
+                }
+                InstData::Call { args, .. } | InstData::MethodCall { args, .. } => {
+                    self.validate_fixed(args, CALL_ARG_SCHEMA.width, |r| {
+                        (r.start(), r.extent(), RirCallArgsRange::FAMILY)
+                    })?;
+                    for (record, words) in self
+                        .payload_words(args, |r| (r.start(), r.extent(), RirCallArgsRange::FAMILY))?
+                        .chunks_exact(CALL_ARG_SCHEMA.width)
+                        .enumerate()
+                    {
+                        if words[CALL_ARG_MODE] > RirArgMode::Borrow as u32 {
+                            return Err(RirPayloadError {
+                                family: RirCallArgsRange::FAMILY,
+                                start: args.start(),
+                                extent: args.extent(),
+                                record: Some(record as u32),
+                                reason: "invalid argument mode",
+                            });
+                        }
+                    }
+                }
+                InstData::Intrinsic { args, .. } => {
+                    self.validate_fixed(args, REF_SCHEMA.width, |r| {
+                        (r.start(), r.extent(), RirIntrinsicArgsRange::FAMILY)
+                    })?
+                }
+                InstData::InternalIntrinsic { args, .. } => {
+                    self.validate_fixed(args, REF_SCHEMA.width, |r| {
+                        (r.start(), r.extent(), RirInternalIntrinsicArgsRange::FAMILY)
+                    })?
+                }
+                InstData::Block { instructions } => {
+                    self.validate_fixed(instructions, REF_SCHEMA.width, |r| {
+                        (r.start(), r.extent(), RirBlockInstsRange::FAMILY)
+                    })?
+                }
+                InstData::StructDecl {
+                    directives,
+                    fields,
+                    methods,
+                    ..
+                } => {
+                    self.validate_directive_range(directives)?;
+                    self.validate_fixed_symbols(fields, FIELD_DECL_SCHEMA, |r| {
+                        (r.start(), r.extent(), RirStructFieldsRange::FAMILY)
+                    })?;
+                    self.validate_fixed(methods, REF_SCHEMA.width, |r| {
+                        (r.start(), r.extent(), RirStructMethodsRange::FAMILY)
+                    })?;
+                }
+                InstData::StructInit { fields, .. } => {
+                    self.validate_fixed_symbols(fields, FIELD_INIT_SCHEMA, |r| {
+                        (r.start(), r.extent(), RirFieldInitsRange::FAMILY)
+                    })?
+                }
+                InstData::EnumDecl {
+                    variants, payloads, ..
+                } => {
+                    self.validate_fixed_symbols(variants, SYMBOL_SCHEMA, |r| {
+                        (r.start(), r.extent(), RirEnumVariantsRange::FAMILY)
+                    })?;
+                    self.validate_enum_payload_range(payloads, variants.extent() as usize)?;
+                }
+                InstData::ArrayInit { elements } => {
+                    self.validate_fixed(elements, REF_SCHEMA.width, |r| {
+                        (r.start(), r.extent(), RirArrayElemsRange::FAMILY)
+                    })?
+                }
+                InstData::AnonStructType { fields, methods } => {
+                    self.validate_fixed_symbols(fields, FIELD_DECL_SCHEMA, |r| {
+                        (r.start(), r.extent(), RirAnonStructFieldsRange::FAMILY)
+                    })?;
+                    self.validate_fixed(methods, REF_SCHEMA.width, |r| {
+                        (r.start(), r.extent(), RirAnonStructMethodsRange::FAMILY)
+                    })?;
+                }
+                InstData::AnonEnumType { variants, payloads } => {
+                    self.validate_fixed_symbols(variants, SYMBOL_SCHEMA, |r| {
+                        (r.start(), r.extent(), RirAnonEnumVariantsRange::FAMILY)
+                    })?;
+                    self.validate_anon_enum_payload_range(payloads, variants.extent() as usize)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_match_range(&self, range: &RirMatchArmsRange) -> Result<(), RirPayloadError> {
+        self.validate_variable_records(
+            range,
+            |r| (r.start(), r.extent(), RirMatchArmsRange::FAMILY),
+            decoded_match_record_extent,
+        )?;
+        let words = self.payload_words(range, |r| {
+            (r.start(), r.extent(), RirMatchArmsRange::FAMILY)
+        })?;
+        if words.is_empty() {
+            return Ok(());
+        }
+        let mut position = 1usize;
+        for record in 0..words[0] as usize {
+            let kind = words[position + RECORD_KIND];
+            if embedded_span(words, position).is_none() {
+                return Err(RirPayloadError {
+                    family: RirMatchArmsRange::FAMILY,
+                    start: range.start(),
+                    extent: range.extent(),
+                    record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    reason: "pattern span overflows u32",
+                });
+            }
+            if kind == PatternKind::Int as u32 {
+                if words[position + MATCH_INT_NEGATIVE_OR_PATH_TYPE] > 1 {
+                    return Err(RirPayloadError {
+                        family: RirMatchArmsRange::FAMILY,
+                        start: range.start(),
+                        extent: range.extent(),
+                        record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                        reason: "invalid integer-sign flag",
+                    });
+                }
+            } else if kind == PatternKind::Bool as u32 {
+                if words[position + MATCH_VALUE_LO_OR_BOOL_OR_BODY] > 1 {
+                    return Err(RirPayloadError {
+                        family: RirMatchArmsRange::FAMILY,
+                        start: range.start(),
+                        extent: range.extent(),
+                        record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                        reason: "invalid boolean scalar",
+                    });
+                }
+            } else if kind == PatternKind::Path as u32 {
+                let binding_count = words[position + MATCH_PATH_BINDING_COUNT] as usize;
+                let binding_start = position + MATCH_PATH_BINDINGS_START;
+                let binding_end = binding_start + binding_count;
+                if words[binding_start..binding_end]
+                    .iter()
+                    .any(|word| decode_symbol_word(*word).is_none())
+                {
+                    return Err(RirPayloadError {
+                        family: RirMatchArmsRange::FAMILY,
+                        start: range.start(),
+                        extent: range.extent(),
+                        record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                        reason: "symbol word is not representable",
+                    });
+                }
+            }
+            let (_, _, width) = decode_match_record(words, position).ok_or(RirPayloadError {
+                family: RirMatchArmsRange::FAMILY,
+                start: range.start(),
+                extent: range.extent(),
+                record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                reason: "match record failed schema decoding",
+            })?;
+            position += width;
+        }
+        Ok(())
+    }
+
+    /// Validate every context-dependent handle after structural payload
+    /// validation and before any infallible borrowing view is published.
+    pub fn validate_context(
+        &self,
+        context: &RirValidationContext<'_>,
+    ) -> Result<(), RirPayloadError> {
+        fn error(index: u32, reason: &'static str) -> RirPayloadError {
+            RirPayloadError {
+                family: "instruction context",
+                start: index,
+                extent: 1,
+                record: None,
+                reason,
+            }
+        }
+        let check_ref = |index: u32, reference: InstRef| {
+            if (reference.as_u32() as usize) < self.instructions.len() {
+                Ok(())
+            } else {
+                Err(error(index, "instruction reference is outside the owner"))
+            }
+        };
+        let check_symbol = |index: u32, symbol: Spur| {
+            if symbol.into_usize() < context.symbol_count {
+                Ok(())
+            } else {
+                Err(error(index, "symbol is outside the canonical interner"))
+            }
+        };
+        let check_span = |index: u32, span: Span| {
+            let Some((_, source_len)) = context
+                .source_lengths
+                .iter()
+                .find(|(file, _)| *file == span.file_id)
+            else {
+                return Err(error(
+                    index,
+                    "span file is outside the canonical source revision",
+                ));
+            };
+            if span.start <= span.end && span.end <= *source_len {
+                Ok(())
+            } else {
+                Err(error(index, "span range is outside its canonical source"))
+            }
+        };
+
+        for (instruction, inst) in self.iter() {
+            let index = instruction.as_u32();
+            check_span(index, inst.span)?;
+            macro_rules! refs {
+                ($($reference:expr),* $(,)?) => {{ $(check_ref(index, $reference)?;)* }};
+            }
+            macro_rules! symbols {
+                ($($symbol:expr),* $(,)?) => {{ $(check_symbol(index, $symbol)?;)* }};
+            }
+            match &inst.data {
+                InstData::IntConst(_)
+                | InstData::BoolConst(_)
+                | InstData::UnitConst
+                | InstData::Continue => {}
+                InstData::StringConst(symbol)
+                | InstData::VarRef { name: symbol }
+                | InstData::TypeConst { type_name: symbol } => symbols!(*symbol),
+                InstData::Add { lhs, rhs }
+                | InstData::Sub { lhs, rhs }
+                | InstData::Mul { lhs, rhs }
+                | InstData::Div { lhs, rhs }
+                | InstData::Mod { lhs, rhs }
+                | InstData::Eq { lhs, rhs }
+                | InstData::Ne { lhs, rhs }
+                | InstData::Lt { lhs, rhs }
+                | InstData::Gt { lhs, rhs }
+                | InstData::Le { lhs, rhs }
+                | InstData::Ge { lhs, rhs }
+                | InstData::And { lhs, rhs }
+                | InstData::Or { lhs, rhs }
+                | InstData::BitAnd { lhs, rhs }
+                | InstData::BitOr { lhs, rhs }
+                | InstData::BitXor { lhs, rhs }
+                | InstData::Shl { lhs, rhs }
+                | InstData::Shr { lhs, rhs } => refs!(*lhs, *rhs),
+                InstData::Neg { operand }
+                | InstData::Not { operand }
+                | InstData::BitNot { operand }
+                | InstData::Try { operand }
+                | InstData::Comptime { expr: operand }
+                | InstData::Checked { expr: operand } => refs!(*operand),
+                InstData::Branch {
+                    cond,
+                    then_block,
+                    else_block,
+                } => {
+                    refs!(*cond, *then_block);
+                    if let Some(reference) = else_block {
+                        refs!(*reference);
+                    }
+                }
+                InstData::Loop { cond, body } => refs!(*cond, *body),
+                InstData::InfiniteLoop { body, iter_borrow } => {
+                    refs!(*body);
+                    if let Some(symbol) = iter_borrow {
+                        symbols!(*symbol);
+                    }
+                }
+                InstData::Match { scrutinee, arms } => {
+                    refs!(*scrutinee);
+                    for (pattern, body) in self.match_arms(arms).iter() {
+                        refs!(body);
+                        check_span(index, pattern.span())?;
+                        if let RirPatternView::Path {
+                            module,
+                            ctor_head,
+                            type_name,
+                            variant,
+                            bindings,
+                            ..
+                        } = pattern
+                        {
+                            if let Some(reference) = module {
+                                refs!(reference);
+                            }
+                            if let Some(reference) = ctor_head {
+                                refs!(reference);
+                            }
+                            symbols!(type_name, variant);
+                            for binding in bindings {
+                                symbols!(binding);
+                            }
+                        }
+                    }
+                }
+                InstData::Break { value } | InstData::Ret(value) => {
+                    if let Some(reference) = value {
+                        refs!(*reference);
+                    }
+                }
+                InstData::FnDecl {
+                    directives,
+                    name,
+                    params,
+                    return_type,
+                    body,
+                    ..
+                } => {
+                    symbols!(*name, *return_type);
+                    refs!(*body);
+                    for directive in self.directives(directives).iter() {
+                        symbols!(directive.name);
+                        check_span(index, directive.span)?;
+                        for arg in directive.args {
+                            symbols!(arg);
+                        }
+                    }
+                    for param in self.params(params) {
+                        symbols!(param.name, param.ty);
+                        check_span(index, param.span)?;
+                    }
+                }
+                InstData::ConstDecl {
+                    directives,
+                    name,
+                    ty,
+                    init,
+                    ..
+                } => {
+                    symbols!(*name);
+                    if let Some(symbol) = ty {
+                        symbols!(*symbol);
+                    }
+                    refs!(*init);
+                    for directive in self.directives(directives).iter() {
+                        symbols!(directive.name);
+                        check_span(index, directive.span)?;
+                        for arg in directive.args {
+                            symbols!(arg);
+                        }
+                    }
+                }
+                InstData::Call { name, args } => {
+                    symbols!(*name);
+                    for arg in self.call_args(args) {
+                        refs!(arg.value);
+                    }
+                }
+                InstData::Intrinsic { name, args } => {
+                    symbols!(*name);
+                    for reference in self.intrinsic_args(args) {
+                        refs!(reference);
+                    }
+                }
+                InstData::InternalIntrinsic { args, .. } => {
+                    for reference in self.internal_intrinsic_args(args) {
+                        refs!(reference);
+                    }
+                }
+                InstData::TypeIntrinsic { name, type_arg } => symbols!(*name, *type_arg),
+                InstData::OffsetOf { type_arg, field } => symbols!(*type_arg, *field),
+                InstData::Block { instructions } => {
+                    for reference in self.block_insts(instructions) {
+                        refs!(reference);
+                    }
+                }
+                InstData::Alloc {
+                    directives,
+                    name,
+                    ty,
+                    init,
+                    ..
+                } => {
+                    if let Some(symbol) = name {
+                        symbols!(*symbol);
+                    }
+                    if let Some(symbol) = ty {
+                        symbols!(*symbol);
+                    }
+                    refs!(*init);
+                    for directive in self.directives(directives).iter() {
+                        symbols!(directive.name);
+                        check_span(index, directive.span)?;
+                        for arg in directive.args {
+                            symbols!(arg);
+                        }
+                    }
+                }
+                InstData::Assign { name, value } => {
+                    symbols!(*name);
+                    refs!(*value);
+                }
+                InstData::StructDecl {
+                    directives,
+                    name,
+                    fields,
+                    methods,
+                    ..
+                } => {
+                    symbols!(*name);
+                    for (field, ty) in self.struct_fields(fields) {
+                        symbols!(field, ty);
+                    }
+                    for reference in self.struct_methods(methods) {
+                        refs!(reference);
+                    }
+                    for directive in self.directives(directives).iter() {
+                        symbols!(directive.name);
+                        check_span(index, directive.span)?;
+                        for arg in directive.args {
+                            symbols!(arg);
+                        }
+                    }
+                }
+                InstData::StructInit {
+                    module,
+                    ctor_head,
+                    type_name,
+                    fields,
+                    shorthand_span,
+                } => {
+                    if let Some(reference) = module {
+                        refs!(*reference);
+                    }
+                    if let Some(reference) = ctor_head {
+                        refs!(*reference);
+                    }
+                    symbols!(*type_name);
+                    for (field, value) in self.field_inits(fields) {
+                        symbols!(field);
+                        refs!(value);
+                    }
+                    if let Some(span) = shorthand_span {
+                        check_span(index, *span)?;
+                    }
+                }
+                InstData::FieldGet { base, field } => {
+                    refs!(*base);
+                    symbols!(*field);
+                }
+                InstData::FieldSet { base, field, value } => {
+                    refs!(*base, *value);
+                    symbols!(*field);
+                }
+                InstData::EnumDecl {
+                    name,
+                    variants,
+                    payloads,
+                    ..
+                } => {
+                    symbols!(*name);
+                    for variant in self.enum_variants(variants) {
+                        symbols!(variant);
+                    }
+                    for payload in self.enum_payloads(payloads, variants) {
+                        for ty in payload {
+                            symbols!(ty);
+                        }
+                    }
+                }
+                InstData::EnumVariant {
+                    module,
+                    type_name,
+                    variant,
+                } => {
+                    if let Some(reference) = module {
+                        refs!(*reference);
+                    }
+                    symbols!(*type_name, *variant);
+                }
+                InstData::ArrayInit { elements } => {
+                    for reference in self.array_elements(elements) {
+                        refs!(reference);
+                    }
+                }
+                InstData::ArrayRepeat { value, count } => {
+                    refs!(*value);
+                    if let RepeatCount::Named(symbol) = count {
+                        symbols!(*symbol);
+                    }
+                }
+                InstData::IndexGet {
+                    base,
+                    index: subscript,
+                } => refs!(*base, *subscript),
+                InstData::IndexSet {
+                    base,
+                    index: subscript,
+                    value,
+                } => refs!(*base, *subscript, *value),
+                InstData::MethodCall {
+                    receiver,
+                    method,
+                    args,
+                } => {
+                    refs!(*receiver);
+                    symbols!(*method);
+                    for arg in self.call_args(args) {
+                        refs!(arg.value);
+                    }
+                }
+                InstData::DropFnDecl { type_name, body } => {
+                    symbols!(*type_name);
+                    refs!(*body);
+                }
+                InstData::AnonStructType { fields, methods } => {
+                    for (field, ty) in self.anon_struct_fields(fields) {
+                        symbols!(field, ty);
+                    }
+                    for reference in self.anon_struct_methods(methods) {
+                        refs!(reference);
+                    }
+                }
+                InstData::AnonEnumType { variants, payloads } => {
+                    for variant in self.anon_enum_variants(variants) {
+                        symbols!(variant);
+                    }
+                    for payload in self.anon_enum_payloads(payloads, variants) {
+                        for ty in payload {
+                            symbols!(ty);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_directive_range(&self, range: &RirDirectivesRange) -> Result<(), RirPayloadError> {
+        self.validate_variable_records(
+            range,
+            |r| (r.start(), r.extent(), RirDirectivesRange::FAMILY),
+            decoded_directive_record_extent,
+        )?;
+        let words = self.payload_words(range, |r| {
+            (r.start(), r.extent(), RirDirectivesRange::FAMILY)
+        })?;
+        if words.is_empty() {
+            return Ok(());
+        }
+        let mut position = 1usize;
+        for record in 0..words[0] as usize {
+            if embedded_span(words, position).is_none() {
+                return Err(RirPayloadError {
+                    family: RirDirectivesRange::FAMILY,
+                    start: range.start(),
+                    extent: range.extent(),
+                    record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    reason: "directive span overflows u32",
+                });
+            }
+            let arg_count = words[position + DIRECTIVE_ARG_COUNT] as usize;
+            let args_start = position + DIRECTIVE_ARGS_START;
+            let args_end = args_start + arg_count;
+            if words[args_start..args_end]
+                .iter()
+                .any(|word| decode_symbol_word(*word).is_none())
+            {
+                return Err(RirPayloadError {
+                    family: RirDirectivesRange::FAMILY,
+                    start: range.start(),
+                    extent: range.extent(),
+                    record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    reason: "symbol word is not representable",
+                });
+            }
+            let (_, record_extent) =
+                decode_directive_record(words, position).ok_or(RirPayloadError {
+                    family: RirDirectivesRange::FAMILY,
+                    start: range.start(),
+                    extent: range.extent(),
+                    record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
+                    reason: "directive record failed schema decoding",
+                })?;
+            let end = position + record_extent;
+            position = end;
+        }
+        Ok(())
+    }
+
+    fn validate_enum_payload_words<R>(
+        &self,
+        range: &R,
+        variants: usize,
+        parts: impl FnOnce(&R) -> (u32, u32, &'static str),
+    ) -> Result<(), RirPayloadError> {
+        let (start, extent, family) = parts(range);
+        let words = self.payload_words(range, |_| (start, extent, family))?;
+        if words.is_empty() {
+            return Ok(());
+        }
+        let mut pos = 0usize;
+        for record in 0..variants {
+            if words.get(pos).is_none() {
+                return Err(RirPayloadError {
+                    family,
+                    start,
+                    extent,
+                    record: Some(record as u32),
+                    reason: "missing variant payload record",
+                });
+            }
+            let Some((payload_start, end)) = enum_payload_record(words, pos) else {
+                return Err(RirPayloadError {
+                    family,
+                    start,
+                    extent,
+                    record: Some(record as u32),
+                    reason: "variant payload record is truncated",
+                });
+            };
+            if words[payload_start..end]
+                .iter()
+                .any(|word| decode_symbol_word(*word).is_none())
+            {
+                return Err(RirPayloadError {
+                    family,
+                    start,
+                    extent,
+                    record: Some(record as u32),
+                    reason: "symbol word is not representable",
+                });
+            }
+            pos = end;
+        }
+        if pos != words.len() {
+            return Err(RirPayloadError {
+                family,
+                start,
+                extent,
+                record: Some(variants as u32),
+                reason: "trailing words after variant payloads",
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_enum_payload_range(
+        &self,
+        range: &RirEnumPayloadsRange,
+        variants: usize,
+    ) -> Result<(), RirPayloadError> {
+        self.validate_enum_payload_words(range, variants, |r| {
+            (r.start(), r.extent(), RirEnumPayloadsRange::FAMILY)
+        })
+    }
+
+    fn validate_anon_enum_payload_range(
+        &self,
+        range: &RirAnonEnumPayloadsRange,
+        variants: usize,
+    ) -> Result<(), RirPayloadError> {
+        self.validate_enum_payload_words(range, variants, |r| {
+            (r.start(), r.extent(), RirAnonEnumPayloadsRange::FAMILY)
+        })
+    }
+
+    fn add_ref_words<R>(
+        &mut self,
+        family: &'static str,
+        refs: &[InstRef],
+        make: impl FnOnce(u32, u32) -> R,
+    ) -> Result<R, RirPayloadBuildError> {
+        let mut staged = Vec::new();
+        staged
+            .try_reserve(refs.len())
+            .map_err(|_| RirPayloadBuildError::CapacityFailure { family })?;
+        staged.extend(refs.iter().map(|reference| reference.as_u32()));
+        let (start, extent) = self.append_payload(family, staged)?;
+        Ok(make(start, extent))
+    }
+
+    pub(crate) fn add_intrinsic_args(
+        &mut self,
+        refs: &[InstRef],
+    ) -> Result<RirIntrinsicArgsRange, RirPayloadBuildError> {
+        self.add_ref_words(
+            RirIntrinsicArgsRange::FAMILY,
+            refs,
+            RirIntrinsicArgsRange::from_parts,
+        )
+    }
+    pub(crate) fn add_internal_intrinsic_args(
+        &mut self,
+        refs: &[InstRef],
+    ) -> Result<RirInternalIntrinsicArgsRange, RirPayloadBuildError> {
+        self.add_ref_words(
+            RirInternalIntrinsicArgsRange::FAMILY,
+            refs,
+            RirInternalIntrinsicArgsRange::from_parts,
+        )
+    }
+    pub(crate) fn add_block_insts(
+        &mut self,
+        refs: &[InstRef],
+    ) -> Result<RirBlockInstsRange, RirPayloadBuildError> {
+        self.add_ref_words(
+            RirBlockInstsRange::FAMILY,
+            refs,
+            RirBlockInstsRange::from_parts,
+        )
+    }
+    pub(crate) fn add_struct_methods(
+        &mut self,
+        refs: &[InstRef],
+    ) -> Result<RirStructMethodsRange, RirPayloadBuildError> {
+        self.add_ref_words(
+            RirStructMethodsRange::FAMILY,
+            refs,
+            RirStructMethodsRange::from_parts,
+        )
+    }
+    pub(crate) fn add_anon_struct_methods(
+        &mut self,
+        refs: &[InstRef],
+    ) -> Result<RirAnonStructMethodsRange, RirPayloadBuildError> {
+        self.add_ref_words(
+            RirAnonStructMethodsRange::FAMILY,
+            refs,
+            RirAnonStructMethodsRange::from_parts,
+        )
+    }
+    pub(crate) fn add_array_elements(
+        &mut self,
+        refs: &[InstRef],
+    ) -> Result<RirArrayElemsRange, RirPayloadBuildError> {
+        self.add_ref_words(
+            RirArrayElemsRange::FAMILY,
+            refs,
+            RirArrayElemsRange::from_parts,
+        )
+    }
+
+    fn ref_view<R>(
+        &self,
+        range: &R,
+        parts: impl FnOnce(&R) -> (u32, u32, &'static str),
+    ) -> RirSlice<'_, InstRef> {
+        RirSlice::new(
+            self.payload_words(range, parts)
+                .expect("validated RIR range"),
+            REF_SCHEMA.width,
+            |record| InstRef::from_raw(record[0]),
+        )
+    }
+    pub fn intrinsic_args(&self, range: &RirIntrinsicArgsRange) -> RirSlice<'_, InstRef> {
+        self.ref_view(range, |r| {
+            (r.start(), r.extent(), RirIntrinsicArgsRange::FAMILY)
+        })
+    }
+    pub fn internal_intrinsic_args(
+        &self,
+        range: &RirInternalIntrinsicArgsRange,
+    ) -> RirSlice<'_, InstRef> {
+        self.ref_view(range, |r| {
+            (r.start(), r.extent(), RirInternalIntrinsicArgsRange::FAMILY)
+        })
+    }
+    pub fn block_insts(&self, range: &RirBlockInstsRange) -> RirSlice<'_, InstRef> {
+        self.ref_view(range, |r| {
+            (r.start(), r.extent(), RirBlockInstsRange::FAMILY)
+        })
+    }
+    pub fn struct_methods(&self, range: &RirStructMethodsRange) -> RirSlice<'_, InstRef> {
+        self.ref_view(range, |r| {
+            (r.start(), r.extent(), RirStructMethodsRange::FAMILY)
+        })
+    }
+    pub fn anon_struct_methods(&self, range: &RirAnonStructMethodsRange) -> RirSlice<'_, InstRef> {
+        self.ref_view(range, |r| {
+            (r.start(), r.extent(), RirAnonStructMethodsRange::FAMILY)
+        })
+    }
+    pub fn array_elements(&self, range: &RirArrayElemsRange) -> RirSlice<'_, InstRef> {
+        self.ref_view(range, |r| {
+            (r.start(), r.extent(), RirArrayElemsRange::FAMILY)
         })
     }
 
     /// Store RirCallArgs and return (start, len).
     /// Layout: [value: u32, mode: u32] per arg
-    pub fn add_call_args(&mut self, args: &[RirCallArg]) -> (u32, u32) {
-        let mut data = Vec::with_capacity(args.len() * CALL_ARG_SIZE as usize);
+    fn add_call_arg_words<R>(
+        &mut self,
+        family: &'static str,
+        args: &[RirCallArg],
+        make: impl FnOnce(u32, u32) -> R,
+    ) -> Result<R, RirPayloadBuildError> {
+        let words = args
+            .len()
+            .checked_mul(CALL_ARG_SCHEMA.width)
+            .ok_or(RirPayloadBuildError::ResourceLimitExceeded { family })?;
+        let mut data = Vec::new();
+        data.try_reserve(words)
+            .map_err(|_| RirPayloadBuildError::CapacityFailure { family })?;
         for arg in args {
-            data.push(arg.value.as_u32());
-            data.push(arg.mode.as_u32());
+            let mut record = [0; CALL_ARG_SCHEMA.width];
+            record[CALL_ARG_VALUE] = arg.value.as_u32();
+            record[CALL_ARG_MODE] = arg.mode.as_u32();
+            data.extend(record);
         }
-        let start = self.add_extra(&data);
-        (start, args.len() as u32)
+        let (start, extent) = self.append_payload(family, data)?;
+        Ok(make(start, extent))
+    }
+
+    pub(crate) fn add_call_args(
+        &mut self,
+        args: &[RirCallArg],
+    ) -> Result<RirCallArgsRange, RirPayloadBuildError> {
+        self.add_call_arg_words(RirCallArgsRange::FAMILY, args, RirCallArgsRange::from_parts)
+    }
+    pub(crate) fn add_method_args(
+        &mut self,
+        args: &[RirCallArg],
+    ) -> Result<RirCallArgsRange, RirPayloadBuildError> {
+        self.add_call_args(args)
     }
 
     /// Retrieve RirCallArgs from the extra array.
-    pub fn get_call_args(&self, start: u32, len: u32) -> RirSlice<'_, RirCallArg> {
-        let words = len.checked_mul(CALL_ARG_SIZE).unwrap();
-        let data = self.get_extra(start, words);
-        RirSlice::new(data, CALL_ARG_SIZE as usize, |chunk| RirCallArg {
-            value: InstRef::from_raw(chunk[0]),
-            mode: RirArgMode::from_u32(chunk[1]),
+    fn call_arg_view<R>(
+        &self,
+        range: &R,
+        parts: impl FnOnce(&R) -> (u32, u32, &'static str),
+    ) -> RirSlice<'_, RirCallArg> {
+        let data = self
+            .payload_words(range, parts)
+            .expect("validated RIR range");
+        RirSlice::new(data, CALL_ARG_SCHEMA.width, |chunk| RirCallArg {
+            value: InstRef::from_raw(chunk[CALL_ARG_VALUE]),
+            mode: RirArgMode::from_u32(chunk[CALL_ARG_MODE]),
         })
+    }
+    pub fn call_args(&self, range: &RirCallArgsRange) -> RirSlice<'_, RirCallArg> {
+        self.call_arg_view(range, |r| (r.start(), r.extent(), RirCallArgsRange::FAMILY))
     }
 
     /// Store RirParams and return (start, len).
     /// Layout: [name: u32, ty: u32, mode: u32, is_comptime: u32,
     ///          span.file_id: u32, span.start: u32, span.end: u32] per param
-    pub fn add_params(&mut self, params: &[RirParam]) -> (u32, u32) {
-        let mut data = Vec::with_capacity(params.len() * PARAM_SIZE as usize);
+    pub(crate) fn add_params(
+        &mut self,
+        params: &[RirParam],
+    ) -> Result<RirParamsRange, RirPayloadBuildError> {
+        let words = params.len().checked_mul(PARAM_SCHEMA.width).ok_or(
+            RirPayloadBuildError::ResourceLimitExceeded {
+                family: RirParamsRange::FAMILY,
+            },
+        )?;
+        let mut data = Vec::new();
+        data.try_reserve(words)
+            .map_err(|_| RirPayloadBuildError::CapacityFailure {
+                family: RirParamsRange::FAMILY,
+            })?;
         for param in params {
-            data.push(param.name.into_usize() as u32);
-            data.push(param.ty.into_usize() as u32);
-            data.push(param.mode.as_u32());
-            data.push(param.is_comptime as u32);
-            data.push(param.span.file_id.index());
-            data.push(param.span.start);
-            data.push(param.span.end);
+            let mut record = [0; PARAM_SCHEMA.width];
+            record[PARAM_NAME] = Self::symbol_word(RirParamsRange::FAMILY, param.name)?;
+            record[PARAM_TYPE] = Self::symbol_word(RirParamsRange::FAMILY, param.ty)?;
+            record[PARAM_MODE] = param.mode.as_u32();
+            record[PARAM_COMPTIME] = param.is_comptime as u32;
+            record[PARAM_SPAN_FILE] = param.span.file_id.index();
+            record[PARAM_SPAN_START] = param.span.start;
+            record[PARAM_SPAN_END] = param.span.end;
+            data.extend(record);
         }
-        let start = self.add_extra(&data);
-        (start, params.len() as u32)
+        let (start, extent) = self.append_payload(RirParamsRange::FAMILY, data)?;
+        Ok(RirParamsRange::from_parts(start, extent))
     }
 
     /// Retrieve RirParams from the extra array.
-    pub fn get_params(&self, start: u32, len: u32) -> RirSlice<'_, RirParam> {
-        let words = len.checked_mul(PARAM_SIZE).unwrap();
-        let data = self.get_extra(start, words);
-        RirSlice::new(data, PARAM_SIZE as usize, |chunk| RirParam {
-            name: Spur::try_from_usize(chunk[0] as usize).unwrap(),
-            ty: Spur::try_from_usize(chunk[1] as usize).unwrap(),
-            mode: RirParamMode::from_u32(chunk[2]),
-            is_comptime: chunk[3] != 0,
-            span: Span::with_file(FileId::new(chunk[4]), chunk[5], chunk[6]),
+    pub fn params(&self, range: &RirParamsRange) -> RirSlice<'_, RirParam> {
+        let data = self
+            .payload_words(range, |r| (r.start(), r.extent(), RirParamsRange::FAMILY))
+            .expect("validated RIR range");
+        RirSlice::new(data, PARAM_SCHEMA.width, |chunk| RirParam {
+            name: validated_symbol_word(chunk[PARAM_NAME]),
+            ty: validated_symbol_word(chunk[PARAM_TYPE]),
+            mode: RirParamMode::from_u32(chunk[PARAM_MODE]),
+            is_comptime: chunk[PARAM_COMPTIME] != 0,
+            span: Span::with_file(
+                FileId::new(chunk[PARAM_SPAN_FILE]),
+                chunk[PARAM_SPAN_START],
+                chunk[PARAM_SPAN_END],
+            ),
         })
     }
 
     /// Store match arms (pattern + body pairs) and return (start, arm_count).
     /// Each arm is stored with variable size depending on pattern kind.
-    pub fn add_match_arms(&mut self, arms: &[(RirPattern, InstRef)]) -> (u32, u32) {
-        let start = self.extra.len() as u32;
+    pub(crate) fn add_match_arms(
+        &mut self,
+        arms: &[(RirPattern, InstRef)],
+    ) -> Result<RirMatchArmsRange, RirPayloadBuildError> {
+        if arms.is_empty() {
+            return Ok(RirMatchArmsRange::from_parts(0, 0));
+        }
+        let count =
+            u32::try_from(arms.len()).map_err(|_| RirPayloadBuildError::ResourceLimitExceeded {
+                family: RirMatchArmsRange::FAMILY,
+            })?;
+        let exact_words = arms.iter().try_fold(1usize, |total, (pattern, _)| {
+            let width = encoded_match_record_extent(pattern).ok_or(
+                RirPayloadBuildError::ResourceLimitExceeded {
+                    family: RirMatchArmsRange::FAMILY,
+                },
+            )?;
+            total
+                .checked_add(width)
+                .ok_or(RirPayloadBuildError::ResourceLimitExceeded {
+                    family: RirMatchArmsRange::FAMILY,
+                })
+        })?;
+        let mut staged = Vec::new();
+        staged.try_reserve_exact(exact_words).map_err(|_| {
+            RirPayloadBuildError::CapacityFailure {
+                family: RirMatchArmsRange::FAMILY,
+            }
+        })?;
+        staged.push(count);
         for (pattern, body) in arms {
             match pattern {
                 RirPattern::Wildcard(span) => {
-                    self.extra.push(PatternKind::Wildcard as u32);
-                    self.extra.push(span.start());
-                    self.extra.push(span.len());
-                    self.extra.push(span.file_id.index());
-                    self.extra.push(body.as_u32());
+                    staged.extend([
+                        PatternKind::Wildcard as u32,
+                        span.start(),
+                        span.len(),
+                        span.file_id.index(),
+                        body.as_u32(),
+                    ]);
                 }
                 RirPattern::Int {
                     value,
                     negative,
                     span,
                 } => {
-                    self.extra.push(PatternKind::Int as u32);
-                    self.extra.push(span.start());
-                    self.extra.push(span.len());
-                    self.extra.push(span.file_id.index());
+                    staged.extend([
+                        PatternKind::Int as u32,
+                        span.start(),
+                        span.len(),
+                        span.file_id.index(),
+                    ]);
                     // Store u64 magnitude as two u32s (little-endian) plus sign flag
-                    self.extra.push(*value as u32);
-                    self.extra.push((*value >> 32) as u32);
-                    self.extra.push(u32::from(*negative));
-                    self.extra.push(body.as_u32());
+                    staged.extend([
+                        *value as u32,
+                        (*value >> 32) as u32,
+                        u32::from(*negative),
+                        body.as_u32(),
+                    ]);
                 }
                 RirPattern::Bool(value, span) => {
-                    self.extra.push(PatternKind::Bool as u32);
-                    self.extra.push(span.start());
-                    self.extra.push(span.len());
-                    self.extra.push(span.file_id.index());
-                    self.extra.push(if *value { 1 } else { 0 });
-                    self.extra.push(body.as_u32());
+                    staged.extend([
+                        PatternKind::Bool as u32,
+                        span.start(),
+                        span.len(),
+                        span.file_id.index(),
+                        u32::from(*value),
+                        body.as_u32(),
+                    ]);
                 }
                 RirPattern::Path {
                     module,
@@ -710,46 +2533,55 @@ impl Rir {
                     bindings,
                     span,
                 } => {
-                    self.extra.push(PatternKind::Path as u32);
-                    self.extra.push(span.start());
-                    self.extra.push(span.len());
-                    self.extra.push(span.file_id.index());
+                    staged.extend([
+                        PatternKind::Path as u32,
+                        span.start(),
+                        span.len(),
+                        span.file_id.index(),
+                    ]);
                     // Store module as u32::MAX for None, otherwise the InstRef
-                    self.extra.push(module.map_or(u32::MAX, |r| r.as_u32()));
+                    staged.push(module.map_or(u32::MAX, |r| r.as_u32()));
                     // Store ctor_head (inline type-constructor pattern head,
                     // RUE-596) the same way — u32::MAX for None.
-                    self.extra.push(ctor_head.map_or(u32::MAX, |r| r.as_u32()));
-                    self.extra.push(type_name.into_usize() as u32);
-                    self.extra.push(variant.into_usize() as u32);
+                    staged.push(ctor_head.map_or(u32::MAX, |r| r.as_u32()));
+                    staged.push(Self::symbol_word(RirMatchArmsRange::FAMILY, *type_name)?);
+                    staged.push(Self::symbol_word(RirMatchArmsRange::FAMILY, *variant)?);
                     // Variable-length payload bindings (RUE-221): a count
                     // followed by the binding symbols, then the body last.
-                    self.extra.push(bindings.len() as u32);
+                    staged.push(u32::try_from(bindings.len()).map_err(|_| {
+                        RirPayloadBuildError::ResourceLimitExceeded {
+                            family: RirMatchArmsRange::FAMILY,
+                        }
+                    })?);
                     for b in bindings {
-                        self.extra.push(b.into_usize() as u32);
+                        staged.push(Self::symbol_word(RirMatchArmsRange::FAMILY, *b)?);
                     }
-                    self.extra.push(body.as_u32());
+                    staged.push(body.as_u32());
                 }
             }
         }
-        (start, arms.len() as u32)
-    }
-
-    /// Decode a pattern's span from the extra array. Every pattern kind
-    /// stores its span as [start, len, file_id] at offsets 1..=3 after the
-    /// kind word (see the `PATTERN_*_SIZE` layout comments).
-    fn decode_pattern_span(extra: &[u32], pos: usize) -> Span {
-        let span_start = extra[pos + 1];
-        let span_len = extra[pos + 2];
-        let file_id = rue_span::FileId::new(extra[pos + 3]);
-        Span::with_file(file_id, span_start, span_start + span_len)
+        let (start, extent) = self.append_payload(RirMatchArmsRange::FAMILY, staged)?;
+        Ok(RirMatchArmsRange::from_parts(start, extent))
     }
 
     /// Retrieve match arms from the extra array.
-    pub fn get_match_arms(&self, start: u32, arm_count: u32) -> RirMatchArms<'_> {
+    pub fn match_arms(&self, range: &RirMatchArmsRange) -> RirMatchArms<'_> {
+        let words = self
+            .payload_words(range, |r| {
+                (r.start(), r.extent(), RirMatchArmsRange::FAMILY)
+            })
+            .expect("validated RIR range");
+        if words.is_empty() {
+            return RirMatchArms {
+                extra: words,
+                start: 0,
+                len: 0,
+            };
+        }
         let view = RirMatchArms {
-            extra: &self.extra,
-            start: start as usize,
-            len: arm_count as usize,
+            extra: words,
+            start: 1,
+            len: words[0] as usize,
         };
         view.iter().for_each(drop);
         view
@@ -757,49 +2589,117 @@ impl Rir {
 
     /// Store field initializers (name, value) and return (start, len).
     /// Layout: [name: u32, value: u32] per field
-    pub fn add_field_inits(&mut self, fields: &[(Spur, InstRef)]) -> (u32, u32) {
-        let mut data = Vec::with_capacity(fields.len() * FIELD_INIT_SIZE as usize);
+    pub(crate) fn add_field_inits(
+        &mut self,
+        fields: &[(Spur, InstRef)],
+    ) -> Result<RirFieldInitsRange, RirPayloadBuildError> {
+        let words = fields.len().checked_mul(FIELD_INIT_SCHEMA.width).ok_or(
+            RirPayloadBuildError::ResourceLimitExceeded {
+                family: RirFieldInitsRange::FAMILY,
+            },
+        )?;
+        let mut data = Vec::new();
+        data.try_reserve(words)
+            .map_err(|_| RirPayloadBuildError::CapacityFailure {
+                family: RirFieldInitsRange::FAMILY,
+            })?;
         for (name, value) in fields {
-            data.push(name.into_usize() as u32);
-            data.push(value.as_u32());
+            let mut record = [0; FIELD_INIT_SCHEMA.width];
+            record[FIELD_INIT_NAME] = Self::symbol_word(RirFieldInitsRange::FAMILY, *name)?;
+            record[FIELD_INIT_VALUE] = value.as_u32();
+            data.extend(record);
         }
-        let start = self.add_extra(&data);
-        (start, fields.len() as u32)
+        let (start, extent) = self.append_payload(RirFieldInitsRange::FAMILY, data)?;
+        Ok(RirFieldInitsRange::from_parts(start, extent))
     }
 
     /// Retrieve field initializers from the extra array.
-    pub fn get_field_inits(&self, start: u32, len: u32) -> RirSlice<'_, (Spur, InstRef)> {
-        let words = len.checked_mul(FIELD_INIT_SIZE).unwrap();
-        let data = self.get_extra(start, words);
-        RirSlice::new(data, FIELD_INIT_SIZE as usize, |chunk| {
+    pub fn field_inits(&self, range: &RirFieldInitsRange) -> RirSlice<'_, (Spur, InstRef)> {
+        let data = self
+            .payload_words(range, |r| {
+                (r.start(), r.extent(), RirFieldInitsRange::FAMILY)
+            })
+            .expect("validated RIR range");
+        RirSlice::new(data, FIELD_INIT_SCHEMA.width, |chunk| {
             (
-                Spur::try_from_usize(chunk[0] as usize).unwrap(),
-                InstRef::from_raw(chunk[1]),
+                validated_symbol_word(chunk[FIELD_INIT_NAME]),
+                InstRef::from_raw(chunk[FIELD_INIT_VALUE]),
             )
         })
     }
 
     /// Store field declarations (name, type) and return (start, len).
     /// Layout: [name: u32, type: u32] per field
-    pub fn add_field_decls(&mut self, fields: &[(Spur, Spur)]) -> (u32, u32) {
-        let mut data = Vec::with_capacity(fields.len() * FIELD_DECL_SIZE as usize);
+    fn add_field_decl_words<R>(
+        &mut self,
+        family: &'static str,
+        fields: &[(Spur, Spur)],
+        make: impl FnOnce(u32, u32) -> R,
+    ) -> Result<R, RirPayloadBuildError> {
+        let words = fields
+            .len()
+            .checked_mul(FIELD_DECL_SCHEMA.width)
+            .ok_or(RirPayloadBuildError::ResourceLimitExceeded { family })?;
+        let mut data = Vec::new();
+        data.try_reserve(words)
+            .map_err(|_| RirPayloadBuildError::CapacityFailure { family })?;
         for (name, ty) in fields {
-            data.push(name.into_usize() as u32);
-            data.push(ty.into_usize() as u32);
+            let mut record = [0; FIELD_DECL_SCHEMA.width];
+            record[FIELD_DECL_NAME] = Self::symbol_word(family, *name)?;
+            record[FIELD_DECL_TYPE] = Self::symbol_word(family, *ty)?;
+            data.extend(record);
         }
-        let start = self.add_extra(&data);
-        (start, fields.len() as u32)
+        let (start, extent) = self.append_payload(family, data)?;
+        Ok(make(start, extent))
+    }
+    pub(crate) fn add_struct_fields(
+        &mut self,
+        fields: &[(Spur, Spur)],
+    ) -> Result<RirStructFieldsRange, RirPayloadBuildError> {
+        self.add_field_decl_words(
+            RirStructFieldsRange::FAMILY,
+            fields,
+            RirStructFieldsRange::from_parts,
+        )
+    }
+    pub(crate) fn add_anon_struct_fields(
+        &mut self,
+        fields: &[(Spur, Spur)],
+    ) -> Result<RirAnonStructFieldsRange, RirPayloadBuildError> {
+        self.add_field_decl_words(
+            RirAnonStructFieldsRange::FAMILY,
+            fields,
+            RirAnonStructFieldsRange::from_parts,
+        )
     }
 
     /// Retrieve field declarations from the extra array.
-    pub fn get_field_decls(&self, start: u32, len: u32) -> RirSlice<'_, (Spur, Spur)> {
-        let words = len.checked_mul(FIELD_DECL_SIZE).unwrap();
-        let data = self.get_extra(start, words);
-        RirSlice::new(data, FIELD_DECL_SIZE as usize, |chunk| {
+    fn field_decl_view<R>(
+        &self,
+        range: &R,
+        parts: impl FnOnce(&R) -> (u32, u32, &'static str),
+    ) -> RirSlice<'_, (Spur, Spur)> {
+        let data = self
+            .payload_words(range, parts)
+            .expect("validated RIR range");
+        RirSlice::new(data, FIELD_DECL_SCHEMA.width, |chunk| {
             (
-                Spur::try_from_usize(chunk[0] as usize).unwrap(),
-                Spur::try_from_usize(chunk[1] as usize).unwrap(),
+                validated_symbol_word(chunk[FIELD_DECL_NAME]),
+                validated_symbol_word(chunk[FIELD_DECL_TYPE]),
             )
+        })
+    }
+    pub fn struct_fields(&self, range: &RirStructFieldsRange) -> RirSlice<'_, (Spur, Spur)> {
+        self.field_decl_view(range, |r| {
+            (r.start(), r.extent(), RirStructFieldsRange::FAMILY)
+        })
+    }
+    pub fn anon_struct_fields(
+        &self,
+        range: &RirAnonStructFieldsRange,
+    ) -> RirSlice<'_, (Spur, Spur)> {
+        self.field_decl_view(range, |r| {
+            (r.start(), r.extent(), RirAnonStructFieldsRange::FAMILY)
         })
     }
 
@@ -810,32 +2710,269 @@ impl Rir {
     /// directive-anchored diagnostics in multi-file compilations attribute
     /// to the right file (dropping the file id here was the same loss shape
     /// as the RUE-185 pattern-span bug; RUE-189).
-    pub fn add_directives(&mut self, directives: &[RirDirective]) -> (u32, u32) {
-        let start = self.extra.len() as u32;
+    pub(crate) fn add_directives(
+        &mut self,
+        directives: &[RirDirective],
+    ) -> Result<RirDirectivesRange, RirPayloadBuildError> {
+        if directives.is_empty() {
+            return Ok(RirDirectivesRange::from_parts(0, 0));
+        }
+        let count = u32::try_from(directives.len()).map_err(|_| {
+            RirPayloadBuildError::ResourceLimitExceeded {
+                family: RirDirectivesRange::FAMILY,
+            }
+        })?;
+        let exact_words = directives.iter().try_fold(1usize, |total, directive| {
+            total
+                .checked_add(encoded_directive_record_extent(directive).ok_or(
+                    RirPayloadBuildError::ResourceLimitExceeded {
+                        family: RirDirectivesRange::FAMILY,
+                    },
+                )?)
+                .ok_or(RirPayloadBuildError::ResourceLimitExceeded {
+                    family: RirDirectivesRange::FAMILY,
+                })
+        })?;
+        let mut staged = Vec::new();
+        staged.try_reserve_exact(exact_words).map_err(|_| {
+            RirPayloadBuildError::CapacityFailure {
+                family: RirDirectivesRange::FAMILY,
+            }
+        })?;
+        staged.push(count);
         for directive in directives {
-            self.extra.push(directive.name.into_usize() as u32);
-            self.extra.push(directive.span.start());
-            self.extra.push(directive.span.len());
-            self.extra.push(directive.span.file_id.index());
-            self.extra.push(directive.args.len() as u32);
+            staged.push(Self::symbol_word(
+                RirDirectivesRange::FAMILY,
+                directive.name,
+            )?);
+            staged.push(directive.span.start());
+            staged.push(directive.span.len());
+            staged.push(directive.span.file_id.index());
+            staged.push(u32::try_from(directive.args.len()).map_err(|_| {
+                RirPayloadBuildError::ResourceLimitExceeded {
+                    family: RirDirectivesRange::FAMILY,
+                }
+            })?);
             for arg in &directive.args {
-                self.extra.push(arg.into_usize() as u32);
+                staged.push(Self::symbol_word(RirDirectivesRange::FAMILY, *arg)?);
             }
         }
-        (start, directives.len() as u32)
+        let (start, extent) = self.append_payload(RirDirectivesRange::FAMILY, staged)?;
+        Ok(RirDirectivesRange::from_parts(start, extent))
     }
 
     /// Retrieve directives from the extra array.
-    pub fn get_directives(&self, start: u32, directive_count: u32) -> RirDirectives<'_> {
+    pub fn directives(&self, range: &RirDirectivesRange) -> RirDirectives<'_> {
+        let words = self
+            .payload_words(range, |r| {
+                (r.start(), r.extent(), RirDirectivesRange::FAMILY)
+            })
+            .expect("validated RIR range");
+        if words.is_empty() {
+            return RirDirectives {
+                extra: words,
+                start: 0,
+                len: 0,
+            };
+        }
         let view = RirDirectives {
-            extra: &self.extra,
-            start: start as usize,
-            len: directive_count as usize,
+            extra: words,
+            start: 1,
+            len: words[0] as usize,
         };
         view.iter().for_each(drop);
         view
     }
+
+    fn add_symbol_words<R>(
+        &mut self,
+        family: &'static str,
+        symbols: &[Spur],
+        make: impl FnOnce(u32, u32) -> R,
+    ) -> Result<R, RirPayloadBuildError> {
+        let mut staged = Vec::new();
+        staged
+            .try_reserve(symbols.len())
+            .map_err(|_| RirPayloadBuildError::CapacityFailure { family })?;
+        for symbol in symbols {
+            staged.push(u32::try_from(symbol.into_usize()).map_err(|_| {
+                RirPayloadBuildError::InvalidBuilderInput {
+                    family,
+                    reason: "symbol index exceeds u32",
+                }
+            })?);
+        }
+        let (start, extent) = self.append_payload(family, staged)?;
+        Ok(make(start, extent))
+    }
+
+    pub(crate) fn add_enum_variants(
+        &mut self,
+        symbols: &[Spur],
+    ) -> Result<RirEnumVariantsRange, RirPayloadBuildError> {
+        self.add_symbol_words(
+            RirEnumVariantsRange::FAMILY,
+            symbols,
+            RirEnumVariantsRange::from_parts,
+        )
+    }
+    pub(crate) fn add_anon_enum_variants(
+        &mut self,
+        symbols: &[Spur],
+    ) -> Result<RirAnonEnumVariantsRange, RirPayloadBuildError> {
+        self.add_symbol_words(
+            RirAnonEnumVariantsRange::FAMILY,
+            symbols,
+            RirAnonEnumVariantsRange::from_parts,
+        )
+    }
+    fn symbol_view<R>(
+        &self,
+        range: &R,
+        parts: impl FnOnce(&R) -> (u32, u32, &'static str),
+    ) -> RirSymbols<'_> {
+        let words = self
+            .payload_words(range, parts)
+            .expect("validated RIR range");
+        RirSlice::new(words, SYMBOL_SCHEMA.width, |record| {
+            validated_symbol_word(record[0])
+        })
+    }
+    pub fn enum_variants(&self, range: &RirEnumVariantsRange) -> RirSymbols<'_> {
+        self.symbol_view(range, |r| {
+            (r.start(), r.extent(), RirEnumVariantsRange::FAMILY)
+        })
+    }
+    pub fn anon_enum_variants(&self, range: &RirAnonEnumVariantsRange) -> RirSymbols<'_> {
+        self.symbol_view(range, |r| {
+            (r.start(), r.extent(), RirAnonEnumVariantsRange::FAMILY)
+        })
+    }
+
+    fn add_enum_payload_words<R>(
+        &mut self,
+        family: &'static str,
+        payloads: &[Vec<Spur>],
+        make: impl FnOnce(u32, u32) -> R,
+    ) -> Result<R, RirPayloadBuildError> {
+        if payloads.iter().all(Vec::is_empty) {
+            return Ok(make(0, 0));
+        }
+        let exact_words = payloads.iter().try_fold(0usize, |total, payload| {
+            total
+                .checked_add(
+                    encoded_enum_payload_record_extent(payload)
+                        .ok_or(RirPayloadBuildError::ResourceLimitExceeded { family })?,
+                )
+                .ok_or(RirPayloadBuildError::ResourceLimitExceeded { family })
+        })?;
+        let mut staged = Vec::new();
+        staged
+            .try_reserve_exact(exact_words)
+            .map_err(|_| RirPayloadBuildError::CapacityFailure { family })?;
+        for payload in payloads {
+            staged.push(
+                u32::try_from(payload.len())
+                    .map_err(|_| RirPayloadBuildError::ResourceLimitExceeded { family })?,
+            );
+            for symbol in payload {
+                staged.push(Self::symbol_word(family, *symbol)?);
+            }
+        }
+        let (start, extent) = self.append_payload(family, staged)?;
+        Ok(make(start, extent))
+    }
+    pub(crate) fn add_enum_payloads(
+        &mut self,
+        payloads: &[Vec<Spur>],
+    ) -> Result<RirEnumPayloadsRange, RirPayloadBuildError> {
+        self.add_enum_payload_words(
+            RirEnumPayloadsRange::FAMILY,
+            payloads,
+            RirEnumPayloadsRange::from_parts,
+        )
+    }
+    pub(crate) fn add_anon_enum_payloads(
+        &mut self,
+        payloads: &[Vec<Spur>],
+    ) -> Result<RirAnonEnumPayloadsRange, RirPayloadBuildError> {
+        self.add_enum_payload_words(
+            RirAnonEnumPayloadsRange::FAMILY,
+            payloads,
+            RirAnonEnumPayloadsRange::from_parts,
+        )
+    }
+    fn enum_payload_view<'a, R>(
+        &'a self,
+        range: &R,
+        variant_count: usize,
+        parts: impl FnOnce(&R) -> (u32, u32, &'static str),
+    ) -> RirEnumPayloads<'a> {
+        RirEnumPayloads {
+            words: self
+                .payload_words(range, parts)
+                .expect("validated RIR range"),
+            position: 0,
+            remaining: variant_count,
+        }
+    }
+
+    pub fn enum_payloads(
+        &self,
+        payloads: &RirEnumPayloadsRange,
+        variants: &RirEnumVariantsRange,
+    ) -> RirEnumPayloads<'_> {
+        self.enum_payload_view(payloads, self.enum_variants(variants).len(), |r| {
+            (r.start(), r.extent(), RirEnumPayloadsRange::FAMILY)
+        })
+    }
+
+    pub fn anon_enum_payloads(
+        &self,
+        payloads: &RirAnonEnumPayloadsRange,
+        variants: &RirAnonEnumVariantsRange,
+    ) -> RirEnumPayloads<'_> {
+        self.enum_payload_view(payloads, self.anon_enum_variants(variants).len(), |r| {
+            (r.start(), r.extent(), RirAnonEnumPayloadsRange::FAMILY)
+        })
+    }
 }
+
+/// Exact, borrowing semantic view of one payload-type list per enum variant.
+#[derive(Debug, Clone)]
+pub struct RirEnumPayloads<'a> {
+    words: &'a [u32],
+    position: usize,
+    remaining: usize,
+}
+
+impl<'a> Iterator for RirEnumPayloads<'a> {
+    type Item = RirSymbols<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        if self.words.is_empty() {
+            return Some(RirSlice::new(&[], SYMBOL_SCHEMA.width, |_| unreachable!()));
+        }
+        let (start, end) = enum_payload_record(self.words, self.position)
+            .expect("validated enum payload descriptor");
+        self.position = end;
+        Some(RirSlice::new(
+            &self.words[start..end],
+            SYMBOL_SCHEMA.width,
+            |record| validated_symbol_word(record[0]),
+        ))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for RirEnumPayloads<'_> {}
 
 /// Reusable zero-allocation view over variable-width RIR match arms.
 #[derive(Debug, Clone)]
@@ -887,82 +3024,13 @@ impl<'a> Iterator for RirMatchArmsIter<'a> {
         if self.remaining == 0 {
             return None;
         }
-        let pos = self.pos;
-        let kind = self.extra[pos];
-        let result = match kind {
-            k if k == PatternKind::Wildcard as u32 => {
-                let span = Rir::decode_pattern_span(self.extra, pos);
-                let body = InstRef::from_raw(self.extra[pos + 4]);
-                self.pos += PATTERN_WILDCARD_SIZE as usize;
-                (RirPatternView::Wildcard(span), body)
-            }
-            k if k == PatternKind::Int as u32 => {
-                let span = Rir::decode_pattern_span(self.extra, pos);
-                let value_lo = self.extra[pos + 4] as u64;
-                let value_hi = self.extra[pos + 5] as u64;
-                let value = value_lo | (value_hi << 32);
-                let negative = self.extra[pos + 6] != 0;
-                let body = InstRef::from_raw(self.extra[pos + 7]);
-                self.pos += PATTERN_INT_SIZE as usize;
-                (
-                    RirPatternView::Int {
-                        value,
-                        negative,
-                        span,
-                    },
-                    body,
-                )
-            }
-            k if k == PatternKind::Bool as u32 => {
-                let span = Rir::decode_pattern_span(self.extra, pos);
-                let value = self.extra[pos + 4] != 0;
-                let body = InstRef::from_raw(self.extra[pos + 5]);
-                self.pos += PATTERN_BOOL_SIZE as usize;
-                (RirPatternView::Bool(value, span), body)
-            }
-            k if k == PatternKind::Path as u32 => {
-                let span = Rir::decode_pattern_span(self.extra, pos);
-                // Decode module: u32::MAX means None
-                let module_raw = self.extra[pos + 4];
-                let module = if module_raw == u32::MAX {
-                    None
-                } else {
-                    Some(InstRef::from_raw(module_raw))
-                };
-                // Decode ctor_head (inline type-constructor pattern head,
-                // RUE-596): u32::MAX means None.
-                let ctor_head_raw = self.extra[pos + 5];
-                let ctor_head = if ctor_head_raw == u32::MAX {
-                    None
-                } else {
-                    Some(InstRef::from_raw(ctor_head_raw))
-                };
-                let type_name = Spur::try_from_usize(self.extra[pos + 6] as usize).unwrap();
-                let variant = Spur::try_from_usize(self.extra[pos + 7] as usize).unwrap();
-                // Variable-length payload bindings (RUE-221).
-                let n_bindings = self.extra[pos + 8] as usize;
-                let bindings =
-                    RirSlice::new(&self.extra[pos + 9..pos + 9 + n_bindings], 1, |record| {
-                        Spur::try_from_usize(record[0] as usize).unwrap()
-                    });
-                let body = InstRef::from_raw(self.extra[pos + 9 + n_bindings]);
-                self.pos += 10 + n_bindings;
-                (
-                    RirPatternView::Path {
-                        module,
-                        ctor_head,
-                        type_name,
-                        variant,
-                        bindings,
-                        span,
-                    },
-                    body,
-                )
-            }
-            _ => panic!("Unknown pattern kind: {}", kind),
+        let (pattern, body, extent) = match decode_match_record(self.extra, self.pos) {
+            Some(record) => record,
+            None => unreachable!("match record passed schema validation"),
         };
+        self.pos += extent;
         self.remaining -= 1;
-        Some(result)
+        Some((pattern, body))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -1020,20 +3088,13 @@ impl<'a> Iterator for RirDirectivesIter<'a> {
         if self.remaining == 0 {
             return None;
         }
-        let name = Spur::try_from_usize(self.extra[self.pos] as usize).unwrap();
-        let span_start = self.extra[self.pos + 1];
-        let span_len = self.extra[self.pos + 2];
-        let file_id = FileId::new(self.extra[self.pos + 3]);
-        let span = Span::with_file(file_id, span_start, span_start + span_len);
-        let args_len = self.extra[self.pos + 4] as usize;
-        let args_start = self.pos + 5;
-        let args_end = args_start + args_len;
-        let args = RirSlice::new(&self.extra[args_start..args_end], 1, |record| {
-            Spur::try_from_usize(record[0] as usize).unwrap()
-        });
-        self.pos = args_end;
+        let (directive, extent) = match decode_directive_record(self.extra, self.pos) {
+            Some(record) => record,
+            None => unreachable!("directive record passed schema validation"),
+        };
+        self.pos += extent;
         self.remaining -= 1;
-        Some(RirDirectiveView { name, args, span })
+        Some(directive)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -1044,7 +3105,7 @@ impl<'a> Iterator for RirDirectivesIter<'a> {
 impl ExactSizeIterator for RirDirectivesIter<'_> {}
 
 /// A single RIR instruction.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Inst {
     pub data: InstData,
     pub span: Span,
@@ -1102,7 +3163,7 @@ impl InternalIntrinsic {
 }
 
 /// Instruction data - the actual operation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum InstData {
     /// Integer constant
     IntConst(u64),
@@ -1205,9 +3266,7 @@ pub enum InstData {
         /// The value being matched
         scrutinee: InstRef,
         /// Index into extra data where arms start
-        arms_start: u32,
-        /// Number of match arms
-        arms_len: u32,
+        arms: RirMatchArmsRange,
     },
 
     /// Break: exits the innermost loop.
@@ -1224,18 +3283,14 @@ pub enum InstData {
     /// Directives and params are stored in the extra array.
     FnDecl {
         /// Index into extra data where directives start
-        directives_start: u32,
-        /// Number of directives
-        directives_len: u32,
+        directives: RirDirectivesRange,
         /// Whether this function is public (requires --preview modules)
         is_pub: bool,
         /// Whether this function is marked `unchecked` (can only be called from checked blocks)
         is_unchecked: bool,
         name: Spur,
         /// Index into extra data where params start
-        params_start: u32,
-        /// Number of parameters
-        params_len: u32,
+        params: RirParamsRange,
         return_type: Spur,
         body: InstRef,
         /// Whether this function/method takes `self` as a receiver.
@@ -1254,9 +3309,7 @@ pub enum InstData {
     /// Used for module re-exports: `pub const strings = @import("utils/strings.rue");`
     ConstDecl {
         /// Index into extra data where directives start
-        directives_start: u32,
-        /// Number of directives
-        directives_len: u32,
+        directives: RirDirectivesRange,
         /// Whether this constant is public (requires --preview modules)
         is_pub: bool,
         /// Constant name
@@ -1273,29 +3326,24 @@ pub enum InstData {
         /// Function name
         name: Spur,
         /// Index into extra data where args start
-        args_start: u32,
-        /// Number of arguments
-        args_len: u32,
+        args: RirCallArgsRange,
     },
 
     /// Intrinsic call with expression arguments (e.g., @dbg)
-    /// Args are stored in the extra array using add_inst_refs/get_inst_refs.
+    /// Args are stored in the typed intrinsic-argument payload family.
     Intrinsic {
         /// Intrinsic name (without @)
         name: Spur,
         /// Index into extra data where args start
-        args_start: u32,
-        /// Number of arguments
-        args_len: u32,
+        args: RirIntrinsicArgsRange,
     },
 
     /// Compiler-internal intrinsic with expression arguments.
     ///
-    /// Args are stored in the extra array using add_inst_refs/get_inst_refs.
+    /// Args are stored in the typed internal-intrinsic payload family.
     InternalIntrinsic {
         intrinsic: InternalIntrinsic,
-        args_start: u32,
-        args_len: u32,
+        args: RirInternalIntrinsicArgsRange,
     },
 
     /// Intrinsic call with a type argument (e.g., @size_of, @align_of)
@@ -1324,9 +3372,7 @@ pub enum InstData {
     /// The result is the last instruction in the block
     Block {
         /// Index into extra data where instruction refs start
-        extra_start: u32,
-        /// Number of instructions in the block
-        len: u32,
+        instructions: RirBlockInstsRange,
     },
 
     // Variable operations
@@ -1335,9 +3381,7 @@ pub enum InstData {
     /// Directives are stored in the extra array using add_directives/get_directives.
     Alloc {
         /// Index into extra data where directives start
-        directives_start: u32,
-        /// Number of directives
-        directives_len: u32,
+        directives: RirDirectivesRange,
         /// Variable name (None for wildcard `_` pattern that discards the value)
         name: Option<Spur>,
         /// Whether the variable is mutable
@@ -1374,9 +3418,7 @@ pub enum InstData {
     /// Directives, fields, and methods are stored in the extra array.
     StructDecl {
         /// Index into extra data where directives start
-        directives_start: u32,
-        /// Number of directives
-        directives_len: u32,
+        directives: RirDirectivesRange,
         /// Whether this struct is public (requires --preview modules)
         is_pub: bool,
         /// Whether this struct is a linear type (must be consumed)
@@ -1384,13 +3426,9 @@ pub enum InstData {
         /// Struct name
         name: Spur,
         /// Index into extra data where fields start
-        fields_start: u32,
-        /// Number of fields
-        fields_len: u32,
+        fields: RirStructFieldsRange,
         /// Index into extra data where method refs start
-        methods_start: u32,
-        /// Number of methods
-        methods_len: u32,
+        methods: RirStructMethodsRange,
     },
 
     /// Struct literal: creates a new struct instance
@@ -1408,9 +3446,7 @@ pub enum InstData {
         /// Struct type name
         type_name: Spur,
         /// Index into extra data where fields start
-        fields_start: u32,
-        /// Number of fields
-        fields_len: u32,
+        fields: RirFieldInitsRange,
         /// Span of the first field-init-shorthand field, if any (`P { x }`
         /// desugaring to `P { x: x }`, RUE-613, stabilized in RUE-628). `Some`
         /// iff at least one field used the shorthand; retained as diagnostic
@@ -1439,25 +3475,21 @@ pub enum InstData {
 
     // Enum operations
     /// Enum type declaration
-    /// Variants are stored in the extra array using add_symbols/get_symbols.
+    /// Variants are stored in the typed enum-variant payload family.
     EnumDecl {
         /// Whether this enum is public (requires --preview modules)
         is_pub: bool,
         /// Enum name
         name: Spur,
         /// Index into extra data where variants start
-        variants_start: u32,
-        /// Number of variants
-        variants_len: u32,
+        variants: RirEnumVariantsRange,
         /// Index into extra data where the tuple-variant payloads start
         /// (RUE-221). The region is a self-describing flat sequence: for each
         /// variant in declaration order, a count `k` followed by `k`
         /// type-name symbols (as `Spur`s). A count of 0 means a
         /// discriminant-only variant. `payloads_len` is the total number of
         /// u32 words in the region (0 when no variant carries a payload).
-        payloads_start: u32,
-        /// Number of u32 words in the payloads region.
-        payloads_len: u32,
+        payloads: RirEnumPayloadsRange,
     },
 
     /// Enum variant: creates a value of an enum type
@@ -1473,12 +3505,10 @@ pub enum InstData {
 
     // Array operations
     /// Array literal: creates a new array from element values
-    /// Elements are stored in the extra array using add_inst_refs/get_inst_refs.
+    /// Elements are stored in the typed array-element payload family.
     ArrayInit {
         /// Index into extra data where elements start
-        elems_start: u32,
-        /// Number of elements
-        elems_len: u32,
+        elements: RirArrayElemsRange,
     },
 
     /// Array-repeat literal `[value; count]` (RUE-235): creates an array of
@@ -1519,9 +3549,7 @@ pub enum InstData {
         /// Method name
         method: Spur,
         /// Index into extra data where args start
-        args_start: u32,
-        /// Number of arguments
-        args_len: u32,
+        args: RirCallArgsRange,
     },
 
     /// User-defined destructor declaration: drop fn TypeName(self) { ... }
@@ -1560,13 +3588,9 @@ pub enum InstData {
     /// Methods are stored as InstRefs to FnDecl instructions in the extra array.
     AnonStructType {
         /// Index into extra data where fields start
-        fields_start: u32,
-        /// Number of fields
-        fields_len: u32,
+        fields: RirAnonStructFieldsRange,
         /// Index into extra data where method InstRefs start
-        methods_start: u32,
-        /// Number of methods (InstRefs to FnDecl instructions)
-        methods_len: u32,
+        methods: RirAnonStructMethodsRange,
     },
 
     /// Anonymous enum type: an enum (sum) type used as a value expression
@@ -1577,15 +3601,11 @@ pub enum InstData {
     /// as in [`InstData::EnumDecl`].
     AnonEnumType {
         /// Index into extra data where variant name symbols start
-        variants_start: u32,
-        /// Number of variants
-        variants_len: u32,
+        variants: RirAnonEnumVariantsRange,
         /// Index into extra data where the tuple-variant payloads start,
         /// encoded as in [`InstData::EnumDecl`]: a self-describing flat
         /// sequence of `count` + `count` type-name symbols per variant.
-        payloads_start: u32,
-        /// Number of u32 words in the payloads region (0 when no payloads).
-        payloads_len: u32,
+        payloads: RirAnonEnumPayloadsRange,
     },
 }
 
@@ -1694,12 +3714,6 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
         )
     }
 
-    fn display_extra(&self, index: u32) -> u32 {
-        self.displayed_extra
-            .as_ref()
-            .map_or(index, |extra| extra[index as usize])
-    }
-
     /// Format a call argument with its mode prefix.
     fn format_call_arg(&self, arg: &RirCallArg) -> String {
         match arg.mode {
@@ -1719,8 +3733,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 
     /// Format an item's directives as a `"@copy @allow(..) "` prefix
     /// (empty string when there are none).
-    fn format_directives(&self, start: u32, len: u32) -> String {
-        let directives = self.rir.get_directives(start, len);
+    fn format_directives(&self, range: &RirDirectivesRange) -> String {
+        let directives = self.rir.directives(range);
         if directives.len() == 0 {
             return String::new();
         }
@@ -1982,12 +3996,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     )
                     .unwrap()
                 }
-                InstData::Match {
-                    scrutinee,
-                    arms_start,
-                    arms_len,
-                } => {
-                    let arms = self.rir.get_match_arms(*arms_start, *arms_len);
+                InstData::Match { scrutinee, arms } => {
+                    let arms = self.rir.match_arms(arms);
                     let arms_str: Vec<String> = arms
                         .iter()
                         .map(|(pat, body)| {
@@ -2014,13 +4024,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 
                 // Functions
                 InstData::FnDecl {
-                    directives_start,
-                    directives_len,
+                    directives,
                     is_pub,
                     is_unchecked,
                     name,
-                    params_start,
-                    params_len,
+                    params,
                     return_type,
                     body,
                     has_self,
@@ -2039,7 +4047,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     } else {
                         ""
                     };
-                    let params = self.rir.get_params(*params_start, *params_len);
+                    let params = self.rir.params(params);
                     let params_str: Vec<String> = params
                         .values()
                         .map(|p| {
@@ -2058,7 +4066,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             )
                         })
                         .collect();
-                    let directives_str = self.format_directives(*directives_start, *directives_len);
+                    let directives_str = self.format_directives(directives);
                     writeln!(
                         out,
                         "{}{}{}fn {}({}{}) -> {} {{",
@@ -2075,14 +4083,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     writeln!(out, "}}").unwrap();
                 }
                 InstData::ConstDecl {
-                    directives_start,
-                    directives_len,
+                    directives,
                     is_pub,
                     name,
                     ty,
                     init,
                 } => {
-                    let directives_str = self.format_directives(*directives_start, *directives_len);
+                    let directives_str = self.format_directives(directives);
                     let pub_str = if *is_pub { "pub " } else { "" };
                     let name_str = self.interner.resolve(&*name);
                     let ty_str = ty
@@ -2106,34 +4113,22 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         writeln!(out, "ret").unwrap();
                     }
                 }
-                InstData::Call {
-                    name,
-                    args_start,
-                    args_len,
-                } => {
+                InstData::Call { name, args } => {
                     let name_str = self.interner.resolve(&*name);
-                    let args = self.rir.get_call_args(*args_start, *args_len);
+                    let args = self.rir.call_args(args);
                     writeln!(out, "call {}({})", name_str, self.format_call_args(args)).unwrap();
                 }
-                InstData::Intrinsic {
-                    name,
-                    args_start,
-                    args_len,
-                } => {
+                InstData::Intrinsic { name, args } => {
                     let name_str = self.interner.resolve(&*name);
-                    let args = self.rir.get_inst_refs(*args_start, *args_len);
+                    let args = self.rir.intrinsic_args(args);
                     let args_str: Vec<String> = args
                         .values()
                         .map(|a| self.display_ref(a).to_string())
                         .collect();
                     writeln!(out, "intrinsic @{}({})", name_str, args_str.join(", ")).unwrap();
                 }
-                InstData::InternalIntrinsic {
-                    intrinsic,
-                    args_start,
-                    args_len,
-                } => {
-                    let args = self.rir.get_inst_refs(*args_start, *args_len);
+                InstData::InternalIntrinsic { intrinsic, args } => {
+                    let args = self.rir.internal_intrinsic_args(args);
                     let args_str: Vec<String> = args
                         .values()
                         .map(|a| self.display_ref(a).to_string())
@@ -2156,21 +4151,20 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let field_str = self.interner.resolve(&*field);
                     writeln!(out, "offset_of @offset_of({}, {})", type_str, field_str).unwrap();
                 }
-                InstData::Block { extra_start, len } => {
-                    writeln!(out, "block({}, {})", self.display_extra(*extra_start), len).unwrap();
+                InstData::Block { instructions } => {
+                    writeln!(out, "block({instructions:?})").unwrap();
                 }
 
                 // Variables
                 InstData::Alloc {
-                    directives_start,
-                    directives_len,
+                    directives,
                     name,
                     is_mut,
                     ty,
                     init,
                     iter_elem,
                 } => {
-                    let directives_str = self.format_directives(*directives_start, *directives_len);
+                    let directives_str = self.format_directives(directives);
                     let name_str = name
                         .map(|n| self.interner.resolve(&n).to_string())
                         .unwrap_or_else(|| "_".to_string());
@@ -2206,19 +4200,16 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 
                 // Structs
                 InstData::StructDecl {
-                    directives_start,
-                    directives_len,
+                    directives,
                     is_pub,
                     is_linear,
                     name,
-                    fields_start,
-                    fields_len,
-                    methods_start,
-                    methods_len,
+                    fields,
+                    methods,
                 } => {
                     let pub_str = if *is_pub { "pub " } else { "" };
                     let name_str = self.interner.resolve(&*name);
-                    let fields = self.rir.get_field_decls(*fields_start, *fields_len);
+                    let fields = self.rir.struct_fields(fields);
                     let fields_str: Vec<String> = fields
                         .values()
                         .map(|(fname, ftype)| {
@@ -2230,8 +4221,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         })
                         .collect();
                     let linear_str = if *is_linear { "linear " } else { "" };
-                    let directives_str = self.format_directives(*directives_start, *directives_len);
-                    let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
+                    let directives_str = self.format_directives(directives);
+                    let methods = self.rir.struct_methods(methods);
                     let methods_str = if methods.len() == 0 {
                         String::new()
                     } else {
@@ -2257,8 +4248,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     module,
                     ctor_head,
                     type_name,
-                    fields_start,
-                    fields_len,
+                    fields,
                     shorthand_span: _,
                 } => {
                     let module_str = match ctor_head {
@@ -2268,7 +4258,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             .unwrap_or_default(),
                     };
                     let type_str = self.interner.resolve(&*type_name);
-                    let fields = self.rir.get_field_inits(*fields_start, *fields_len);
+                    let fields = self.rir.field_inits(fields);
                     let fields_str: Vec<String> = fields
                         .values()
                         .map(|(fname, value)| {
@@ -2312,23 +4302,17 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::EnumDecl {
                     is_pub,
                     name,
-                    variants_start,
-                    variants_len,
-                    payloads_start,
-                    payloads_len,
+                    variants,
+                    payloads,
                 } => {
                     let pub_str = if *is_pub { "pub " } else { "" };
                     let name_str = self.interner.resolve(&*name);
-                    let variants = self.rir.get_symbols(*variants_start, *variants_len);
-                    // Decode payloads (self-describing [k, t0..t_{k-1}] per variant).
-                    let payload_words = self.rir.get_extra(*payloads_start, *payloads_len);
-                    let mut payload_arities: Vec<usize> = Vec::new();
-                    let mut pi = 0usize;
-                    while pi < payload_words.len() {
-                        let k = payload_words[pi] as usize;
-                        payload_arities.push(k);
-                        pi += 1 + k;
-                    }
+                    let payload_arities: Vec<usize> = self
+                        .rir
+                        .enum_payloads(payloads, variants)
+                        .map(|payload| payload.len())
+                        .collect();
+                    let variants = self.rir.enum_variants(variants);
                     let variants_str: Vec<String> = variants
                         .iter()
                         .enumerate()
@@ -2368,11 +4352,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
 
                 // Arrays
-                InstData::ArrayInit {
-                    elems_start,
-                    elems_len,
-                } => {
-                    let elements = self.rir.get_inst_refs(*elems_start, *elems_len);
+                InstData::ArrayInit { elements } => {
+                    let elements = self.rir.array_elements(elements);
                     let elems_str: Vec<String> = elements
                         .values()
                         .map(|e| self.display_ref(e).to_string())
@@ -2418,10 +4399,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::MethodCall {
                     receiver,
                     method,
-                    args_start,
-                    args_len,
+                    args,
                 } => {
-                    let args = self.rir.get_call_args(*args_start, *args_len);
+                    let args = self.rir.call_args(args);
                     writeln!(
                         out,
                         "method_call {}.{}({})",
@@ -2461,14 +4441,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
 
                 // Anonymous struct type
-                InstData::AnonStructType {
-                    fields_start,
-                    fields_len,
-                    methods_start,
-                    methods_len,
-                } => {
+                InstData::AnonStructType { fields, methods } => {
                     write!(out, "struct {{ ").unwrap();
-                    let fields = self.rir.get_field_decls(*fields_start, *fields_len);
+                    let fields = self.rir.anon_struct_fields(fields);
                     for (i, (name, ty)) in fields.values().enumerate() {
                         if i > 0 {
                             write!(out, ", ").unwrap();
@@ -2478,8 +4453,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         write!(out, "{}: {}", name_str, ty_str).unwrap();
                     }
                     // Print methods if any
-                    if *methods_len > 0 {
-                        let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
+                    if methods.extent() > 0 {
+                        let methods = self.rir.anon_struct_methods(methods);
                         let methods_str: Vec<String> = methods
                             .values()
                             .map(|m| self.display_ref(m).to_string())
@@ -2493,22 +4468,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
 
                 // Anonymous enum type
-                InstData::AnonEnumType {
-                    variants_start,
-                    variants_len,
-                    payloads_start,
-                    payloads_len,
-                } => {
-                    let variants = self.rir.get_symbols(*variants_start, *variants_len);
-                    // Decode payloads (self-describing [k, t0..t_{k-1}] per variant).
-                    let payload_words = self.rir.get_extra(*payloads_start, *payloads_len);
-                    let mut payload_arities: Vec<usize> = Vec::new();
-                    let mut pi = 0usize;
-                    while pi < payload_words.len() {
-                        let k = payload_words[pi] as usize;
-                        payload_arities.push(k);
-                        pi += 1 + k;
-                    }
+                InstData::AnonEnumType { variants, payloads } => {
+                    let payload_arities: Vec<usize> = self
+                        .rir
+                        .anon_enum_payloads(payloads, variants)
+                        .map(|payload| payload.len())
+                        .collect();
+                    let variants = self.rir.anon_enum_variants(variants);
                     let variants_str: Vec<String> = variants
                         .iter()
                         .enumerate()
@@ -2535,7 +4501,7 @@ impl fmt::Display for RirPrinter<'_, '_> {
 }
 
 #[cfg(test)]
-mod tests {
+mod typed_payload_tests {
     use super::*;
     use lasso::ThreadedRodeo;
     use std::alloc::{GlobalAlloc, Layout, System};
@@ -2546,6 +4512,7 @@ mod tests {
     thread_local! {
         static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
         static ALLOCATION_COUNT: Cell<usize> = const { Cell::new(0) };
+        static ALLOCATION_BYTES: Cell<usize> = const { Cell::new(0) };
     }
 
     unsafe impl GlobalAlloc for CountingAllocator {
@@ -2553,31 +4520,13 @@ mod tests {
             COUNT_ALLOCATIONS.with(|enabled| {
                 if enabled.get() {
                     ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
+                    ALLOCATION_BYTES.with(|bytes| bytes.set(bytes.get() + layout.size()));
                 }
             });
             unsafe { System.alloc(layout) }
         }
-
-        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-            COUNT_ALLOCATIONS.with(|enabled| {
-                if enabled.get() {
-                    ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
-                }
-            });
-            unsafe { System.alloc_zeroed(layout) }
-        }
-
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             unsafe { System.dealloc(ptr, layout) }
-        }
-
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            COUNT_ALLOCATIONS.with(|enabled| {
-                if enabled.get() {
-                    ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
-                }
-            });
-            unsafe { System.realloc(ptr, layout, new_size) }
         }
     }
 
@@ -2587,1950 +4536,837 @@ mod tests {
     fn allocations_during(f: impl FnOnce()) -> usize {
         COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
         ALLOCATION_COUNT.with(|count| count.set(0));
+        ALLOCATION_BYTES.with(|bytes| bytes.set(0));
         COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
         f();
         COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
         ALLOCATION_COUNT.with(Cell::get)
     }
 
-    #[test]
-    fn test_inst_ref_size() {
-        assert_eq!(std::mem::size_of::<InstRef>(), 4);
+    fn allocation_evidence(f: impl FnOnce()) -> (usize, usize) {
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+        ALLOCATION_COUNT.with(|count| count.set(0));
+        ALLOCATION_BYTES.with(|bytes| bytes.set(0));
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
+        f();
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+        (
+            ALLOCATION_COUNT.with(Cell::get),
+            ALLOCATION_BYTES.with(Cell::get),
+        )
+    }
+
+    fn span() -> Span {
+        Span::with_file(FileId::new(7), 3, 9)
     }
 
     #[test]
-    fn test_add_and_get_inst() {
-        let mut rir = Rir::new();
-        let inst = Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        };
-        let inst_ref = rir.add_inst(inst);
-
-        let retrieved = rir.get(inst_ref);
-        assert!(matches!(retrieved.data, InstData::IntConst(42)));
-    }
-
-    #[test]
-    fn test_rir_is_empty() {
-        let rir = Rir::new();
-        assert!(rir.is_empty());
-        assert_eq!(rir.len(), 0);
-    }
-
-    #[test]
-    fn test_rir_extra_data() {
-        let mut rir = Rir::new();
-        let data = [1, 2, 3, 4, 5];
-        let start = rir.add_extra(&data);
-        assert_eq!(start, 0);
-
-        let retrieved = rir.get_extra(start, 5);
-        assert_eq!(retrieved, &data);
-
-        // Add more extra data
-        let data2 = [10, 20];
-        let start2 = rir.add_extra(&data2);
-        assert_eq!(start2, 5);
-    }
-
-    #[test]
-    fn test_rir_iter() {
-        let mut rir = Rir::new();
-        rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
-        rir.add_inst(Inst {
-            data: InstData::IntConst(2),
-            span: Span::new(2, 3),
-        });
-
-        let items: Vec<_> = rir.iter().collect();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].0.as_u32(), 0);
-        assert_eq!(items[1].0.as_u32(), 1);
-    }
-
-    #[test]
-    fn test_inst_ref_display() {
-        let inst_ref = InstRef::from_raw(42);
-        assert_eq!(format!("{}", inst_ref), "%42");
-    }
-
-    // RirPattern tests
-    #[test]
-    fn test_rir_pattern_wildcard_span() {
-        let span = Span::new(10, 11);
-        let pattern = RirPattern::Wildcard(span);
-        assert_eq!(pattern.span(), span);
-    }
-
-    #[test]
-    fn test_rir_pattern_int_span() {
-        let span = Span::new(20, 22);
-        let pattern = RirPattern::Int {
-            value: 42,
-            negative: false,
-            span,
-        };
-        assert_eq!(pattern.span(), span);
-
-        // Test negative int
-        let pattern_neg = RirPattern::Int {
-            value: 100,
-            negative: true,
-            span,
-        };
-        assert_eq!(pattern_neg.span(), span);
-    }
-
-    #[test]
-    fn test_rir_pattern_bool_span() {
-        let span = Span::new(30, 34);
-        let pattern = RirPattern::Bool(true, span);
-        assert_eq!(pattern.span(), span);
-
-        let pattern_false = RirPattern::Bool(false, span);
-        assert_eq!(pattern_false.span(), span);
-    }
-
-    #[test]
-    fn test_rir_pattern_path_span() {
-        let span = Span::new(40, 50);
+    fn every_payload_family_round_trips() {
         let interner = ThreadedRodeo::new();
-        let type_name = interner.get_or_intern("Color");
-        let variant = interner.get_or_intern("Red");
-
-        let pattern = RirPattern::Path {
-            module: None,
-            ctor_head: None,
-            type_name,
-            variant,
-            bindings: Vec::new(),
-            span,
-        };
-        assert_eq!(pattern.span(), span);
-    }
-
-    // RirCallArg tests
-    #[test]
-    fn test_rir_call_arg_is_inout() {
-        let arg_normal = RirCallArg {
-            value: InstRef::from_raw(0),
-            mode: RirArgMode::Normal,
-        };
-        assert!(!arg_normal.is_inout());
-        assert!(!arg_normal.is_borrow());
-
-        let arg_inout = RirCallArg {
-            value: InstRef::from_raw(0),
-            mode: RirArgMode::Inout,
-        };
-        assert!(arg_inout.is_inout());
-        assert!(!arg_inout.is_borrow());
-
-        let arg_borrow = RirCallArg {
-            value: InstRef::from_raw(0),
-            mode: RirArgMode::Borrow,
-        };
-        assert!(!arg_borrow.is_inout());
-        assert!(arg_borrow.is_borrow());
-    }
-
-    #[test]
-    fn test_rir_call_arg_modes_round_trip() {
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let r0 = InstRef::from_raw(0);
+        let r1 = InstRef::from_raw(1);
         let mut rir = Rir::new();
-        let (args_start, args_len) = rir.add_call_args(&[
-            RirCallArg {
-                value: InstRef::from_raw(1),
-                mode: RirArgMode::Normal,
-            },
-            RirCallArg {
-                value: InstRef::from_raw(2),
-                mode: RirArgMode::Inout,
-            },
-            RirCallArg {
-                value: InstRef::from_raw(3),
-                mode: RirArgMode::Borrow,
-            },
-        ]);
 
-        let args = rir.get_call_args(args_start, args_len).to_vec();
-        assert_eq!(args.len(), 3);
-        assert_eq!(args[0].value, InstRef::from_raw(1));
-        assert_eq!(args[0].mode, RirArgMode::Normal);
-        assert_eq!(args[1].value, InstRef::from_raw(2));
-        assert_eq!(args[1].mode, RirArgMode::Inout);
-        assert_eq!(args[2].value, InstRef::from_raw(3));
-        assert_eq!(args[2].mode, RirArgMode::Borrow);
-    }
-
-    #[test]
-    #[should_panic(expected = "invalid RirArgMode value: 99")]
-    fn test_rir_call_arg_invalid_mode_panics() {
-        let mut rir = Rir::new();
-        let args_start = rir.add_extra(&[InstRef::from_raw(1).as_u32(), 99]);
-
-        let _ = rir.get_call_args(args_start, 1);
-    }
-
-    #[test]
-    fn test_rir_param_modes_round_trip() {
-        let mut rir = Rir::new();
-        let interner = ThreadedRodeo::new();
-        let name = interner.get_or_intern("value");
-        let ty = interner.get_or_intern("i32");
-        let span = Span::new(3, 8);
-        let modes = [
-            RirParamMode::Normal,
-            RirParamMode::Inout,
-            RirParamMode::Borrow,
-        ];
-        let params: Vec<_> = modes
-            .iter()
-            .map(|&mode| RirParam {
-                name,
-                ty,
-                mode,
-                is_comptime: false,
-                span,
-            })
-            .collect();
-
-        let (params_start, params_len) = rir.add_params(&params);
-        let decoded = rir.get_params(params_start, params_len);
-
-        assert_eq!(decoded.len(), modes.len());
+        let intrinsic = rir.add_intrinsic_args(&[r0, r1]).unwrap();
+        let internal = rir.add_internal_intrinsic_args(&[r1]).unwrap();
+        let block = rir.add_block_insts(&[r0, r1]).unwrap();
+        let methods = rir.add_struct_methods(&[r0]).unwrap();
+        let anon_methods = rir.add_anon_struct_methods(&[r1]).unwrap();
+        let elements = rir.add_array_elements(&[r0, r1]).unwrap();
         assert_eq!(
-            decoded.values().map(|param| param.mode).collect::<Vec<_>>(),
-            modes
+            rir.intrinsic_args(&intrinsic).values().collect::<Vec<_>>(),
+            [r0, r1]
         );
-        assert_eq!(modes.map(RirParamMode::as_u32), [0, 1, 2]);
-    }
+        assert_eq!(
+            rir.internal_intrinsic_args(&internal)
+                .values()
+                .collect::<Vec<_>>(),
+            [r1]
+        );
+        assert_eq!(
+            rir.block_insts(&block).values().collect::<Vec<_>>(),
+            [r0, r1]
+        );
+        assert_eq!(
+            rir.struct_methods(&methods).values().collect::<Vec<_>>(),
+            [r0]
+        );
+        assert_eq!(
+            rir.anon_struct_methods(&anon_methods)
+                .values()
+                .collect::<Vec<_>>(),
+            [r1]
+        );
+        assert_eq!(
+            rir.array_elements(&elements).values().collect::<Vec<_>>(),
+            [r0, r1]
+        );
 
-    #[test]
-    #[should_panic(expected = "invalid RirParamMode value: 3")]
-    fn test_rir_param_old_comptime_mode_panics() {
-        let mut rir = Rir::new();
-        let params_start = rir.add_extra(&[0, 0, 3, 0, 0, 0, 0]);
-
-        let _ = rir.get_params(params_start, 1);
-    }
-
-    #[test]
-    #[should_panic(expected = "invalid RirParamMode value: 99")]
-    fn test_rir_param_invalid_mode_panics() {
-        let mut rir = Rir::new();
-        let params_start = rir.add_extra(&[0, 0, 99, 0, 0, 0, 0]);
-
-        let _ = rir.get_params(params_start, 1);
-    }
-
-    #[test]
-    fn borrowing_payload_views_are_exact_for_empty_fixed_and_variable_records() {
-        fn exact_len(iter: impl ExactSizeIterator) -> usize {
-            iter.len()
-        }
-
-        let mut rir = Rir::new();
-        assert_eq!(exact_len(rir.get_inst_refs(0, 0).values()), 0);
-        assert_eq!(exact_len(rir.get_symbols(0, 0).iter()), 0);
-        assert_eq!(exact_len(rir.get_call_args(0, 0).values()), 0);
-        assert_eq!(exact_len(rir.get_params(0, 0).values()), 0);
-        assert_eq!(exact_len(rir.get_match_arms(0, 0).iter()), 0);
-        assert_eq!(exact_len(rir.get_field_inits(0, 0).values()), 0);
-        assert_eq!(exact_len(rir.get_field_decls(0, 0).values()), 0);
-        assert_eq!(exact_len(rir.get_directives(0, 0).iter()), 0);
-
-        let interner = ThreadedRodeo::new();
-        let type_name = interner.get_or_intern("Shape");
-        let variant = interner.get_or_intern("Rect");
-        let left = interner.get_or_intern("left");
-        let right = interner.get_or_intern("right");
-        let body = rir.add_inst(Inst {
-            data: InstData::UnitConst,
-            span: Span::new(20, 21),
-        });
-        let (arms_start, arms_len) = rir.add_match_arms(&[(
-            RirPattern::Path {
-                module: None,
-                ctor_head: None,
-                type_name,
-                variant,
-                bindings: vec![left, right],
-                span: Span::new(3, 18),
-            },
-            body,
-        )]);
-        let arms = rir.get_match_arms(arms_start, arms_len);
-        assert_eq!(arms.len(), 1);
-        let (pattern, decoded_body) = arms.iter().next().unwrap();
-        assert_eq!(arms.len(), 1);
-        assert_eq!(decoded_body, body);
-        let RirPatternView::Path { bindings, span, .. } = pattern else {
-            panic!("expected path-pattern view")
-        };
-        assert_eq!(span, Span::new(3, 18));
-        assert_eq!(exact_len(bindings.iter()), 2);
-        assert_eq!(bindings.to_vec(), vec![left, right]);
-
-        let directive_name = interner.get_or_intern("allow");
-        let warning = interner.get_or_intern("unused_variable");
-        let (directives_start, directives_len) = rir.add_directives(&[RirDirective {
-            name: directive_name,
-            args: vec![warning],
-            span: Span::new(30, 42),
-        }]);
-        let directives = rir.get_directives(directives_start, directives_len);
-        assert_eq!(directives.len(), 1);
-        let directive = directives.iter().next().unwrap();
-        assert_eq!(directive.span, Span::new(30, 42));
-        assert_eq!(exact_len(directive.args.iter()), 1);
-        assert_eq!(directive.args.to_vec(), vec![warning]);
-    }
-
-    #[test]
-    fn every_borrowing_payload_family_traverses_without_allocating() {
-        let interner = ThreadedRodeo::new();
-        let first = interner.get_or_intern("first");
-        let second = interner.get_or_intern("second");
-        let ty = interner.get_or_intern("i32");
-        let directive_name = interner.get_or_intern("allow");
-        let span = Span::new(1, 2);
-        let refs = [InstRef::from_raw(1), InstRef::from_raw(2)];
-        let mut rir = Rir::new();
-        let inst_refs = rir.add_inst_refs(&refs);
-        let symbols = rir.add_symbols(&[first, second]);
-        let call_args = rir.add_call_args(&[
-            RirCallArg {
-                value: refs[0],
-                mode: RirArgMode::Normal,
-            },
-            RirCallArg {
-                value: refs[1],
+        let call = rir
+            .add_call_args(&[RirCallArg {
+                value: r1,
                 mode: RirArgMode::Inout,
-            },
-        ]);
-        let params = rir.add_params(&[
-            RirParam {
-                name: first,
-                ty,
-                mode: RirParamMode::Normal,
-                is_comptime: false,
-                span,
-            },
-            RirParam {
-                name: second,
-                ty,
-                mode: RirParamMode::Inout,
-                is_comptime: false,
-                span,
-            },
-        ]);
-        let match_arms = rir.add_match_arms(&[(
-            RirPattern::Path {
-                module: None,
-                ctor_head: None,
-                type_name: ty,
-                variant: first,
-                bindings: vec![second],
-                span,
-            },
-            refs[0],
-        )]);
-        let field_inits = rir.add_field_inits(&[(first, refs[0]), (second, refs[1])]);
-        let field_decls = rir.add_field_decls(&[(first, ty), (second, ty)]);
-        let directives = rir.add_directives(&[RirDirective {
-            name: directive_name,
-            args: vec![first, second],
-            span,
-        }]);
-
-        let checks = [
-            (
-                "inst refs",
-                allocations_during(|| {
-                    std::hint::black_box(
-                        rir.get_inst_refs(inst_refs.0, inst_refs.1).values().count(),
-                    );
-                }),
-            ),
-            (
-                "symbols",
-                allocations_during(|| {
-                    std::hint::black_box(rir.get_symbols(symbols.0, symbols.1).values().count());
-                }),
-            ),
-            (
-                "call args",
-                allocations_during(|| {
-                    std::hint::black_box(
-                        rir.get_call_args(call_args.0, call_args.1).values().count(),
-                    );
-                }),
-            ),
-            (
-                "params",
-                allocations_during(|| {
-                    std::hint::black_box(rir.get_params(params.0, params.1).values().count());
-                }),
-            ),
-            (
-                "match arms",
-                allocations_during(|| {
-                    std::hint::black_box(
-                        rir.get_match_arms(match_arms.0, match_arms.1)
-                            .iter()
-                            .count(),
-                    );
-                }),
-            ),
-            (
-                "field inits",
-                allocations_during(|| {
-                    std::hint::black_box(
-                        rir.get_field_inits(field_inits.0, field_inits.1)
-                            .values()
-                            .count(),
-                    );
-                }),
-            ),
-            (
-                "field decls",
-                allocations_during(|| {
-                    std::hint::black_box(
-                        rir.get_field_decls(field_decls.0, field_decls.1)
-                            .values()
-                            .count(),
-                    );
-                }),
-            ),
-            (
-                "directives",
-                allocations_during(|| {
-                    std::hint::black_box(
-                        rir.get_directives(directives.0, directives.1)
-                            .iter()
-                            .count(),
-                    );
-                }),
-            ),
-        ];
-        for (family, allocations) in checks {
-            assert_eq!(allocations, 0, "{family} traversal allocated");
-        }
-    }
-
-    #[test]
-    #[should_panic]
-    fn fixed_payload_view_rejects_an_out_of_bounds_range() {
-        let rir = Rir::new();
-        let _ = rir.get_call_args(0, 1);
-    }
-
-    #[test]
-    #[should_panic]
-    fn variable_payload_view_rejects_a_truncated_path_record() {
-        let mut rir = Rir::new();
-        let start = rir.add_extra(&[
-            PatternKind::Path as u32,
-            0,
-            1,
-            0,
-            u32::MAX,
-            u32::MAX,
-            0,
-            0,
-            2,
-            0,
-        ]);
-        let _ = rir.get_match_arms(start, 1);
-    }
-
-    #[test]
-    #[should_panic(expected = "invalid RirArgMode value: 99")]
-    fn fixed_payload_view_eagerly_rejects_a_malformed_later_record() {
-        let mut rir = Rir::new();
-        let start = rir.add_extra(&[0, RirArgMode::Normal.as_u32(), 1, 99]);
-        let _ = rir.get_call_args(start, 2);
-    }
-
-    #[test]
-    #[should_panic(expected = "Unknown pattern kind: 99")]
-    fn match_arm_view_eagerly_rejects_a_malformed_later_record() {
-        let mut rir = Rir::new();
-        let start = rir.add_extra(&[PatternKind::Wildcard as u32, 0, 0, 0, 0, 99]);
-        let _ = rir.get_match_arms(start, 2);
-    }
-
-    #[test]
-    #[should_panic]
-    fn directive_view_eagerly_rejects_a_truncated_later_record() {
-        let mut rir = Rir::new();
-        let start = rir.add_extra(&[0, 0, 0, 0, 0, 0]);
-        let _ = rir.get_directives(start, 2);
-    }
-
-    // RirPrinter tests
-    fn create_printer_test_rir() -> (Rir, ThreadedRodeo) {
-        let rir = Rir::new();
-        let interner = ThreadedRodeo::new();
-        (rir, interner)
-    }
-
-    #[test]
-    fn test_printer_int_const() {
-        let (mut rir, interner) = create_printer_test_rir();
-        rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("%0 = const 42"));
-    }
-
-    #[test]
-    fn test_printer_bool_const() {
-        let (mut rir, interner) = create_printer_test_rir();
-        rir.add_inst(Inst {
-            data: InstData::BoolConst(true),
-            span: Span::new(0, 4),
-        });
-        rir.add_inst(Inst {
-            data: InstData::BoolConst(false),
-            span: Span::new(0, 5),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("%0 = const true"));
-        assert!(output.contains("%1 = const false"));
-    }
-
-    #[test]
-    fn test_printer_string_const() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let hello = interner.get_or_intern("hello world");
-        rir.add_inst(Inst {
-            data: InstData::StringConst(hello),
-            span: Span::new(0, 13),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("%0 = const \"hello world\""));
-    }
-
-    #[test]
-    fn test_printer_unit_const() {
-        let (mut rir, interner) = create_printer_test_rir();
-        rir.add_inst(Inst {
-            data: InstData::UnitConst,
-            span: Span::new(0, 2),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("%0 = const ()"));
-    }
-
-    #[test]
-    fn test_printer_binary_ops() {
-        let (_, interner) = create_printer_test_rir();
-
-        // Test all binary operations
-        let ops = [
-            "add", "sub", "mul", "div", "mod", "eq", "ne", "lt", "gt", "le", "ge", "and", "or",
-            "bit_and", "bit_or", "bit_xor", "shl", "shr",
-        ];
-
-        for op_name in ops {
-            let mut test_rir = Rir::new();
-            let lhs = test_rir.add_inst(Inst {
-                data: InstData::IntConst(1),
-                span: Span::new(0, 1),
-            });
-            let rhs = test_rir.add_inst(Inst {
-                data: InstData::IntConst(2),
-                span: Span::new(2, 3),
-            });
-            // Create the op instruction with refs into this iteration's RIR
-            let data = match op_name {
-                "add" => InstData::Add { lhs, rhs },
-                "sub" => InstData::Sub { lhs, rhs },
-                "mul" => InstData::Mul { lhs, rhs },
-                "div" => InstData::Div { lhs, rhs },
-                "mod" => InstData::Mod { lhs, rhs },
-                "eq" => InstData::Eq { lhs, rhs },
-                "ne" => InstData::Ne { lhs, rhs },
-                "lt" => InstData::Lt { lhs, rhs },
-                "gt" => InstData::Gt { lhs, rhs },
-                "le" => InstData::Le { lhs, rhs },
-                "ge" => InstData::Ge { lhs, rhs },
-                "and" => InstData::And { lhs, rhs },
-                "or" => InstData::Or { lhs, rhs },
-                "bit_and" => InstData::BitAnd { lhs, rhs },
-                "bit_or" => InstData::BitOr { lhs, rhs },
-                "bit_xor" => InstData::BitXor { lhs, rhs },
-                "shl" => InstData::Shl { lhs, rhs },
-                "shr" => InstData::Shr { lhs, rhs },
-                _ => unreachable!(),
-            };
-            test_rir.add_inst(Inst {
-                data,
-                span: Span::new(0, 5),
-            });
-
-            let printer = RirPrinter::new(&test_rir, &interner);
-            let output = printer.to_string();
-            let expected = format!("%2 = {} %0, %1", op_name);
-            assert!(
-                output.contains(&expected),
-                "Expected '{}' in output:\n{}",
-                expected,
-                output
-            );
-        }
-    }
-
-    #[test]
-    fn test_printer_unary_ops() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let operand = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        rir.add_inst(Inst {
-            data: InstData::Neg { operand },
-            span: Span::new(0, 3),
-        });
-        rir.add_inst(Inst {
-            data: InstData::Not { operand },
-            span: Span::new(0, 3),
-        });
-        rir.add_inst(Inst {
-            data: InstData::BitNot { operand },
-            span: Span::new(0, 3),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("neg %0"));
-        assert!(output.contains("not %0"));
-        assert!(output.contains("bit_not %0"));
-    }
-
-    #[test]
-    fn test_printer_branch() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let cond = rir.add_inst(Inst {
-            data: InstData::BoolConst(true),
-            span: Span::new(0, 4),
-        });
-        let then_block = rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
-        let else_block = rir.add_inst(Inst {
-            data: InstData::IntConst(0),
-            span: Span::new(0, 1),
-        });
-
-        // With else block
-        rir.add_inst(Inst {
-            data: InstData::Branch {
-                cond,
-                then_block,
-                else_block: Some(else_block),
-            },
-            span: Span::new(0, 20),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("branch %0, %1, %2"));
-    }
-
-    #[test]
-    fn test_printer_branch_no_else() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let cond = rir.add_inst(Inst {
-            data: InstData::BoolConst(true),
-            span: Span::new(0, 4),
-        });
-        let then_block = rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
-
-        rir.add_inst(Inst {
-            data: InstData::Branch {
-                cond,
-                then_block,
-                else_block: None,
-            },
-            span: Span::new(0, 15),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        // Should not have the third argument
-        assert!(output.contains("branch %0, %1\n"));
-    }
-
-    #[test]
-    fn test_printer_loop() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let cond = rir.add_inst(Inst {
-            data: InstData::BoolConst(true),
-            span: Span::new(0, 4),
-        });
-        let body = rir.add_inst(Inst {
-            data: InstData::IntConst(0),
-            span: Span::new(0, 1),
-        });
-
-        rir.add_inst(Inst {
-            data: InstData::Loop { cond, body },
-            span: Span::new(0, 20),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("loop %0, %1"));
-    }
-
-    #[test]
-    fn test_printer_infinite_loop() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let body = rir.add_inst(Inst {
-            data: InstData::IntConst(0),
-            span: Span::new(0, 1),
-        });
-
-        rir.add_inst(Inst {
-            data: InstData::InfiniteLoop {
-                body,
-                iter_borrow: None,
-            },
-            span: Span::new(0, 15),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("infinite_loop %0"));
-    }
-
-    #[test]
-    fn test_printer_break_continue() {
-        let (mut rir, interner) = create_printer_test_rir();
-        rir.add_inst(Inst {
-            data: InstData::Break { value: None },
-            span: Span::new(0, 5),
-        });
-        rir.add_inst(Inst {
-            data: InstData::Continue,
-            span: Span::new(0, 8),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("break\n"));
-        assert!(output.contains("continue\n"));
-    }
-
-    #[test]
-    fn test_printer_ret() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let value = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        // Return with value
-        rir.add_inst(Inst {
-            data: InstData::Ret(Some(value)),
-            span: Span::new(0, 10),
-        });
-        // Return without value
-        rir.add_inst(Inst {
-            data: InstData::Ret(None),
-            span: Span::new(0, 6),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("ret %0"));
-        assert!(output.contains("%2 = ret\n"));
-    }
-
-    #[test]
-    fn test_printer_fn_decl() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let body = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        let name = interner.get_or_intern("main");
-        let return_type = interner.get_or_intern("i32");
-        let param_name = interner.get_or_intern("x");
-        let param_type = interner.get_or_intern("i32");
-
-        let (directives_start, directives_len) = rir.add_directives(&[]);
-        let (params_start, params_len) = rir.add_params(&[RirParam {
-            name: param_name,
-            ty: param_type,
-            mode: RirParamMode::Normal,
-            is_comptime: false,
-            span: Span::default(),
-        }]);
-
-        rir.add_inst(Inst {
-            data: InstData::FnDecl {
-                directives_start,
-                directives_len,
-                is_pub: false,
-                is_unchecked: false,
-                name,
-                params_start,
-                params_len,
-                return_type,
-                body,
-                has_self: false,
-                self_mode: RirParamMode::Normal,
-            },
-            span: Span::new(0, 30),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("fn main(x: i32) -> i32"));
-    }
-
-    #[test]
-    fn test_printer_fn_decl_with_self() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let body = rir.add_inst(Inst {
-            data: InstData::IntConst(0),
-            span: Span::new(0, 1),
-        });
-
-        let name = interner.get_or_intern("get_x");
-        let return_type = interner.get_or_intern("i32");
-
-        let (directives_start, directives_len) = rir.add_directives(&[]);
-        let (params_start, params_len) = rir.add_params(&[]);
-
-        rir.add_inst(Inst {
-            data: InstData::FnDecl {
-                directives_start,
-                directives_len,
-                is_pub: false,
-                is_unchecked: false,
-                name,
-                params_start,
-                params_len,
-                return_type,
-                body,
-                has_self: true,
-                self_mode: RirParamMode::Normal,
-            },
-            span: Span::new(0, 30),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("fn get_x(self, ) -> i32"));
-    }
-
-    #[test]
-    fn test_printer_fn_decl_param_modes() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let body = rir.add_inst(Inst {
-            data: InstData::UnitConst,
-            span: Span::new(0, 2),
-        });
-
-        let name = interner.get_or_intern("modify");
-        let return_type = interner.get_or_intern("()");
-        let param1_name = interner.get_or_intern("a");
-        let param1_type = interner.get_or_intern("i32");
-        let param2_name = interner.get_or_intern("b");
-        let param2_type = interner.get_or_intern("i32");
-        let param3_name = interner.get_or_intern("c");
-        let param3_type = interner.get_or_intern("i32");
-
-        let (directives_start, directives_len) = rir.add_directives(&[]);
-        let (params_start, params_len) = rir.add_params(&[
-            RirParam {
-                name: param1_name,
-                ty: param1_type,
-                mode: RirParamMode::Normal,
-                is_comptime: false,
-                span: Span::default(),
-            },
-            RirParam {
-                name: param2_name,
-                ty: param2_type,
-                mode: RirParamMode::Inout,
-                is_comptime: false,
-                span: Span::default(),
-            },
-            RirParam {
-                name: param3_name,
-                ty: param3_type,
+            }])
+            .unwrap();
+        assert_eq!(rir.call_args(&call).get(0).unwrap().value, r1);
+        let params = rir
+            .add_params(&[RirParam {
+                name: a,
+                ty: b,
                 mode: RirParamMode::Borrow,
-                is_comptime: false,
-                span: Span::default(),
-            },
-        ]);
-
-        rir.add_inst(Inst {
-            data: InstData::FnDecl {
-                directives_start,
-                directives_len,
-                is_pub: false,
-                is_unchecked: false,
-                name,
-                params_start,
-                params_len,
-                return_type,
-                body,
-                has_self: false,
-                self_mode: RirParamMode::Normal,
-            },
-            span: Span::new(0, 50),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("a: i32"));
-        assert!(output.contains("inout b: i32"));
-        assert!(output.contains("borrow c: i32"));
-    }
-
-    #[test]
-    fn test_printer_fn_decl_comptime_param() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let body = rir.add_inst(Inst {
-            data: InstData::UnitConst,
-            span: Span::new(0, 2),
-        });
-        let name = interner.get_or_intern("identity");
-        let return_type = interner.get_or_intern("type");
-        let param_name = interner.get_or_intern("T");
-        let param_type = interner.get_or_intern("type");
-        let (directives_start, directives_len) = rir.add_directives(&[]);
-        let (params_start, params_len) = rir.add_params(&[RirParam {
-            name: param_name,
-            ty: param_type,
-            mode: RirParamMode::Normal,
-            is_comptime: true,
-            span: Span::default(),
-        }]);
-
-        rir.add_inst(Inst {
-            data: InstData::FnDecl {
-                directives_start,
-                directives_len,
-                is_pub: false,
-                is_unchecked: false,
-                name,
-                params_start,
-                params_len,
-                return_type,
-                body,
-                has_self: false,
-                self_mode: RirParamMode::Normal,
-            },
-            span: Span::new(0, 40),
-        });
-
-        let output = RirPrinter::new(&rir, &interner).to_string();
-        assert!(output.contains("fn identity(comptime T: type) -> type"));
-    }
-
-    #[test]
-    fn test_printer_call() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let arg = rir.add_inst(Inst {
-            data: InstData::IntConst(10),
-            span: Span::new(0, 2),
-        });
-
-        let name = interner.get_or_intern("foo");
-
-        let (args_start, args_len) = rir.add_call_args(&[RirCallArg {
-            value: arg,
-            mode: RirArgMode::Normal,
-        }]);
-
-        rir.add_inst(Inst {
-            data: InstData::Call {
-                name,
-                args_start,
-                args_len,
-            },
-            span: Span::new(0, 8),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("call foo(%0)"));
-    }
-
-    #[test]
-    fn test_printer_call_with_arg_modes() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let arg1 = rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
-        let arg2 = rir.add_inst(Inst {
-            data: InstData::IntConst(2),
-            span: Span::new(0, 1),
-        });
-        let arg3 = rir.add_inst(Inst {
-            data: InstData::IntConst(3),
-            span: Span::new(0, 1),
-        });
-
-        let name = interner.get_or_intern("modify");
-
-        let (args_start, args_len) = rir.add_call_args(&[
-            RirCallArg {
-                value: arg1,
-                mode: RirArgMode::Normal,
-            },
-            RirCallArg {
-                value: arg2,
-                mode: RirArgMode::Inout,
-            },
-            RirCallArg {
-                value: arg3,
-                mode: RirArgMode::Borrow,
-            },
-        ]);
-
-        rir.add_inst(Inst {
-            data: InstData::Call {
-                name,
-                args_start,
-                args_len,
-            },
-            span: Span::new(0, 20),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("call modify(%0, inout %1, borrow %2)"));
-    }
-
-    #[test]
-    fn test_printer_intrinsic() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let arg = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        let name = interner.get_or_intern("dbg");
-
-        let (args_start, args_len) = rir.add_call_args(&[RirCallArg {
-            value: arg,
-            mode: RirArgMode::Normal,
-        }]);
-
-        rir.add_inst(Inst {
-            data: InstData::Intrinsic {
-                name,
-                args_start,
-                args_len,
-            },
-            span: Span::new(0, 10),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("intrinsic @dbg(%0)"));
-    }
-
-    #[test]
-    fn test_printer_internal_intrinsic() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let arg = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-        let (args_start, args_len) = rir.add_inst_refs(&[arg]);
-        rir.add_inst(Inst {
-            data: InstData::InternalIntrinsic {
-                intrinsic: InternalIntrinsic::IterLen,
-                args_start,
-                args_len,
-            },
-            span: Span::new(0, 10),
-        });
-
-        let output = RirPrinter::new(&rir, &interner).to_string();
-        assert!(output.contains("internal_intrinsic @__rue_iter_len(%0)"));
-    }
-
-    #[test]
-    fn internal_intrinsic_presentation_and_arity_are_exhaustive() {
+                is_comptime: true,
+                span: span(),
+            }])
+            .unwrap();
+        assert_eq!(rir.params(&params).get(0).unwrap().name, a);
+        let arms = rir
+            .add_match_arms(&[(RirPattern::Wildcard(span()), r0)])
+            .unwrap();
+        assert_eq!(rir.match_arms(&arms).get(0).unwrap().1, r0);
+        let inits = rir.add_field_inits(&[(a, r1)]).unwrap();
+        assert_eq!(rir.field_inits(&inits).get(0).unwrap(), (a, r1));
+        let fields = rir.add_struct_fields(&[(a, b)]).unwrap();
+        let anon_fields = rir.add_anon_struct_fields(&[(b, a)]).unwrap();
+        assert_eq!(rir.struct_fields(&fields).get(0).unwrap(), (a, b));
+        assert_eq!(rir.anon_struct_fields(&anon_fields).get(0).unwrap(), (b, a));
+        let directives = rir
+            .add_directives(&[RirDirective {
+                name: a,
+                args: vec![b],
+                span: span(),
+            }])
+            .unwrap();
+        assert_eq!(rir.directives(&directives).get(0).unwrap().name, a);
+        let variants = rir.add_enum_variants(&[a, b]).unwrap();
+        let anon_variants = rir.add_anon_enum_variants(&[b]).unwrap();
+        assert_eq!(rir.enum_variants(&variants).to_vec(), [a, b]);
+        assert_eq!(rir.anon_enum_variants(&anon_variants).to_vec(), [b]);
+        let payloads = rir.add_enum_payloads(&[vec![a], vec![]]).unwrap();
+        let anon_payloads = rir.add_anon_enum_payloads(&[vec![b]]).unwrap();
         assert_eq!(
-            [
-                (
-                    InternalIntrinsic::IterLen.as_str(),
-                    InternalIntrinsic::IterLen.arity()
-                ),
-                (
-                    InternalIntrinsic::CharScalar.as_str(),
-                    InternalIntrinsic::CharScalar.arity()
-                ),
-                (
-                    InternalIntrinsic::CharNext.as_str(),
-                    InternalIntrinsic::CharNext.arity()
-                ),
-                (
-                    InternalIntrinsic::CharScalarLossy.as_str(),
-                    InternalIntrinsic::CharScalarLossy.arity()
-                ),
-                (
-                    InternalIntrinsic::CharNextLossy.as_str(),
-                    InternalIntrinsic::CharNextLossy.arity()
-                ),
-            ],
-            [
-                ("__rue_iter_len", 1),
-                ("__rue_char_scalar", 2),
-                ("__rue_char_next", 2),
-                ("__rue_char_scalar_lossy", 2),
-                ("__rue_char_next_lossy", 2),
-            ]
+            rir.enum_payloads(&payloads, &variants)
+                .map(|payload| payload.to_vec())
+                .collect::<Vec<_>>(),
+            [vec![a], vec![]]
+        );
+        assert_eq!(
+            rir.anon_enum_payloads(&anon_payloads, &anon_variants)
+                .map(|payload| payload.to_vec())
+                .collect::<Vec<_>>(),
+            [vec![b]]
         );
     }
 
     #[test]
-    fn test_printer_type_intrinsic() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let name = interner.get_or_intern("size_of");
-        let type_arg = interner.get_or_intern("i32");
-
-        rir.add_inst(Inst {
-            data: InstData::TypeIntrinsic { name, type_arg },
-            span: Span::new(0, 15),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("type_intrinsic @size_of(i32)"));
+    fn empty_payloads_are_canonical_and_borrowed_views_are_empty() {
+        let mut rir = Rir::new();
+        let call = rir.add_call_args(&[]).unwrap();
+        let params = rir.add_params(&[]).unwrap();
+        let arms = rir.add_match_arms(&[]).unwrap();
+        let directives = rir.add_directives(&[]).unwrap();
+        assert_eq!(rir.extra_len(), 0);
+        assert!(rir.call_args(&call).is_empty());
+        assert!(rir.params(&params).is_empty());
+        assert!(rir.match_arms(&arms).is_empty());
+        assert!(rir.directives(&directives).is_empty());
     }
 
     #[test]
-    fn test_printer_block() {
-        let (mut rir, interner) = create_printer_test_rir();
+    fn validation_reports_family_range_and_record_deterministically() {
+        let mut rir = Rir::new();
+        rir.extra.extend([1, PatternKind::Path as u32]);
+        let arms = RirMatchArmsRange::from_parts(0, 2);
         rir.add_inst(Inst {
-            data: InstData::Block {
-                extra_start: 0,
-                len: 3,
+            data: InstData::Match {
+                scrutinee: InstRef::from_raw(0),
+                arms,
             },
-            span: Span::new(0, 20),
+            span: span(),
         });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("block(0, 3)"));
+        assert_eq!(
+            rir.validate_payloads().unwrap_err(),
+            RirPayloadError {
+                family: "match arms",
+                start: 0,
+                extent: 2,
+                record: Some(0),
+                reason: "record header or body is truncated",
+            }
+        );
     }
 
     #[test]
-    fn test_printer_alloc() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let init = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        let name = interner.get_or_intern("x");
-        let ty = interner.get_or_intern("i32");
-
-        let (directives_start, directives_len) = rir.add_directives(&[]);
-
-        // Normal alloc with type
+    fn validation_rejects_noncanonical_empty_ranges() {
+        let mut rir = Rir::new();
+        let args = RirCallArgsRange::from_parts(1, 0);
         rir.add_inst(Inst {
-            data: InstData::Alloc {
-                directives_start,
-                directives_len,
-                name: Some(name),
-                is_mut: false,
-                ty: Some(ty),
-                init,
-                iter_elem: false,
+            data: InstData::Call {
+                name: Spur::default(),
+                args,
             },
-            span: Span::new(0, 15),
+            span: span(),
         });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("alloc x: i32= %0"));
+        assert_eq!(
+            rir.validate_payloads().unwrap_err().reason,
+            "noncanonical empty range"
+        );
     }
 
     #[test]
-    fn test_printer_alloc_mut() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let init = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        let name = interner.get_or_intern("x");
-
-        let (directives_start, directives_len) = rir.add_directives(&[]);
-
-        rir.add_inst(Inst {
-            data: InstData::Alloc {
-                directives_start,
-                directives_len,
-                name: Some(name),
-                is_mut: true,
-                ty: None,
-                init,
-                iter_elem: false,
+    fn validation_rejects_partial_fixed_records_and_invalid_modes() {
+        let mut partial = Rir::new();
+        partial.extra.push(0);
+        let args = RirCallArgsRange::from_parts(0, 1);
+        partial.add_inst(Inst {
+            data: InstData::Call {
+                name: Spur::default(),
+                args,
             },
-            span: Span::new(0, 15),
+            span: span(),
         });
+        assert_eq!(
+            partial.validate_payloads().unwrap_err().reason,
+            "payload ends in a partial record"
+        );
 
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("alloc mut x= %0"));
-    }
-
-    #[test]
-    fn test_printer_alloc_wildcard() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let init = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        let (directives_start, directives_len) = rir.add_directives(&[]);
-
-        rir.add_inst(Inst {
-            data: InstData::Alloc {
-                directives_start,
-                directives_len,
-                name: None,
-                is_mut: false,
-                ty: None,
-                init,
-                iter_elem: false,
+        let mut invalid_mode = Rir::new();
+        invalid_mode.extra.extend([0, 99]);
+        let args = RirCallArgsRange::from_parts(0, 2);
+        invalid_mode.add_inst(Inst {
+            data: InstData::Call {
+                name: Spur::default(),
+                args,
             },
-            span: Span::new(0, 10),
+            span: span(),
         });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("alloc _= %0"));
+        assert_eq!(
+            invalid_mode.validate_payloads().unwrap_err().reason,
+            "invalid argument mode"
+        );
     }
 
     #[test]
-    fn test_printer_var_ref() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let name = interner.get_or_intern("x");
-
-        rir.add_inst(Inst {
-            data: InstData::VarRef { name },
-            span: Span::new(0, 1),
+    fn validation_rejects_unknown_tags_trailing_words_and_bad_enum_cardinality() {
+        let mut unknown = Rir::new();
+        unknown.extra.extend([1, 99]);
+        let arms = RirMatchArmsRange::from_parts(0, 2);
+        unknown.add_inst(Inst {
+            data: InstData::Match {
+                scrutinee: InstRef::from_raw(0),
+                arms,
+            },
+            span: span(),
         });
+        assert_eq!(
+            unknown.validate_payloads().unwrap_err().reason,
+            "record header or body is truncated"
+        );
 
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("var_ref x"));
-    }
-
-    #[test]
-    fn test_printer_assign() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let value = rir.add_inst(Inst {
-            data: InstData::IntConst(10),
-            span: Span::new(0, 2),
-        });
-
-        let name = interner.get_or_intern("x");
-
-        rir.add_inst(Inst {
-            data: InstData::Assign { name, value },
-            span: Span::new(0, 6),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("assign x = %0"));
-    }
-
-    #[test]
-    fn test_printer_struct_decl() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let name = interner.get_or_intern("Point");
-        let x_name = interner.get_or_intern("x");
-        let y_name = interner.get_or_intern("y");
-        let i32_type = interner.get_or_intern("i32");
-
-        let (directives_start, directives_len) = rir.add_directives(&[]);
-        let (fields_start, fields_len) =
-            rir.add_field_decls(&[(x_name, i32_type), (y_name, i32_type)]);
-        let (methods_start, methods_len) = rir.add_inst_refs(&[]);
-
-        rir.add_inst(Inst {
-            data: InstData::StructDecl {
-                directives_start,
-                directives_len,
+        let mut trailing = Rir::new();
+        trailing.extra.extend([0, 7]);
+        let directives = RirDirectivesRange::from_parts(0, 2);
+        trailing.add_inst(Inst {
+            data: InstData::ConstDecl {
+                directives,
                 is_pub: false,
-                is_linear: false,
-                name,
-                fields_start,
-                fields_len,
-                methods_start,
-                methods_len,
+                name: Spur::default(),
+                ty: None,
+                init: InstRef::from_raw(0),
             },
-            span: Span::new(0, 30),
+            span: span(),
         });
+        assert_eq!(
+            trailing.validate_payloads().unwrap_err().reason,
+            "trailing words after final record"
+        );
 
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("struct Point { x: i32, y: i32 }"));
-    }
-
-    #[test]
-    fn test_printer_struct_decl_with_directive() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let name = interner.get_or_intern("Point");
-        let x_name = interner.get_or_intern("x");
-        let i32_type = interner.get_or_intern("i32");
-        let copy_name = interner.get_or_intern("copy");
-
-        let (directives_start, directives_len) = rir.add_directives(&[RirDirective {
-            name: copy_name,
-            args: vec![],
-            span: Span::new(0, 5),
-        }]);
-        let (fields_start, fields_len) = rir.add_field_decls(&[(x_name, i32_type)]);
-        let (methods_start, methods_len) = rir.add_inst_refs(&[]);
-
-        rir.add_inst(Inst {
-            data: InstData::StructDecl {
-                directives_start,
-                directives_len,
-                is_pub: false,
-                is_linear: false,
-                name,
-                fields_start,
-                fields_len,
-                methods_start,
-                methods_len,
-            },
-            span: Span::new(0, 30),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("@copy struct Point { x: i32 }"));
-    }
-
-    #[test]
-    fn test_directive_span_round_trips_file_id() {
-        // Directive spans must keep start, len, AND file id through the
-        // extra-array encoding (RUE-189): dropping the file id made every
-        // directive-anchored diagnostic in a multi-file build render
-        // "unknown file id", and decoding len as end corrupted the range.
-        let (mut rir, interner) = create_printer_test_rir();
-        let copy_name = interner.get_or_intern("copy");
-        let allow_name = interner.get_or_intern("allow");
-        let arg = interner.get_or_intern("unused_variable");
-
-        let original = vec![
-            RirDirective {
-                name: copy_name,
-                args: vec![],
-                span: Span::with_file(rue_span::FileId::new(2), 7, 12),
-            },
-            RirDirective {
-                name: allow_name,
-                args: vec![arg],
-                span: Span::with_file(rue_span::FileId::new(3), 40, 62),
-            },
-        ];
-        let (start, len) = rir.add_directives(&original);
-        let decoded: Vec<_> = rir
-            .get_directives(start, len)
-            .iter()
-            .map(|directive| directive.to_owned())
-            .collect();
-        assert_eq!(decoded, original);
-    }
-
-    #[test]
-    fn test_printer_struct_init() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let x_val = rir.add_inst(Inst {
-            data: InstData::IntConst(10),
-            span: Span::new(0, 2),
-        });
-        let y_val = rir.add_inst(Inst {
-            data: InstData::IntConst(20),
-            span: Span::new(0, 2),
-        });
-
-        let type_name = interner.get_or_intern("Point");
-        let x_name = interner.get_or_intern("x");
-        let y_name = interner.get_or_intern("y");
-
-        let (fields_start, fields_len) = rir.add_field_inits(&[(x_name, x_val), (y_name, y_val)]);
-
-        rir.add_inst(Inst {
-            data: InstData::StructInit {
-                module: None,
-                ctor_head: None,
-                type_name,
-                fields_start,
-                fields_len,
-                shorthand_span: None,
-            },
-            span: Span::new(0, 25),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("struct_init Point { x: %0, y: %1 }"));
-    }
-
-    #[test]
-    fn test_printer_field_get() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let base = rir.add_inst(Inst {
-            data: InstData::IntConst(0), // placeholder for a struct value
-            span: Span::new(0, 1),
-        });
-
-        let field = interner.get_or_intern("x");
-
-        rir.add_inst(Inst {
-            data: InstData::FieldGet { base, field },
-            span: Span::new(0, 5),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("field_get %0.x"));
-    }
-
-    #[test]
-    fn test_printer_field_set() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let base = rir.add_inst(Inst {
-            data: InstData::IntConst(0), // placeholder
-            span: Span::new(0, 1),
-        });
-        let value = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        let field = interner.get_or_intern("x");
-
-        rir.add_inst(Inst {
-            data: InstData::FieldSet { base, field, value },
-            span: Span::new(0, 10),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("field_set %0.x = %1"));
-    }
-
-    #[test]
-    fn test_printer_enum_decl() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let name = interner.get_or_intern("Color");
-        let red = interner.get_or_intern("Red");
-        let green = interner.get_or_intern("Green");
-        let blue = interner.get_or_intern("Blue");
-
-        let (variants_start, variants_len) = rir.add_symbols(&[red, green, blue]);
-
-        rir.add_inst(Inst {
+        let mut cardinality = Rir::new();
+        cardinality.extra.extend([0, 0, 7]);
+        let variants = RirEnumVariantsRange::from_parts(0, 1);
+        let payloads = RirEnumPayloadsRange::from_parts(1, 2);
+        cardinality.add_inst(Inst {
             data: InstData::EnumDecl {
                 is_pub: false,
-                name,
-                variants_start,
-                variants_len,
-                payloads_start: 0,
-                payloads_len: 0,
+                name: Spur::default(),
+                variants,
+                payloads,
             },
-            span: Span::new(0, 35),
+            span: span(),
         });
+        assert_eq!(
+            cardinality.validate_payloads().unwrap_err().reason,
+            "trailing words after variant payloads"
+        );
+    }
 
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("enum Color { Red, Green, Blue }"));
+    fn context() -> RirValidationContext<'static> {
+        static SOURCES: [(FileId, u32); 1] = [(FileId::new(7), 100)];
+        RirValidationContext {
+            symbol_count: 1,
+            source_lengths: &SOURCES,
+        }
     }
 
     #[test]
-    fn test_printer_enum_variant() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let type_name = interner.get_or_intern("Color");
-        let variant = interner.get_or_intern("Red");
+    fn finish_rejects_noncanonical_match_scalars_before_iteration() {
+        let mut boolean = RirEditor::new();
+        let value = boolean.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: span(),
+        });
+        boolean
+            .add_match(value, &[(RirPattern::Bool(true, span()), value)], span())
+            .unwrap();
+        boolean.rir.extra[5] = 2;
+        assert_eq!(
+            ValidatedRir::finish(boolean, &context())
+                .unwrap_err()
+                .reason,
+            "invalid boolean scalar"
+        );
 
-        rir.add_inst(Inst {
-            data: InstData::EnumVariant {
-                module: None,
-                type_name,
-                variant,
+        let mut integer = RirEditor::new();
+        let value = integer.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: span(),
+        });
+        integer
+            .add_match(
+                value,
+                &[(
+                    RirPattern::Int {
+                        value: 1,
+                        negative: false,
+                        span: span(),
+                    },
+                    value,
+                )],
+                span(),
+            )
+            .unwrap();
+        integer.rir.extra[7] = 2;
+        assert_eq!(
+            ValidatedRir::finish(integer, &context())
+                .unwrap_err()
+                .reason,
+            "invalid integer-sign flag"
+        );
+    }
+
+    #[test]
+    fn finish_rejects_unrepresentable_directive_argument_before_iteration() {
+        let symbol = Spur::try_from_usize(0).unwrap();
+        let mut editor = RirEditor::new();
+        let value = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: span(),
+        });
+        editor
+            .add_const_decl(
+                &[RirDirective {
+                    name: symbol,
+                    args: vec![symbol],
+                    span: span(),
+                }],
+                false,
+                symbol,
+                None,
+                value,
+                span(),
+            )
+            .unwrap();
+        editor.rir.extra[DIRECTIVE_ARGS_START + 1] = u32::MAX;
+
+        assert_eq!(
+            ValidatedRir::finish(editor, &context()).unwrap_err(),
+            RirPayloadError {
+                family: RirDirectivesRange::FAMILY,
+                start: 0,
+                extent: 7,
+                record: Some(0),
+                reason: "symbol word is not representable",
+            }
+        );
+    }
+
+    #[test]
+    fn finish_rejects_unrepresentable_match_binding_before_iteration() {
+        let symbol = Spur::try_from_usize(0).unwrap();
+        let mut editor = RirEditor::new();
+        let value = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: span(),
+        });
+        editor
+            .add_match(
+                value,
+                &[(
+                    RirPattern::Path {
+                        module: None,
+                        ctor_head: None,
+                        type_name: symbol,
+                        variant: symbol,
+                        bindings: vec![symbol],
+                        span: span(),
+                    },
+                    value,
+                )],
+                span(),
+            )
+            .unwrap();
+        editor.rir.extra[MATCH_PATH_BINDINGS_START + 1] = u32::MAX;
+
+        assert_eq!(
+            ValidatedRir::finish(editor, &context()).unwrap_err(),
+            RirPayloadError {
+                family: RirMatchArmsRange::FAMILY,
+                start: 0,
+                extent: 12,
+                record: Some(0),
+                reason: "symbol word is not representable",
+            }
+        );
+    }
+
+    #[test]
+    fn finish_rejects_out_of_owner_match_refs_and_context_values() {
+        let symbol = Spur::try_from_usize(0).unwrap();
+        for (module, ctor, body) in [
+            (Some(InstRef::from_raw(99)), None, InstRef::from_raw(0)),
+            (None, Some(InstRef::from_raw(99)), InstRef::from_raw(0)),
+            (None, None, InstRef::from_raw(99)),
+        ] {
+            let mut editor = RirEditor::new();
+            let scrutinee = editor.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: span(),
+            });
+            editor
+                .add_match(
+                    scrutinee,
+                    &[(
+                        RirPattern::Path {
+                            module,
+                            ctor_head: ctor,
+                            type_name: symbol,
+                            variant: symbol,
+                            bindings: vec![],
+                            span: span(),
+                        },
+                        body,
+                    )],
+                    span(),
+                )
+                .unwrap();
+            assert_eq!(
+                ValidatedRir::finish(editor, &context()).unwrap_err().reason,
+                "instruction reference is outside the owner"
+            );
+        }
+
+        let mut bad_symbol = RirEditor::new();
+        bad_symbol.add_inst(Inst {
+            data: InstData::StringConst(Spur::try_from_usize(77).unwrap()),
+            span: span(),
+        });
+        assert_eq!(
+            ValidatedRir::finish(bad_symbol, &context())
+                .unwrap_err()
+                .reason,
+            "symbol is outside the canonical interner"
+        );
+
+        let mut bad_symbol_word = RirEditor::new();
+        bad_symbol_word.rir.extra.push(77);
+        bad_symbol_word.rir.add_inst(Inst {
+            data: InstData::EnumDecl {
+                is_pub: false,
+                name: symbol,
+                variants: RirEnumVariantsRange::from_parts(0, 1),
+                payloads: RirEnumPayloadsRange::payload_fallback(),
             },
-            span: Span::new(0, 10),
+            span: span(),
         });
+        assert_eq!(
+            ValidatedRir::finish(bad_symbol_word, &context())
+                .unwrap_err()
+                .reason,
+            "symbol is outside the canonical interner"
+        );
 
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("enum_variant Color::Red"));
+        let mut overflow = RirEditor::new();
+        let value = overflow.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: span(),
+        });
+        overflow
+            .add_match(value, &[(RirPattern::Wildcard(span()), value)], span())
+            .unwrap();
+        overflow.rir.extra[2] = u32::MAX;
+        overflow.rir.extra[3] = 1;
+        assert_eq!(
+            ValidatedRir::finish(overflow, &context())
+                .unwrap_err()
+                .reason,
+            "pattern span overflows u32"
+        );
     }
 
     #[test]
-    fn test_printer_array_init() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let elem1 = rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
-        let elem2 = rir.add_inst(Inst {
-            data: InstData::IntConst(2),
-            span: Span::new(0, 1),
-        });
-        let elem3 = rir.add_inst(Inst {
-            data: InstData::IntConst(3),
-            span: Span::new(0, 1),
-        });
-
-        let (elems_start, elems_len) = rir.add_inst_refs(&[elem1, elem2, elem3]);
-
-        rir.add_inst(Inst {
-            data: InstData::ArrayInit {
-                elems_start,
-                elems_len,
-            },
-            span: Span::new(0, 10),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("array_init [%0, %1, %2]"));
+    fn borrowed_payload_traversal_allocates_nothing() {
+        let interner = ThreadedRodeo::new();
+        let a = interner.get_or_intern("a");
+        let mut rir = Rir::new();
+        let refs = rir
+            .add_block_insts(&[InstRef::from_raw(0), InstRef::from_raw(1)])
+            .unwrap();
+        let intrinsic = rir.add_intrinsic_args(&[InstRef::from_raw(0)]).unwrap();
+        let internal = rir
+            .add_internal_intrinsic_args(&[InstRef::from_raw(0)])
+            .unwrap();
+        let methods = rir.add_struct_methods(&[InstRef::from_raw(0)]).unwrap();
+        let anon_methods = rir
+            .add_anon_struct_methods(&[InstRef::from_raw(0)])
+            .unwrap();
+        let elements = rir.add_array_elements(&[InstRef::from_raw(0)]).unwrap();
+        let calls = rir
+            .add_call_args(&[RirCallArg {
+                value: InstRef::from_raw(0),
+                mode: RirArgMode::Normal,
+            }])
+            .unwrap();
+        let directives = rir
+            .add_directives(&[RirDirective {
+                name: a,
+                args: vec![a],
+                span: span(),
+            }])
+            .unwrap();
+        let arms = rir
+            .add_match_arms(&[(RirPattern::Wildcard(span()), InstRef::from_raw(1))])
+            .unwrap();
+        let params = rir
+            .add_params(&[RirParam {
+                name: a,
+                ty: a,
+                mode: RirParamMode::Normal,
+                is_comptime: false,
+                span: span(),
+            }])
+            .unwrap();
+        let inits = rir.add_field_inits(&[(a, InstRef::from_raw(0))]).unwrap();
+        let fields = rir.add_struct_fields(&[(a, a)]).unwrap();
+        let anon_fields = rir.add_anon_struct_fields(&[(a, a)]).unwrap();
+        let variants = rir.add_enum_variants(&[a]).unwrap();
+        let anon_variants = rir.add_anon_enum_variants(&[a]).unwrap();
+        let payloads = rir.add_enum_payloads(&[vec![a]]).unwrap();
+        let anon_payloads = rir.add_anon_enum_payloads(&[vec![a]]).unwrap();
+        assert_eq!(
+            allocations_during(|| {
+                std::hint::black_box(rir.block_insts(&refs).values().count());
+                std::hint::black_box(rir.intrinsic_args(&intrinsic).values().count());
+                std::hint::black_box(rir.internal_intrinsic_args(&internal).values().count());
+                std::hint::black_box(rir.struct_methods(&methods).values().count());
+                std::hint::black_box(rir.anon_struct_methods(&anon_methods).values().count());
+                std::hint::black_box(rir.array_elements(&elements).values().count());
+                std::hint::black_box(rir.call_args(&calls).values().count());
+                std::hint::black_box(rir.params(&params).values().count());
+                std::hint::black_box(rir.directives(&directives).iter().count());
+                std::hint::black_box(rir.match_arms(&arms).iter().count());
+                std::hint::black_box(rir.field_inits(&inits).values().count());
+                std::hint::black_box(rir.struct_fields(&fields).values().count());
+                std::hint::black_box(rir.anon_struct_fields(&anon_fields).values().count());
+                std::hint::black_box(rir.enum_variants(&variants).values().count());
+                std::hint::black_box(rir.anon_enum_variants(&anon_variants).values().count());
+                std::hint::black_box(rir.enum_payloads(&payloads, &variants).flatten().count());
+                std::hint::black_box(
+                    rir.anon_enum_payloads(&anon_payloads, &anon_variants)
+                        .flatten()
+                        .count(),
+                );
+            }),
+            0
+        );
     }
 
     #[test]
-    fn test_printer_index_get() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let base = rir.add_inst(Inst {
-            data: InstData::IntConst(0), // placeholder for array
-            span: Span::new(0, 1),
-        });
-        let index = rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
+    fn every_symbol_bearing_schema_rejects_u32_max_before_views() {
+        let interner = ThreadedRodeo::new();
+        let a = interner.get_or_intern("a");
+        let reference = InstRef::from_raw(0);
+        let assert_rejected = |mut rir: Rir, corrupt: usize, data: InstData| {
+            rir.extra[corrupt] = u32::MAX;
+            rir.add_inst(Inst { data, span: span() });
+            let error = rir.validate_payloads().unwrap_err();
+            assert!(
+                error.reason.contains("symbol") || error.reason.contains("schema"),
+                "{error:?}"
+            );
+        };
 
-        rir.add_inst(Inst {
-            data: InstData::IndexGet { base, index },
-            span: Span::new(0, 5),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("index_get %0[%1]"));
-    }
-
-    #[test]
-    fn test_printer_index_set() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let base = rir.add_inst(Inst {
-            data: InstData::IntConst(0), // placeholder for array
-            span: Span::new(0, 1),
-        });
-        let index = rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
-        let value = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        rir.add_inst(Inst {
-            data: InstData::IndexSet { base, index, value },
-            span: Span::new(0, 10),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("index_set %0[%1] = %2"));
-    }
-
-    // Struct with methods tests
-    #[test]
-    fn test_printer_struct_decl_with_methods() {
-        let (mut rir, interner) = create_printer_test_rir();
-
-        // Create a method first
-        let method_body = rir.add_inst(Inst {
-            data: InstData::IntConst(0),
-            span: Span::new(0, 1),
-        });
-        let method_name = interner.get_or_intern("get_x");
-        let return_type = interner.get_or_intern("i32");
-
-        let (directives_start, directives_len) = rir.add_directives(&[]);
-        let (params_start, params_len) = rir.add_params(&[]);
-
-        let method_ref = rir.add_inst(Inst {
-            data: InstData::FnDecl {
-                directives_start,
-                directives_len,
+        let mut rir = Rir::new();
+        let params = rir
+            .add_params(&[RirParam {
+                name: a,
+                ty: a,
+                mode: RirParamMode::Normal,
+                is_comptime: false,
+                span: span(),
+            }])
+            .unwrap();
+        assert_rejected(
+            rir,
+            0,
+            InstData::FnDecl {
+                directives: RirDirectivesRange::payload_fallback(),
                 is_pub: false,
                 is_unchecked: false,
-                name: method_name,
-                params_start,
-                params_len,
-                return_type,
-                body: method_body,
-                has_self: true,
+                name: a,
+                params,
+                return_type: a,
+                body: reference,
+                has_self: false,
                 self_mode: RirParamMode::Normal,
             },
-            span: Span::new(0, 30),
-        });
+        );
 
-        let struct_name = interner.get_or_intern("Point");
-        let x_field = interner.get_or_intern("x");
-        let i32_type = interner.get_or_intern("i32");
+        let mut rir = Rir::new();
+        let directives = rir
+            .add_directives(&[RirDirective {
+                name: a,
+                args: vec![a],
+                span: span(),
+            }])
+            .unwrap();
+        assert_rejected(
+            rir,
+            1,
+            InstData::ConstDecl {
+                directives,
+                is_pub: false,
+                name: a,
+                ty: None,
+                init: reference,
+            },
+        );
 
-        let (fields_start, fields_len) = rir.add_field_decls(&[(x_field, i32_type)]);
-        let (methods_start, methods_len) = rir.add_inst_refs(&[method_ref]);
+        let mut rir = Rir::new();
+        let arms = rir
+            .add_match_arms(&[(
+                RirPattern::Path {
+                    module: None,
+                    ctor_head: None,
+                    type_name: a,
+                    variant: a,
+                    bindings: vec![a],
+                    span: span(),
+                },
+                reference,
+            )])
+            .unwrap();
+        assert_rejected(
+            rir,
+            7,
+            InstData::Match {
+                scrutinee: reference,
+                arms,
+            },
+        );
 
-        rir.add_inst(Inst {
-            data: InstData::StructDecl {
-                directives_start,
-                directives_len,
+        macro_rules! fixed_symbol_case {
+            ($builder:expr, $data:expr) => {{
+                let mut rir = Rir::new();
+                let range = ($builder)(&mut rir);
+                assert_rejected(rir, 0, ($data)(range));
+            }};
+        }
+        fixed_symbol_case!(
+            |rir: &mut Rir| rir.add_field_inits(&[(a, reference)]).unwrap(),
+            |fields| InstData::StructInit {
+                module: None,
+                ctor_head: None,
+                type_name: a,
+                fields,
+                shorthand_span: None,
+            }
+        );
+        fixed_symbol_case!(
+            |rir: &mut Rir| rir.add_struct_fields(&[(a, a)]).unwrap(),
+            |fields| InstData::StructDecl {
+                directives: RirDirectivesRange::payload_fallback(),
                 is_pub: false,
                 is_linear: false,
-                name: struct_name,
-                fields_start,
-                fields_len,
-                methods_start,
-                methods_len,
-            },
-            span: Span::new(0, 50),
-        });
+                name: a,
+                fields,
+                methods: RirStructMethodsRange::payload_fallback(),
+            }
+        );
+        fixed_symbol_case!(
+            |rir: &mut Rir| rir.add_anon_struct_fields(&[(a, a)]).unwrap(),
+            |fields| InstData::AnonStructType {
+                fields,
+                methods: RirAnonStructMethodsRange::payload_fallback(),
+            }
+        );
+        fixed_symbol_case!(
+            |rir: &mut Rir| rir.add_enum_variants(&[a]).unwrap(),
+            |variants| InstData::EnumDecl {
+                is_pub: false,
+                name: a,
+                variants,
+                payloads: RirEnumPayloadsRange::payload_fallback(),
+            }
+        );
+        fixed_symbol_case!(
+            |rir: &mut Rir| rir.add_anon_enum_variants(&[a]).unwrap(),
+            |variants| InstData::AnonEnumType {
+                variants,
+                payloads: RirAnonEnumPayloadsRange::payload_fallback(),
+            }
+        );
 
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("struct Point { x: i32 } methods: [%1]"));
+        let mut rir = Rir::new();
+        let payloads = rir.add_enum_payloads(&[vec![a]]).unwrap();
+        assert_rejected(
+            rir,
+            1,
+            InstData::EnumDecl {
+                is_pub: false,
+                name: a,
+                variants: RirEnumVariantsRange::from_parts(0, 1),
+                payloads,
+            },
+        );
+        let mut rir = Rir::new();
+        let payloads = rir.add_anon_enum_payloads(&[vec![a]]).unwrap();
+        assert_rejected(
+            rir,
+            1,
+            InstData::AnonEnumType {
+                variants: RirAnonEnumVariantsRange::from_parts(0, 1),
+                payloads,
+            },
+        );
     }
 
     #[test]
-    fn test_printer_method_call() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let receiver = rir.add_inst(Inst {
-            data: InstData::IntConst(0), // placeholder for struct value
-            span: Span::new(0, 1),
-        });
-        let arg = rir.add_inst(Inst {
-            data: InstData::IntConst(10),
-            span: Span::new(0, 2),
-        });
-
-        let method = interner.get_or_intern("add");
-
-        let (args_start, args_len) = rir.add_call_args(&[RirCallArg {
-            value: arg,
-            mode: RirArgMode::Normal,
-        }]);
-
-        rir.add_inst(Inst {
-            data: InstData::MethodCall {
-                receiver,
-                method,
-                args_start,
-                args_len,
-            },
-            span: Span::new(0, 15),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("method_call %0.add(%1)"));
-    }
-
-    #[test]
-    fn test_printer_method_call_with_arg_modes() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let receiver = rir.add_inst(Inst {
-            data: InstData::IntConst(0),
-            span: Span::new(0, 1),
-        });
-        let arg1 = rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
-        let arg2 = rir.add_inst(Inst {
-            data: InstData::IntConst(2),
-            span: Span::new(0, 1),
-        });
-
-        let method = interner.get_or_intern("modify");
-
-        let (args_start, args_len) = rir.add_call_args(&[
-            RirCallArg {
-                value: arg1,
-                mode: RirArgMode::Inout,
-            },
-            RirCallArg {
-                value: arg2,
-                mode: RirArgMode::Borrow,
-            },
-        ]);
-
-        rir.add_inst(Inst {
-            data: InstData::MethodCall {
-                receiver,
-                method,
-                args_start,
-                args_len,
-            },
-            span: Span::new(0, 25),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("method_call %0.modify(inout %1, borrow %2)"));
-    }
-
-    #[test]
-    fn test_printer_drop_fn_decl() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let body = rir.add_inst(Inst {
-            data: InstData::UnitConst,
-            span: Span::new(0, 2),
-        });
-
-        let type_name = interner.get_or_intern("Resource");
-
-        rir.add_inst(Inst {
-            data: InstData::DropFnDecl { type_name, body },
-            span: Span::new(0, 30),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("drop fn Resource(self)"));
-    }
-
-    // Match and pattern tests
-    #[test]
-    fn test_printer_match_wildcard() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let scrutinee = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-        let body = rir.add_inst(Inst {
-            data: InstData::IntConst(0),
-            span: Span::new(0, 1),
-        });
-
-        let (arms_start, arms_len) =
-            rir.add_match_arms(&[(RirPattern::Wildcard(Span::new(0, 1)), body)]);
-
-        rir.add_inst(Inst {
-            data: InstData::Match {
-                scrutinee,
-                arms_start,
-                arms_len,
-            },
-            span: Span::new(0, 20),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("match %0 { _ => %1 }"));
-    }
-
-    #[test]
-    fn test_printer_match_int_pattern() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let scrutinee = rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-        let body1 = rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
-        let body2 = rir.add_inst(Inst {
-            data: InstData::IntConst(2),
-            span: Span::new(0, 1),
-        });
-        let body_default = rir.add_inst(Inst {
-            data: InstData::IntConst(0),
-            span: Span::new(0, 1),
-        });
-
-        let (arms_start, arms_len) = rir.add_match_arms(&[
-            (
-                RirPattern::Int {
-                    value: 1,
-                    negative: false,
-                    span: Span::new(0, 1),
-                },
-                body1,
-            ),
-            (
-                RirPattern::Int {
-                    value: 5,
-                    negative: true,
-                    span: Span::new(0, 2),
-                },
-                body2,
-            ),
-            (RirPattern::Wildcard(Span::new(0, 1)), body_default),
-        ]);
-
-        rir.add_inst(Inst {
-            data: InstData::Match {
-                scrutinee,
-                arms_start,
-                arms_len,
-            },
-            span: Span::new(0, 30),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("match %0 { 1 => %1, -5 => %2, _ => %3 }"));
-    }
-
-    #[test]
-    fn test_printer_match_bool_pattern() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let scrutinee = rir.add_inst(Inst {
-            data: InstData::BoolConst(true),
-            span: Span::new(0, 4),
-        });
-        let body_true = rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
-        let body_false = rir.add_inst(Inst {
-            data: InstData::IntConst(0),
-            span: Span::new(0, 1),
-        });
-
-        let (arms_start, arms_len) = rir.add_match_arms(&[
-            (RirPattern::Bool(true, Span::new(0, 4)), body_true),
-            (RirPattern::Bool(false, Span::new(0, 5)), body_false),
-        ]);
-
-        rir.add_inst(Inst {
-            data: InstData::Match {
-                scrutinee,
-                arms_start,
-                arms_len,
-            },
-            span: Span::new(0, 30),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("match %0 { true => %1, false => %2 }"));
-    }
-
-    #[test]
-    fn test_printer_match_path_pattern() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let scrutinee = rir.add_inst(Inst {
-            data: InstData::IntConst(0), // placeholder for enum value
-            span: Span::new(0, 1),
-        });
-        let body_red = rir.add_inst(Inst {
-            data: InstData::IntConst(1),
-            span: Span::new(0, 1),
-        });
-        let body_green = rir.add_inst(Inst {
-            data: InstData::IntConst(2),
-            span: Span::new(0, 1),
-        });
-        let body_default = rir.add_inst(Inst {
-            data: InstData::IntConst(0),
-            span: Span::new(0, 1),
-        });
-
-        let color = interner.get_or_intern("Color");
-        let red = interner.get_or_intern("Red");
-        let green = interner.get_or_intern("Green");
-
-        let (arms_start, arms_len) = rir.add_match_arms(&[
-            (
-                RirPattern::Path {
-                    module: None,
-                    ctor_head: None,
-                    type_name: color,
-                    variant: red,
-                    bindings: Vec::new(),
-                    span: Span::new(0, 10),
-                },
-                body_red,
-            ),
-            (
-                RirPattern::Path {
-                    module: None,
-                    ctor_head: None,
-                    type_name: color,
-                    variant: green,
-                    bindings: Vec::new(),
-                    span: Span::new(0, 12),
-                },
-                body_green,
-            ),
-            (RirPattern::Wildcard(Span::new(0, 1)), body_default),
-        ]);
-
-        rir.add_inst(Inst {
-            data: InstData::Match {
-                scrutinee,
-                arms_start,
-                arms_len,
-            },
-            span: Span::new(0, 50),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("match %0 { Color::Red => %1, Color::Green => %2, _ => %3 }"));
-    }
-
-    #[test]
-    fn test_printer_display_trait() {
-        let (mut rir, interner) = create_printer_test_rir();
-        rir.add_inst(Inst {
-            data: InstData::IntConst(42),
-            span: Span::new(0, 2),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        // Test Display trait implementation
-        let output = format!("{}", printer);
-        assert!(output.contains("%0 = const 42"));
+    fn every_payload_builder_records_per_family_allocation_and_storage_evidence() {
+        let interner = ThreadedRodeo::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let r0 = InstRef::from_raw(0);
+        let r1 = InstRef::from_raw(1);
+        let directives = [RirDirective {
+            name: a,
+            args: vec![b],
+            span: span(),
+        }];
+        let params = [RirParam {
+            name: a,
+            ty: b,
+            mode: RirParamMode::Borrow,
+            is_comptime: true,
+            span: span(),
+        }];
+        let calls = [RirCallArg {
+            value: r0,
+            mode: RirArgMode::Inout,
+        }];
+        let enum_payloads = [vec![a], vec![]];
+        let anon_payloads = [vec![b]];
+        #[derive(Debug)]
+        struct Evidence {
+            family: &'static str,
+            allocation_calls: usize,
+            allocated_bytes: usize,
+            logical_bytes: usize,
+            retained_capacity_bytes: usize,
+        }
+        macro_rules! evidence {
+            ($family:expr, $build:expr) => {{
+                let mut rir = Rir::new();
+                let (allocation_calls, allocated_bytes) =
+                    allocation_evidence(|| ($build)(&mut rir));
+                Evidence {
+                    family: $family,
+                    allocation_calls,
+                    allocated_bytes,
+                    logical_bytes: rir.extra.len() * std::mem::size_of::<u32>(),
+                    retained_capacity_bytes: rir.extra.capacity() * std::mem::size_of::<u32>(),
+                }
+            }};
+        }
+        let evidence = [
+            evidence!(RirIntrinsicArgsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_intrinsic_args(&[r0, r1]).unwrap();
+            }),
+            evidence!(RirInternalIntrinsicArgsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_internal_intrinsic_args(&[r0]).unwrap();
+            }),
+            evidence!(RirBlockInstsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_block_insts(&[r0, r1]).unwrap();
+            }),
+            evidence!(RirStructMethodsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_struct_methods(&[r0]).unwrap();
+            }),
+            evidence!(RirAnonStructMethodsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_anon_struct_methods(&[r1]).unwrap();
+            }),
+            evidence!(RirArrayElemsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_array_elements(&[r0, r1]).unwrap();
+            }),
+            evidence!(RirCallArgsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_call_args(&calls).unwrap();
+            }),
+            evidence!(RirParamsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_params(&params).unwrap();
+            }),
+            evidence!(RirMatchArmsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_match_arms(&[(RirPattern::Wildcard(span()), r0)])
+                    .unwrap();
+            }),
+            evidence!(RirFieldInitsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_field_inits(&[(a, r0)]).unwrap();
+            }),
+            evidence!(RirStructFieldsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_struct_fields(&[(a, b)]).unwrap();
+            }),
+            evidence!(RirAnonStructFieldsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_anon_struct_fields(&[(a, b)]).unwrap();
+            }),
+            evidence!(RirDirectivesRange::FAMILY, |rir: &mut Rir| {
+                rir.add_directives(&directives).unwrap();
+            }),
+            evidence!(RirEnumVariantsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_enum_variants(&[a, b]).unwrap();
+            }),
+            evidence!(RirAnonEnumVariantsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_anon_enum_variants(&[b]).unwrap();
+            }),
+            evidence!(RirEnumPayloadsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_enum_payloads(&enum_payloads).unwrap();
+            }),
+            evidence!(RirAnonEnumPayloadsRange::FAMILY, |rir: &mut Rir| {
+                rir.add_anon_enum_payloads(&anon_payloads).unwrap();
+            }),
+        ];
+        assert_eq!(evidence.len(), 17);
+        for item in &evidence {
+            assert!(item.allocation_calls >= 2, "{}: {item:?}", item.family);
+            assert!(item.logical_bytes > 0, "{}: {item:?}", item.family);
+            assert!(
+                item.retained_capacity_bytes >= item.logical_bytes,
+                "{}: {item:?}",
+                item.family
+            );
+            assert!(
+                item.allocated_bytes >= item.retained_capacity_bytes,
+                "{}: {item:?}",
+                item.family
+            );
+        }
+        std::hint::black_box(evidence);
     }
 }

@@ -25,6 +25,12 @@ mod inst;
 
 pub use astgen::AstGen;
 pub use inst::{
-    Inst, InstData, InstRef, InternalIntrinsic, RepeatCount, Rir, RirArgMode, RirCallArg,
-    RirDirective, RirDirectiveView, RirParam, RirParamMode, RirPattern, RirPatternView, RirPrinter,
+    Inst, InstData, InstRef, InternalIntrinsic, RepeatCount, Rir, RirAnonEnumPayloadsRange,
+    RirAnonEnumVariantsRange, RirAnonStructFieldsRange, RirAnonStructMethodsRange, RirArgMode,
+    RirArrayElemsRange, RirBlockInstsRange, RirCallArg, RirCallArgsRange, RirDirective,
+    RirDirectiveView, RirDirectivesRange, RirEditor, RirEnumPayloads, RirEnumPayloadsRange,
+    RirEnumVariantsRange, RirFieldInitsRange, RirInternalIntrinsicArgsRange, RirIntrinsicArgsRange,
+    RirMatchArmsRange, RirParam, RirParamMode, RirParamsRange, RirPattern, RirPatternView,
+    RirPayloadBuildError, RirPayloadError, RirPrinter, RirStructFieldsRange, RirStructMethodsRange,
+    RirValidationContext, ValidatedRir,
 };

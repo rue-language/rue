@@ -131,19 +131,16 @@ mod tests {
         let (ast, mut interner) = Parser::new(tokens, interner).parse().unwrap();
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
-        let mut rir = astgen.finish();
-        let (intrinsic_ref, args_start) = rir
+        let mut rir = astgen.finish_editor();
+        let intrinsic_ref = rir
             .iter()
             .find_map(|(inst_ref, inst)| match inst.data {
-                InstData::Intrinsic { args_start, .. } => Some((inst_ref, args_start)),
+                InstData::Intrinsic { .. } => Some(inst_ref),
                 _ => None,
             })
             .unwrap();
-        rir.get_mut(intrinsic_ref).data = InstData::InternalIntrinsic {
-            intrinsic: InternalIntrinsic::IterLen,
-            args_start,
-            args_len: 0,
-        };
+        rir.replace_internal_intrinsic(intrinsic_ref, InternalIntrinsic::IterLen, &[])
+            .unwrap();
 
         let errors = Sema::new(&rir, &mut interner, PreviewFeatures::new())
             .analyze_all()
@@ -897,16 +894,15 @@ mod tests {
         let imports = rir
             .iter()
             .filter_map(|(_, inst)| {
-                let rue_rir::InstData::Intrinsic {
-                    name,
-                    args_start,
-                    args_len: 1,
-                } = inst.data
-                else {
+                let rue_rir::InstData::Intrinsic { name, args } = &inst.data else {
                     return None;
                 };
-                (interner.resolve(&name) == "import").then(|| {
-                    let argument = rir.get_inst_refs(args_start, 1).get(0).unwrap();
+                let args = rir.intrinsic_args(args);
+                if args.len() != 1 {
+                    return None;
+                }
+                (interner.resolve(name) == "import").then(|| {
+                    let argument = args.get(0).unwrap();
                     let rue_rir::InstData::StringConst(specifier) = rir.get(argument).data else {
                         unreachable!()
                     };

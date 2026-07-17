@@ -119,13 +119,8 @@ impl RirDeclarationIndex {
                         *non_receiver_name_multiplicity.entry(*name).or_default() += 1;
                     }
                 }
-                InstData::StructDecl {
-                    name,
-                    methods_start,
-                    methods_len,
-                    ..
-                } => {
-                    for method_ref in rir.get_inst_refs(*methods_start, *methods_len) {
+                InstData::StructDecl { name, methods, .. } => {
+                    for method_ref in rir.struct_methods(methods) {
                         work.method_references_visited += 1;
                         named_method_refs.insert(method_ref);
                         // A method may only have one named owner in valid RIR;
@@ -135,12 +130,8 @@ impl RirDeclarationIndex {
                     }
                     nominal_candidates.push((source_order as u32, inst_ref));
                 }
-                InstData::AnonStructType {
-                    methods_start,
-                    methods_len,
-                    ..
-                } => {
-                    for method_ref in rir.get_inst_refs(*methods_start, *methods_len) {
+                InstData::AnonStructType { methods, .. } => {
+                    for method_ref in rir.anon_struct_methods(methods) {
                         work.method_references_visited += 1;
                         anonymous_method_refs.insert(method_ref);
                     }

@@ -321,17 +321,12 @@ impl<'a> BodySema<'a> {
 
             // Anonymous struct type: a struct type constructed at comptime
             // (e.g., `struct { first: T, second: T, fn get(self) -> T { ... } }` in a comptime function)
-            InstData::AnonStructType {
-                fields_start,
-                fields_len,
-                methods_start,
-                methods_len,
-            } => {
+            InstData::AnonStructType { fields, methods } => {
                 // Get the field declarations from the RIR
-                let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
+                let field_decls = self.rir.anon_struct_fields(fields);
 
                 // Empty structs are not allowed (unless they have methods)
-                if field_decls.is_empty() && *methods_len == 0 {
+                if field_decls.is_empty() && self.rir.anon_struct_methods(methods).is_empty() {
                     return Err(CompileError::new(ErrorKind::EmptyStruct, inst.span));
                 }
 
@@ -348,7 +343,7 @@ impl<'a> BodySema<'a> {
 
                 // Extract method signatures for structural equality comparison
                 // (uses type symbols, not resolved Types, so Self matches Self)
-                let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
+                let method_sigs = self.extract_anon_method_sigs(methods);
 
                 // Check if an equivalent anonymous struct already exists (structural equality)
                 // This now compares fields, method signatures, AND captured comptime values
@@ -359,7 +354,7 @@ impl<'a> BodySema<'a> {
                 // (the comptime evaluator's AnonStructType arm in sema::comptime_eval).
                 // If we register here, we create a struct without captured comptime values, which is incorrect.
                 //
-                // if is_new && *methods_len > 0 {
+                // if is_new && !self.rir.anon_struct_methods(methods).is_empty() {
                 //     let struct_id = struct_ty
                 //         .as_struct()
                 //         .expect("anon struct should have StructId");
@@ -386,35 +381,20 @@ impl<'a> BodySema<'a> {
             // (payloads mentioning a `comptime T`) are comptime-evaluated, not
             // analyzed here — this path resolves a concrete anon enum, exactly
             // as the struct arm does (ADR-0038, RUE-6 phase 2).
-            InstData::AnonEnumType {
-                variants_start,
-                variants_len,
-                payloads_start,
-                payloads_len,
-            } => {
-                let variant_syms = self
+            InstData::AnonEnumType { variants, payloads } => {
+                let variant_syms = self.rir.anon_enum_variants(variants).to_vec();
+                let payload_symbols: Vec<Vec<Spur>> = self
                     .rir
-                    .get_symbols(*variants_start, *variants_len)
-                    .to_vec();
-                let payload_words = self.rir.get_extra(*payloads_start, *payloads_len).to_vec();
+                    .anon_enum_payloads(payloads, variants)
+                    .map(|payload| payload.to_vec())
+                    .collect();
 
                 let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
                 let mut variant_payloads: Vec<Vec<Type>> = Vec::with_capacity(variant_syms.len());
-                let mut pi = 0usize;
-                for vsym in &variant_syms {
+                for (vsym, symbols) in variant_syms.iter().zip(payload_symbols) {
                     variant_names.push(self.interner.resolve(vsym).to_string());
-                    let k = if payload_words.is_empty() {
-                        0
-                    } else {
-                        let k = payload_words[pi] as usize;
-                        pi += 1;
-                        k
-                    };
-                    let mut tys: Vec<Type> = Vec::with_capacity(k);
-                    for _ in 0..k {
-                        let ty_sym = Spur::try_from_usize(payload_words[pi] as usize)
-                            .expect("valid interned type symbol in payload region");
-                        pi += 1;
+                    let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
+                    for ty_sym in symbols {
                         let field_ty = self.resolve_type(ty_sym, inst.span)?;
                         // A payload of type `type` cannot exist at runtime
                         // (spec 4.14:6); reject it like struct fields / enum

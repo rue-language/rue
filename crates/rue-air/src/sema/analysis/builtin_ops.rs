@@ -271,8 +271,7 @@ impl<'a> BodySema<'a> {
         &mut self,
         air: &mut Air,
         name: Spur,
-        args_start: u32,
-        args_len: u32,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
@@ -282,7 +281,7 @@ impl<'a> BodySema<'a> {
             "print"
         };
 
-        let args = self.rir.get_call_args(args_start, args_len);
+        let args = self.rir.call_args(args);
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount {

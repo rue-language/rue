@@ -3,11 +3,11 @@
 use std::cell::RefCell;
 use std::ops::Range;
 
-use rue_error::CompileError;
 #[cfg(test)]
 use rue_error::CompileResult;
+use rue_error::{CompileError, ErrorKind};
 use rue_rir::RirPrinter;
-use rue_rir::{AstGen, InstRef, Rir};
+use rue_rir::{AstGen, InstRef, Rir, RirValidationContext, ValidatedRir};
 use rue_span::FileId;
 
 use crate::{CanonicalMergedProgram, SemanticSymbolUniverse, SourceRevision};
@@ -31,7 +31,7 @@ pub struct CanonicalRirWork {
 #[derive(Debug)]
 pub struct CanonicalRirOutput {
     source_revision: SourceRevision,
-    rir: Rir,
+    rir: ValidatedRir,
     symbols: SemanticSymbolUniverse,
     work: CanonicalRirWork,
     module_ranges: Vec<CanonicalRirModuleRange>,
@@ -67,7 +67,7 @@ impl CanonicalRirOutput {
                 })
     }
 
-    pub fn into_parts(self) -> (Rir, SemanticSymbolUniverse) {
+    pub fn into_parts(self) -> (ValidatedRir, SemanticSymbolUniverse) {
         (self.rir, self.symbols)
     }
 
@@ -166,13 +166,19 @@ pub(crate) fn lower_canonical_rir_with_work(
             work.modules_visited += 1;
             work.items_visited += view.module().ast().items.len();
             *current_view.borrow_mut() = Some(view.clone());
-            let instruction_start = generator.instruction_len() as u32;
-            let extra_start = generator.extra_len() as u32;
+            let instruction_start = u32::try_from(generator.instruction_len())
+                .expect("AstGen enforces the u32 instruction limit");
+            let extra_start = u32::try_from(generator.extra_len())
+                .expect("AstGen enforces the u32 payload-word limit");
             generator.append_items(&view.module().ast().items);
+            let instruction_end = u32::try_from(generator.instruction_len())
+                .expect("AstGen enforces the u32 instruction limit");
+            let extra_end = u32::try_from(generator.extra_len())
+                .expect("AstGen enforces the u32 payload-word limit");
             module_ranges.push(CanonicalRirModuleRange {
                 file_id: view.module().file_id(),
-                instructions: instruction_start..generator.instruction_len() as u32,
-                extra: extra_start..generator.extra_len() as u32,
+                instructions: instruction_start..instruction_end,
+                extra: extra_start..extra_end,
             });
             if let Some(error) = first_error.borrow_mut().take() {
                 drop(generator);
@@ -184,8 +190,56 @@ pub(crate) fn lower_canonical_rir_with_work(
                 return Err((error, work));
             }
         }
-        generator.finish()
+        match generator.try_finish_editor() {
+            Ok(rir) => rir,
+            Err(error) => {
+                let translation = symbols.work();
+                work.symbol_fields_translated = translation.local_symbol_resolutions;
+                work.semantic_intern_attempts = translation.semantic_intern_attempts;
+                work.unique_semantic_strings = translation.unique_semantic_strings;
+                work.semantic_strings_retained = symbols.interner().len();
+                return Err((
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "RIR payload construction failed: {error}"
+                        )),
+                        rue_span::Span::new(0, 0),
+                    ),
+                    work,
+                ));
+            }
+        }
     };
+    let source_lengths: Vec<(FileId, u32)> = ast
+        .modules()
+        .iter()
+        .map(|module| {
+            u32::try_from(module.source_text().len())
+                .map(|length| (module.file_id(), length))
+                .map_err(|_| {
+                    CompileError::new(
+                        ErrorKind::InternalError(
+                            "canonical source length exceeds RIR span capacity".to_string(),
+                        ),
+                        rue_span::Span::new(0, 0),
+                    )
+                })
+        })
+        .collect::<Result<_, _>>()
+        .map_err(|error| (error, work))?;
+    let validation = RirValidationContext {
+        symbol_count: symbols.interner().len(),
+        source_lengths: &source_lengths,
+    };
+    let rir = ValidatedRir::finish(rir, &validation).map_err(|error| {
+        (
+            CompileError::new(
+                ErrorKind::InternalError(format!("RIR payload validation failed: {error}")),
+                rue_span::Span::new(0, 0),
+            ),
+            work,
+        )
+    })?;
 
     let translation = symbols.work();
     work.symbol_fields_translated = translation.local_symbol_resolutions;

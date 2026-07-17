@@ -821,10 +821,12 @@ impl<'a> BodySema<'a> {
     pub(crate) fn rir_block_tail_expr(&self, inst: InstRef) -> InstRef {
         let mut current = inst;
         loop {
-            match self.rir.get(current).data {
-                InstData::Block { extra_start, len } if len > 0 => {
-                    let refs = self.rir.get_extra(extra_start, len);
-                    current = InstRef::from_raw(refs[len as usize - 1]);
+            match &self.rir.get(current).data {
+                InstData::Block { instructions } => {
+                    match self.rir.block_insts(instructions).values().last() {
+                        Some(tail) => current = tail,
+                        None => return current,
+                    }
                 }
                 _ => return current,
             }
