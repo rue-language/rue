@@ -1,11 +1,11 @@
 ---
 id: 0052
 title: Canonical Physical Type Layout
-status: proposal
+status: accepted
 tags: [types, semantics, compiler, codegen, abi, memory]
 feature-flag: aggregate_layout
 created: 2026-07-14
-accepted:
+accepted: 2026-07-17
 implemented:
 spec-sections: []
 superseded-by:
@@ -15,8 +15,12 @@ superseded-by:
 
 ## Status
 
-Proposal. Tracked by RUE-880. This record is a design gate, not authorization
-to begin the migration.
+Accepted. Ratified by Steve on 2026-07-17, resolving the RUE-880 design gate.
+The open questions below are settled by the rulings recorded in
+[Resolved at acceptance](#resolved-at-acceptance). RUE-880 (the design epic)
+closed with this document's proposal; implementation is tracked by the RUE-971
+epic. The fresh source and call-site audit this ADR requires was completed on
+2026-07-17 and the staged children are filed as RUE-972 through RUE-978.
 
 ## Summary
 
@@ -205,26 +209,27 @@ own guarantees and eligibility rules.
 
 ## Implementation Phases
 
-Implementation is intentionally unscheduled. After this ADR is accepted,
-RUE-880 requires a fresh source and call-site audit before actionable children
-are filed. The expected capability sequence is:
+The required fresh source and call-site audit was completed at acceptance
+(2026-07-17; recorded on the RUE-971 implementation epic), and the staged
+children are filed from it:
 
-- [ ] **Canonical query** — introduce target-aware layout data while preserving
-  current behavior.
-- [ ] **Memory consumers** — route layout intrinsics, places, pointer stride,
-  typed allocation, constants, and aggregate memory operations through it.
-- [ ] **Compact representation** — adopt natural scalar and aggregate physical
-  layout on x86-64 and AArch64.
-- [ ] **Stack and value separation** — remove physical-layout dependence on
-  compiler value fragments.
-- [ ] **Call ABI classification** — introduce a canonical native classifier
-  separate from target C classification.
-- [ ] **Language integration** — update the specification, preview gating,
-  traceability, oracle, UI/CLI coverage, and layout presentation.
-- [ ] **Transitional cleanup** — reassess the RUE-879 raw-byte family once
-  ordinary `u8` and typed pointer operations use physical layout.
-
-Linear identifiers will be assigned only after acceptance and the fresh audit.
+- [ ] **Canonical query** — RUE-972. Introduce target-aware layout data while
+  preserving current behavior, de-duplicating the existing bytes-per-slot
+  conversions rather than adding a peer path.
+- [ ] **Memory consumers** — RUE-973. Route layout intrinsics, places, pointer
+  stride, typed allocation, constants, and aggregate memory operations through
+  it; reconcile the dual alloc-ABI operand encodings found by the audit.
+- [ ] **Compact representation** — RUE-974. Adopt natural scalar and aggregate
+  physical layout on x86-64 and AArch64.
+- [ ] **Stack and value separation** — RUE-975. Remove physical-layout
+  dependence on compiler value fragments.
+- [ ] **Call ABI classification** — RUE-976. Introduce a canonical native
+  classifier separate from target C classification.
+- [ ] **Language integration** — RUE-977. Update the specification, preview
+  gating, traceability, oracle, UI/CLI coverage, and layout presentation.
+- [ ] **Transitional cleanup** — RUE-978. Reassess the RUE-879 raw-byte family
+  once ordinary `u8` and typed pointer operations use physical layout
+  (consumed by ADR-0059's fold-in phases).
 
 ## Consequences
 
@@ -254,26 +259,44 @@ Linear identifiers will be assigned only after acceptance and the fresh audit.
 - Existing slot-oriented tests and transitional runtime interfaces will need
   careful staged updates.
 
-## Open Questions
+## Resolved at acceptance
 
-- What exact size and alignment does each scalar have on every supported target?
-- Does `size` include tail padding, or does Rue expose a distinct storage
-  extent and array stride in the style of Swift?
-- What are the size, alignment, stride, and addressability rules for zero-sized
-  types and arrays of them?
-- How is the initial enum tag width selected, and which invalid discriminants
-  are forbidden?
-- What padding initialization or canonicalization guarantee balances security,
-  determinism, concurrency, and code-generation cost?
-- Which types, if any, may safely expose their object representation as bytes?
-- What syntax expresses pointer alignment, explicit checked strengthening, and
-  unaligned access?
-- What alignment does `@alloc_bytes` currently guarantee, and what long-term
-  layout-based allocator surface replaces or subsumes it?
-- Which parts of the current native calling convention should be preserved
-  during migration, and which aggregates should temporarily pass indirectly?
-- Does the migration use the existing `aggregate_layout` preview name or a
-  different incremental gate selected during acceptance?
+The proposal's open questions, settled by the 2026-07-17 ratification:
+
+- **Scalar sizes and alignments: the natural LP64 table.** Fixed-width integers
+  use their byte width and natural alignment; `bool` is one byte with a 0/1
+  validity rule; pointers are 8 bytes, 8-aligned. x86-64 and AArch64 agree, so
+  one table serves both targets today.
+- **`size` includes tail padding; `stride == size`.** The Rust model. A
+  Swift-style distinct storage extent is adopted only on future evidence that
+  the optimization is worth the added concept.
+- **Zero-sized types: size 0, alignment 1, stride 0.** Well-aligned dangling
+  pointers to them are valid and non-dereferenceable; zero-size allocation
+  follows the existing zero rules.
+- **Enum tags: smallest sufficient unsigned width** (`u8`/`u16`/`u32`) at
+  offset 0, payload placed at the maximum variant alignment. Invalid
+  discriminants are forbidden bit patterns: rejected by any safe byte import,
+  undefined in unchecked code.
+- **Padding: deterministic zero on construction, canonicalizing safe byte
+  export, unrestricted representation access stays unchecked** — the direction
+  this ADR already favored, ratified. The cost review is folded into the
+  compact-representation phase (RUE-974) as an explicit measure-and-revisit
+  gate rather than a pre-acceptance study.
+- **Safe byte export v0: only padding-free types for which every bit pattern is
+  a valid value.** Everything else goes through unchecked access.
+- **Pointer-alignment syntax is deferred, tracked concretely.** RUE-965 owns
+  the alignment-qualified-pointer design; ADR-0059's Phase 4 checkpoint
+  (RUE-962) decides it against the `_unaligned` intrinsics, which serve as the
+  interim explicit-unaligned mechanism. Checked strengthening arrives with that
+  design.
+- **Allocator surface: answered by ADR-0059.** The long-term primitive is the
+  unified `@alloc(size, align)` family; `@alloc_bytes` guarantees alignment 1,
+  documented, until RUE-960 adds its explicit alignment parameter.
+- **Calling convention: memory-first migration.** The current convention is
+  preserved unchanged while memory layout migrates; classification becomes its
+  own phase (RUE-976). Aggregates the preserved convention cannot express pass
+  indirectly as a transitional rule.
+- **Preview gate: keep the `aggregate_layout` name.**
 
 ## Future Work
 

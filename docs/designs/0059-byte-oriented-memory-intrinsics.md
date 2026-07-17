@@ -9,7 +9,7 @@ accepted: 2026-07-17
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-937", "RUE-879", "RUE-880", "RUE-712", "ADR-0052", "ADR-0005", "ADR-0057"]
+relates: ["RUE-937", "RUE-879", "RUE-971", "RUE-712", "ADR-0052", "ADR-0005", "ADR-0057"]
 ---
 
 # ADR-0059: Byte-oriented memory intrinsics — one intentional set
@@ -50,11 +50,11 @@ int↔pointer pair (`@ptr_to_int`/`@int_to_ptr`), all resting on the
 deprecated by folding into this set. Because both families already share the
 `__rue_alloc`/`__rue_free`/`__rue_realloc` runtime helpers, this is a **surface
 redesign, not a runtime ABI change**. The re-orientation of the typed family is
-**sequenced behind ADR-0052 / RUE-880 canonical layout**: only once
+**sequenced behind ADR-0052 / RUE-971 canonical layout**: only once
 `@size_of(u8)` reports 1 does the typed family become byte-correct, so the
 deprecation cannot precede canonical layout landing. The `raw_bytes` gate is
 **not stabilized** here; it is retargeted to govern the interim byte surface
-until RUE-880 lands.
+until RUE-971 lands.
 
 ## Context
 
@@ -88,7 +88,7 @@ designed," and the goal is "the right set of intrinsics, not just whatever we
 happened to build in the past," surveying Rust and Zig — "Rust generally has the
 right intrinsics here" and Zig "is very good at this kind of stuff." Concretely:
 
-- The typed family is slot-shaped: byte-accurate only once RUE-880 lands, and
+- The typed family is slot-shaped: byte-accurate only once RUE-971 lands, and
   even then it lacks bulk copy/set and an unaligned access mode.
 - The byte family is `u8`-only and cannot express typed multi-unit moves (which
   `ArrayBuf` needs), has **no alignment parameter** (`@alloc_bytes` guarantees
@@ -108,11 +108,13 @@ right intrinsics here" and Zig "is very good at this kind of stuff." Concretely:
   and `align = align_of(T)` in codegen, byte calls pass `size` through with
   `align = 1`. Unifying the intrinsic surface therefore requires little runtime
   change.
-- **Canonical layout (ADR-0052 / RUE-880).** ADR-0052 is a proposal; RUE-880 is
-  unscheduled. Its final migration phase is literally "reassess the RUE-879
-  raw-byte family once ordinary `u8` and typed pointer operations use physical
-  layout." The re-orientation this ADR proposes is the same endpoint ADR-0052
-  anticipates, and it presupposes canonical layout has landed or co-lands.
+- **Canonical layout (ADR-0052 / RUE-971).** ADR-0052 was ratified on
+  2026-07-17; the migration is staged under the RUE-971 epic (children RUE-972
+  through RUE-978). Its final phase (RUE-978) is literally "reassess the
+  RUE-879 raw-byte family once ordinary `u8` and typed pointer operations use
+  physical layout." The re-orientation this ADR proposes is the same endpoint
+  ADR-0052 anticipates, and it presupposes canonical layout has landed or
+  co-lands.
 - **Trusted-std carve-out.** `require_preview` authorizes `raw_bytes` for files
   with standard-library provenance (by `file_id`, not path), and this carve-out
   is `RawBytes`-specific. `std/strbuf.rue`, `std/fs.rue`, `std/env.rue`, and
@@ -222,7 +224,7 @@ alignment parameter they lack — the defect ADR-0052 flagged.
 derives `T` from the pointee via HM inference (reconciled against the annotation
 to avoid silent truncation, RUE-244), so no explicit type argument is needed.
 Keep Rue's existing pointee-typed spelling. The aligned pair keeps its current
-signatures; RUE-880 makes their width physically correct (`@size_of(T)` bytes
+signatures; RUE-971 makes their width physically correct (`@size_of(T)` bytes
 instead of a slot). The **new** `_unaligned` variants are the Rust-style
 explicit escape for packed/parsed data, chosen over a `*align(N)` pointer type
 because Rue lacks alignment-qualified pointers today. `@ptr_read`/`@ptr_write`
@@ -251,7 +253,7 @@ appears (see Open Questions); none exists in std today.
 
 Kept as element-scaled (`addr + n * @size_of(T)`), unchanged in spelling.
 ADR-0040 already ratified this as standard pointer arithmetic and `ArrayBuf`
-depends on it. Post-RUE-880, at `T = u8` it strides one byte naturally, so
+depends on it. Post-RUE-971, at `T = u8` it strides one byte naturally, so
 byte-granular walking is `@ptr_offset` on a `ptr u8`; no separate byte-granular
 intrinsic is added at this stage (add a byte-granular variant later only on
 demonstrated need).
@@ -269,11 +271,11 @@ null check — the byte family never had these, and the unified set does not
 strand the consumers that borrow them. Names are chosen so a later strict/exposed
 provenance split does not force a rename of the common path.
 
-### Reflection substrate — kept, made byte-accurate by RUE-880
+### Reflection substrate — kept, made byte-accurate by RUE-971
 
 `@size_of` and `@align_of` are the substrate the entire byte surface computes on
 (typed allocation, buffer sizing, field displacement). They are unchanged in
-spelling; RUE-880 makes them report physical bytes instead of slots, which is
+spelling; RUE-971 makes them report physical bytes instead of slots, which is
 what makes the whole re-orientation byte-correct. `@offset_of` can join when
 aggregate layout stabilizes.
 
@@ -286,15 +288,15 @@ All eight typed intrinsics and all five byte intrinsics — thirteen total:
 | `@alloc` | typed | **Re-shape** | Becomes byte + align: `@alloc(size, align)`, size in bytes. Absorbs `@alloc_bytes`. `ArrayBuf` computes `size = count*@size_of(T)`, `align = @align_of(T)` in source. |
 | `@realloc` | typed | **Re-shape** | `@realloc(p, old_size, align, new_size)` in bytes. Absorbs `@realloc_bytes`. |
 | `@free` | typed | **Re-shape** | `@free(p, size, align)` — sizeless-allocator ABI. Absorbs `@free_bytes`. |
-| `@ptr_read` | typed | **Keep + re-semantics** | Signature kept (pointee-typed via HM). Width becomes physical `@size_of(T)` post-RUE-880, not an 8-byte slot. Gains `@ptr_read_unaligned`. |
+| `@ptr_read` | typed | **Keep + re-semantics** | Signature kept (pointee-typed via HM). Width becomes physical `@size_of(T)` post-RUE-971, not an 8-byte slot. Gains `@ptr_read_unaligned`. |
 | `@ptr_write` | typed | **Keep + re-semantics** | Same. Gains `@ptr_write_unaligned`. |
-| `@ptr_offset` | typed | **Keep** | Element-scaled (ADR-0040). Becomes byte-exact stride post-RUE-880; strides 1 at `T = u8`. |
+| `@ptr_offset` | typed | **Keep** | Element-scaled (ADR-0040). Becomes byte-exact stride post-RUE-971; strides 1 at `T = u8`. |
 | `@ptr_to_int` | typed | **Keep** | Correct escape-hatch shape; unchanged. |
 | `@int_to_ptr` | typed | **Keep** | Unchanged. Remains the null-pointer idiom for all consumers. |
 | `@alloc_bytes` | preview | **Deprecate → fold** | Into re-shaped `@alloc`; gains the missing `align` parameter. |
 | `@realloc_bytes` | preview | **Deprecate → fold** | Into re-shaped `@realloc`. |
 | `@free_bytes` | preview | **Deprecate → fold** | Into re-shaped `@free`. |
-| `@byte_read` | preview | **Deprecate → fold** | Subsumed by `@ptr_read` on a `ptr u8` (width 1 post-RUE-880); redundant once width derives from the pointee. |
+| `@byte_read` | preview | **Deprecate → fold** | Subsumed by `@ptr_read` on a `ptr u8` (width 1 post-RUE-971); redundant once width derives from the pointee. |
 | `@byte_write` | preview | **Deprecate → fold** | Subsumed by `@ptr_write` on a `ptr u8`. |
 | — | new | **Add** | `@byte_copy`, `@byte_set`, `@ptr_read_unaligned`, `@ptr_write_unaligned`. |
 
@@ -307,15 +309,15 @@ the primitive surface.
 
 ## Sequencing
 
-The re-orientation of the **typed** family is gated on ADR-0052 / RUE-880
+The re-orientation of the **typed** family is gated on ADR-0052 / RUE-971
 canonical layout. Today `@size_of` reports slot-flattened sizes, so byte-correct
 typed operations only make sense post-migration: until `@size_of(u8) == 1`, the
 typed family still strides and allocates in eight-byte slots, and `StrBuf`/
 `std.fs` cannot move onto it. "Deprecate the byte family" therefore **cannot
-precede canonical layout landing**. RUE-880's own final phase already names this
+precede canonical layout landing**. the migration's final phase (RUE-978) already names this
 reassessment; this ADR supplies its target shape.
 
-**Can happen now, independent of RUE-880:**
+**Can happen now, independent of RUE-971:**
 
 - Add `@byte_copy` and `@byte_set` to the interim byte surface. They replace the
   hand-rolled per-byte loops in `std/strbuf.rue`, `std/fs.rue`, and `std/mem.rue`
@@ -324,7 +326,7 @@ reassessment; this ADR supplies its target shape.
   alignment-1 defect that ADR-0052 flags), so the interim surface already carries
   the `(size, align)` contract the final `@alloc` requires.
 
-**Must wait for RUE-880 (or co-land with its compact-representation phase):**
+**Must wait for RUE-971 (or co-land with its compact-representation phase):**
 
 - Re-shaping `@alloc`/`@realloc`/`@free` from element counts to byte + align and
   folding the `_bytes` allocators into them.
@@ -338,11 +340,11 @@ reassessment; this ADR supplies its target shape.
 - **The `raw_bytes` preview gate (RUE-937).** Not stabilized. RUE-937 is
   re-scoped from "remove the gate" to "deliver the unified set." The gate is
   retained and retargeted to govern the interim byte surface (including the new
-  bulk primitives) and the unified set until RUE-880 lands and the surface is
+  bulk primitives) and the unified set until RUE-971 lands and the surface is
   proven; it is then removed by the ADR-0005 stabilization procedure (drop
   `preview =` from spec tests, remove `require_preview()`, remove the
   `PreviewFeature::RawBytes` variant, set this ADR to `implemented`). Per the
-  acceptance ruling, the surface stays gated until RUE-880 lands and is
+  acceptance ruling, the surface stays gated until RUE-971 lands and is
   stabilized once, at the end — no partial early stabilization.
 - **The `trusted_std_raw_bytes` carve-out.** Retained unchanged while the gate
   exists — `std/strbuf.rue`, `std/fs.rue`, `std/env.rue`, `std/mem.rue` keep
@@ -363,7 +365,7 @@ reassessment; this ADR supplies its target shape.
 
 Phases are ordered by the sequencing above. RUE-937 is the tracking issue.
 
-- [ ] **Phase 1: Bulk primitives (now, no RUE-880 dependency)** — RUE-937. Add
+- [ ] **Phase 1: Bulk primitives (now, no RUE-971 dependency)** — RUE-937. Add
   `@byte_copy` and `@byte_set` to the `raw_bytes` surface; port
   `StrBuf::copy_packed_bytes`, the `std.fs` marshalling loops, and
   `std.mem.swap` off their per-byte loops; add spec coverage under the existing
@@ -372,16 +374,16 @@ Phases are ordered by the sequencing above. RUE-937 is the tracking issue.
   the `align` parameter to the byte allocator, giving the interim surface the
   `(size, align)` contract; update the runtime operand plan (already
   `(size, align)`-shaped) and `std` call sites.
-- [ ] **Phase 3: Byte-oriented allocation family (post-/co-RUE-880)** —
+- [ ] **Phase 3: Byte-oriented allocation family (post-/co-RUE-971)** —
   RUE-961. Re-shape `@alloc`/`@realloc`/`@free` to byte + align; fold
   the `_bytes` allocators in; move `ArrayBuf` typed allocation to source-computed
   `@size_of`/`@align_of` sugar.
-- [ ] **Phase 4: Byte-correct typed access (post-RUE-880)** — RUE-962.
+- [ ] **Phase 4: Byte-correct typed access (post-RUE-971)** — RUE-962.
   Make `@ptr_read`/`@ptr_write`/`@ptr_offset` physical-layout-driven; add
   `@ptr_read_unaligned`/`@ptr_write_unaligned`; fold `@byte_read`/`@byte_write`
   into `@ptr_read`/`@ptr_write`. Before implementing the `_unaligned` pair,
   re-evaluate `*align(N)` alignment-qualified pointer types (see the ruling
-  below): if RUE-880 has landed and slices have stabilized by then, type-carried
+  below): if RUE-971 has landed and slices have stabilized by then, type-carried
   alignment may replace the two-intrinsic split at near-zero churn, since
   nothing will have been built on the split yet.
 - [ ] **Phase 5: Specification sweep** — RUE-963. Rewrite `4.13:5a` and
@@ -400,7 +402,7 @@ Phases are ordered by the sequencing above. RUE-937 is the tracking issue.
   replaces two accidental families; the `u8`-only limitation, the missing
   alignment parameter, and the missing null primitive all disappear.
 - **Bulk primitives available immediately.** `@byte_copy`/`@byte_set` land in
-  Phase 1 with no RUE-880 dependency and delete every hand-rolled per-byte loop
+  Phase 1 with no RUE-971 dependency and delete every hand-rolled per-byte loop
   in std — a correctness and performance win before the layout migration.
 - **No runtime ABI churn.** The shared `__rue_alloc`/`__rue_free`/`__rue_realloc`
   helpers already take `(size, align)`; this is a surface and operand-plan
@@ -415,7 +417,7 @@ Phases are ordered by the sequencing above. RUE-937 is the tracking issue.
 ### Negative
 
 - **Gated on an unscheduled migration.** The typed re-orientation cannot land
-  until RUE-880, which is itself a proposal; the full payoff is deferred.
+  until the RUE-971 migration epic completes its compact-representation phase (RUE-974); the full payoff is deferred.
 - **Std call-site churn.** `StrBuf`, `ArrayBuf`, `std.fs`, `std.env`, and
   `std.mem` all change call sites (typed allocation becomes source-computed byte
   sugar; per-byte loops become bulk calls).
@@ -447,7 +449,7 @@ The proposal's open questions, settled by the 2026-07-17 ratification:
   (ADR-0005); an alias window would double the spec surface for names being
   deleted.
 - **Gate timing: single de-gate at the end.** The unified surface stays behind
-  `raw_bytes` until RUE-880 lands and the surface is proven, then stabilizes
+  `raw_bytes` until RUE-971 lands and the surface is proven, then stabilizes
   once (Phase 6). Partial early stabilization of the bulk primitives would
   leave §9.2 describing a half-gated family, and the features users want reach
   them ungated through std via the trusted-std carve-out regardless.
@@ -462,11 +464,11 @@ The proposal's open questions, settled by the 2026-07-17 ratification:
   only the access split — the allocator still passes alignment explicitly even
   in Zig, and Rue's access surface is intrinsic-shaped rather than
   deref-shaped, so the ergonomic delta is small. Because the `_unaligned` pair
-  is Phase 4 (post-RUE-880) and nothing is built on the split before then,
+  is Phase 4 (post-RUE-971) and nothing is built on the split before then,
   Phase 4 explicitly re-evaluates `*align(N)` before implementing the
   intrinsics; a byte-granular `@ptr_offset` variant is likewise deferred to
   demonstrated need (element-scaled at `T = u8` covers byte walking
-  post-RUE-880).
+  post-RUE-971).
 
 ## Future Work
 
@@ -480,7 +482,7 @@ Explicitly out of scope for this ADR, for later designs:
   memory model formalizes.
 - **In-place-only resize** (`@resize` returning a success bool, Zig-style) for
   containers that manage their own copy.
-- **`@offset_of`** once aggregate layout stabilizes under RUE-880.
+- **`@offset_of`** once aggregate layout stabilizes under RUE-971.
 - **`@alloc_zeroed`** if the allocator can zero more cheaply than `@byte_set`.
 - **Endianness** stays library-level forever (`to_le_bytes`/`from_le_bytes`-style
   conversions over the byte primitives); no byte-order intrinsic.
@@ -491,7 +493,7 @@ Explicitly out of scope for this ADR, for later designs:
   unification).
 - RUE-879 — the transitional raw-byte intrinsic family (no prior ADR of record;
   this document becomes it).
-- RUE-880 / ADR-0052 — canonical physical type layout; its final phase reassesses
+- RUE-880 / RUE-971 / ADR-0052 — canonical physical type layout (design epic / implementation epic); its final phase reassesses
   the raw-byte family, and it flags the `@alloc_bytes` alignment defect.
 - RUE-712 / ADR-0057 — File IO v0, a live consumer of the byte family and the
   trusted-std carve-out.
