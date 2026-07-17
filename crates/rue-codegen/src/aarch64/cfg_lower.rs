@@ -1618,6 +1618,24 @@ impl<'a> CfgLower<'a> {
                 } else {
                     Aarch64Inst::Svc { imm: 0 }
                 });
+                if self.target.is_macho() {
+                    // Darwin reports syscall errors by setting carry and returning
+                    // a positive errno in x0. Normalize that to the negative errno
+                    // convention exposed by @syscall. Keep the flag consumer
+                    // immediately after SVC: both instructions are scheduling
+                    // barriers, so no flag-setting instruction can be moved between
+                    // the kernel return and this test.
+                    let success = self.mir.alloc_label();
+                    self.mir.push(Aarch64Inst::BCond {
+                        cond: Cond::Lo,
+                        label: success,
+                    });
+                    self.mir.push(Aarch64Inst::Neg {
+                        dst: Operand::Physical(Reg::X0),
+                        src: Operand::Physical(Reg::X0),
+                    });
+                    self.mir.push(Aarch64Inst::Label { id: success });
+                }
                 if stack_space > 0 {
                     self.mir.push(Aarch64Inst::AddImm {
                         dst: Operand::Physical(Reg::Sp),

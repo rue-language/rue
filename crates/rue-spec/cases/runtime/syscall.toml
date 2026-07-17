@@ -49,6 +49,32 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# Darwin reports a positive errno in x0 with carry set. @syscall normalizes
+# that ABI-specific representation to the negative error convention used on
+# every supported target.
+[[case]]
+name = "syscall_error_is_negative_aarch64_macos"
+spec = ["9.2:4"]
+only_on = ["aarch64-macos"]
+source = """
+fn main() -> i32 {
+    // close(-1) is guaranteed to fail with EBADF. Darwin syscall arguments
+    // are u64, so u64::MAX supplies the all-ones file descriptor value.
+    let close_num: u64 = 6;
+    let invalid_fd: u64 = 18446744073709551615;
+    let result: i64 = checked {
+        @syscall(close_num, invalid_fd)
+    };
+    let zero: i64 = 0;
+    if result < zero {
+        42
+    } else {
+        1
+    }
+}
+"""
+exit_code = 42
+
 # Test that @syscall requires at least one argument (the syscall number)
 [[case]]
 name = "syscall_requires_syscall_number"
