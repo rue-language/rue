@@ -612,3 +612,114 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# =============================================================================
+# Byte Access (3.10:34 - 3.10:35)
+# =============================================================================
+
+[[case]]
+name = "string_byte_at_in_bounds"
+spec = ["3.10:34", "3.10:35"]
+description = "byte_at returns Some(byte) for an in-bounds index"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s: StrBuf = "hi";
+    let O = std.option.Option(u8);
+    match s.byte_at(0) {
+        O.Some(b) => @intCast(b),  // 'h' = 104
+        O.None => -1,
+    }
+}
+"""
+exit_code = 104
+
+[[case]]
+name = "string_byte_at_out_of_bounds_none"
+spec = ["3.10:34"]
+description = "byte_at returns None for an index past the end (no trap)"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s: StrBuf = "hi";
+    let O = std.option.Option(u8);
+    match s.byte_at(2) {
+        O.Some(b) => 1,
+        O.None => 0,
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_byte_at_empty_none"
+spec = ["3.10:34"]
+description = "byte_at on an empty string returns None at index 0"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s: StrBuf = "";
+    let O = std.option.Option(u8);
+    match s.byte_at(0) {
+        O.Some(b) => 1,
+        O.None => 0,
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_byte_at_last_byte_boundary"
+spec = ["3.10:34"]
+description = "The last valid index is Some; length itself is None"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s: StrBuf = "abc";  // len == 3
+    let O = std.option.Option(u8);
+    let last = match s.byte_at(2) {  // 'c' = 99
+        O.Some(b) => @intCast(b),
+        O.None => -1,
+    };
+    let past = match s.byte_at(3) {  // index == len -> None
+        O.Some(b) => -1,
+        O.None => 0,
+    };
+    last + past  // 99
+}
+"""
+exit_code = 99
+
+[[case]]
+name = "string_byte_at_loop_sum"
+spec = ["3.10:34"]
+description = "Reading every byte with byte_at and summing them"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s: StrBuf = "ABC";  // 65 + 66 + 67 = 198
+    let O = std.option.Option(u8);
+    let mut sum: i32 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        let add = match s.byte_at(i) {
+            O.Some(b) => @intCast(b),
+            O.None => 0,
+        };
+        sum = sum + add;
+        i = i + 1;
+    }
+    sum  // 198
+}
+"""
+exit_code = 198

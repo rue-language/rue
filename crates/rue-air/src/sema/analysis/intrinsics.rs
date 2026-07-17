@@ -111,6 +111,11 @@ impl<'a> BodySema<'a> {
             self.analyze_random_u32_intrinsic(air, name, &args, span)
         } else if name == known.random_u64 {
             self.analyze_random_u64_intrinsic(air, name, &args, span)
+        } else if name == known.wrapping_add
+            || name == known.wrapping_sub
+            || name == known.wrapping_mul
+        {
+            self.analyze_wrapping_arith_intrinsic(air, name, &args, span, ctx)
         } else if name == known.ptr_read {
             self.analyze_ptr_read_intrinsic(air, name, inst_ref, &args, span, ctx)
         } else if name == known.ptr_write {
@@ -1314,6 +1319,86 @@ impl<'a> BodySema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::U64))
+    }
+
+    /// Analyze `@wrapping_add` / `@wrapping_sub` / `@wrapping_mul` (RUE-647).
+    ///
+    /// Each takes exactly two operands of the same integer type and returns
+    /// that type; the value is the true mathematical result reduced modulo
+    /// 2^N (two's-complement), defined for every width (`i8`..`i64`,
+    /// `u8`..`u64`) and both signednesses, and never traps. The
+    /// operand/result equality-and-integer typing is exactly that of checked
+    /// `+`/`-`/`*` (inference `generate_add`); this re-emits the resolved AIR
+    /// node as a `WrappingAdd`/`WrappingSub`/`WrappingMul` so lowering drops
+    /// the overflow-check step.
+    pub(super) fn analyze_wrapping_arith_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let display = self.interner.resolve(&name).to_string();
+        if args.len() != 2 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: display,
+                    expected: 2,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let lhs = self.analyze_inst(air, args[0].value, ctx)?;
+        let rhs = self.analyze_inst(air, args[1].value, ctx)?;
+        let lty = lhs.ty;
+        let rty = rhs.ty;
+
+        // Both operands must be integers. An `<error>`-typed operand already
+        // produced its own diagnostic during inference, so let it pass through
+        // silently (it never reaches codegen) — mirroring the other arithmetic
+        // intrinsics.
+        for (ty, arg) in [(lty, &args[0]), (rty, &args[1])] {
+            if !ty.is_integer() && !ty.is_error() {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: format!("@{display}"),
+                        expected: "integer".to_string(),
+                        found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                    })),
+                    self.rir.get(arg.value).span,
+                ));
+            }
+        }
+
+        // The operand and result types share one integer type through the
+        // inference equality constraints; use the concrete operand type as the
+        // result. (A mismatch between the two operands is reported by inference
+        // as an ordinary type error before reaching here.)
+        let result_ty = if lty.is_integer() {
+            lty
+        } else if rty.is_integer() {
+            rty
+        } else {
+            Type::ERROR
+        };
+
+        let data = if name == self.known.wrapping_add {
+            AirInstData::WrappingAdd(lhs.air_ref, rhs.air_ref)
+        } else if name == self.known.wrapping_sub {
+            AirInstData::WrappingSub(lhs.air_ref, rhs.air_ref)
+        } else {
+            AirInstData::WrappingMul(lhs.air_ref, rhs.air_ref)
+        };
+
+        let air_ref = air.add_inst(AirInst {
+            data,
+            ty: result_ty,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_ty))
     }
 
     /// Analyze @import intrinsic.

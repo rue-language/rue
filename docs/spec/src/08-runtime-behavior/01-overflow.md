@@ -53,4 +53,7 @@ fn main() -> i32 {
 
 {{ rule(id="8.1:6") }}
 
-Future versions of Rue may provide wrapping arithmetic operations that do not panic on overflow.
+Wrapping arithmetic that does not panic on overflow is available through the
+`@wrapping_add`, `@wrapping_sub`, and `@wrapping_mul` intrinsics (§4.13,
+rules 4.13:97–4.13:102), which reduce their result modulo `2^N` instead of
+trapping. Wrapping forms of the arithmetic *operators* remain future work.

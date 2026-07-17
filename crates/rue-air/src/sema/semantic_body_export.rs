@@ -223,6 +223,18 @@ impl BodySema<'_> {
                     let (a, b) = binary(*a, *b)?;
                     SemanticBodyInstData::Mul(a, b)
                 }
+                AirInstData::WrappingAdd(a, b) => {
+                    let (a, b) = binary(*a, *b)?;
+                    SemanticBodyInstData::WrappingAdd(a, b)
+                }
+                AirInstData::WrappingSub(a, b) => {
+                    let (a, b) = binary(*a, *b)?;
+                    SemanticBodyInstData::WrappingSub(a, b)
+                }
+                AirInstData::WrappingMul(a, b) => {
+                    let (a, b) = binary(*a, *b)?;
+                    SemanticBodyInstData::WrappingMul(a, b)
+                }
                 AirInstData::Div(a, b) => {
                     let (a, b) = binary(*a, *b)?;
                     SemanticBodyInstData::Div(a, b)

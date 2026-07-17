@@ -729,6 +729,15 @@ pub enum AirInstData {
     Sub(AirRef, AirRef),
     /// Multiplication
     Mul(AirRef, AirRef),
+    /// Wrapping addition — two's-complement result mod 2^N, never traps
+    /// (`@wrapping_add`, RUE-647).
+    WrappingAdd(AirRef, AirRef),
+    /// Wrapping subtraction — two's-complement result mod 2^N, never traps
+    /// (`@wrapping_sub`, RUE-647).
+    WrappingSub(AirRef, AirRef),
+    /// Wrapping multiplication — two's-complement result mod 2^N, never traps
+    /// (`@wrapping_mul`, RUE-647).
+    WrappingMul(AirRef, AirRef),
     /// Division
     Div(AirRef, AirRef),
     /// Modulo
@@ -1095,6 +1104,9 @@ impl Air {
                 AirInstData::Add(lhs, rhs) => writeln!(f, "add {}, {}", lhs, rhs)?,
                 AirInstData::Sub(lhs, rhs) => writeln!(f, "sub {}, {}", lhs, rhs)?,
                 AirInstData::Mul(lhs, rhs) => writeln!(f, "mul {}, {}", lhs, rhs)?,
+                AirInstData::WrappingAdd(lhs, rhs) => writeln!(f, "wrapping_add {}, {}", lhs, rhs)?,
+                AirInstData::WrappingSub(lhs, rhs) => writeln!(f, "wrapping_sub {}, {}", lhs, rhs)?,
+                AirInstData::WrappingMul(lhs, rhs) => writeln!(f, "wrapping_mul {}, {}", lhs, rhs)?,
                 AirInstData::Div(lhs, rhs) => writeln!(f, "div {}, {}", lhs, rhs)?,
                 AirInstData::Mod(lhs, rhs) => writeln!(f, "mod {}, {}", lhs, rhs)?,
                 AirInstData::Eq(lhs, rhs) => writeln!(f, "eq {}, {}", lhs, rhs)?,

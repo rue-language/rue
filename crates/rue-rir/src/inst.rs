@@ -1073,10 +1073,10 @@ pub enum InstData {
         /// Number of fields
         fields_len: u32,
         /// Span of the first field-init-shorthand field, if any (`P { x }`
-        /// desugaring to `P { x: x }`, RUE-613, preview `field_init_shorthand`).
-        /// `Some` iff at least one field used the shorthand; Sema uses it to gate
-        /// the form behind its preview flag and to point the diagnostic. `None`
-        /// when every field was written explicitly (`P { x: x }`).
+        /// desugaring to `P { x: x }`, RUE-613, stabilized in RUE-628). `Some`
+        /// iff at least one field used the shorthand; retained as diagnostic
+        /// provenance for the shorthand form. `None` when every field was
+        /// written explicitly (`P { x: x }`).
         shorthand_span: Option<Span>,
     },
 

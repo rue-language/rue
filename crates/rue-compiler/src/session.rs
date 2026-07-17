@@ -8077,6 +8077,39 @@ mod tests {
         )
     }
 
+    /// Generate `QUERY_TERMINAL_RETENTION_LIMIT + 1` distinct `CompileOptions`
+    /// for terminal retention/eviction tests (one more key than the store can
+    /// hold, forcing exactly one eviction). Preview-feature subsets supply the
+    /// low bits; because there are now fewer preview features than the
+    /// `ceil(log2(LIMIT + 1))` bits the mask spans, the first bit above the
+    /// feature range toggles the compile target so every mask stays a distinct
+    /// cache key. Both `target` and the preview-feature set are part of the
+    /// semantic, definition, and dependency-manifest query keys.
+    fn retention_variants() -> Vec<CompileOptions> {
+        let feature_bits = PreviewFeature::all().len();
+        let default_target = CompileOptions::default().target;
+        let alt_target = *Target::all()
+            .iter()
+            .find(|&&target| target != default_target)
+            .expect("multiple compiler targets");
+        (0..=QUERY_TERMINAL_RETENTION_LIMIT)
+            .map(|mask| CompileOptions {
+                preview_features: PreviewFeature::all()
+                    .iter()
+                    .enumerate()
+                    .filter(|(bit, _)| mask & (1 << bit) != 0)
+                    .map(|(_, feature)| *feature)
+                    .collect(),
+                target: if mask & (1 << feature_bits) != 0 {
+                    alt_target
+                } else {
+                    default_target
+                },
+                ..CompileOptions::default()
+            })
+            .collect()
+    }
+
     #[test]
     fn caught_session_cancellation_is_immediately_observable_and_commits_no_cache() {
         let mut session = CompilerSession::new();
@@ -9564,17 +9597,7 @@ mod tests {
         let source = base();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let variants = (0..=QUERY_TERMINAL_RETENTION_LIMIT)
-            .map(|mask| CompileOptions {
-                preview_features: PreviewFeature::all()
-                    .iter()
-                    .enumerate()
-                    .filter(|(bit, _)| mask & (1 << bit) != 0)
-                    .map(|(_, feature)| *feature)
-                    .collect(),
-                ..CompileOptions::default()
-            })
-            .collect::<Vec<_>>();
+        let variants = retention_variants();
         for options in &variants {
             session.semantic_dependency_inputs(options, None).unwrap();
         }
@@ -9605,17 +9628,7 @@ mod tests {
         let source = base();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let variants = (0..=QUERY_TERMINAL_RETENTION_LIMIT)
-            .map(|mask| CompileOptions {
-                preview_features: PreviewFeature::all()
-                    .iter()
-                    .enumerate()
-                    .filter(|(bit, _)| mask & (1 << bit) != 0)
-                    .map(|(_, feature)| *feature)
-                    .collect(),
-                ..CompileOptions::default()
-            })
-            .collect::<Vec<_>>();
+        let variants = retention_variants();
 
         for options in &variants {
             session.semantic(options).unwrap();
@@ -12191,17 +12204,7 @@ mod tests {
         let source = base();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let variants = (0..=QUERY_TERMINAL_RETENTION_LIMIT)
-            .map(|mask| CompileOptions {
-                preview_features: PreviewFeature::all()
-                    .iter()
-                    .enumerate()
-                    .filter(|(bit, _)| mask & (1 << bit) != 0)
-                    .map(|(_, feature)| *feature)
-                    .collect(),
-                ..CompileOptions::default()
-            })
-            .collect::<Vec<_>>();
+        let variants = retention_variants();
 
         for options in &variants {
             session.stable_definitions(options).unwrap();

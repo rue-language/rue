@@ -225,3 +225,36 @@ Rue strings are *conventionally UTF-8* rather than strictly validated:
 {{ rule(id="3.10:33", cat="informative") }}
 
 This approach matches Go's `string` and Rust's `bstr` crate: UTF-8 is the convention, but the type does not enforce it at runtime.
+
+## Byte Access
+
+{{ rule(id="3.10:34", cat="normative") }}
+
+`fn byte_at(borrow self, index: u64) -> Option(u8)` returns the byte stored at
+`index`. When `index` is less than the length it returns `Some(byte)`; when
+`index` is greater than or equal to the length it returns `None`. The read is
+bounds-checked and never traps: an out-of-range index yields `None` rather than
+aborting the program. `byte_at` borrows `self`, so the string remains valid
+after the call.
+
+{{ rule(id="3.10:35", cat="example") }}
+
+```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let s: StrBuf = "hi";
+    let O = std.option.Option(u8);
+    let first = match s.byte_at(0) {
+        O.Some(b) => @intCast(b),  // 'h' = 104
+        O.None => -1,
+    };
+    // Reading past the end yields None, not a trap.
+    let past = match s.byte_at(2) {
+        O.Some(b) => @intCast(b),
+        O.None => 0,
+    };
+    first + past  // 104
+}
+```

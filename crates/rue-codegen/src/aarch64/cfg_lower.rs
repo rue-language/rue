@@ -414,6 +414,7 @@ impl<'a> CfgLower<'a> {
         use crate::value_plan::ArithmeticOperation;
         let overflow_call = plan.overflow_call;
         let div_by_zero_call = plan.div_by_zero_call;
+        let wrap = plan.wrap;
         let vreg = match plan.operation {
             ArithmeticOperation::Add { lhs, rhs, width } => {
                 let vreg = self.mir.alloc_vreg();
@@ -430,7 +431,11 @@ impl<'a> CfgLower<'a> {
                         src2: Operand::Virtual(rhs),
                     }
                 });
-                self.emit_overflow_check_add(width, vreg, overflow_call.clone());
+                if wrap {
+                    self.emit_wrap_narrow_subword(width, vreg);
+                } else {
+                    self.emit_overflow_check_add(width, vreg, overflow_call.clone());
+                }
                 vreg
             }
             ArithmeticOperation::Sub { lhs, rhs, width } => {
@@ -448,7 +453,11 @@ impl<'a> CfgLower<'a> {
                         src2: Operand::Virtual(rhs),
                     }
                 });
-                self.emit_overflow_check_sub(width, vreg, overflow_call.clone());
+                if wrap {
+                    self.emit_wrap_narrow_subword(width, vreg);
+                } else {
+                    self.emit_overflow_check_sub(width, vreg, overflow_call.clone());
+                }
                 vreg
             }
             ArithmeticOperation::Mul {
@@ -458,7 +467,18 @@ impl<'a> CfgLower<'a> {
                 shift,
             } => {
                 let vreg = self.mir.alloc_vreg();
-                if let Some((src, amount)) = shift.filter(|_| width.bits >= 32) {
+                if wrap {
+                    // Wrapping multiply: one plain 64-bit MUL. Low bits agree for
+                    // signed and unsigned; the result is then truncated to the
+                    // declared width so the two's-complement wrap is observable
+                    // (RUE-647). No widening overflow probe is emitted.
+                    self.mir.push(Aarch64Inst::MulRR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs),
+                        src2: Operand::Virtual(rhs),
+                    });
+                    self.emit_wrap_narrow_mul(width, vreg);
+                } else if let Some((src, amount)) = shift.filter(|_| width.bits >= 32) {
                     self.mir.push(if width.bits == 64 {
                         Aarch64Inst::LslImm {
                             dst: Operand::Virtual(vreg),
@@ -2255,6 +2275,50 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::Sxth { dst, src })
             }
             16 => self.mir.push(Aarch64Inst::Uxth { dst, src }),
+            _ => {}
+        }
+    }
+
+    /// Re-narrow a sub-word wrapping `Add`/`Sub` result to its declared width
+    /// (RUE-647). The flag-setting `Adds`/`Subs` are 32-bit ops that zero bits
+    /// 32..63, so 32- and 64-bit results are already canonical; only 8/16-bit
+    /// results need the low byte/halfword re-extended to match the canonical
+    /// sign/zero extension of an in-range value.
+    fn emit_wrap_narrow_subword(&mut self, width: crate::value_plan::IntegerWidth, vreg: VReg) {
+        let dst = Operand::Virtual(vreg);
+        let src = Operand::Virtual(vreg);
+        match (width.bits, width.signed) {
+            (8, true) => self.mir.push(Aarch64Inst::Sxtb { dst, src }),
+            (8, false) => self.mir.push(Aarch64Inst::Uxtb { dst, src }),
+            (16, true) => self.mir.push(Aarch64Inst::Sxth { dst, src }),
+            (16, false) => self.mir.push(Aarch64Inst::Uxth { dst, src }),
+            _ => {}
+        }
+    }
+
+    /// Truncate a wrapping multiply result to its declared width (RUE-647).
+    /// `MUL` is a 64-bit op whose upper bits carry the high half of the product,
+    /// so every sub-64-bit width must be re-narrowed: 8/16-bit sign/zero-extend
+    /// the low byte/halfword; a 32-bit signed result sign-extends the low word,
+    /// and a 32-bit unsigned result zeroes the upper word (`lsl #32; lsr #32`)
+    /// so a later `u32 -> u64` widening sees the correct zero-extended value.
+    fn emit_wrap_narrow_mul(&mut self, width: crate::value_plan::IntegerWidth, vreg: VReg) {
+        let dst = Operand::Virtual(vreg);
+        let src = Operand::Virtual(vreg);
+        match (width.bits, width.signed) {
+            (8, true) => self.mir.push(Aarch64Inst::Sxtb { dst, src }),
+            (8, false) => self.mir.push(Aarch64Inst::Uxtb { dst, src }),
+            (16, true) => self.mir.push(Aarch64Inst::Sxth { dst, src }),
+            (16, false) => self.mir.push(Aarch64Inst::Uxth { dst, src }),
+            (32, true) => self.mir.push(Aarch64Inst::Sxtw { dst, src }),
+            (32, false) => {
+                self.mir.push(Aarch64Inst::LslImm { dst, src, imm: 32 });
+                self.mir.push(Aarch64Inst::Lsr64Imm {
+                    dst,
+                    src: dst,
+                    imm: 32,
+                });
+            }
             _ => {}
         }
     }

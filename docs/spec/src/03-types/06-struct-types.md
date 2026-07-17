@@ -127,7 +127,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.6:18", cat="normative") }}
 
-A field initializer written as a bare identifier `x` — with no `: expression` — is **field-init shorthand** and is exactly equivalent to `x: x`: the field named `x` is initialized from the value bound to `x` in the enclosing scope, resolved to the innermost binding of that name (a `let` that shadows an outer `x` supplies the shorthand's value). If no `x` is in scope the shorthand is an undefined-name error, exactly as the explicit `x: x` would be. Shorthand and explicit initializers may be freely mixed within one literal (`P { x, y: 2 }`), and the shorthand is available for every struct-literal head, including `Self { .. }`. This form is a preview feature (gated behind `field_init_shorthand`, RUE-613); using it without the feature enabled is an error.
+A field initializer written as a bare identifier `x` — with no `: expression` — is **field-init shorthand** and is exactly equivalent to `x: x`: the field named `x` is initialized from the value bound to `x` in the enclosing scope, resolved to the innermost binding of that name (a `let` that shadows an outer `x` supplies the shorthand's value). If no `x` is in scope the shorthand is an undefined-name error, exactly as the explicit `x: x` would be. Shorthand and explicit initializers may be freely mixed within one literal (`P { x, y: 2 }`), and the shorthand is available for every struct-literal head, including `Self { .. }`.
 
 {{ rule(id="3.6:19") }}
 

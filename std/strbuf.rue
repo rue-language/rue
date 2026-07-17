@@ -5,6 +5,8 @@
 // Allocation failure is fail-fast, and an owner header is changed only after
 // its replacement allocation has succeeded.
 
+const option = @import("option.rue");
+
 // Raw-pointer operations are private module implementation details. Keeping
 // them outside the public struct prevents callers from laundering unchecked
 // arbitrary pointers through safe-looking associated functions.
@@ -182,6 +184,18 @@ pub struct StrBuf {
             @panic("index out of bounds");
         }
         read_packed_byte(value.buf, index)
+    }
+
+    // Bounds-checked byte read. Returns `None` when `index` is at or past the
+    // length and `Some(byte)` otherwise, reading through the same internal
+    // packed-byte pathway as the other query methods. This is the
+    // Option-returning counterpart to the trapping `StrBuf[i]` indexing form.
+    fn byte_at(borrow self, index: u64) -> option.Option(u8) {
+        let O = option.Option(u8);
+        if index >= self.len {
+            return O.None;
+        }
+        O.Some(read_packed_byte(self.buf, index))
     }
 
     fn starts_with(borrow self, borrow prefix: str) -> bool {

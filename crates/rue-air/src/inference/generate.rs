@@ -1406,6 +1406,27 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "random_u64" {
                     // @random_u64: no arguments, returns u64
                     InferType::Concrete(Type::U64)
+                } else if intrinsic_name == "wrapping_add"
+                    || intrinsic_name == "wrapping_sub"
+                    || intrinsic_name == "wrapping_mul"
+                {
+                    // @wrapping_add/sub/mul(a, b): both operands and the result
+                    // share one integer type — the same equality-and-integer
+                    // constraints as checked `+`/`-`/`*` (see `generate_add`),
+                    // minus the String-concat overload. Sema re-emits the
+                    // resolved node without the overflow check (RUE-647).
+                    let result_var = self.fresh_var();
+                    let result_ty = InferType::Var(result_var);
+                    for arg_ref in args.iter() {
+                        let info = self.generate(*arg_ref, ctx);
+                        self.add_constraint(Constraint::equal(
+                            info.ty,
+                            result_ty.clone(),
+                            info.span,
+                        ));
+                    }
+                    self.add_constraint(Constraint::is_integer(result_ty.clone(), span));
+                    result_ty
                 } else if intrinsic_name == "syscall" {
                     // @syscall: syscall_num and up to 6 args (all u64), returns i64
                     for arg_ref in args.iter() {

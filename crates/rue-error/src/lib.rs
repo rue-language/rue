@@ -518,11 +518,6 @@ pub enum PreviewFeature {
     /// bind-first form (`let P = F(args); P.NAME`). Elided args (`Option(_)`)
     /// remain out of scope (RUE-401).
     InlineTypeCtorPath,
-    /// Field-init shorthand (RUE-613): a struct-literal field written as a bare
-    /// identifier `P { x }` desugars to `P { x: x }`, taking the value from the
-    /// in-scope binding of the same name. Mixed forms (`P { x, y: 2 }`) and
-    /// `Self { a, b }` in methods are supported.
-    FieldInitShorthand,
     /// Raw physical-byte heap and memory access intrinsics (RUE-879). These
     /// operations intentionally bypass Rue's slot-sized typed-pointer model so
     /// source-defined packed representations can use the runtime byte ABI.
@@ -549,7 +544,6 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::Slices => "slices",
             PreviewFeature::InlineTypeCtorPath => "inline_type_ctor_paths",
-            PreviewFeature::FieldInitShorthand => "field_init_shorthand",
             PreviewFeature::RawBytes => "raw_bytes",
         }
     }
@@ -561,7 +555,6 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::Slices => "ADR-0043",
             PreviewFeature::InlineTypeCtorPath => "ADR-0025",
-            PreviewFeature::FieldInitShorthand => "RUE-613",
             PreviewFeature::RawBytes => "RUE-879",
         }
     }
@@ -572,7 +565,6 @@ impl PreviewFeature {
             PreviewFeature::TestInfra,
             PreviewFeature::Slices,
             PreviewFeature::InlineTypeCtorPath,
-            PreviewFeature::FieldInitShorthand,
             PreviewFeature::RawBytes,
         ]
     }
@@ -599,7 +591,6 @@ impl std::str::FromStr for PreviewFeature {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "slices" => Ok(PreviewFeature::Slices),
             "inline_type_ctor_paths" => Ok(PreviewFeature::InlineTypeCtorPath),
-            "field_init_shorthand" => Ok(PreviewFeature::FieldInitShorthand),
             "raw_bytes" => Ok(PreviewFeature::RawBytes),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
@@ -2582,7 +2573,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, slices, inline_type_ctor_paths, field_init_shorthand, raw_bytes"
+            "test_infra, slices, inline_type_ctor_paths, raw_bytes"
         );
     }
 
@@ -2660,13 +2651,15 @@ mod tests {
 
     #[test]
     fn test_preview_feature_stabilized_are_unknown() {
-        // for_loops, method_receivers, enum_payloads, and array_repeat were
-        // stabilized (no longer gated) — their names must now be rejected.
+        // for_loops, method_receivers, enum_payloads, array_repeat, and
+        // field_init_shorthand were stabilized (no longer gated) — their names
+        // must now be rejected.
         for name in [
             "for_loops",
             "method_receivers",
             "enum_payloads",
             "array_repeat",
+            "field_init_shorthand",
         ] {
             assert!(
                 name.parse::<PreviewFeature>().is_err(),
