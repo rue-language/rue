@@ -26,6 +26,8 @@ mod semantic_body;
 mod semantic_import;
 pub mod specialize;
 mod type_encoding;
+#[cfg(test)]
+mod type_properties;
 mod types;
 
 pub use canonical_imports::CanonicalImportView;
