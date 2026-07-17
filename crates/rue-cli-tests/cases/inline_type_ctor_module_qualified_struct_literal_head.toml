@@ -1,0 +1,90 @@
+# Module-qualified inline type-constructor STRUCT-LITERAL head (RUE-951, spec
+# 4.14:23). The local head `Pair(i64, i32) { first: .., second: .. }` already
+# worked (RUE-596); the module-qualified head `std.tuple.Pair(i64, i32) { .. }`
+# previously failed with a raw E0100 parse error at `{`. It now parses (the
+# `(...)` group is the ctor call and the field-shaped `{...}` is the struct
+# literal, carrying the module receiver as the base), lowers the head as a
+# method call on the module base (RUE-947 model), and reduces through sema's
+# pre-computed inline-ctor-head types so wide field literals widen to the
+# declared field type. Accepted with no preview flag (stabilized RUE-598).
+# Driven end-to-end through the real binary against the real standard library.
+
+[section]
+id = "cli.inline_type_ctor_module_qualified_struct_literal_head"
+name = "Module-qualified inline type-constructor struct-literal head"
+description = "`std.tuple.Pair(i64, i32) { first: .., second: .. }` as a struct-literal head, against real std (RUE-951)."
+
+[[case]]
+name = "module_qualified_struct_literal_head_runs"
+description = "`std.tuple.Pair(i64, i32) { .. }` constructs the specialized struct inline; a wide i64 field literal widens to the declared field type."
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let q = std.tuple.Pair(i64, i32) { first: 5000000000, second: 2 };  // module-qualified struct-literal head
+    if q.first == 5000000000 { q.second + 40 } else { 1 }               // 42
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "local_and_module_qualified_struct_literal_heads_one_program"
+description = "The local and module-qualified inline struct-literal heads run together in one program (RUE-951)."
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn Pair(comptime A: type, comptime B: type) -> type { struct { first: A, second: B } }
+fn main() -> i32 {
+    let local = Pair(i64, i32) { first: 40, second: 2 };                    // local head
+    let qualified = std.tuple.Pair(i64, i32) { first: 5000000000, second: 2 }; // module-qualified head
+    if qualified.first == 5000000000 {
+        @intCast(local.first) + local.second                                // 42
+    } else {
+        1
+    }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "module_qualified_struct_literal_head_accepted_without_flag"
+description = "The module-qualified struct-literal head compiles and runs with no preview flag (stabilized RUE-598)."
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let q = std.tuple.Pair(i64, i32) { first: 41, second: 2 };
+    q.second - 2
+}
+""" }]
+exit_code = 0
+
+# Regression guard for the dijkstra shape (RUE-951): a method call as the right
+# operand of a binary `if` condition, followed by an EMPTY body block. The
+# postfix inline-ctor struct-literal-head extension greedily parses the empty
+# `{}` as struct fields; in bare-condition position it must reclaim to the plain
+# method call plus the loop/if body, exactly as the local call head does. Before
+# the reclaim was completed this compiled to a raw E0102 parse error at `} else`.
+# The full real-std dijkstra path is covered end-to-end by the examples sweeper
+# (`cli.examples::dijkstra`); this minimized case pins just the parse shape.
+[[case]]
+name = "method_call_in_binary_if_condition_with_empty_body"
+description = "`if d > s.get(k) {} else { .. }` (dijkstra shape) parses the empty braces as the if body, not a struct literal, driven through the real binary (RUE-951)."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct S { x: i32, fn get(borrow self, a: i32) -> i32 { self.x + a } }
+fn main() -> i32 {
+    let s = S { x: 40 };
+    let d: i32 = 5;
+    let mut acc: i32 = 0;
+    if d > s.get(0) {          // 5 > 40 is false -> else
+    } else {
+        acc = s.get(2);        // 42
+    }
+    acc
+}
+""" }]
+exit_code = 42

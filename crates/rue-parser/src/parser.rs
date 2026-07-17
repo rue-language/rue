@@ -1257,13 +1257,33 @@ impl Parser {
                     let field = self.ident()?;
                     if self.at(TokenKind::LParen) {
                         let args = self.call_args()?;
-                        let span = base.span().extend_to(self.previous_end());
-                        base = Expr::MethodCall(MethodCallExpr {
-                            receiver: Box::new(base),
-                            method: field,
-                            args,
-                            span,
-                        });
+                        // A module-qualified inline type-constructor struct-literal
+                        // head (`m.F(args) { ... }`, RUE-951) mirrors the local
+                        // form in `ident_expr`: the `(...)` is the ctor call and a
+                        // following field-shaped `{...}` is the struct literal, with
+                        // the receiver carried as the `base`. Any other continuation
+                        // is an ordinary method call. The struct-literal-in-a-bare-
+                        // condition guard is post-hoc in `condition_body`/`match_expr`
+                        // via `tail_is_struct_lit`, exactly as for the local form.
+                        if self.at(TokenKind::LBrace) && self.looks_like_fields() {
+                            let fields = self.field_inits()?;
+                            let span = base.span().extend_to(self.previous_end());
+                            base = Expr::StructLit(StructLitExpr {
+                                base: Some(Box::new(base)),
+                                name: field,
+                                ctor_args: Some(args),
+                                fields,
+                                span,
+                            });
+                        } else {
+                            let span = base.span().extend_to(self.previous_end());
+                            base = Expr::MethodCall(MethodCallExpr {
+                                receiver: Box::new(base),
+                                method: field,
+                                args,
+                                span,
+                            });
+                        }
                     } else if self.at(TokenKind::LBrace) && self.looks_like_fields() {
                         let fields = self.field_inits()?;
                         let span = base.span().extend_to(self.previous_end());

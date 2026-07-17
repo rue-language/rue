@@ -70,6 +70,25 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "empty_if_body_after_method_call_in_binary_condition"
+spec = ["4.6:13"]
+description = "An empty if body after a binary condition whose right operand is a method call (`if d > s.get(k) {}`) parses the braces as the body, not a struct literal (RUE-951, dijkstra shape)."
+source = """
+struct S { x: i32, fn get(borrow self, a: i32) -> i32 { self.x + a } }
+fn main() -> i32 {
+    let s = S { x: 40 };
+    let d: i32 = 5;
+    let mut acc: i32 = 0;
+    if d > s.get(0) {          // 5 > 40 is false -> else
+    } else {
+        acc = s.get(2);        // 42
+    }
+    acc
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "bare_struct_literal_if_condition_requires_parens"
 spec = ["4.6:13"]
 source = """
