@@ -28,17 +28,13 @@ fn io_link_error(context: &str, err: std::io::Error) -> CompileError {
     CompileError::without_span(ErrorKind::LinkError(format!("{}: {}", context, err)))
 }
 
-/// Counter for generating unique temp directory names.
-static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// A temporary directory for linking that automatically cleans up on drop.
 ///
-/// This struct manages the creation of a unique temporary directory for the
-/// linking process and automatically removes it when dropped (whether via
-/// normal completion or early error return).
+/// The `TempDir` is the ownership token for the workspace: it is created
+/// atomically with a random name and only that directory is removed on drop.
 struct TempLinkDir {
-    /// Path to the temporary directory.
-    path: PathBuf,
+    /// Owner-only directory created by this invocation.
+    directory: tempfile::TempDir,
     /// Paths to the object files written to the directory.
     obj_paths: Vec<PathBuf>,
     /// Path to the runtime archive in the directory.
@@ -50,24 +46,38 @@ struct TempLinkDir {
 impl TempLinkDir {
     /// Create a new temporary directory for linking.
     ///
-    /// Creates a unique directory in the system temp directory with the
-    /// format `rue-<pid>-<counter>` to ensure uniqueness even in parallel
-    /// test execution.
+    /// The random name is deliberately longer than `tempfile`'s default, and
+    /// creation uses `mkdir` rather than accepting an existing path.
     fn new() -> CompileResult<Self> {
-        let unique_id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("rue-{}-{}", std::process::id(), unique_id));
-        std::fs::create_dir_all(&path)
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("rue-link-").rand_bytes(16);
+        #[cfg(unix)]
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+        Self::create_in(&builder, &std::env::temp_dir())
+    }
+
+    fn create_in(builder: &tempfile::Builder<'_, '_>, parent: &Path) -> CompileResult<Self> {
+        let directory = builder
+            .tempdir_in(parent)
             .map_err(|e| io_link_error("failed to create temp directory", e))?;
 
-        let runtime_path = path.join("librue_runtime.a");
-        let output_path = path.join("output");
+        let runtime_path = directory.path().join("librue_runtime.a");
+        let output_path = directory.path().join("output");
 
         Ok(Self {
-            path,
+            directory,
             obj_paths: Vec::new(),
             runtime_path,
             output_path,
         })
+    }
+
+    fn create_leaf(path: &Path, context: &str) -> CompileResult<std::fs::File> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        options.open(path).map_err(|e| io_link_error(context, e))
     }
 
     /// Write object files to the temporary directory.
@@ -76,9 +86,8 @@ impl TempLinkDir {
     /// the index. The paths are stored in `self.obj_paths`.
     fn write_object_files(&mut self, object_files: &[Vec<u8>]) -> CompileResult<()> {
         for (i, obj_bytes) in object_files.iter().enumerate() {
-            let obj_path = self.path.join(format!("obj{}.o", i));
-            let mut file = std::fs::File::create(&obj_path)
-                .map_err(|e| io_link_error("failed to create temp object file", e))?;
+            let obj_path = self.directory.path().join(format!("obj{}.o", i));
+            let mut file = Self::create_leaf(&obj_path, "failed to create temp object file")?;
             file.write_all(obj_bytes)
                 .map_err(|e| io_link_error("failed to write temp object file", e))?;
             self.obj_paths.push(obj_path);
@@ -88,21 +97,39 @@ impl TempLinkDir {
 
     /// Write the runtime archive to the temporary directory.
     fn write_runtime(&self, runtime_bytes: &[u8]) -> CompileResult<()> {
-        std::fs::write(&self.runtime_path, runtime_bytes)
+        let mut file = Self::create_leaf(&self.runtime_path, "failed to create runtime archive")?;
+        file.write_all(runtime_bytes)
             .map_err(|e| io_link_error("failed to write runtime archive", e))
+    }
+
+    /// Reserve the output leaf so a pre-existing file of any kind is rejected.
+    fn create_output(&self) -> CompileResult<()> {
+        Self::create_leaf(&self.output_path, "failed to create linker output")?;
+        Ok(())
     }
 
     /// Read the linked executable from the output path.
     fn read_output(&self) -> CompileResult<Vec<u8>> {
-        std::fs::read(&self.output_path)
-            .map_err(|e| io_link_error("failed to read linked executable", e))
-    }
-}
-
-impl Drop for TempLinkDir {
-    fn drop(&mut self) {
-        // Best-effort cleanup; ignore errors
-        let _ = std::fs::remove_dir_all(&self.path);
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW);
+        let mut file = options
+            .open(&self.output_path)
+            .map_err(|e| io_link_error("failed to open linked executable", e))?;
+        if !file
+            .metadata()
+            .map_err(|e| io_link_error("failed to inspect linked executable", e))?
+            .is_file()
+        {
+            return Err(CompileError::without_span(ErrorKind::LinkError(
+                "linked executable is not a regular file".to_string(),
+            )));
+        }
+        let mut output = Vec::new();
+        file.read_to_end(&mut output)
+            .map_err(|e| io_link_error("failed to read linked executable", e))?;
+        Ok(output)
     }
 }
 
@@ -522,6 +549,7 @@ pub(crate) fn link_system_with_warnings(
     temp_dir
         .write_runtime(runtime_bytes)
         .map_err(CompileErrors::from)?;
+    temp_dir.create_output().map_err(CompileErrors::from)?;
 
     // Build the linker command
     let mut cmd = Command::new(linker_cmd);
@@ -586,14 +614,93 @@ pub(crate) fn link_system_with_warnings(
         work: PipelineWork::default(),
     })
 }
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use tracing::{info, info_span};
 
 use crate::*;
+
+#[cfg(all(test, unix))]
+mod temp_link_dir_tests {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    use super::*;
+
+    #[test]
+    fn workspace_is_owner_only() {
+        let workspace = TempLinkDir::new().unwrap();
+        let mode = workspace
+            .directory
+            .path()
+            .metadata()
+            .unwrap()
+            .permissions()
+            .mode();
+
+        assert_eq!(mode & 0o077, 0, "workspace mode was {mode:o}");
+    }
+
+    #[test]
+    fn precreated_workspace_is_rejected_and_not_cleaned_up() {
+        let parent = tempfile::tempdir().unwrap();
+        let occupied = parent.path().join("occupied");
+        std::fs::create_dir(&occupied).unwrap();
+        std::fs::write(occupied.join("sentinel"), b"not ours").unwrap();
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("occupied").rand_bytes(0);
+
+        let result = TempLinkDir::create_in(&builder, parent.path());
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(occupied.join("sentinel")).unwrap(),
+            b"not ours"
+        );
+    }
+
+    fn symlink_target() -> (tempfile::TempDir, PathBuf) {
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("target");
+        std::fs::write(&target, b"outside").unwrap();
+        (outside, target)
+    }
+
+    #[test]
+    fn symlinked_object_leaf_is_rejected() {
+        let (_outside, target) = symlink_target();
+        let mut workspace = TempLinkDir::new().unwrap();
+        symlink(&target, workspace.directory.path().join("obj0.o")).unwrap();
+
+        assert!(workspace.write_object_files(&[b"object".to_vec()]).is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn symlinked_runtime_leaf_is_rejected() {
+        let (_outside, target) = symlink_target();
+        let workspace = TempLinkDir::new().unwrap();
+        symlink(&target, &workspace.runtime_path).unwrap();
+
+        assert!(workspace.write_runtime(b"runtime").is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn symlinked_output_leaf_is_rejected_on_creation_and_read() {
+        let (_outside, target) = symlink_target();
+        let workspace = TempLinkDir::new().unwrap();
+        symlink(&target, &workspace.output_path).unwrap();
+
+        assert!(workspace.create_output().is_err());
+        assert!(workspace.read_output().is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"outside");
+    }
+}
 
 #[cfg(test)]
 mod runtime_archive_validation_tests {
