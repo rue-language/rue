@@ -221,4 +221,5 @@ The table is generated from ADR frontmatter. Run
 | [0056](0056-typed-ir-payload-schemas.md) | Typed IR payload schemas | Implemented | architecture, compiler, ir, performance, validation |
 | [0057](0057-file-io-v0.md) | File IO v0: pure-Rue fs over @syscall with normalized FileError | Accepted | stdlib, io, syscalls, runtime, error-handling, ownership |
 | [0058](0058-canonical-semantic-artifact-algebra.md) | Canonical semantic artifact algebra | Accepted | architecture, compiler, incremental, semantics, validation |
+| [0059](0059-byte-oriented-memory-intrinsics.md) | Byte-oriented memory intrinsics: unify the two low-level families | Accepted | intrinsics, memory, pointers, allocator, bytes, semantics, stdlib, abi |
 <!-- ADR-INDEX:END -->
