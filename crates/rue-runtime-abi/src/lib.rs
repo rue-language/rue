@@ -830,6 +830,24 @@ macro_rules! for_each_runtime_helper {
             result: U64_RESULT,
             safety: SafetyContract::NONE,
             returns: RETURNS
+        },
+        ByteCopy => unsafe __rue_byte_copy(dst: *mut u8, src: *const u8, size: u64) {
+            symbol: "__rue_byte_copy",
+            parameters: params![MUT_BYTE_POINTER, BYTE_VIEW, U64_VALUE],
+            result: VOID,
+            // Copies `size` bytes from `src` into the non-overlapping region at
+            // `dst`; both pointer/length ranges must describe accessible bytes.
+            safety: READABLE.union(WRITABLE),
+            returns: RETURNS
+        },
+        ByteSet => unsafe __rue_byte_set(dst: *mut u8, value: u64, size: u64) {
+            symbol: "__rue_byte_set",
+            parameters: params![MUT_BYTE_POINTER, U64_VALUE, U64_VALUE],
+            result: VOID,
+            // Writes the low byte of `value` to each of `size` bytes at `dst`,
+            // which must denote that many writable bytes.
+            safety: WRITABLE,
+            returns: RETURNS
         }
             }
     };
@@ -1274,7 +1292,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 41);
+        assert_eq!(RuntimeHelperId::ALL.len(), 43);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1337,6 +1355,8 @@ mod tests {
             "__rue_env_count",
             "__rue_env_ptr",
             "__rue_env_len",
+            "__rue_byte_copy",
+            "__rue_byte_set",
         ];
         assert_eq!(
             RUNTIME_HELPERS.map(|helper| helper.symbol),
@@ -1348,7 +1368,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 41],
+            visited: &mut [bool; 43],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1369,7 +1389,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 41];
+        let mut visited = [false; 43];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -1571,6 +1591,22 @@ mod tests {
             &[U64_VALUE],
             U64_RESULT,
             SafetyContract::NONE,
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::ByteCopy],
+            &[MUT_BYTE_POINTER, BYTE_VIEW, U64_VALUE],
+            VOID,
+            READABLE.union(WRITABLE),
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::ByteSet],
+            &[MUT_BYTE_POINTER, U64_VALUE, U64_VALUE],
+            VOID,
+            WRITABLE,
             RETURNS,
         );
         assert!(visited.into_iter().all(|was_visited| was_visited));

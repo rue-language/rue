@@ -717,6 +717,85 @@ impl<'a> BodySema<'a> {
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
+    /// Analyze `@byte_copy(dst: ptr mut u8, src: ptr const u8 | ptr mut u8,
+    /// size: u64) -> ()` (ADR-0058 Phase 1, RUE-937). A memcpy-shaped bulk copy
+    /// of `size` physical bytes; `dst` and `src` must not overlap (undefined
+    /// behavior otherwise) and `size == 0` is a no-op. Lowers to the shared
+    /// `__rue_byte_copy` runtime helper.
+    pub(super) fn analyze_byte_copy_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(PreviewFeature::RawBytes, "@byte_copy intrinsic", span)?;
+        if args.len() != 3 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "byte_copy".to_string(),
+                    expected: 3,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let dst = self.analyze_inst(air, args[0].value, ctx)?;
+        self.require_mut_u8_pointer("byte_copy", dst.ty, span)?;
+        let src = self.analyze_inst(air, args[1].value, ctx)?;
+        self.require_u8_pointer("byte_copy", src.ty, span)?;
+        let size = self.analyze_inst(air, args[2].value, ctx)?;
+        self.require_intrinsic_type("byte_copy", size.ty, Type::U64, span)?;
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::ByteCopy),
+            name,
+            &[dst.air_ref, src.air_ref, size.air_ref],
+            Type::UNIT,
+            span,
+        )?;
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// Analyze `@byte_set(dst: ptr mut u8, byte: u8, size: u64) -> ()`
+    /// (ADR-0058 Phase 1, RUE-937). A memset-shaped fill of `size` physical
+    /// bytes with `byte`; `size == 0` is a no-op. Lowers to the shared
+    /// `__rue_byte_set` runtime helper.
+    pub(super) fn analyze_byte_set_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(PreviewFeature::RawBytes, "@byte_set intrinsic", span)?;
+        if args.len() != 3 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "byte_set".to_string(),
+                    expected: 3,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let dst = self.analyze_inst(air, args[0].value, ctx)?;
+        self.require_mut_u8_pointer("byte_set", dst.ty, span)?;
+        let byte = self.analyze_inst(air, args[1].value, ctx)?;
+        self.require_intrinsic_type("byte_set", byte.ty, Type::U8, span)?;
+        let size = self.analyze_inst(air, args[2].value, ctx)?;
+        self.require_intrinsic_type("byte_set", size.ty, Type::U64, span)?;
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::ByteSet),
+            name,
+            &[dst.air_ref, byte.air_ref, size.air_ref],
+            Type::UNIT,
+            span,
+        )?;
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
     fn require_intrinsic_type(
         &self,
         name: &str,

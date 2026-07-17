@@ -94,6 +94,8 @@ full semantics):
 | `@realloc_bytes` | Resize physical bytes (preview `raw_bytes`) | 3 expressions (`ptr mut u8`, `u64`, `u64`) | `ptr mut u8` |
 | `@byte_read` | Read one physical byte (preview `raw_bytes`) | 2 expressions (`ptr const u8`/`ptr mut u8`, `u64`) | `u8` |
 | `@byte_write` | Write one physical byte (preview `raw_bytes`) | 3 expressions (`ptr mut u8`, `u64`, `u8`) | `()` |
+| `@byte_copy` | Copy `size` non-overlapping bytes (preview `raw_bytes`) | 3 expressions (`ptr mut u8`, `ptr const u8`/`ptr mut u8`, `u64`) | `()` |
+| `@byte_set` | Fill `size` bytes with a byte (preview `raw_bytes`) | 3 expressions (`ptr mut u8`, `u8`, `u64`) | `()` |
 | `@arg_ptr` | Pointer to argument `i`'s bytes (null out of range) | 1 expression (`u64` index) | `ptr mut u8` |
 | `@env_ptr` | Pointer to environment entry `i`'s bytes (null out of range) | 1 expression (`u64` index) | `ptr mut u8` |
 

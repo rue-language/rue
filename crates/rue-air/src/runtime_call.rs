@@ -8,12 +8,21 @@ use rue_runtime_abi::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeOperandOrigin {
     OutResult(AggregateShapeId),
-    ValueArgument { index: u8, ty: AbiType },
+    ValueArgument {
+        index: u8,
+        ty: AbiType,
+    },
     SignExtendedArgument(u8),
     ZeroExtendedArgument(u8),
     BoolWordArgument(u8),
     AbiExtendedIntegerArgument(u8),
-    MutablePointerArgument { index: u8, source: RuntimeAirType },
+    MutablePointerArgument {
+        index: u8,
+        source: RuntimeAirType,
+    },
+    /// A `ptr const u8` / `ptr mut u8` argument passed straight through to a
+    /// `const u8*` runtime parameter (the `@byte_copy` source, ADR-0058).
+    BytePointerArgument(u8),
     TextPointer(u8),
     TextLength(u8),
     ProjectedTextPointer(u8),
@@ -21,7 +30,10 @@ pub enum RuntimeOperandOrigin {
     ResultPointeeAlign,
     ScaledByResultPointeeSize(u8),
     PointerPointeeAlign(u8),
-    ScaledByPointerPointeeSize { pointer: u8, count: u8 },
+    ScaledByPointerPointeeSize {
+        pointer: u8,
+        count: u8,
+    },
     OptionDiscriminant(OptionVariant),
     ByteAlignment,
 }
@@ -73,7 +85,7 @@ impl RuntimeOperandOrigin {
     fn accepts(self, parameter: AbiParameter) -> bool {
         match self {
             Self::OutResult(shape) => parameter.mode == ParameterMode::OutPointer(shape),
-            Self::TextPointer(_) | Self::ProjectedTextPointer(_) => {
+            Self::TextPointer(_) | Self::ProjectedTextPointer(_) | Self::BytePointerArgument(_) => {
                 parameter.ty == AbiType::Byte && parameter.mode == ParameterMode::ConstPointer
             }
             Self::TextLength(_)
@@ -145,6 +157,8 @@ pub enum RuntimeCallKind {
     EnvCount,
     EnvPtr,
     EnvLen,
+    ByteCopy,
+    ByteSet,
 }
 
 const STR_BYTE_AT: &[RuntimeOperandOrigin] = &[
@@ -268,9 +282,31 @@ const REALLOC_BYTES: &[RuntimeOperandOrigin] = &[
     },
     RuntimeOperandOrigin::ByteAlignment,
 ];
+const BYTE_COPY: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::MutablePointerArgument {
+        index: 0,
+        source: RuntimeAirType::MutBytePointer,
+    },
+    RuntimeOperandOrigin::BytePointerArgument(1),
+    RuntimeOperandOrigin::ValueArgument {
+        index: 2,
+        ty: AbiType::U64,
+    },
+];
+const BYTE_SET: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::MutablePointerArgument {
+        index: 0,
+        source: RuntimeAirType::MutBytePointer,
+    },
+    RuntimeOperandOrigin::ZeroExtendedArgument(1),
+    RuntimeOperandOrigin::ValueArgument {
+        index: 2,
+        ty: AbiType::U64,
+    },
+];
 
 impl RuntimeCallKind {
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 40] = [
         Self::StrByteAt,
         Self::StrCharScalar,
         Self::StrCharNext,
@@ -309,6 +345,8 @@ impl RuntimeCallKind {
         Self::EnvCount,
         Self::EnvPtr,
         Self::EnvLen,
+        Self::ByteCopy,
+        Self::ByteSet,
     ];
 
     pub const fn helper(self) -> RuntimeHelperId {
@@ -346,6 +384,8 @@ impl RuntimeCallKind {
             Self::EnvCount => RuntimeHelperId::EnvCount,
             Self::EnvPtr => RuntimeHelperId::EnvPtr,
             Self::EnvLen => RuntimeHelperId::EnvLen,
+            Self::ByteCopy => RuntimeHelperId::ByteCopy,
+            Self::ByteSet => RuntimeHelperId::ByteSet,
         }
     }
 
@@ -384,6 +424,8 @@ impl RuntimeCallKind {
             Self::AllocBytes => ALLOC_BYTES,
             Self::FreeBytes => FREE_BYTES,
             Self::ReallocBytes => REALLOC_BYTES,
+            Self::ByteCopy => BYTE_COPY,
+            Self::ByteSet => BYTE_SET,
         }
     }
 
@@ -564,6 +606,9 @@ impl RuntimeCallKind {
                 }
                 RuntimeOperandOrigin::TextPointer(index)
                 | RuntimeOperandOrigin::TextLength(index) => require(index, RuntimeAirType::Text),
+                RuntimeOperandOrigin::BytePointerArgument(index) => {
+                    require(index, RuntimeAirType::BytePointer)
+                }
                 RuntimeOperandOrigin::ProjectedTextPointer(index) => {
                     require(index, RuntimeAirType::BytePointer)
                 }

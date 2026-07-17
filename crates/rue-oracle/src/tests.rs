@@ -419,6 +419,8 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         ("realloc_bytes", Intrinsic::ReallocateBytes),
         ("byte_read", Intrinsic::ByteRead),
         ("byte_write", Intrinsic::ByteWrite),
+        ("byte_copy", Intrinsic::ByteCopy),
+        ("byte_set", Intrinsic::ByteSet),
     ] {
         let expected = UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(intrinsic));
         assert_eq!(unsupported_intrinsic_kind(name), expected, "@{name}");

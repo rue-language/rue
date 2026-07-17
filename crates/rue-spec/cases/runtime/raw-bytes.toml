@@ -244,6 +244,173 @@ compile_fail = true
 error_contains = "expected u8"
 
 [[case]]
+name = "byte_copy_round_trip"
+spec = ["9.2:14g", "9.2:14h"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let src: ptr mut u8 = @alloc_bytes(3);
+        @byte_write(src, 0, 10);
+        @byte_write(src, 1, 20);
+        @byte_write(src, 2, 30);
+        let dst: ptr mut u8 = @alloc_bytes(3);
+        @byte_copy(dst, src, 3);
+        let result: i32 = @intCast(@byte_read(dst, 0))
+            + @intCast(@byte_read(dst, 1))
+            + @intCast(@byte_read(dst, 2));
+        @free_bytes(src, 3);
+        @free_bytes(dst, 3);
+        result
+    }
+}
+"""
+exit_code = 60
+
+[[case]]
+name = "byte_set_fills_every_byte"
+spec = ["9.2:14g", "9.2:14h"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(4);
+        @byte_set(p, 9, 4);
+        let result: i32 = @intCast(@byte_read(p, 0))
+            + @intCast(@byte_read(p, 1))
+            + @intCast(@byte_read(p, 2))
+            + @intCast(@byte_read(p, 3));
+        @free_bytes(p, 4);
+        result
+    }
+}
+"""
+exit_code = 36
+
+[[case]]
+name = "byte_copy_size_zero_is_noop"
+spec = ["9.2:14g"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let dst: ptr mut u8 = @alloc_bytes(2);
+        @byte_write(dst, 0, 55);
+        @byte_write(dst, 1, 11);
+        let src: ptr mut u8 = @alloc_bytes(2);
+        @byte_set(src, 99, 2);
+        @byte_copy(dst, src, 0);
+        let result: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1));
+        @free_bytes(src, 2);
+        @free_bytes(dst, 2);
+        result
+    }
+}
+"""
+exit_code = 66
+
+[[case]]
+name = "byte_copy_copies_subrange"
+spec = ["9.2:14g"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let src: ptr mut u8 = @alloc_bytes(4);
+        @byte_write(src, 0, 1);
+        @byte_write(src, 1, 2);
+        @byte_write(src, 2, 3);
+        @byte_write(src, 3, 4);
+        let dst: ptr mut u8 = @alloc_bytes(2);
+        @byte_set(dst, 0, 2);
+        let src_mid: ptr mut u8 = @int_to_ptr(@ptr_to_int(src) + 1);
+        @byte_copy(dst, src_mid, 2);
+        let result: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1));
+        @free_bytes(src, 4);
+        @free_bytes(dst, 2);
+        result
+    }
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "byte_copy_require_preview"
+spec = ["9.2:14h", "8.4:1"]
+source = """
+fn main() -> i32 {
+    checked {
+        let z: u64 = 0;
+        let p: ptr mut u8 = @int_to_ptr(z);
+        @byte_copy(p, p, 0);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "--preview raw_bytes"
+
+[[case]]
+name = "byte_copy_require_checked"
+spec = ["9.2:14h"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn use_it(p: ptr mut u8) -> i32 {
+    @byte_copy(p, p, 0);
+    0
+}
+fn main() -> i32 {
+    let p: ptr mut u8 = checked { @alloc_bytes(1) };
+    let r = use_it(p);
+    checked { @free_bytes(p, 1); };
+    r
+}
+"""
+compile_fail = true
+error_contains = "[E1300]"
+
+[[case]]
+name = "byte_set_requires_u8_value"
+spec = ["9.2:14h"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_bytes(1);
+        let value: u64 = 1;
+        @byte_set(p, value, 1);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "expected u8"
+
+[[case]]
+name = "byte_copy_requires_mut_u8_pointer"
+spec = ["9.2:14h"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let z: u64 = 0;
+        let p: ptr mut i32 = @int_to_ptr(z);
+        @byte_copy(p, p, 0);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "ptr mut u8"
+
+[[case]]
 name = "alloc_bytes_result_is_ptr_mut_u8"
 spec = ["9.2:14b", "9.2:14e"]
 preview = "raw_bytes"
