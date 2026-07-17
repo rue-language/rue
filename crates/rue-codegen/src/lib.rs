@@ -403,27 +403,21 @@ pub use x86_64::{Operand, Reg, X86Inst, X86Mir};
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
-    use rue_air::{Air, AirInst, AirInstData, FrozenTypeInternPool, Type, TypeInternPool};
+    use rue_air::{AirEditor, AirValidationContext, FrozenTypeInternPool, Type, TypeInternPool};
     use rue_cfg::{CfgBuilder, ValidatedCfg};
     use rue_span::Span;
 
     fn test_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
-        let mut air = Air::new(Type::I32);
+        let mut air = AirEditor::new(Type::I32);
 
-        let const_ref = air.add_inst(AirInst {
-            data: AirInstData::Const(42),
-            ty: Type::I32,
-            span: Span::new(0, 2),
-        });
-
-        air.add_inst(AirInst {
-            data: AirInstData::Ret(Some(const_ref)),
-            ty: Type::I32,
-            span: Span::new(0, 2),
-        });
+        let const_ref = air.add_const(42, Type::I32, Span::new(0, 2));
+        air.add_ret(Some(const_ref), Type::I32, Span::new(0, 2));
 
         let interner = ThreadedRodeo::new();
         let type_pool = FrozenTypeInternPool::new();
+        let air = air
+            .finish(AirValidationContext::Canonical(&type_pool))
+            .expect("test AIR must validate");
         let cfg_output =
             CfgBuilder::build(&air, 0, 0, "main", &type_pool, vec![], &interner, false);
         (cfg_output.cfg.unwrap(), type_pool, interner)
@@ -434,46 +428,22 @@ mod tests {
         let array_id = type_pool.intern_array_from_type(Type::I64, len);
         let type_pool = type_pool.freeze();
         let array_ty = Type::new_array(array_id);
-        let mut air = Air::new(array_ty);
+        let mut air = AirEditor::new(array_ty);
         let span = Span::new(0, 2);
 
-        let seed = air.add_inst(AirInst {
-            data: AirInstData::Const(1),
-            ty: Type::I64,
-            span,
-        });
+        let seed = air.add_const(1, Type::I64, span);
         let mut elements = Vec::with_capacity(len as usize);
         for value in 0..len {
-            let rhs = air.add_inst(AirInst {
-                data: AirInstData::Const(value),
-                ty: Type::I64,
-                span,
-            });
-            elements.push(
-                air.add_inst(AirInst {
-                    data: AirInstData::Add(seed, rhs),
-                    ty: Type::I64,
-                    span,
-                })
-                .as_u32(),
-            );
+            let rhs = air.add_const(value, Type::I64, span);
+            elements.push(air.add_add(seed, rhs, Type::I64, span));
         }
-        let elements_start = air.add_extra(&elements);
-        let array = air.add_inst(AirInst {
-            data: AirInstData::ArrayInit {
-                elems_start: elements_start,
-                elems_len: len as u32,
-            },
-            ty: array_ty,
-            span,
-        });
-        air.add_inst(AirInst {
-            data: AirInstData::Ret(Some(array)),
-            ty: array_ty,
-            span,
-        });
+        let array = air.add_array_init(&elements, array_ty, span).unwrap();
+        air.add_ret(Some(array), array_ty, span);
 
         let interner = ThreadedRodeo::new();
+        let air = air
+            .finish(AirValidationContext::Canonical(&type_pool))
+            .expect("test AIR must validate");
         let cfg_output = CfgBuilder::build(
             &air,
             3,
@@ -490,29 +460,23 @@ mod tests {
     fn syscall_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
         let type_pool = FrozenTypeInternPool::new();
         let interner = ThreadedRodeo::new();
-        let mut air = Air::new(Type::I64);
+        let mut air = AirEditor::new(Type::I64);
         let span = Span::new(0, 2);
-        let number = air.add_inst(AirInst {
-            data: AirInstData::Const(1),
-            ty: Type::I64,
-            span,
-        });
-        let args_start = air.add_extra(&[number.as_u32()]);
-        let result = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name: interner.get_or_intern("syscall"),
-                args_start,
-                args_len: 1,
-            },
-            ty: Type::I64,
-            span,
-        });
-        air.add_inst(AirInst {
-            data: AirInstData::Ret(Some(result)),
-            ty: Type::I64,
-            span,
-        });
+        let number = air.add_const(1, Type::I64, span);
+        let result = air
+            .add_intrinsic(
+                None,
+                interner.get_or_intern("syscall"),
+                &[number],
+                Type::I64,
+                span,
+            )
+            .unwrap();
+        air.add_ret(Some(result), Type::I64, span);
+
+        let air = air
+            .finish(AirValidationContext::Canonical(&type_pool))
+            .expect("test AIR must validate");
 
         let cfg_output = CfgBuilder::build(
             &air,

@@ -37,8 +37,12 @@ pub use inference::{
     UnificationError, Unifier, UnifyResult,
 };
 pub use inst::{
-    Air, AirArgMode, AirCallArg, AirDisplay, AirInst, AirInstData, AirParamMode, AirPattern,
-    AirPlace, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
+    AIR_PAYLOAD_FAMILY_NAMES, Air, AirArgMode, AirArrayElements, AirBlockStatements, AirBuildError,
+    AirBuildErrorKind, AirCallArg, AirCallArgs, AirConstValueWords, AirDisplay, AirEditor,
+    AirEnumPayload, AirInst, AirInstData, AirIntrinsicArgs, AirMatchArms, AirParamMode, AirPattern,
+    AirPayloadError, AirPayloadStorageStats, AirPlace, AirPlaceBase, AirPlaceRef, AirProjection,
+    AirRef, AirSourceOrder, AirStructFields, AirTypeArgs, AirValidationContext, AirValidationError,
+    ValidatedAir,
 };
 pub use intern_pool::{
     EnumData, FrozenTypeInternPool, StructData, TypeData, TypeInternPool, TypeInternPoolStats,

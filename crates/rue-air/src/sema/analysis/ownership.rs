@@ -446,7 +446,7 @@ impl<'a> BodySema<'a> {
         elem_type: Type,
         array_type: Type,
         span: Span,
-    ) -> AirRef {
+    ) -> CompileResult<AirRef> {
         let droppable_base = match trace.base {
             AirPlaceBase::Local(_) => true,
             AirPlaceBase::Param(_) => ctx
@@ -455,7 +455,7 @@ impl<'a> BodySema<'a> {
                 .any(|p| p.name == trace.root_var && p.mode == RirParamMode::Normal),
         };
         if !droppable_base {
-            return value;
+            return Ok(value);
         }
         let (slot, is_param) = match trace.base {
             AirPlaceBase::Local(slot) => (slot, false),
@@ -476,8 +476,8 @@ impl<'a> BodySema<'a> {
                 array_type,
                 index: idx_const,
             }),
-        );
-        air.add_inst(AirInst {
+        )?;
+        Ok(air.add_inst(AirInst {
             data: AirInstData::MarkMoved {
                 value,
                 slot,
@@ -486,7 +486,7 @@ impl<'a> BodySema<'a> {
             },
             ty: elem_type,
             span,
-        })
+        }))
     }
 
     /// Reject a read through an array element that is (or may be) moved out
@@ -1084,7 +1084,7 @@ impl<'a> BodySema<'a> {
         // and pass it through — no re-materialization.
         if arr_ty == slice_ty {
             let projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
-            let place_ref = air.make_place(trace.base, trace.base_type, projs);
+            let place_ref = air.make_place(trace.base, trace.base_type, projs)?;
             let val = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: slice_ty,
@@ -1114,17 +1114,7 @@ impl<'a> BodySema<'a> {
             // guarded by `i < len`, and `len` is 0. Do not form `@raw(arr[0])`
             // for `[T; 0]`; that is not a valid place and underflows in some
             // codegen paths. Use a conventional null pointer word instead.
-            let ptr_args = air.add_extra(&[zero_ref.as_u32()]);
-            air.add_inst(AirInst {
-                data: AirInstData::Intrinsic {
-                    runtime: None,
-                    name: self.known.int_to_ptr,
-                    args_start: ptr_args,
-                    args_len: 1,
-                },
-                ty: ptr_ty,
-                span,
-            })
+            air.add_intrinsic(None, self.known.int_to_ptr, &[zero_ref], ptr_ty, span)?
         } else {
             // ptr word = @raw(arr[0]) : ptr const T. Build a place read of
             // element 0 and take its address, exactly as source `@raw(arr[0])`
@@ -1134,23 +1124,13 @@ impl<'a> BodySema<'a> {
                 array_type: arr_ty,
                 index: zero_ref,
             });
-            let place_ref = air.make_place(trace.base, trace.base_type, projs);
+            let place_ref = air.make_place(trace.base, trace.base_type, projs)?;
             let elem0_read = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: arr_elem,
                 span,
             });
-            let raw_args = air.add_extra(&[elem0_read.as_u32()]);
-            air.add_inst(AirInst {
-                data: AirInstData::Intrinsic {
-                    runtime: None,
-                    name: self.known.raw,
-                    args_start: raw_args,
-                    args_len: 1,
-                },
-                ty: ptr_ty,
-                span,
-            })
+            air.add_intrinsic(None, self.known.raw, &[elem0_read], ptr_ty, span)?
         };
 
         // len word = N (compile-time array length).
@@ -1161,18 +1141,13 @@ impl<'a> BodySema<'a> {
         });
 
         // Materialize the fat pointer `{ptr, len}` struct value.
-        let fields = air.add_extra(&[ptr_ref.as_u32(), len_ref.as_u32()]);
-        let source_order = air.add_extra(&[0u32, 1u32]);
-        let slice_val = air.add_inst(AirInst {
-            data: AirInstData::StructInit {
-                struct_id: slice_struct_id,
-                fields_start: fields,
-                fields_len: 2,
-                source_order_start: source_order,
-            },
-            ty: slice_ty,
+        let slice_val = air.add_struct_init(
+            slice_struct_id,
+            &[ptr_ref, len_ref],
+            &[0, 1],
+            slice_ty,
             span,
-        });
+        )?;
         Ok(slice_val)
     }
 
@@ -1214,7 +1189,7 @@ impl<'a> BodySema<'a> {
         // the fat pointer by value (it is `@copy`) and pass it through.
         if self.is_str_like(src_ty) {
             let projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
-            let place_ref = air.make_place(trace.base, trace.base_type, projs);
+            let place_ref = air.make_place(trace.base, trace.base_type, projs)?;
             return Ok(air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: str_ty,
@@ -1235,7 +1210,7 @@ impl<'a> BodySema<'a> {
                     struct_id: buf_struct_id,
                     field_index,
                 });
-                let place_ref = air.make_place(trace.base, trace.base_type, projs);
+                let place_ref = air.make_place(trace.base, trace.base_type, projs)?;
                 let field_ty =
                     self.type_pool.struct_def(buf_struct_id).fields[field_index as usize].ty;
                 let word = air.add_inst(AirInst {
@@ -1243,20 +1218,9 @@ impl<'a> BodySema<'a> {
                     ty: field_ty,
                     span,
                 });
-                field_words.push(word.as_u32());
+                field_words.push(word);
             }
-            let fields = air.add_extra(&field_words);
-            let source_order = air.add_extra(&[0u32, 1u32]);
-            return Ok(air.add_inst(AirInst {
-                data: AirInstData::StructInit {
-                    struct_id: str_struct_id,
-                    fields_start: fields,
-                    fields_len: 2,
-                    source_order_start: source_order,
-                },
-                ty: str_ty,
-                span,
-            }));
+            return Ok(air.add_struct_init(str_struct_id, &field_words, &[0, 1], str_ty, span)?);
         }
 
         Err(self.type_mismatch_error(str_ty, src_ty, span))

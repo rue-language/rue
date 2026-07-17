@@ -171,7 +171,11 @@ pub(crate) fn build_functions_and_cfgs(
     } = sema_output;
 
     // Synthesize drop glue functions.
-    let drop_glue_functions = drop_glue::synthesize_drop_glue(&type_pool);
+    let drop_glue_functions =
+        drop_glue::synthesize_drop_glue(&type_pool).map_err(|error| CfgConstructionFailure {
+            errors: error.into(),
+            work: canonical_semantic::CfgConstructionWork::default(),
+        })?;
     let mut work = canonical_semantic::CfgConstructionWork {
         drop_glue_functions_synthesized: drop_glue_functions.len(),
         functions_considered: functions.len() + drop_glue_functions.len(),
@@ -635,7 +639,7 @@ pub(crate) fn compile_with_session(
 #[cfg(test)]
 mod failure_work_tests {
     use lasso::ThreadedRodeo;
-    use rue_air::{Air, AirInst, AirInstData, Sema, Type};
+    use rue_air::{Sema, Type};
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
@@ -664,26 +668,21 @@ mod failure_work_tests {
                 .iter_mut()
                 .find(|function| function.name == name)
                 .unwrap();
-            let mut air = Air::new(Type::I32);
-            let call = air.add_inst(AirInst {
-                data: AirInstData::CallGeneric {
-                    name: generic,
-                    type_args_start: 0,
-                    type_args_len: 0,
-                    value_args_start: 0,
-                    value_args_len: 0,
-                    args_start: 0,
-                    args_len: 0,
-                },
-                ty: Type::I32,
-                span: Span::new(start, start + 1),
-            });
-            air.add_inst(AirInst {
-                data: AirInstData::Ret(Some(call)),
-                ty: Type::I32,
-                span: Span::new(start, start + 1),
-            });
-            function.air = air;
+            let mut air = rue_air::AirEditor::new(Type::I32);
+            let call = air
+                .add_call_generic(
+                    generic,
+                    &[],
+                    &[],
+                    &[],
+                    Type::I32,
+                    Span::new(start, start + 1),
+                )
+                .unwrap();
+            air.add_ret(Some(call), Type::I32, Span::new(start, start + 1));
+            function.air = air
+                .finish(rue_air::AirValidationContext::Canonical(&output.type_pool))
+                .expect("malformed test AIR structure must validate");
         }
         (output, interner)
     }

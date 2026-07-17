@@ -5,8 +5,8 @@
 
 use lasso::ThreadedRodeo;
 use rue_air::{
-    Air, AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
-    FrozenTypeInternPool, ParamSlotModes, StructId, Type, TypeKind,
+    AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
+    FrozenTypeInternPool, ParamSlotModes, StructId, Type, TypeKind, ValidatedAir,
 };
 use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 
@@ -182,7 +182,7 @@ impl MoveState {
 
 /// Builder that converts AIR to CFG.
 pub struct CfgBuilder<'a> {
-    air: &'a Air,
+    air: &'a ValidatedAir,
     cfg: Cfg,
     /// Canonical pool for struct, enum, array, and pointer definitions.
     type_pool: &'a FrozenTypeInternPool,
@@ -382,7 +382,7 @@ impl<'a> CfgBuilder<'a> {
     /// The `type_pool` provides struct/enum/array definitions needed for queries like
     /// `type_needs_drop`. The `interner` is used to resolve Symbol values to strings for the CFG.
     pub fn build(
-        air: &'a Air,
+        air: &'a ValidatedAir,
         num_locals: u32,
         num_params: u32,
         fn_name: &str,
@@ -1044,20 +1044,19 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::Call {
                 runtime,
                 name,
-                args_start,
-                args_len,
+                args,
             } => {
                 if let Some(runtime) = runtime {
                     self.assert_valid_runtime_call_args(
                         *runtime,
                         self.air
-                            .get_call_args(*args_start, *args_len)
+                            .get_call_args(args)
                             .map(|arg| (arg.value, arg.mode)),
                         ty,
                     );
                 }
                 let mut arg_vals = Vec::new();
-                for arg in self.air.get_call_args(*args_start, *args_len) {
+                for arg in self.air.get_call_args(args) {
                     let Some(value) = self.lower_value(arg.value) else {
                         return Self::diverged();
                     };
@@ -1101,20 +1100,19 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::Intrinsic {
                 runtime,
                 name,
-                args_start,
-                args_len,
+                args,
             } => {
                 if let Some(runtime) = runtime {
                     self.assert_valid_runtime_call_args(
                         *runtime,
                         self.air
-                            .get_air_refs(*args_start, *args_len)
+                            .get_intrinsic_args(args)
                             .map(|arg| (arg, AirArgMode::Normal)),
                         ty,
                     );
                 }
                 let mut arg_vals = Vec::new();
-                for arg in self.air.get_air_refs(*args_start, *args_len) {
+                for arg in self.air.get_intrinsic_args(args) {
                     let Some(val) = self.lower_value(arg) else {
                         return Self::diverged();
                     };
@@ -1195,17 +1193,13 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::StructInit {
                 struct_id,
-                fields_start,
-                fields_len,
-                source_order_start,
+                fields,
+                source_order,
             } => {
                 // Evaluate field initializers in SOURCE ORDER (spec 4.0:8)
                 // The source_order tells us which declaration-order index to evaluate at each step
-                let (fields, source_order) =
-                    self.air
-                        .get_struct_init(*fields_start, *fields_len, *source_order_start);
-                let fields: Vec<AirRef> = fields.collect();
-                let source_order: Vec<usize> = source_order.collect();
+                let fields: Vec<AirRef> = self.air.get_struct_fields(fields).collect();
+                let source_order: Vec<usize> = self.air.get_source_order(source_order).collect();
 
                 let mut lowered_fields: Vec<Option<CfgValue>> = vec![None; fields.len()];
                 for decl_idx in source_order {
@@ -1239,14 +1233,9 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::Block {
-                stmts_start,
-                stmts_len,
-                value,
-            } => {
+            AirInstData::Block { statements, value } => {
                 // Collect statements into a Vec for iteration (needed for checking remaining)
-                let statements: Vec<AirRef> =
-                    self.air.get_air_refs(*stmts_start, *stmts_len).collect();
+                let statements: Vec<AirRef> = self.air.get_block_statements(statements).collect();
 
                 // Check if this is a "wrapper block" that only contains StorageLive statements.
                 // These are synthetic blocks created to pair StorageLive with Alloc, and they
@@ -1666,19 +1655,14 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::Match {
-                scrutinee,
-                arms_start,
-                arms_len,
-            } => {
+            AirInstData::Match { scrutinee, arms } => {
                 // Lower the scrutinee
                 let Some(scrutinee_val) = self.lower_value(*scrutinee) else {
                     return Self::diverged();
                 };
 
                 // Collect arms into a Vec for iteration
-                let arms: Vec<(AirPattern, AirRef)> =
-                    self.air.get_match_arms(*arms_start, *arms_len).collect();
+                let arms: Vec<(AirPattern, AirRef)> = self.air.get_match_arms(arms).collect();
 
                 // `match v {}` on a zero-variant enum (RUE-169): the scrutinee
                 // type is uninhabited, so this point can never be reached with
@@ -1883,12 +1867,9 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::ArrayInit {
-                elems_start,
-                elems_len,
-            } => {
+            AirInstData::ArrayInit { elements } => {
                 let mut element_vals = Vec::new();
-                for elem in self.air.get_air_refs(*elems_start, *elems_len) {
+                for elem in self.air.get_array_elements(elements) {
                     let Some(val) = self.lower_value(elem) else {
                         return Self::diverged();
                     };
@@ -1941,7 +1922,7 @@ impl<'a> CfgBuilder<'a> {
                     AirPlaceBase::Local(slot) => MovedSlot::Local(slot),
                     AirPlaceBase::Param(slot) => MovedSlot::Param(slot),
                 };
-                if air_place.projections_len == 0 {
+                if air_place.projection_count() == 0 {
                     self.emit_overwrite_drop(base_key, val_ty, span);
                 } else {
                     // A single top-level field OR constant-index element write:
@@ -1953,20 +1934,19 @@ impl<'a> CfgBuilder<'a> {
                     // `arr[0] = arr[0]` must not drop element 0 mid-write after
                     // the RHS moved it out (RUE-228).
                     let mut field_flag: Option<u32> = None;
-                    let single_path: Option<FieldPath> = match self
-                        .air
-                        .get_projections(air_place.projections_start, air_place.projections_len)
-                    {
-                        [AirProjection::Field { field_index, .. }] => Some(vec![*field_index]),
-                        [AirProjection::Index { index, .. }] => match self.air.get(*index).data {
-                            AirInstData::Const(k) => Some(vec![k as u32]),
-                            // A dynamic index can't identify a single element,
-                            // so there is no per-element move to skip: drop the
-                            // old value as usual.
+                    let single_path: Option<FieldPath> =
+                        match self.air.get_place_projections(air_place) {
+                            [AirProjection::Field { field_index, .. }] => Some(vec![*field_index]),
+                            [AirProjection::Index { index, .. }] => match self.air.get(*index).data
+                            {
+                                AirInstData::Const(k) => Some(vec![k as u32]),
+                                // A dynamic index can't identify a single element,
+                                // so there is no per-element move to skip: drop the
+                                // old value as usual.
+                                _ => None,
+                            },
                             _ => None,
-                        },
-                        _ => None,
-                    };
+                        };
                     let field_moved = match single_path {
                         Some(path) => {
                             if self.moved.moved_paths_of(base_key).contains(&path) {
@@ -2010,11 +1990,8 @@ impl<'a> CfgBuilder<'a> {
                 } else if let Some(slot) = air_place.as_param() {
                     self.moved.clear_slot(MovedSlot::Param(slot));
                     self.update_drop_flag(MovedSlot::Param(slot), true, span);
-                } else if air_place.projections_len == 1 {
-                    match self
-                        .air
-                        .get_projections(air_place.projections_start, air_place.projections_len)
-                    {
+                } else if air_place.projection_count() == 1 {
+                    match self.air.get_place_projections(air_place) {
                         [AirProjection::Field { field_index, .. }] => {
                             self.moved.clear_field(base_key, *field_index);
                             // The field is re-initialized: re-arm its runtime
@@ -2044,14 +2021,13 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::EnumVariant {
                 enum_id,
                 variant_index,
-                payload_start,
-                payload_len,
+                payload,
             } => {
                 // Lower payload operands (RUE-221) in order, then store them in
                 // the Cfg's extra array. A discriminant-only variant has no
                 // payload and lowers to just its discriminant value.
-                let payload_refs = self.air.get_air_refs(*payload_start, *payload_len);
-                let mut payload_vals: Vec<CfgValue> = Vec::with_capacity(*payload_len as usize);
+                let payload_refs = self.air.get_enum_payload(payload);
+                let mut payload_vals: Vec<CfgValue> = Vec::with_capacity(payload.len());
                 for pref in payload_refs {
                     let Some(v) = self.lower_value(pref) else {
                         return Self::diverged();
@@ -3219,19 +3195,21 @@ impl<'a> CfgBuilder<'a> {
     fn lower_air_place(&mut self, place_ref: AirPlaceRef) -> Option<Place> {
         // Copy the compact descriptor before lowering index operands mutably.
         // In particular, `base_type` is still needed after that lowering.
-        let air_place = *self.air.get_place(place_ref);
+        let air_place = self.air.get_place(place_ref);
+        let air_base = air_place.base;
+        let air_base_type = air_place.base_type;
+        let air_projections = self.air.get_place_projections(air_place).to_vec();
 
         // Convert the base
-        let base = match air_place.base {
+        let base = match air_base {
             AirPlaceBase::Local(slot) => PlaceBase::Local(slot),
             AirPlaceBase::Param(slot) => PlaceBase::Param(slot),
         };
 
         // Convert projections, lowering any index expressions
-        let air_projections = self.air.get_place_projections(&air_place);
         let mut cfg_projections = Vec::with_capacity(air_projections.len());
 
-        for proj in air_projections {
+        for proj in &air_projections {
             let cfg_proj = match proj {
                 AirProjection::Field {
                     struct_id,
@@ -3253,10 +3231,7 @@ impl<'a> CfgBuilder<'a> {
         }
 
         // Create the CFG place
-        match self
-            .cfg
-            .make_place(base, air_place.base_type, cfg_projections)
-        {
+        match self.cfg.make_place(base, air_base_type, cfg_projections) {
             Ok(place) => Some(place),
             Err(error) => {
                 self.errors.push(CompileError::new(
@@ -3272,7 +3247,7 @@ impl<'a> CfgBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_air::Sema;
+    use rue_air::{AirEditor, AirValidationContext, Sema};
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
@@ -3934,9 +3909,7 @@ mod tests {
 
     #[test]
     fn borrowed_computed_projection_drops_its_owner_once_after_the_consumer() {
-        use rue_air::{
-            Air, AirInst, AirPlaceBase, AirProjection, StructDef, StructField, TypeInternPool,
-        };
+        use rue_air::{AirPlaceBase, AirProjection, StructDef, StructField, TypeInternPool};
         use rue_span::{FileId, Span};
 
         for shape in ["direct", "nested", "index"] {
@@ -3987,69 +3960,24 @@ mod tests {
             let owner_ty = Type::new_struct(owner_id);
             let type_pool = type_pool.freeze();
 
-            let mut air = Air::new(Type::UNIT);
-            let constant = air.add_inst(AirInst {
-                data: AirInstData::Const(7),
-                ty: Type::I32,
-                span,
-            });
-            let leaf_fields = air.add_extra(&[constant.as_u32()]);
-            let leaf_order = air.add_extra(&[0]);
-            let leaf = air.add_inst(AirInst {
-                data: AirInstData::StructInit {
-                    struct_id: leaf_id,
-                    fields_start: leaf_fields,
-                    fields_len: 1,
-                    source_order_start: leaf_order,
-                },
-                ty: leaf_ty,
-                span,
-            });
-            let array_fields = air.add_extra(&[leaf.as_u32()]);
-            let array = air.add_inst(AirInst {
-                data: AirInstData::ArrayInit {
-                    elems_start: array_fields,
-                    elems_len: 1,
-                },
-                ty: array_ty,
-                span,
-            });
+            let mut air = AirEditor::new(Type::UNIT);
+            let constant = air.add_const(7, Type::I32, span);
+            let leaf = air
+                .add_struct_init(leaf_id, &[constant], &[0], leaf_ty, span)
+                .unwrap();
+            let array = air.add_array_init(&[leaf], array_ty, span).unwrap();
             let owner_field = match shape {
                 "direct" => constant,
                 "nested" => leaf,
                 "index" => array,
                 _ => unreachable!(),
             };
-            let owner_fields = air.add_extra(&[owner_field.as_u32()]);
-            let owner_order = air.add_extra(&[0]);
-            let owner = air.add_inst(AirInst {
-                data: AirInstData::StructInit {
-                    struct_id: owner_id,
-                    fields_start: owner_fields,
-                    fields_len: 1,
-                    source_order_start: owner_order,
-                },
-                ty: owner_ty,
-                span,
-            });
-            let live = air.add_inst(AirInst {
-                data: AirInstData::StorageLive { slot: 0 },
-                ty: owner_ty,
-                span,
-            });
-            let alloc = air.add_inst(AirInst {
-                data: AirInstData::Alloc {
-                    slot: 0,
-                    init: owner,
-                },
-                ty: Type::UNIT,
-                span,
-            });
-            let index = air.add_inst(AirInst {
-                data: AirInstData::Const(0),
-                ty: Type::U64,
-                span,
-            });
+            let owner = air
+                .add_struct_init(owner_id, &[owner_field], &[0], owner_ty, span)
+                .unwrap();
+            let live = air.add_storage_live(0, owner_ty, span);
+            let alloc = air.add_alloc(0, owner, span);
+            let index = air.add_const(0, Type::U64, span);
             let projections = match shape {
                 "direct" => vec![AirProjection::Field {
                     struct_id: owner_id,
@@ -4081,39 +4009,30 @@ mod tests {
                 ],
                 _ => unreachable!(),
             };
-            let place = air.make_place(AirPlaceBase::Local(0), owner_ty, projections);
-            let read = air.add_inst(AirInst {
-                data: AirInstData::PlaceRead { place },
-                ty: Type::I32,
-                span,
-            });
-            let args = air.add_extra(&[read.as_u32(), AirArgMode::Borrow.as_u32()]);
-            let call = air.add_inst(AirInst {
-                data: AirInstData::Call {
-                    runtime: None,
-                    name: interner.get_or_intern("consume"),
-                    args_start: args,
-                    args_len: 1,
-                },
-                ty: Type::UNIT,
-                span,
-            });
-            let stmts = air.add_extra(&[live.as_u32(), alloc.as_u32()]);
-            let block = air.add_inst(AirInst {
-                data: AirInstData::Block {
-                    stmts_start: stmts,
-                    stmts_len: 2,
-                    value: call,
-                },
-                ty: Type::UNIT,
-                span,
-            });
-            air.add_inst(AirInst {
-                data: AirInstData::Ret(Some(block)),
-                ty: Type::UNIT,
-                span,
-            });
+            let place = air
+                .make_place(AirPlaceBase::Local(0), owner_ty, projections)
+                .unwrap();
+            let read = air.add_place_read(place, Type::I32, span);
+            let call = air
+                .add_call(
+                    None,
+                    interner.get_or_intern("consume"),
+                    &[rue_air::AirCallArg {
+                        value: read,
+                        mode: AirArgMode::Borrow,
+                    }],
+                    Type::UNIT,
+                    span,
+                )
+                .unwrap();
+            let block = air
+                .add_block(&[live, alloc], call, Type::UNIT, span)
+                .unwrap();
+            air.add_ret(Some(block), Type::UNIT, span);
 
+            let air = air
+                .finish(AirValidationContext::Canonical(&type_pool))
+                .expect("test AIR must validate");
             let cfg = CfgBuilder::build(&air, 1, 0, "probe", &type_pool, vec![], &interner, false)
                 .cfg
                 .unwrap();
@@ -4165,34 +4084,22 @@ mod tests {
         // a regular `Call`). The builder must record a clean
         // internal-compiler-error diagnostic on the error channel rather than
         // panicking / aborting the process.
-        use rue_air::{Air, AirInst};
         use rue_span::Span;
 
         let interner = ThreadedRodeo::default();
         let name = interner.get_or_intern("generic_fn");
         let type_pool = FrozenTypeInternPool::new();
 
-        let mut air = Air::new(Type::I32);
-        let call = air.add_inst(AirInst {
-            data: AirInstData::CallGeneric {
-                name,
-                type_args_start: 0,
-                type_args_len: 0,
-                value_args_start: 0,
-                value_args_len: 0,
-                args_start: 0,
-                args_len: 0,
-            },
-            ty: Type::I32,
-            span: Span::new(0, 1),
-        });
+        let mut air = AirEditor::new(Type::I32);
+        let call = air
+            .add_call_generic(name, &[], &[], &[], Type::I32, Span::new(0, 1))
+            .unwrap();
         // The root (last instruction) must be a Ret so `build` starts lowering
         // from it and reaches the CallGeneric operand.
-        air.add_inst(AirInst {
-            data: AirInstData::Ret(Some(call)),
-            ty: Type::I32,
-            span: Span::new(0, 1),
-        });
+        air.add_ret(Some(call), Type::I32, Span::new(0, 1));
+        let air = air
+            .finish(AirValidationContext::Canonical(&type_pool))
+            .expect("test AIR must validate");
 
         let output = CfgBuilder::build(
             &air,

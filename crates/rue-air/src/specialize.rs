@@ -52,96 +52,6 @@ pub struct SpecializationKey {
     pub value_args: Vec<ConstValue>,
 }
 
-// ============================================================================
-// ConstValue <-> extra-array encoding
-// ============================================================================
-//
-// Comptime value arguments travel from the call site (sema) to this pass
-// inside the AIR extra array (a flat `u32` stream), as a tagged word stream:
-// each value is a tag word followed by its payload words.
-
-/// Tag for `ConstValue::Integer` (payload: 4 words, i128 as little-endian u32s).
-const CV_TAG_INTEGER: u32 = 0;
-/// Tag for `ConstValue::Bool` (payload: 1 word, 0 or 1).
-const CV_TAG_BOOL: u32 = 1;
-/// Tag for `ConstValue::Unit` (no payload).
-const CV_TAG_UNIT: u32 = 2;
-/// Tag for `ConstValue::Type` (payload: 1 word, `Type::as_u32`).
-const CV_TAG_TYPE: u32 = 3;
-/// Tag for `ConstValue::Function` (payload: 1 word, interned symbol key).
-const CV_TAG_FUNCTION: u32 = 4;
-
-/// Encode comptime value arguments as a tagged `u32` word stream for the AIR
-/// extra array. Decoded by [`decode_const_values`].
-pub fn encode_const_values(values: &[ConstValue]) -> Vec<u32> {
-    let mut words = Vec::with_capacity(values.len() * 5);
-    for value in values {
-        match value {
-            ConstValue::Integer(n) => {
-                words.push(CV_TAG_INTEGER);
-                let bits = *n as u128;
-                for i in 0..4 {
-                    words.push((bits >> (32 * i)) as u32);
-                }
-            }
-            ConstValue::Bool(b) => {
-                words.push(CV_TAG_BOOL);
-                words.push(u32::from(*b));
-            }
-            ConstValue::Unit => words.push(CV_TAG_UNIT),
-            ConstValue::Type(ty) => {
-                words.push(CV_TAG_TYPE);
-                words.push(ty.as_u32());
-            }
-            ConstValue::Function(name) => {
-                words.push(CV_TAG_FUNCTION);
-                words.push(name.into_usize() as u32);
-            }
-        }
-    }
-    words
-}
-
-/// Decode a tagged word stream produced by [`encode_const_values`].
-pub fn decode_const_values(words: &[u32]) -> Vec<ConstValue> {
-    let mut values = Vec::new();
-    let mut i = 0;
-    while i < words.len() {
-        let tag = words[i];
-        i += 1;
-        let value = match tag {
-            CV_TAG_INTEGER => {
-                let mut bits: u128 = 0;
-                for j in 0..4 {
-                    bits |= u128::from(words[i + j]) << (32 * j);
-                }
-                i += 4;
-                ConstValue::Integer(bits as i128)
-            }
-            CV_TAG_BOOL => {
-                let b = words[i] != 0;
-                i += 1;
-                ConstValue::Bool(b)
-            }
-            CV_TAG_UNIT => ConstValue::Unit,
-            CV_TAG_TYPE => {
-                let ty = Type::from_u32(words[i]);
-                i += 1;
-                ConstValue::Type(ty)
-            }
-            CV_TAG_FUNCTION => {
-                let name = lasso::Spur::try_from_usize(words[i] as usize)
-                    .expect("invalid function symbol key in extra array");
-                i += 1;
-                ConstValue::Function(name)
-            }
-            _ => unreachable!("invalid ConstValue tag {tag} in extra array"),
-        };
-        values.push(value);
-    }
-    values
-}
-
 /// Info about a specialization: the mangled name and the first call site span.
 struct SpecializationInfo {
     /// The mangled name for the specialized function.
@@ -305,13 +215,22 @@ impl Specializer {
             }
 
             // Previously scanned bodies have no CallGeneric instructions left.
-            for (function, _) in &mut functions_with_strings[self.next_unscanned..scan_end] {
+            let mut unscanned = functions_with_strings.split_off(self.next_unscanned);
+            let later = unscanned.split_off(scan_end - self.next_unscanned);
+            for (mut function, strings) in unscanned {
+                let mut editor = function.air.into_editor();
                 rewrite_call_generic(
-                    &mut function.air,
+                    &mut editor,
                     &self.specializations,
                     &mut sema.body_analysis_work,
                 );
+                function.air = editor.finish(crate::AirValidationContext::SemanticWithSymbols(
+                    &sema.type_pool,
+                    interner,
+                ))?;
+                functions_with_strings.push((function, strings));
             }
+            functions_with_strings.extend(later);
             self.next_unscanned = scan_end;
 
             if pending.is_empty() {
@@ -488,7 +407,7 @@ impl Specializer {
                     .iter()
                     .map(|ty| ty.as_u32())
                     .collect::<Vec<_>>();
-                let value_arguments = encode_const_values(&key.value_args);
+                let value_arguments = crate::inst::encode_const_values(&key.value_args)?;
                 sema.specialized_free_function_origins.push(
                     crate::sema::SpecializedFreeFunctionOrigin {
                         specialized_name: specialized_name.clone(),
@@ -588,20 +507,14 @@ fn collect_specializations(
         work.specialization_air_instructions_scanned += 1;
         if let AirInstData::CallGeneric {
             name,
-            type_args_start,
-            type_args_len,
-            value_args_start,
-            value_args_len,
+            type_args,
+            value_args,
             ..
         } = &inst.data
         {
             work.generic_calls_observed += 1;
-            let type_args: Vec<Type> = air
-                .get_extra(*type_args_start, *type_args_len)
-                .iter()
-                .map(|&encoded| Type::from_u32(encoded))
-                .collect();
-            let value_args = decode_const_values(air.get_extra(*value_args_start, *value_args_len));
+            let type_args: Vec<Type> = air.get_type_args(type_args).collect();
+            let value_args = air.get_const_values(value_args).collect();
 
             let key = SpecializationKey {
                 base_name: *name,
@@ -631,29 +544,22 @@ fn collect_specializations(
 }
 
 fn rewrite_call_generic(
-    air: &mut Air,
+    air: &mut crate::AirEditor,
     specializations: &HashMap<SpecializationKey, SpecializationInfo>,
     work: &mut crate::BodyAnalysisWork,
 ) {
-    let mut rewrites: Vec<(usize, AirInstData)> = Vec::new();
+    let mut rewrites: Vec<(usize, Spur)> = Vec::new();
 
     for (i, inst) in air.instructions().iter().enumerate() {
         if let AirInstData::CallGeneric {
             name,
-            type_args_start,
-            type_args_len,
-            value_args_start,
-            value_args_len,
-            args_start,
-            args_len,
+            type_args,
+            value_args,
+            args: _,
         } = &inst.data
         {
-            let type_args: Vec<Type> = air
-                .get_extra(*type_args_start, *type_args_len)
-                .iter()
-                .map(|&encoded| Type::from_u32(encoded))
-                .collect();
-            let value_args = decode_const_values(air.get_extra(*value_args_start, *value_args_len));
+            let type_args: Vec<Type> = air.get_type_args(type_args).collect();
+            let value_args = air.get_const_values(value_args).collect();
 
             let key = SpecializationKey {
                 base_name: *name,
@@ -662,22 +568,14 @@ fn rewrite_call_generic(
             };
 
             if let Some(info) = specializations.get(&key) {
-                rewrites.push((
-                    i,
-                    AirInstData::Call {
-                        runtime: None,
-                        name: info.mangled_name,
-                        args_start: *args_start,
-                        args_len: *args_len,
-                    },
-                ));
+                rewrites.push((i, info.mangled_name));
             }
         }
     }
 
-    for (index, new_data) in rewrites {
+    for (index, name) in rewrites {
         work.specialization_rewrites += 1;
-        air.rewrite_inst_data(index, new_data);
+        air.rewrite_generic_call_to_call(index, name);
     }
 }
 
@@ -998,7 +896,11 @@ fn create_specialized_function(
                     identity,
                 },
             )),
-            air,
+            air: crate::ValidatedAir::from_semantic_air_with_symbols(
+                air,
+                &sema.type_pool,
+                sema.interner,
+            )?,
             num_locals,
             num_param_slots,
             param_modes,

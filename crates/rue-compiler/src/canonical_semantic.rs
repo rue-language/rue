@@ -117,7 +117,7 @@ pub(crate) fn with_test_authoritative_key_mismatch<T>(run: impl FnOnce() -> T) -
 
 #[cfg(test)]
 fn inject_cfg_failure(sema_output: &mut rue_air::SemaOutput, interner: &crate::ThreadedRodeo) {
-    use rue_air::{Air, AirInst, AirInstData, Type};
+    use rue_air::{AirEditor, AirValidationContext, Type};
     use rue_span::Span;
 
     if !INJECT_CFG_FAILURE.with(Cell::get) {
@@ -128,26 +128,21 @@ fn inject_cfg_failure(sema_output: &mut rue_air::SemaOutput, interner: &crate::T
         .iter_mut()
         .find(|function| function.name == "main")
         .expect("test CFG injection requires main");
-    let mut air = Air::new(Type::I32);
-    let call = air.add_inst(AirInst {
-        data: AirInstData::CallGeneric {
-            name: interner.get_or_intern("test_unrewritten_generic"),
-            type_args_start: 0,
-            type_args_len: 0,
-            value_args_start: 0,
-            value_args_len: 0,
-            args_start: 0,
-            args_len: 0,
-        },
-        ty: Type::I32,
-        span: Span::new(0, 1),
-    });
-    air.add_inst(AirInst {
-        data: AirInstData::Ret(Some(call)),
-        ty: Type::I32,
-        span: Span::new(0, 1),
-    });
-    function.air = air;
+    let mut air = AirEditor::new(Type::I32);
+    let call = air
+        .add_call_generic(
+            interner.get_or_intern("test_unrewritten_generic"),
+            &[],
+            &[],
+            &[],
+            Type::I32,
+            Span::new(0, 1),
+        )
+        .unwrap();
+    air.add_ret(Some(call), Type::I32, Span::new(0, 1));
+    function.air = air
+        .finish(AirValidationContext::Canonical(&sema_output.type_pool))
+        .expect("injected AIR must validate");
 }
 
 pub(crate) struct CanonicalOrdinaryAnalysis {

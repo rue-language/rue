@@ -1037,9 +1037,9 @@ drop fn StrBuf(self) { }
                 .filter_map(|(_, inst)| match inst.data {
                     rue_air::AirInstData::Call {
                         runtime: Some(runtime),
-                        args_len,
+                        ref args,
                         ..
-                    } if is_target(runtime) => Some((runtime, args_len)),
+                    } if is_target(runtime) => Some((runtime, args.count() as u32)),
                     _ => None,
                 })
                 .collect::<Vec<_>>();

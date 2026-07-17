@@ -388,6 +388,8 @@ impl ErrorCode {
     // ========================================================================
     /// Invalid metadata supplied at a compiler API boundary.
     pub const INVALID_COMPILER_INPUT: Self = Self(1400);
+    pub const COMPILER_RESOURCE_LIMIT: Self = Self(1401);
+    pub const COMPILER_RESOURCE_EXHAUSTION: Self = Self(1402);
 
     // ========================================================================
     // Internal compiler errors (E9000-E9999)
@@ -1585,7 +1587,19 @@ pub enum ErrorKind {
     #[error("invalid compiler input: {0}")]
     InvalidCompilerInput(String),
 
+    /// A source-driven request exceeded a documented bounded compiler
+    /// representation. This is a normal diagnostic, not an ICE.
+    #[error("compiler resource limit exceeded: {0}")]
+    CompilerResourceLimit(String),
+
+    /// The compiler could not acquire memory for an otherwise valid request.
+    /// This is a normal environmental failure, not an ICE.
+    #[error("compiler resource exhaustion: {0}")]
+    CompilerResourceExhaustion(String),
+
     // Internal compiler errors (bugs in the compiler itself)
+    #[error("internal compiler producer invariant: {0}")]
+    CompilerProducerInvariant(String),
     #[error("internal compiler error: {0}")]
     InternalError(String),
 
@@ -1771,9 +1785,13 @@ impl ErrorKind {
 
             // Compiler-input errors (E1400-E1499)
             ErrorKind::InvalidCompilerInput(_) => ErrorCode::INVALID_COMPILER_INPUT,
+            ErrorKind::CompilerResourceLimit(_) => ErrorCode::COMPILER_RESOURCE_LIMIT,
+            ErrorKind::CompilerResourceExhaustion(_) => ErrorCode::COMPILER_RESOURCE_EXHAUSTION,
 
             // Internal compiler errors (E9000-E9999)
-            ErrorKind::InternalError(_) => ErrorCode::INTERNAL_ERROR,
+            ErrorKind::CompilerProducerInvariant(_) | ErrorKind::InternalError(_) => {
+                ErrorCode::INTERNAL_ERROR
+            }
             ErrorKind::InternalCodegenError(_) => ErrorCode::INTERNAL_CODEGEN_ERROR,
         }
     }
@@ -2980,6 +2998,20 @@ mod tests {
             kind.to_string(),
             "invalid compiler input: duplicate file ID 7"
         );
+    }
+
+    #[test]
+    fn compiler_resource_failures_have_distinct_non_ice_codes() {
+        let limit = ErrorKind::CompilerResourceLimit("AIR words".into());
+        let exhaustion = ErrorKind::CompilerResourceExhaustion("AIR reserve".into());
+        let invariant = ErrorKind::CompilerProducerInvariant("bad AIR".into());
+        assert_eq!(limit.code(), ErrorCode::COMPILER_RESOURCE_LIMIT);
+        assert_eq!(exhaustion.code(), ErrorCode::COMPILER_RESOURCE_EXHAUSTION);
+        assert_eq!(invariant.code(), ErrorCode::INTERNAL_ERROR);
+        assert_ne!(limit.code(), exhaustion.code());
+        assert!(!limit.to_string().contains("internal compiler"));
+        assert!(!exhaustion.to_string().contains("internal compiler"));
+        assert!(invariant.to_string().contains("internal compiler"));
     }
 
     // ========================================================================

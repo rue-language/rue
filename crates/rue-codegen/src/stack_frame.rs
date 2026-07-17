@@ -595,27 +595,21 @@ fn generate_aarch64_stack_frame(
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
-    use rue_air::{Air, AirInst, AirInstData, FrozenTypeInternPool, Type};
+    use rue_air::{AirEditor, AirValidationContext, FrozenTypeInternPool, Type};
     use rue_cfg::CfgBuilder;
     use rue_span::Span;
 
     fn create_simple_cfg() -> (rue_cfg::ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
-        let mut air = Air::new(Type::I32);
+        let mut air = AirEditor::new(Type::I32);
 
-        let const_ref = air.add_inst(AirInst {
-            data: AirInstData::Const(42),
-            ty: Type::I32,
-            span: Span::new(0, 2),
-        });
-
-        air.add_inst(AirInst {
-            data: AirInstData::Ret(Some(const_ref)),
-            ty: Type::I32,
-            span: Span::new(0, 2),
-        });
+        let const_ref = air.add_const(42, Type::I32, Span::new(0, 2));
+        air.add_ret(Some(const_ref), Type::I32, Span::new(0, 2));
 
         let interner = ThreadedRodeo::new();
         let type_pool = FrozenTypeInternPool::new();
+        let air = air
+            .finish(AirValidationContext::Canonical(&type_pool))
+            .expect("test AIR must validate");
         let cfg_output =
             CfgBuilder::build(&air, 0, 0, "test", &type_pool, vec![], &interner, false);
         (cfg_output.cfg.unwrap(), type_pool, interner)

@@ -4,7 +4,6 @@
 //! - [`AnalyzedFunction`] - A single analyzed function with typed IR
 //! - [`SemaOutput`] - Complete output from analyzing a program
 
-use crate::inst::Air;
 use crate::{SemanticBodyExport, SemanticSpecializedBodyExport};
 use rue_error::CompileWarning;
 /// Opaque identity issued by the compiler for one supported ordinary body.
@@ -335,7 +334,7 @@ pub struct AnalyzedFunction {
     pub ordinary_owner: Option<BodyOwnerToken>,
     /// Definition-level provenance used by CFG dependency capture.
     pub implicit_drop_source: Option<ImplicitDropDependencySourceEvent>,
-    pub air: Air,
+    pub air: crate::ValidatedAir,
     /// Number of local variable slots needed
     pub num_locals: u32,
     /// Number of ABI slots used by parameters.

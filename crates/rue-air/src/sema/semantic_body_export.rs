@@ -131,7 +131,7 @@ impl BodySema<'_> {
 
         let mut places = Vec::with_capacity(place_count);
         for source in body.places() {
-            let mut projections = Vec::with_capacity(source.projections_len as usize);
+            let mut projections = Vec::with_capacity(source.projection_count());
             for projection in body.get_place_projections(source) {
                 projections.push(match projection {
                     AirProjection::Field {
@@ -170,8 +170,8 @@ impl BodySema<'_> {
             }
             let unary = |v| r(v, current);
             let binary = |a, b| Ok::<_, F>((r(a, current)?, r(b, current)?));
-            let call_args = |start, len| -> Result<Arc<[SemanticBodyCallArg]>, F> {
-                body.get_call_args(start, len)
+            let call_args = |range| -> Result<Arc<[SemanticBodyCallArg]>, F> {
+                body.get_call_args(range)
                     .map(|arg| {
                         Ok(SemanticBodyCallArg {
                             value: r(arg.value, current)?,
@@ -181,20 +181,14 @@ impl BodySema<'_> {
                     .collect::<Result<Vec<_>, _>>()
                     .map(Arc::from)
             };
-            let intrinsic_args = |start, len| -> Result<Arc<[SemanticBodyCallArg]>, F> {
-                body.get_air_refs(start, len)
+            let intrinsic_args = |range| -> Result<Arc<[SemanticBodyCallArg]>, F> {
+                body.get_intrinsic_args(range)
                     .map(|value| {
                         Ok(SemanticBodyCallArg {
                             value: r(value, current)?,
                             mode: crate::AirArgMode::Normal,
                         })
                     })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(Arc::from)
-            };
-            let refs = |start, len| -> Result<Arc<[u32]>, F> {
-                body.get_air_refs(start, len)
-                    .map(|value| r(value, current))
                     .collect::<Result<Vec<_>, _>>()
                     .map(Arc::from)
             };
@@ -314,13 +308,9 @@ impl BodySema<'_> {
                 AirInstData::InfiniteLoop { body: value } => SemanticBodyInstData::InfiniteLoop {
                     body: r(*value, current)?,
                 },
-                AirInstData::Match {
-                    scrutinee,
-                    arms_start,
-                    arms_len,
-                } => {
+                AirInstData::Match { scrutinee, arms } => {
                     let arms = body
-                        .get_match_arms(*arms_start, *arms_len)
+                        .get_match_arms(arms)
                         .map(|(pattern, value)| {
                             let pattern = match pattern {
                                 AirPattern::Wildcard => SemanticBodyPattern::Wildcard,
@@ -366,23 +356,22 @@ impl BodySema<'_> {
                 AirInstData::Call {
                     runtime,
                     name,
-                    args_start,
-                    args_len,
+                    args,
                 } => {
                     if let Some(runtime) = runtime {
                         SemanticBodyInstData::RuntimeCall {
                             runtime: *runtime,
-                            args: call_args(*args_start, *args_len)?,
+                            args: call_args(args)?,
                         }
                     } else {
                         match specialized_calls.and_then(|calls| calls.get(name)) {
                             Some(identity) => SemanticBodyInstData::CallSpecialized {
                                 identity: identity.clone(),
-                                args: call_args(*args_start, *args_len)?,
+                                args: call_args(args)?,
                             },
                             None => SemanticBodyInstData::Call {
                                 function: self.function_identity(*name)?,
-                                args: call_args(*args_start, *args_len)?,
+                                args: call_args(args)?,
                             },
                         }
                     }
@@ -391,47 +380,44 @@ impl BodySema<'_> {
                 AirInstData::Intrinsic {
                     runtime,
                     name,
-                    args_start,
-                    args_len,
+                    args,
                 } => SemanticBodyInstData::Intrinsic {
                     runtime: *runtime,
                     name: Arc::from(self.interner.resolve(name)),
-                    args: intrinsic_args(*args_start, *args_len)?,
+                    args: intrinsic_args(args)?,
                 },
                 AirInstData::Param { index } => SemanticBodyInstData::Param { index: *index },
-                AirInstData::Block {
-                    stmts_start,
-                    stmts_len,
-                    value,
-                } => SemanticBodyInstData::Block {
-                    statements: refs(*stmts_start, *stmts_len)?,
+                AirInstData::Block { statements, value } => SemanticBodyInstData::Block {
+                    statements: body
+                        .get_block_statements(statements)
+                        .map(|v| r(v, current))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
                     value: r(*value, current)?,
                 },
                 AirInstData::StructInit {
                     struct_id,
-                    fields_start,
-                    fields_len,
-                    source_order_start,
-                } => {
-                    let (fields, order) =
-                        body.get_struct_init(*fields_start, *fields_len, *source_order_start);
-                    SemanticBodyInstData::StructInit {
-                        struct_key: self.struct_identity(*struct_id)?,
-                        fields: fields
-                            .map(|value| r(value, current))
-                            .collect::<Result<Vec<_>, _>>()?
-                            .into(),
-                        source_order: order
-                            .map(|value| u32::try_from(value).map_err(|_| F::SizeOverflow))
-                            .collect::<Result<Vec<_>, _>>()?
-                            .into(),
-                    }
-                }
-                AirInstData::ArrayInit {
-                    elems_start,
-                    elems_len,
-                } => SemanticBodyInstData::ArrayInit {
-                    elements: refs(*elems_start, *elems_len)?,
+                    fields,
+                    source_order,
+                } => SemanticBodyInstData::StructInit {
+                    struct_key: self.struct_identity(*struct_id)?,
+                    fields: body
+                        .get_struct_fields(fields)
+                        .map(|value| r(value, current))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
+                    source_order: body
+                        .get_source_order(source_order)
+                        .map(|value| u32::try_from(value).map_err(|_| F::SizeOverflow))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
+                },
+                AirInstData::ArrayInit { elements } => SemanticBodyInstData::ArrayInit {
+                    elements: body
+                        .get_array_elements(elements)
+                        .map(|v| r(v, current))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
                 },
                 AirInstData::PlaceRead { place: value } => SemanticBodyInstData::PlaceRead {
                     place: place(*value)?,
@@ -443,12 +429,15 @@ impl BodySema<'_> {
                 AirInstData::EnumVariant {
                     enum_id,
                     variant_index,
-                    payload_start,
-                    payload_len,
+                    payload,
                 } => SemanticBodyInstData::EnumVariant {
                     enum_key: self.enum_identity(*enum_id)?,
                     variant_index: *variant_index,
-                    payload: refs(*payload_start, *payload_len)?,
+                    payload: body
+                        .get_enum_payload(payload)
+                        .map(|v| r(v, current))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
                 },
                 AirInstData::EnumPayloadGet {
                     base,

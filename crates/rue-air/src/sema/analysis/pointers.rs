@@ -65,17 +65,7 @@ impl<'a> BodySema<'a> {
         }
 
         // Create the intrinsic call instruction
-        let args_start = air.add_extra(&[ptr_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name,
-                args_start,
-                args_len: 1,
-            },
-            ty: pointee_type,
-            span,
-        });
+        let air_ref = air.add_intrinsic(None, name, &[ptr_result.air_ref], pointee_type, span)?;
         Ok(AnalysisResult::new(air_ref, pointee_type))
     }
 
@@ -174,18 +164,13 @@ impl<'a> BodySema<'a> {
         }
 
         // Create the intrinsic call instruction
-        let args_start =
-            air.add_extra(&[ptr_result.air_ref.as_u32(), value_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name,
-                args_start,
-                args_len: 2,
-            },
-            ty: Type::UNIT,
+        let air_ref = air.add_intrinsic(
+            None,
+            name,
+            &[ptr_result.air_ref, value_result.air_ref],
+            Type::UNIT,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
@@ -240,18 +225,13 @@ impl<'a> BodySema<'a> {
         }
 
         // Create the intrinsic call instruction (returns same pointer type)
-        let args_start =
-            air.add_extra(&[ptr_result.air_ref.as_u32(), offset_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name,
-                args_start,
-                args_len: 2,
-            },
-            ty: ptr_type,
+        let air_ref = air.add_intrinsic(
+            None,
+            name,
+            &[ptr_result.air_ref, offset_result.air_ref],
+            ptr_type,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, ptr_type))
     }
 
@@ -292,17 +272,7 @@ impl<'a> BodySema<'a> {
         }
 
         // Create the intrinsic call instruction (returns u64)
-        let args_start = air.add_extra(&[ptr_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name,
-                args_start,
-                args_len: 1,
-            },
-            ty: Type::U64,
-            span,
-        });
+        let air_ref = air.add_intrinsic(None, name, &[ptr_result.air_ref], Type::U64, span)?;
         Ok(AnalysisResult::new(air_ref, Type::U64))
     }
 
@@ -373,17 +343,7 @@ impl<'a> BodySema<'a> {
         }
 
         // Create the intrinsic call instruction
-        let args_start = air.add_extra(&[addr_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name,
-                args_start,
-                args_len: 1,
-            },
-            ty: result_type,
-            span,
-        });
+        let air_ref = air.add_intrinsic(None, name, &[addr_result.air_ref], result_type, span)?;
         Ok(AnalysisResult::new(air_ref, result_type))
     }
 
@@ -452,17 +412,13 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        let args_start = air.add_extra(&[count_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::AllocTyped),
-                name,
-                args_start,
-                args_len: 1,
-            },
-            ty: result_type,
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::AllocTyped),
+            name,
+            &[count_result.air_ref],
+            result_type,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, result_type))
     }
 
@@ -515,18 +471,13 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        let args_start =
-            air.add_extra(&[ptr_result.air_ref.as_u32(), count_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::FreeTyped),
-                name,
-                args_start,
-                args_len: 2,
-            },
-            ty: Type::UNIT,
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::FreeTyped),
+            name,
+            &[ptr_result.air_ref, count_result.air_ref],
+            Type::UNIT,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
@@ -582,21 +533,13 @@ impl<'a> BodySema<'a> {
             }
         }
 
-        let args_start = air.add_extra(&[
-            ptr_result.air_ref.as_u32(),
-            old_result.air_ref.as_u32(),
-            new_result.air_ref.as_u32(),
-        ]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::ReallocTyped),
-                name,
-                args_start,
-                args_len: 3,
-            },
-            ty: ptr_type,
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::ReallocTyped),
+            name,
+            &[ptr_result.air_ref, old_result.air_ref, new_result.air_ref],
+            ptr_type,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, ptr_type))
     }
 
@@ -633,17 +576,13 @@ impl<'a> BodySema<'a> {
         {
             return Err(self.type_mismatch_error(expected, result_ty, span));
         }
-        let args_start = air.add_extra(&[size.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::AllocBytes),
-                name,
-                args_start,
-                args_len: 1,
-            },
-            ty: result_ty,
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::AllocBytes),
+            name,
+            &[size.air_ref],
+            result_ty,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, result_ty))
     }
 
@@ -672,21 +611,13 @@ impl<'a> BodySema<'a> {
         let new_size = self.analyze_inst(air, args[2].value, ctx)?;
         self.require_intrinsic_type("realloc_bytes", old_size.ty, Type::U64, span)?;
         self.require_intrinsic_type("realloc_bytes", new_size.ty, Type::U64, span)?;
-        let args_start = air.add_extra(&[
-            ptr.air_ref.as_u32(),
-            old_size.air_ref.as_u32(),
-            new_size.air_ref.as_u32(),
-        ]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::ReallocBytes),
-                name,
-                args_start,
-                args_len: 3,
-            },
-            ty: ptr.ty,
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::ReallocBytes),
+            name,
+            &[ptr.air_ref, old_size.air_ref, new_size.air_ref],
+            ptr.ty,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, ptr.ty))
     }
 
@@ -713,17 +644,13 @@ impl<'a> BodySema<'a> {
         self.require_mut_u8_pointer("free_bytes", ptr.ty, span)?;
         let size = self.analyze_inst(air, args[1].value, ctx)?;
         self.require_intrinsic_type("free_bytes", size.ty, Type::U64, span)?;
-        let args_start = air.add_extra(&[ptr.air_ref.as_u32(), size.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::FreeBytes),
-                name,
-                args_start,
-                args_len: 2,
-            },
-            ty: Type::UNIT,
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::FreeBytes),
+            name,
+            &[ptr.air_ref, size.air_ref],
+            Type::UNIT,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
@@ -750,17 +677,8 @@ impl<'a> BodySema<'a> {
         self.require_u8_pointer("byte_read", ptr.ty, span)?;
         let offset = self.analyze_inst(air, args[1].value, ctx)?;
         self.require_intrinsic_type("byte_read", offset.ty, Type::U64, span)?;
-        let args_start = air.add_extra(&[ptr.air_ref.as_u32(), offset.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name,
-                args_start,
-                args_len: 2,
-            },
-            ty: Type::U8,
-            span,
-        });
+        let air_ref =
+            air.add_intrinsic(None, name, &[ptr.air_ref, offset.air_ref], Type::U8, span)?;
         Ok(AnalysisResult::new(air_ref, Type::U8))
     }
 
@@ -789,21 +707,13 @@ impl<'a> BodySema<'a> {
         let value = self.analyze_inst(air, args[2].value, ctx)?;
         self.require_intrinsic_type("byte_write", offset.ty, Type::U64, span)?;
         self.require_intrinsic_type("byte_write", value.ty, Type::U8, span)?;
-        let args_start = air.add_extra(&[
-            ptr.air_ref.as_u32(),
-            offset.air_ref.as_u32(),
-            value.air_ref.as_u32(),
-        ]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name,
-                args_start,
-                args_len: 3,
-            },
-            ty: Type::UNIT,
+        let air_ref = air.add_intrinsic(
+            None,
+            name,
+            &[ptr.air_ref, offset.air_ref, value.air_ref],
+            Type::UNIT,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
@@ -973,17 +883,7 @@ impl<'a> BodySema<'a> {
         // @raw/@raw_mut/@field_ptr in the AIR; codegen lowers all three the
         // same way (address of the operand place).
         let name = result_name;
-        let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name,
-                args_start,
-                args_len: 1,
-            },
-            ty: result_type,
-            span,
-        });
+        let air_ref = air.add_intrinsic(None, name, &[arg_result.air_ref], result_type, span)?;
         Ok(AnalysisResult::new(air_ref, result_type))
     }
 
@@ -1073,21 +973,11 @@ impl<'a> BodySema<'a> {
                 ));
             }
 
-            arg_refs.push(arg_result.air_ref.as_u32());
+            arg_refs.push(arg_result.air_ref);
         }
 
         // Create the intrinsic call instruction
-        let args_start = air.add_extra(&arg_refs);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name,
-                args_start,
-                args_len: args.len() as u32,
-            },
-            ty: Type::I64,
-            span,
-        });
+        let air_ref = air.add_intrinsic(None, name, &arg_refs, Type::I64, span)?;
         Ok(AnalysisResult::new(air_ref, Type::I64))
     }
 
@@ -1126,16 +1016,7 @@ impl<'a> BodySema<'a> {
         };
 
         let result_type = Type::new_enum(arch_enum_id);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::EnumVariant {
-                enum_id: arch_enum_id,
-                variant_index,
-                payload_start: 0,
-                payload_len: 0,
-            },
-            ty: result_type,
-            span,
-        });
+        let air_ref = air.add_enum_variant(arch_enum_id, variant_index, &[], result_type, span)?;
         Ok(AnalysisResult::new(air_ref, result_type))
     }
 
@@ -1174,16 +1055,7 @@ impl<'a> BodySema<'a> {
         };
 
         let result_type = Type::new_enum(os_enum_id);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::EnumVariant {
-                enum_id: os_enum_id,
-                variant_index,
-                payload_start: 0,
-                payload_len: 0,
-            },
-            ty: result_type,
-            span,
-        });
+        let air_ref = air.add_enum_variant(os_enum_id, variant_index, &[], result_type, span)?;
         Ok(AnalysisResult::new(air_ref, result_type))
     }
 }

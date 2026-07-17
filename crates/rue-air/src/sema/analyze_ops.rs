@@ -161,20 +161,17 @@ impl<'a> BodySema<'a> {
             value = inner;
         }
         let AirInstData::Block {
-            stmts_start,
-            stmts_len,
+            statements,
             value: projected,
-        } = air.get(value).data
+        } = &air.get(value).data
         else {
             return (original, Vec::new());
         };
-        if stmts_len < 2 || stmts_len % 2 != 0 {
+        if statements.len() < 2 || statements.len() % 2 != 0 {
             return (original, Vec::new());
         }
-        let statements = air
-            .get_air_refs(stmts_start, stmts_len)
-            .collect::<Vec<AirRef>>();
-        let mut projected = projected;
+        let statements = air.get_block_statements(statements).collect::<Vec<_>>();
+        let mut projected = *projected;
         while let AirInstData::MarkMoved { value: inner, .. } = air.get(projected).data {
             projected = inner;
         }
@@ -223,27 +220,18 @@ impl<'a> BodySema<'a> {
         if !stmts.is_empty()
             && let AirInstData::PlaceRead { place } = air.get(base).data
         {
-            let place = *air.get_place(place);
-            let mut projections = air.get_place_projections(&place).to_vec();
+            let place = air.get_place(place);
+            let base = place.base;
+            let base_type = place.base_type;
+            let mut projections = air.get_place_projections(place).to_vec();
             projections.push(projection);
-            let place = air.make_place(place.base, place.base_type, projections);
+            let place = air.make_place(base, base_type, projections)?;
             let value = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place },
                 ty: result_type,
                 span,
             });
-            let stmts_len = stmts.len() as u32;
-            let stmts = stmts.iter().map(|stmt| stmt.as_u32()).collect::<Vec<_>>();
-            let stmts_start = air.add_extra(&stmts);
-            return Ok(air.add_inst(AirInst {
-                data: AirInstData::Block {
-                    stmts_start,
-                    stmts_len,
-                    value,
-                },
-                ty: result_type,
-                span,
-            }));
+            return Ok(air.add_block(&stmts, value, result_type, span)?);
         }
         let temp_slot = ctx.next_slot;
         ctx.next_slot += self.require_layout_slots(base_type, span)?;
@@ -261,25 +249,14 @@ impl<'a> BodySema<'a> {
             ty: Type::UNIT,
             span,
         });
-        let place = air.make_place(AirPlaceBase::Local(temp_slot), base_type, [projection]);
+        let place = air.make_place(AirPlaceBase::Local(temp_slot), base_type, [projection])?;
         let value = air.add_inst(AirInst {
             data: AirInstData::PlaceRead { place },
             ty: result_type,
             span,
         });
         stmts.extend([storage_live, alloc]);
-        let stmts_len = stmts.len() as u32;
-        let stmts = stmts.iter().map(|stmt| stmt.as_u32()).collect::<Vec<_>>();
-        let stmts_start = air.add_extra(&stmts);
-        Ok(air.add_inst(AirInst {
-            data: AirInstData::Block {
-                stmts_start,
-                stmts_len,
-                value,
-            },
-            ty: result_type,
-            span,
-        }))
+        Ok(air.add_block(&stmts, value, result_type, span)?)
     }
 
     // ========================================================================
@@ -479,9 +456,9 @@ impl<'a> BodySema<'a> {
     }
 
     /// Build an AirPlaceRef from a PlaceTrace, adding projections to the Air.
-    pub(crate) fn build_place_ref(air: &mut Air, trace: &PlaceTrace) -> AirPlaceRef {
+    pub(crate) fn build_place_ref(air: &mut Air, trace: &PlaceTrace) -> CompileResult<AirPlaceRef> {
         let projs = trace.projections.iter().map(|p| p.proj);
-        air.make_place(trace.base, trace.base_type, projs)
+        Ok(air.make_place(trace.base, trace.base_type, projs)?)
     }
 
     /// Build a `MarkMoved` place from a trace.
@@ -494,15 +471,20 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         trace: &PlaceTrace,
         span: Span,
-    ) -> AirPlaceRef {
+    ) -> CompileResult<AirPlaceRef> {
         let mut projs = Vec::with_capacity(trace.projections.len());
         for p in &trace.projections {
             match p.proj {
                 AirProjection::Field { .. } => projs.push(p.proj),
                 AirProjection::Index { array_type, .. } => {
-                    let k = p
-                        .const_index
-                        .expect("move-marker index must be statically trackable");
+                    let k = p.const_index.ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::InternalError(
+                                "move-marker index is not statically trackable".to_string(),
+                            ),
+                            span,
+                        )
+                    })?;
                     debug_assert!(k >= 0, "move-marker index must be non-negative");
                     let index = air.add_inst(AirInst {
                         data: AirInstData::Const(k as u64),
@@ -513,7 +495,7 @@ impl<'a> BodySema<'a> {
                 }
             }
         }
-        air.make_place(trace.base, trace.base_type, projs)
+        Ok(air.make_place(trace.base, trace.base_type, projs)?)
     }
 
     // ========================================================================
@@ -1126,20 +1108,22 @@ impl<'a> BodySema<'a> {
         // The scratch Air and context are discarded - this pass exists only
         // for the checks.
         if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
-            let mut scratch_air = air.clone();
+            let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
-            (|| -> CompileResult<()> {
-                self.analyze_inst(&mut scratch_air, cond, &mut scratch_ctx)?;
+            let result = (|| -> CompileResult<()> {
+                self.analyze_inst(air, cond, &mut scratch_ctx)?;
                 scratch_ctx.push_scope();
                 scratch_ctx.loop_depth += 1;
                 scratch_ctx.loop_break_stack.push(false);
-                self.analyze_inst(&mut scratch_air, body, &mut scratch_ctx)?;
+                self.analyze_inst(air, body, &mut scratch_ctx)?;
                 scratch_ctx.loop_break_stack.pop();
                 scratch_ctx.loop_depth -= 1;
                 scratch_ctx.pop_scope();
                 Ok(())
-            })()
-            .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
+            })();
+            air.rollback(checkpoint);
+            result
+                .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
         }
 
         let air_ref = air.add_inst(AirInst {
@@ -1195,7 +1179,7 @@ impl<'a> BodySema<'a> {
         // Note: like Rust, this is conservative - a body that unconditionally
         // breaks after the move still errors.
         if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
-            let mut scratch_air = air.clone();
+            let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
@@ -1203,7 +1187,9 @@ impl<'a> BodySema<'a> {
             if let Some(var) = iter_borrow {
                 scratch_ctx.iter_borrows.push(var);
             }
-            self.analyze_inst(&mut scratch_air, body, &mut scratch_ctx)
+            let result = self.analyze_inst(air, body, &mut scratch_ctx);
+            air.rollback(checkpoint);
+            result
                 .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
             if iter_borrow.is_some() {
                 scratch_ctx.iter_borrows.pop();
@@ -1587,16 +1573,7 @@ impl<'a> BodySema<'a> {
             if !is_uninhabited_enum {
                 return Err(CompileError::new(ErrorKind::EmptyMatch, span));
             }
-            let arms_start = air.add_extra(&[]);
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::Match {
-                    scrutinee: scrutinee_result.air_ref,
-                    arms_start,
-                    arms_len: 0,
-                },
-                ty: Type::NEVER,
-                span,
-            });
+            let air_ref = air.add_match(scrutinee_result.air_ref, &[], Type::NEVER, span)?;
             return Ok(AnalysisResult::new(air_ref, Type::NEVER));
         }
 
@@ -1973,16 +1950,12 @@ impl<'a> BodySema<'a> {
             let arm_body_ref = if binding_stmts.is_empty() {
                 body_result.air_ref
             } else {
-                let stmts_start = air.add_extra(&binding_stmts);
-                air.add_inst(AirInst {
-                    data: AirInstData::Block {
-                        stmts_start,
-                        stmts_len: binding_stmts.len() as u32,
-                        value: body_result.air_ref,
-                    },
-                    ty: body_type,
-                    span: pattern_span,
-                })
+                let statements: Vec<_> = binding_stmts
+                    .iter()
+                    .copied()
+                    .map(AirRef::from_raw)
+                    .collect();
+                air.add_block(&statements, body_result.air_ref, body_type, pattern_span)?
             };
 
             air_arms.push((air_pattern, arm_body_ref));
@@ -2028,23 +2001,7 @@ impl<'a> BodySema<'a> {
 
         let final_type = result_type.unwrap_or(Type::UNIT);
 
-        // Encode match arms into extra array
-        let arms_len = air_arms.len() as u32;
-        let mut extra_data = Vec::new();
-        for (pattern, body) in &air_arms {
-            pattern.encode(*body, &mut extra_data);
-        }
-        let arms_start = air.add_extra(&extra_data);
-
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Match {
-                scrutinee: scrutinee_result.air_ref,
-                arms_start,
-                arms_len,
-            },
-            ty: final_type,
-            span,
-        });
+        let air_ref = air.add_match(scrutinee_result.air_ref, &air_arms, final_type, span)?;
         Ok(AnalysisResult::new(air_ref, final_type))
     }
 
@@ -2156,7 +2113,7 @@ impl<'a> BodySema<'a> {
                     ));
                 }
             };
-            return Ok(self.build_try_desugar(
+            return self.build_try_desugar(
                 air,
                 operand_result.air_ref,
                 operand_enum_id,
@@ -2168,7 +2125,7 @@ impl<'a> BodySema<'a> {
                 ret_none_idx,
                 None,
                 span,
-            ));
+            );
         }
 
         // Result operand: `?` evaluates to `T` on `Ok(v)` and early-returns
@@ -2198,7 +2155,7 @@ impl<'a> BodySema<'a> {
                     span,
                 ));
             }
-            return Ok(self.build_try_desugar(
+            return self.build_try_desugar(
                 air,
                 operand_result.air_ref,
                 operand_enum_id,
@@ -2210,7 +2167,7 @@ impl<'a> BodySema<'a> {
                 ret_err_idx,
                 Some(err_ty),
                 span,
-            ));
+            );
         }
 
         // The operand is a two-variant enum but neither Option- nor
@@ -2245,7 +2202,7 @@ impl<'a> BodySema<'a> {
         ret_fail_idx: u32,
         fail_err_ty: Option<Type>,
         span: Span,
-    ) -> AnalysisResult {
+    ) -> CompileResult<AnalysisResult> {
         // Success arm (`Some(v)` / `Ok(v)`): read the payload out; it is the
         // whole `?`-expression's value (RUE-221).
         let success_body = air.add_inst(AirInst {
@@ -2269,16 +2226,8 @@ impl<'a> BodySema<'a> {
                     ty: Type::UNIT,
                     span,
                 });
-                let none_ctor = air.add_inst(AirInst {
-                    data: AirInstData::EnumVariant {
-                        enum_id: ret_enum_id,
-                        variant_index: ret_fail_idx,
-                        payload_start: 0,
-                        payload_len: 0,
-                    },
-                    ty: return_type,
-                    span,
-                });
+                let none_ctor =
+                    air.add_enum_variant(ret_enum_id, ret_fail_idx, &[], return_type, span)?;
                 (drop_scrutinee, none_ctor)
             }
             Some(err_ty) => {
@@ -2294,17 +2243,8 @@ impl<'a> BodySema<'a> {
                     ty: err_ty,
                     span,
                 });
-                let payload = air.add_extra(&[err_val.as_u32()]);
-                let err_ctor = air.add_inst(AirInst {
-                    data: AirInstData::EnumVariant {
-                        enum_id: ret_enum_id,
-                        variant_index: ret_fail_idx,
-                        payload_start: payload,
-                        payload_len: 1,
-                    },
-                    ty: return_type,
-                    span,
-                });
+                let err_ctor =
+                    air.add_enum_variant(ret_enum_id, ret_fail_idx, &[err_val], return_type, span)?;
                 (err_val, err_ctor)
             }
         };
@@ -2313,16 +2253,7 @@ impl<'a> BodySema<'a> {
             ty: Type::NEVER,
             span,
         });
-        let fail_stmts = air.add_extra(&[fail_stmt.as_u32()]);
-        let fail_body = air.add_inst(AirInst {
-            data: AirInstData::Block {
-                stmts_start: fail_stmts,
-                stmts_len: 1,
-                value: ret,
-            },
-            ty: Type::NEVER,
-            span,
-        });
+        let fail_body = air.add_block(&[fail_stmt], ret, Type::NEVER, span)?;
 
         // Encode the two arms and emit the dispatching match. Its value type is
         // the success payload (the failure arm diverges).
@@ -2342,21 +2273,8 @@ impl<'a> BodySema<'a> {
                 fail_body,
             ),
         ];
-        let mut extra_data = Vec::new();
-        for (pattern, body) in &air_arms {
-            pattern.encode(*body, &mut extra_data);
-        }
-        let arms_start = air.add_extra(&extra_data);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Match {
-                scrutinee,
-                arms_start,
-                arms_len: air_arms.len() as u32,
-            },
-            ty: success_payload_ty,
-            span,
-        });
-        AnalysisResult::new(air_ref, success_payload_ty)
+        let air_ref = air.add_match(scrutinee, &air_arms, success_payload_ty, span)?;
+        Ok(AnalysisResult::new(air_ref, success_payload_ty))
     }
 
     /// Materialize the payload bindings of a tuple-variant match pattern
@@ -2639,18 +2557,7 @@ impl<'a> BodySema<'a> {
             Ok(last)
         } else {
             let ty = last.ty;
-            let stmt_u32s: Vec<u32> = statements.iter().map(|r| r.as_u32()).collect();
-            let stmts_start = air.add_extra(&stmt_u32s);
-            let stmts_len = statements.len() as u32;
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::Block {
-                    stmts_start,
-                    stmts_len,
-                    value: last.air_ref,
-                },
-                ty,
-                span,
-            });
+            let air_ref = air.add_block(&statements, last.air_ref, ty, span)?;
             Ok(AnalysisResult::new(air_ref, ty))
         }
     }
@@ -2921,16 +2828,7 @@ impl<'a> BodySema<'a> {
         });
 
         // Return a block containing both StorageLive and Alloc
-        let stmts_start = air.add_extra(&[storage_live_ref.as_u32()]);
-        let block_ref = air.add_inst(AirInst {
-            data: AirInstData::Block {
-                stmts_start,
-                stmts_len: 1,
-                value: alloc_ref,
-            },
-            ty: Type::UNIT,
-            span,
-        });
+        let block_ref = air.add_block(&[storage_live_ref], alloc_ref, Type::UNIT, span)?;
         Ok(AnalysisResult::new(block_ref, Type::UNIT))
     }
 
@@ -3850,23 +3748,14 @@ impl<'a> BodySema<'a> {
             .map(|opt| opt.expect("all fields should be initialized"))
             .collect();
 
-        // Encode into extra array
-        let fields_len = field_refs.len() as u32;
-        let field_u32s: Vec<u32> = field_refs.iter().map(|r| r.as_u32()).collect();
-        let fields_start = air.add_extra(&field_u32s);
         let source_order_u32s: Vec<u32> = source_order.iter().map(|&i| i as u32).collect();
-        let source_order_start = air.add_extra(&source_order_u32s);
-
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::StructInit {
-                struct_id,
-                fields_start,
-                fields_len,
-                source_order_start,
-            },
-            ty: struct_type,
+        let air_ref = air.add_struct_init(
+            struct_id,
+            &field_refs,
+            &source_order_u32s,
+            struct_type,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(air_ref, struct_type))
     }
 
@@ -4251,7 +4140,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Emit PlaceRead instruction
-            let place_ref = Self::build_place_ref(air, &trace);
+            let place_ref = Self::build_place_ref(air, &trace)?;
             let mut air_ref = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: field_type,
@@ -4264,8 +4153,9 @@ impl<'a> BodySema<'a> {
                     AirPlaceBase::Local(slot) => (slot, false),
                     AirPlaceBase::Param(slot) => (slot, true),
                 };
-                let marker_place =
-                    move_is_partial.then(|| Self::build_move_marker_place_ref(air, &trace, span));
+                let marker_place = move_is_partial
+                    .then(|| Self::build_move_marker_place_ref(air, &trace, span))
+                    .transpose()?;
                 air_ref = air.add_inst(AirInst {
                     data: AirInstData::MarkMoved {
                         value: air_ref,
@@ -4347,7 +4237,7 @@ impl<'a> BodySema<'a> {
                 struct_id,
                 field_index: field_index as u32,
             }),
-        );
+        )?;
         let mut value_ref = air.add_inst(AirInst {
             data: AirInstData::PlaceRead { place: place_ref },
             ty: field_type,
@@ -4378,16 +4268,8 @@ impl<'a> BodySema<'a> {
         // scope-based drop elaboration in the CFG builder. This is slightly conservative
         // (temp lives until scope exit rather than immediately after use) but correct.
         // A future optimization could add explicit StorageDead at the right point.
-        let stmts_start = air.add_extra(&[storage_live_ref.as_u32(), alloc_ref.as_u32()]);
-        let block_ref = air.add_inst(AirInst {
-            data: AirInstData::Block {
-                stmts_start,
-                stmts_len: 2,
-                value: value_ref,
-            },
-            ty: field_type,
-            span,
-        });
+        let block_ref =
+            air.add_block(&[storage_live_ref, alloc_ref], value_ref, field_type, span)?;
         Ok(AnalysisResult::new(block_ref, field_type))
     }
 
@@ -4899,16 +4781,7 @@ impl<'a> BodySema<'a> {
         }
 
         let ty = Type::new_enum(enum_id);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::EnumVariant {
-                enum_id,
-                variant_index: variant_index as u32,
-                payload_start: 0,
-                payload_len: 0,
-            },
-            ty,
-            span,
-        });
+        let air_ref = air.add_enum_variant(enum_id, variant_index as u32, &[], ty, span)?;
         Ok(Some(AnalysisResult::new(air_ref, ty)))
     }
 
@@ -4960,16 +4833,7 @@ impl<'a> BodySema<'a> {
         }
 
         let ty = Type::new_enum(enum_id);
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::EnumVariant {
-                enum_id,
-                variant_index: variant_index as u32,
-                payload_start: 0,
-                payload_len: 0,
-            },
-            ty,
-            span,
-        });
+        let air_ref = air.add_enum_variant(enum_id, variant_index as u32, &[], ty, span)?;
         Ok(Some(AnalysisResult::new(air_ref, ty)))
     }
 
@@ -5056,19 +4920,7 @@ impl<'a> BodySema<'a> {
             air_elems.push(elem_result.air_ref);
         }
 
-        // Encode into extra array
-        let elems_len = air_elems.len() as u32;
-        let elem_u32s: Vec<u32> = air_elems.iter().map(|r| r.as_u32()).collect();
-        let elems_start = air.add_extra(&elem_u32s);
-
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::ArrayInit {
-                elems_start,
-                elems_len,
-            },
-            ty: array_type,
-            span,
-        });
+        let air_ref = air.add_array_init(&air_elems, array_type, span)?;
         Ok(AnalysisResult::new(air_ref, array_type))
     }
 
@@ -5126,6 +4978,14 @@ impl<'a> BodySema<'a> {
             }
         };
 
+        // A repeat materializes the complete array value. Reject an oversized
+        // layout before expanding its element-reference payload: for an input
+        // such as `[0; 536870912]`, building that payload would otherwise do
+        // work proportional to a value the compiler is required to reject.
+        // This is the same checked materialization boundary used for locals,
+        // temporaries, by-value parameters, and type-layout intrinsics.
+        self.require_layout_slots(array_type, span)?;
+
         // Require the element type to be Copy (RUE-235).
         if !self.is_type_copy(elem_type) {
             return Err(CompileError::new(
@@ -5140,18 +5000,8 @@ impl<'a> BodySema<'a> {
         let value_result = self.analyze_inst(air, value_ref, ctx)?;
 
         // Desugar to ArrayInit: `length` elements, each the single value.
-        let elem_u32s: Vec<u32> = vec![value_result.air_ref.as_u32(); length as usize];
-        let elems_len = elem_u32s.len() as u32;
-        let elems_start = air.add_extra(&elem_u32s);
-
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::ArrayInit {
-                elems_start,
-                elems_len,
-            },
-            ty: array_type,
-            span,
-        });
+        let elem_refs = vec![value_result.air_ref; length as usize];
+        let air_ref = air.add_array_init(&elem_refs, array_type, span)?;
 
         // The value expression is evaluated exactly once even when the length
         // is 0 (spec 7.1:39). With no element referencing it the evaluation
@@ -5162,16 +5012,7 @@ impl<'a> BodySema<'a> {
         // Block lowering also handles a diverging value (`return`/`break`)
         // correctly, marking the array construction unreachable.
         if length == 0 {
-            let stmts_start = air.add_extra(&[value_result.air_ref.as_u32()]);
-            let block_ref = air.add_inst(AirInst {
-                data: AirInstData::Block {
-                    stmts_start,
-                    stmts_len: 1,
-                    value: air_ref,
-                },
-                ty: array_type,
-                span,
-            });
+            let block_ref = air.add_block(&[value_result.air_ref], air_ref, array_type, span)?;
             return Ok(AnalysisResult::new(block_ref, array_type));
         }
         Ok(AnalysisResult::new(air_ref, array_type))
@@ -5312,7 +5153,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Emit PlaceRead instruction
-            let place_ref = Self::build_place_ref(air, &trace);
+            let place_ref = Self::build_place_ref(air, &trace)?;
             let mut air_ref = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: elem_type,
@@ -5329,7 +5170,7 @@ impl<'a> BodySema<'a> {
                     elem_type,
                     parent_type,
                     span,
-                );
+                )?;
             }
             return Ok(AnalysisResult::new(air_ref, elem_type));
         }
@@ -5469,7 +5310,7 @@ impl<'a> BodySema<'a> {
                 array_type: base_type,
                 index: index_result.air_ref,
             }),
-        );
+        )?;
         let read_ref = air.add_inst(AirInst {
             data: AirInstData::PlaceRead { place: place_ref },
             ty: elem_type,
@@ -5478,16 +5319,7 @@ impl<'a> BodySema<'a> {
 
         // Note: We don't emit StorageDead here. The temporary will be cleaned up by
         // scope-based drop elaboration in the CFG builder.
-        let stmts_start = air.add_extra(&[storage_live_ref.as_u32(), alloc_ref.as_u32()]);
-        let block_ref = air.add_inst(AirInst {
-            data: AirInstData::Block {
-                stmts_start,
-                stmts_len: 2,
-                value: read_ref,
-            },
-            ty: elem_type,
-            span,
-        });
+        let block_ref = air.add_block(&[storage_live_ref, alloc_ref], read_ref, elem_type, span)?;
         Ok(AnalysisResult::new(block_ref, elem_type))
     }
 
@@ -5570,24 +5402,24 @@ impl<'a> BodySema<'a> {
             self.interner
                 .get_or_intern(&self.method_symbol(struct_id, "byte_at_borrowed", false));
         let receiver_mode = AirArgMode::Borrow;
-        let extra = [
-            receiver.as_u32(),
-            receiver_mode.as_u32(),
-            index_result.air_ref.as_u32(),
-            AirArgMode::Normal.as_u32(),
-        ];
-        let args_start = air.add_extra(&extra);
-        let call_ref = air.add_inst(AirInst {
-            data: AirInstData::Call {
-                runtime: None,
-                name: call_name,
-                args_start,
-                args_len: 2,
-            },
-            ty: Type::U8,
+        let call_ref = air.add_call(
+            None,
+            call_name,
+            &[
+                AirCallArg {
+                    value: receiver,
+                    mode: receiver_mode,
+                },
+                AirCallArg {
+                    value: index_result.air_ref,
+                    mode: AirArgMode::Normal,
+                },
+            ],
+            Type::U8,
             span,
-        });
-        let call_ref = self.wrap_value_with_temp_scope(air, call_ref, Type::U8, span, temp_scope);
+        )?;
+        let call_ref =
+            self.wrap_value_with_temp_scope(air, call_ref, Type::U8, span, temp_scope)?;
         Ok(AnalysisResult::new(call_ref, Type::U8))
     }
 
@@ -5644,23 +5476,22 @@ impl<'a> BodySema<'a> {
         // argument registers.
         let runtime = crate::RuntimeCallKind::StrByteAt;
         let call_name = self.interner.get_or_intern(runtime.helper().symbol());
-        let extra = [
-            base_result.air_ref.as_u32(),
-            AirArgMode::Normal.as_u32(),
-            index_result.air_ref.as_u32(),
-            AirArgMode::Normal.as_u32(),
-        ];
-        let args_start = air.add_extra(&extra);
-        let call_ref = air.add_inst(AirInst {
-            data: AirInstData::Call {
-                runtime: Some(runtime),
-                name: call_name,
-                args_start,
-                args_len: 2,
-            },
-            ty: Type::U8,
+        let call_ref = air.add_call(
+            Some(runtime),
+            call_name,
+            &[
+                AirCallArg {
+                    value: base_result.air_ref,
+                    mode: AirArgMode::Normal,
+                },
+                AirCallArg {
+                    value: index_result.air_ref,
+                    mode: AirArgMode::Normal,
+                },
+            ],
+            Type::U8,
             span,
-        });
+        )?;
         Ok(AnalysisResult::new(call_ref, Type::U8))
     }
 
@@ -5763,17 +5594,13 @@ impl<'a> BodySema<'a> {
                 ty: Type::BOOL,
                 span,
             });
-            let assert_args = air.add_extra(&[lower_bound_ref.as_u32()]);
-            Some(air.add_inst(AirInst {
-                data: AirInstData::Intrinsic {
-                    runtime: Some(crate::RuntimeCallKind::AssertFailed),
-                    name: self.known.assert,
-                    args_start: assert_args,
-                    args_len: 1,
-                },
-                ty: Type::UNIT,
+            Some(air.add_intrinsic(
+                Some(crate::RuntimeCallKind::AssertFailed),
+                self.known.assert,
+                &[lower_bound_ref],
+                Type::UNIT,
                 span,
-            }))
+            )?)
         } else {
             None
         };
@@ -5782,60 +5609,32 @@ impl<'a> BodySema<'a> {
             ty: Type::BOOL,
             span,
         });
-        let upper_assert_args = air.add_extra(&[upper_bound_ref.as_u32()]);
-        let upper_assert_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: Some(crate::RuntimeCallKind::AssertFailed),
-                name: self.known.assert,
-                args_start: upper_assert_args,
-                args_len: 1,
-            },
-            ty: Type::UNIT,
+        let upper_assert_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::AssertFailed),
+            self.known.assert,
+            &[upper_bound_ref],
+            Type::UNIT,
             span,
-        });
+        )?;
 
         // element = @ptr_read(@ptr_offset(ptr, index)).
-        let off_args = air.add_extra(&[ptr_ref.as_u32(), index_result.air_ref.as_u32()]);
-        let off_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name: self.known.ptr_offset,
-                args_start: off_args,
-                args_len: 2,
-            },
-            ty: ptr_ty,
+        let off_ref = air.add_intrinsic(
+            None,
+            self.known.ptr_offset,
+            &[ptr_ref, index_result.air_ref],
+            ptr_ty,
             span,
-        });
-        let read_args = air.add_extra(&[off_ref.as_u32()]);
-        let elem_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                runtime: None,
-                name: self.known.ptr_read,
-                args_start: read_args,
-                args_len: 1,
-            },
-            ty: elem_ty,
-            span,
-        });
+        )?;
+        let elem_ref = air.add_intrinsic(None, self.known.ptr_read, &[off_ref], elem_ty, span)?;
 
         // Demand-driven lowering only pulls the returned value's dependencies,
         // so the bounds-check assertion (a pure side effect) must be an explicit
         // statement of the block that yields the element.
-        let stmt_refs: Vec<u32> = lower_assert_ref
+        let stmt_refs: Vec<AirRef> = lower_assert_ref
             .into_iter()
             .chain(std::iter::once(upper_assert_ref))
-            .map(AirRef::as_u32)
             .collect();
-        let stmts = air.add_extra(&stmt_refs);
-        let block_ref = air.add_inst(AirInst {
-            data: AirInstData::Block {
-                stmts_start: stmts,
-                stmts_len: stmt_refs.len() as u32,
-                value: elem_ref,
-            },
-            ty: elem_ty,
-            span,
-        });
+        let block_ref = air.add_block(&stmt_refs, elem_ref, elem_ty, span)?;
         Ok(AnalysisResult::new(block_ref, elem_ty))
     }
 
@@ -6007,16 +5806,8 @@ impl<'a> BodySema<'a> {
 
                 let ty = Type::new_enum(enum_id);
 
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::EnumVariant {
-                        enum_id,
-                        variant_index: variant_index as u32,
-                        payload_start: 0,
-                        payload_len: 0,
-                    },
-                    ty,
-                    span: inst.span,
-                });
+                let air_ref =
+                    air.add_enum_variant(enum_id, variant_index as u32, &[], ty, inst.span)?;
                 Ok(AnalysisResult::new(air_ref, ty))
             }
 
@@ -6499,66 +6290,21 @@ impl<'a> BodySema<'a> {
                 // (we can't have a runtime call that returns `type`)
             }
 
-            // Encode type arguments into extra array (as raw Type discriminants)
-            let mut type_extra = Vec::with_capacity(type_args.len());
-            for ty in &type_args {
-                type_extra.push(ty.as_u32());
-            }
-            let type_args_start = air.add_extra(&type_extra);
-            let type_args_len = type_args.len() as u32;
-
-            // Encode comptime value arguments into extra array (as a tagged
-            // word stream; the length is in words, not values)
-            let value_words = crate::specialize::encode_const_values(&value_args);
-            let value_args_start = air.add_extra(&value_words);
-            let value_args_len = value_words.len() as u32;
-
-            // Encode runtime args into extra array
-            let mut args_extra = Vec::with_capacity(runtime_args.len() * 2);
-            for arg in &runtime_args {
-                args_extra.push(arg.value.as_u32());
-                args_extra.push(arg.mode.as_u32());
-            }
-            let runtime_args_start = air.add_extra(&args_extra);
-            let runtime_args_len = runtime_args.len() as u32;
-
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::CallGeneric {
-                    name,
-                    type_args_start,
-                    type_args_len,
-                    value_args_start,
-                    value_args_len,
-                    args_start: runtime_args_start,
-                    args_len: runtime_args_len,
-                },
-                ty: return_type,
+            let air_ref = air.add_call_generic(
+                name,
+                &type_args,
+                &value_args,
+                &runtime_args,
+                return_type,
                 span,
-            });
+            )?;
             Ok(AnalysisResult::new(air_ref, return_type))
         } else {
             // Regular non-generic call
             let return_type = base_return_type;
 
             // Encode call args into extra array
-            let args_len = air_args.len() as u32;
-            let mut extra_data = Vec::with_capacity(air_args.len() * 2);
-            for arg in &air_args {
-                extra_data.push(arg.value.as_u32());
-                extra_data.push(arg.mode.as_u32());
-            }
-            let args_start = air.add_extra(&extra_data);
-
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::Call {
-                    runtime: None,
-                    name,
-                    args_start,
-                    args_len,
-                },
-                ty: return_type,
-                span,
-            });
+            let air_ref = air.add_call(None, name, &air_args, return_type, span)?;
             Ok(AnalysisResult::new(air_ref, return_type))
         }
     }
@@ -6793,7 +6539,7 @@ impl<'a> BodySema<'a> {
         // Analyze each payload argument and type-check against the declared
         // payload type (inference already constrained them; this is the final
         // legality check).
-        let mut payload_refs: Vec<u32> = Vec::with_capacity(args.len());
+        let mut payload_refs: Vec<AirRef> = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
             let expected = payload_types[i];
             let arg_result = ctx
@@ -6806,26 +6552,15 @@ impl<'a> BodySema<'a> {
                     self.rir.get(arg.value).span,
                 ));
             }
-            payload_refs.push(arg_result.air_ref.as_u32());
+            payload_refs.push(arg_result.air_ref);
         }
 
-        let payload_start = air.add_extra(&payload_refs);
-        let payload_len = payload_refs.len() as u32;
         let ty = Type::new_enum(enum_id);
 
         // Suppress unused-variable warnings for names only used in messages.
         let _ = (&variant_name, &enum_name);
 
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::EnumVariant {
-                enum_id,
-                variant_index,
-                payload_start,
-                payload_len,
-            },
-            ty,
-            span,
-        });
+        let air_ref = air.add_enum_variant(enum_id, variant_index, &payload_refs, ty, span)?;
         Ok(AnalysisResult::new(air_ref, ty))
     }
 
