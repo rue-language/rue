@@ -220,4 +220,5 @@ The table is generated from ADR frontmatter. Run
 | [0055](0055-typed-runtime-abi-manifest.md) | Typed compiler-runtime ABI manifest | Implemented | architecture, compiler, runtime, abi, codegen |
 | [0056](0056-typed-ir-payload-schemas.md) | Typed IR payload schemas | Implemented | architecture, compiler, ir, performance, validation |
 | [0057](0057-file-io-v0.md) | File IO v0: pure-Rue fs over @syscall with normalized FileError | Accepted | stdlib, io, syscalls, runtime, error-handling, ownership |
+| [0058](0058-canonical-semantic-artifact-algebra.md) | Canonical semantic artifact algebra | Accepted | architecture, compiler, incremental, semantics, validation |
 <!-- ADR-INDEX:END -->
