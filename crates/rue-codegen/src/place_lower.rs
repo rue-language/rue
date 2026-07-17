@@ -372,7 +372,7 @@ mod tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
-        let output = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
             .analyze_all()
             .expect("fixture should analyze");
         let build_cfg = |name: &str| {

@@ -3294,7 +3294,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
 
-        let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
+        let sema = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new());
         let output = sema.analyze_all().unwrap();
 
         let func = select(&output.functions);
@@ -3777,7 +3777,7 @@ mod tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
-        let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
+        let sema = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new());
         let err = sema
             .analyze_all()
             .expect_err("field move out of a destructor-having struct must be rejected");

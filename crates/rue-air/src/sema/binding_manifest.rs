@@ -1832,7 +1832,8 @@ mod tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
-        let bound = Sema::new(&rir, &interner, PreviewFeatures::new()).bind_declarations()?;
+        let bound =
+            Sema::new_synthetic(&rir, &interner, PreviewFeatures::new()).bind_declarations()?;
         Ok(bound.binding_manifest().clone())
     }
 
@@ -1867,7 +1868,7 @@ mod tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
-        let bound = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let bound = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();
         bound.with_declaration_semantics(|records, work| (records.to_vec(), work))
@@ -1986,7 +1987,7 @@ mod tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
-        let installed = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let installed = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
             .unwrap()
             .install_declaration_semantics(&exports)
@@ -2008,7 +2009,7 @@ mod tests {
         // ordinary resolution in another fresh epoch remains available.
         let mut mismatched = exports.clone();
         mismatched[0].identity.is_public = !mismatched[0].identity.is_public;
-        let failure = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let failure = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
             .unwrap()
             .install_declaration_semantics(&mismatched);
@@ -2016,7 +2017,7 @@ mod tests {
             panic!("mismatched durable payload unexpectedly installed")
         };
         assert_eq!(failure, DeclarationInstallFailure::VisibilityMismatch);
-        Sema::new(&rir, &interner, PreviewFeatures::new())
+        Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap()
             .analyze_all_bodies()
@@ -2058,7 +2059,7 @@ mod tests {
                 matches!(inst.data, InstData::Intrinsic { .. }).then_some(inst.span.start)
             })
             .unwrap_or_default();
-        let mut sema = Sema::new(&rir, &interner, PreviewFeatures::new());
+        let mut sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
         sema.set_root_file_id(FileId::DEFAULT);
         sema.set_file_paths(HashMap::from([
             (FileId::DEFAULT, "/main.rue".to_owned()),
@@ -2141,7 +2142,7 @@ mod tests {
             })
             .unwrap();
         rir.set_function_public(method, true).unwrap();
-        let bound = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let bound = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();
         assert!(bound.binding_manifest().bindings().iter().any(|binding| {
@@ -2187,10 +2188,10 @@ mod tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
-        let direct = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let direct = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .analyze_all()
             .unwrap();
-        let bound = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let bound = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();
         assert!(!bound.manifest_is_materialized());
@@ -2227,7 +2228,7 @@ mod tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
-        let bound = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let bound = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();
         assert!(!bound.manifest_is_materialized());
@@ -2258,7 +2259,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
 
-        let shells = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
             .unwrap();
         let prepared = shells.binding_work();
@@ -2298,7 +2299,7 @@ mod tests {
             paths: HashMap<FileId, String>,
         ) -> Vec<SemanticDeclarationShellIdentity> {
             let (rir, interner) = lower_files(files);
-            let mut sema = Sema::new(&rir, &interner, PreviewFeatures::new());
+            let mut sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
             sema.set_symbol_paths(paths);
             sema.predeclare_declaration_shells()
                 .unwrap()
@@ -2361,7 +2362,7 @@ mod tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
-        let shells = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
             .unwrap();
         let records = shells.callable_value_shells().collect::<Vec<_>>();
@@ -2392,11 +2393,11 @@ mod tests {
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
-        let direct = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let direct = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .err()
             .expect("ordinary binding must fail");
-        let split = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let split = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
             .unwrap()
             .resolve_declarations()
@@ -2415,10 +2416,10 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
 
-        let direct = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let direct = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .expect("StrBuf is not a reserved root type");
-        let split = Sema::new(&rir, &interner, PreviewFeatures::new())
+        let split = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .predeclare_declaration_shells()
             .expect("StrBuf nominal predeclaration succeeds")
             .resolve_declarations()

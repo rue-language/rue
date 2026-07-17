@@ -22,7 +22,7 @@
 
 use rue_air::{
     AirEditor, AirPattern, AirRef, AirValidationContext, AnalyzedFunction, EnumId,
-    FrozenTypeInternPool, StructDef, Type, TypeKind,
+    FrozenTypeInternPool, ParamSlotModes, StructDef, Type, TypeKind,
 };
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::Span;
@@ -246,7 +246,7 @@ fn create_struct_drop_glue_function(
             })?,
         num_locals: 0,
         num_param_slots,
-        param_modes: param_modes.into(),
+        param_modes: ParamSlotModes::new(param_modes.clone(), vec![false; param_modes.len()]),
         allow_unreachable_code: false,
     })
 }
@@ -339,7 +339,7 @@ fn create_array_drop_glue_function(
             })?,
         num_locals: 0,
         num_param_slots,
-        param_modes: param_modes.into(),
+        param_modes: ParamSlotModes::new(param_modes.clone(), vec![false; param_modes.len()]),
         allow_unreachable_code: false,
     })
 }
@@ -428,7 +428,7 @@ fn create_enum_drop_glue_function(
             })?,
         num_locals: 0,
         num_param_slots,
-        param_modes: param_modes.into(),
+        param_modes: ParamSlotModes::new(param_modes.clone(), vec![false; param_modes.len()]),
         allow_unreachable_code: false,
     })
 }

@@ -478,7 +478,7 @@ mod tests {
             const_candidates_indexed: 1,
         };
         assert_eq!(index.work(), expected_work);
-        let sema = Sema::new(&rir, &interner, PreviewFeatures::new());
+        let sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
         assert_eq!(sema.rir_declaration_index_work(), expected_work);
     }
 
@@ -583,7 +583,7 @@ mod tests {
             fn main() -> i32 { alias() }
         "#;
         let (rir, interner) = lower_files(&[(source, file_id)]);
-        let mut sema = Sema::new(&rir, &interner, PreviewFeatures::new());
+        let mut sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
         sema.set_symbol_paths(HashMap::from([(file_id, "pkg/main.rue".to_owned())]));
         let output = sema.analyze_all().unwrap();
 

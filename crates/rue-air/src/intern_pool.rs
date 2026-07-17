@@ -614,6 +614,9 @@ impl TypeInternPoolInner {
         self.symbol_paths
             .get(&file_id)
             .map(|path| mangle_symbol_component(&normalize_module_path(path)))
+            // Standalone TypeInternPool is a phase-local test/embedding API.
+            // Supported Sema construction installs complete logical paths
+            // before nominal symbols can be requested.
             .unwrap_or_else(|| file_id.index().to_string())
     }
 

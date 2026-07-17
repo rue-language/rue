@@ -69,7 +69,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
 
-        let sema = Sema::new(&rir, &mut interner, preview_features);
+        let sema = Sema::new_synthetic(&rir, &mut interner, preview_features);
         sema.analyze_all()
     }
 
@@ -142,7 +142,7 @@ mod tests {
         rir.replace_internal_intrinsic(intrinsic_ref, InternalIntrinsic::IterLen, &[])
             .unwrap();
 
-        let errors = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+        let errors = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
             .analyze_all()
             .expect_err("malformed compiler RIR must be diagnosed");
         assert!(errors.iter().any(|error| matches!(
@@ -470,7 +470,7 @@ mod tests {
                 _ => None,
             })
             .expect("main body span");
-        let output = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
             .analyze_all()
             .unwrap();
         let export = output
@@ -765,7 +765,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
 
-        let bound = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+        let bound = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();
         let binding_work = bound.binding_work();
@@ -800,7 +800,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
 
-        let bound = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+        let bound = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();
         assert_eq!(bound.binding_work().indexed_free_functions, 3);
@@ -835,7 +835,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
 
-        let bound = Sema::new(&rir, &mut interner, PreviewFeatures::new())
+        let bound = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();
         let (output, before, after) = bound.analyze_all_bodies_with_namespace_probe();
@@ -920,7 +920,7 @@ mod tests {
             modules,
             sites: imports,
         };
-        let mut sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
+        let mut sema = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new());
         sema.set_root_file_id(FileId::DEFAULT);
         sema.set_file_paths(paths);
         sema.set_canonical_imports(&view).unwrap();
@@ -2543,7 +2543,7 @@ mod tests {
         let rir = Box::leak(Box::new(rir));
         let interner = Box::leak(Box::new(interner));
 
-        let mut sema = Sema::new(rir, interner, PreviewFeatures::new());
+        let mut sema = Sema::new_synthetic(rir, interner, PreviewFeatures::new());
         sema.inject_builtin_types();
         sema.register_type_names().unwrap();
         sema.resolve_declarations().unwrap();
