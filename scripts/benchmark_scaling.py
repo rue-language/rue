@@ -62,6 +62,20 @@ def compile_once(
 
 MIN_GROWTH_SAMPLES = 3
 
+# Shared CI runners can make one collection round indeterminate through
+# scheduler noise alone (an extreme sample range or growth uncertainty that
+# crosses the budget). Those reasons are evidence problems, not proven
+# regressions, so the runner collects additional rounds of samples for the
+# implicated tiers instead of failing enforcement on the first noisy round.
+# Each tier is bounded at MAX_SAMPLE_MULTIPLIER times the base iterations;
+# evidence that is still indeterminate at the bound fails enforcement as
+# before. `at_least_three_samples_required` is deliberately excluded: it
+# reflects the caller's --iterations choice, not runner noise.
+MAX_SAMPLE_MULTIPLIER = 3
+RESAMPLE_REASONS = frozenset(
+    {"extreme_sample_range", "uncertainty_crosses_budget", "variation_reaches_zero"}
+)
+
 
 def _metric_summary(samples: list[float | int]) -> dict:
     summary = robust_summary(samples)
@@ -216,41 +230,84 @@ def derive_family(family: dict, tiers: list[dict]) -> dict:
     }
 
 
+def collect_round(state: dict, family: dict, rue_bin: Path, iterations: int, platform: str) -> None:
+    """Append one round of compile samples to a tier's raw evidence."""
+    for offset in range(iterations):
+        iteration = len(state["payloads"]) + offset
+        try:
+            payload, peak = compile_once(
+                rue_bin,
+                state["source"],
+                state["root"] / f"out-{iteration}",
+                platform,
+                family["timeout_seconds"],
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                f"scaling compile timed out after {family['timeout_seconds']}s: "
+                f"{family['name']} size {state['input_size']}"
+            ) from error
+        state["payloads"].append(payload)
+        if peak is not None and peak > 0:
+            state["peak_memory_samples_bytes"].append(peak)
+
+
+def tier_evidence(state: dict) -> dict:
+    aggregate = aggregate_iterations(state["payloads"])
+    return {
+        "input_size": state["input_size"],
+        "samples_ms": [
+            float(parse_iteration_json(payload)["total_ms"])
+            for payload in state["payloads"]
+        ],
+        "peak_memory_samples_bytes": state["peak_memory_samples_bytes"],
+        "passes": aggregate["passes"],
+        "source_metrics": aggregate["source_metrics"],
+    }
+
+
+def noisy_tier_sizes(derived: dict) -> set[int]:
+    """Return tier sizes implicated in noise-driven indeterminate evidence."""
+    sizes = set()
+    for row in derived["adjacent_growth"]:
+        for evidence in (row["latency_per_unit_growth"], row["memory_per_unit_growth"]):
+            if (
+                evidence["classification"] == "indeterminate"
+                and evidence["reason"] in RESAMPLE_REASONS
+            ):
+                sizes.update((row["from_size"], row["to_size"]))
+    return sizes
+
+
 def run_family(family: dict, rue_bin: Path, iterations: int, platform: str, work: Path) -> dict:
-    tiers = []
+    states = []
     for size in family["sizes"]:
         tier_root = work / family["name"] / str(size)
-        source = generate(family["generator"], tier_root, size)
-        payloads = []
-        memory = []
-        for iteration in range(iterations):
-            try:
-                payload, peak = compile_once(
-                    rue_bin,
-                    source,
-                    tier_root / f"out-{iteration}",
-                    platform,
-                    family["timeout_seconds"],
-                )
-            except subprocess.TimeoutExpired as error:
-                raise RuntimeError(
-                    f"scaling compile timed out after {family['timeout_seconds']}s: "
-                    f"{family['name']} size {size}"
-                ) from error
-            payloads.append(payload)
-            if peak is not None and peak > 0:
-                memory.append(peak)
-        aggregate = aggregate_iterations(payloads)
-        samples = [float(parse_iteration_json(payload)["total_ms"]) for payload in payloads]
-        tier = {
-            "input_size": size,
-            "samples_ms": samples,
-            "peak_memory_samples_bytes": memory,
-            "passes": aggregate["passes"],
-            "source_metrics": aggregate["source_metrics"],
-        }
-        tiers.append(tier)
-    return derive_family(family, tiers)
+        states.append(
+            {
+                "input_size": size,
+                "root": tier_root,
+                "source": generate(family["generator"], tier_root, size),
+                "payloads": [],
+                "peak_memory_samples_bytes": [],
+            }
+        )
+    for state in states:
+        collect_round(state, family, rue_bin, iterations, platform)
+    derived = derive_family(family, [tier_evidence(state) for state in states])
+    max_samples = iterations * MAX_SAMPLE_MULTIPLIER
+    while True:
+        eligible = [
+            state
+            for state in states
+            if state["input_size"] in noisy_tier_sizes(derived)
+            and len(state["payloads"]) + iterations <= max_samples
+        ]
+        if not eligible:
+            return derived
+        for state in eligible:
+            collect_round(state, family, rue_bin, iterations, platform)
+        derived = derive_family(family, [tier_evidence(state) for state in states])
 
 
 def budget_status(families: list[dict]) -> str:

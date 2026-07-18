@@ -988,6 +988,139 @@ class BenchmarkValidationTests(unittest.TestCase):
         )
         self.assertIn("per_tier_compile_timeout_seconds", quiet["budgets"])
 
+    def test_range_guard_trims_one_edge_outlier_per_five_samples(self):
+        # Five samples tolerate one isolated scheduler delay but not two.
+        one_outlier = [10.0] * 4 + [1000.0]
+        self.assertEqual(
+            metrics.robust_summary(one_outlier)["dispersion_classification"],
+            "robust",
+        )
+        two_outliers = [0.1] + [10.0] * 3 + [1000.0]
+        self.assertEqual(
+            metrics.robust_summary(two_outliers)["dispersion_classification"],
+            "extreme_range",
+        )
+        # A noise-driven top-up to ten samples earns a second trimmed edge, so
+        # the same two isolated outliers no longer poison the evidence.
+        topped_up = [0.1] + [10.0] * 8 + [1000.0]
+        self.assertEqual(
+            metrics.robust_summary(topped_up)["dispersion_classification"],
+            "robust",
+        )
+        # More isolated outliers than the trim allowance stay extreme: ten
+        # samples earn two trims, so a third outlier still poisons the run.
+        three_outliers = [10.0] * 7 + [1000.0, 2000.0, 3000.0]
+        self.assertEqual(
+            metrics.robust_summary(three_outliers)["dispersion_classification"],
+            "extreme_range",
+        )
+
+    def test_scaling_runner_resamples_noisy_tiers_until_evidence_is_determinate(self):
+        family = manifest_tools.scaling_families(INPUT_ROOT / "benchmarks/manifest.toml")[0]
+        centers = dict(zip(family["sizes"], (10.0, 30.0, 90.0)))
+
+        def payload(total_ms):
+            return json.dumps(
+                {
+                    "total_ms": total_ms,
+                    "passes": [{"name": family["focus_pass"], "duration_ms": total_ms}],
+                    "source_metrics": {"bytes": 8, "files": 1, "lines": 1, "tokens": 4},
+                }
+            )
+
+        def run_with_samples(sample_for_call):
+            calls = {}
+
+            def fake_compile(rue_bin, source, output, platform, timeout):
+                size = int(source.parent.name)
+                index = calls.get(size, 0)
+                calls[size] = index + 1
+                return payload(sample_for_call(size, index)), size * 1024
+
+            with tempfile.TemporaryDirectory() as temp:
+                with mock.patch.object(
+                    scaling, "generate", side_effect=lambda name, root, size: root / "main.rue"
+                ), mock.patch.object(scaling, "compile_once", side_effect=fake_compile):
+                    return scaling.run_family(family, Path("rue"), 5, "darwin", Path(temp))
+
+        # Two opposing scheduler outliers in the middle tier's first round
+        # made round one indeterminate; one top-up round of clean samples
+        # must recover determinate, in-budget evidence.
+        def transient_noise(size, index):
+            if size == family["sizes"][1] and index in (3, 4):
+                return centers[size] / 100 if index == 3 else centers[size] * 100
+            return centers[size]
+
+        recovered = run_with_samples(transient_noise)
+        self.assertEqual(recovered["classification"], "within_normalized_growth_budget")
+        self.assertEqual(scaling.budget_status([recovered]), "passed")
+        self.assertEqual(
+            [len(tier["samples_ms"]) for tier in recovered["tiers"]], [10, 10, 10]
+        )
+
+        # Persistent noise never converges; sampling must stop at
+        # MAX_SAMPLE_MULTIPLIER rounds and report indeterminate as before.
+        def persistent_noise(size, index):
+            if size == family["sizes"][1]:
+                return centers[size] * 100 if index % 2 else centers[size]
+            return centers[size]
+
+        capped = run_with_samples(persistent_noise)
+        self.assertEqual(capped["classification"], "indeterminate")
+        self.assertEqual(scaling.budget_status([capped]), "indeterminate")
+        self.assertEqual(
+            [len(tier["samples_ms"]) for tier in capped["tiers"]],
+            [5 * scaling.MAX_SAMPLE_MULTIPLIER] * 3,
+        )
+
+    def test_scaling_validation_accepts_topped_up_tiers_and_bounds_sample_counts(self):
+        manifest_path = INPUT_ROOT / "benchmarks/manifest.toml"
+        declared = manifest_tools.scaling_families(manifest_path)[0]
+
+        def build_result(middle_tier_samples):
+            result = self.valid_result()
+            counts = [5, middle_tier_samples, 5]
+            tiers = [
+                {
+                    "input_size": size,
+                    "samples_ms": [float(size)] * count,
+                    "peak_memory_samples_bytes": [size * 1024] * count,
+                    "source_metrics": {
+                        "bytes": size * 8,
+                        "files": 1,
+                        "lines": size,
+                        "tokens": size * 4,
+                    },
+                    "passes": {
+                        declared["focus_pass"]: {
+                            "mean_ms": float(size),
+                            "invocations": size,
+                            "root_invocations": 0,
+                            "leaf_invocations": size,
+                        }
+                    },
+                }
+                for size, count in zip(declared["sizes"], counts)
+            ]
+            result["scaling"]["families"][0] = scaling.derive_family(declared, tiers)
+            return result
+
+        # A tier topped up within the multiplier publishes cleanly.
+        topped_up = build_result(5 * scaling.MAX_SAMPLE_MULTIPLIER)
+        self.assertEqual(
+            validator.validate_manifest_results(topped_up, manifest_path), []
+        )
+        # Counts beyond the multiplier or below the base iterations are
+        # invalid evidence, not a bigger top-up.
+        for count in (5 * scaling.MAX_SAMPLE_MULTIPLIER + 1, 4):
+            errors = validator.validate_manifest_results(
+                build_result(count), manifest_path
+            )
+            self.assertTrue(
+                any("invalid latency samples" in error for error in errors),
+                errors,
+            )
+
     def test_scaling_cli_enforcement_rejects_failed_and_indeterminate(self):
         manifest_path = INPUT_ROOT / "benchmarks/manifest.toml"
         argv = [

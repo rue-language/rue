@@ -80,9 +80,15 @@ Scaling tiers have bounded per-compile timeouts plus adjacent-tier latency/unit
 and memory/unit budgets. A violation requires the conservative lower growth
 bound to exceed its budget; bounds crossing the budget and runs with fewer than
 three samples remain visibly indeterminate. A range guard also keeps extreme
-minority samples from becoming a false `±0` conclusion when MAD is zero.
-Both proven violations and indeterminate evidence fail enforcement and are not
-publishable. Passing a loose bound is not a claim of linear complexity.
+minority samples from becoming a false `±0` conclusion when MAD is zero: it
+trims the most isolated edge observation once per five samples before
+comparing the remaining range to the guard threshold. When noise alone makes
+evidence indeterminate (an extreme sample range or growth uncertainty crossing
+the budget), the runner collects additional rounds of samples for the
+implicated tiers, bounded at three times the base iterations per tier, before
+concluding. Both proven violations and evidence still indeterminate at that
+bound fail enforcement and are not publishable. Passing a loose bound is not a
+claim of linear complexity.
 Absolute time is shown but is not the complexity budget. The scaling section
 is separate from the static phase-probe aggregate.
 
