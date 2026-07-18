@@ -776,7 +776,7 @@ mod aarch64_seq {
                     });
                     Aarch64Inst::B { label: target }
                 }
-                7 | 8 | 9 => {
+                7..=9 => {
                     branches.push(BranchSite {
                         inst_index: emitted,
                         kind: BranchKind::BCond(cond),
