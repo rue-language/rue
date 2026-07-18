@@ -330,6 +330,12 @@ pub struct IntrinsicPlan {
     /// `None` for every other operation and gate-off, so the existing
     /// slot-shaped path is unchanged.
     pub physical_slots: Option<Vec<crate::types::PhysicalEnumSlot>>,
+    /// For a typed `@ptr_write` of a compact aggregate pointee, the byte ranges
+    /// of its memory image that hold padding (ADR-0052 ruling 5). The backend
+    /// zeros these before the field stores so the image is deterministically
+    /// initialized. Empty for every other operation, a padding-free pointee, and
+    /// gate-off, so no zeroing is emitted there.
+    pub image_padding: Vec<rue_air::layout::PaddingRange>,
 }
 
 /// Place with every dynamic index already materialized. The plan contains no
@@ -1630,6 +1636,15 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     ),
                     _ => None,
                 };
+                // A compact enum `@ptr_write` initializes the whole image, so the
+                // pointee's padding is zeroed before the field stores (ADR-0052
+                // ruling 5). Only the write needs it; the read never stores.
+                let image_padding = match operation {
+                    IntrinsicOperation::PtrWrite if physical_slots.is_some() => ctx
+                        .type_pool
+                        .compact_image_padding_ranges(ctx.cfg.get_inst(args[1]).ty),
+                    _ => Vec::new(),
+                };
                 let result = adapter.emit_intrinsic(IntrinsicPlan {
                     operation,
                     runtime_call,
@@ -1639,6 +1654,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     scale,
                     narrow_access,
                     physical_slots,
+                    image_padding,
                 });
                 cache_result(adapter, value, result);
                 Some(ValueKind::Intrinsic)

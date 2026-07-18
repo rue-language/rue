@@ -596,6 +596,12 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "cli.aggregate_layout",
+        "compact_enum_padding_is_deterministically_zeroed",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
         "cli.partial_move_depth",
         "disjoint_sibling_after_subfield_move_ok",
         semantic(SemanticGapKind::TextProjectionRead),

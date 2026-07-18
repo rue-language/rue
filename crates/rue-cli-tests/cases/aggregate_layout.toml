@@ -436,6 +436,68 @@ fn main() -> i32 {
 stdout = "7\n9\n"
 exit_code = 0
 
+# RUE-1007 (ADR-0052 phase 5.9, ruling 5): deterministic zero on construction.
+# Wherever a compact image is materialized, its padding bytes are zeroed before
+# the field stores. `Wide { A(u8, i32), B }` has a u8 tag @0, payload @4 (i32
+# alignment), a u8 field @4 and an i32 field @8, size 12 => padding [1,4) (the
+# tag-to-payload gap) and [5,8) (after the u8 field). Poisoning every byte to
+# 0xFF first, an `@ptr_write` must leave those padding bytes deterministically
+# zero, and re-poisoning then writing a different variant must leave no residue.
+[[case]]
+name = "compact_enum_padding_is_deterministically_zeroed"
+description = "An enum heap image zeros its tag-to-payload and inter-field padding on @ptr_write, with no residue across an overwrite (RUE-1007)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "--preview", "raw_bytes", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Wide { A(u8, i32), B }
+fn main() -> i32 {
+    checked {
+        let ep: ptr mut Wide = @alloc(1);
+        let addr: u64 = @ptr_to_int(ep);
+        let bp: ptr mut u8 = @int_to_ptr(addr);
+        // Poison every byte so any un-zeroed padding would be observable.
+        @byte_write(bp, 0, 255);
+        @byte_write(bp, 1, 255);
+        @byte_write(bp, 2, 255);
+        @byte_write(bp, 3, 255);
+        @byte_write(bp, 4, 255);
+        @byte_write(bp, 5, 255);
+        @byte_write(bp, 6, 255);
+        @byte_write(bp, 7, 255);
+        @ptr_write(ep, Wide.A(7, 16909060));
+        // Padding bytes must be deterministically zero.
+        if @byte_read(bp, 1) != 0 { return 1; }
+        if @byte_read(bp, 2) != 0 { return 2; }
+        if @byte_read(bp, 3) != 0 { return 3; }
+        if @byte_read(bp, 5) != 0 { return 4; }
+        if @byte_read(bp, 6) != 0 { return 5; }
+        if @byte_read(bp, 7) != 0 { return 6; }
+        // Fields survive the zeroing.
+        let a = @ptr_read(ep);
+        match a { Wide.A(b, w) => { if b != 7 { return 7; } if w != 16909060 { return 8; } }, Wide.B => { return 9; }, };
+        // Overwrite: re-poison the padding, then write a different variant. No
+        // residue of the poison (or of A) may remain in B's unused bytes.
+        @byte_write(bp, 1, 255);
+        @byte_write(bp, 2, 255);
+        @byte_write(bp, 3, 255);
+        @byte_write(bp, 5, 255);
+        @byte_write(bp, 6, 255);
+        @byte_write(bp, 7, 255);
+        @ptr_write(ep, Wide.B);
+        if @byte_read(bp, 1) != 0 { return 10; }
+        if @byte_read(bp, 2) != 0 { return 11; }
+        if @byte_read(bp, 3) != 0 { return 12; }
+        if @byte_read(bp, 5) != 0 { return 13; }
+        if @byte_read(bp, 6) != 0 { return 14; }
+        if @byte_read(bp, 7) != 0 { return 15; }
+        @free(ep, 1);
+    };
+    0
+}
+""" }]
+stdout = ""
+exit_code = 0
+
 # RUE-1000 keeps refusing enums whose compact memory image is variant-dependent:
 # A(i64) and B(i32,i32) would need overlapping union slots (the i64 field spans
 # both i32 positions), so there is no single slot->byte map. Refused loudly.

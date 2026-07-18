@@ -1039,6 +1039,93 @@ impl TypeInternPoolInner {
         }
     }
 
+    /// The byte ranges of `ty`'s compact memory image that no leaf field
+    /// occupies: interior and tail struct padding, an enum's tag-to-payload gap
+    /// and tail padding, and any gaps between an enum's union payload positions.
+    ///
+    /// These are exactly the bytes ADR-0052 ruling 5 (deterministic zero on
+    /// construction) requires cleared wherever a compact image is materialized,
+    /// and the complement of the value-decomposition slots the codegen image map
+    /// writes — so zeroing these ranges and then storing the fields
+    /// deterministically initializes every byte of the image. Empty under the
+    /// slot model (no padding exists), so a gate-off build derives no ranges and
+    /// emits no zeroing.
+    fn compact_image_padding_ranges(&self, ty: Type) -> Vec<PaddingRange> {
+        if !self.compact_layout {
+            return Vec::new();
+        }
+        let (size, _) = self.compact_size_align(ty);
+        if size == 0 {
+            return Vec::new();
+        }
+        let mut covered: Vec<(u64, u64)> = Vec::new();
+        self.collect_compact_leaf_ranges(ty, 0, &mut covered);
+        // Complement the covered leaf ranges against `[0, size)`.
+        covered.sort_by_key(|&(start, _)| start);
+        let mut ranges = Vec::new();
+        let mut cursor = 0u64;
+        for (start, end) in covered {
+            if start > cursor {
+                ranges.push(PaddingRange {
+                    start: cursor,
+                    end: start,
+                });
+            }
+            cursor = cursor.max(end);
+        }
+        if cursor < size {
+            ranges.push(PaddingRange {
+                start: cursor,
+                end: size,
+            });
+        }
+        ranges
+    }
+
+    /// Append the absolute byte ranges every leaf scalar of `ty`'s compact image
+    /// occupies (offset by `base`) to `out`. A struct recurses through its
+    /// fields; an array through its elements; an enum contributes its tag range
+    /// plus every variant's every payload-field range (their union is the
+    /// variant-independent payload image); a scalar contributes its own byte
+    /// span. The counterpart of the codegen image map, kept here so the layout
+    /// authority is the single source of which bytes are padding.
+    fn collect_compact_leaf_ranges(&self, ty: Type, base: u64, out: &mut Vec<(u64, u64)>) {
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                let layout = self.compact_struct_layout(id);
+                let fields = self.struct_def(id).fields.clone();
+                for (field, &offset) in fields.iter().zip(layout.field_offsets.iter()) {
+                    self.collect_compact_leaf_ranges(field.ty, base + offset, out);
+                }
+            }
+            TypeKind::Array(id) => {
+                let (element, count) = self.array_def(id);
+                let (stride, _) = self.compact_size_align(element);
+                for k in 0..count {
+                    self.collect_compact_leaf_ranges(element, base + k * stride, out);
+                }
+            }
+            TypeKind::Enum(id) => {
+                let layout = self.compact_enum_layout(id);
+                out.push((base, base + layout.tag_size));
+                let def = self.enum_def(id);
+                for variant in 0..def.variant_count() {
+                    let payload = def.variant_payload(variant);
+                    for (field_index, &field_ty) in payload.iter().enumerate() {
+                        let offset = layout.variants[variant][field_index];
+                        self.collect_compact_leaf_ranges(field_ty, base + offset, out);
+                    }
+                }
+            }
+            _ => {
+                let (size, _) = self.compact_size_align(ty);
+                if size > 0 {
+                    out.push((base, base + size));
+                }
+            }
+        }
+    }
+
     fn file_symbol_component(&self, file_id: FileId) -> String {
         self.symbol_paths
             .get(&file_id)
@@ -2279,6 +2366,18 @@ impl FrozenTypeInternPool {
         self.validate_complete_type(ty)
             .expect("backend layout requires a complete, non-recovery type graph");
         self.inner.layout(ty)
+    }
+
+    /// The byte ranges of `ty`'s compact memory image that hold padding rather
+    /// than a leaf field (ADR-0052 ruling 5). Code generation zeros exactly these
+    /// ranges wherever it materializes a compact image — heap enum stores, sret
+    /// buffers, and by-value argument buffers — so the padding is deterministically
+    /// zero on construction. Always empty with the compact layout off, keeping
+    /// gate-off code byte-identical.
+    pub fn compact_image_padding_ranges(&self, ty: Type) -> Vec<PaddingRange> {
+        self.validate_complete_type(ty)
+            .expect("backend layout requires a complete, non-recovery type graph");
+        self.inner.compact_image_padding_ranges(ty)
     }
 
     /// Byte offset of a struct field within its aggregate, the shared source for
@@ -4001,6 +4100,128 @@ mod tests {
         assert_eq!(frozen.struct_field_slot_offset(id, 0), 0);
         assert_eq!(frozen.struct_field_slot_offset(id, 1), 1);
         assert_eq!(frozen.struct_field_slot_offset(id, 2), 2);
+    }
+
+    #[test]
+    fn compact_image_padding_ranges_cover_struct_interior_and_tail_gaps() {
+        // Padded { a: u8, b: i32, c: u8 }: a@0, pad[1,4), b@4, c@8, tail[9,12).
+        let pool = TypeInternPool::new();
+        pool.set_compact_layout(true);
+        let interner = ThreadedRodeo::default();
+        let (id, _) = pool.register_struct(
+            interner.get_or_intern("Padded"),
+            struct_def(
+                "Padded",
+                vec![
+                    StructField {
+                        name: "a".into(),
+                        ty: Type::U8,
+                    },
+                    StructField {
+                        name: "b".into(),
+                        ty: Type::I32,
+                    },
+                    StructField {
+                        name: "c".into(),
+                        ty: Type::U8,
+                    },
+                ],
+            ),
+        );
+        let frozen = pool.freeze();
+        assert_eq!(
+            frozen.compact_image_padding_ranges(Type::new_struct(id)),
+            vec![
+                PaddingRange { start: 1, end: 4 },
+                PaddingRange { start: 9, end: 12 },
+            ]
+        );
+    }
+
+    #[test]
+    fn compact_image_padding_ranges_cover_enum_tag_gap_and_tail() {
+        // Wide { A(u8, i32), B }: u8 tag@0, payload@4 (i32 alignment). Payload
+        // packs u8@0,i32@4 => u8 abs@4, i32 abs@8; size = align_up(4+8,4) = 12.
+        // Padding: tag-to-payload [1,4) and the gap [5,8) after the u8 field.
+        let pool = TypeInternPool::new();
+        pool.set_compact_layout(true);
+        let interner = ThreadedRodeo::default();
+        let def = EnumDef {
+            name: "Wide".to_string(),
+            variants: vec!["A".to_string(), "B".to_string()],
+            variant_payloads: vec![vec![Type::U8, Type::I32], vec![]],
+            is_pub: false,
+            file_id: FileId::DEFAULT,
+        };
+        let (id, _) = pool.register_enum(interner.get_or_intern("Wide"), def);
+        let frozen = pool.freeze();
+        assert_eq!(
+            frozen.compact_image_padding_ranges(Type::new_enum(id)),
+            vec![
+                PaddingRange { start: 1, end: 4 },
+                PaddingRange { start: 5, end: 8 },
+            ]
+        );
+    }
+
+    #[test]
+    fn compact_image_padding_ranges_are_empty_without_the_gate() {
+        // The slot model has no padding, so a gate-off pool derives no ranges —
+        // the property that keeps gate-off code byte-identical.
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let (id, _) = pool.register_struct(
+            interner.get_or_intern("Padded"),
+            struct_def(
+                "Padded",
+                vec![
+                    StructField {
+                        name: "a".into(),
+                        ty: Type::U8,
+                    },
+                    StructField {
+                        name: "b".into(),
+                        ty: Type::I32,
+                    },
+                ],
+            ),
+        );
+        let frozen = pool.freeze();
+        assert!(
+            frozen
+                .compact_image_padding_ranges(Type::new_struct(id))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn compact_image_padding_ranges_empty_for_packed_all_i64_struct() {
+        // An all-eight-byte-leaf struct is slot-identical: no padding to zero.
+        let pool = TypeInternPool::new();
+        pool.set_compact_layout(true);
+        let interner = ThreadedRodeo::default();
+        let (id, _) = pool.register_struct(
+            interner.get_or_intern("Packed"),
+            struct_def(
+                "Packed",
+                vec![
+                    StructField {
+                        name: "a".into(),
+                        ty: Type::I64,
+                    },
+                    StructField {
+                        name: "b".into(),
+                        ty: Type::I64,
+                    },
+                ],
+            ),
+        );
+        let frozen = pool.freeze();
+        assert!(
+            frozen
+                .compact_image_padding_ranges(Type::new_struct(id))
+                .is_empty()
+        );
     }
 
     #[test]
