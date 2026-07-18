@@ -657,6 +657,385 @@ impl FuzzTarget for EmitterSequenceTarget {
     }
 }
 
+/// AArch64 branch/label sequence generation plus a decode oracle.
+///
+/// The fuzz target builds a valid MIR sequence with labels defined exactly once
+/// and branches (forward and backward) of every AArch64 branch form, emits it,
+/// then decodes each branch word straight out of the machine code and checks
+/// that the resolved target matches the label's known position — a structural
+/// oracle rather than just "did not panic".
+///
+/// Filler instructions are restricted to guaranteed single-word encodings, and
+/// the emitter is constructed with `num_locals`/`num_params`/callee-saved all
+/// zero, so there is no prologue and `Ret` is a bare `RET`. Every non-label
+/// instruction therefore occupies exactly four bytes, and the instruction at
+/// sequence index `n` lands at byte offset `4 * n`. `Label` markers emit no
+/// bytes, so a label preceded by `k` non-label instructions sits at byte `4 * k`.
+mod aarch64_seq {
+    use super::{aarch64_cond_from_index, aarch64_reg_from_index};
+    use rue_codegen::aarch64::{Aarch64Inst, Aarch64Mir, Cond, Operand, Reg};
+    use std::collections::HashMap;
+
+    /// The ten condition codes exercised by `BCond` (used by the deterministic
+    /// per-form regression tests).
+    #[cfg(test)]
+    pub(crate) const ALL_CONDS: [Cond; 10] = [
+        Cond::Eq,
+        Cond::Ne,
+        Cond::Lt,
+        Cond::Gt,
+        Cond::Le,
+        Cond::Ge,
+        Cond::Hi,
+        Cond::Ls,
+        Cond::Hs,
+        Cond::Lo,
+    ];
+
+    /// A branch form together with any operand needed to decode/verify it.
+    #[derive(Clone, Copy)]
+    pub(crate) enum BranchKind {
+        B,
+        BCond(Cond),
+        Bvs,
+        Bvc,
+        Cbz(Reg),
+        Cbnz(Reg),
+    }
+
+    /// A recorded branch site for the oracle.
+    pub(crate) struct BranchSite {
+        /// Index of this branch among non-label instructions (byte offset / 4).
+        pub inst_index: usize,
+        pub kind: BranchKind,
+        /// `LabelId::index()` of the target label.
+        pub target: u32,
+    }
+
+    /// A built sequence plus the metadata the oracle needs to verify it.
+    pub(crate) struct SequenceBuild {
+        pub mir: Aarch64Mir,
+        pub branches: Vec<BranchSite>,
+        /// Target label id -> its non-label instruction index.
+        pub label_index: HashMap<u32, usize>,
+    }
+
+    /// Build a valid AArch64 branch/label sequence from fuzzer bytes.
+    ///
+    /// Each label is defined exactly once: either at the point the byte stream
+    /// selects a label-definition opcode for a not-yet-defined label, or (for
+    /// any label never selected) appended once at the end. Branches may target
+    /// labels defined earlier (backward) or later (forward).
+    pub(crate) fn build_sequence(input: &[u8]) -> SequenceBuild {
+        let num_labels = (input[0] % 8) as usize + 1;
+        let mut mir = Aarch64Mir::new();
+        let labels: Vec<_> = (0..num_labels).map(|_| mir.alloc_label()).collect();
+        let mut defined = vec![false; num_labels];
+        let mut label_index: HashMap<u32, usize> = HashMap::new();
+        let mut branches: Vec<BranchSite> = Vec::new();
+        // Count of non-label instructions emitted so far == byte offset / 4.
+        let mut emitted = 0usize;
+        let mut idx = 1usize;
+
+        while idx < input.len() {
+            let opcode = input[idx] % 30;
+            idx += 1;
+            let r1 = aarch64_reg_from_index(input.get(idx).copied().unwrap_or(0));
+            idx += 1;
+            let r2 = aarch64_reg_from_index(input.get(idx).copied().unwrap_or(1));
+            idx += 1;
+            let r3 = aarch64_reg_from_index(input.get(idx).copied().unwrap_or(2));
+            idx += 1;
+            let label_idx = input.get(idx).copied().unwrap_or(0) as usize % num_labels;
+            idx += 1;
+            let cond = aarch64_cond_from_index(input.get(idx).copied().unwrap_or(0));
+            idx += 1;
+
+            let op1 = Operand::Physical(r1);
+            let op2 = Operand::Physical(r2);
+            let op3 = Operand::Physical(r3);
+
+            // Label definition: no bytes emitted, and only the first time for a
+            // given label (a repeat selection falls through to a filler below).
+            if opcode < 5 && !defined[label_idx] {
+                defined[label_idx] = true;
+                label_index.insert(labels[label_idx].index(), emitted);
+                mir.push(Aarch64Inst::Label {
+                    id: labels[label_idx],
+                });
+                continue;
+            }
+
+            let target = labels[label_idx];
+            let inst = match opcode {
+                5 | 6 => {
+                    branches.push(BranchSite {
+                        inst_index: emitted,
+                        kind: BranchKind::B,
+                        target: target.index(),
+                    });
+                    Aarch64Inst::B { label: target }
+                }
+                7 | 8 | 9 => {
+                    branches.push(BranchSite {
+                        inst_index: emitted,
+                        kind: BranchKind::BCond(cond),
+                        target: target.index(),
+                    });
+                    Aarch64Inst::BCond {
+                        cond,
+                        label: target,
+                    }
+                }
+                10 => {
+                    branches.push(BranchSite {
+                        inst_index: emitted,
+                        kind: BranchKind::Bvs,
+                        target: target.index(),
+                    });
+                    Aarch64Inst::Bvs { label: target }
+                }
+                11 => {
+                    branches.push(BranchSite {
+                        inst_index: emitted,
+                        kind: BranchKind::Bvc,
+                        target: target.index(),
+                    });
+                    Aarch64Inst::Bvc { label: target }
+                }
+                12 | 13 => {
+                    branches.push(BranchSite {
+                        inst_index: emitted,
+                        kind: BranchKind::Cbz(r1),
+                        target: target.index(),
+                    });
+                    Aarch64Inst::Cbz {
+                        src: op1,
+                        label: target,
+                    }
+                }
+                14 | 15 => {
+                    branches.push(BranchSite {
+                        inst_index: emitted,
+                        kind: BranchKind::Cbnz(r1),
+                        target: target.index(),
+                    });
+                    Aarch64Inst::Cbnz {
+                        src: op1,
+                        label: target,
+                    }
+                }
+                // Guaranteed single-word filler instructions.
+                16 => Aarch64Inst::MovRR { dst: op1, src: op2 },
+                17 => Aarch64Inst::AddRR {
+                    dst: op1,
+                    src1: op2,
+                    src2: op3,
+                },
+                18 => Aarch64Inst::SubRR {
+                    dst: op1,
+                    src1: op2,
+                    src2: op3,
+                },
+                19 => Aarch64Inst::MulRR {
+                    dst: op1,
+                    src1: op2,
+                    src2: op3,
+                },
+                20 => Aarch64Inst::AndRR {
+                    dst: op1,
+                    src1: op2,
+                    src2: op3,
+                },
+                21 => Aarch64Inst::OrrRR {
+                    dst: op1,
+                    src1: op2,
+                    src2: op3,
+                },
+                22 => Aarch64Inst::EorRR {
+                    dst: op1,
+                    src1: op2,
+                    src2: op3,
+                },
+                23 => Aarch64Inst::CmpRR {
+                    src1: op1,
+                    src2: op2,
+                },
+                24 => Aarch64Inst::TstRR {
+                    src1: op1,
+                    src2: op2,
+                },
+                25 => Aarch64Inst::MvnRR { dst: op1, src: op2 },
+                26 => Aarch64Inst::Cset { dst: op1, cond },
+                27 => Aarch64Inst::Sxtw { dst: op1, src: op2 },
+                28 => Aarch64Inst::Uxtb { dst: op1, src: op2 },
+                // opcode 29, plus repeat label-definition selections, land here.
+                _ => Aarch64Inst::Brk,
+            };
+            mir.push(inst);
+            emitted += 1;
+        }
+
+        // Define any never-selected labels exactly once at the end. They all
+        // share the current `emitted` offset (labels emit no bytes).
+        for (i, placed) in defined.iter().enumerate() {
+            if !placed {
+                label_index.insert(labels[i].index(), emitted);
+                mir.push(Aarch64Inst::Label { id: labels[i] });
+            }
+        }
+        // Single-word return (no frame), so it does not disturb byte offsets.
+        mir.push(Aarch64Inst::Ret);
+
+        SequenceBuild {
+            mir,
+            branches,
+            label_index,
+        }
+    }
+
+    fn word_at(code: &[u8], byte: usize) -> u32 {
+        u32::from_le_bytes(code[byte..byte + 4].try_into().unwrap())
+    }
+
+    /// Sign-extend the low `bits` bits of `value` to `i64`.
+    fn sign_extend(value: u32, bits: u32) -> i64 {
+        let shift = 64 - bits;
+        ((value as i64) << shift) >> shift
+    }
+
+    /// Resolve the byte target of a `B` word (imm26) emitted at `site_byte`.
+    pub(crate) fn decode_b_target(word: u32, site_byte: usize) -> i64 {
+        let imm = sign_extend(word & 0x03FF_FFFF, 26);
+        site_byte as i64 + imm * 4
+    }
+
+    /// Resolve the byte target of a conditional-form word — B.cond / B.vs /
+    /// B.vc / CBZ / CBNZ (imm19) — emitted at `site_byte`.
+    pub(crate) fn decode_cond_target(word: u32, site_byte: usize) -> i64 {
+        let imm = sign_extend((word >> 5) & 0x7_FFFF, 19);
+        site_byte as i64 + imm * 4
+    }
+
+    /// Verify every recorded branch resolves to its label's byte offset and
+    /// that the opcode / condition / register fields round-trip. Panics with a
+    /// descriptive message on any mismatch (the harness treats panics as
+    /// findings).
+    pub(crate) fn validate(build: &SequenceBuild, code: &[u8]) {
+        for site in &build.branches {
+            let site_byte = site.inst_index * 4;
+            let target_index = build.label_index[&site.target];
+            let target_byte = (target_index * 4) as i64;
+            assert!(
+                site_byte + 4 <= code.len(),
+                "branch site byte {site_byte} beyond {}-byte code",
+                code.len()
+            );
+            let word = word_at(code, site_byte);
+            match site.kind {
+                BranchKind::B => {
+                    assert_eq!(
+                        word & 0xFC00_0000,
+                        0x1400_0000,
+                        "expected B opcode at byte {site_byte}, got {word:#010x}"
+                    );
+                    let decoded = decode_b_target(word, site_byte);
+                    assert_eq!(
+                        decoded, target_byte,
+                        "B at {site_byte}: decoded target {decoded} != label offset {target_byte}"
+                    );
+                }
+                BranchKind::BCond(_) | BranchKind::Bvs | BranchKind::Bvc => {
+                    assert_eq!(
+                        (word >> 24) & 0xFF,
+                        0x54,
+                        "expected B.cond opcode at byte {site_byte}, got {word:#010x}"
+                    );
+                    assert_eq!(word & 0x10, 0, "B.cond bit 4 must be 0 at byte {site_byte}");
+                    let decoded = decode_cond_target(word, site_byte);
+                    assert_eq!(
+                        decoded, target_byte,
+                        "B.cond at {site_byte}: decoded target {decoded} != label offset {target_byte}"
+                    );
+                    let expected_cond: u32 = match site.kind {
+                        BranchKind::BCond(c) => c.encoding() as u32,
+                        BranchKind::Bvs => 6,
+                        BranchKind::Bvc => 7,
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(
+                        word & 0xF,
+                        expected_cond,
+                        "condition nibble mismatch at byte {site_byte}"
+                    );
+                }
+                BranchKind::Cbz(rt) | BranchKind::Cbnz(rt) => {
+                    let is_nz = matches!(site.kind, BranchKind::Cbnz(_));
+                    let expected_top: u32 = if is_nz { 0xB5 } else { 0xB4 };
+                    assert_eq!(
+                        (word >> 24) & 0xFF,
+                        expected_top,
+                        "expected CBZ/CBNZ opcode at byte {site_byte}, got {word:#010x}"
+                    );
+                    let decoded = decode_cond_target(word, site_byte);
+                    assert_eq!(
+                        decoded, target_byte,
+                        "CBZ/CBNZ at {site_byte}: decoded target {decoded} != label offset {target_byte}"
+                    );
+                    assert_eq!(
+                        word & 0x1F,
+                        rt.encoding() as u32,
+                        "CBZ/CBNZ register mismatch at byte {site_byte}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Fuzz target for AArch64 instruction sequences with labels and branches.
+///
+/// Unlike `emitter_aarch64` (independent ALU/memory/return instructions), this
+/// exercises label definitions, every branch form (`B`, `BCond` with all
+/// conditions, `Bvs`, `Bvc`, `Cbz`, `Cbnz`), and the fixup machinery — with a
+/// decode oracle that checks each resolved branch target. Both the ordinary
+/// `emit()` path and the assembly-recording `emit_all()` path (which runs
+/// `synchronize_emitted_bytes`) are exercised and required to agree.
+pub struct EmitterSequenceAarch64Target;
+
+impl FuzzTarget for EmitterSequenceAarch64Target {
+    fn name(&self) -> &'static str {
+        "emitter_sequence_aarch64"
+    }
+
+    fn fuzz(&self, input: &[u8]) {
+        if input.len() < 2 {
+            return;
+        }
+        let build = aarch64_seq::build_sequence(input);
+
+        let emitter = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[]);
+        let (code, _relocations) = match emitter.emit() {
+            Ok(result) => result,
+            // A graceful ICE (e.g. an out-of-range displacement) is a normal
+            // Err, not a finding; these bounded sequences stay within range.
+            Err(_) => return,
+        };
+
+        aarch64_seq::validate(&build, &code);
+
+        // The assembly-recording path must produce identical final bytes.
+        let recording = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[]);
+        if let Ok(emitted) = recording.emit_all() {
+            assert_eq!(
+                emitted.to_bytes(),
+                code,
+                "emit_all() final bytes must equal emit() bytes"
+            );
+        }
+    }
+}
+
 /// Get all available fuzz targets.
 pub fn all_targets() -> Vec<Box<dyn FuzzTarget>> {
     vec![
@@ -668,6 +1047,7 @@ pub fn all_targets() -> Vec<Box<dyn FuzzTarget>> {
         Box::new(EmitterTarget),
         Box::new(EmitterAarch64Target),
         Box::new(EmitterSequenceTarget),
+        Box::new(EmitterSequenceAarch64Target),
     ]
 }
 
@@ -682,6 +1062,7 @@ pub fn get_target(name: &str) -> Option<Box<dyn FuzzTarget>> {
         "emitter" => Some(Box::new(EmitterTarget)),
         "emitter_aarch64" => Some(Box::new(EmitterAarch64Target)),
         "emitter_sequence" => Some(Box::new(EmitterSequenceTarget)),
+        "emitter_sequence_aarch64" => Some(Box::new(EmitterSequenceAarch64Target)),
         _ => None,
     }
 }
@@ -807,10 +1188,205 @@ mod tests {
         target.fuzz(&[2, 20, 1, 0, 25, 2, 0, 0, 1, 2]);
     }
 
+    // ===== AArch64 branch/label sequence target =====
+
+    use super::aarch64_seq::{self, BranchKind, BranchSite, SequenceBuild};
+    use rue_codegen::aarch64::Cond as A64Cond;
+    use std::collections::HashMap;
+
+    /// Build a forward branch of `kind` whose target label is `disp`
+    /// instructions ahead: the branch at index 0, `disp - 1` `Brk` fillers, then
+    /// the label at index `disp`.
+    fn build_forward_branch(kind: BranchKind, disp: usize) -> SequenceBuild {
+        let mut mir = Aarch64Mir::new();
+        let label = mir.alloc_label();
+        let branch = match kind {
+            BranchKind::B => Aarch64Inst::B { label },
+            BranchKind::BCond(c) => Aarch64Inst::BCond { cond: c, label },
+            BranchKind::Bvs => Aarch64Inst::Bvs { label },
+            BranchKind::Bvc => Aarch64Inst::Bvc { label },
+            BranchKind::Cbz(rt) => Aarch64Inst::Cbz {
+                src: Aarch64Operand::Physical(rt),
+                label,
+            },
+            BranchKind::Cbnz(rt) => Aarch64Inst::Cbnz {
+                src: Aarch64Operand::Physical(rt),
+                label,
+            },
+        };
+        let branches = vec![BranchSite {
+            inst_index: 0,
+            kind,
+            target: label.index(),
+        }];
+        mir.push(branch);
+        for _ in 0..disp.saturating_sub(1) {
+            mir.push(Aarch64Inst::Brk);
+        }
+        let mut label_index = HashMap::new();
+        label_index.insert(label.index(), disp);
+        mir.push(Aarch64Inst::Label { id: label });
+        mir.push(Aarch64Inst::Ret);
+        SequenceBuild {
+            mir,
+            branches,
+            label_index,
+        }
+    }
+
+    /// Build a backward branch of `kind` whose target label is `disp`
+    /// instructions behind: the label at index 0, `disp` `Brk` fillers, then the
+    /// branch at index `disp`.
+    fn build_backward_branch(kind: BranchKind, disp: usize) -> SequenceBuild {
+        let mut mir = Aarch64Mir::new();
+        let label = mir.alloc_label();
+        let mut label_index = HashMap::new();
+        label_index.insert(label.index(), 0);
+        mir.push(Aarch64Inst::Label { id: label });
+        for _ in 0..disp {
+            mir.push(Aarch64Inst::Brk);
+        }
+        let branch = match kind {
+            BranchKind::B => Aarch64Inst::B { label },
+            BranchKind::BCond(c) => Aarch64Inst::BCond { cond: c, label },
+            BranchKind::Bvs => Aarch64Inst::Bvs { label },
+            BranchKind::Bvc => Aarch64Inst::Bvc { label },
+            BranchKind::Cbz(rt) => Aarch64Inst::Cbz {
+                src: Aarch64Operand::Physical(rt),
+                label,
+            },
+            BranchKind::Cbnz(rt) => Aarch64Inst::Cbnz {
+                src: Aarch64Operand::Physical(rt),
+                label,
+            },
+        };
+        let branches = vec![BranchSite {
+            inst_index: disp,
+            kind,
+            target: label.index(),
+        }];
+        mir.push(branch);
+        mir.push(Aarch64Inst::Ret);
+        SequenceBuild {
+            mir,
+            branches,
+            label_index,
+        }
+    }
+
+    /// Emit via `emit()`, run the decode oracle, and require `emit_all()` to
+    /// produce identical bytes. Returns the emitted code.
+    fn emit_and_validate(build: &SequenceBuild) -> Vec<u8> {
+        let (code, _) = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[])
+            .emit()
+            .expect("in-range sequence should emit");
+        aarch64_seq::validate(build, &code);
+        let recorded = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[])
+            .emit_all()
+            .expect("in-range sequence should emit_all");
+        assert_eq!(
+            recorded.to_bytes(),
+            code,
+            "emit_all() bytes must equal emit() bytes"
+        );
+        code
+    }
+
+    fn emit_is_err(build: &SequenceBuild) -> bool {
+        Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[])
+            .emit()
+            .is_err()
+    }
+
+    #[test]
+    fn emitter_sequence_aarch64_forward_and_backward_each_form() {
+        let mut kinds = vec![
+            BranchKind::B,
+            BranchKind::Bvs,
+            BranchKind::Bvc,
+            BranchKind::Cbz(Aarch64Reg::X3),
+            BranchKind::Cbnz(Aarch64Reg::X7),
+        ];
+        // BCond with all ten condition codes.
+        for c in aarch64_seq::ALL_CONDS {
+            kinds.push(BranchKind::BCond(c));
+        }
+        for kind in kinds {
+            for disp in [1usize, 4, 9] {
+                emit_and_validate(&build_forward_branch(kind, disp));
+                emit_and_validate(&build_backward_branch(kind, disp));
+            }
+        }
+    }
+
+    #[test]
+    fn emitter_sequence_aarch64_cond_branch_imm19_boundaries() {
+        // imm19 is a signed instruction count: -2^18 ..= 2^18 - 1.
+        let max_forward = (1usize << 18) - 1; // +262143
+        let max_backward = 1usize << 18; // displacement -262144
+
+        // Exact legal boundaries encode and decode correctly.
+        emit_and_validate(&build_forward_branch(
+            BranchKind::Cbz(Aarch64Reg::X0),
+            max_forward,
+        ));
+        emit_and_validate(&build_forward_branch(
+            BranchKind::BCond(A64Cond::Eq),
+            max_forward,
+        ));
+        emit_and_validate(&build_backward_branch(
+            BranchKind::Cbz(Aarch64Reg::X0),
+            max_backward,
+        ));
+        emit_and_validate(&build_backward_branch(
+            BranchKind::BCond(A64Cond::Ne),
+            max_backward,
+        ));
+
+        // One instruction past each boundary is a graceful ICE Err, not a panic.
+        assert!(emit_is_err(&build_forward_branch(
+            BranchKind::Cbz(Aarch64Reg::X0),
+            max_forward + 1
+        )));
+        assert!(emit_is_err(&build_backward_branch(
+            BranchKind::BCond(A64Cond::Ne),
+            max_backward + 1
+        )));
+    }
+
+    #[test]
+    fn emitter_sequence_aarch64_b_imm26_beyond_imm19() {
+        // A displacement far past the imm19 range (a conditional branch here
+        // would ICE) still fits B's imm26 and decodes to the right target. We
+        // cover the largest practical displacement rather than the full +-2^25
+        // imm26 boundary, which would need ~134 MB of code and slow the suite.
+        let disp = 300_000usize;
+        emit_and_validate(&build_forward_branch(BranchKind::B, disp));
+        emit_and_validate(&build_backward_branch(BranchKind::B, disp));
+    }
+
+    #[test]
+    fn test_emitter_sequence_aarch64_target_valid() {
+        let target = EmitterSequenceAarch64Target;
+        // A deterministic seed driving many opcodes (labels, every branch form,
+        // and fillers) through the full build + oracle + emit_all path.
+        let seed: Vec<u8> = (0u8..120).collect();
+        target.fuzz(&seed);
+    }
+
+    #[test]
+    fn test_emitter_sequence_aarch64_target_tiny_and_empty() {
+        let target = EmitterSequenceAarch64Target;
+        target.fuzz(&[]);
+        target.fuzz(&[0]);
+        target.fuzz(&[1, 2]);
+        target.fuzz(&[7, 5, 0, 0, 0, 0, 0]);
+    }
+
     #[test]
     fn test_all_targets() {
         let targets = all_targets();
-        assert_eq!(targets.len(), 8);
+        assert_eq!(targets.len(), 9);
     }
 
     #[test]
@@ -823,6 +1399,7 @@ mod tests {
         assert!(get_target("emitter").is_some());
         assert!(get_target("emitter_aarch64").is_some());
         assert!(get_target("emitter_sequence").is_some());
+        assert!(get_target("emitter_sequence_aarch64").is_some());
         assert!(get_target("invalid").is_none());
     }
 }
@@ -950,6 +1527,14 @@ mod proptest_tests {
             let target = EmitterSequenceTarget;
             target.fuzz(&bytes);
         }
+
+        /// The AArch64 emitter sequence target should handle arbitrary bytes
+        /// without panicking and with its decode oracle satisfied.
+        #[test]
+        fn emitter_sequence_aarch64_handles_arbitrary_bytes(bytes in prop::collection::vec(any::<u8>(), 2..256)) {
+            let target = EmitterSequenceAarch64Target;
+            target.fuzz(&bytes);
+        }
     }
 }
 
@@ -1043,6 +1628,16 @@ mod codegen_proptest_tests {
         /// The AArch64 emitter should never panic on generated physical MIR.
         #[test]
         fn emitter_aarch64_never_panics_on_mir(mir in codegen_generators::arb_aarch64_mir(20)) {
+            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let _ = emitter.emit();
+        }
+
+        /// The AArch64 emitter should never panic on generated branch/label
+        /// control-flow MIR (labels defined once, forward and backward edges).
+        #[test]
+        fn emitter_aarch64_sequence_never_panics_on_mir(
+            mir in codegen_generators::arb_aarch64_branch_mir(20, 3)
+        ) {
             let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]);
             let _ = emitter.emit();
         }

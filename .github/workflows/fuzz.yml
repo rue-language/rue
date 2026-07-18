@@ -112,6 +112,12 @@ jobs:
         timeout-minutes: 10
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter_sequence crates/rue-fuzz/corpus
 
+      - name: Fuzz aarch64 emitter sequences (5 minutes)
+        id: fuzz-emitter-sequence-aarch64
+        continue-on-error: true
+        timeout-minutes: 10
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter_sequence_aarch64 crates/rue-fuzz/corpus
+
       # Differential fuzzing: generate valid programs and cross-check the
       # rue-oracle reference interpreter against the compiled native binary
       # (RUE-247). Any exit-code / stdout disagreement is an automatically-found
@@ -145,6 +151,7 @@ jobs:
           steps.fuzz-emitter.outcome == 'failure' ||
           steps.fuzz-emitter-aarch64.outcome == 'failure' ||
           steps.fuzz-emitter-sequence.outcome == 'failure' ||
+          steps.fuzz-emitter-sequence-aarch64.outcome == 'failure' ||
           steps.fuzz-differential.outcome == 'failure'
         run: |
           echo "One or more fuzz targets found crashes (see step outcomes above)."
@@ -163,6 +170,7 @@ jobs:
               ['emitter', '${{ steps.fuzz-emitter.outcome }}'],
               ['emitter_aarch64', '${{ steps.fuzz-emitter-aarch64.outcome }}'],
               ['emitter_sequence', '${{ steps.fuzz-emitter-sequence.outcome }}'],
+              ['emitter_sequence_aarch64', '${{ steps.fuzz-emitter-sequence-aarch64.outcome }}'],
               ['differential', '${{ steps.fuzz-differential.outcome }}'],
             ].filter(([, o]) => o === 'failure').map(([n]) => n);
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
