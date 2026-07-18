@@ -19,7 +19,7 @@ method_list = method_def { method_def } ;
 method_def = [ directives ] "fn" IDENT "(" [ method_params ] ")" [ "->" type ] block ;
 method_params = method_param { "," method_param } [ "," ] ;
 method_param = receiver | ( [ "inout" | "borrow" ] IDENT ":" type ) ;
-receiver = [ "inout" | "borrow" ] "self" ;
+receiver = [ "inout" | "borrow" | "mut" ] "self" ;
 ```
 
 ## Method Definition
@@ -247,7 +247,9 @@ A receiver **MAY** be declared `borrow self` or `inout self`, mirroring the
 (copied if the struct is `Copy`, otherwise moved). A `borrow self` receiver
 grants read-only access to the receiver without taking ownership. An `inout
 self` receiver grants exclusive mutable access without taking ownership, and
-mutations to `self` are observed by the caller after the call returns.
+mutations to `self` are observed by the caller after the call returns. A
+by-value receiver **MAY** additionally be declared `mut self`, making the
+binding mutable within the method body (6.4:35).
 
 {{ rule(id="6.4:25", cat="normative") }}
 
@@ -308,5 +310,46 @@ fn main() -> i32 {
     let a = c.get();   // borrow does not consume `c`
     c.bump();
     a + c.get()        // 2 + 3 = 5
+}
+```
+
+## Mutable By-Value Receivers
+
+{{ rule(id="6.4:35", cat="normative") }}
+
+A by-value receiver **MAY** be declared `mut self`. The receiver is still
+passed by value exactly as a bare `self` receiver is — copied if the struct is
+`Copy`, otherwise moved — but the binding is mutable within the method body,
+like a `let mut` local (5.1:5): the body **MAY** assign to `self`, its fields,
+and its elements, and **MAY** call `inout self` methods on it. Mutations
+affect only the method's own value; they are never observed by the caller
+(caller write-back is `inout self`, 6.4:24). `mut` is not part of the method's
+signature: call sites are unaffected, and the caller's receiver expression is
+subject to the same rules as for a bare `self` receiver.
+
+{{ rule(id="6.4:36", cat="legality-rule") }}
+
+Assigning to `self`, a field of `self`, or an element of `self`, or calling an
+`inout self` method on `self`, inside a method whose receiver is a bare
+(non-`mut`, non-`inout`) `self` is a compile-time error. The `mut` modifier is
+only valid on a by-value receiver: `mut` cannot be combined with `borrow`
+(which grants no mutable access) or `inout` (which is already mutable).
+
+{{ rule(id="6.4:37", cat="example") }}
+
+```rue
+struct Counter {
+    n: i32,
+
+    // Consumes the receiver, mutates its own copy, returns the result.
+    fn finish(mut self, bonus: i32) -> i32 {
+        self.n = self.n + bonus;
+        self.n
+    }
+}
+
+fn main() -> i32 {
+    let c = Counter { n: 40 };
+    c.finish(2)   // 42; `c` was moved into the call
 }
 ```

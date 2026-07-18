@@ -330,7 +330,11 @@ impl<'a> BodySema<'a> {
                         base_type: param_info.ty,
                         projections: Vec::new(),
                         root_var: *name,
-                        is_root_mutable: matches!(param_info.mode, RirParamMode::Inout),
+                        // `inout` names mutable caller storage; a `mut self`
+                        // receiver is a mutable by-value binding (callee copy
+                        // only).
+                        is_root_mutable: matches!(param_info.mode, RirParamMode::Inout)
+                            || param_info.is_mut,
                         is_borrow_param: matches!(param_info.mode, RirParamMode::Borrow),
                     }));
                 }
@@ -1050,7 +1054,12 @@ impl<'a> BodySema<'a> {
     ///
     /// Negative integers are sign-extended into the u64 payload (two's
     /// complement), matching how comptime-block results are emitted.
-    fn materialize_const_value(value: ConstValue, ty: Type) -> (AirInstData, Type) {
+    fn materialize_const_value(
+        &mut self,
+        ctx: &mut AnalysisContext,
+        value: ConstValue,
+        ty: Type,
+    ) -> (AirInstData, Type) {
         match value {
             ConstValue::Integer(v) => (AirInstData::Const(v as u64), ty),
             ConstValue::Bool(b) => (AirInstData::BoolConst(b), Type::BOOL),
@@ -1059,6 +1068,15 @@ impl<'a> BodySema<'a> {
                 "function-valued constants are callable aliases and must not be materialized"
             ),
             ConstValue::Type(t) => (AirInstData::TypeConst(t), Type::COMPTIME_TYPE),
+            // A string constant materializes exactly like an inline string
+            // literal: its content joins the function's local string table
+            // and lowers to a `.rodata`-backed value of the declared type
+            // (always `str`, so the 2-word `{ptr, len}` shape; RUE-957).
+            ConstValue::String(content) => {
+                let content = self.interner.resolve(&content).to_string();
+                let local_id = ctx.add_local_string(content);
+                (AirInstData::StringConst(local_id), ty)
+            }
         }
     }
 
@@ -1304,6 +1322,16 @@ impl<'a> BodySema<'a> {
                         span,
                     ));
                 }
+                // No comptime parameter has a string type, so a captured
+                // string value never occurs (RUE-957).
+                ConstValue::String(_) => {
+                    return Err(CompileError::new(
+                        ErrorKind::ConstExprNotSupported {
+                            expr_kind: "a captured string value".to_string(),
+                        },
+                        span,
+                    ));
+                }
                 ConstValue::Unit => {
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::Const(0),
@@ -1363,7 +1391,7 @@ impl<'a> BodySema<'a> {
                     span,
                 ));
             }
-            let (data, ty) = Self::materialize_const_value(const_info.value, const_info.ty);
+            let (data, ty) = self.materialize_const_value(ctx, const_info.value, const_info.ty);
             let air_ref = air.add_inst(AirInst { data, ty, span });
             return Ok(AnalysisResult::new(air_ref, ty));
         }
@@ -1399,6 +1427,32 @@ impl<'a> BodySema<'a> {
     }
 
     /// Analyze an assignment.
+    /// E0203 for a write through an immutable by-value parameter, with a
+    /// receiver-aware hint: a method's `self` should be declared `mut self`
+    /// (callee-local) or `inout self` (write-back), while an ordinary
+    /// parameter's only mutable form is `inout`.
+    pub(crate) fn immutable_param_assign_error(
+        &self,
+        name_str: &str,
+        ty: Type,
+        span: Span,
+    ) -> CompileError {
+        let error = CompileError::new(ErrorKind::AssignToImmutable(name_str.to_string()), span);
+        if name_str == "self" {
+            error.with_help(
+                "consider declaring the receiver mutable: `mut self` (mutates the callee's copy \
+                 only), or `inout self` to write back to the caller",
+            )
+        } else {
+            error.with_help(format!(
+                "consider making parameter `{}` inout: `inout {}: {}`",
+                name_str,
+                name_str,
+                ty.safe_name_with_pool(Some(&self.type_pool))
+            ))
+        }
+    }
+
     fn analyze_assign(
         &mut self,
         air: &mut Air,
@@ -1428,19 +1482,19 @@ impl<'a> BodySema<'a> {
         // against the immutable parameter with a bogus "make it inout" hint.
         if !ctx.locals.contains_key(&name) {
             if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
-                // Check parameter mode - only inout can be assigned to
+                // Check parameter mode - inout params and `mut self` (a
+                // mutable by-value receiver binding) can be assigned to
                 match param_info.mode {
+                    RirParamMode::Normal if param_info.is_mut => {
+                        // `mut self`: assignment mutates the callee's copy
+                        // only; there is no write-back to the caller.
+                    }
                     RirParamMode::Normal => {
-                        return Err(CompileError::new(
-                            ErrorKind::AssignToImmutable(name_str.to_string()),
+                        return Err(self.immutable_param_assign_error(
+                            name_str,
+                            param_info.ty,
                             span,
-                        )
-                        .with_help(format!(
-                            "consider making parameter `{}` inout: `inout {}: {}`",
-                            name_str,
-                            name_str,
-                            param_info.ty.safe_name_with_pool(Some(&self.type_pool))
-                        )));
+                        ));
                     }
                     RirParamMode::Inout => {
                         // Inout parameters can be assigned to
@@ -2154,7 +2208,8 @@ impl<'a> BodySema<'a> {
                     // Member access is a use of the binding (`let m =
                     // @import(..); m.ANSWER` must not warn about `m`).
                     ctx.used_locals.insert(*name);
-                    return self.analyze_module_type_member_access(air, module_id, field, span);
+                    return self
+                        .analyze_module_type_member_access(air, module_id, field, span, ctx);
                 }
             }
         }
@@ -2387,7 +2442,7 @@ impl<'a> BodySema<'a> {
 
         // Handle module member access that wasn't caught above
         if let Some(module_id) = base_type.as_module() {
-            return self.analyze_module_type_member_access(air, module_id, field, span);
+            return self.analyze_module_type_member_access(air, module_id, field, span, ctx);
         }
 
         let struct_id = match base_type.as_struct() {
@@ -2518,6 +2573,7 @@ impl<'a> BodySema<'a> {
         module_id: crate::types::ModuleId,
         member_name: Spur,
         span: Span,
+        ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let member_name_str = self.interner.resolve(&member_name).to_string();
 
@@ -2689,7 +2745,7 @@ impl<'a> BodySema<'a> {
             // A value const (e.g. `pub const ANSWER = ...`) accessed as a
             // module member: materialize the value that was evaluated at
             // declaration time, typed as declared (RUE-160).
-            let (data, ty) = Self::materialize_const_value(const_info.value, const_info.ty);
+            let (data, ty) = self.materialize_const_value(ctx, const_info.value, const_info.ty);
             let air_ref = air.add_inst(AirInst { data, ty, span });
             return Ok(AnalysisResult::new(air_ref, ty));
         }

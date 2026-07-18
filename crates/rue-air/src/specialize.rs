@@ -153,6 +153,11 @@ impl Specializer {
                         crate::SemanticImportConstValue::Function(sema.function_identity(*value)?)
                     }
                     ConstValue::Unit => crate::SemanticImportConstValue::Unit,
+                    // Comptime parameters have no string type (RUE-957);
+                    // export the content faithfully regardless.
+                    ConstValue::String(content) => crate::SemanticImportConstValue::String(
+                        std::sync::Arc::from(sema.interner.resolve(content)),
+                    ),
                 })
             })
             .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
@@ -641,6 +646,10 @@ fn mangle_const_value(value: &ConstValue) -> String {
         ConstValue::Unit => "vunit".to_string(),
         ConstValue::Type(ty) => format!("v{}", mangle_type(*ty)),
         ConstValue::Function(name) => format!("vfn{}", name.into_usize()),
+        // Comptime parameters have no string type, so strings never appear
+        // in a specialization key (RUE-957). The interner index still gives
+        // a unique, symbol-safe fragment should that ever change.
+        ConstValue::String(content) => format!("vstr{}", content.into_usize()),
     }
 }
 
@@ -801,6 +810,8 @@ fn create_specialized_function(
         base_info.body,
         &type_subst,
         &value_subst,
+        // Specialization covers free functions; they have no receiver.
+        false,
     );
     sema.body_dependency_observer = previous_body_observer;
     sema.declaration_type_observer = previous_type_observer;

@@ -268,3 +268,40 @@ fn main() -> i32 { 0 }
 """ }]
 compile_fail = true
 error_contains = ["E0434", "not supported in const context"]
+
+# String constants (RUE-957): a top-level `const DIR: str = "..."` was E0434
+# ("string literals is not supported in const context"); the workaround was a
+# function returning the literal. Pin the runtime behavior end-to-end,
+# including the printed bytes and cross-file member access.
+[[case]]
+name = "string_const_prints_and_measures"
+files = [{ path = "main.rue", source = """
+const DIR: str = "/tmp/rue-out";
+const BANNER: str = "rue says hi";
+
+fn main() -> i32 {
+    println(BANNER);
+    println(DIR);
+    @intCast(DIR.len())
+}
+""" }]
+exit_code = 12
+stdout = "rue says hi\n/tmp/rue-out\n"
+
+[[case]]
+name = "string_const_cross_module"
+files = [
+  { path = "main.rue", source = """
+const util = @import("util.rue");
+
+fn main() -> i32 {
+    println(util.NAME);
+    @intCast(util.NAME.len())
+}
+""" },
+  { path = "util.rue", source = """
+pub const NAME: str = "rue-util";
+""" },
+]
+exit_code = 8
+stdout = "rue-util\n"

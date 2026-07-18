@@ -1281,11 +1281,25 @@ impl<'a> CfgLower<'a> {
                 if value_shape.slot_count() == 0 {
                     return ValueResult::SideEffect;
                 }
-                let ptr = self.ensure_by_ref_param_ptr(param_slot);
-                if value.slots.is_empty() {
-                    self.emit_store_ptr_base(value.primary, ptr);
+                if self.ctx.cfg.is_param_by_ref(param_slot) {
+                    let ptr = self.ensure_by_ref_param_ptr(param_slot);
+                    if value.slots.is_empty() {
+                        self.emit_store_ptr_base(value.primary, ptr);
+                    } else {
+                        crate::agg_slots::store_slots_through_ptr(self, &value.slots, ptr, 0);
+                    }
                 } else {
-                    crate::agg_slots::store_slots_through_ptr(self, &value.slots, ptr, 0);
+                    // By-value slot (a `mut self` receiver): the param area
+                    // itself holds the value, so write the slots directly —
+                    // there is no pointer to chase and no caller write-back.
+                    // Mirrors the projection-free by-value Param arm of
+                    // `place_lower::lower_place_write_plan`.
+                    let vals = if value.slots.is_empty() {
+                        vec![value.primary]
+                    } else {
+                        value.slots
+                    };
+                    crate::agg_slots::store_slots(self, &vals, self.ctx.num_locals + param_slot);
                 }
                 return ValueResult::SideEffect;
             }

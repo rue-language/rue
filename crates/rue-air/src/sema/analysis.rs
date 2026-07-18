@@ -315,6 +315,11 @@ pub(crate) fn import_staged_body(
                             crate::sema::ConstValue::Function(resolve_body_function(sema, value)?)
                         }
                         crate::SemanticImportConstValue::Unit => crate::sema::ConstValue::Unit,
+                        crate::SemanticImportConstValue::String(content) => {
+                            crate::sema::ConstValue::String(
+                                sema.interner.get_or_intern(content.as_ref()),
+                            )
+                        }
                     })
                 })
                 .collect::<Result<Vec<_>, BF>>()?;
@@ -1475,6 +1480,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                         method_info.struct_type,
                         &captured_values,
                         &enclosing_type_subst,
+                        method_info.self_is_mut,
                     )
                 };
 
@@ -1560,6 +1566,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 body,
                 has_self,
                 self_mode,
+                self_is_mut,
                 ..
             } = &method_inst.data
             else {
@@ -1570,6 +1577,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
             debug_assert_eq!(method_inst.span, method_info.span);
             debug_assert_eq!(*has_self, method_info.has_self);
             debug_assert_eq!(*self_mode, method_info.self_mode);
+            debug_assert_eq!(*self_is_mut, method_info.self_is_mut);
 
             let params = sema.rir.params(params);
             let full_name = sema.method_symbol(struct_id, &method_name_str, *has_self);
@@ -1735,6 +1743,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 method_info.struct_type,
                 *has_self,
                 *self_mode,
+                *self_is_mut,
             );
             sema.declaration_type_observer = previous_type_observer;
             sema.body_dependency_observer = previous_body_observer;

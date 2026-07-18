@@ -218,6 +218,12 @@ pub struct Method {
 pub struct SelfParam {
     /// Receiver passing mode (`Normal` by-value, `Borrow`, or `Inout`).
     pub mode: ParamMode,
+    /// Whether the receiver is declared `mut self`: the by-value receiver
+    /// binds mutably in the method body, like `let mut`. Mutations affect
+    /// only the callee's copy — there is no write-back to the caller (that
+    /// is `inout self`). Only valid with `mode == Normal`; the parser never
+    /// produces `is_mut` together with `Borrow`/`Inout`.
+    pub is_mut: bool,
     /// Span covering the `self` keyword (and any leading mode keyword).
     pub span: Span,
 }

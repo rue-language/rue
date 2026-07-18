@@ -600,7 +600,8 @@ impl<'a> BodySema<'a> {
     /// Whether a method receiver rooted at `root` binds a mutable place, for
     /// the `inout self` mut-binding requirement (RUE-15). A `let mut` local is
     /// mutable; an `inout` parameter is mutable (it already names mutable
-    /// caller storage); everything else (`let`, `borrow` params) is not.
+    /// caller storage); a `mut self` receiver is a mutable by-value binding;
+    /// everything else (`let`, plain params, `borrow` params) is not.
     /// Mirrors `PlaceTrace::is_root_mutable`.
     pub(super) fn receiver_root_is_mutable(&self, root: Spur, ctx: &AnalysisContext) -> bool {
         // Locals shadow parameters (RUE-278): a `let mut` rebinding a param
@@ -609,7 +610,7 @@ impl<'a> BodySema<'a> {
             return local.is_mut;
         }
         if let Some(param) = ctx.params.iter().find(|p| p.name == root) {
-            return param.mode == RirParamMode::Inout;
+            return param.mode == RirParamMode::Inout || param.is_mut;
         }
         false
     }

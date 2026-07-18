@@ -171,6 +171,10 @@ pub enum SemanticImportConstValue<K, M> {
     Type(SemanticImportType<K, M>),
     Function(K),
     Unit,
+    /// String constant content (RUE-957). Carried as the literal text —
+    /// interner symbols are process-local and cannot cross the import
+    /// boundary.
+    String(std::sync::Arc<str>),
 }
 
 macro_rules! semantic_import_const_schema {
@@ -181,6 +185,7 @@ macro_rules! semantic_import_const_schema {
             Type, SemanticImportConstValue::Type(..), 2, "type";
             Function, SemanticImportConstValue::Function(..), 3, "function";
             Unit, SemanticImportConstValue::Unit, 4, "unit";
+            String, SemanticImportConstValue::String(..), 5, "string";
         }
     };
 }
@@ -319,6 +324,7 @@ impl<K, M> SemanticImportConstValue<K, M> {
             }
             Self::Function(value) => SemanticImportConstValue::Function(key(value)?),
             Self::Unit => SemanticImportConstValue::Unit,
+            Self::String(value) => SemanticImportConstValue::String(value.clone()),
         })
     }
 }
@@ -1166,6 +1172,12 @@ where
                     .ok_or(SemanticImportFailure::MissingFunction)?,
             ),
             SemanticImportConstValue::Unit => ConstValue::Unit,
+            // The epoch owns an isolated interner, so the content round-trips
+            // through it for validation; durable const payloads are never
+            // installed into a live Sema (install fails closed on consts).
+            SemanticImportConstValue::String(content) => {
+                ConstValue::String(self.interner.get_or_intern(content.as_ref()))
+            }
         })
     }
 
@@ -1284,6 +1296,9 @@ where
                     .ok_or(SemanticImportFailure::ForeignLocalValue)?,
             ),
             ConstValue::Unit => SemanticImportConstValue::Unit,
+            ConstValue::String(content) => {
+                SemanticImportConstValue::String(Arc::from(self.interner.resolve(&content)))
+            }
         })
     }
 

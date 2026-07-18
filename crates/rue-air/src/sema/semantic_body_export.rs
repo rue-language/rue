@@ -66,6 +66,12 @@ impl BodySema<'_> {
                         SemanticImportConstValue::Function(self.function_identity(*value)?)
                     }
                     super::ConstValue::Unit => SemanticImportConstValue::Unit,
+                    // Comptime parameters have no string type, so a string
+                    // specialization argument never occurs (RUE-957); export
+                    // the content faithfully regardless.
+                    super::ConstValue::String(content) => SemanticImportConstValue::String(
+                        std::sync::Arc::from(self.interner.resolve(content)),
+                    ),
                 })
             })
             .collect::<Result<Vec<_>, F>>()?;

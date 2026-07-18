@@ -31,6 +31,7 @@ struct PrimitiveTypeSpurs {
     u64: Spur,
     bool: Spur,
     self_type: Spur,
+    self_value: Spur,
     type_kw: Spur,
     as_kw: Spur,
     underscore: Spur,
@@ -53,6 +54,7 @@ impl PrimitiveTypeSpurs {
             u64: interner.get_or_intern("u64"),
             bool: interner.get_or_intern("bool"),
             self_type: interner.get_or_intern("Self"),
+            self_value: interner.get_or_intern("self"),
             type_kw: interner.get_or_intern("type"),
             as_kw: interner.get_or_intern("as"),
             drop_kw: interner.get_or_intern("drop"),
@@ -534,6 +536,7 @@ impl Parser {
             type_name,
             self_param: SelfParam {
                 mode: ParamMode::Normal,
+                is_mut: false,
                 span: self_tok.span,
             },
             body,
@@ -865,17 +868,24 @@ impl Parser {
         let mut params = Vec::new();
         if !self.at(TokenKind::RParen) {
             let checkpoint = self.cursor;
-            let mode = if self.eat(TokenKind::Inout) {
-                ParamMode::Inout
+            // Receiver modifiers are mutually exclusive: `inout self`,
+            // `borrow self`, or `mut self` (a by-value receiver that binds
+            // mutably in the body). If `self` doesn't follow, the cursor is
+            // reset and the tokens re-parse as an ordinary parameter list.
+            let (mode, is_mut) = if self.eat(TokenKind::Inout) {
+                (ParamMode::Inout, false)
             } else if self.eat(TokenKind::Borrow) {
-                ParamMode::Borrow
+                (ParamMode::Borrow, false)
+            } else if self.eat(TokenKind::Mut) {
+                (ParamMode::Normal, true)
             } else {
-                ParamMode::Normal
+                (ParamMode::Normal, false)
             };
             if self.at(TokenKind::SelfValue) {
                 let tok = self.bump();
                 receiver = Some(SelfParam {
                     mode,
+                    is_mut,
                     span: Span::with_file(
                         self.file_id,
                         self.tokens[checkpoint].span.start,
@@ -941,6 +951,7 @@ impl Parser {
             },
             receiver: Some(SelfParam {
                 mode: ParamMode::Normal,
+                is_mut: false,
                 span: tok.span,
             }),
             params: Vec::new(),
@@ -2008,7 +2019,7 @@ impl Parser {
                 self.expr()?
             };
             if self.eat(TokenKind::Eq) {
-                let target = expr_to_target(value).ok_or_else(|| {
+                let target = expr_to_target(value, self.syms.self_value).ok_or_else(|| {
                     self.error("invalid assignment target");
                 })?;
                 let rhs = Box::new(self.expr()?);
@@ -2296,11 +2307,17 @@ fn binary_binding(kind: TokenKind) -> Option<(u8, u8, BinaryOp)> {
     Some((p, p + 1, op))
 }
 
-fn expr_to_target(expr: Expr) -> Option<AssignTarget> {
+fn expr_to_target(expr: Expr, self_value: Spur) -> Option<AssignTarget> {
     match expr {
         Expr::Ident(id) => Some(AssignTarget::Var(id)),
         Expr::Field(field) => Some(AssignTarget::Field(field)),
         Expr::Index(index) => Some(AssignTarget::Index(index)),
+        // `self = value` targets the receiver binding; sema enforces that
+        // only a `mut self` (or shadowing `let mut`) receiver is assignable.
+        Expr::SelfExpr(se) => Some(AssignTarget::Var(Ident {
+            name: self_value,
+            span: se.span,
+        })),
         _ => None,
     }
 }

@@ -24,10 +24,14 @@ forms are: literals (4.14:26); the arithmetic, comparison, logical, bitwise,
 and shift operators applied to comptime-evaluable operands (4.14:27);
 `comptime` block expressions (4.14:2, 4.14:27); references to other constants
 (4.14:26); and module expressions (`@import(...)` and module member access —
-chapter 10, 6.5:10). A reference to a function item is comptime-evaluable only
-for the purpose of forming a callable alias (6.5:15). An initializer outside
-this set is a compile-time error (E0434) — the same diagnostic 4.14:29 names
-for a `const` initializer that is not comptime-evaluable.
+chapter 10, 6.5:10). Additionally, a string literal is a valid constant
+initializer (6.5:16) even though it is not in the general comptime-evaluable
+set: string values exist in constant-initializer position only, not in
+`comptime` blocks or `comptime` argument positions. A reference to a function
+item is comptime-evaluable only for the purpose of forming a callable alias
+(6.5:15). An initializer outside this set is a compile-time error (E0434) —
+the same diagnostic 4.14:29 names for a `const` initializer that is not
+comptime-evaluable.
 
 {{ rule(id="6.5:3", cat="example") }}
 
@@ -113,11 +117,40 @@ const OK: i32 = 2147483647;          // in range: fine
 {{ rule(id="6.5:14", cat="informative") }}
 
 In the current revision the compile-time-evaluable expression forms (6.5:2)
-produce only scalar values — integers and `bool` — so a value constant's type
-is in practice a scalar type. There is no const-evaluable form that yields a
-struct or an array: an aggregate initializer such as a struct literal or an
-array literal is not compile-time evaluable and is rejected (E0434). Constants
-of aggregate type may be revisited in a future revision.
+produce scalar values — integers and `bool` — plus string values from string
+literals (6.5:16), so a value constant's type is in practice a scalar type or
+`str`. There is no const-evaluable form that yields a user struct or an
+array: an aggregate initializer such as a struct literal or an array literal
+is not compile-time evaluable and is rejected (E0434). Constants of aggregate
+type may be revisited in a future revision.
+
+## String Constants
+
+{{ rule(id="6.5:16", cat="normative") }}
+
+A string-literal initializer declares a *string constant*. A string constant
+is always of type `str` — the static, copyable string view (3.7) — and its
+annotation **MUST** be `str` (the owning `StrBuf` and fixed `Str(N)`
+representations are runtime-only and do not match, 6.5:5). Like every value
+constant, a string constant requires a type annotation (6.5:4). A use of a
+string constant materializes the same value the string literal itself would
+denote at that site: string constants participate in `str` operations,
+`println`, and reads exactly like inline literals. A constant initialized
+from another string constant (`const B: str = A;`) denotes the same value.
+String values remain outside `comptime` blocks and `comptime` argument
+positions (6.5:2).
+
+{{ rule(id="6.5:17", cat="example") }}
+
+```rue
+const GREETING: str = "hello";
+const ALIAS: str = GREETING;
+
+fn main() -> i32 {
+    println(GREETING);
+    @intCast(GREETING.len() + ALIAS.len())   // 10
+}
+```
 
 ## Evaluation Order
 

@@ -43,7 +43,7 @@ struct_def     = directives [ "pub" ] [ "linear" ]
 struct_fields  = struct_field { "," struct_field } [ "," ] ;
 struct_field   = IDENT ":" type ;
 method         = directives "fn" IDENT
-                 "(" [ [ "inout" | "borrow" ] "self" [ "," params ] | params ] ")"
+                 "(" [ [ "inout" | "borrow" | "mut" ] "self" [ "," params ] | params ] ")"
                  [ "->" type ] "{" block "}" ;
 
 (* Enums *)

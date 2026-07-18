@@ -1127,6 +1127,7 @@ impl RirEditor {
         body: InstRef,
         has_self: bool,
         self_mode: RirParamMode,
+        self_is_mut: bool,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
@@ -1143,6 +1144,7 @@ impl RirEditor {
                     body,
                     has_self,
                     self_mode,
+                    self_is_mut,
                 },
                 span,
             }))
@@ -3528,6 +3530,12 @@ pub enum InstData {
         /// by-value, `Borrow`, or `Inout`; RUE-15). Always `Normal` for
         /// associated functions and free functions.
         self_mode: RirParamMode,
+        /// Whether the receiver is declared `mut self`: a by-value receiver
+        /// that binds mutably in the method body. Body-local only — it does
+        /// not affect the method's signature, call sites, or structural
+        /// identity, and is always false unless `has_self` is true with
+        /// `self_mode == Normal`.
+        self_is_mut: bool,
     },
 
     /// Constant declaration
@@ -4260,6 +4268,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     body,
                     has_self,
                     self_mode,
+                    self_is_mut,
                 } => {
                     let pub_str = if *is_pub { "pub " } else { "" };
                     let unchecked_str = if *is_unchecked { "unchecked " } else { "" };
@@ -4269,6 +4278,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         match self_mode {
                             RirParamMode::Inout => "inout self, ",
                             RirParamMode::Borrow => "borrow self, ",
+                            RirParamMode::Normal if *self_is_mut => "mut self, ",
                             RirParamMode::Normal => "self, ",
                         }
                     } else {

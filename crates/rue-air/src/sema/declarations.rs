@@ -1553,6 +1553,7 @@ impl<'a> Sema<'a> {
                 body,
                 has_self,
                 self_mode,
+                self_is_mut,
                 ..
             } = &method_inst.data
             {
@@ -1612,6 +1613,7 @@ impl<'a> Sema<'a> {
                         struct_type,
                         has_self: *has_self,
                         self_mode: *self_mode,
+                        self_is_mut: *self_is_mut,
                         params: param_range,
                         return_type: ret_type,
                         body: *body,
@@ -1981,14 +1983,10 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            // String constants would need the String type; not supported in
-            // const context yet.
-            InstData::StringConst(_) => Err(CompileError::new(
-                ErrorKind::ConstExprNotSupported {
-                    expr_kind: "string literals".to_string(),
-                },
-                span,
-            )),
+            // A string literal is directly a constant value (RUE-957). It is
+            // stored as the interned content; use sites materialize it like
+            // an inline literal (local string table -> `.rodata` `str`).
+            InstData::StringConst(content) => Ok(ConstInit::Value(ConstValue::String(*content))),
 
             // Everything else: literals, arithmetic, comptime blocks, ... —
             // evaluated by the comptime engine.
@@ -2868,6 +2866,10 @@ impl<'a> Sema<'a> {
             }
             ConstValue::Bool(_) => Type::BOOL,
             ConstValue::Unit => Type::UNIT,
+            // A string constant is always the static view type `str`; the
+            // owning (`StrBuf`) and fixed (`Str(N)`) representations stay
+            // runtime-only (RUE-957).
+            ConstValue::String(_) => self.get_or_create_str_struct(span)?,
             ConstValue::Function(_) | ConstValue::Type(_) => Type::COMPTIME_TYPE,
         };
 
