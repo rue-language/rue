@@ -223,4 +223,5 @@ The table is generated from ADR frontmatter. Run
 | [0058](0058-canonical-semantic-artifact-algebra.md) | Canonical semantic artifact algebra | Accepted | architecture, compiler, incremental, semantics, validation |
 | [0059](0059-byte-oriented-memory-intrinsics.md) | Byte-oriented memory intrinsics: unify the two low-level families | Accepted | intrinsics, memory, pointers, allocator, bytes, semantics, stdlib, abi |
 | [0060](0060-network-io-v1.md) | Network IO v1: blocking IPv4 TCP in pure Rue | Accepted | stdlib, io, networking, tcp, syscalls, error-handling, ownership |
+| [0061](0061-supported-compiler-facade.md) | Supported compiler facade and immutable artifact views | Accepted | architecture, compiler, tooling, api, incremental |
 <!-- ADR-INDEX:END -->
