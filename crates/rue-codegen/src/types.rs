@@ -331,18 +331,20 @@ fn scalar_physical_access(ty: Type) -> Option<(u8, bool)> {
     }
 }
 
-/// One internal value-decomposition slot of a compact enum mapped onto its
-/// physical byte position (ADR-0052 phase 5.6, RUE-1000).
+/// One internal value-decomposition slot of a compact aggregate mapped onto its
+/// physical byte position (ADR-0052 phase 5.6/5.7, RUE-1000/RUE-1004).
 ///
-/// The discriminant slot maps to the narrow tag at offset 0; every payload slot
-/// maps to a payload-union field position at its compact byte offset, accessed
-/// narrow ([`Some`]) or full-slot ([`None`], an eight-byte leaf). Both backends
-/// consume this to marshal a whole compact enum value across a typed pointer:
-/// stores truncate each slot to its physical width, loads extend back into the
-/// slot-shaped vreg.
+/// For an enum the discriminant slot maps to the narrow tag at offset 0 and every
+/// payload slot to a payload-union field position; for a struct each slot maps to
+/// a flattened scalar field at its compact byte offset. Each is accessed narrow
+/// ([`Some`]) or full-slot ([`None`], an eight-byte leaf). Both backends consume
+/// this to marshal a whole compact aggregate value across a typed pointer: stores
+/// truncate each slot to its physical width, loads extend back into the
+/// slot-shaped vreg. (The `Enum` in the name is historical; the map now serves
+/// every aggregate with a variant-independent compact image.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalEnumSlot {
-    /// Byte offset of this slot within the compact enum.
+    /// Byte offset of this slot within the compact aggregate.
     pub byte_offset: i32,
     /// Narrow (1/2/4-byte) access, or `None` for a full eight-byte slot.
     pub access: Option<NarrowScalar>,
@@ -470,6 +472,94 @@ pub(crate) fn enum_physical_slot_map(
     Some(slots)
 }
 
+/// The internal-slot → physical-byte map for whole-aggregate memory marshalling
+/// at a call boundary under the compact layout (ADR-0052 phase 5.7, RUE-1004),
+/// or `None` when the aggregate has no variant-independent compact memory image
+/// and must stay refused.
+///
+/// This is the single authority the call-boundary marshalling consults so the
+/// caller-side compact image write, the callee-side unmarshalling, and the
+/// sret/return image agree by construction. It flattens the aggregate to its
+/// internal value-decomposition slots in the same order
+/// [`aggregate_leaf_types`]/[`require_aggregate_slots`] use, giving each slot its
+/// compact byte offset from the canonical layout authority:
+///
+/// - **struct**: each field is placed at its layout byte offset and recursively
+///   flattened; a scalar field is one slot, a nested struct/enum contributes its
+///   own sub-map shifted by the field offset;
+/// - **enum**: delegated to [`enum_physical_slot_map`] (the variant-independent
+///   tag+payload image);
+/// - **array**: `None` — a fixed array's compact stride differs from the slot
+///   stride and array call marshalling is not implemented (kept refused);
+/// - **scalar / unit**: a single slot (or none), for the recursive cases.
+///
+/// Returns `None` (stay refused) for any aggregate containing a construct without
+/// a variant-independent image (an array, or an enum [`enum_physical_slot_map`]
+/// rejects), and asserts the flattened slot count equals the type's
+/// [`type_slot_count`]. Always `None` with the gate off.
+pub(crate) fn aggregate_physical_slot_map(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+) -> Option<Vec<PhysicalEnumSlot>> {
+    if !type_pool.compact_layout() {
+        return None;
+    }
+    let mut slots = Vec::new();
+    push_physical_slots(type_pool, ty, 0, &mut slots)?;
+    if slots.len() != type_pool.abi_slot_count(ty) as usize {
+        return None;
+    }
+    Some(slots)
+}
+
+/// Append the compact physical slots of `ty` (each offset by `base_offset`) to
+/// `out`, in internal value-decomposition slot order. Returns `None` when any
+/// leaf lacks a variant-independent compact image (see
+/// [`aggregate_physical_slot_map`]).
+fn push_physical_slots(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+    base_offset: i32,
+    out: &mut Vec<PhysicalEnumSlot>,
+) -> Option<()> {
+    use rue_air::layout::LayoutKind;
+    match ty.kind() {
+        TypeKind::Unit | TypeKind::Never => Some(()),
+        TypeKind::Struct(struct_id) => {
+            let layout = type_pool.layout(ty);
+            let LayoutKind::Struct { field_offsets, .. } = &layout.kind else {
+                return None;
+            };
+            let def = type_pool.struct_def(struct_id);
+            for (index, field) in def.fields.iter().enumerate() {
+                let field_offset = i32::try_from(*field_offsets.get(index)?).ok()?;
+                push_physical_slots(type_pool, field.ty, base_offset + field_offset, out)?;
+            }
+            Some(())
+        }
+        TypeKind::Enum(_) => {
+            for slot in enum_physical_slot_map(type_pool, ty)? {
+                out.push(PhysicalEnumSlot {
+                    byte_offset: base_offset + slot.byte_offset,
+                    access: slot.access,
+                });
+            }
+            Some(())
+        }
+        // A fixed array's compact stride differs from the slot stride; array call
+        // marshalling is not implemented, so the whole aggregate stays refused.
+        TypeKind::Array(_) => None,
+        _ => {
+            let (width, signed) = scalar_physical_access(ty)?;
+            out.push(PhysicalEnumSlot {
+                byte_offset: base_offset,
+                access: (width != 8).then_some(NarrowScalar { width, signed }),
+            });
+            Some(())
+        }
+    }
+}
+
 /// The pointee of a pointer type, or the type itself when it is not a pointer.
 fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
     match ty.kind() {
@@ -543,6 +633,16 @@ pub(crate) fn compact_physical_access_unsupported(
         ) && !is_slot_identical_layout(type_pool, ty)
     };
 
+    // A non-slot-identical aggregate crossing a CALL boundary (return via sret,
+    // by-value argument, or by-reference parameter) that has NO variant-
+    // independent compact memory image, so the call marshalling cannot build or
+    // consume one (RUE-1004). Aggregates WITH an image are marshalled through a
+    // caller-owned compact buffer and are allowed; arrays and enums without an
+    // image stay refused.
+    let call_boundary_unsupported = |ty: Type| -> bool {
+        unimplemented_aggregate(ty) && aggregate_physical_slot_map(type_pool, ty).is_none()
+    };
+
     // A non-slot-identical aggregate whose whole-value marshalling THROUGH A
     // TYPED POINTER (memory) is unimplemented. RUE-1000 implements compact enum
     // memory for enums with a variant-independent slot→byte image (see
@@ -556,9 +656,10 @@ pub(crate) fn compact_physical_access_unsupported(
         }
     };
 
-    // Returned aggregates are written to the caller's sret buffer in physical
-    // memory (RUE-976's transitional indirect rule; unimplemented).
-    if unimplemented_aggregate(cfg.return_type()) {
+    // A returned aggregate is written to the caller's sret buffer as its compact
+    // memory image (RUE-1004); refused only when it has no variant-independent
+    // image (an array, or an enum without one).
+    if call_boundary_unsupported(cfg.return_type()) {
         return Some(cfg.return_type());
     }
 
@@ -597,17 +698,38 @@ pub(crate) fn compact_physical_access_unsupported(
             // slot-based frame; whole-aggregate compact access is unimplemented.
             // A by-reference narrow scalar reads/writes its eight-byte slot
             // through the pointer and is correct, so scalars are allowed.
+            // A by-reference (`inout`/`borrow`) aggregate parameter is a pointer
+            // into the caller's slot-based frame storage (RUE-975 keeps a struct
+            // frame value slot-shaped, and a pointer to a compact heap aggregate
+            // cannot exist under the gate — see the pointer check above), so its
+            // whole-value access through the pointer is the existing slot-shaped
+            // by-ref path and is physically correct. Allowed for aggregates with a
+            // variant-independent compact image (RUE-1004); arrays and imageless
+            // enums stay refused.
             CfgInstData::Param { index } => {
-                if cfg.is_param_by_ref(*index) && unimplemented_aggregate(inst.ty) {
+                if cfg.is_param_by_ref(*index) && call_boundary_unsupported(inst.ty) {
                     return Some(inst.ty);
                 }
             }
-            // A non-slot-identical aggregate passed by value crosses the call
-            // boundary indirectly (RUE-976); that marshalling is unimplemented.
+            // An aggregate crossing a call boundary. A by-reference (`inout` /
+            // `borrow`) argument uses the same slot-shaped by-ref transport as a
+            // by-ref parameter and is allowed with a compact image (RUE-1004). A
+            // by-value non-slot-identical aggregate still crosses indirectly by the
+            // classifier (RUE-976); its caller-owned compact-buffer marshalling is
+            // not implemented, because the callee-side parameter ABI would have to
+            // consume one incoming pointer for a value the CFG still models as N
+            // decomposition slots, and per-source-parameter types are not plumbed
+            // to code generation to recompute that mapping. Refused loudly.
             CfgInstData::Call { .. } => {
                 for arg in cfg.get_call_args(&inst.data) {
                     let arg_ty = cfg.get_inst(arg.value).ty;
-                    if unimplemented_aggregate(arg_ty) {
+                    let unsupported = match arg.mode {
+                        rue_cfg::CfgArgMode::Inout | rue_cfg::CfgArgMode::Borrow => {
+                            call_boundary_unsupported(arg_ty)
+                        }
+                        rue_cfg::CfgArgMode::Normal => unimplemented_aggregate(arg_ty),
+                    };
+                    if unsupported {
                         return Some(arg_ty);
                     }
                 }
@@ -657,10 +779,12 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
             rue_error::ErrorKind::InternalCodegenError(format!(
                 "aggregate_layout: physical-layout code generation for type `{name}` (in function \
                  `{}`) is not yet implemented. Narrow scalar access through typed pointers \
-                 (RUE-989) and compact enum memory for enums with a variant-independent memory \
-                 image (RUE-1000) are lowered, but whole struct/array marshalling through \
-                 pointers, aggregates crossing call boundaries, and enums without a \
-                 variant-independent memory image are still staged for a follow-up.",
+                 (RUE-989), compact enum memory for enums with a variant-independent memory image \
+                 (RUE-1000), and call-boundary marshalling of a compact aggregate through its \
+                 memory image — sret returns and `inout`/`borrow` parameters (RUE-1004) — are \
+                 lowered, but whole struct/array marshalling through arbitrary pointers, a compact \
+                 aggregate passed BY VALUE across a call, arrays crossing a call, and enums \
+                 without a variant-independent memory image are still staged for a follow-up.",
                 cfg.fn_name()
             )),
         ));
