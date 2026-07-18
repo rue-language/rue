@@ -12,6 +12,7 @@
 //! - [`builtins`] - Built-in type injection (String, etc.)
 //! - [`typeck`] - Type resolution and checking helpers
 //! - [`analysis`] - Function analysis, type inference coordination, and RIR-to-AIR lowering
+//! - [`control_flow`] - Branch, loop, match, try, return, and block analysis
 //! - [`info`] - Function, method, and constant info types
 //! - [`gather`] - Declaration gathering output
 //! - [`output`] - Semantic analysis output types
@@ -32,6 +33,7 @@ mod binding_manifest;
 mod builtins;
 mod comptime_eval;
 mod context;
+mod control_flow;
 mod declaration_index;
 mod declarations;
 mod file_paths;

@@ -104,7 +104,11 @@ mod tests {
         include_str!("analysis/ownership.rs"),
         include_str!("analysis/anon_methods.rs"),
         include_str!("analysis/pointers.rs"),
+        include_str!("control_flow.rs"),
     );
+
+    const ANALYZE_OPS_SOURCE: &str = include_str!("analyze_ops.rs");
+    const CONTROL_FLOW_SOURCE: &str = include_str!("control_flow.rs");
 
     /// Extract InstData variant names from source code.
     ///
@@ -263,5 +267,33 @@ mod tests {
         assert!(variants.contains("Sub"));
         assert!(variants.contains("Call"));
         assert_eq!(variants.len(), 4);
+    }
+
+    #[test]
+    fn control_flow_analysis_has_one_cohesive_owner() {
+        for method in [
+            "analyze_control_flow",
+            "analyze_branch",
+            "analyze_while_loop",
+            "analyze_infinite_loop",
+            "analyze_match",
+            "analyze_try",
+            "analyze_return",
+            "analyze_block",
+            "resolve_pattern_enum",
+        ] {
+            let definition = format!("fn {method}(");
+            assert!(
+                CONTROL_FLOW_SOURCE.contains(&definition),
+                "control_flow.rs must own {method}"
+            );
+            assert!(
+                !ANALYZE_OPS_SOURCE.contains(&definition),
+                "analyze_ops.rs must not retain {method}"
+            );
+        }
+
+        assert!(CONTROL_FLOW_SOURCE.contains("impl<'a> BodySema<'a>"));
+        assert!(!CONTROL_FLOW_SOURCE.contains("struct BodySema"));
     }
 }
