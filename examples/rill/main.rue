@@ -42,32 +42,17 @@ const vm = @import("vm.rue");
 const StrBuf = std.strbuf.StrBuf;
 const Bytes = std.arraybuf.ArrayBuf(u8);
 const OptStr = std.option.Option(StrBuf);
-const OptU8 = std.option.Option(u8);
 const OptBytes = std.option.Option(Bytes);
 const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
 const ReadRes = std.result.Result(u64, std.fs.FileError);
 
 fn bytes_of(borrow text: StrBuf) -> Bytes {
-    let mut bytes = Bytes.new();
-    let mut i: u64 = 0;
-    while i < text.len() {
-        match text.byte_at(i) {
-            OptU8.Some(b) => { bytes.push(b); },
-            OptU8.None => {},
-        }
-        i = i + 1;
-    }
-    bytes
+    text.to_bytes()
 }
 
 fn copy_bytes(borrow source: Bytes) -> Bytes {
-    let mut copy = Bytes.new();
-    copy.reserve(source.len());
-    let mut i: u64 = 0;
-    while i < source.len() {
-        copy.push(source.get_or(i, 0));
-        i = i + 1;
-    }
+    let mut copy = Bytes.with_capacity(source.len());
+    copy.extend_from(borrow source);
     copy
 }
 

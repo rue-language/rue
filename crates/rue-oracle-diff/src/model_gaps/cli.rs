@@ -941,6 +941,24 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "cli.std_byte_bridges",
+        "all_three_representations_round_trip_without_consuming_sources",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_byte_bridges",
+        "byte_range_bridges_reject_out_of_bounds_ranges",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_byte_bridges",
+        "empty_bridges_and_spare_capacity_are_preserved",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
         "cli.std_m3",
         "std_rand_m3",
         semantic(SemanticGapKind::InoutParameterForwarding),

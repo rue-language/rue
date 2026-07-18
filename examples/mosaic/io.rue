@@ -31,10 +31,7 @@ pub fn read_text(borrow path: StrBuf) -> std.option.Option(StrBuf) {
     let O = std.option.Option(StrBuf);
     match read_bytes(borrow path) {
         OptBytes.Some(bytes) => {
-            let mut out = StrBuf.new();
-            let mut i: u64 = 0;
-            while i < bytes.len() { out.push(bytes.get_or(i, 0)); i = i + 1; }
-            O.Some(out)
+            O.Some(StrBuf.from_bytes(borrow bytes))
         },
         OptBytes.None => O.None,
     }
@@ -45,7 +42,7 @@ pub fn write_text(borrow path: StrBuf, borrow value: StrBuf) -> bool {
         FileRes.Ok(f) => f,
         FileRes.Err(e) => { return false; },
     };
-    let bytes = text.bytes_of(borrow value);
+    let bytes = value.to_bytes();
     let ok = match file.write_all(borrow bytes) {
         WriteRes.Ok(unit) => true,
         WriteRes.Err(e) => false,

@@ -1,0 +1,105 @@
+# Ownership-safe bulk bridges between core `str`, std `StrBuf`, and
+# `ArrayBuf(u8)` (RUE-955). These are exercised through the real std bundle so
+# the test covers source-defined implementations rather than compiler magic.
+
+[section]
+id = "cli.std_byte_bridges"
+name = "Standard byte-string bridges"
+description = "Borrowed copying conversions and bulk append operations connect str, StrBuf, and ArrayBuf(u8)."
+
+[[case]]
+name = "all_three_representations_round_trip_without_consuming_sources"
+description = "Typed str values, owned strings, and byte buffers copy and append in both directions while their sources remain usable."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const LABEL: str = "café";
+
+fn main() -> i32 {
+    let label: str = LABEL;
+    let text = S.from_str(borrow label);
+    if text != "café" || LABEL.len() != 5 { return 1; }
+
+    let bytes = text.to_bytes();
+    if bytes.len() != 5 || bytes.get_or(3, 0) != 195 || bytes.get_or(4, 0) != 169 { return 2; }
+    if text != "café" { return 3; }
+
+    let copied_back = S.from_bytes(borrow bytes);
+    if copied_back != text || bytes.len() != 5 { return 4; }
+
+    let mut combined: S = "[";
+    combined.append_borrowed(borrow text);
+    combined.append_str(borrow label);
+    combined.append_bytes(borrow bytes);
+    combined.push_str("]");
+    if combined != "[cafécafécafé]" { return 5; }
+    if text != "café" || bytes.len() != 5 { return 6; }
+
+    let direct = Bytes.from_str(borrow label);
+    let x: str = "x";
+    let mut extended = Bytes.from_str(borrow x);
+    extended.extend_from(borrow direct);
+    extended.extend_str(borrow label);
+    if extended.len() != 11 { return 7; }
+    if extended.get_or(0, 0) != 120 || extended.get_or(1, 0) != 99 { return 8; }
+    if direct.len() != 5 || direct.get_or(4, 0) != 169 { return 9; }
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+
+[[case]]
+name = "byte_range_bridges_reject_out_of_bounds_ranges"
+description = "The checked ArrayBuf(u8)-to-StrBuf range bridge traps before reading beyond the borrowed source."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+fn main() -> i32 {
+    let view: str = "abc";
+    let bytes = Bytes.from_str(borrow view);
+    let impossible = S.from_byte_range(borrow bytes, 2, 2);
+    @intCast(impossible.len())
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["index out of bounds"]
+
+[[case]]
+name = "empty_bridges_and_spare_capacity_are_preserved"
+description = "Empty copies are valid and appending into pre-reserved destinations does not shrink or replace their capacity contract."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+fn main() -> i32 {
+    let empty_view: str = "";
+    let empty_text = S.from_str(borrow empty_view);
+    let empty_bytes = Bytes.from_str(borrow empty_view);
+    if !empty_text.is_empty() || !empty_bytes.is_empty() { return 1; }
+
+    let mut text = S.with_capacity(64);
+    let cap = text.capacity();
+    text.append_bytes(borrow empty_bytes);
+    text.append_str(borrow empty_view);
+    text.append_borrowed(borrow empty_text);
+    if !text.is_empty() || text.capacity() != cap { return 2; }
+
+    let mut bytes = Bytes.with_capacity(64);
+    let bytes_cap = bytes.capacity();
+    bytes.extend_from(borrow empty_bytes);
+    bytes.extend_str(borrow empty_view);
+    if !bytes.is_empty() || bytes.capacity() != bytes_cap { return 3; }
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 0

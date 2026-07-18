@@ -152,13 +152,7 @@ pub struct Lexer {
 
     // A fresh StrBuf of source bytes [a, b).
     fn slice_key(borrow self, a: u64, b: u64) -> StrBuf {
-        let mut k = StrBuf.new();
-        let mut i = a;
-        while i < b {
-            k.push(self.at(i));
-            i = i + 1;
-        }
-        k
+        StrBuf.from_byte_range(borrow self.src, a, b - a)
     }
 
     // --- token recognizers (cursor is at the token start; each consumes the

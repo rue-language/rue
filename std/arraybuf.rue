@@ -29,6 +29,13 @@
 //     // the heap buffer is freed AUTOMATICALLY when `v` goes out of scope
 //     // (the `drop fn` below); call `v.free()` only for explicit early release.
 //
+// Byte buffers also have explicit copying bridges from core string views:
+//
+//     let Bytes = std.arraybuf.ArrayBuf(u8);
+//     let label: str = "Rue";
+//     let mut bytes = Bytes.from_str(borrow label);
+//     bytes.extend_str(borrow label); // label remains usable
+//
 // RAII: `ArrayBuf` owns its buffer and frees it in its destructor at scope exit
 // (RUE-312), so callers no longer have to remember `free()`. `free()` remains
 // available to release the buffer early; it resets the buffer to empty, so the
@@ -133,6 +140,17 @@ pub fn ArrayBuf(comptime T: type) -> type {
             v
         }
 
+        // Copy the bytes of a `str` view into a new `ArrayBuf(u8)`. This
+        // method is intentionally available through the generic type function
+        // but only type-checks for `T == u8`: `value[i]` is a `u8`, so using it
+        // with any other element type produces the ordinary element mismatch.
+        // The source is borrowed and remains usable after the copy (RUE-955).
+        fn from_str(borrow value: str) -> Self {
+            let mut out = Self.with_capacity(value.len());
+            out.extend_str(borrow value);
+            out
+        }
+
         // --- reads ---
 
         fn len(borrow self) -> u64 { self.len }
@@ -229,6 +247,37 @@ pub fn ArrayBuf(comptime T: type) -> type {
                 @ptr_write(slot, x);
             };
             self.len = self.len + 1;
+        }
+
+        // Append a by-copy collection in one capacity operation. Reading a
+        // drop-glue element would create an aliasing owner, so this operation
+        // has the same trivially-droppable gate as `get` (RUE-651). The source
+        // remains unchanged and self-aliasing is rejected by Rue's ordinary
+        // borrow/exclusivity rules.
+        fn extend_from(inout self, borrow other: Self) {
+            @require_trivially_droppable(T);
+            self.reserve(other.len);
+            let mut i: u64 = 0;
+            while i < other.len {
+                let value = checked { @ptr_read(@ptr_offset(other.buf, i)) };
+                checked {
+                    @ptr_write(@ptr_offset(self.buf, self.len), value);
+                };
+                self.len = self.len + 1;
+                i = i + 1;
+            }
+        }
+
+        // Append the bytes of a borrowed `str` view to an `ArrayBuf(u8)` with
+        // one reserve. As with `from_str`, the body deliberately type-checks
+        // only for the byte specialization (`T == u8`).
+        fn extend_str(inout self, borrow value: str) {
+            self.reserve(value.len());
+            let mut i: u64 = 0;
+            while i < value.len() {
+                self.push(value[i]);
+                i = i + 1;
+            }
         }
 
         // Remove and return the last element as `Some(x)`, or `None` when the

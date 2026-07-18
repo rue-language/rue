@@ -4,8 +4,14 @@
 // A value with `cap > 0` owns exactly `cap` packed bytes at alignment one.
 // Allocation failure is fail-fast, and an owner header is changed only after
 // its replacement allocation has succeeded.
+//
+// Interoperability with core `str` and `ArrayBuf(u8)` is explicit and copying:
+// `from_str`, `from_bytes`, and `to_bytes` create independent owners, while
+// `append_str`, `append_bytes`, and `append_borrowed` keep their source usable.
+// No bridge aliases or transfers either container's private allocation.
 
 const option = @import("option.rue");
+const arraybuf = @import("arraybuf.rue");
 
 // Raw-pointer operations are private module implementation details. Keeping
 // them outside the public struct prevents callers from laundering unchecked
@@ -51,6 +57,44 @@ pub struct StrBuf {
 
     fn with_capacity(requested: u64) -> Self {
         Self.allocate(requested)
+    }
+
+    // Copy a borrowed core string view into a new owned buffer. The view may
+    // come from a literal, fixed string, or another StrBuf; it never escapes
+    // and the source remains usable after this call (RUE-955).
+    fn from_str(borrow source: str) -> Self {
+        let mut out = Self.allocate(source.len());
+        let mut i: u64 = 0;
+        while i < source.len() {
+            write_packed_byte(out.buf, i, source[i]);
+            i = i + 1;
+        }
+        out.len = source.len();
+        out
+    }
+
+    // Copy an ArrayBuf(u8) into a new owned string buffer. This is an explicit
+    // copy rather than an ownership cast: the two types use distinct allocator
+    // and capacity invariants, and both owners remain independently valid.
+    fn from_bytes(borrow source: arraybuf.ArrayBuf(u8)) -> Self {
+        Self.from_byte_range(borrow source, 0, source.len())
+    }
+
+    // Copy a checked byte-buffer range `[start, start + count)` into a new
+    // string. This gives lexers/parsers a bulk spelling for the common token
+    // lexeme bridge without exposing either container's backing pointer.
+    fn from_byte_range(borrow source: arraybuf.ArrayBuf(u8), start: u64, count: u64) -> Self {
+        if start > source.len() || count > source.len() - start {
+            @panic("index out of bounds");
+        }
+        let mut out = Self.allocate(count);
+        let mut i: u64 = 0;
+        while i < count {
+            write_packed_byte(out.buf, i, source.get_or(start + i, 0));
+            i = i + 1;
+        }
+        out.len = count;
+        out
     }
 
     // Shared allocator used by constructors and owned algorithms.
@@ -141,6 +185,60 @@ pub struct StrBuf {
         Self.append_owned(other, inout self);
     }
 
+    // Append without consuming the source owner. This is the efficient bridge
+    // for callers that only hold a borrow: grow once, then bulk-copy the packed
+    // bytes directly between distinct allocations.
+    fn append_borrowed(inout self, borrow other: Self) {
+        let source_len = other.len;
+        let destination_start = self.len;
+        self.grow(source_len);
+        if source_len == 0 {
+            return;
+        }
+        copy_packed_bytes(other.buf, 0, self.buf, destination_start, source_len);
+        self.len = destination_start + source_len;
+    }
+
+    // Append a borrowed core string view without forcing the caller to create
+    // a temporary StrBuf. The target reserves once; byte indexing is packed
+    // and preserves arbitrary UTF-8 or non-UTF-8 byte sequences.
+    fn append_str(inout self, borrow source: str) {
+        self.grow(source.len());
+        let destination_start = self.len;
+        let mut i: u64 = 0;
+        while i < source.len() {
+            write_packed_byte(self.buf, destination_start + i, source[i]);
+            i = i + 1;
+        }
+        self.len = destination_start + source.len();
+    }
+
+    // Append a borrowed byte buffer without consuming it. Reserving before the
+    // loop avoids the hand-written caller pattern's repeated growth checks.
+    fn append_bytes(inout self, borrow source: arraybuf.ArrayBuf(u8)) {
+        self.append_byte_range(borrow source, 0, source.len());
+    }
+
+    // Append a checked range from a borrowed byte buffer, reserving once.
+    fn append_byte_range(
+        inout self,
+        borrow source: arraybuf.ArrayBuf(u8),
+        start: u64,
+        count: u64,
+    ) {
+        if start > source.len() || count > source.len() - start {
+            @panic("index out of bounds");
+        }
+        self.grow(count);
+        let destination_start = self.len;
+        let mut i: u64 = 0;
+        while i < count {
+            write_packed_byte(self.buf, destination_start + i, source.get_or(start + i, 0));
+            i = i + 1;
+        }
+        self.len = destination_start + count;
+    }
+
     // The normal source append path consumes a separate owner. Literal inputs
     // may share static storage safely because the destination is promoted to a
     // fresh allocation before any writes.
@@ -179,6 +277,19 @@ pub struct StrBuf {
         copy_packed_bytes(self.buf, 0, result.buf, 0, self.len);
         result.len = self.len;
         result
+    }
+
+    // Copy the packed bytes into an independently owned ArrayBuf(u8). The
+    // source remains valid and keeps its existing allocation/capacity.
+    fn to_bytes(borrow self) -> arraybuf.ArrayBuf(u8) {
+        let Bytes = arraybuf.ArrayBuf(u8);
+        let mut out = Bytes.with_capacity(self.len);
+        let mut i: u64 = 0;
+        while i < self.len {
+            out.push(read_packed_byte(self.buf, i));
+            i = i + 1;
+        }
+        out
     }
 
     fn substring(borrow self, start: u64, count: u64) -> Self {

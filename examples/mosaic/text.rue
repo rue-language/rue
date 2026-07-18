@@ -2,7 +2,6 @@
 // bytes with ASCII markup punctuation; non-ASCII bytes pass through untouched.
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
-const Bytes = std.arraybuf.ArrayBuf(u8);
 const OptU8 = std.option.Option(u8);
 
 pub fn byte_of(borrow value: StrBuf, i: u64) -> u8 {
@@ -167,17 +166,8 @@ pub fn join_path(borrow base: StrBuf, borrow leaf: StrBuf) -> StrBuf {
     if leaf.len() > 0 && byte_of(borrow leaf, 0) == 47 { return slice(borrow leaf, 0, leaf.len()); }
     let mut out = slice(borrow base, 0, base.len());
     if out.len() > 0 && byte_of(borrow out, out.len() - 1) != 47 { out.push(47); }
-    let mut i: u64 = 0;
-    while i < leaf.len() { out.push(byte_of(borrow leaf, i)); i = i + 1; }
+    out.append_borrowed(borrow leaf);
     normalize_path(borrow out)
-}
-
-pub fn bytes_of(borrow value: StrBuf) -> Bytes {
-    let mut out = Bytes.new();
-    out.reserve(value.len());
-    let mut i: u64 = 0;
-    while i < value.len() { out.push(byte_of(borrow value, i)); i = i + 1; }
-    out
 }
 
 pub fn decimal(value: u64) -> StrBuf { @to_string(value) }
