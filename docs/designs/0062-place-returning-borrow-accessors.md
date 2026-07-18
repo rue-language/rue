@@ -1,11 +1,11 @@
 ---
 id: 0062
 title: "Place-returning borrow accessors: projection reads of owned elements"
-status: proposal
+status: accepted
 tags: [ownership, borrows, collections, accessors, stdlib, formal-semantics]
 feature-flag: borrow-accessors
 created: 2026-07-18
-accepted:
+accepted: 2026-07-18
 implemented:
 spec-sections: []
 superseded-by:
@@ -16,13 +16,13 @@ relates: ["RUE-662", "RUE-286", "RUE-651", "RUE-646", "RUE-1012", "RUE-1013", "R
 
 ## Status
 
-Proposal (2026-07-18), complete and awaiting ratification. Direction and
-syntax were both ratified by Steve in the 2026-07-18 design session: build
-the restricted place-returning form now, with the **S2 surface** (`fn` +
-`-> borrow T` + `yield` body — see §"The syntax decision"), conditional on
-(a) it remaining forward-compatible with full coroutine accessors (RUE-1012
-tracks that general form) and (b) nothing shipping that the formal §7 lemmas
-cannot be extended to cover.
+Accepted — ratified by Steve on 2026-07-18. Direction and syntax were both
+decided in the 2026-07-18 design session: build the restricted
+place-returning form now, with the **S2 surface** (`fn` + `-> borrow T` +
+`yield` body — see §"The syntax decision"), conditional on (a) it remaining
+forward-compatible with full coroutine accessors (RUE-1012 tracks that
+general form) and (b) nothing shipping that the formal §7 lemmas cannot be
+extended to cover. RUE-662 is the phase 0/1 implementing issue.
 
 ## Summary
 
