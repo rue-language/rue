@@ -160,6 +160,24 @@ fn removed_parallel_entry_points_cannot_return() {
 }
 
 #[test]
+fn orphaned_backend_inspection_exports_cannot_return() {
+    let facade = include_str!("lib.rs");
+    let backend = include_str!("backend.rs");
+    let removed = ["generate_allocated_mir"];
+
+    for name in removed {
+        assert!(
+            !code_identifiers(facade).contains(&name),
+            "test-only backend helper returned to the production facade: {name}"
+        );
+        assert!(
+            !code_identifiers(backend).contains(&name),
+            "orphaned backend inspection path returned: {name}"
+        );
+    }
+}
+
+#[test]
 fn query_attempts_have_one_family_owned_representation() {
     let production = PRODUCTION_MODULES
         .iter()
