@@ -978,6 +978,12 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.std_m3",
+        "std_strings_count_chars_strict_invalid_utf8_traps",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_m3",
         "std_strings_m3",
         semantic(SemanticGapKind::TextProjectionRead),
         &[],

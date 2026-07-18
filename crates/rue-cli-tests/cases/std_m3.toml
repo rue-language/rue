@@ -50,7 +50,7 @@ fn main() -> i32 {
 
 [[case]]
 name = "std_strings_m3"
-description = "strings parse/find/trim/repeat helpers (14 checks -> exit 62)."
+description = "bounds-checked bytes plus byte- and character-oriented string helpers (22 checks -> exit 62)."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 exit_code = 62
@@ -61,6 +61,7 @@ fn main() -> i32 {
     let mut score: i32 = 0;
     let Oi = std.option.Option(i64);
     let Ou = std.option.Option(u64);
+    let Ob = std.option.Option(u8);
 
     match std.strings.parse_int("-42") { Oi.Some(v) => { if v == -42 { score = score + 1; } }, Oi.None => {} }
     match std.strings.parse_int("1000") { Oi.Some(v) => { if v == 1000 { score = score + 1; } }, Oi.None => {} }
@@ -79,7 +80,42 @@ fn main() -> i32 {
     if std.strings.trim_end("hi  ").len() == 2 { score = score + 1; }
     if std.strings.repeat("ab", 3).len() == 6 { score = score + 1; }
 
-    if score == 14 { 62 } else { @intCast(score) }
+    match "abc".byte_at(0) { Ob.Some(v) => { if v == 97 { score = score + 1; } }, Ob.None => {} }
+    match "".byte_at(0) { Ob.Some(_) => {}, Ob.None => { score = score + 1; } }
+    match "abc".byte_at(3) { Ob.Some(_) => {}, Ob.None => { score = score + 1; } }
+
+    if std.strings.count_chars("") == 0 { score = score + 1; }
+    if std.strings.count_chars("ASCII") == 5 { score = score + 1; }
+    if std.strings.count_chars("café") == 4 { score = score + 1; }
+    if std.strings.count_chars_lossy("café") == 4 { score = score + 1; }
+
+    let mut invalid = std.strbuf.StrBuf.new();
+    invalid.push(97);
+    invalid.push(255);
+    invalid.push(98);
+    if std.strings.count_chars_lossy(invalid) == 3 { score = score + 1; }
+
+    if score == 22 { 62 } else { @intCast(score) }
+}
+""" }]
+
+[[case]]
+name = "std_strings_count_chars_strict_invalid_utf8_traps"
+description = "std.strings.count_chars uses strict UTF-8 decoding and traps on malformed input."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["invalid UTF-8"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut invalid = std.strbuf.StrBuf.new();
+    invalid.push(97);
+    invalid.push(255);
+    invalid.push(98);
+    let _count = std.strings.count_chars(invalid);
+    0
 }
 """ }]
 

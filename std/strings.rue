@@ -1,34 +1,32 @@
-// std.strings — byte-oriented text helpers over `StrBuf` (RUE-677).
+// std.strings — byte- and character-oriented text helpers over `StrBuf`.
 //
-// Built on the working `StrBuf` surface: byte indexing (`s[i] -> u8`), `.len()`,
-// and the mutating builders `StrBuf.new()` + `.push(byte)`. Everything here is
-// byte-level (ASCII-oriented) and never inspects UTF-8 boundaries, matching
-// std.ascii. Fallible parses/searches return `option.Option(T)`.
+// Byte-oriented helpers use the bounds-checked `s.byte_at(i) -> Option(u8)`
+// surface. Character counts use strict or lossy UTF-8 scalar iteration.
+// Fallible parses/searches return `option.Option(T)`.
 //
 //     const std = @import("std");
 //     std.strings.parse_int("-42");        // Some(-42)
 //     std.strings.find("hello", 108);      // Some(2)  (first 'l')
 //     std.strings.trim("  hi  ");          // "hi"
 //     std.strings.repeat("ab", 3);         // "ababab"
-//
-// COMPILER-BUG WORKAROUND (see below): a `StrBuf` byte index `s[i]` used
-// DIRECTLY inside an `if`/`while` condition expression is currently rejected
-// with E0900 "cannot index into non-array type 'StrBuf'" — even though the very
-// same `s[i]` works when bound to a `let` first or used in tail position.
-// Minimal repro:
-//
-//     fn f(s: StrBuf) -> u8 { if s[0] == 45 { 1 } else { 9 } }   // E0900
-//     fn f(s: StrBuf) -> u8 { let c = s[0]; if c == 45 { 1 } else { 9 } }  // OK
-//
-// So every index below reads the byte into a local in statement position first,
-// then tests the local. This is filed for the compiler team; when it is fixed
-// the local bindings can be inlined back into the conditions.
+//     std.strings.count_chars("café");   // 4
 
 const ascii = @import("ascii.rue");
 const option = @import("option.rue");
 const math = @import("math.rue");
 const strbuf = @import("strbuf.rue");
 const StrBuf = strbuf.StrBuf;
+
+// Internal callers establish `index < s.len()` before reading. Keep the
+// impossible branch in one place while Rue's Option surface has no `expect`
+// helper that can express that invariant.
+fn bounded_byte_at(borrow s: StrBuf, index: u64) -> u8 {
+    let O = option.Option(u8);
+    match s.byte_at(index) {
+        O.Some(byte) => byte,
+        O.None => @panic("index out of bounds"),
+    }
+}
 
 // Parse a decimal integer with an optional leading '-'. Returns `None` on an
 // empty string, a lone '-', any non-digit byte, or arithmetic overflow of
@@ -44,7 +42,7 @@ pub fn parse_int(s: StrBuf) -> option.Option(i64) {
     }
     let mut i: u64 = 0;
     let mut neg = false;
-    let first = s[0];
+    let first = bounded_byte_at(borrow s, 0);
     if first == 45 {
         neg = true;
         i = 1;
@@ -55,7 +53,7 @@ pub fn parse_int(s: StrBuf) -> option.Option(i64) {
     let mut acc: i64 = 0;
     let ten: i64 = 10;
     while i < n {
-        let byte = s[i];
+        let byte = bounded_byte_at(borrow s, i);
         if !ascii.is_digit(byte) {
             return O.None;
         }
@@ -90,7 +88,7 @@ pub fn find(s: StrBuf, byte: u8) -> option.Option(u64) {
     let n = s.len();
     let mut i: u64 = 0;
     while i < n {
-        let c = s[i];
+        let c = bounded_byte_at(borrow s, i);
         if c == byte {
             return O.Some(i);
         }
@@ -105,7 +103,7 @@ pub fn rfind(s: StrBuf, byte: u8) -> option.Option(u64) {
     let mut i = s.len();
     while i > 0 {
         i = i - 1;
-        let c = s[i];
+        let c = bounded_byte_at(borrow s, i);
         if c == byte {
             return O.Some(i);
         }
@@ -119,7 +117,7 @@ pub fn count(s: StrBuf, byte: u8) -> u64 {
     let n = s.len();
     let mut i: u64 = 0;
     while i < n {
-        let cur = s[i];
+        let cur = bounded_byte_at(borrow s, i);
         if cur == byte {
             c = c + 1;
         }
@@ -133,7 +131,7 @@ pub fn starts_with_byte(s: StrBuf, byte: u8) -> bool {
     if s.len() == 0 {
         false
     } else {
-        let c = s[0];
+        let c = bounded_byte_at(borrow s, 0);
         c == byte
     }
 }
@@ -144,7 +142,7 @@ pub fn trim_start(s: StrBuf) -> StrBuf {
     let mut start: u64 = 0;
     let mut scanning = true;
     while scanning && start < n {
-        let c = s[start];
+        let c = bounded_byte_at(borrow s, start);
         if ascii.is_whitespace(c) {
             start = start + 1;
         } else {
@@ -154,7 +152,7 @@ pub fn trim_start(s: StrBuf) -> StrBuf {
     let mut out = StrBuf.new();
     let mut i = start;
     while i < n {
-        let c = s[i];
+        let c = bounded_byte_at(borrow s, i);
         out.push(c);
         i = i + 1;
     }
@@ -167,7 +165,7 @@ pub fn trim_end(s: StrBuf) -> StrBuf {
     let mut end = n;
     let mut scanning = true;
     while scanning && end > 0 {
-        let c = s[end - 1];
+        let c = bounded_byte_at(borrow s, end - 1);
         if ascii.is_whitespace(c) {
             end = end - 1;
         } else {
@@ -177,7 +175,7 @@ pub fn trim_end(s: StrBuf) -> StrBuf {
     let mut out = StrBuf.new();
     let mut i: u64 = 0;
     while i < end {
-        let c = s[i];
+        let c = bounded_byte_at(borrow s, i);
         out.push(c);
         i = i + 1;
     }
@@ -190,7 +188,7 @@ pub fn trim(s: StrBuf) -> StrBuf {
     let mut start: u64 = 0;
     let mut sc = true;
     while sc && start < n {
-        let c = s[start];
+        let c = bounded_byte_at(borrow s, start);
         if ascii.is_whitespace(c) {
             start = start + 1;
         } else {
@@ -200,7 +198,7 @@ pub fn trim(s: StrBuf) -> StrBuf {
     let mut end = n;
     let mut ec = true;
     while ec && end > start {
-        let c = s[end - 1];
+        let c = bounded_byte_at(borrow s, end - 1);
         if ascii.is_whitespace(c) {
             end = end - 1;
         } else {
@@ -210,7 +208,7 @@ pub fn trim(s: StrBuf) -> StrBuf {
     let mut out = StrBuf.new();
     let mut i = start;
     while i < end {
-        let c = s[i];
+        let c = bounded_byte_at(borrow s, i);
         out.push(c);
         i = i + 1;
     }
@@ -225,11 +223,30 @@ pub fn repeat(s: StrBuf, n: u64) -> StrBuf {
     while k < n {
         let mut i: u64 = 0;
         while i < len {
-            let c = s[i];
+            let c = bounded_byte_at(borrow s, i);
             out.push(c);
             i = i + 1;
         }
         k = k + 1;
     }
     out
+}
+
+// Number of Unicode scalar values in valid UTF-8. Traps on malformed UTF-8.
+pub fn count_chars(s: StrBuf) -> u64 {
+    let mut count: u64 = 0;
+    for _scalar in s.chars() {
+        count = count + 1;
+    }
+    count
+}
+
+// Number of Unicode scalar values after malformed UTF-8 is replaced with
+// U+FFFD using the canonical lossy decoder.
+pub fn count_chars_lossy(s: StrBuf) -> u64 {
+    let mut count: u64 = 0;
+    for _scalar in s.chars_lossy() {
+        count = count + 1;
+    }
+    count
 }
