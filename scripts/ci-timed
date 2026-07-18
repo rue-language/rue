@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Run one CI command without changing its output or exit status, and append a
+# compact wall-time/action-cache summary to GitHub's job summary.
+set -uo pipefail
+
+if [[ $# -lt 3 || "$2" != "--" ]]; then
+    echo "usage: scripts/ci-timed LABEL -- COMMAND [ARG ...]" >&2
+    exit 2
+fi
+
+label="$1"
+shift 2
+
+log="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rue-ci-timed.XXXXXX")"
+cleanup() {
+    rm -f "$log"
+}
+trap cleanup EXIT
+
+started="$(date +%s)"
+"$@" 2>&1 | tee "$log"
+status=${PIPESTATUS[0]}
+finished="$(date +%s)"
+elapsed=$((finished - started))
+
+invocations=0
+commands=0
+cached=0
+remote=0
+local_actions=0
+while IFS= read -r line; do
+    if [[ "$line" =~ Commands:[[:space:]]+([0-9]+)[[:space:]]+\(cached:[[:space:]]+([0-9]+),[[:space:]]+remote:[[:space:]]+([0-9]+),[[:space:]]+local:[[:space:]]+([0-9]+)\) ]]; then
+        ((invocations += 1))
+        ((commands += BASH_REMATCH[1]))
+        ((cached += BASH_REMATCH[2]))
+        ((remote += BASH_REMATCH[3]))
+        ((local_actions += BASH_REMATCH[4]))
+    fi
+done <"$log"
+
+result="passed"
+if [[ "$status" -ne 0 ]]; then
+    result="failed ($status)"
+fi
+
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    safe_label="${label//|/\\|}"
+    {
+        echo "### CI timing: $safe_label"
+        echo
+        echo "| Result | Wall time | Buck invocations | Commands | Cached | Remote | Local |"
+        echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"
+        echo "| $result | ${elapsed}s | $invocations | $commands | $cached | $remote | $local_actions |"
+        echo
+    } >>"$GITHUB_STEP_SUMMARY"
+fi
+
+exit "$status"

@@ -15,11 +15,28 @@ because per-commit measurement on trunk is its purpose.
 
 The build jobs use the shared BuildBuddy remote action cache when the
 `BUILDBUDDY_API_KEY` secret is available (merge_group runs; fork PRs build
-cold) — see `docs/process/build-cache.md` for the availability rules,
-including why the linux-x64 test lane stays cache-free. Containers executed by that workflow must use a reviewed,
-human-readable release tag and the immutable OCI index digest for that tag. The
-repository gate `//:required-ci-container-pin-validation` rejects a moving
-`latest` image reference, and the normal `./test.sh` run includes that gate.
+cold) — see `docs/process/build-cache.md` for the availability rules. The
+compiler-reproducibility job is the deliberate exception: its two independently
+materialized compiler builds stay local and cache-free, while the ordinary
+linux-x64 test lane may use BuildBuddy.
+
+The platform test lanes all retain broad target discovery. On macOS, the main
+lane defers the two longest heavy targets (`//:cli-tests` and `//:spec-tests`)
+to explicit required jobs so those corpora overlap. `test.sh` accepts that
+deferral only under `CI=true`, validates each target against Buck's live
+`rue_heavy_suite` query, and continues to audit every corpus target it owns.
+Local full suites never defer coverage.
+
+Major Buck commands run through `scripts/ci-timed`, which preserves output and
+the exact command exit status while appending wall time and aggregate
+`Commands: (cached / remote / local)` counters to the GitHub job summary. Read
+wall time together with hit count: a small number of invalidated ThinLTO actions
+can dominate a release build even when its hit rate is above 90 percent.
+
+Containers executed by the workflow must use a reviewed, human-readable
+release tag and the immutable OCI index digest for that tag. The repository
+gate `//:required-ci-container-pin-validation` rejects a moving `latest` image
+reference, and the normal `./test.sh` run includes that gate.
 
 ## Updating actionlint
 

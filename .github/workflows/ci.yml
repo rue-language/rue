@@ -141,16 +141,11 @@ jobs:
           restore-keys: |
             dotslash-${{ matrix.name }}-
 
-      # BuildBuddy remote action cache (RUE-316/RUE-1006); see the clippy job
-      # for the secret-availability contract. NOT on linux-x64: that lane runs
-      # the compiler reproducibility check, whose guard requires a cache-free,
-      # .buckconfig-only configuration so the reference and relocated candidate
-      # builds are identically configured — a `.buckconfig.local` is a hard
-      # error in scripts/check-reproducible-compiler.sh. Warming that lane by
-      # dropping the config before the repro step is a possible follow-up once
-      # cache behavior is proven in the queue (RUE-1006).
+      # BuildBuddy remote action cache (RUE-316/RUE-1006/RUE-1019); see the
+      # clippy job for the secret-availability contract. Compiler
+      # reproducibility now has its own strictly cache-free job, so every
+      # ordinary platform lane can consume and upload shared actions.
       - name: Provision remote build cache
-        if: matrix.name != 'linux-x64'
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
@@ -164,29 +159,93 @@ jobs:
       # Uses hermetic Rust toolchain downloaded by Buck2
       # First verify everything builds (catches issues tests might miss)
       - name: Build all targets
-        run: ./buck2 build //crates/...
+        run: scripts/ci-timed "${{ matrix.name }} build" -- ./buck2 build //crates/...
 
-      # RUE-617: the compiler built above is the first half of this comparison.
-      # On the required Linux x64 lane, rebuild Rue locally with remote caching
-      # disabled from a relocated clean source tree and compare the complete
-      # compiler artifacts.  Limiting the extra cold build to one lane keeps the
-      # merge queue moving while still turning path/scheduling/environment leaks
-      # into a required failure.
+      - name: Run tests
+        # macOS owns the broad pass and the smaller heavy suites here; its CLI
+        # and spec corpora run on explicit required shards below. Local full
+        # suites and the Linux lanes continue to own every discovered target.
+        env:
+          RUE_CI_DEFER_HEAVY_SUITES: ${{ matrix.name == 'macos' && '//:cli-tests //:spec-tests' || '' }}
+        run: scripts/ci-timed "${{ matrix.name }} tests" -- ./test.sh
+
+  # RUE-617/RUE-1019: keep the byte-reproducibility proof independent of the
+  # cache-enabled Linux test lane. Both reference and relocated candidate are
+  # built locally, cache-free, under identical configuration; the job overlaps
+  # ordinary tests instead of delaying them.
+  compiler-reproducibility:
+    runs-on: ubuntu-latest
+    name: compiler reproducibility (linux-x64)
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
       - name: Verify compiler build reproducibility
         id: compiler_repro
-        if: matrix.name == 'linux-x64'
-        run: ./scripts/check-reproducible-compiler.sh
+        run: scripts/ci-timed "compiler reproducibility" -- ./scripts/check-reproducible-compiler.sh
 
       - name: Upload compiler reproducibility diagnostics
-        if: failure() && matrix.name == 'linux-x64' && steps.compiler_repro.outcome == 'failure'
+        if: failure() && steps.compiler_repro.outcome == 'failure'
         uses: actions/upload-artifact@v6
         with:
           name: compiler-reproducibility-diagnostics
           path: ${{ runner.temp }}/rue-compiler-repro-artifacts
           if-no-files-found: ignore
 
-      - name: Run tests
-        run: ./test.sh
+  # The macOS CLI and spec corpora dominate that platform's wall clock even
+  # though each harness already uses every available core. Run them on separate
+  # machines while the main macOS lane retains broad discovery, UI, oracle,
+  # reproducible-program, tutorial, and omission-audit coverage.
+  macos-corpus:
+    strategy:
+      matrix:
+        include:
+          - target: //:cli-tests
+            name: cli
+          - target: //:spec-tests
+            name: spec
+    runs-on: macos-15
+    name: test (macos-${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Select Xcode 16.2
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/dotslash
+          key: dotslash-macos-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-macos-
+
+      - name: Provision remote build cache
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
+      - name: Run ${{ matrix.name }} corpus
+        run: scripts/ci-timed "macos ${{ matrix.name }} corpus" -- scripts/ci-heavy-suite "${{ matrix.target }}"
 
   # Release-mode build + test (RUE-45). Every other job builds the compiler in
   # debug, so release-only miscompiles — the ones previously masked by a
@@ -234,11 +293,17 @@ jobs:
           scripts/provision-build-cache install
           scripts/provision-build-cache apply
 
+      # Build every crate optimized (catches build breaks that only surface with
+      # optimizations on). Do this before the debug comparison: on cache-miss
+      # changes it gives the parallel sanitizer job time to publish the Linux
+      # debug compiler instead of racing two cold builds of the same graph.
+      - name: Build all targets (release)
+        run: scripts/ci-timed "release build" -- ./buck2 build //crates/... --target-platforms //platforms:release
+
       # Regression guard for RUE-277: `//platforms:release` must produce a
-      # genuinely-optimized binary that differs from the debug build. If the
-      # opt-level constraint ever silently reverts to a no-op (debug == release,
-      # as it was before RUE-277), `cmp -s` succeeds and we fail — the release
-      # suite below would otherwise be a pointless re-run of the debug build.
+      # genuinely-optimized binary that differs from the debug build. The
+      # release artifact is already materialized above; the debug artifact may
+      # now be served by the shared cache after another required job uploads it.
       - name: Assert release build is distinct from debug
         run: |
           debug_bin="$(./scripts/rue-bin --target-platforms //platforms:debug)"
@@ -249,12 +314,9 @@ jobs:
           fi
           echo "release build differs from debug build (optimized) — OK"
 
-      # Build every crate optimized (catches build breaks that only surface with
-      # optimizations on), then run the full suite — including the spec/UI/CLI
-      # sh_tests, which spawn the release-configured rue binary — so any
-      # cfg(debug_assertions)-off miscompile is caught.
-      - name: Build all targets (release)
-        run: ./buck2 build //crates/... --target-platforms //platforms:release
+      # Run the full suite — including the spec/UI/CLI sh_tests, which spawn
+      # the release-configured rue binary — so cfg(debug_assertions)-off and
+      # ThinLTO miscompiles remain required coverage.
 
       - name: Run tests (release)
-        run: ./buck2 test //... --target-platforms //platforms:release
+        run: scripts/ci-timed "release tests" -- ./buck2 test //... --target-platforms //platforms:release

@@ -404,6 +404,8 @@ filegroup(
     name = "wrapper-script-inputs",
     srcs = [
         "fmt.sh",
+        "scripts/ci-heavy-suite",
+        "scripts/ci-timed",
         "scripts/rue",
         "scripts/rue-bin",
         "scripts/provision-build-cache",

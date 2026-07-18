@@ -107,6 +107,44 @@ if [[ $# -eq 0 ]]; then
         exit 1
     fi
 
+    # Required CI may move selected heavy suites to their own platform runner
+    # so expensive corpus harnesses overlap instead of serializing the merge
+    # queue. This is deliberately CI-only: an ordinary local `./test.sh` still
+    # owns and audits the complete corpus in one invocation. Every deferred
+    # target must be present in Buck's live heavy-suite query; a stale or
+    # misspelled shard therefore fails here instead of becoming a false green.
+    DEFERRED_HEAVY_SUITES=()
+    if [[ -n "${RUE_CI_DEFER_HEAVY_SUITES:-}" ]]; then
+        if [[ "${CI:-}" != "true" ]]; then
+            echo "error: RUE_CI_DEFER_HEAVY_SUITES is reserved for required CI" >&2
+            exit 1
+        fi
+        read -r -a DEFERRED_HEAVY_SUITES <<<"$RUE_CI_DEFER_HEAVY_SUITES"
+        for deferred in "${DEFERRED_HEAVY_SUITES[@]}"; do
+            found=0
+            for suite in "${HEAVY_SUITES[@]}"; do
+                [[ "${suite#root}" == "${deferred#root}" ]] && found=1
+            done
+            if [[ "$found" -ne 1 ]]; then
+                echo "error: deferred CI suite is not labeled rue_heavy_suite: $deferred" >&2
+                exit 1
+            fi
+        done
+    fi
+
+    suite_is_deferred() {
+        local candidate="$1" deferred
+        # Bash 3.2 treats an empty array expansion as an unbound variable under
+        # `set -u`. macOS runners normally provide a newer Bash, but keeping the
+        # no-deferral path portable also makes relocated/cache-free validation
+        # behave exactly like the canonical worktree.
+        [[ -z "${RUE_CI_DEFER_HEAVY_SUITES:-}" ]] && return 1
+        for deferred in "${DEFERRED_HEAVY_SUITES[@]}"; do
+            [[ "${candidate#root}" == "${deferred#root}" ]] && return 0
+        done
+        return 1
+    }
+
     # Stream every invocation live AND capture it into one log, so we can audit
     # afterward that no corpus harness was silently omitted (RUE-924).
     # PIPESTATUS[0] is buck2's real exit code (tee always exits 0), preserving
@@ -120,6 +158,10 @@ if [[ $# -eq 0 ]]; then
     step_status=${PIPESTATUS[0]}
     [[ "$step_status" -ne 0 && "$overall_status" -eq 0 ]] && overall_status=$step_status
     for suite in "${HEAVY_SUITES[@]}"; do
+        if suite_is_deferred "$suite"; then
+            echo "Deferring heavy suite $suite to its required CI shard..."
+            continue
+        fi
         echo "Running heavy suite $suite..."
         ./buck2 test "$suite" 2>&1 | tee -a "$run_log"
         step_status=${PIPESTATUS[0]}
@@ -133,6 +175,9 @@ if [[ $# -eq 0 ]]; then
     # — neither in the broad pass nor as a heavy suite.
     missing_corpus=()
     for target in "${REQUIRED_CORPUS_HARNESSES[@]}"; do
+        if suite_is_deferred "$target"; then
+            continue
+        fi
         if ! grep -qE "(Pass|Fail|Skip|Timeout|Fatal|Omit|Flaky): root${target} " "$run_log"; then
             missing_corpus+=("$target")
         fi
