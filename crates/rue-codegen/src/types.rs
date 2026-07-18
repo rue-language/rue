@@ -403,7 +403,16 @@ pub(crate) fn enum_physical_slot_map(
         }),
     }];
 
-    // Payload union positions, one per scalar field position across all variants.
+    // Payload union positions, one per flattened scalar LEAF position across all
+    // variants. Each variant's payload is flattened to its scalar leaves at their
+    // compact byte offsets (a struct or array payload field flattens recursively
+    // via [`push_physical_slots`], mirroring the internal value decomposition of
+    // [`aggregate_leaf_types`]); the leaves are then merged by position index so a
+    // variant-dependent enum (e.g. `Option(Point)` or `Json`) whose per-variant
+    // aggregate payloads still overlay a single, agreeing scalar image gets one
+    // marshalling map (RUE-1014). Positions that disagree on byte offset, overlap,
+    // or carry an imageless leaf (an imageless nested enum, or an array without a
+    // compact image) yield `None` and keep the enum loudly refused.
     #[derive(Clone, Copy)]
     struct Position {
         offset: i32,
@@ -414,14 +423,25 @@ pub(crate) fn enum_physical_slot_map(
     let mut positions: Vec<Position> = Vec::new();
     for variant in 0..def.variant_count() {
         let payload = def.variant_payload(variant);
+        // Flatten this variant's whole payload into its scalar leaves at their
+        // compact byte offsets (enum-base-relative), in internal-slot order. A
+        // struct/array payload field recurses; an imageless leaf bails to `None`.
+        let mut leaves: Vec<PhysicalEnumSlot> = Vec::new();
         for (field_index, &field_ty) in payload.iter().enumerate() {
-            // Only scalar payload fields have a single-slot memory image; a
-            // nested aggregate payload has no variant-independent slot map.
-            let (width, signed) = scalar_physical_access(field_ty)?;
-            let offset = i32::try_from(variant_offsets[variant][field_index]).ok()?;
-            if let Some(pos) = positions.get_mut(field_index) {
+            let field_offset =
+                i32::try_from(*variant_offsets.get(variant)?.get(field_index)?).ok()?;
+            push_physical_slots(type_pool, field_ty, field_offset, &mut leaves)?;
+        }
+        // Merge the flattened leaves into the union positions by leaf index.
+        for (leaf_index, leaf) in leaves.iter().enumerate() {
+            let (width, signed) = match leaf.access {
+                None => (8u8, false),
+                Some(access) => (access.width, access.signed),
+            };
+            let offset = leaf.byte_offset;
+            if let Some(pos) = positions.get_mut(leaf_index) {
                 if pos.offset != offset {
-                    // Variant-dependent field offset: not a single memory image.
+                    // Variant-dependent leaf offset: not a single memory image.
                     return None;
                 }
                 match width.cmp(&pos.width) {
@@ -546,9 +566,20 @@ fn push_physical_slots(
             }
             Some(())
         }
-        // A fixed array's compact stride differs from the slot stride; array call
-        // marshalling is not implemented, so the whole aggregate stays refused.
-        TypeKind::Array(_) => None,
+        // A fixed array flattens to its `count` elements laid out at the compact
+        // element stride, each recursively flattened (RUE-1014). The internal
+        // slot order matches [`aggregate_leaf_types`] (element leaves repeated per
+        // element). An element without a compact image bails to `None`.
+        TypeKind::Array(array_id) => {
+            let (element, count) = type_pool.array_def(array_id);
+            let stride = i32::try_from(type_pool.layout(element).stride).ok()?;
+            for k in 0..count {
+                let element_base =
+                    base_offset.checked_add(i32::try_from(k).ok()?.checked_mul(stride)?)?;
+                push_physical_slots(type_pool, element, element_base, out)?;
+            }
+            Some(())
+        }
         _ => {
             let (width, signed) = scalar_physical_access(ty)?;
             out.push(PhysicalEnumSlot {
@@ -572,7 +603,12 @@ pub(crate) fn pointer_image_slot_map(
 ) -> Option<Vec<PhysicalEnumSlot>> {
     match ty.kind() {
         TypeKind::Enum(_) => enum_physical_slot_map(type_pool, ty),
-        TypeKind::Struct(_) if !is_slot_identical_layout(type_pool, ty) => {
+        // A compact (non-slot-identical) struct or array marshals its whole value
+        // through the pointer via its internal-slot → physical-byte image (RUE-987
+        // struct, RUE-1014 array). A slot-identical aggregate keeps the
+        // byte-identical full-slot path; one without a compact image (an imageless
+        // enum leaf) returns `None` and stays refused.
+        TypeKind::Struct(_) | TypeKind::Array(_) if !is_slot_identical_layout(type_pool, ty) => {
             aggregate_physical_slot_map(type_pool, ty)
         }
         _ => None,
@@ -670,17 +706,16 @@ pub(crate) fn compact_physical_access_unsupported(
     let unimplemented_through_pointer = |ty: Type| -> bool {
         match ty.kind() {
             TypeKind::Enum(_) => enum_physical_slot_map(type_pool, ty).is_none(),
-            // A compact (non-slot-identical) struct WITH a variant-independent
-            // memory image marshals its whole value through the pointer via its
-            // internal-slot → physical-byte map (RUE-987), exactly like a compact
-            // enum (RUE-1000). A slot-identical struct keeps the byte-identical
-            // full-slot path; a struct WITHOUT an image (it contains an array or
-            // an imageless enum) stays refused.
-            TypeKind::Struct(_) => {
+            // A compact (non-slot-identical) struct or array WITH a variant-
+            // independent memory image marshals its whole value through the pointer
+            // via its internal-slot → physical-byte map (RUE-987 struct, RUE-1014
+            // array), exactly like a compact enum (RUE-1000). A slot-identical
+            // aggregate keeps the byte-identical full-slot path; one WITHOUT an
+            // image (it contains an imageless enum) stays refused.
+            TypeKind::Struct(_) | TypeKind::Array(_) => {
                 !is_slot_identical_layout(type_pool, ty)
                     && aggregate_physical_slot_map(type_pool, ty).is_none()
             }
-            TypeKind::Array(_) => !is_slot_identical_layout(type_pool, ty),
             _ => false,
         }
     };
@@ -696,20 +731,16 @@ pub(crate) fn compact_physical_access_unsupported(
         let value = CfgValue::from_raw(raw as u32);
         let inst = cfg.get_inst(value);
 
-        // A non-slot-identical ARRAY value is refused outright: dynamic array
-        // indexing strides by the compact element size while the frame is
-        // slot-based. A non-slot-identical STRUCT or ENUM value, by contrast, is
-        // allowed to exist in the frame — a struct uses static slot-offset field
-        // access and narrow scalar field pointers, and an enum keeps its
-        // slot-based value decomposition (discriminant slot + payload slots)
-        // untouched by the compact layout (RUE-975). The boundary checks below
-        // still refuse either aggregate crossing a pointer (unless the enum has
-        // a variant-independent memory image), call, return, or by-ref boundary.
-        if matches!(inst.ty.kind(), TypeKind::Array(_))
-            && !is_slot_identical_layout(type_pool, inst.ty)
-        {
-            return Some(inst.ty);
-        }
+        // A non-slot-identical ARRAY, STRUCT, or ENUM value may exist in the
+        // frame. Array `[]` indexing strides by the *slot* stride
+        // (`abi_slot_count(element) * SLOT_BYTES`, RUE-1014) because the frame
+        // stores every array element slot-shaped (RUE-975), so element addressing
+        // is physically correct; a struct uses static slot-offset field access and
+        // narrow scalar field pointers; an enum keeps its slot-based value
+        // decomposition (discriminant slot + payload slots) untouched by the
+        // compact layout. The boundary checks below still refuse an aggregate
+        // crossing a pointer, call, return, or by-ref boundary when it has no
+        // variant-independent compact memory image.
 
         // A pointer to a non-slot-identical aggregate: whole-aggregate
         // marshalling through a pointer is unimplemented (except a compact enum
@@ -802,13 +833,14 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
             rue_error::ErrorKind::InternalCodegenError(format!(
                 "aggregate_layout: physical-layout code generation for type `{name}` (in function \
                  `{}`) is not yet implemented. Narrow scalar access through typed pointers \
-                 (RUE-989), compact enum memory for enums with a variant-independent memory image \
-                 (RUE-1000), and call-boundary marshalling of a compact aggregate through its \
-                 memory image — sret returns and `inout`/`borrow` parameters (RUE-1004), and \
-                 by-value arguments (RUE-1005), and whole compact-struct marshalling through \
-                 typed pointers (RUE-987) — are lowered, but whole-array marshalling through \
-                 pointers, arrays crossing a call, and enums (and structs) without a \
-                 variant-independent memory image are still staged for a follow-up.",
+                 (RUE-989), compact enum memory (RUE-1000), call-boundary marshalling of a compact \
+                 aggregate through its memory image — sret returns and `inout`/`borrow` parameters \
+                 (RUE-1004), by-value arguments (RUE-1005) — whole compact-struct marshalling \
+                 through typed pointers (RUE-987), and variant-dependent enum images plus compact \
+                 arrays through pointers and across calls (RUE-1014) are lowered, but an aggregate \
+                 whose compact memory image is not variant-independent — an enum whose per-variant \
+                 payloads overlap or disagree on leaf offset, or an aggregate containing such an \
+                 enum — is still refused for a follow-up.",
                 cfg.fn_name()
             )),
         ));

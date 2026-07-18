@@ -1427,6 +1427,7 @@ impl<'a> CfgLower<'a> {
                 variant_index,
                 payload,
                 total_slots,
+                zero_unused_payload,
                 ..
             } => {
                 slots = (0..total_slots).map(|_| self.mir.alloc_vreg()).collect();
@@ -1452,6 +1453,17 @@ impl<'a> CfgLower<'a> {
                             });
                             offset += 1;
                         }
+                    }
+                }
+                // Zero the payload slots this (shorter) variant does not write, so a
+                // compact memory image marshalled from the value carries no residue
+                // from a wider variant (ADR-0052 ruling 5). Only under the gate.
+                if zero_unused_payload {
+                    for slot in slots.iter().skip(offset) {
+                        self.mir.push(X86Inst::MovRI32 {
+                            dst: Operand::Virtual(*slot),
+                            imm: 0,
+                        });
                     }
                 }
                 let dst = slots[0];
@@ -3133,24 +3145,20 @@ mod tests {
         CfgLower::new(cfg_output.cfg.as_ref().unwrap(), type_pool, &interner).lower()
     }
 
-    /// Under `aggregate_layout`, a non-slot-identical **array** value is still
-    /// refused loudly rather than miscompiled: dynamic indexing strides by the
-    /// compact element size while the slot-based frame stores elements at the
-    /// slot stride (ADR-0052; RUE-989 narrows the refusal to what remains
-    /// unimplemented — aggregates through pointers/calls, arrays, and enums).
+    /// RUE-1014: under `aggregate_layout`, a non-slot-identical **array** frame
+    /// value now lowers: array `[]` indexing strides by the *slot* stride
+    /// (`abi_slot_count(element) * SLOT_BYTES`) because the frame stores every
+    /// element slot-shaped (RUE-975), so element addressing is physically correct
+    /// even when the compact element size diverges from the slot stride.
     #[test]
-    fn aggregate_layout_refuses_unimplemented_aggregate_codegen() {
+    fn aggregate_layout_allows_frame_array_slot_stride_indexing() {
         let mut preview = PreviewFeatures::new();
         preview.insert(PreviewFeature::AggregateLayout);
-        let err = try_lower_first_fn(
-            "fn main() -> i32 { let a: [i32; 3] = [1, 2, 3]; a[0] }",
+        try_lower_first_fn(
+            "fn main() -> i32 { let a: [i32; 3] = [1, 2, 3]; let i: u64 = 1; a[i] }",
             preview,
         )
-        .expect_err("a narrow array value must refuse compact codegen, not miscompile");
-        assert!(
-            format!("{err:?}").contains("aggregate_layout"),
-            "refusal must name the feature, got: {err:?}"
-        );
+        .expect("a frame array indexed at the slot stride must lower under compact layout");
     }
 
     /// RUE-989: under `aggregate_layout`, narrow scalar access through a typed
@@ -3279,18 +3287,71 @@ mod tests {
         );
     }
 
-    /// RUE-987: a struct WITHOUT a variant-independent compact image (a field is a
-    /// fixed array, whose compact stride differs from the slot stride) is still
-    /// refused loudly through a pointer on x86-64, not miscompiled.
+    /// RUE-1014: a struct containing a fixed array now HAS a variant-independent
+    /// compact image — the array flattens to its elements at the compact stride —
+    /// so it marshals whole through a pointer on x86-64. The narrow element
+    /// stores/loads land at the compact byte offsets; gate-off emits none.
+    #[test]
+    fn aggregate_layout_allows_array_bearing_struct_memory() {
+        let source = "struct HasArr { tag: u8, xs: [i32; 2] } \
+                      fn main() -> i32 { let r = checked { let p: ptr mut HasArr = @alloc(1); \
+                      @ptr_write(p, HasArr { tag: 5, xs: [10, 20] }); let v = @ptr_read(p); \
+                      @free(p, 1); v.xs[0] + v.xs[1] }; @dbg(r); 0 }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let mir = try_lower_first_fn(source, preview)
+            .expect("a struct with a compact array image must lower under compact layout");
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { width: 4, .. })),
+            "the array elements must store narrow (4-byte i32) at their compact stride"
+        );
+        let off = try_lower_first_fn(source, PreviewFeatures::new())
+            .expect("the same program lowers under the default slot model");
+        assert!(
+            off.instructions().iter().all(|inst| !matches!(
+                inst,
+                X86Inst::NarrowStoreIndexed { .. } | X86Inst::NarrowLoadIndexed { .. }
+            )),
+            "gate-off must not emit any narrow access"
+        );
+    }
+
+    /// RUE-1014: a variant-dependent enum whose per-variant aggregate payloads
+    /// overlay one variant-independent scalar image (`Option(Point)`) marshals
+    /// whole through a pointer on x86-64, extending each payload leaf narrow.
+    #[test]
+    fn aggregate_layout_allows_variant_dependent_enum_image() {
+        let source = "struct Point { x: i32, y: i32 } enum Opt { Some(Point), None } \
+                      fn main() -> i32 { let r = checked { let p: ptr mut Opt = @alloc(1); \
+                      @ptr_write(p, Opt.Some(Point { x: 40, y: 2 })); let v = @ptr_read(p); \
+                      @free(p, 1); match v { Opt.Some(pt) => pt.x + pt.y, Opt.None => 0 - 1 } }; \
+                      @dbg(r); 0 }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let mir = try_lower_first_fn(source, preview)
+            .expect("an enum with a variant-independent struct-payload image must lower");
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { width: 4, .. })),
+            "the struct-payload leaves must store narrow (4-byte i32) at their compact offsets"
+        );
+    }
+
+    /// RUE-1014: a struct WITHOUT a variant-independent compact image — it embeds
+    /// an enum whose union payloads overlap (`A(i64)` versus `B(i32, i32)`) — is
+    /// still refused loudly through a pointer on x86-64, not miscompiled.
     #[test]
     fn aggregate_layout_refuses_image_less_struct_memory() {
-        let source = "struct HasArr { xs: [i32; 2] } \
-                      fn main() -> i32 { checked { let p: ptr mut HasArr = @alloc(1); \
-                      @ptr_write(p, HasArr { xs: [1, 2] }); }; 0 }";
+        let source = "enum Bad { A(i64), B(i32, i32) } struct HasBad { b: Bad } \
+                      fn main() -> i32 { checked { let p: ptr mut HasBad = @alloc(1); \
+                      @ptr_write(p, HasBad { b: Bad.A(5) }); }; 0 }";
         let mut preview = PreviewFeatures::new();
         preview.insert(PreviewFeature::AggregateLayout);
         let err = try_lower_first_fn(source, preview)
-            .expect_err("a struct with no compact image must refuse, not miscompile");
+            .expect_err("a struct embedding an imageless enum must refuse, not miscompile");
         assert!(
             format!("{err:?}").contains("aggregate_layout"),
             "refusal must name the feature, got: {err:?}"

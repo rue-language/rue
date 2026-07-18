@@ -125,13 +125,24 @@ pub const fn scale_kind(bytes: u64) -> ScaleKind {
     }
 }
 
-/// Build the scaling plan used for an array projection.
+/// Build the scaling plan used for an array `[]` projection.
+///
+/// Array values are stored slot-shaped in the frame (RUE-975), so element
+/// addressing strides by the *slot* stride — `abi_slot_count(element) *
+/// SLOT_BYTES` — not the compact element size. Under the slot model the two are
+/// identical (every leaf is eight bytes); under the compact layout (ADR-0052)
+/// they diverge, and the slot stride is the physically correct one because
+/// `[]`-indexed arrays only ever address slot-based storage (a frame value or a
+/// by-reference pointer into the caller's slot-based frame). Heap element
+/// stepping uses `@ptr_offset` (`pointer_offset_scale_plan`), which strides by
+/// the compact element size against a compact heap image (RUE-1014).
 #[inline]
 pub fn index_scale_plan(type_pool: &FrozenTypeInternPool, array_type: Type) -> ScalePlan {
     let (element_type, _) =
         types::array_type_def_from_type(type_pool, array_type).unwrap_or((array_type, 0));
+    let slot_stride = u64::from(types::type_slot_count(type_pool, element_type)) * SLOT_BYTES;
     ScalePlan {
-        kind: scale_kind(type_width(type_pool, element_type).bytes),
+        kind: scale_kind(slot_stride),
         purpose: ScalePurpose::IndexOffset,
         overflow: OverflowBehavior::Wrap,
     }

@@ -324,21 +324,26 @@ exit_code = 0
 # RUE-987 image path admits a struct only when every leaf flattens to a scalar
 # position (no array, no imageless enum).
 [[case]]
-name = "array_bearing_struct_through_pointer_still_fails"
-description = "A struct containing a fixed array has no compact image and is still refused through a pointer, not miscompiled."
+name = "array_bearing_struct_through_pointer_roundtrip"
+description = "A struct containing a fixed array marshals whole through a pointer: the array field flattens into the compact image at the compact element stride (RUE-1014)."
+differential_opt = true
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct HasArr { xs: [i32; 2] }
 fn main() -> i32 {
-    checked {
+    let r = checked {
         let p: ptr mut HasArr = @alloc(1);
-        @ptr_write(p, HasArr { xs: [1, 2] });
+        @ptr_write(p, HasArr { xs: [10, 20] });
+        let v = @ptr_read(p);
+        @free(p, 1);
+        v.xs[0] + v.xs[1]
     };
+    @dbg(r);
     0
 }
 """ }]
-compile_fail = true
-error_contains = ["aggregate_layout", "not yet implemented"]
+stdout = "30\n"
+exit_code = 0
 
 # ADR-0052 phase 5.6 (RUE-1000): compact enum memory. A compact enum has a
 # smallest-sufficient unsigned tag at offset 0 and its payload placed at the
@@ -554,22 +559,31 @@ error_contains = ["aggregate_layout", "not yet implemented"]
 # RUE-1000 keeps refusing a nested-aggregate enum payload through a pointer:
 # a struct payload has no single-slot scalar memory image in this phase.
 [[case]]
-name = "compact_enum_struct_payload_still_fails"
-description = "An enum with a struct payload marshalled through a pointer is still refused under --preview aggregate_layout."
+name = "compact_enum_struct_payload_roundtrip"
+description = "An enum with a struct payload marshals whole through a pointer: the struct payload flattens to a variant-independent image (RUE-1014)."
+differential_opt = true
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Res { id: i32 }
 enum Holder { Full(Res), Nothing }
 fn main() -> i32 {
-    checked {
+    let r = checked {
         let p: ptr mut Holder = @alloc(1);
         @ptr_write(p, Holder.Full(Res { id: 7 }));
+        let a = @ptr_read(p);
+        @ptr_write(p, Holder.Nothing);
+        let b = @ptr_read(p);
+        @free(p, 1);
+        let av: i32 = match a { Holder.Full(res) => res.id, Holder.Nothing => 0 - 1 };
+        let bv: i32 = match b { Holder.Full(res) => res.id, Holder.Nothing => 0 - 1 };
+        av * 10 + bv
     };
+    @dbg(r);
     0
 }
 """ }]
-compile_fail = true
-error_contains = ["aggregate_layout", "not yet implemented"]
+stdout = "69\n"
+exit_code = 0
 
 # An IMAGELESS compact enum crossing a CALL boundary by value stays refused
 # (RUE-1005): overlapping union payload slots (`A(i64)` versus `B(i32, i32)`)
@@ -819,18 +833,20 @@ exit_code = 0
 # from the slot stride, so it has no variant-independent compact image and call
 # marshalling for it is not implemented.
 [[case]]
-name = "compact_array_by_value_arg_still_fails"
-description = "A by-value fixed array crossing a call is still refused under --preview aggregate_layout (no variant-independent compact image)."
+name = "compact_array_by_value_arg_roundtrip"
+description = "A by-value fixed array crossing a call marshals through its compact image (compact element stride) and is indexed in the callee at the slot stride (RUE-1014)."
+differential_opt = true
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn sum(a: [i32; 3]) -> i32 { a[0] + a[1] + a[2] }
 fn main() -> i32 {
-    let xs = [1, 2, 3];
-    sum(xs)
+    let xs = [10, 20, 30];
+    @dbg(sum(xs));
+    0
 }
 """ }]
-compile_fail = true
-error_contains = ["aggregate_layout", "not yet implemented"]
+stdout = "60\n"
+exit_code = 0
 
 # RUE-1004 prize: a std-like generic `ArrayBuf(i32)` compiles and runs under
 # --preview aggregate_layout. `ArrayBuf(T)` is `{ buf: ptr mut T, len: u64,
@@ -1048,4 +1064,60 @@ pub fn ArrayBuf(comptime T: type) -> type {
 """ },
 ]
 stdout = "3\n3\n4\n90\n91\n5\n6\n2\n"
+exit_code = 0
+
+# ===========================================================================
+# RUE-1014: variant-dependent enum images. An enum whose payload is an
+# aggregate (Option(Point)) has no single scalar-union image in RUE-1000's
+# sense, but its per-variant payloads flatten to leaves that overlay one
+# variant-independent image, so it marshals through every boundary. Here the
+# enum crosses the sret return boundary (make -> Opt) and is matched.
+# ===========================================================================
+[[case]]
+name = "variant_dependent_enum_struct_payload_sret"
+description = "An Option(struct) enum returned by value marshals through the compact sret image and matches on both variants (RUE-1014)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+enum Opt { Some(Point), None }
+fn make(v: bool) -> Opt { if v { Opt.Some(Point { x: 40, y: 2 }) } else { Opt.None } }
+fn main() -> i32 {
+    match make(true) { Opt.Some(p) => @dbg(p.x + p.y), Opt.None => @dbg(0 - 1) };
+    match make(false) { Opt.Some(p) => @dbg(p.x + p.y), Opt.None => @dbg(0 - 1) };
+    0
+}
+""" }]
+stdout = "42\n-1\n"
+exit_code = 0
+
+# RUE-1014 / RUE-1007: a shorter variant's construction zeroes the payload
+# slots it does not write, so a variant-independent image marshalled to memory
+# carries no residue from a wider variant. Write the wide variant `Big(-1, -1)`
+# to a heap enum, overwrite it with the narrow `Small(7)`, read the second
+# payload word back via a byte pointer: it must be 0, not the wide variant's
+# residue. With the construction zeroing disabled this reads back 0xFF... .
+[[case]]
+name = "compact_enum_variant_overwrite_leaves_no_residue"
+description = "Overwriting a heap enum with a shorter variant leaves no residue from the wider variant's payload (RUE-1014 / RUE-1007 ruling 5)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "--preview", "raw_bytes", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { Big(i64, i64), Small(u8) }
+fn main() -> i32 {
+    let hi = checked {
+        let p: ptr mut E = @alloc(1);
+        @ptr_write(p, E.Big(0 - 1, 0 - 1));
+        @ptr_write(p, E.Small(7));
+        let bytes: ptr mut u8 = @int_to_ptr(@ptr_to_int(p));
+        let b: u8 = @ptr_read(@ptr_offset(bytes, 16));
+        @free(p, 1);
+        let z: i32 = @intCast(b);
+        z
+    };
+    @dbg(hi);
+    0
+}
+""" }]
+stdout = "0\n"
 exit_code = 0
