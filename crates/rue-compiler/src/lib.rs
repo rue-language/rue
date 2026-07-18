@@ -159,8 +159,8 @@ pub use durable_semantics::{
 
 // Backend presentation queries used by the command-line emit modes.
 pub use backend::{
-    Mir, generate_allocated_mir, generate_emitted_asm, generate_liveness_info,
-    generate_lowering_info, generate_mir, generate_regalloc_info,
+    Mir, generate_emitted_asm, generate_liveness_info, generate_lowering_info, generate_mir,
+    generate_regalloc_info,
 };
 
 // Small foundational types callers need to configure or inspect the facade.

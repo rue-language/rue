@@ -249,45 +249,6 @@ pub fn generate_mir(
     }
 }
 
-/// Generate MIR after register allocation for the given target (for debugging/inspection).
-///
-/// This returns the MIR after register allocation, with physical registers.
-/// This is closer to the final assembly that will be emitted.
-pub fn generate_allocated_mir(
-    cfg: &Cfg,
-    type_pool: &FrozenTypeInternPool,
-    interner: &ThreadedRodeo,
-    target: Target,
-) -> CompileResult<Mir> {
-    let num_locals = cfg.num_locals();
-    let num_params = cfg.num_params();
-    let existing_slots = num_locals + num_params;
-
-    match target.arch() {
-        Arch::X86_64 => {
-            // Lower CFG to X86Mir with virtual registers
-            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower()?;
-
-            // Allocate physical registers
-            let (mir, _num_spills, _used_callee_saved) =
-                rue_codegen::x86_64::RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
-
-            Ok(Mir::X86_64(mir))
-        }
-        Arch::Aarch64 => {
-            // Lower CFG to Aarch64Mir with virtual registers
-            let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower()?;
-
-            // Allocate physical registers
-            let (mir, _num_spills, _used_callee_saved) =
-                rue_codegen::aarch64::RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
-
-            Ok(Mir::Aarch64(mir))
-        }
-    }
-}
-
 /// Generate liveness debug information for a CFG.
 ///
 /// This performs liveness analysis on the MIR (before register allocation)
@@ -405,8 +366,6 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
-    use rue_codegen::aarch64::{Aarch64Inst, Reg as Aarch64Reg};
-    use rue_codegen::x86_64::{Reg as X86Reg, X86Inst};
     use rue_linker::ObjectFile;
 
     use super::*;
@@ -514,89 +473,62 @@ drop fn StrBuf(self) { }
             .iter()
             .find(|function| function.analyzed.name == "main")
             .unwrap();
-        let allocated = generate_allocated_mir(
+        let assembly = generate_emitted_asm(
             &main.cfg,
             semantic.type_pool(),
+            semantic.strings(),
             rir.semantic_symbols().interner(),
             target,
         )
         .unwrap();
-
-        let (calls, stores, loads): (Vec<(usize, String)>, Vec<(usize, i32)>, Vec<(usize, i32)>) =
-            match &allocated {
-                Mir::X86_64(mir) => (
-                    mir.instructions()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, instruction)| match instruction {
-                            X86Inst::CallRel { symbol_id } => {
-                                Some((index, mir.get_symbol(*symbol_id).to_owned()))
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                    mir.instructions()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, instruction)| match instruction {
-                            X86Inst::MovMR {
-                                base: X86Reg::Rbp,
-                                offset,
-                                ..
-                            } => Some((index, *offset)),
-                            _ => None,
-                        })
-                        .collect(),
-                    mir.instructions()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, instruction)| match instruction {
-                            X86Inst::MovRM {
-                                base: X86Reg::Rbp,
-                                offset,
-                                ..
-                            } => Some((index, *offset)),
-                            _ => None,
-                        })
-                        .collect(),
-                ),
-                Mir::Aarch64(mir) => (
-                    mir.instructions()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, instruction)| match instruction {
-                            Aarch64Inst::Bl { symbol_id } => {
-                                Some((index, mir.get_symbol(*symbol_id).to_owned()))
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                    mir.instructions()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, instruction)| match instruction {
-                            Aarch64Inst::Str {
-                                base: Aarch64Reg::Fp,
-                                offset,
-                                ..
-                            } => Some((index, *offset)),
-                            _ => None,
-                        })
-                        .collect(),
-                    mir.instructions()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, instruction)| match instruction {
-                            Aarch64Inst::Ldr {
-                                base: Aarch64Reg::Fp,
-                                offset,
-                                ..
-                            } => Some((index, *offset)),
-                            _ => None,
-                        })
-                        .collect(),
-                ),
-            };
+        let instructions = assembly
+            .lines()
+            .map(|line| line.split_once(":   ").map_or(line, |(_, inst)| inst))
+            .collect::<Vec<_>>();
+        let call_prefix = match target.arch() {
+            Arch::X86_64 => "call ",
+            Arch::Aarch64 => "bl ",
+        };
+        let calls = instructions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| {
+                instruction
+                    .strip_prefix(call_prefix)
+                    .map(|symbol| (index, symbol.to_owned()))
+            })
+            .collect::<Vec<_>>();
+        let frame_offset = |instruction: &str, store: bool| match target.arch() {
+            Arch::X86_64 => {
+                let offset = if store {
+                    instruction.strip_prefix("mov [rbp")?.split_once("],")?.0
+                } else {
+                    instruction.split_once(", [rbp")?.1.strip_suffix(']')?
+                };
+                offset.parse::<i32>().ok()
+            }
+            Arch::Aarch64 => {
+                let operation = if store { "str " } else { "ldr " };
+                instruction
+                    .strip_prefix(operation)?
+                    .split_once(", [fp, #")?
+                    .1
+                    .strip_suffix(']')?
+                    .parse::<i32>()
+                    .ok()
+            }
+        };
+        let frame_accesses = |store| {
+            instructions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, instruction)| {
+                    frame_offset(instruction, store).map(|offset| (index, offset))
+                })
+                .collect::<Vec<_>>()
+        };
+        let stores = frame_accesses(true);
+        let loads = frame_accesses(false);
 
         let concats: Vec<_> = calls
             .iter()
