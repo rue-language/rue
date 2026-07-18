@@ -1,0 +1,113 @@
+// jsonfmt — validate and compact a JSON file using std.json (RUE-690).
+//
+// Usage: jsonfmt <input.json> <output.json>
+//
+// The compact result is written both to the output file and stdout. This makes
+// the example a conventional Unix program while keeping its behavior easy to
+// pin in the CLI integration suite.
+
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const OptStr = std.option.Option(StrBuf);
+const OptBytes = std.option.Option(Bytes);
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+const WriteRes = std.result.Result((), std.fs.FileError);
+const JsonRes = std.result.Result(std.json.Json, std.json.ParseError);
+
+fn read_file(borrow path: StrBuf) -> OptBytes {
+    let O = OptBytes;
+    let mut data = Bytes.new();
+    let mut file = match std.fs.File.open(borrow path) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(e) => return O.None,
+    };
+    let chunk: u64 = 65536;
+    loop {
+        data.reserve(chunk);
+        let count = match file.read(inout data) {
+            ReadRes.Ok(n) => n,
+            ReadRes.Err(e) => return O.None,
+        };
+        if count == 0 { break; }
+    }
+    let _ = file.close();
+    O.Some(data)
+}
+
+fn bytes_to_string(borrow data: Bytes) -> StrBuf {
+    let mut out = StrBuf.with_capacity(data.len());
+    let mut i: u64 = 0;
+    while i < data.len() {
+        out.push(data.get_or(i, 0));
+        i = i + 1;
+    }
+    out
+}
+
+fn string_to_bytes(borrow text: StrBuf) -> Bytes {
+    let mut out = Bytes.with_capacity(text.len());
+    let mut i: u64 = 0;
+    while i < text.len() {
+        out.push(StrBuf.byte_at_borrowed(borrow text, i));
+        i = i + 1;
+    }
+    out
+}
+
+fn write_file(borrow path: StrBuf, borrow text: StrBuf) -> bool {
+    let bytes = string_to_bytes(borrow text);
+    let mut file = match std.fs.File.create(borrow path) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(e) => return false,
+    };
+    match file.write_all(borrow bytes) {
+        WriteRes.Ok(unit) => {},
+        WriteRes.Err(e) => return false,
+    }
+    match file.close() {
+        WriteRes.Ok(unit) => true,
+        WriteRes.Err(e) => false,
+    }
+}
+
+fn main() -> i32 {
+    let input_path = match std.env.arg(1) {
+        OptStr.Some(path) => path,
+        OptStr.None => {
+            println("usage: jsonfmt <input.json> <output.json>");
+            return 1;
+        },
+    };
+    let output_path = match std.env.arg(2) {
+        OptStr.Some(path) => path,
+        OptStr.None => {
+            println("usage: jsonfmt <input.json> <output.json>");
+            return 1;
+        },
+    };
+    let bytes = match read_file(borrow input_path) {
+        OptBytes.Some(data) => data,
+        OptBytes.None => {
+            println("error: cannot read input file");
+            return 2;
+        },
+    };
+    let source = bytes_to_string(borrow bytes);
+    let value = match std.json.parse(source) {
+        JsonRes.Ok(v) => v,
+        JsonRes.Err(e) => {
+            println("error: invalid JSON");
+            return 3;
+        },
+    };
+    let mut compact = std.json.to_string(value);
+    compact.push(10);
+    if !write_file(borrow output_path, borrow compact) {
+        println("error: cannot write output file");
+        return 4;
+    }
+    print(compact);
+    0
+}

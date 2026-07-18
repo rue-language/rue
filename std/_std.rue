@@ -43,6 +43,7 @@ pub const bitset = @import("bitset.rue");
 // Algorithms & text (Standard library v1, M3).
 pub const ascii = @import("ascii.rue");
 pub const strings = @import("strings.rue");
+pub const json = @import("json.rue");
 pub const sort = @import("sort.rue");
 pub const rand = @import("rand.rue");
 
