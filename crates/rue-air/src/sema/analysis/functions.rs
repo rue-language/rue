@@ -96,6 +96,7 @@ impl<'a> BodySema<'a> {
         struct_type: Type,
         has_self: bool,
         self_mode: RirParamMode,
+        self_is_mut: bool,
     ) -> CompileResult<(
         AnalyzedFunction,
         Vec<CompileWarning>,
@@ -155,6 +156,7 @@ impl<'a> BodySema<'a> {
             None,
             false,
             false,
+            self_is_mut,
         )?;
 
         Ok((
@@ -221,6 +223,9 @@ impl<'a> BodySema<'a> {
             None,
             /* is_destructor */ true,
             false,
+            // A destructor's `self` stays immutable; mutate via a `let mut`
+            // rebind if needed.
+            false,
         )?;
 
         reject_self_move_in_destructor(&air, full_name)?;
@@ -284,6 +289,9 @@ impl<'a> BodySema<'a> {
             None,
             false,
             allow_unused_variable,
+            // Free and associated functions have no receiver, so no binding
+            // can be a mutable by-value `self`.
+            false,
         )
     }
 
@@ -309,6 +317,7 @@ impl<'a> BodySema<'a> {
         value_subst: Option<&std::collections::HashMap<Spur, ConstValue>>,
         is_destructor: bool,
         allow_unused_variable: bool,
+        self_is_mut: bool,
     ) -> CompileResult<(
         Air,
         u32,
@@ -351,6 +360,10 @@ impl<'a> BodySema<'a> {
                 ty: *ptype,
                 mode: *mode,
                 is_comptime: *is_comptime,
+                // Only the synthetic `self` entry of a `mut self` method can
+                // be a mutable by-value binding; ordinary parameters have no
+                // `mut` form.
+                is_mut: self_is_mut && *pname == self_sym && *mode == RirParamMode::Normal,
             });
             // Inout and Borrow parameters are passed by reference.
             // Comptime parameters are VALUE params (like `comptime n: i32`), passed by value.
@@ -591,6 +604,7 @@ impl<'a> BodySema<'a> {
         body: InstRef,
         type_subst: &std::collections::HashMap<Spur, Type>,
         value_subst: &std::collections::HashMap<Spur, ConstValue>,
+        self_is_mut: bool,
     ) -> CompileResult<(
         Air,
         u32,
@@ -616,6 +630,7 @@ impl<'a> BodySema<'a> {
             Some(value_subst),
             false,
             false,
+            self_is_mut,
         )
     }
 
@@ -633,6 +648,7 @@ impl<'a> BodySema<'a> {
         self_type: Type,
         captured_comptime_values: &std::collections::HashMap<Spur, ConstValue>,
         enclosing_type_subst: &std::collections::HashMap<Spur, Type>,
+        self_is_mut: bool,
     ) -> CompileResult<(
         Air,
         u32,
@@ -661,6 +677,7 @@ impl<'a> BodySema<'a> {
             Some(captured_comptime_values),
             false,
             false,
+            self_is_mut,
         )
     }
 
@@ -720,6 +737,9 @@ impl<'a> BodySema<'a> {
             Some(&type_subst),
             Some(captured_comptime_values),
             /* is_destructor */ true,
+            false,
+            // Anonymous-struct destructors keep an immutable `self`, matching
+            // named `drop fn`.
             false,
         )?;
 

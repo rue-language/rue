@@ -184,6 +184,10 @@ impl<'a> BodySema<'a> {
                     ConstValue::Bool(_) => Type::BOOL,
                     ConstValue::Type(t) => *t,
                     ConstValue::Function(_) => Type::COMPTIME_TYPE,
+                    // No comptime parameter has a string type, so a captured
+                    // string value never occurs (RUE-957); skip rather than
+                    // fabricate a type for it.
+                    ConstValue::String(_) => continue,
                     ConstValue::Unit => Type::UNIT,
                 };
                 param_vars.entry(*name).or_insert(ParamVarInfo {
@@ -469,7 +473,8 @@ impl<'a> BodySema<'a> {
             // rejecting it as field access on a non-struct (RUE-632). A
             // constant inlines a fresh value, so no move state applies.
             if let Some(module_id) = base_type.as_module() {
-                return self.analyze_module_type_member_access(air, module_id, field, field_span);
+                return self
+                    .analyze_module_type_member_access(air, module_id, field, field_span, ctx);
             }
 
             let struct_id = match base_type.kind() {

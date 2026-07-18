@@ -637,6 +637,94 @@ fn main() -> i32 {
 }
 """
 
+[[case]]
+name = "mut_self_mutates_callee_copy"
+spec = ["6.4:35", "6.4:37"]
+description = "mut self permits field mutation and whole-receiver reassignment in the body"
+source = """
+struct Counter {
+    n: i32,
+    fn finish(mut self, bonus: i32) -> i32 {
+        self.n = self.n + bonus;
+        self.n
+    }
+    fn replace(mut self) -> i32 {
+        self = Counter { n: 40 };
+        self.n + 2
+    }
+}
+
+fn main() -> i32 {
+    let c = Counter { n: 40 };
+    let a = c.finish(2);
+    let d = Counter { n: 0 };
+    a + d.replace() - 42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "mut_self_no_caller_writeback"
+spec = ["6.4:35"]
+description = "mut self mutates the callee's copy only; a Copy caller value is unaffected"
+source = """
+@copy
+struct P {
+    n: i32,
+    fn bump(mut self) -> i32 {
+        self.n = self.n + 1;
+        self.n
+    }
+}
+
+fn main() -> i32 {
+    let p = P { n: 20 };
+    let a = p.bump();
+    a + p.n
+}
+"""
+exit_code = 41
+
+[[case]]
+name = "mut_self_allows_inout_method_call"
+spec = ["6.4:35"]
+description = "a mut self receiver is a mutable place for inout self calls"
+source = """
+struct P {
+    n: i32,
+    fn add(inout self, v: i32) { self.n = self.n + v; }
+    fn total(mut self) -> i32 {
+        self.add(2);
+        self.add(30);
+        self.n
+    }
+}
+
+fn main() -> i32 {
+    let p = P { n: 10 };
+    p.total()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "bare_self_mutation_rejected"
+spec = ["6.4:36"]
+compile_fail = true
+error_contains = ["E0203", "mut self"]
+description = "a bare self receiver stays immutable; the diagnostic points at mut self"
+source = """
+struct P {
+    n: i32,
+    fn poke(self) { self.n = 3; }
+}
+
+fn main() {
+    let p = P { n: 0 };
+    p.poke();
+}
+"""
+
 # =============================================================================
 # Fields and methods are separate name spaces (6.4:33) — RUE-299
 # =============================================================================

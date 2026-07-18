@@ -80,8 +80,13 @@ pub enum SemanticExportConstValue {
     Integer(i128),
     Bool(bool),
     Type(SemanticExportType),
-    Function { file_id: FileId, name: Arc<str> },
+    Function {
+        file_id: FileId,
+        name: Arc<str>,
+    },
     Unit,
+    /// String constant content (RUE-957), carried as the literal text.
+    String(Arc<str>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -583,6 +588,7 @@ impl<'a> DeclarationShells<'a> {
                         return_type,
                         params,
                         self_mode,
+                        self_is_mut,
                         directives,
                         ..
                     } = &self.sema.rir.get(pending.declaration).data
@@ -643,6 +649,7 @@ impl<'a> DeclarationShells<'a> {
                                 struct_type: Type::new_struct(id),
                                 has_self: *has_self,
                                 self_mode: *self_mode,
+                                self_is_mut: *self_is_mut,
                                 params: range,
                                 return_type: return_type_value,
                                 body,
@@ -1623,6 +1630,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                             SemanticExportConstValue::Type(self.export_type(t, &mut Vec::new())?)
                         }
                         ConstValue::Unit => SemanticExportConstValue::Unit,
+                        ConstValue::String(content) => SemanticExportConstValue::String(Arc::from(
+                            self.interner.resolve(&content),
+                        )),
                         ConstValue::Function(symbol) => {
                             let fi = self
                                 .functions

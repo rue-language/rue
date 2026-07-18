@@ -472,6 +472,12 @@ impl<'a> AstGen<'a> {
             Some(receiver) => self.convert_param_mode(receiver.mode),
             None => RirParamMode::Normal,
         };
+        // `mut self` (by-value receiver binding mutably in the body) is
+        // carried separately from the mode so signatures stay mode-only.
+        let self_is_mut = method
+            .receiver
+            .as_ref()
+            .is_some_and(|receiver| receiver.is_mut);
 
         // Emit methods as FnDecl instructions with has_self flag.
         // Sema uses has_self to add the implicit self parameter for methods,
@@ -490,6 +496,7 @@ impl<'a> AstGen<'a> {
                 body,
                 has_self,
                 self_mode,
+                self_is_mut,
                 method.span,
             )
             .record_failure(&mut self.payload_error);
@@ -586,6 +593,7 @@ impl<'a> AstGen<'a> {
                 body,
                 false,
                 RirParamMode::Normal,
+                false,
                 func.span,
             )
             .record_failure(&mut self.payload_error);

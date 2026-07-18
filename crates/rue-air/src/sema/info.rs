@@ -69,6 +69,10 @@ pub struct MethodInfo {
     /// by-value, `Borrow`, or `Inout`; RUE-15). Determines how the receiver
     /// is passed at call sites (by value vs. by reference / autoref).
     pub self_mode: rue_rir::RirParamMode,
+    /// Whether the receiver is declared `mut self` (by-value receiver that
+    /// binds mutably in the method body). Body-local only: call sites and
+    /// structural identity (`AnonMethodSig`) deliberately ignore it.
+    pub self_is_mut: bool,
     /// Parameter data (names, types, modes, comptime flags) stored in arena.
     /// Access via `arena.names(params)`, `arena.types(params)`, etc.
     /// Note: This excludes `self` if present - only explicit parameters.

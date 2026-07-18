@@ -34,6 +34,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 body,
                 has_self,
                 self_mode,
+                self_is_mut,
                 ..
             } = &method_inst.data
             {
@@ -81,6 +82,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                         struct_type,
                         has_self: *has_self,
                         self_mode: *self_mode,
+                        self_is_mut: *self_is_mut,
                         params: param_range,
                         return_type: ret_type,
                         body: *body,
@@ -122,6 +124,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 body,
                 has_self,
                 self_mode,
+                self_is_mut,
                 ..
             } = &method_inst.data
             {
@@ -172,6 +175,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                         struct_type,
                         has_self: *has_self,
                         self_mode: *self_mode,
+                        self_is_mut: *self_is_mut,
                         params: param_range,
                         return_type: ret_type,
                         body: *body,
@@ -270,6 +274,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 body,
                 has_self,
                 self_mode,
+                self_is_mut,
                 ..
             } = &method_inst.data
             {
@@ -336,6 +341,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                         struct_type,
                         has_self: *has_self,
                         self_mode: *self_mode,
+                        self_is_mut: *self_is_mut,
                         params: param_range,
                         return_type: ret_type,
                         body: *body,

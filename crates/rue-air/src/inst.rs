@@ -727,6 +727,9 @@ impl ConstValueTag {
             crate::sema::ConstValue::Unit => Self::Unit,
             crate::sema::ConstValue::Type(_) => Self::Type,
             crate::sema::ConstValue::Function(_) => Self::Function,
+            crate::sema::ConstValue::String(_) => {
+                unreachable!("string const values are rejected before tag classification")
+            }
         }
     }
 
@@ -769,6 +772,17 @@ pub(crate) fn encode_const_values(
         operation: "stage",
         kind,
     };
+    // No comptime parameter has a string type, so the comptime engine never
+    // yields a string const as a specialization argument (RUE-957). Reject
+    // up front so the tag/payload scheme below stays scalar-only.
+    if values
+        .iter()
+        .any(|value| matches!(value, crate::sema::ConstValue::String(_)))
+    {
+        return Err(error(AirBuildErrorKind::ProducerInvariant(
+            "string constants are not valid comptime argument values",
+        )));
+    }
     let word_count = values.iter().try_fold(0usize, |count, value| {
         count.checked_add(1 + ConstValueTag::of(value).payload_width())
     });
@@ -801,6 +815,9 @@ pub(crate) fn encode_const_values(
                     u32::try_from(value.into_usize())
                         .map_err(|_| error(AirBuildErrorKind::ResourceLimit))?,
                 );
+            }
+            crate::sema::ConstValue::String(_) => {
+                unreachable!("string const values are rejected before encoding")
             }
         }
     }

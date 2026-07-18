@@ -219,7 +219,9 @@ pub const DURABLE_SEMANTIC_SCHEMA_VERSION: DurableSemanticSchemaVersion =
     DurableSemanticSchemaVersion {
         major: 1,
         minor: 0,
-        implementation_epoch: 1,
+        // Epoch 2: const string values joined the durable const payloads
+        // (SemanticImportConstValue::String, RUE-957).
+        implementation_epoch: 2,
     };
 
 const DURABLE_SEMANTIC_COMPATIBLE_MINORS: &[u16] = &[0];
@@ -909,6 +911,9 @@ pub(crate) fn convert_declaration_semantics(
                         DurableConstValue::Type(ty(t, merged, definitions)?)
                     }
                     SemanticExportConstValue::Unit => DurableConstValue::Unit,
+                    SemanticExportConstValue::String(content) => {
+                        DurableConstValue::String(content.clone())
+                    }
                     SemanticExportConstValue::Function { file_id, name } => {
                         DurableConstValue::Function(
                             key_for(*file_id, name, StableDefinitionKind::Function, None).ok_or(

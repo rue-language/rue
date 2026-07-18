@@ -303,6 +303,11 @@ pub(crate) struct ParamInfo {
     /// `RirParam::is_comptime`). Used to allow forwarding a comptime
     /// parameter to another function's comptime parameter (spec 4.14:5).
     pub is_comptime: bool,
+    /// Whether the binding is mutable in the body despite being by-value
+    /// (`mode == Normal`). Today this is only true for a `mut self`
+    /// receiver; mutations affect the callee's copy only, with no
+    /// write-back to the caller (that is `Inout`).
+    pub is_mut: bool,
 }
 
 /// How a call argument (or method receiver) loans its root variable for the
@@ -815,6 +820,14 @@ pub enum ConstValue {
     /// be used as the callee of a call expression, but cannot be materialized
     /// as ordinary runtime values.
     Function(lasso::Spur),
+    /// String value - stores the interned literal content (RUE-957).
+    ///
+    /// A string constant's use sites materialize it exactly like an inline
+    /// string literal: the content joins the function's local string table
+    /// and lowers to `.rodata`-backed `str` (`{ptr, len}`). String constants
+    /// are not usable as comptime arguments (no `comptime s: str` parameters
+    /// exist), so specialization serialization rejects them.
+    String(lasso::Spur),
     /// Unit value - the value of `()`.
     Unit,
 }
@@ -878,6 +891,12 @@ impl ConstValue {
             ConstValue::Bool(_) => Type::BOOL,
             ConstValue::Type(_) => Type::COMPTIME_TYPE,
             ConstValue::Function(_) => Type::COMPTIME_TYPE,
+            // The `str` struct type lives in the type pool, which this
+            // pool-free helper cannot reach. Both callers type-check comptime
+            // arguments, which string constants never reach (the comptime
+            // engine treats them as non-evaluable), so this arm only has to
+            // avoid colliding with a real comptime parameter type.
+            ConstValue::String(_) => Type::ERROR,
             ConstValue::Unit => Type::UNIT,
         }
     }

@@ -309,3 +309,89 @@ fn main() -> i32 { O.x }
 """
 compile_fail = true
 error_contains = ["E0434"]
+
+# =============================================================================
+# String constants (6.5:16)
+# =============================================================================
+
+[[case]]
+name = "string_const_basic"
+spec = ["6.5:2", "6.5:16", "6.5:17"]
+description = "A string-literal initializer declares a str constant usable like an inline literal (RUE-957)"
+source = """
+const GREETING: str = "hello";
+const EMPTY: str = "";
+
+fn main() -> i32 {
+    let g = GREETING;
+    @intCast(g.len() + GREETING.len() + EMPTY.len())
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "string_const_alias"
+spec = ["6.5:16"]
+description = "A constant initialized from another string constant denotes the same value"
+source = """
+const A: str = "rue";
+const B: str = A;
+
+fn main() -> i32 {
+    @intCast(B.len() + A.len())
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "string_const_module_member"
+spec = ["6.5:16"]
+description = "A pub string constant is usable through module member access"
+source = """
+const util = @import("util");
+
+fn main() -> i32 {
+    let n = util.NAME;
+    @intCast(n.len() + util.NAME.len())
+}
+"""
+aux_files = { "util.rue" = "pub const NAME: str = \"rue-util\";" }
+exit_code = 16
+
+[[case]]
+name = "unannotated_string_const_rejected"
+spec = ["6.5:4", "6.5:16"]
+description = "String constants require an annotation like every value constant; the help names str"
+source = """
+const S = "hello";
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0475", "const S: str = ...;"]
+
+[[case]]
+name = "string_const_non_str_annotation_rejected"
+spec = ["6.5:5", "6.5:16"]
+description = "A string constant's annotation must be str; other annotations are a type mismatch"
+source = """
+const S: i64 = "hello";
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i64, found str"]
+
+[[case]]
+name = "string_const_not_comptime_evaluable"
+spec = ["6.5:2", "6.5:16"]
+description = "String values stay outside comptime blocks"
+source = """
+const S: str = "hello";
+
+fn main() -> i32 {
+    comptime { S }
+}
+"""
+compile_fail = true
+error_contains = ["comptime"]

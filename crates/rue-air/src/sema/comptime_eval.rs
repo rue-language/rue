@@ -1146,6 +1146,15 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                         info.is_pub,
                         span,
                     )?;
+                    // String constants stay out of the comptime engine: no
+                    // engine operation consumes them (no comptime string
+                    // params or string arithmetic), so treat a reference as
+                    // non-evaluable instead of leaking a value the arms
+                    // below would mis-type (RUE-957). Use sites materialize
+                    // string constants through the runtime path instead.
+                    if matches!(info.value, super::ConstValue::String(_)) {
+                        return Ok(None);
+                    }
                     return Ok(Some(info.value));
                 }
                 // 7. Type names used as values (e.g. `Point` in

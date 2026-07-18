@@ -398,6 +398,7 @@ fn canonical_const_value(
             SemanticImportConstValue::Function(key.clone())
         }
         SemanticImportConstValue::Unit => SemanticImportConstValue::Unit,
+        SemanticImportConstValue::String(value) => SemanticImportConstValue::String(value.clone()),
     })
 }
 

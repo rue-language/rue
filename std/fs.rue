@@ -418,11 +418,10 @@ pub struct File {
     // out of the caller's binding means the caller's scope-exit drop does not
     // fire; the sentinel (`fd = -1`) makes THIS value's own scope-exit drop a
     // no-op, so the fd is closed exactly once (ADR-0057 §4, double-close guard).
-    fn close(self) -> result.Result((), FileError) {
+    fn close(mut self) -> result.Result((), FileError) {
         let R = result.Result((), FileError);
-        let mut me = self;
-        let fd = me.fd;
-        me.fd = -1;
+        let fd = self.fd;
+        self.fd = -1;
         if fd < 0 {
             return R.Ok(());
         }

@@ -287,6 +287,16 @@ impl<'a> BodySema<'a> {
                         },
                         inst.span,
                     )),
+                    // The engine never produces string values (string consts
+                    // are non-evaluable in comptime position, RUE-957); keep
+                    // a clean diagnostic should that ever change.
+                    Some(ConstValue::String(_)) => Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: "string values are not supported in comptime blocks"
+                                .to_string(),
+                        },
+                        inst.span,
+                    )),
                     Some(ConstValue::Unit) => {
                         let ty = Type::UNIT;
                         let air_ref = air.add_inst(AirInst {
@@ -488,16 +498,7 @@ impl<'a> BodySema<'a> {
                 // Provide more specific error based on whether it's a param or local
                 match trace.base {
                     AirPlaceBase::Param(_) => {
-                        return Err(CompileError::new(
-                            ErrorKind::AssignToImmutable(root_name.clone()),
-                            span,
-                        )
-                        .with_help(format!(
-                            "consider making parameter `{}` inout: `inout {}: {}`",
-                            root_name,
-                            root_name,
-                            root_type.safe_name_with_pool(Some(&self.type_pool))
-                        )));
+                        return Err(self.immutable_param_assign_error(&root_name, root_type, span));
                     }
                     AirPlaceBase::Local(_) => {
                         return Err(CompileError::new(
@@ -658,16 +659,7 @@ impl<'a> BodySema<'a> {
                 let root_type = trace.base_type;
                 match trace.base {
                     AirPlaceBase::Param(_) => {
-                        return Err(CompileError::new(
-                            ErrorKind::AssignToImmutable(root_name.clone()),
-                            span,
-                        )
-                        .with_help(format!(
-                            "consider making parameter `{}` inout: `inout {}: {}`",
-                            root_name,
-                            root_name,
-                            root_type.safe_name_with_pool(Some(&self.type_pool))
-                        )));
+                        return Err(self.immutable_param_assign_error(&root_name, root_type, span));
                     }
                     AirPlaceBase::Local(_) => {
                         return Err(CompileError::new(
