@@ -57,5 +57,6 @@ description = "help documents normal, export, audit, selftest, and scaling modes
 source_path = "examples/harbor/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["help"]
+timeout_ms = 30000
 exit_code = 0
 stdout_contains = ["usage:", "simulate", "routes", "scenario", "timeline", "selftest", "stressN"]
