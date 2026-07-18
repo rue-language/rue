@@ -128,6 +128,12 @@ pub enum ResidualValuePlan {
         variant_index: u32,
         payload: Vec<(MaterializedValue, ValueShape)>,
         total_slots: u32,
+        /// Under the compact layout (ADR-0052 ruling 5, RUE-1007/RUE-1014), the
+        /// payload slots not written by this (shorter) variant are zeroed so a
+        /// variant-independent memory image marshalled from this value carries no
+        /// residue from a wider variant. `false` with the gate off, keeping the
+        /// slot-model construction byte-identical.
+        zero_unused_payload: bool,
     },
     EnumPayloadGet {
         base_slots: Vec<VReg>,
@@ -1081,6 +1087,7 @@ fn residual_plan<A: ValueLowerAdapter>(
                 })
                 .collect(),
             total_slots: ctx.type_slot_count(ctx.cfg.get_inst(value).ty),
+            zero_unused_payload: ctx.type_pool.compact_layout(),
         },
         ResidualInput::EnumPayloadGet {
             base,

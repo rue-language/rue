@@ -638,6 +638,42 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
+    // ADR-0052 phase 5.10 (RUE-1014): the variant-dependent-enum-image and
+    // compact-array heap round-trips reach memory through `@alloc`, outside the
+    // oracle model (same gap as the enum/struct heap cases above).
+    Entry::new(
+        "cli.aggregate_layout",
+        "array_bearing_struct_through_pointer_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_enum_struct_payload_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_enum_variant_overwrite_leaves_no_residue",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    // RUE-1014: the real-std json/priority-queue cases under the gate reach memory
+    // through the std allocators (`@alloc_bytes` in StrBuf, `@int_to_ptr` in
+    // ArrayBuf.new()), outside the oracle model.
+    Entry::new(
+        "cli.aggregate_layout_std_sweep",
+        "std_json_parse_variant_under_gate",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout_std_sweep",
+        "std_priority_queue_option_pair_under_gate",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
     Entry::new(
         "cli.partial_move_depth",
         "disjoint_sibling_after_subfield_move_ok",

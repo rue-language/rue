@@ -1,24 +1,27 @@
-# std-under-aggregate_layout sweep (ADR-0052, RUE-987).
+# std-under-aggregate_layout sweep (ADR-0052, RUE-987 / RUE-1014).
 #
 # The compact physical layout (`--preview aggregate_layout`) is only useful if the
 # standard library's data-structure PATTERNS compile and run correctly under it.
-# This suite is the permanent CI home for that sweep: each case is a self-contained
-# program that exercises a real std shape — heap-backed containers, byte buffers,
-# nested records, and struct elements — through the compact-layout machinery
-# (narrow scalar access RUE-989, compact enum memory RUE-1000, call-boundary
-# marshalling RUE-1004/1005, zero-padding RUE-1007, and whole compact-struct
-# marshalling through typed pointers RUE-987). Every `stdout`/`exit_code` here is
-# the gate-OFF oracle: the compact-layout run must be byte-identical, so a
-# miscompile changes the pinned output and fails. `differential_opt` additionally
-# pins identical behavior across every optimization level.
+# This suite is the permanent CI home for that sweep: each case exercises a real
+# std shape — heap-backed containers, byte buffers, nested records, struct
+# elements, and now variant-dependent enum images and compact arrays — through the
+# compact-layout machinery (narrow scalar access RUE-989, compact enum memory
+# RUE-1000, call-boundary marshalling RUE-1004/1005, zero-padding RUE-1007, whole
+# compact-struct marshalling through typed pointers RUE-987, and variant-dependent
+# enum images plus compact arrays through pointers and across calls RUE-1014).
+# Every `stdout`/`exit_code` here is the gate-OFF oracle: the compact-layout run
+# must be byte-identical, so a miscompile changes the pinned output and fails.
+# `differential_opt` additionally pins identical behavior across every
+# optimization level.
 #
-# Programs are self-contained rather than `@import("std")` because importing the
-# real std root eagerly code-generates every module including `std.json`, whose
-# `Json` enum has variant-dependent aggregate payloads (an imageless enum) that
-# marshalling through a pointer does not yet support — so a full-std import is
-# still refused under the gate (see the refusal sentinels at the end and
-# rue-sweep.meta). These programs mirror the std container/string patterns exactly
-# while staying within what the gate supports today.
+# Most programs are self-contained mirrors of the std container/string/record
+# patterns; the RUE-1014 additions at the end drive the REAL std via
+# `@import("std")` (RUE_STD_PATH), because a full-std import — including
+# `std.json`, whose `Json` enum has variant-dependent aggregate payloads — now
+# COMPILES under the gate: the `Json` payloads overlay a single variant-
+# independent scalar image, so the imageless-enum blocker RUE-987 recorded is
+# cleared. An enum whose per-variant payloads genuinely overlap or disagree on
+# leaf offset has no such image and stays loudly refused (see the sentinel).
 
 [section]
 id = "cli.aggregate_layout_std_sweep"
@@ -195,19 +198,22 @@ stdout = "3\n4\n90\n91\n5\n6\n"
 exit_code = 0
 
 # ---------------------------------------------------------------------------
-# Refusal sentinels: constructs still staged for a follow-up must fail LOUDLY
-# (a clear diagnostic), never miscompile. If a future change lifts one of these,
-# the sentinel flips to a hard failure and forces a deliberate update here.
+# RUE-1014: variant-dependent enum images and compact arrays. The two shapes the
+# earlier rungs left refused now execute — an enum with a struct payload
+# (Option(struct)) whose per-variant payloads overlay one variant-independent
+# scalar image, and a fixed array crossing a call by value (marshalled at the
+# compact element stride). Both are pinned to the gate-OFF oracle.
 # ---------------------------------------------------------------------------
 
-# An enum with a struct (aggregate) payload has no variant-independent memory
-# image — the payload's leaves are not a scalar union that agrees across variants —
-# so returning Option(struct) by value across a call is still refused. This is the
-# `ArrayBuf(struct).get -> Option(T)` shape; use a by-value `get -> T` /
-# `pop_or -> T` accessor (see arraybuf_compact_struct_element) under the gate.
+# An enum with a struct (aggregate) payload now has a variant-independent memory
+# image: the payload's leaves flatten to a scalar union that agrees across
+# variants, so returning Option(struct) by value across a call marshals through
+# the compact sret image (RUE-1014). This is the `ArrayBuf(struct).get -> Option(T)`
+# shape, now supported under the gate.
 [[case]]
-name = "option_struct_return_still_refuses"
-description = "Returning an enum with a struct payload (Option(struct)) by value is still refused under the gate, not miscompiled (imageless enum)."
+name = "option_struct_return_roundtrip"
+description = "Returning an enum with a struct payload (Option(struct)) by value round-trips under the gate: the struct payload flattens to a variant-independent image (RUE-1014)."
+differential_opt = true
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct P { x: i32, y: i32 }
@@ -215,18 +221,22 @@ enum Opt { Some(P), None }
 fn make(v: bool) -> Opt { if v { Opt.Some(P { x: 1, y: 2 }) } else { Opt.None } }
 fn main() -> i32 {
     match make(true) { Opt.Some(p) => @dbg(p.x + p.y), Opt.None => @dbg(-1) };
+    match make(false) { Opt.Some(p) => @dbg(p.x + p.y), Opt.None => @dbg(-1) };
     0
 }
 """ }]
-compile_fail = true
-error_contains = ["aggregate_layout", "not yet implemented"]
+stdout = "3\n-1\n"
+exit_code = 0
 
-# A fixed array crossing a call by value (return) has no variant-independent
-# compact image — its compact stride differs from the slot stride — so it is still
-# refused. This is the std.binary `u32_to_be_bytes -> [u8; 4]` shape.
+# A fixed array crossing a call by value (return) now marshals through the
+# caller's sret buffer as its compact image — `count` elements at the compact
+# element stride, each extended from its physical width (RUE-1014). This is the
+# std.binary `u32_to_be_bytes -> [u8; 4]` shape. The returned array is then
+# `[]`-indexed as a frame value at the slot stride.
 [[case]]
-name = "array_crossing_call_still_refuses"
-description = "A fixed array returned by value across a call is still refused under the gate, not miscompiled (compact stride != slot stride)."
+name = "array_crossing_call_roundtrip"
+description = "A fixed array returned by value across a call marshals through its compact image and is then indexed as a frame value (RUE-1014)."
+differential_opt = true
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn make() -> [u8; 4] { [1, 2, 3, 4] }
@@ -234,6 +244,111 @@ fn main() -> i32 {
     let a = make();
     let s: i32 = @intCast(a[0]) + @intCast(a[3]);
     @dbg(s);
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+
+# The REAL std.json parser under the gate: `parse` returns
+# `Result(Json, ParseError)` by value across a call, and `Json` — an enum with
+# variant-dependent aggregate payloads (StrBuf / ArrayBuf(Json) / Object) — is
+# marshalled through its variant-independent scalar image at every boundary
+# (heap pointer, sret, by-value). This is the exact full-`@import("std")`
+# construct RUE-987 recorded as the last blocker; classifying the parsed value
+# pins the top-level variant (an array -> 5).
+[[case]]
+name = "std_json_parse_variant_under_gate"
+description = "The real std.json parser compiles and runs under the gate: Json's variant-dependent aggregate payloads marshal through one variant-independent image (RUE-1014)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "--preview", "raw_bytes", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const json = std.json;
+const result = std.result;
+const StrBuf = std.strbuf.StrBuf;
+const PR = result.Result(json.Json, json.ParseError);
+fn classify(v: json.Json) -> i32 {
+    match v {
+        json.Json.Null => 0,
+        json.Json.Bool(b) => if b { 1 } else { 2 },
+        json.Json.Number(n) => 3,
+        json.Json.String(s) => 4,
+        json.Json.Array(a) => 5,
+        json.Json.Object(o) => 6,
+    }
+}
+fn main() -> i32 {
+    let src: str = "[true,null,42]";
+    let input = StrBuf.from_str(borrow src);
+    let code = match json.parse(input) {
+        PR.Ok(v) => classify(v),
+        PR.Err(e) => 0 - 1,
+    };
+    @dbg(code);
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+
+# The REAL std PriorityQueue(i32, i32) under the gate: its backing
+# ArrayBuf(Pair(i32, i32)) stores whole compact structs through the heap pointer
+# (RUE-987) and its `get`/`pop` return `Option(Pair)` by value — a variant-
+# dependent enum image (RUE-1014) — across the sret boundary. A four-element
+# min-heap pops in ascending priority order, pinning the whole pipeline.
+[[case]]
+name = "std_priority_queue_option_pair_under_gate"
+description = "The real std PriorityQueue(i32,i32) runs under the gate: ArrayBuf(Pair) struct elements plus Option(Pair) variant-dependent enum returns (RUE-1014)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "--preview", "raw_bytes", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const bh = std.binary_heap;
+const option = std.option;
+const tuple = std.tuple;
+fn main() -> i32 {
+    let PQ = bh.PriorityQueue(i32, i32);
+    let Item = tuple.Pair(i32, i32);
+    let O = option.Option(Item);
+    let mut q = PQ.new();
+    q.push(5, 50);
+    q.push(1, 10);
+    q.push(3, 30);
+    q.push(2, 20);
+    let mut n: u64 = 0;
+    while n < 4 {
+        match q.pop() {
+            O.Some(it) => { @dbg(it.first); @dbg(it.second); },
+            O.None => @dbg(0 - 1),
+        };
+        n = n + 1;
+    }
+    0
+}
+""" }]
+stdout = "1\n10\n2\n20\n3\n30\n5\n50\n"
+exit_code = 0
+
+# Refusal sentinel: an enum whose per-variant payloads genuinely overlap (no
+# single variant-independent image) must still fail LOUDLY, never miscompile. If
+# a future change lifts this, the sentinel flips to a hard failure and forces a
+# deliberate update. `A(u16, u16)` versus `B(u32)`: leaf 0 merges to a 4-byte
+# slot at the payload start, but `A`'s leaf 1 sits at payload+2, overlapping it.
+[[case]]
+name = "overlapping_union_enum_still_refuses"
+description = "An enum whose per-variant payloads overlap has no variant-independent image and is still refused under the gate, not miscompiled (RUE-1014 boundary)."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Ov { A(u16, u16), B(u32) }
+fn make(v: bool) -> Ov { if v { Ov.A(1, 2) } else { Ov.B(3) } }
+fn main() -> i32 {
+    match make(true) {
+        Ov.A(a, b) => { let s: i32 = @intCast(a) + @intCast(b); @dbg(s); },
+        Ov.B(c) => { let s: i32 = @intCast(c); @dbg(s); }
+    };
     0
 }
 """ }]
