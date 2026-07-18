@@ -1,5 +1,11 @@
 // Shared byte pool for Mosaic. Every parsed string is represented by a stable
 // integer id, keeping the site model trivially copyable and arena-friendly.
+// An open-addressed hash index makes interning amortized O(length), so total
+// intern work stays linear in input volume instead of quadratic in pool size
+// (RUE-1003). The index is hand-rolled from the pool's own primitive arrays
+// because a StrMap(u64) field on this cross-module public struct fails
+// comptime type reduction while RUE-993 is open. Ids are never removed, so
+// the table needs no tombstones: a slot holds id + 1, and 0 means empty.
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 const U64s = std.arraybuf.ArrayBuf(u64);
@@ -9,17 +15,64 @@ pub struct Pool {
     bytes: StrBuf,
     offsets: U64s,
     lengths: U64s,
+    slots: U64s,
+    slot_cap: u64,
 
     fn new() -> Self {
-        Self { bytes: StrBuf.new(), offsets: U64s.new(), lengths: U64s.new() }
+        let mut pool = Self {
+            bytes: StrBuf.new(),
+            offsets: U64s.new(),
+            lengths: U64s.new(),
+            slots: U64s.new(),
+            slot_cap: 0,
+        };
+        pool.grow_slots(16);
+        pool
     }
 
     fn len(borrow self) -> u64 { self.offsets.len() }
 
+    // FNV-1a over the candidate's bytes; must match `hash` over pooled ids so
+    // rebuilt tables and fresh probes agree on slot positions.
+    fn value_hash(borrow value: StrBuf) -> u64 {
+        let mut h: u64 = 14695981039346656037;
+        let mut i: u64 = 0;
+        while i < value.len() {
+            let b = match value.byte_at(i) { OptU8.Some(x) => x, OptU8.None => 0 };
+            h = h ^ @intCast(b);
+            h = @wrapping_mul(h, 1099511628211);
+            i = i + 1;
+        }
+        h
+    }
+
+    // Re-hash every interned id into a table of `new_cap` slots.
+    fn grow_slots(inout self, new_cap: u64) {
+        let mut fresh = U64s.new();
+        let mut i: u64 = 0;
+        while i < new_cap { fresh.push(0); i = i + 1; }
+        let mut id: u64 = 0;
+        while id < self.len() {
+            let mut slot = self.hash(id) % new_cap;
+            while fresh.get_or(slot, 0) != 0 { slot = (slot + 1) % new_cap; }
+            fresh.set(slot, id + 1);
+            id = id + 1;
+        }
+        self.slots = fresh;
+        self.slot_cap = new_cap;
+    }
+
     fn intern(inout self, borrow value: StrBuf) -> u64 {
-        let existing = self.find(borrow value);
-        if existing < self.len() { return existing; }
+        // Grow above 50% load so probe chains stay short.
+        if (self.len() + 1) * 2 > self.slot_cap { self.grow_slots(self.slot_cap * 2); }
+        let mut slot = Self.value_hash(borrow value) % self.slot_cap;
+        while self.slots.get_or(slot, 0) != 0 {
+            let id = self.slots.get_or(slot, 0) - 1;
+            if self.equals(id, borrow value) { return id; }
+            slot = (slot + 1) % self.slot_cap;
+        }
         let id = self.len();
+        self.slots.set(slot, id + 1);
         self.offsets.push(self.bytes.len());
         self.lengths.push(value.len());
         let mut i: u64 = 0;
@@ -36,10 +89,12 @@ pub struct Pool {
     fn intern_literal(inout self, value: StrBuf) -> u64 { self.intern(borrow value) }
 
     fn find(borrow self, borrow value: StrBuf) -> u64 {
-        let mut id: u64 = 0;
-        while id < self.len() {
+        if self.slot_cap == 0 { return self.len(); }
+        let mut slot = Self.value_hash(borrow value) % self.slot_cap;
+        while self.slots.get_or(slot, 0) != 0 {
+            let id = self.slots.get_or(slot, 0) - 1;
             if self.equals(id, borrow value) { return id; }
-            id = id + 1;
+            slot = (slot + 1) % self.slot_cap;
         }
         self.len()
     }

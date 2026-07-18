@@ -3,6 +3,7 @@
 const std = @import("std");
 const htmlcheck = @import("htmlcheck.rue");
 const model = @import("model.rue");
+const navigation = @import("navigation.rue");
 const text = @import("text.rue");
 const StrBuf = std.strbuf.StrBuf;
 
@@ -91,8 +92,9 @@ fn expected_toc_count(borrow site: model.Site, page_index: u64) -> u64 {
 fn expected_rendered_links(borrow site: model.Site, page_index: u64) -> u64 {
     let page = site.pages.get_or(page_index, model.empty_page());
     let content = page.link_count;
-    // Primary navigation plus the brand link and keyboard skip link.
-    let primary = site.navigation.len() + 2;
+    // The rendered primary-navigation window plus the brand link and
+    // keyboard skip link.
+    let primary = navigation.window_len(borrow site) + 2;
     let mut pager: u64 = 0;
     let mut pos: u64 = 0;
     while pos < site.navigation.len() {

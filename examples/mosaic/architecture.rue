@@ -114,7 +114,9 @@ fn limits(inout out: StrBuf) {
     out.push_str("  Template expressions expose a fixed environment and explicit filters.\n");
     out.push_str("  Local links may contain fragments but not query strings.\n");
     out.push_str("  External HTTP, HTTPS, mailto, and unknown safe schemes are not crawled.\n");
-    out.push_str("  Draft documents are parsed but omitted from navigation and outputs.\n\n");
+    out.push_str("  Draft documents are parsed but omitted from navigation and outputs.\n");
+    out.push_str("  Rendered primary navigation is a 16-entry window around the current page,\n");
+    out.push_str("  keeping generated output volume linear in page count.\n\n");
 }
 
 fn maintenance(inout out: StrBuf) {

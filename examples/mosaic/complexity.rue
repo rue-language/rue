@@ -3,6 +3,7 @@
 // different hosts and spotting accidental quadratic growth.
 const std = @import("std");
 const model = @import("model.rue");
+const navigation = @import("navigation.rue");
 
 pub struct Complexity {
     pool_probe_units: u64,
@@ -41,12 +42,14 @@ pub fn estimate(borrow site: model.Site) -> Complexity {
     let inlines = site.inlines.len();
     let links = site.links.len();
     let anchors = site.anchors.len();
-    let pool_probe_units = saturated_mul(strings, strings + 1) / 2;
+    // Interning is hash-indexed, so probing is amortized-constant per string.
+    let pool_probe_units = strings;
     let parse_units = saturated_add(blocks, inlines);
     let inline_units = saturated_add(inlines, links);
     let graph_units = saturated_mul(links, saturated_add(pages, anchors));
     let reachability_units = saturated_add(pages, links);
-    let render_units = saturated_add(saturated_add(blocks, inlines), saturated_mul(pages, site.navigation.len()));
+    // Each page renders a bounded navigation window, not the full list.
+    let render_units = saturated_add(saturated_add(blocks, inlines), saturated_mul(pages, navigation.window_len(borrow site)));
     let mut words: u64 = 0;
     let mut i: u64 = 0;
     while i < site.pages.len() {
