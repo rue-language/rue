@@ -207,7 +207,7 @@ The implementation dependency chain is exact:
 
 - [x] **Reusable explicit-endian helpers** — RUE-970
 - [x] **IPv4 and `SockAddr` types plus Linux marshalling** — RUE-982, blocked by RUE-970
-- [ ] **Blocking `TcpListener`/`TcpStream` operations** — RUE-983, blocked by RUE-982
+- [x] **Blocking `TcpListener`/`TcpStream` operations** — RUE-983, blocked by RUE-982
 - [ ] **Deterministic real-binary Linux loopback coverage** — RUE-984, blocked by RUE-983
 
 RUE-984 may narrowly extend the CLI harness to coordinate two processes. Tests

@@ -1028,6 +1028,18 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "cli.std_net_tcp",
+        "tcp_connection_refused",
+        external(ExternalDependencyKind::SystemCall),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.std_net_tcp",
+        "tcp_loopback_round_trip",
+        external(ExternalDependencyKind::SystemCall),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
         "cli.std_strbuf",
         "aliased_three_word_layout_and_scope_drop",
         intrinsic(UnsupportedIntrinsicKind::IntToPointer),
