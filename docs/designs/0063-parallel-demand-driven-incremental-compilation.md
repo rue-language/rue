@@ -9,7 +9,9 @@ accepted:
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["ADR-0045", "ADR-0050", "ADR-0051", "ADR-0052", "ADR-0053", "ADR-0055", "ADR-0058", "ADR-0061", "RUE-328", "RUE-812"]
+supersedes: [0045, 0053]
+amends: [0051]
+relates: ["ADR-0050", "ADR-0052", "ADR-0055", "ADR-0058", "ADR-0061", "RUE-328", "RUE-812"]
 ---
 
 # ADR-0063: Parallel demand-driven incremental compilation
@@ -23,14 +25,34 @@ project is created.
 If accepted, this ADR supersedes ADR-0045's compiler-architecture rollout and
 its exclusion of cross-request and cross-invocation incremental state. It
 retains and restates ADR-0045's language-semantic rule that observable semantic
-checking and emitted code are selected by explicit roots. It also supersedes
-ADR-0053's single-threaded, one-selected-key execution boundary and its decision
-to end the query database before code generation. The attempt, diagnostic,
-dependency, current-versus-last-good, and fail-closed publication invariants
-from ADR-0053 remain requirements.
+checking and emitted code are selected by explicit roots.
 
-Until this proposal is accepted, ADR-0045 and ADR-0053 remain authoritative and
-their metadata is unchanged.
+This ADR also supersedes ADR-0053's single-threaded, one-selected-key execution
+boundary and its decision to end the query database before code generation.
+ADR-0053 invariants 2 through 8 and 10 through 17 remain binding verbatim.
+Invariant 1 is replaced by per-key memo nodes plus request-owned current
+publication. Invariant 9 is modified so cancellation, dependency cycles, and
+engine invariant violations remain non-terminal aborts, while an exact-key,
+compatible duplicate joins the existing computation instead of aborting.
+Invariant 18 is strengthened to require cold, reused, joined, one-worker,
+many-worker, and codegen observations to be equivalent. Invariant 19 is
+superseded: code generation becomes a retained query terminal while linking
+remains fresh in the first implementation project. Publication identity,
+bounded ownership, the single computation path, and the differential oracle
+therefore remain explicit requirements rather than implied survivals.
+
+This ADR amends ADR-0051. Compiler ownership of import recognition, candidate
+precedence, canonical identity and outcomes, provenance, read policy, typed
+observations, observation and accepted-read ledgers, and deterministic
+diagnostics survives. Its closed-whole-graph fixed point, all-module parse abort,
+and rule that semantic work begins only after a complete valid import graph are
+replaced by batched demand fulfillment and validity of the rooted dependency
+closure. Section 7 defines the amended protocol.
+
+Until this proposal is accepted, ADR-0045, ADR-0051, and ADR-0053 remain
+authoritative and their metadata is unchanged. Acceptance requires marking
+ADR-0045 and ADR-0053 superseded with reciprocal `superseded-by: 0063` metadata
+and adding `amended-by: 0063` to ADR-0051.
 
 ## Summary
 
@@ -114,6 +136,13 @@ query reads it. This separates language semantics from scheduling policy and
 allows safe background work without turning `check-all` into the default build
 mode.
 
+Speculation may consume only inputs already present in its pinned revision. It
+may not emit a host missing-input demand, trigger filesystem access or policy
+checks, or enlarge the observation or accepted-read ledgers. A speculative
+query which encounters a missing input parks or abandons without publishing a
+failure. Only rooted work, or a future explicitly authorized cache-warming
+request with its own read policy, may drive the external-input protocol.
+
 Lexing and parsing remain whole-file operations after a module is demanded.
 Therefore a demanded module must be syntactically valid as a whole. An
 undemanded module is not read or parsed and contributes no syntax diagnostics.
@@ -123,10 +152,24 @@ future work and is not required by this ADR.
 
 ### 2. Inputs are immutable revisions
 
-The query database retains immutable input revisions. A request pins exactly one
-revision for its lifetime. Publishing a source edit, target/configuration edit,
-or host import observation creates a successor revision; it does not mutate the
-inputs observed by already-running work.
+The query database retains immutable input revisions. A compilation request is
+a sequence of attempts. Each attempt pins exactly one revision for its lifetime.
+Publishing a source edit, target/configuration edit, or host import observation
+creates a successor revision; it does not mutate the inputs observed by an
+already-running attempt. A request may continue in a successor attempt after
+rooted missing-input fulfillment, but no individual query computation observes
+two revisions. An explicit source or configuration update begins a new request;
+a canceled request may be retried only as a new request.
+
+Rooted missing-input fulfillment is round-based. The coordinator drains all
+currently available work for one pinned attempt, accumulates and deduplicates
+its frontier of demands, and asks the host to execute one compiler-produced
+batch. The host publishes the batch in one successor revision and the request
+continues with one successor attempt. A cold build therefore advances revisions
+with import dependency depth, not once per imported module. Terminals from the
+previous attempt are validated or red/green reused against the successor; an
+unchanged input leaf carried into the successor does not become different merely
+because its revision number advanced.
 
 Input leaves are granular:
 
@@ -152,6 +195,13 @@ specialization key, type-instance key, target, or optimization level. A logical
 key never embeds terminal stamps from its dependencies. Dependency stamps are
 recorded on observed graph edges.
 
+A terminal content fingerprint is derived metadata over the canonical result
+and the explicit dependency outputs which affect that result. It is never part
+of memo identity, never replaces exact-key and dependency validation, and never
+proves reuse by digest equality alone. Consumers such as `ProgramImagePlan` may
+compare fingerprints to describe content deltas without changing the stable
+logical node which owns attempt history.
+
 The database allocates one logical memo node per `(query family, logical key)`
 and may retain versioned attempts/results for that node. Requesting a node from
 a pinned revision validates a compatible retained result or performs an atomic
@@ -175,10 +225,13 @@ and observed dependencies privately and publishes them atomically after
 checking that its pinned revision is still eligible for the requesting
 publication.
 
-Publication is red/green. If a recomputed query has an outcome and diagnostic
-batch equal under its family-owned comparison, its observable terminal stamp is
-preserved. Dependents are not invalidated merely because an implementation ran
-again or an input revision number advanced.
+Publication is red/green. If a recomputed query has an equal canonical outcome
+and equal semantic diagnostic identities and payloads under its family-owned
+comparison, its observable terminal stamp is preserved. Current source
+locations are a separately stamped presentation projection and do not
+participate in semantic terminal equality. Dependents are not invalidated merely
+because an implementation ran again, an input revision number advanced, or an
+unrelated source edit shifted diagnostic positions.
 
 Attempt history, current/last-good behavior, deterministic failures,
 cancellation, and fail-closed retained-artifact validation continue to follow
@@ -211,6 +264,19 @@ than nesting uncoordinated global thread pools. The first implementation may run
 the same interfaces with one worker. Correctness and artifact identity must be
 identical for one worker and many workers.
 
+A parked joiner does not retain an execution permit needed by the computation
+it awaits. The scheduler must either release the permit while parking or donate
+the waiting worker to ready dependency work. It must make progress with a budget
+of one and under adversarial claim, join, and dependency schedules; cross-task
+cycle detection alone is not a progress guarantee.
+
+Rue's existing process-global Rayon configuration and the CFG, optimization,
+and backend `par_iter` paths are part of this migration. Before query-level
+parallelism is enabled, they must execute through the same structured budget or
+be serial inside a query. `configure_thread_pool` remains a supported facade
+operation under ADR-0061, but its implementation becomes configuration of this
+shared budget rather than authorization for an independent nested pool.
+
 ### 5. Stable identity and canonical artifacts are the interchange format
 
 Query results which outlive one local computation contain no request-local
@@ -224,10 +290,16 @@ The stable identity domain covers:
 - concrete generic/comptime specializations with canonical type/value
   arguments;
 - anonymous structs/enums and their methods/destructors, keyed by their stable
-  producing definition or specialization, source anchor, and canonical
-  arguments;
+  producing definition or specialization, definition-relative structural
+  anchor, and canonical arguments;
 - synthesized drop glue keyed by canonical type instance; and
 - runtime/compiler-provided symbols from the typed ABI manifest.
+
+An identity anchor is a structural path relative to its stable producing
+definition or specialization. It is not a module-absolute byte offset, line,
+column, or raw span. Inserting whitespace, comments, or declarations outside
+the producer therefore changes only current position metadata, not anonymous
+nominal identity, symbols, codegen fingerprints, or image-plan entries.
 
 ADR-0058's canonical semantic body/type/value algebra is the semantic query
 interchange format. Compact live AIR, live type pools, parser interners, CFG
@@ -289,8 +361,11 @@ measurement demonstrates an independent reuse boundary.
 ### 7. Import resolution is a demand-driven external-input protocol
 
 The compiler continues to own import syntax recognition, candidate precedence,
-logical identity, canonical outcomes, and diagnostics under ADR-0051. The host
-continues to own filesystem access and read policy.
+logical identity, canonical outcomes, diagnostics, and the ordered demand plan
+under ADR-0051. The host continues to own filesystem access and read policy and
+executes only compiler-produced demand batches. Candidate provenance, typed
+observation outcomes, the observation ledger, and the accepted-read manifest
+remain separate canonical records.
 
 Parsing a module records lazy module-binding/import-site values. Merely
 encountering `const std = @import("std")` does not read the target. Looking up a
@@ -298,16 +373,38 @@ member through that binding requests its resolution. If the pinned revision has
 no observation for the required candidate operation, the query reports a typed
 missing-input demand rather than a compiler failure.
 
-The request coordinator deduplicates demands from concurrent queries. The host
-performs stable reads and policy checks, then publishes accepted, absent, denied,
-unreadable, ambiguous, or canceled observations into a successor immutable
-revision. Work pinned to the previous revision does not observe an in-place
-mutation. Candidate precedence and provenance remain identical under serial and
-parallel fulfillment.
+The request coordinator deduplicates all demands exposed by the current rooted
+frontier. The host performs stable reads and policy checks for that ordered
+batch, then publishes accepted, absent, denied, unreadable, ambiguous, or
+canceled observations into one successor immutable revision. Work pinned to
+the previous revision does not observe an in-place mutation. Candidate
+precedence and provenance remain identical under serial and parallel
+fulfillment.
 
-The implementation may use suspension/joining or controlled retry across the
-successor revision. It may not let semantic queries access the filesystem or
-maintain a second import graph outside the canonical query database.
+All successor attempts used to fulfill one compilation request belong to one
+immutable external-input discovery epoch. Completed observations may be carried
+across those attempts and are validated as the same leaves. A later source
+update starts a new epoch and re-executes observations unless the host supplies
+the trustworthy filesystem/read-policy revision or watch token required by
+ADR-0051; that token participates in every observation key. Suspension and
+retry therefore cannot silently promote an old filesystem observation into a
+new update epoch.
+
+The database's canonical import records and their projections are the sole
+resolution authority. A whole `CanonicalImportGraph` remains available as a
+deterministic projection for diagnostics, dependency output, and compatibility,
+but semantic work no longer waits for a complete transitive graph. Each rooted
+branch proceeds only through demanded modules whose parse and relevant import
+outcomes are valid. A syntax or import failure blocks that dependent branch and
+the root request while unrelated, undemanded modules remain unread and cannot
+fail the request. This replaces ADR-0051's closed-graph semantic gate and its
+all-loaded-module parse abort; it retains fail-closed outcomes for every import
+which the rooted closure actually observes.
+
+The implementation may use suspension/joining or successor attempts. It may
+not let semantic queries access the filesystem, let speculative work emit host
+demands, let the host invent or reorder demand candidates, or maintain a second
+import graph outside the canonical query database.
 
 ### 8. Semantic bodies and reachability are separate
 
@@ -316,15 +413,37 @@ concrete specialization. It may request names, declarations, signatures,
 constant values, type facts, and comptime results. It does not request ordinary
 callee bodies.
 
-The body result includes a canonical body plus a `BodyReferences` projection
-containing the stable callable/specialization/type/module/glue dependencies
-discovered after current-target comptime evaluation. Ordinary call recursion is
+The body producer publishes a canonical body outcome plus an independently
+stamped `BodyReferences` projection containing the stable callable,
+specialization, type, module, and glue dependencies discovered after
+current-target comptime evaluation. After whole-module parsing succeeds,
+`BodyReferences` is a total projection: a body with deterministic semantic
+errors still publishes every positively resolved reference found during
+error-tolerant analysis. Unresolved references produce diagnostics but no
+invented edge. Cancellation, engine abort, or typed incompleteness publishes no
+terminal reference projection, so reachability cannot mistake an interrupted
+scan for an empty body. This policy keeps diagnostics in valid callees
+observable even when their caller also fails. Ordinary call recursion is
 therefore a legal cycle in the reachability graph, not a query dependency cycle.
 
-The reachability coordinator expands reference projections from the root set,
-deduplicates stable identities, and schedules newly ready work. It can discover
-and analyze independent callees in parallel. Its reached-set stamp depends on
-reference projections, not on unrelated instruction content inside bodies.
+`Reachability(RootSetKey)` is a database-owned query family, not a peer
+coordinator or second call graph. Its evaluator expands a deterministic worklist
+of `BodyReferences` projections from the root set, records every observed
+projection stamp and canonical edge, deduplicates stable identities, and may
+schedule independent frontier work in parallel. The result publishes a sorted
+reached set plus independently stamped per-identity membership projections.
+Downstream type, glue, codegen, and image-plan queries observe the memberships
+they use rather than one opaque global reached-set stamp.
+
+Additions may be maintained by monotone frontier expansion. When an observed
+edge is removed, the baseline correctness algorithm re-derives membership from
+the roots; it never retains a node merely because it was reached in an earlier
+revision. If measurement shows that re-derivation misses the warm-edit budget,
+the implementation may add predecessor support counts, tracing, or another
+dynamic reachability algorithm behind the same query contract. Phase 7 must
+measure edge addition and deletion separately and may not complete without a
+documented latency/work gate. A recomputation whose reached memberships are
+unchanged remains green even if one reference projection was recomputed.
 
 True semantic cycles retain domain-specific handling. Recursive value constants,
 illegal by-value type/layout cycles, and non-terminating specialization cycles
@@ -403,17 +522,22 @@ Object-file encoding is a projection from `CodegenUnit` for the system linker,
 object presentation, and compatibility testing. The internal path does not need
 to serialize each function to ELF/Mach-O and immediately parse it back.
 
-Machine-code keys include the optimized CFG, target architecture/OS and code
-model, relevant ABI/layout facts, runtime ABI manifest version, backend/schema
-epoch, and only the strings/data actually referenced by that unit. Linker mode
-is not a codegen input.
+The logical machine-code key is the stable `FunctionInstanceKey` plus explicit
+target architecture/OS, code model, optimization mode, and relevant
+ABI/layout/backend schema epochs. The optimized CFG, referenced ABI/layout
+facts, runtime ABI manifest, and only the strings/data used by that unit are
+recorded dependencies. Their canonical content contributes to the terminal
+fingerprint but is not embedded in memo identity. Linker mode is neither a
+logical key component nor a codegen dependency.
 
 ### 12. `ProgramImagePlan` preserves the incremental-linking seam
 
 A deterministic `ProgramImagePlan` contains the sorted reached `CodegenUnit`
 identities/fingerprints, entry point, target/object format, runtime ABI/archive
-identity, required runtime symbols, and final user-visible warnings. It contains
-no external system-toolchain state.
+identity, and required runtime symbols. It contains no diagnostics, warnings,
+source positions, or external system-toolchain state. Final user-visible
+warnings belong to the executable request adapter's diagnostic projection under
+section 13; changing warning text or position cannot create a linker delta.
 
 The first implementation rebuilds the internal executable from the complete plan
 on every root request. This is the intentional project boundary: frontend
@@ -443,15 +567,21 @@ publication policies without changing `CodegenUnit` or frontend query identity.
 
 ### 13. Diagnostics, work, and determinism belong to requests
 
-Every query attempt freezes its own diagnostic/warning batch and structural work
-record. A root request publishes only batches observed through its dependency
-closure. Reused and joined results retain origin provenance without duplicating
-logical diagnostics.
+Every query attempt freezes its own semantic diagnostic/warning identities and
+payloads plus a separately stamped current-position projection and structural
+work record. The semantic batch owns diagnostic identity, severity, message,
+notes, and producer order; it excludes module-absolute offsets, lines, columns,
+and raw spans. A root request publishes only batches observed through its
+dependency closure and joins them with position projections from the request's
+pinned attempt. Reused and joined results retain origin provenance without
+duplicating logical diagnostics.
 
 Execution order never determines presentation order. The request adapter merges
-and sorts observed batches using stable source identity and anchors. Parallel
-failure does not race to choose the one user-visible error; family-defined
-collection and presentation rules remain deterministic.
+and sorts observed batches using stable source identity, current source
+positions, and producer order. A whitespace-only position shift updates rendered
+locations without reddening semantic, CFG, codegen, or image-plan terminals.
+Parallel failure does not race to choose the one user-visible error;
+family-defined collection and presentation rules remain deterministic.
 
 Structural metrics distinguish requested, computed, reused, joined, canceled,
 speculative, red-equivalent, invalidated, and evicted work. Phase counts prove
@@ -504,31 +634,38 @@ accepted. The dependency order is:
 - [ ] **Phase 0: Runtime prototype and benchmark gate.** Prove exact-key
   claim-or-join, different-key parallel execution, red/green propagation,
   deterministic diagnostics, cancellation/revision isolation, exact cycle
-  handling, and bounded retention on representative query shapes. Compare an
+  handling, bounded retention, and progress with one permit and adversarial
+  claim/join/dependency schedules on representative query shapes. Compare an
   in-house evolution with a query-library prototype if substrate choice remains
   open.
-- [ ] **Phase 1: Revisioned keyed database.** Replace family-selected mutable
-  state with immutable revisions, per-key nodes, joined waiters, task-scoped
-  dependency recording, and single-worker scheduling through the parallel-ready
-  interface.
+- [ ] **Phase 1: Revisioned keyed database and compatibility shim.** Introduce
+  immutable revisions, per-key nodes, joined waiters, task-scoped dependency
+  recording, and single-worker scheduling beneath a compatibility shim over the
+  selected-state API. Do not require all query families to change call
+  discipline in one diff.
 - [ ] **Phase 2: Source and import inputs.** Publish per-module source leaves,
-  demand missing import observations, and preserve canonical read policy,
-  precedence, and provenance across successor revisions.
+  fulfill rooted missing import observations in deduplicated frontier batches,
+  prohibit speculative host demands, and preserve canonical read policy,
+  precedence, provenance, and discovery-epoch reuse across successor attempts.
 - [ ] **Phase 3: Module syntax/RIR queries.** Parse and lower demanded modules,
   provide stable definition/name/import indexes, and keep whole-program views as
   thin projections.
 - [ ] **Phase 4: Complete stable semantic identity.** Cover named definitions,
-  specializations, anonymous nominals, methods/destructors, source anchors, and
-  synthesized entities with schedule-independent keys.
+  specializations, anonymous nominals, methods/destructors,
+  definition-relative structural anchors, and synthesized entities with
+  schedule- and position-independent keys.
 - [ ] **Phase 5: Declaration and comptime queries.** Move shells, signatures,
   constants, type constructors, method lookup, and domain-specific cycle
   handling behind keyed canonical queries.
 - [ ] **Phase 6: Per-body semantics and projections.** Analyze one body per
   query, publish canonical bodies and independently stamped `BodyReferences`,
-  and remove the whole-program mutable Sema epoch as an authority.
-- [ ] **Phase 7: Reachability and parallel scheduling.** Expand root reference
-  projections, handle legal call SCCs, submit independent frontier work through
-  the shared scheduler, and prove one-worker/many-worker equivalence.
+  including deterministic references from failed bodies, and remove the
+  whole-program mutable Sema epoch as an authority.
+- [ ] **Phase 7: Reachability and parallel scheduling.** Implement
+  database-owned reachability with per-identity memberships, correct edge
+  deletion, and separate addition/deletion measurement gates; handle legal call
+  SCCs; move existing Rayon CFG/backend parallelism onto the shared budget; and
+  prove progress plus one-worker/many-worker equivalence.
 - [ ] **Phase 8: Type/layout/ABI/drop queries.** Replace full-pool scans and
   destructor roots with demand-driven facts, layouts, call ABI, and glue.
 - [ ] **Phase 9: CFG and optimization queries.** Publish per-function
@@ -543,24 +680,35 @@ accepted. The dependency order is:
   contract for follow-up direct and incremental internal linking.
 - [ ] **Phase 12: Compatibility and performance completion.** Generalize the
   cold-versus-reused oracle, add multi-worker determinism and cancellation
-  schedules, enforce memory budgets, and publish warm edit-to-codegen and
-  edit-to-runnable baselines.
+  schedules and source-position-shift cases, delete the selected-state
+  compatibility shim and peer cache state, enforce memory budgets, and publish
+  warm edit-to-codegen and edit-to-runnable baselines.
 
-Each phase is additive until its replacement is proven. The superseded
-whole-program cache/path is deleted in the phase that establishes the canonical
-query path; compatibility code does not remain as a peer compiler graph.
+Each family migrates through the compatibility shim one at a time and must pass
+the cold-versus-reused differential oracle before the next family moves. Each
+phase is additive until its replacement is proven. The superseded whole-program
+cache/path is deleted in the phase that establishes the canonical query path;
+the selected-state shim is deleted in Phase 12 and compatibility code does not
+remain as a peer compiler graph.
 
 ## Acceptance and validation
 
 The implementation is complete through code generation only when tests prove:
 
 - importing and using one std submodule does not read, parse, analyze, or
-  generate code for unrelated std modules;
+  generate code for unrelated std modules, including under speculative
+  execution;
+- a cold import build publishes at most one successor input revision per
+  demand-frontier round rather than one revision per imported module;
 - an unreachable declaration contributes no semantic diagnostic or codegen
   unit, including under speculative query execution;
 - current-target comptime selection contributes references only from the chosen
   branch;
 - ordinary recursive calls terminate reachability without query-cycle errors;
+- deterministic semantic failures retain every positively resolved body
+  reference, while canceled or incomplete scans publish no reference terminal;
+- adding and removing call edges updates exact per-identity reachability and
+  satisfies the Phase 7 work/latency gate;
 - true const, type-layout, import, and specialization cycles are deterministic;
 - editing an unreachable source invalidates no rooted downstream terminal;
 - editing a callee implementation preserves ordinary callers unless an
@@ -568,6 +716,11 @@ The implementation is complete through code generation only when tests prove:
 - changing optimization preserves syntax, declarations, bodies, layouts, and
   unoptimized CFGs;
 - named/anonymous destructors and glue are generated only for reached types;
+- inserting whitespace or comments above definitions changes no stable
+  identity, semantic terminal, codegen fingerprint, codegen unit, or image-plan
+  entry; only current diagnostic/source-position projections may change;
+- a one-worker budget and adversarial claim/join/dependency schedules make
+  progress without permit-starvation deadlock;
 - one-worker and many-worker requests produce identical diagnostics, reached
   identities, CFGs, codegen atoms, relocations, and executable bytes;
 - cold, reused, joined, recovered-failure, canceled, and evicted schedules are
@@ -644,7 +797,7 @@ remain useful inside one query.
 
 Rejected. It turns legal source recursion into query cycles and invalidates
 callers on ordinary callee implementation edits. Body reference projections and
-a separate reachability coordinator express the real dependency.
+the database-owned reachability query express the real dependency.
 
 ### Make every backend pass a query
 
